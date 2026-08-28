@@ -7,31 +7,26 @@
 <script src="/template-shared/ro-badge.js"></script>
 <script src="/template-shared/graph-canvas.js"></script>
 <style>
-  /* Appearance (SPEC §30, D134). Both palettes are **Obsidian's own default
-     theme**, taken from its published CSS-variable reference rather than
-     approximated: the `--color-base-*` neutral scale, `--color-red` and
-     `--color-orange`, and the default accent `hsl(254, 80%, 68%)`. Obsidian is
-     already the reference for this template's read/write behaviour (SPEC §32),
-     so it should be the reference for its appearance too.
+  /* Appearance (SPEC §30, D134). The NEUTRALS come from the app shell itself
+     (`frontend/src/styles/tokens.css`), so the note surface is literally the
+     same colour as the app around it — Obsidian's own editor is the same
+     colour as the app around IT, which is the argument D159 already used to
+     strip oneDark's surface, and this palette carries it one step further:
+     the shell's cool blue-tinted neutrals, not a dead-neutral grey approximated
+     from Obsidian's published theme. A dead grey next to the shell's blue-
+     tinted one reads as a warm brown slab on a cool page (found by looking at
+     it, 2026-08-28) — which is what an Obsidian-sourced scale was doing here.
+     Obsidian stays the reference for this template's BEHAVIOUR (SPEC §32);
+     it is no longer the reference for its colour.
 
-       --bg      = --background-primary        (--color-base-00)
-       --bg-alt  = --background-secondary      (--color-base-20)
-       --border  = --background-modifier-border(--color-base-30)
-       --fg      = --text-normal               (--color-base-100)
-       --fg-muted= --text-muted                (--color-base-70)
-       --ghost   = --text-faint                (--color-base-50)
-
-     The NEUTRALS are Obsidian's; the ACCENT is not. Obsidian's default accent is
-     a violet (`hsl(254, 80%, 68%)`), and against these greys it read as off —
-     so the accent stays fused-render's own yellow, used sparingly and mostly on
-     links. That is the whole point of borrowing a neutral scale: it is neutral,
-     so it carries any accent. `--on-accent` is therefore dark, because the
-     accent is light.
+     `--accent` is unchanged and is not from either source: fused-render's own
+     yellow, used sparingly and mostly on links. `--on-accent` is dark, because
+     the accent is light.
 
      One other deviation: light `--warn` is darkened from Obsidian's l=46% to
-     36% (same hue and saturation). Its light orange is 2.8:1 on white and it
-     carries the conflict banner, the one message in this view that must be read
-     (4.3:1 after, on `--bg-alt`).
+     36% (same hue and saturation, kept from the original palette pass). Its
+     light orange is 2.8:1 on white and it carries the conflict banner, the one
+     message in this view that must be read (4.3:1 after, on `--bg-alt`).
 
      `data-theme` is written onto <html> by the injected runtime, which acts only
      because this document opted in via `data-fused-theme` on <html> (see
@@ -39,35 +34,35 @@
      that never gets the attribute. */
   :root {
     color-scheme: dark;
-    --fg: #dadada;
-    --fg-muted: #bababa;
-    --border: #363636;
-    --bg: #1e1e1e;
-    --bg-alt: #262626;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
     --accent: #E5FF44;
     --error: #fb464c;
     --warn: #e9973f;
-    --skel-shine: #363636;
+    --skel-shine: #2a2d33;
     --ghost: #666666;
     --on-accent: #1e1e1e;
-    /* Neutral, not accent-tinted: a wash of acid yellow over a paragraph is not
-       a selection anyone can read through. */
-    --selection: rgba(255, 255, 255, 0.16);
+    /* The shell's own `--sel`, not a re-derived alpha wash: a wash tuned
+       against the old grey read too warm on the shell's cooler ground. */
+    --selection: #2b3a52;
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --fg: #222222;
-    --fg-muted: #5a5a5a;
-    --border: #e0e0e0;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
     --bg: #ffffff;
-    --bg-alt: #f6f6f6;
+    --bg-alt: #f4f5f7;
     --accent: #5f7300;
     --error: #e93147;
     --warn: #b85b00;
-    --skel-shine: #e0e0e0;
+    --skel-shine: #d8dade;
     --ghost: #ababab;
     --on-accent: #ffffff;
-    --selection: rgba(0, 0, 0, 0.12);
+    --selection: #cfe0f7;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -231,10 +226,15 @@
     border-radius: 4px;
     padding: 0.1em 0.32em;
   }
+  /* A block, not striped lines (6b.3): a left/right border on every line of
+     the fence plus a top/bottom border only on its edges reads as one panel,
+     because the lines sit flush against each other with no gap. */
   .lp-fence-line {
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 0.86em;
     background: var(--bg-alt);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
   }
   .lp-quote-line {
     border-left: 3px solid var(--border);
@@ -289,9 +289,12 @@
      markdown already requires before a fence. */
   .cm-editor .lp-fence-line-top {
     padding-top: 0.5em; border-radius: 6px 6px 0 0;
+    border-top: 1px solid var(--border);
+    position: relative; /* anchors the language chip (6b) */
   }
   .cm-editor .lp-fence-line-bot {
     padding-bottom: 0.5em; border-radius: 0 0 6px 6px;
+    border-bottom: 1px solid var(--border);
   }
   .cm-editor .lp-quote-line-top { padding-top: 0.35em; }
   .cm-editor .lp-quote-line-bot { padding-bottom: 0.35em; }
@@ -357,9 +360,10 @@
   .wl-embed-missing { border: 1px dashed var(--ghost); color: var(--ghost); }
   .wl-embed-unknown { border: 1px solid var(--border); color: var(--fg-muted); }
 
-  /* ---- the corner cluster: mode + sidebar (MD-1a, MD-19) ------------------
-     The only persistent chrome in this view. Two 26px buttons in one corner,
-     never a toolbar row (MD-2a). */
+  /* ---- the corner cluster: sidebar toggle (MD-2a, MD-19) -------------------
+     The only persistent chrome in this view. One 26px button in the corner,
+     never a toolbar row (MD-2a). A writable note is editable, full stop — no
+     mode to switch, so no second button here (MD-1a). */
   #corner {
     position: absolute;
     top: 8px;
@@ -393,13 +397,6 @@
   }
   .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
   .corner-btn svg { width: 14px; height: 14px; display: block; }
-  /* `aria-pressed` tracks EDITING — the non-default state now that a note opens
-     read-only — so the accent marks the surface you can actually change. The
-     glyph names the CURRENT mode either way: padlock while read-only, pencil
-     while editing. */
-  #toggle-edit .icon-edit { display: none; }
-  #toggle-edit[aria-pressed="true"] .icon-edit { display: block; }
-  #toggle-edit[aria-pressed="true"] .icon-lock { display: none; }
   #side {
     position: relative;
     width: 21rem;
@@ -445,19 +442,115 @@
     color: var(--fg-muted);
   }
   .side-head .spacer { flex: 1; }
-  /* Whichever section is FIRST has to clear the floating corner cluster, and
-     that is the outline now (MD-19b). */
-  #outline-head { padding-right: 72px; }
-  /* Content-sized and scrolling, exactly as #links is and for the same reason:
-     a fifty-heading note must not push the canvas out of the panel. The two
-     caps together still leave #graph-sec its min-height. */
-  #outline { flex: none; max-height: 30%; min-height: 0; overflow: auto; padding: 8px; }
   /* Sized by its content, not by the leftover space: a handful of backlinks
      should not reserve half the panel while the graph's labels collide. The
      cap keeps a long list scrolling here instead of starving #graph-sec, so
      flex: none is load-bearing — flex: 1 is what made the list mostly empty. */
   #links { flex: none; max-height: 42%; min-height: 0; overflow: auto; padding: 8px; }
   #links[hidden] { display: none; }
+
+  /* ---- the outline rail (MD-19a/MD-19b) ----------------------------------
+     A left margin, not a second panel: `--bg`, same as the document, with one
+     hairline border. Open by default (the `outline` param defaults open,
+     MD-20) — a note always has structure, so this is permanent chrome rather
+     than something whose subject might not exist. */
+  #outline-rail {
+    position: relative;
+    width: 15rem;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+  }
+  #outline-rail[hidden] { display: none; }
+  #rail-grip {
+    position: absolute;
+    right: -3px;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    z-index: 6;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  #rail-grip:hover, #rail-grip:focus-visible {
+    background: var(--accent);
+    opacity: 0.4;
+    outline: none;
+  }
+  .rail-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    padding: 7px 8px 7px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    color: var(--ghost);
+  }
+  .rail-head .spacer { flex: 1; }
+  #rail-collapse {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ghost);
+    cursor: pointer;
+  }
+  #rail-collapse:hover { color: var(--fg); background: var(--bg-alt); }
+  #rail-collapse svg { width: 12px; height: 12px; display: block; }
+  #outline { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 12px; }
+  /* Collapsed: the rail vanishes and a slim reopen tab takes its place at the
+     page edge, clear of the corner cluster on the right. */
+  #rail-reopen {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 5;
+    width: 26px;
+    height: 26px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  #rail-reopen[hidden] { display: none; }
+  #rail-reopen:not([hidden]) { display: flex; }
+  #rail-reopen:hover { color: var(--fg); border-color: var(--accent); }
+  #rail-reopen svg { width: 13px; height: 13px; display: block; }
+  /* The signature element: a 2px accent bar on the row for the heading you are
+     currently reading, driven off scroll — the one accent-coloured thing in
+     the rail. `::before` rather than a border, so it does not shift the row's
+     own left padding. */
+  .ol.current { color: var(--fg); }
+  .ol.current::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 3px;
+    bottom: 3px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+  }
+  .ol { position: relative; }
   /* A list, not a table of cards: no row border and no row fill, so the four
      backlinks of a typical note read as four lines of text. The rhythm has to
      come from the margin now that no border draws the edges. */
@@ -542,6 +635,177 @@
     padding: 1px 4px;
   }
 
+  /* ---- code block chrome: language chip + copy (6b.3, 6b.4) --------------
+     One small floating toolbar, anchored to the fence's opening line (which
+     carries `position: relative` above), not to every line of the block —
+     that is what lets it sit in one corner instead of repeating per line. */
+  .lp-fence-chip {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .lp-lang-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    user-select: none;
+  }
+  .lp-copy-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg-muted);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+  }
+  .lp-fence-chip:hover .lp-copy-btn,
+  .lp-fence-chip.hover-show .lp-copy-btn { opacity: 1; }
+  .lp-copy-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .lp-copy-btn svg { width: 11px; height: 11px; display: block; }
+
+  /* ---- the selection format bubble (6c) -----------------------------------
+     Positioned by hand from `view.coordsAtPos`, not via CM's tooltip API
+     (that would need `showTooltip`/`Tooltip`, which are not bundled — MD-13
+     stays as it is). Chrome for a subject that exists: hidden while there is
+     no non-empty selection. */
+  #fmt-bubble {
+    position: fixed;
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-alt);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  }
+  #fmt-bubble[hidden] { display: none; }
+  #fmt-bubble button {
+    min-width: 26px;
+    height: 26px;
+    padding: 0 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #fmt-bubble button:hover { background: var(--bg); border-color: var(--border); }
+  /* A mark already applied shows pressed, so the bubble also says what the
+     selection currently IS, not only what it can become. */
+  #fmt-bubble button[aria-pressed="true"] {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .fmt-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--border); }
+  .fmt-turn { position: relative; }
+  #fmt-turn-btn {
+    font-size: 12px;
+    white-space: nowrap;
+    color: var(--fg-muted);
+  }
+  #fmt-turn-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 8;
+    min-width: 10rem;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-alt);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  }
+  #fmt-turn-menu[hidden] { display: none; }
+  #fmt-turn-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 5px 8px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--fg);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #fmt-turn-menu button:hover { background: var(--bg); }
+
+  /* ---- the image lightbox (6a) --------------------------------------------
+     A backdrop overlay, not a rendering change: the underlying `<img
+     class="lp-img">`/`<video>` widgets are untouched (imageWidget). */
+  #lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4vh 4vw;
+    background: rgba(0, 0, 0, 0.82);
+  }
+  #lightbox[hidden] { display: none; }
+  #lb-img {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 4px;
+    object-fit: contain;
+  }
+  #lb-close, #lb-prev, #lb-next {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.4);
+    color: #fff;
+    cursor: pointer;
+  }
+  #lb-close { top: 16px; right: 16px; width: 34px; height: 34px; font-size: 15px; }
+  #lb-prev, #lb-next {
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 44px;
+    font-size: 22px;
+  }
+  #lb-prev { left: 16px; }
+  #lb-next { right: 16px; }
+  #lb-close:hover, #lb-prev:hover, #lb-next:hover { background: rgba(0, 0, 0, 0.65); }
+  #lb-prev[hidden], #lb-next[hidden] { display: none; }
+  #lb-caption {
+    position: absolute;
+    left: 20px;
+    bottom: 16px;
+    max-width: 60%;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 13px;
+  }
+  #lb-caption:empty { display: none; }
+
+  /* ---- outline count, the rail's utility register -------------------------
+     Matches the chip/bubble register: small, muted, non-uppercase digits. */
+  #outline-count { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ghost); }
+
   /* ---- skeleton --------------------------------------------------------- */
   #skel { flex: 1; max-width: 46rem; margin: 0 auto; padding: 40px 24px; }
   #skel[hidden] { display: none; }
@@ -577,6 +841,30 @@
     <button id="keep">Keep my version</button>
   </div>
   <div id="split">
+    <!-- The outline is a left rail in the page (MD-19a/MD-19b), open by
+         default: a note always has structure, so this is permanent chrome
+         rather than a section behind a toggle. -->
+    <aside id="outline-rail">
+      <div class="rail-head">
+        <span>Outline</span>
+        <span id="outline-count"></span>
+        <span class="spacer"></span>
+        <button id="rail-collapse" type="button" aria-label="Collapse outline">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3.5 L11 8 L6 12.5" transform="rotate(180 8 8)" />
+          </svg>
+        </button>
+      </div>
+      <div id="outline"></div>
+      <button id="rail-grip" type="button" aria-label="Resize outline"></button>
+    </aside>
+    <button id="rail-reopen" type="button" aria-label="Show outline" hidden>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 3.5 L11 8 L6 12.5" />
+      </svg>
+    </button>
     <div id="surfaces">
       <div id="skel" aria-hidden="true">
         <div class="skel-bar skel-h1"></div>
@@ -594,28 +882,23 @@
       </div>
       <div id="status" hidden></div>
       <div id="editor-wrap"></div>
+      <!-- The selection format bubble (6c). Hidden while there is no
+           selection — chrome for a subject that exists (§2). Positioned by
+           hand from the selection's coordinates, in JS. -->
+      <div id="fmt-bubble" hidden>
+        <button id="fmt-bold" data-cmd="bold" title="Bold (⌘B)"><b>B</b></button>
+        <button id="fmt-italic" data-cmd="italic" title="Italic (⌘I)"><i>i</i></button>
+        <button id="fmt-strike" data-cmd="strike" title="Strikethrough (⌘⇧X)"><s>S</s></button>
+        <button id="fmt-code" data-cmd="code" title="Inline code (⌘⇧E)">&lt;/&gt;</button>
+        <button id="fmt-link" data-cmd="link" title="Link (⌘K)">🔗</button>
+        <span class="fmt-sep"></span>
+        <div id="fmt-turn" class="fmt-turn">
+          <button id="fmt-turn-btn" type="button">Turn into ▾</button>
+          <div id="fmt-turn-menu" hidden></div>
+        </div>
+      </div>
     </div>
     <div id="corner">
-      <!-- `aria-pressed` tracks EDITING, not read-only: a note opens read-only
-           (MD-1a), and accenting the default would leave the corner permanently
-           lit and say nothing. The accent marks the state worth noticing — the
-           file is writable right now — and the glyph names the current mode:
-           padlock while read-only, pencil while editing. -->
-      <button id="toggle-edit" class="corner-btn" aria-pressed="false"
-              aria-label="Editing" title="Read-only — click to edit">
-        <svg class="icon-edit" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-             stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
-             aria-hidden="true">
-          <path d="M10.6 2.6 L13.4 5.4 L6 12.8 L3 13.6 L3.8 10.6 Z" />
-          <path d="M9.2 4 L12 6.8" />
-        </svg>
-        <svg class="icon-lock" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-             stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
-             aria-hidden="true">
-          <rect x="3.4" y="7" width="9.2" height="6.6" rx="1.4" />
-          <path d="M5.6 7 V5.2 a2.4 2.4 0 0 1 4.8 0 V7" />
-        </svg>
-      </button>
       <button id="toggle-graph" class="corner-btn" aria-pressed="false"
               aria-label="Toggle side panel" title="Toggle side panel">
         <!-- A panel, not a graph: the sidebar holds backlinks AND the graph, and
@@ -633,19 +916,15 @@
     </div>
     <aside id="side">
       <button id="side-grip" type="button" aria-label="Resize side panel"></button>
-      <!-- The outline goes at the TOP of the one right sidebar (MD-19b): it is
-           about the note in front of you, while backlinks and the graph are
-           about the rest of the vault, so it sits nearest the document — which
-           is also where Obsidian puts it. Not a second panel and not a second
-           toggle: MD-19a forbids the first and MD-2a the second. -->
-      <div class="side-head" id="outline-head">Outline</div>
-      <div id="outline"></div>
       <div class="side-head" id="links-head">Backlinks</div>
       <div id="links" hidden>
         <div id="bl-list"></div>
         <div id="notice" hidden></div>
       </div>
-      <div id="graph-sec">
+      <!-- The graph section only exists when the note has links (§5): drawn
+           by JS, not hidden by CSS, so an absent graph never reserves space
+           or a "no links" placeholder. -->
+      <div id="graph-sec" hidden>
         <div class="side-head">
           <span>Graph</span>
           <span id="graph-count"></span>
@@ -668,6 +947,15 @@
   </div>
   <div id="save-state"></div>
   <div id="ro-wrap"><span id="ro" hidden></span></div>
+  <!-- The image lightbox (6a): overlay + key handler over the already-rendered
+       <img class="lp-img">/<video> widgets, not a rendering change. -->
+  <div id="lightbox" hidden>
+    <button id="lb-close" type="button" aria-label="Close">✕</button>
+    <button id="lb-prev" type="button" aria-label="Previous image">‹</button>
+    <img id="lb-img" alt="" />
+    <button id="lb-next" type="button" aria-label="Next image">›</button>
+    <div id="lb-caption"></div>
+  </div>
   <script>
     // This view owns its own saves and its own reload rule (MD-16/MD-17), so
     // the runtime's blanket reload-on-change must stay out of the way — it
@@ -743,21 +1031,11 @@
     function noteDir() { return file ? file.slice(0, file.lastIndexOf("/")) : ""; }
     function isNote(path) { return /\.(md|markdown)$/i.test(path || ""); }
 
-    // ---- read-only vs editing (MD-1a) --------------------------------------
-    // A mode, not a second surface: the SAME decorations over the same document,
-    // with CM's two read-only facets on or off. It changes writability and
-    // nothing about appearance — no different typography, no second render
-    // pipeline. A note OPENS READ-ONLY: opening a note is a read, and a stray
-    // keystroke on a freshly opened file must not silently rewrite it — editing
-    // is one click away and stays in the URL once asked for.
-    //
-    // The preference lives in a param, like `graph` and `depth` (MD-20), so it
-    // survives a refresh and travels in a shared URL. It is layered ON TOP of
-    // the file's real writability and can never override it: an unwritable file
-    // (MD-15) is read-only whatever the param says, which is also why a
-    // read-only file and read-only mode are one mechanism rather than two.
-    function editWanted() { return fused.params.get("edit") === "1"; }
-    function editing() { return writable && editWanted(); }
+    // ---- read-only (MD-1a) --------------------------------------------------
+    // No mode: a writable note is editable, full stop. `writable` — read off
+    // the shell's persisted `stat.writable` (MD-15) — is the only gate, so a
+    // genuinely unwritable file (a snapshot, a read-only file) still opens
+    // locked with its floating read-only badge; that path is unchanged.
 
     // ---- shell navigation ---------------------------------------------------
     // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
@@ -895,12 +1173,12 @@
     // that whole line's markup, not just the one node under the cursor.
     function selectedLines(state) {
       const lines = new Set();
-      // Read-only mode reveals nothing, ever (MD-1a). `editable.of(false)`
+      // An unwritable file reveals nothing, ever (MD-1a/MD-15). `editable.of(false)`
       // leaves no caret so there is usually nothing to reveal — but a browser
       // text selection inside a non-editable view still reaches the state's
       // selection, and swiping over a heading would un-render it. One guard
-      // makes the mode deterministic instead of dependent on that.
-      if (!editing()) return lines;
+      // makes this deterministic instead of dependent on that.
+      if (!writable) return lines;
       for (const range of state.selection.ranges) {
         const first = state.doc.lineAt(range.from).number;
         const last = state.doc.lineAt(range.to).number;
@@ -1052,13 +1330,20 @@
     // play the file says far more than a broken-image icon.
     const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)$/i;
 
-    function imageWidget(alt, src) {
+    // `pos` is the widget's own position in the source (the `Image` node's
+    // `from`) — the lightbox (6a) uses it to find this exact image again in
+    // `collectDocImages()`'s regex scan, rather than trusting DOM order,
+    // which CodeMirror only renders for the current viewport.
+    function imageWidget(alt, src, pos) {
       const key = "im:" + alt + "|" + src;
+      // The extension is read off the source BEFORE the scheme/absolute
+      // branching below, so a `file:` URL or an absolute path to a clip
+      // picks the player just as a relative one does.
+      const isVideo = VIDEO_EXT.test(src.split(/[?#]/)[0]);
+      // Images open the lightbox and are therefore OPAQUE (a click must not
+      // move the caret or count as an edit, per §6a); video keeps its old
+      // click-to-edit posture, since a native player already owns clicks on it.
       return new DomWidget(key, () => {
-        // The extension is read off the source BEFORE the scheme/absolute
-        // branching below, so a `file:` URL or an absolute path to a clip
-        // picks the player just as a relative one does.
-        const isVideo = VIDEO_EXT.test(src.split(/[?#]/)[0]);
         const el = document.createElement(isVideo ? "video" : "img");
         if (isVideo) {
           el.className = "lp-video";
@@ -1074,8 +1359,16 @@
         if (/^[a-z][a-z0-9+.-]*:/i.test(src)) el.src = src;   // http:, data:, file:
         else if (src.startsWith("/")) el.src = fused.rawUrl(src);
         else el.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        if (!isVideo) {
+          el.style.cursor = "zoom-in";
+          el.addEventListener("mousedown", (e) => e.stopPropagation());
+          el.addEventListener("click", (e) => {
+            e.preventDefault();
+            openLightbox(pos);
+          });
+        }
         return el;
-      }, false);
+      }, !isVideo);
     }
 
     // A task checkbox is clickable and writes back, as in Obsidian — and it
@@ -1089,8 +1382,8 @@
         box.type = "checkbox";
         box.className = "lp-task";
         box.checked = checked;
-        box.disabled = !editing();
-        if (!editing()) return box;
+        box.disabled = !writable;
+        if (!writable) return box;
         box.addEventListener("mousedown", (e) => e.stopPropagation());
         box.addEventListener("change", () => {
           const at = editorView.posAtDOM(box);
@@ -1141,6 +1434,59 @@
         });
         return table;
       }, false);
+    }
+
+    // A fence's language chip + copy button (6b.3/6b.4), anchored to the
+    // opening line as a zero-width WIDGET (not a replacement) at that line's
+    // end — the fence markers stay visible (MD-18a), this only adds a small
+    // floating toolbar over them. Opaque: a click on the chip or the copy
+    // button must not move the caret or count as an edit.
+    function fenceChipWidget(lang, body) {
+      // Body is part of the key: the widget must not be REUSED with a stale
+      // closure once the code inside the fence changes, or the copy button
+      // would keep copying whatever it happened to close over first.
+      const key = "fc:" + lang + "|" + body.length + "|" + body.slice(0, 40);
+      return new DomWidget(key, () => {
+        const wrap = document.createElement("span");
+        wrap.className = "lp-fence-chip";
+        if (lang) {
+          const label = document.createElement("span");
+          label.className = "lp-lang-label";
+          label.textContent = lang;
+          wrap.appendChild(label);
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "lp-copy-btn";
+        btn.textContent = "Copy";
+        btn.title = "Copy code";
+        btn.addEventListener("mousedown", (e) => e.stopPropagation());
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+          navigator.clipboard.writeText(body).then(() => {
+            btn.textContent = "Copied";
+            setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+          }).catch(() => {});
+        });
+        wrap.appendChild(btn);
+        return wrap;
+      }, true);
+    }
+
+    // The fence's language, off its info string (the text right after the
+    // opening ``` / ~~~), and its body with the marker lines stripped — what
+    // the copy button actually copies.
+    function fenceLangAndBody(state, node) {
+      const first = state.doc.lineAt(node.from).number;
+      const lang = (/^ {0,3}(?:`{3,}|~{3,})[ \t]*(\S*)/.exec(state.doc.line(first).text) || [])[1] || "";
+      const lines = state.doc.sliceString(node.from, node.to).split("\n");
+      const closesWithFence = lines.length > 1
+        && /^ {0,3}(`{3,}|~{3,})[ \t]*$/.test(lines[lines.length - 1]);
+      const body = lines.length <= 1 ? ""
+        : lines.slice(1, closesWithFence ? -1 : undefined).join("\n");
+      return [lang, body];
     }
 
     // ---- the decoration set -------------------------------------------------
@@ -1297,6 +1643,17 @@
           if (name === "FencedCode" || name === "CodeBlock") {
             out.push(...lineClass(
               state, node.from, node.to, "lp-fence-line", true));
+            // The chip only makes sense for a real FENCE (it reads the info
+            // string), and only where that opening line is not itself the
+            // point the caret is currently on — matching the treatment every
+            // other block-level widget in this builder gives a touched line.
+            if (name === "FencedCode") {
+              const firstLine = state.doc.lineAt(node.from);
+              const [lang, body] = fenceLangAndBody(state, node);
+              out.push(CM.Decoration.widget({
+                widget: fenceChipWidget(lang, body), side: 1,
+              }).range(firstLine.to));
+            }
             return true; // let the embedded language highlight inside
           }
           if (name === "Blockquote") {
@@ -1357,7 +1714,7 @@
             // of a `[[wikilink]]`, which the regex pass below owns.
             if (!match) return true;
             pushWidget(node.from, node.to, match[1]
-              ? imageWidget(match[2], match[3])
+              ? imageWidget(match[2], match[3], node.from)
               : markdownLinkWidget(match[2], match[3]));
             return false;
           }
@@ -1540,17 +1897,17 @@
         }
         setDirty(false);
         // Reassigning `writable` changes nothing on its own: `editable`/
-        // `readOnly` are facets chosen when the view is BUILT, and the corner
-        // button's state comes from applyEditMode. Without this, a file that had
-        // become read-only stayed typeable (the edits then failed at save time)
-        // and one that had become writable stayed locked until the iframe
-        // reloaded — and this is the silent-reload path, so nothing else was
-        // going to notice. Only on a change: rebuilding every reload is churn.
+        // `readOnly` are facets chosen when the view is BUILT. Without this, a
+        // file that had become read-only stayed typeable (the edits then
+        // failed at save time) and one that had become writable stayed locked
+        // until the iframe reloaded — and this is the silent-reload path, so
+        // nothing else was going to notice. Only on a change: rebuilding
+        // every reload is churn.
         if (writable !== wasWritable) {
           fusedRoBadge.update(document.getElementById("ro"),
             writable ? "" : "Read-only",
             writable ? "" : "This file can't be written, so the editor opens locked.");
-          applyEditMode(true);
+          buildEditor(fresh);
         }
         await refreshLinks();
       } catch (err) {
@@ -1604,9 +1961,6 @@
       clearTimeout(saveTimer);
       fusedRoBadge.update(document.getElementById("ro"), "Read-only", message);
       if (view) buildEditor(view.state.doc.toString()); // rebuild with the lock on
-      // The file just turned out to be unwritable, so the mode button has to
-      // stop offering editing (MD-1a) — false because buildEditor already ran.
-      applyEditMode(false);
     }
 
     function wantsDark() {
@@ -1716,6 +2070,104 @@
           : { from: line.from + indent.length, insert: "- [ ] " },
       });
       return true;
+    }
+
+    // ---- line/block conversion (6d) -----------------------------------------
+    // Two doors into one command set: the `/` menu (an insertion, below) and
+    // "Turn into" in the selection bubble (a retroactive conversion). Both
+    // change what a line's markup IS, never what it says — the strip regex
+    // below is the inverse of every prefix this function can apply, so
+    // "Turn into Quote" on an already-bulleted line replaces the bullet
+    // rather than stacking `- > `.
+    const BLOCK_STRIP_RE = /^(#{1,6}[ \t]+|>[ \t]?|(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)/;
+    function stripBlockPrefix(text) { return text.replace(BLOCK_STRIP_RE, ""); }
+
+    // Converts every line the selection touches (or the caret's own line, with
+    // no selection) to `kind`. `code` is the one kind that is not a per-line
+    // prefix — it fences the whole touched range as a single block.
+    function convertLines(kind) {
+      if (!view || view.state.readOnly) return;
+      const state = view.state;
+      const sel = state.selection.main;
+      const firstLine = state.doc.lineAt(sel.from).number;
+      const lastLine = state.doc.lineAt(sel.to).number;
+
+      if (kind === "code") {
+        const from = state.doc.line(firstLine).from;
+        const to = state.doc.line(lastLine).to;
+        const insert = "```\n" + state.sliceDoc(from, to) + "\n```";
+        view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + 4 } });
+        view.focus();
+        return;
+      }
+
+      const changes = [];
+      let n = 0; // the ordered-list counter, restarting at 1 for this conversion
+      for (let ln = firstLine; ln <= lastLine; ln++) {
+        const line = state.doc.line(ln);
+        const stripped = stripBlockPrefix(line.text);
+        let prefix = "";
+        if (kind === "h1") prefix = "# ";
+        else if (kind === "h2") prefix = "## ";
+        else if (kind === "h3") prefix = "### ";
+        else if (kind === "quote") prefix = "> ";
+        else if (kind === "bullet") prefix = "- ";
+        else if (kind === "number") { n += 1; prefix = n + ". "; }
+        else if (kind === "task") prefix = "- [ ] ";
+        // kind === "p": prefix stays "" — turning into plain text IS the strip.
+        if (prefix + stripped === line.text) continue; // nothing to change
+        changes.push({ from: line.from, to: line.to, insert: prefix + stripped });
+      }
+      if (changes.length) view.dispatch({ changes });
+      view.focus();
+    }
+
+    // The menu both doors share: label for the "Turn into" list, and the
+    // literal text the `/` menu inserts on an empty line (which needs no
+    // strip — there is nothing there to strip).
+    const BLOCK_TYPES = [
+      { kind: "p", label: "Text" },
+      { kind: "h1", label: "Heading 1", insert: "# " },
+      { kind: "h2", label: "Heading 2", insert: "## " },
+      { kind: "h3", label: "Heading 3", insert: "### " },
+      { kind: "quote", label: "Quote", insert: "> " },
+      { kind: "bullet", label: "Bullet list", insert: "- " },
+      { kind: "number", label: "Numbered list", insert: "1. " },
+      { kind: "task", label: "Task", insert: "- [ ] " },
+      { kind: "code", label: "Code", insert: "```\n\n```", cursorOffset: 4 },
+      { kind: "table", label: "Table", insert: "| Column | Column |\n| --- | --- |\n|  |  |" },
+      { kind: "divider", label: "Divider", insert: "---\n" },
+      { kind: "callout", label: "Callout", insert: "> [!note] " },
+    ];
+
+    // ---- the `/` menu (6d) ---------------------------------------------------
+    // A fourth source in the SAME `autocompletion({ override })` call the `[[`
+    // popup already uses — no new plumbing (MD-14). Triggers only at the very
+    // start of an empty line, so `/` typed mid-sentence (a path, a fraction)
+    // stays plain text.
+    async function slashMenuCompletions(context) {
+      const line = context.state.doc.lineAt(context.pos);
+      const before = line.text.slice(0, context.pos - line.from);
+      const match = /^\/(\w*)$/.exec(before);
+      if (!match) return null;
+      const typed = match[1].toLowerCase();
+      const options = BLOCK_TYPES
+        .filter((t) => t.insert) // "p" (Text) has nothing to insert on a blank line
+        .filter((t) => !typed || t.kind.startsWith(typed) || t.label.toLowerCase().startsWith(typed))
+        .map((t) => ({
+          label: "/" + t.kind,
+          displayLabel: t.label,
+          type: "class",
+          apply: (applyView, _completion, applyFrom, applyTo) => {
+            const cursor = applyFrom + (t.cursorOffset !== undefined ? t.cursorOffset : t.insert.length);
+            applyView.dispatch({
+              changes: { from: applyFrom, to: applyTo, insert: t.insert },
+              selection: { anchor: cursor },
+            });
+          },
+        }));
+      if (!options.length) return null;
+      return { from: line.from, options, validFor: /^\/\w*$/ };
     }
 
     // MD-1a/MD-15: read-only is the `readOnly` + `editable` facets, and
@@ -2481,6 +2933,67 @@
     // per line, a dimmed right-hand detail column, and a selected row that reads
     // like `.bl:hover` (--bg on the --bg-alt panel) plus an accent left edge and
     // bold weight — two non-colour signals, so the selection survives without it.
+    // ---- fenced code: real per-language highlighting (6b.1/6b.2) -----------
+    // `CM.markdown({ codeLanguages })` accepts a function `(info) => Language
+    // | LanguageSupport | null`, which is simpler than building an array of
+    // `LanguageDescription` and needs nothing extra from the bundle. The
+    // aliases are the usual short forms a fence's info string carries.
+    const CODE_LANG_MAP = {
+      python: () => CM.python(), py: () => CM.python(),
+      javascript: () => CM.javascript(), js: () => CM.javascript(),
+      jsx: () => CM.javascript({ jsx: true }),
+      typescript: () => CM.javascript({ typescript: true }),
+      ts: () => CM.javascript({ typescript: true }),
+      tsx: () => CM.javascript({ jsx: true, typescript: true }),
+      json: () => CM.json(),
+      yaml: () => CM.yaml(), yml: () => CM.yaml(),
+      html: () => CM.html(),
+      css: () => CM.css(),
+      shell: () => CM.shellLang, sh: () => CM.shellLang,
+      bash: () => CM.shellLang, zsh: () => CM.shellLang,
+      toml: () => CM.tomlLang,
+    };
+    function codeLanguageFor(info) {
+      const name = (info || "").trim().toLowerCase().split(/\s+/)[0];
+      const make = CODE_LANG_MAP[name];
+      return make ? make() : null;
+    }
+    // Every fence's language name, for the chip (6b.3) — the info string as
+    // typed, not normalised, so `Python` on the fence shows `PYTHON` and a
+    // language with no mapped highlighter still gets its chip.
+    function fenceInfoText(state, fromLine) {
+      const text = state.doc.line(fromLine).text;
+      return (/^ {0,3}(?:`{3,}|~{3,})[ \t]*([^\s]*)/.exec(text) || [])[1] || "";
+    }
+
+    // `oneDark` (dark mode) already ships its own token colours; light mode
+    // has no equivalent, so fences there stayed flat grey until this. Built
+    // from the SAME theme tokens as everything else in this view (no new
+    // colour literals) — a small, mostly-monochrome palette, so weight and
+    // slant carry some of what a fuller palette would carry in colour.
+    const lightCodeHighlight = CM.HighlightStyle.define([
+      { tag: [CM.tags.keyword, CM.tags.controlKeyword, CM.tags.operatorKeyword,
+              CM.tags.definitionKeyword, CM.tags.moduleKeyword],
+        color: "var(--accent)", fontWeight: "600" },
+      { tag: [CM.tags.string, CM.tags.special(CM.tags.string)], color: "var(--fg-muted)" },
+      { tag: [CM.tags.comment, CM.tags.lineComment, CM.tags.blockComment],
+        color: "var(--ghost)", fontStyle: "italic" },
+      { tag: [CM.tags.number, CM.tags.bool, CM.tags.atom, CM.tags.null],
+        color: "var(--accent)" },
+      { tag: [CM.tags.typeName, CM.tags.className, CM.tags.namespace],
+        color: "var(--fg)", fontWeight: "600" },
+      { tag: [CM.tags.propertyName, CM.tags.attributeName], color: "var(--fg-muted)" },
+      { tag: [CM.tags.function(CM.tags.variableName), CM.tags.definition(CM.tags.variableName)],
+        color: "var(--fg)", fontWeight: "600" },
+      { tag: [CM.tags.variableName, CM.tags.self], color: "var(--fg)" },
+      { tag: [CM.tags.operator, CM.tags.punctuation, CM.tags.bracket, CM.tags.meta],
+        color: "var(--fg-muted)" },
+      { tag: CM.tags.invalid, color: "var(--error)" },
+    ]);
+    // A stable reference, so the theme-flip reconfigure below can filter it
+    // out by identity exactly as it already does for `CM.oneDark`.
+    const lightHighlightExt = CM.syntaxHighlighting(lightCodeHighlight);
+
     const completionTheme = CM.EditorView.theme({
       // `.cm-tooltip.cm-tooltip-autocomplete` rather than the single class: the
       // page's generic `.cm-editor .cm-tooltip` rule is equal-specificity and
@@ -2562,8 +3075,10 @@
       const base = [
         completionTheme,
         CM.basicSetup,
-        ...(wantsDark() ? [CM.oneDark] : []),
-        CM.markdown({ base: CM.markdownLanguage }),
+        // Dark gets oneDark's own token colours; light gets this view's own
+        // token-based HighlightStyle, since oneDark is dark-only (6b.2).
+        ...(wantsDark() ? [CM.oneDark] : [lightHighlightExt]),
+        CM.markdown({ base: CM.markdownLanguage, codeLanguages: codeLanguageFor }),
         CM.EditorView.lineWrapping,
         // Above basicSetup's default keymap: Enter must continue the list
         // marker rather than plain-indent, and Tab must indent the list item.
@@ -2576,6 +3091,7 @@
         CM.Prec.high(CM.autocompletion({
           override: [
             wikilinkCompletions, inlinePathCompletions, headingAnchorCompletions,
+            slashMenuCompletions,
           ],
           // No icon column (D192). CM renders the `type` field as a glyph, and
           // its glyph for `text` is the literal string "abc" — on every path
@@ -2588,23 +3104,25 @@
         pasteHandler,
         livePreviewField,
         CM.EditorView.updateListener.of((update) => {
-          if (!update.docChanged) return;
-          setDirty(true);
-          armAutosave();
-          // The outline's only trigger: headings change as you type, and this is
-          // the event that says the document did (MD-19b — no timer, no poll).
-          renderOutline();
+          if (update.docChanged) {
+            setDirty(true);
+            armAutosave();
+            // The outline's only trigger: headings change as you type, and this
+            // is the event that says the document did (MD-19b — no timer, no
+            // poll).
+            renderOutline();
+          }
+          if (update.docChanged || update.selectionSet) updateFmtBubble(update.view);
         }),
       ];
-      if (!editing()) {
-        // Two ways to reach here, one mechanism (MD-1a). An UNWRITABLE file:
-        // the server refuses the write anyway, and opening disabled is what
-        // makes the UI honest up front — on an rclone mount with CacheMode=full
-        // a doomed write even succeeds locally and only 403s later on upload, so
-        // this reads the shell's persisted read_only flag through stat.writable
-        // rather than os.access (MD-15). Or read-only MODE, asked for by the
-        // user. Either way the decorations are unchanged and the buffer is
-        // locked, which is what "reading view" is here (MD-1).
+      if (!writable) {
+        // An UNWRITABLE file (MD-15): the server refuses the write anyway, and
+        // opening disabled is what makes the UI honest up front — on an rclone
+        // mount with CacheMode=full a doomed write even succeeds locally and
+        // only 403s later on upload, so this reads the shell's persisted
+        // read_only flag through stat.writable rather than os.access. A
+        // writable note is otherwise always editable (MD-1a): there is no mode
+        // to gate this a second way.
         base.push(CM.EditorView.editable.of(false));
         base.push(CM.EditorState.readOnly.of(true));
       }
@@ -2627,6 +3145,15 @@
       // them can change the headings, so the outline is redrawn from the new doc.
       outlineKey = null;
       renderOutline();
+      // The active-heading marker's only trigger besides typing (MD-19b/§2):
+      // the editor's own scroll event, never a timer. `buildEditor` replaces
+      // the DOM wholesale, so this is reattached each time rather than once.
+      // The format bubble also dismisses on scroll (6c) — same event, no new
+      // event source.
+      view.scrollDOM.addEventListener("scroll", () => {
+        updateActiveHeading();
+        hideFmtBubble();
+      }, { passive: true });
 
       // A live appearance change reconfigures the RUNNING view — rebuilding it
       // would throw away unsaved edits, the caret and the scroll position.
@@ -2639,7 +3166,8 @@
         try {
           view.dispatch({
             effects: CM.StateEffect.reconfigure.of(
-              extensions.filter((e) => e !== CM.oneDark).concat(next ? [CM.oneDark] : [])),
+              extensions.filter((e) => e !== CM.oneDark && e !== lightHighlightExt)
+                .concat(next ? [CM.oneDark] : [lightHighlightExt])),
           });
         } catch (err) { /* cosmetic only — keep the current editor theme */ }
       });
@@ -2749,23 +3277,25 @@
     // innerHTML while someone types inside a heading would reset the outline's
     // own scroll position and drop the row under their pointer.
     let outlineKey = null;
+    let outlineRows = [];  // the last rows drawn, for the active-heading marker
 
     function renderOutline() {
       const listEl = document.getElementById("outline");
-      const headEl = document.getElementById("outline-head");
-      if (!graphOn()) {
-        // The panel is closed; there is nothing to draw and this is the hot path.
+      const countEl = document.getElementById("outline-count");
+      if (!outlineOn()) {
+        // The rail is collapsed; there is nothing to draw and this is the hot path.
         outlineKey = null;
         return;
       }
       const rows = documentHeadings();
       const key = rows.map((r) => `${r.line}:${r.level}:${r.text}`).join("\n");
-      if (key === outlineKey) return;
+      if (key === outlineKey) { updateActiveHeading(); return; }
       outlineKey = key;
+      outlineRows = rows;
 
       const drawn = withDepth(rows);
 
-      headEl.textContent = rows.length ? `Outline (${rows.length})` : "Outline";
+      countEl.textContent = rows.length ? String(rows.length) : "";
       listEl.innerHTML = drawn.length
         ? drawn.map((row) => `
             <button class="bl ol" style="--ol-depth: ${row.depth}"
@@ -2774,7 +3304,34 @@
             </button>`).join("")
         // Same voice as the backlinks empty state: state the absence as a fact
         // about this note, rather than hiding the section.
-        : `<div class="bl-empty">No headings in this note.</div>`;
+        : `<div class="bl-empty">No headings yet.</div>`;
+      updateActiveHeading();
+    }
+
+    // The signature element (§2): a 2px accent bar on the row for the heading
+    // currently at (or just above) the top of the viewport. No timer — driven
+    // off the editor's own scroll and update events, the same poll-free
+    // discipline MD-17 already holds this template to. The last heading whose
+    // line top has scrolled past the viewport's top edge is "current",
+    // matching how a table of contents tracks reading position elsewhere.
+    function updateActiveHeading() {
+      if (!view) return;
+      const listEl = document.getElementById("outline");
+      let current = null;
+      if (outlineRows.length) {
+        const top = view.scrollDOM.scrollTop;
+        for (const row of outlineRows) {
+          if (row.line > view.state.doc.lines) continue;
+          const block = view.lineBlockAt(view.state.doc.line(row.line).from);
+          if (block.top <= top + 4) current = row.line;
+          else break;
+        }
+      }
+      for (const el of listEl.querySelectorAll(".ol.current")) el.classList.remove("current");
+      if (current !== null) {
+        const el = listEl.querySelector(`[data-line="${current}"]`);
+        if (el) el.classList.add("current");
+      }
     }
 
     // ---- backlinks, in the sidebar ------------------------------------------
@@ -2863,10 +3420,29 @@
         scanNotice = "The folder scan failed: " + (err.message || String(err));
       }
       renderSidebar();
+      updateGraphSection();
       // Every ghost may just have become a real link (or the reverse), and the
       // decorations were built against the old answer.
       view?.dispatch({ effects: relinkEffect.of(null) });
       return notes;
+    }
+
+    // ---- the graph, conditional (§5) -----------------------------------------
+    // Drawn only when the note actually has links — an outbound one this scan
+    // resolved, or a backlink. Otherwise the section is ABSENT, not an empty
+    // canvas: an empty graph would tell you the note is an orphan a second
+    // time, with a canvas, after the backlinks list already told you once.
+    // On the no-scan path the section stays absent too, and the backlinks
+    // notice already says why in graph.py's own words — "nobody looked" is not
+    // "there is nothing" (MD-11a), and that distinction belongs to one surface,
+    // not two.
+    function hasLinks() {
+      return !!notes && (
+        (notes.links && notes.links.length > 0)
+        || (notes.backlinks && notes.backlinks.length > 0));
+    }
+    function updateGraphSection() {
+      document.getElementById("graph-sec").hidden = !hasLinks();
     }
 
     // Clicking an unresolved link creates the note — Obsidian's behaviour, and
@@ -2961,6 +3537,185 @@
     document.getElementById("reload").addEventListener("click", () => void reloadFromDisk());
     document.getElementById("keep").addEventListener("click", () => void keepMine());
 
+    // ---- the image lightbox (6a) ---------------------------------------------
+    // An overlay + key handler over the already-rendered `<img class="lp-img">`
+    // widgets (imageWidget) — not a rendering change. Navigation walks the
+    // SOURCE in document order (`collectDocImages`), not the DOM: CodeMirror
+    // only renders the current viewport, so a DOM query would miss every
+    // image outside it on a long note.
+    const lightboxEl = document.getElementById("lightbox");
+    const lbImgEl = document.getElementById("lb-img");
+    const lbCaptionEl = document.getElementById("lb-caption");
+    const lbCloseEl = document.getElementById("lb-close");
+    const lbPrevEl = document.getElementById("lb-prev");
+    const lbNextEl = document.getElementById("lb-next");
+    let lbImages = [];
+    let lbIndex = -1;
+
+    // Videos are excluded — they already play in place with native controls,
+    // and a lightbox adds nothing there.
+    function collectDocImages() {
+      if (!view) return [];
+      const doc = view.state.doc.toString();
+      const re = /!\[([^\]]*)\]\(([^()\s]*)\)/g;
+      const out = [];
+      let match;
+      while ((match = re.exec(doc))) {
+        const src = match[2];
+        if (VIDEO_EXT.test(src.split(/[?#]/)[0])) continue;
+        const url = /^[a-z][a-z0-9+.-]*:/i.test(src) ? src
+          : src.startsWith("/") ? fused.rawUrl(src)
+          : fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        out.push({ pos: match.index, alt: match[1], url });
+      }
+      return out;
+    }
+
+    function showLightboxAt(index) {
+      if (!lbImages.length) return;
+      lbIndex = ((index % lbImages.length) + lbImages.length) % lbImages.length;
+      const image = lbImages[lbIndex];
+      lbImgEl.src = image.url;
+      lbImgEl.alt = image.alt || "";
+      lbCaptionEl.textContent = image.alt || "";
+      const multiple = lbImages.length > 1;
+      lbPrevEl.hidden = !multiple;
+      lbNextEl.hidden = !multiple;
+      lightboxEl.hidden = false;
+    }
+
+    function openLightbox(pos) {
+      lbImages = collectDocImages();
+      const at = lbImages.findIndex((image) => image.pos === pos);
+      showLightboxAt(at === -1 ? 0 : at);
+    }
+
+    function closeLightbox() {
+      lightboxEl.hidden = true;
+      lbImgEl.src = "";
+      lbImages = [];
+      lbIndex = -1;
+    }
+
+    lbCloseEl.addEventListener("click", closeLightbox);
+    lbPrevEl.addEventListener("click", () => showLightboxAt(lbIndex - 1));
+    lbNextEl.addEventListener("click", () => showLightboxAt(lbIndex + 1));
+    // A click on the backdrop closes it; a click on the image or the buttons
+    // must not, which `e.target === lightboxEl` tells apart.
+    lightboxEl.addEventListener("click", (event) => {
+      if (event.target === lightboxEl) closeLightbox();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (lightboxEl.hidden) return;
+      if (event.key === "Escape") { event.preventDefault(); closeLightbox(); }
+      else if (event.key === "ArrowLeft") { event.preventDefault(); showLightboxAt(lbIndex - 1); }
+      else if (event.key === "ArrowRight") { event.preventDefault(); showLightboxAt(lbIndex + 1); }
+    });
+
+    // ---- the selection format bubble (6c) ------------------------------------
+    // Positioned by hand from `view.coordsAtPos`, not CM's tooltip API (not
+    // bundled, and the plan says stay out of that rebuild). Every button calls
+    // the SAME command the keyboard shortcut does — `toggleWrap`/`insertLink`
+    // — so there is no second definition of what bold means.
+    const fmtBubbleEl = document.getElementById("fmt-bubble");
+    const fmtTurnBtnEl = document.getElementById("fmt-turn-btn");
+    const fmtTurnMenuEl = document.getElementById("fmt-turn-menu");
+    const FMT_MARKERS = { bold: "**", italic: "*", strike: "~~", code: "`" };
+
+    // "Turn into" reuses the same BLOCK_TYPES the `/` menu draws from, minus
+    // the kinds a per-line RETROACTIVE conversion cannot express (table,
+    // divider, callout are insertions with nothing to turn existing text
+    // into).
+    const TURN_INTO_KINDS = ["p", "h1", "h2", "h3", "quote", "bullet", "number", "task", "code"];
+    fmtTurnMenuEl.innerHTML = BLOCK_TYPES
+      .filter((t) => TURN_INTO_KINDS.includes(t.kind))
+      .map((t) => `<button type="button" data-kind="${t.kind}">${escapeHtml(t.label)}</button>`)
+      .join("");
+
+    function closeTurnMenu() { fmtTurnMenuEl.hidden = true; }
+
+    function hideFmtBubble() {
+      fmtBubbleEl.hidden = true;
+      closeTurnMenu();
+    }
+
+    // A mark already applied shows pressed — `**word**` with the caret inside
+    // reads as Bold already ON — using the same pre/post wrap test `toggleWrap`
+    // itself uses to decide whether to unwrap.
+    function markActive(state, marker) {
+      const { from, to } = state.selection.main;
+      const pre = state.sliceDoc(Math.max(0, from - marker.length), from);
+      const post = state.sliceDoc(to, Math.min(state.doc.length, to + marker.length));
+      return pre === marker && post === marker;
+    }
+
+    function updateFmtBubble(editorView) {
+      if (!editorView || editorView.state.readOnly) { hideFmtBubble(); return; }
+      const sel = editorView.state.selection.main;
+      if (sel.empty) { hideFmtBubble(); return; }
+      const start = editorView.coordsAtPos(sel.from);
+      const end = editorView.coordsAtPos(sel.to);
+      if (!start || !end) { hideFmtBubble(); return; }
+      for (const [cmd, marker] of Object.entries(FMT_MARKERS)) {
+        const btn = document.getElementById("fmt-" + cmd);
+        if (btn) btn.setAttribute("aria-pressed", String(markActive(editorView.state, marker)));
+      }
+      const linkBtn = document.getElementById("fmt-link");
+      if (linkBtn) {
+        linkBtn.setAttribute("aria-pressed",
+          String(!!enclosingLinkTarget(editorView.state, sel.to)));
+      }
+      fmtBubbleEl.hidden = false;
+      const top = Math.min(start.top, end.top);
+      const bottom = Math.max(start.bottom, end.bottom);
+      const left = Math.min(start.left, end.left);
+      const right = Math.max(start.right, end.right);
+      const bw = fmtBubbleEl.offsetWidth;
+      const bh = fmtBubbleEl.offsetHeight;
+      let x = (left + right) / 2 - bw / 2;
+      x = Math.max(8, Math.min(window.innerWidth - bw - 8, x));
+      // Flips BELOW the selection when there is no room above — "near the top
+      // of the viewport" is exactly the case that needs it.
+      let y = top - bh - 8;
+      if (y < 8) y = bottom + 8;
+      fmtBubbleEl.style.left = x + "px";
+      fmtBubbleEl.style.top = y + "px";
+    }
+
+    // Clicking the bubble must not steal the editor's selection — the browser
+    // collapses a text selection on mousedown elsewhere by default.
+    fmtBubbleEl.addEventListener("mousedown", (event) => event.preventDefault());
+    fmtBubbleEl.addEventListener("click", (event) => {
+      if (!view) return;
+      const cmdBtn = event.target.closest("[data-cmd]");
+      if (cmdBtn) {
+        const marker = FMT_MARKERS[cmdBtn.dataset.cmd];
+        if (marker) toggleWrap(view, marker);
+        else if (cmdBtn.dataset.cmd === "link") insertLink(view);
+        view.focus();
+        updateFmtBubble(view);
+        return;
+      }
+      if (event.target === fmtTurnBtnEl || fmtTurnBtnEl.contains(event.target)) {
+        fmtTurnMenuEl.hidden = !fmtTurnMenuEl.hidden;
+        return;
+      }
+      const turnItem = event.target.closest("[data-kind]");
+      if (turnItem) {
+        convertLines(turnItem.dataset.kind);
+        closeTurnMenu();
+        hideFmtBubble();
+      }
+    });
+    // Dismissed on Escape, on scroll, and on blur (6c) — the scroll hook rides
+    // the same `scrollDOM` listener the active-heading marker uses, so this
+    // adds no new event source, just another handler on it.
+    window.addEventListener("keydown", (event) => {
+      if (fmtBubbleEl.hidden) return;
+      if (event.key === "Escape") { event.preventDefault(); hideFmtBubble(); }
+    });
+    window.addEventListener("blur", hideFmtBubble);
+
     // Cmd/Ctrl+S forces the flush early — it is not "the save", because the
     // idle timer and the blur hook already saved. There is no Cmd/Ctrl+E: with
     // one surface there is nothing to toggle to (MD-1).
@@ -3000,7 +3755,6 @@
     // mode — one implementation, so the two surfaces cannot drift apart.
     const sideEl = document.getElementById("side");
     const toggleEl = document.getElementById("toggle-graph");
-    const editToggleEl = document.getElementById("toggle-edit");
     const canvasEl = document.getElementById("graph-canvas");
     const graphCountEl = document.getElementById("graph-count");
     const graphNoteEl = document.getElementById("graph-note");
@@ -3074,6 +3828,83 @@
       applySideWidth(sideEl.getBoundingClientRect().width + step, true);
     });
 
+    // ---- the outline rail (MD-19a/MD-19b) ------------------------------------
+    // Open by default: absent means open, only an explicit "0" closes it — the
+    // rule `graph` and `depth` already follow (MD-20). Width lives in
+    // localStorage, like the right panel's, and is clamped so it cannot
+    // squeeze the document.
+    const railEl = document.getElementById("outline-rail");
+    const railGripEl = document.getElementById("rail-grip");
+    const railReopenEl = document.getElementById("rail-reopen");
+    const railCollapseEl = document.getElementById("rail-collapse");
+    const RAIL_KEY = "fused-md-outline-width";
+    const RAIL_MIN = 12 * 16;  // 12rem
+    const RAIL_MAX = 30 * 16;  // 30rem
+
+    function outlineOn() { return fused.params.get("outline") !== "0"; }
+
+    function applyRailWidth(px, persist) {
+      const room = document.getElementById("split").getBoundingClientRect().width;
+      const reserved = 20 * 16 + (sideEl.classList.contains("on") ? sideEl.getBoundingClientRect().width : 0);
+      const max = Math.max(RAIL_MIN, Math.min(RAIL_MAX, room - reserved));
+      const width = Math.min(max, Math.max(RAIL_MIN, Math.round(px)));
+      railEl.style.width = width + "px";
+      if (persist) {
+        try { localStorage.setItem(RAIL_KEY, String(width)); }
+        catch (e) { /* private mode — the width is a nicety */ }
+      }
+    }
+
+    function storedRailWidth() {
+      try {
+        const raw = parseInt(localStorage.getItem(RAIL_KEY) || "", 10);
+        return Number.isFinite(raw) ? raw : 0;
+      } catch (e) { return 0; }
+    }
+
+    function applyRail() {
+      const on = outlineOn();
+      railEl.hidden = !on;
+      railReopenEl.hidden = on;
+      if (on) {
+        const stored = storedRailWidth();
+        if (stored) applyRailWidth(stored, false);
+        // renderOutline draws nothing while the rail is collapsed, so opening
+        // it is the moment to draw what the document says now.
+        outlineKey = null;
+        renderOutline();
+      }
+    }
+
+    railCollapseEl.addEventListener("click", () => fused.params.set("outline", "0"));
+    railReopenEl.addEventListener("click", () => fused.params.set("outline", "1"));
+
+    railGripEl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = railEl.getBoundingClientRect().width;
+      railGripEl.setPointerCapture(event.pointerId);
+      // The rail is on the LEFT, so dragging right (away from the document)
+      // widens it — the opposite sense from the right panel's grip.
+      const onMove = (move) => applyRailWidth(startWidth + (move.clientX - startX), false);
+      const onUp = () => {
+        railGripEl.removeEventListener("pointermove", onMove);
+        railGripEl.removeEventListener("pointerup", onUp);
+        railGripEl.removeEventListener("pointercancel", onUp);
+        applyRailWidth(railEl.getBoundingClientRect().width, true);
+      };
+      railGripEl.addEventListener("pointermove", onMove);
+      railGripEl.addEventListener("pointerup", onUp);
+      railGripEl.addEventListener("pointercancel", onUp);
+    });
+
+    railGripEl.addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowLeft" ? -16 : event.key === "ArrowRight" ? 16 : 0;
+      if (!step) return;
+      event.preventDefault();
+      applyRailWidth(railEl.getBoundingClientRect().width + step, true);
+    });
+
     function graphOn() { return fused.params.get("graph") === "1"; }
     // -1 is the `all` option: graph.py skips the neighbourhood filter for a
     // negative depth, so the panel shows the whole vault with the focus still
@@ -3086,6 +3917,8 @@
 
     async function loadGraph() {
       if (!graphOn() || !file) return;
+      // The section is absent for an orphan note (§5) — nothing to fetch.
+      if (!hasLinks()) return;
       const root = fused.params.get("root") || "";
       let data;
       try {
@@ -3118,33 +3951,7 @@
       fused.params.set("graph", graphOn() ? "0" : "1");
     });
 
-    // Leaving editing must not lose edits newer than the last autosave — the
-    // same reason navigation flushes first (MD-16). The param is set only after
-    // the flush, so the rebuild it triggers cannot race the write.
-    editToggleEl.addEventListener("click", async () => {
-      if (!writable) return; // disabled anyway; belt and braces (MD-15)
-      const next = editWanted() ? "0" : "1";
-      if (next === "0") await save();
-      fused.params.set("edit", next);
-    });
-
     depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
-
-    // The button's own state, and — when the mode actually changed — the
-    // rebuild that applies it. `editable` is a facet chosen at construction
-    // here, so the view is rebuilt rather than reconfigured; buildEditor carries
-    // the caret and the scroll position across, which is what makes that
-    // invisible.
-    function applyEditMode(rebuild) {
-      const on = editing();
-      // Pressed = EDITING, the non-default state (see the button's markup).
-      editToggleEl.setAttribute("aria-pressed", String(on));
-      editToggleEl.disabled = !writable;
-      editToggleEl.title = writable
-        ? (on ? "Editing — click to read only" : "Read-only — click to edit")
-        : "This file can't be written, so it is always read-only.";
-      if (rebuild && view) buildEditor(view.state.doc.toString());
-    }
 
     // One toggle for the whole sidebar: backlinks and the graph are the same
     // panel, as they are in Obsidian's right sidebar. The state lives in a
@@ -3160,9 +3967,6 @@
         const stored = storedSideWidth();
         if (stored) applySideWidth(stored, false);
         canvas.nudge(); // the canvas had zero size while the panel was hidden
-        // renderOutline draws nothing while the panel is closed, so opening it is
-        // the moment to draw what the document says now.
-        renderOutline();
         void loadGraph();
       }
     }
@@ -3203,32 +4007,32 @@
 
       skelEl.hidden = true;
       buildEditor(text);
-      applyEditMode(false); // the view was just built with the mode applied
       scrollToHeading();
       // The link scan runs alongside the first build; a failed or refused scan
       // degrades to plain markdown rather than blocking the document, and
       // refreshLinks re-decorates once it lands.
       await refreshLinks();
       lastGraph = (fused.params.get("graph") || "0") + "/" + (fused.params.get("depth") || "1");
-      lastEdit = fused.params.get("edit") || "0";
+      lastOutline = outlineOn() ? "1" : "0";
       applySidebar();
+      applyRail();
     }
 
-    // Params are the state: the sidebar toggle, the depth and the mode all write
-    // params, and this is the single re-render path — which is also what makes a
-    // graph view (and now a reading view) URL-shareable, unlike Obsidian's.
+    // Params are the state: the sidebar toggle and the depth both write params,
+    // and this is the single re-render path — which is also what makes a graph
+    // view URL-shareable, unlike Obsidian's.
     let lastGraph = null;
-    let lastEdit = null;
+    let lastOutline = null;
     fused.params.onChange((params) => {
       const key = (params.graph || "0") + "/" + (params.depth || "1");
       if (key !== lastGraph) {
         lastGraph = key;
         applySidebar();
       }
-      const edit = params.edit || "0";
-      if (edit !== lastEdit) {
-        lastEdit = edit;
-        applyEditMode(true);
+      const outline = params.outline === "0" ? "0" : "1";
+      if (outline !== lastOutline) {
+        lastOutline = outline;
+        applyRail();
       }
     });
 
