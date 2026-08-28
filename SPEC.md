@@ -10942,19 +10942,52 @@ this section is one new capability occupying each of them, not a new pattern.
   resolution (`registry.MIN_MESH_OCTREE_RESOLUTION`/`MAX_MESH_OCTREE_
   RESOLUTION`, mirroring upstream's own `gradio_app.py` sliders) is bounding
   the face count, because there is no second knob to bound it with.
-- **MESH-7** **No mid-render progress ticks, and no mid-render cancel
-  point.** `ShapePipeline.__call__` runs its whole denoising loop and VAE
-  decode inside one Python call with no callback hook of any kind — unlike
-  `ltx-video`'s patchable `samplers.tqdm` (§40) or `mflux_image`'s
-  `mflux.callbacks` registry, there is no name in this pipeline a worker can
-  stand in front of without editing the fork's own loop, which MESH-2's
-  packaging-only mandate rules out. A `report_or_cancel()` before the call
-  is what this worker can honestly say about a render in progress; a ✕
-  from either cancellation channel (`worker_base.CANCEL`, set by a direct
-  `/cancel` POST to this worker, or the job row's own `cancel_requested`)
-  is checked again once the call returns, so a cancel that could not stop
-  the compute already in flight still stops the mesh from being written
-  and the row from reading "done" (code review, 2026-08-28, finding 2).
+- **MESH-7** **Real per-phase progress, and a mid-render cancel point —
+  reached WITHOUT editing the fork.** `ShapePipeline.__call__` itself takes
+  no progress callback: unlike `ltx-video`'s patchable `samplers.tqdm`
+  (§40) or `mflux_image`'s `mflux.callbacks` registry, there is no name in
+  the pipeline a worker can stand in front of without editing the fork's
+  own loop, which MESH-2's packaging-only mandate rules out. But
+  `pipeline.scheduler.step` (once per denoising iteration) and
+  `pipeline.vae._query_sdf_volume` (once per hierarchical decode level) are
+  bound methods reached through the pipeline object the worker already
+  holds — `hunyuan3d_mlx/worker.py::generate` wraps both for the duration
+  of one render, reporting `done`/`total` for the denoise phase and,
+  separately, the decode phase, and restores the originals in a `finally`
+  so wrapping never leaks across renders on the same long-lived pipeline.
+  Every wrapper tick is also a cancellation checkpoint (both channels —
+  `worker_base.CANCEL`, set by a direct `/cancel` POST, and the job row's
+  own `cancel_requested`), so a ✕ pressed mid-denoise now stops the LOOP
+  rather than only stopping the artefact from being written once the whole
+  call finally returns (code review, 2026-08-28, finding 2, extended).
+- **MESH-7b** **The conditioning image is recentred to the torch
+  reference's own geometry before it ever reaches the pipeline, and the
+  subject mask comes from alpha when there is one and from the image's own
+  border colour when there is not (D623).** The MLX port's
+  `preprocess_image` composites RGBA-on-white and resizes — nothing else;
+  the torch reference's `ImageProcessorV2.recenter` additionally crops to
+  the subject's bounding box and scales it to 85% of a square canvas
+  first. Without that step, an off-centre or small-in-frame attach —
+  ordinary shapes for a file-picker attach — conditions the DiT far enough
+  from its training distribution that the hierarchical SDF decoder finds
+  no near-surface voxels anywhere, and `np.concatenate([])` raises inside
+  `_query_sdf_volume`. `hunyuan3d_mlx/worker.py::_prepare_cutout` ports the
+  reference's recenter geometry in PIL + numpy (no `cv2`, no `torch` — this
+  venv declares neither). **The mask itself has two sources, tried in
+  order**: a real alpha channel, reused as-is (so an antialiased cutout
+  edge stays smooth); failing that, `_border_backdrop_mask` samples the
+  image's own border and, if it reads as a near-uniform flat backdrop,
+  builds a mask by colour distance from that sampled colour — relative to
+  what the border actually is, not hardcoded against black, so a white
+  backdrop mattes the same way a dark one does. Only when neither applies
+  (no alpha, and a non-uniform border — a real photo, or a subject that
+  touches the frame edge and pollutes the border sample) does this
+  function give up and raise, naming what to attach instead. The residual
+  case — a well-formed input that still decodes to an empty surface — is
+  translated from `ValueError: need at least one array to concatenate`
+  into a message naming what to try (a larger/more distinct subject, more
+  steps), detected by walking the traceback for `_query_sdf_volume`'s own
+  empty `all_logits` rather than string-matching numpy's exception text.
 - **MESH-8** **`text-to-3d` stays unmapped, deliberately, not by
   oversight.** Serving it means chaining an image-generation runner into
   the mesh runner behind one button — two resident slots, two engines, one
@@ -10962,10 +10995,15 @@ this section is one new capability occupying each of them, not a new pattern.
   not a side effect of the mesh runner landing. `ai/tasks.py`'s row for it
   carries the real reason as its `note`, not the generic "nothing runs
   this" fallback every other unmapped row gets by default.
-- **fp16 only, so this is a 32 GB story, not a 16 GB one.** The curated
+- **fp16 only, and now a MEASURED figure, not a guess.** The curated
   weights repo publishes one `dit.safetensors` at 6.10 GB and no quantized
   variant — unlike `ltx-video`'s int4/int8 pair, there is no smaller tier
-  to offer today.
+  to offer today. The registry row and the catalog entry both used to say
+  "32 GB+", reasoning from the download size alone; a real matrix of
+  renders (Defect 4, this build's own perf write-up) put
+  `mx.get_peak_memory()` at 8.83 GB worst case across steps 4-50 and octree
+  64-256, and the Playground's own model card independently measured
+  7.8 GB — both corrected to "10 GB+".
 - **Sequenced-after, deliberately absent here**: the PBR texture stage
   (MESH-4), `text-to-3d` (MESH-8), a quantized DiT tier, and any
   mesh-simplification option beyond the octree-resolution ceiling (MESH-6).

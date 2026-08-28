@@ -1584,14 +1584,21 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Hunyuan3D-2.1 (Apple Silicon)",
         short_label="Hunyuan3D-2.1",
         family_label="Hunyuan3D-2.1",
-        # 32 GB+, not 16 — this repo publishes one fp16 dit.safetensors and
-        # no quantized tier (catalog.py's own comment on the row has the
-        # measurement), so unlike ltx-video there is no smaller checkpoint
-        # to soften the number. 16 was copy-pasted from that row above and
-        # would have sent a 16 GB user into swap or an OOM after a real
-        # 7.4 GB download (code review, 2026-08-28, finding 4).
+        # 10 GB+, not 32 — the 32 figure assumed a `dit.safetensors`-sized
+        # checkpoint needs the same multiple of headroom `mflux-image`'s
+        # untested-above-32GB row does, but this engine was never actually
+        # MEASURED before that guess was written. It has been now: the
+        # curated download is 6.9 GB total (`_CURATED_FILES`, `hunyuan3d_
+        # mlx/worker.py`) and `mx.get_peak_memory()` across a matrix of
+        # real renders (steps 4-50, octree 64-256, both single- and
+        # two-image CFG batches) topped out at 8.83 GB — the Playground's
+        # own model card independently reports "Ran comfortably here (7.8
+        # GB)" for the same engine. 10 GB+ is that measured peak plus a
+        # small margin, not a multiple of the download size (code review,
+        # 2026-08-28: Defect 4, this branch's own perf write-up has the
+        # full matrix).
         note="Generates an untextured 3D mesh from one image. Needs "
-             "32 GB+ of RAM.",
+             "10 GB+ of RAM.",
         _available=_apple_silicon,
     ),
 )

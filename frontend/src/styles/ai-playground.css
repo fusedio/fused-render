@@ -1073,6 +1073,89 @@
   background: rgba(var(--tint), 0.08);
 }
 
+/* -- the mesh stage's picture composer -----------------------------------
+   The image stage's `pg-composer-stack` stacks a picked photo ABOVE a
+   prompt that still does the talking; this stage has no prompt at all — the
+   picture is the whole input. `pg-composer-image` is the same stack shape
+   (attach controls + Generate on a floor below, `pg-clear-corner` reused
+   for the ✕) with the body given over entirely to the picture: a sized
+   preview once one is attached, a same-sized dropzone button before that,
+   never a thumbnail crammed into the footer next to Generate. */
+.pg-composer-image {
+  flex-direction: column;
+  align-items: stretch;
+  position: relative;
+}
+
+.pg-mesh-preview {
+  position: relative;
+  width: 100%;
+  height: 220px;
+}
+
+.pg-mesh-preview-open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.pg-mesh-preview-open img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.pg-mesh-preview-open:hover img {
+  opacity: 0.88;
+}
+
+/* The way IN, before there is a picture to show — the same footprint the
+   preview takes once one lands, so attaching an image never reflows the
+   card around it. Dashed, not solid: a solid `pg-composer` border already
+   frames the whole card, and a second solid rule nested inside it read as a
+   box within a box rather than as "drop something here". */
+.pg-mesh-dropzone {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pg-mesh-dropzone:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: rgba(var(--tint), 0.04);
+}
+
+.pg-mesh-dropzone:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.pg-mesh-dropzone svg {
+  width: 28px;
+  height: 28px;
+  opacity: 0.7;
+}
+
 /* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,
    then Clear/Generate. Bottom-aligned, so the 28px pills sit on the same
    baseline as the 32px button beside them however tall that column gets. */

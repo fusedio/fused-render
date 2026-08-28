@@ -337,15 +337,17 @@ export function MeshStage({
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
         <StageHeader title="Turn a picture into a mesh" configOpen={configOpen} onToggleConfig={toggleConfig} />
 
-        <div className="pg-composer">
-          {/* No text box — this pipeline only ever reads a picture. The
-              composer is the attach row plus Generate. */}
-          <div className="pg-composer-foot">
-            {attachment && (
-              <span className="pg-attach">
+        <div className="pg-composer pg-composer-image">
+          {/* No text box — this pipeline only ever reads a picture, and the
+              picture IS the composer's body, not a chip hanging off its
+              foot. A dropzone-sized button stands in for it until one is
+              attached. */}
+          <div className="pg-mesh-preview">
+            {attachment ? (
+              <>
                 <button
                   type="button"
-                  className="pg-attach-open"
+                  className="pg-mesh-preview-open"
                   title="See this picture"
                   aria-label="See this picture"
                   onClick={() => setShowAttachment(true)}
@@ -354,29 +356,43 @@ export function MeshStage({
                 </button>
                 <button
                   type="button"
-                  className="pg-attach-drop"
+                  className="pg-clear-corner"
                   title="Remove this image"
                   aria-label="Remove this image"
                   onClick={() => setAttachment(null)}
                 >
                   ✕
                 </button>
-              </span>
-            )}
-            <div className="pg-attach-row">
+              </>
+            ) : (
               <button
                 type="button"
-                className="pg-attach-btn"
+                className="pg-mesh-dropzone"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
-                <span>{attachment ? "Replace" : "Choose an image"}</span>
+                <span>{attaching ? "Working…" : "Choose a picture to convert"}</span>
               </button>
-            </div>
+            )}
           </div>
-          <div className="pg-composer-side">
+          <div className="pg-composer-foot">
+            <div className="pg-attach-row">
+              {attachment && (
+                <button
+                  type="button"
+                  className="pg-attach-btn"
+                  title="Point at a different picture — nothing is copied"
+                  disabled={attaching}
+                  onClick={() => void choose()}
+                >
+                  {StarterIcons.landscape}
+                  <span>Replace</span>
+                </button>
+              )}
+            </div>
+            <div className="pg-composer-side">
             {!busy && run && (
               <button
                 type="button"
@@ -406,6 +422,7 @@ export function MeshStage({
                 Generate
               </button>
             )}
+            </div>
           </div>
         </div>
 
@@ -481,7 +498,11 @@ export function MeshStage({
           <ResultSlot
             label="Result"
             capability="image-to-3d"
-            note="Your mesh appears here. Choose a picture above, then Generate."
+            note={
+              attachment
+                ? "Your mesh appears here. Press Generate to build it."
+                : "Your mesh appears here. Choose a picture above, then Generate."
+            }
           />
         ) : (
           <div className="pg-answer-block">

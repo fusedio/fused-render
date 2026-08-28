@@ -1195,12 +1195,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # marching-cubes decode-buffer memory on top of it is real and unmeasured
     # here.
     #
-    # **fp16 only, so this is a 32 GB story, not a 16 GB one.** The repo
+    # **fp16 only, and now a MEASURED figure, not a guessed one.** The repo
     # publishes one `dit.safetensors` at 6.10 GB and no quantized variant —
     # unlike the video entries' int4/int8 pair, there is no smaller tier to
-    # offer. The plan's own risk note puts the fuller (weights + activations)
-    # peak around 10 GB; the note below says 32 GB+ rather than 16 GB+ for
-    # that reason.
+    # offer. This entry used to guess "32 GB+" from the download size alone
+    # (the same reasoning that mis-sized `registry.py`'s Runner row); a real
+    # matrix of renders (Defect 4, this branch's own perf write-up) put
+    # `mx.get_peak_memory()` at 8.83 GB worst case, and the Playground's own
+    # model card independently measured 7.8 GB — both well under a 16 GB
+    # machine, let alone 32.
     "hunyuan3d-mlx": [
         {
             "id": "dgrauet/hunyuan3d-2.1-mlx",
@@ -1218,7 +1221,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 7.4,
             "resident_gb": 6.7,
             "note": "Image to untextured 3D mesh, fp16 only (no quantized "
-                    "tier), on a 32 GB+ Mac. Shape only — no PBR texture "
+                    "tier), on a 10 GB+ Mac. Shape only — no PBR texture "
                     "stage.",
             # `ShapePipeline.__call__`'s own defaults (`pipeline_mlx.py` at
             # the pinned commit) — the same "one repo, one curator's hint"
