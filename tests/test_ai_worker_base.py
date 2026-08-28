@@ -757,6 +757,34 @@ def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base,
     assert base._rss_peak == 5_000
 
 
+def test_serve_moves_into_the_directory_the_supervisor_names(base, monkeypatch, tmp_path):
+    """The posix_spawn half of the fork-crash fix (`supervisor._spawn_kwargs`):
+    with no `cwd=` on the Popen, the worker has to `chdir` itself, before
+    anything else in `serve` — a runner that opens a file by a relative path
+    must already be home. `setsid` is stubbed: under pytest this process leads
+    a session already, and the point here is the directory."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+    calls = []
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    monkeypatch.setattr(base.os, "setsid", lambda: calls.append("setsid"), raising=False)
+    home = tmp_path / "runner_home"
+    home.mkdir()
+    monkeypatch.setenv(base.WORKER_CWD_ENV, str(home))
+    before = os.getcwd()
+    try:
+        base.serve(download=lambda m: None, load=lambda m, f: None,
+                  generate=lambda body: {},
+                  argv=["--model", "org/m", "--status", str(tmp_path / "status.json")])
+        assert os.path.realpath(os.getcwd()) == os.path.realpath(str(home))
+        assert calls == ["setsid"]
+    finally:
+        os.chdir(before)
+
+
 def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path):
     """`serve(peak_memory=...)` has to actually reach `peak_resident_bytes()`,
     not just be accepted and dropped — the same wiring `memory=` already gets
