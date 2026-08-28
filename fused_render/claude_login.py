@@ -107,6 +107,18 @@ class LoginError(RuntimeError):
     """A refusal with a sentence the strip can show as-is."""
 
 
+def _windows() -> bool:
+    """Whether to stop children the Windows way.
+
+    A function rather than an inline `os.name` check so a test can pin the
+    platform to ONE MODULE. Patching `os.name` itself would reach the whole
+    interpreter — pathlib, subprocess, tempfile — and on the Windows runner it
+    would also leave every test that reaches `_stop` firing a real
+    `taskkill /F /T /PID` at whatever process happens to hold a fake pid.
+    """
+    return os.name == "nt"
+
+
 @dataclasses.dataclass
 class _Login:
     proc: subprocess.Popen
@@ -232,18 +244,28 @@ def _stop(login: _Login, force: bool) -> None:
     child IS the CLI and a signal reaches it.
     """
     proc = login.proc
-    if os.name == "nt":
+    if _windows():
         try:
-            subprocess.run(
+            done = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True, timeout=30,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            return
+            if done.returncode == 0:
+                return
+            # NOT `check=True`, and the returncode is NOT ignorable. taskkill
+            # reports "process not found" and "access denied" by exiting
+            # non-zero, which raises nothing — so returning on the strength of
+            # having merely RUN it would skip the fallback in exactly the cases
+            # that need one, leaving the tree alive and the record in flight
+            # for good.
+            logger.warning("taskkill did not stop the Claude Code sign-in tree "
+                           "(exit %s)", done.returncode)
         except (OSError, subprocess.SubprocessError):
-            # taskkill missing or refused. Fall through: killing cmd.exe alone
-            # is worth less than nothing here, but it is better than not trying.
-            logger.warning("taskkill could not stop the Claude Code sign-in tree")
+            logger.warning("taskkill could not be run for the Claude Code sign-in")
+        # Fall through. Killing cmd.exe alone is worth little behind a shim, and
+        # on an already-dead pid it is a no-op, but neither is worse than
+        # walking away from a child we were asked to stop.
     try:
         proc.kill() if force else proc.terminate()
     except OSError:

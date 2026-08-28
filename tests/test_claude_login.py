@@ -30,8 +30,16 @@ _PROMPT = "Paste code here"
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
+    """Reset the record, and PIN THE PLATFORM.
+
+    Without the pin, every test that reaches `_stop` behaves differently on the
+    Windows runner: it would fire a real `taskkill /F /T /PID 4242` at whatever
+    process holds that pid on the runner, never close the fake child, and hang
+    to the grace period before failing. Tests about Windows opt in explicitly.
+    """
     claude_login.reset()
+    monkeypatch.setattr(claude_login, "_windows", lambda: False)
     yield
     claude_login.reset()
 
@@ -356,10 +364,12 @@ def test_on_windows_the_whole_process_tree_is_stopped(monkeypatch):
     pipe — so the drain never sees EOF and the record never settles. Cancel and
     the watchdog would both wedge the button, on exactly the npm-on-Windows
     install this button exists to serve."""
-    monkeypatch.setattr(claude_login.os, "name", "nt")
+    monkeypatch.setattr(claude_login, "_windows", lambda: True)
     killed = []
-    monkeypatch.setattr(claude_login.subprocess, "run",
-                        lambda argv, **kw: killed.append(argv))
+    monkeypatch.setattr(
+        claude_login.subprocess, "run",
+        lambda argv, **kw: killed.append(argv)
+        or subprocess.CompletedProcess(argv, 0))
     proc = _FakeProc(text=PROMPT, pid=9182)
     claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
                        force=False)
@@ -372,7 +382,6 @@ def test_on_windows_the_whole_process_tree_is_stopped(monkeypatch):
 def test_off_windows_the_child_itself_is_signalled(monkeypatch):
     """`shell=True` never happens on POSIX, so the child IS the CLI and a
     signal reaches it — no taskkill, and terminate stays the polite form."""
-    monkeypatch.setattr(claude_login.os, "name", "posix")
     proc = _FakeProc(text=PROMPT)
     login = claude_login._Login(proc=proc, started_at=0.0, tail=[])
     claude_login._stop(login, force=False)
@@ -449,10 +458,26 @@ def test_a_re_probe_that_itself_fails_does_not_wedge_the_record(monkeypatch):
     assert claude_login.status()["error"] is None
 
 
+def test_taskkill_failing_still_falls_back_to_signalling_the_child(monkeypatch):
+    """taskkill reports "process not found" and "access denied" by exiting
+    non-zero, and `subprocess.run` raises nothing for either. Returning on the
+    strength of having merely RUN it would skip the fallback in exactly the
+    cases that need one."""
+    monkeypatch.setattr(claude_login, "_windows", lambda: True)
+    monkeypatch.setattr(
+        claude_login.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 128))
+    proc = _FakeProc(text=PROMPT)
+    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
+                       force=False)
+    assert proc.terminated is True
+    proc.finish()
+
+
 def test_taskkill_missing_falls_back_to_signalling_the_child(monkeypatch):
     """Killing cmd.exe alone is worth little behind a shim, but it beats not
     trying — and the fallback must not raise out of a cancel."""
-    monkeypatch.setattr(claude_login.os, "name", "nt")
+    monkeypatch.setattr(claude_login, "_windows", lambda: True)
 
     def no_taskkill(*a, **k):
         raise FileNotFoundError("taskkill")
