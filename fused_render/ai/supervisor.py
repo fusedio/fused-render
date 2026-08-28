@@ -47,6 +47,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -462,6 +463,55 @@ SPAWN_KWARGS = (
     if os.name == "nt" else {"start_new_session": True}
 )
 
+#: The worker's working directory, when the spawn cannot pass `cwd=` — see
+#: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
+WORKER_CWD_ENV = "FUSED_AI_WORKER_CWD"
+
+
+def _spawn_kwargs(cwd: str, env: dict) -> dict:
+    """The Popen keyword arguments for a worker — and the ONE place the
+    fork-versus-posix_spawn decision lives, because on macOS it decides whether
+    a worker can start at all.
+
+    **On macOS, workers are started with `posix_spawn`, never `fork()`.**
+    CPython picks `posix_spawn` only for a narrow Popen shape (3.12
+    `subprocess._execute_child`: no `cwd`, `close_fds=False`, no
+    `start_new_session`, no `preexec_fn`, every redirected fd above 2), and
+    falls back to `fork()` + `exec()` the moment any of those is set. The old
+    shape here set three of them, so every worker was forked — and a forked
+    child runs the parent's `pthread_atfork` child handlers before it ever
+    reaches `exec()`.
+
+    That is what killed the embeddings worker on a fresh machine, with
+    `the worker exited before it started (code -11)` and an EMPTY stderr:
+    the crash report shows the child dying in `do_fork_exec → fork →
+    _pthread_atfork_child_handlers → osgeo::proj::io::SQLiteHandleCache →
+    sqlite3Close → sqlite3_log → os_log_type_enabled → SIGSEGV`. PROJ (loaded
+    into THIS server process through pyproj/shapely the moment any geo page
+    renders) registers an atfork handler that closes its SQLite handles in
+    the child, SQLite logs while doing so, and `os_log` after `fork()` is the
+    documented macOS hazard. Nothing about the worker, its venv or MLX was at
+    fault — the same worker started fine from a shell, and the same server
+    could not start ANY worker once PROJ was resident. Reproduced exactly with
+    a deliberately crashing atfork handler: the fork shape dies -11 every
+    time, the `posix_spawn` shape never does.
+
+    `posix_spawn` runs no atfork handlers, so the worker gets its own process
+    with none of the parent's native state in the way. The two things the old
+    shape did for the child — `cwd` and a fresh session/process group for
+    `_kill_tree`'s `killpg` — the worker now does for itself, first thing in
+    `worker_base.serve`: `chdir` to `WORKER_CWD_ENV` and `os.setsid()`.
+    `close_fds=False` leaks only descriptors marked inheritable, which since
+    Python 3.4 (PEP 446) is none of this server's by default.
+
+    Linux and Windows keep the previous shape: glibc's fork is not where this
+    hazard lives, and Windows never forks.
+    """
+    if sys.platform == "darwin":
+        env[WORKER_CWD_ENV] = cwd
+        return {"close_fds": False}
+    return {"cwd": cwd, "close_fds": True, **SPAWN_KWARGS}
+
 #: Windows has no SIGKILL. Read through getattr so merely IMPORTING this module
 #: does not fail there — the image runner is cross-platform, so this code really
 #: does run on Windows.
@@ -796,15 +846,14 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
+    env = _child_env(worker.token, worker.model, worker.capability)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
-        cwd=runner.folder,
-        env=_child_env(worker.token, worker.model, worker.capability),
-        close_fds=True,
-        **SPAWN_KWARGS,
+        env=env,
+        **_spawn_kwargs(runner.folder, env),
     )
     worker.pid = proc.pid
     worker.proc = proc
@@ -1175,11 +1224,12 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         python = _ensure_venv(runner, stub, job)
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
+        env = _child_env(stub.token, model)
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
-            cwd=runner.folder, env=_child_env(stub.token, model), close_fds=True,
-            **SPAWN_KWARGS,
+            env=env,
+            **_spawn_kwargs(runner.folder, env),
         )
         stub.pid = proc.pid
         stub.proc = proc
@@ -2063,6 +2113,40 @@ def busy_reason(model: str) -> str | None:
     return None
 
 
+def _drop_gone(worker: Worker) -> None:
+    """Forget a worker whose PROCESS has exited: an `error` row that says so,
+    and an empty slot the next request fills with a fresh load.
+
+    Shared by `refresh_memory()` (the sidebar's poll, which decides with
+    `_alive`) and `ready_worker()` (every generation request, which decides
+    with the stricter `_exited`) so the two agree on what "gone" leaves behind.
+    """
+    worker.state = "error"
+    worker.error = "the model process is gone"
+    with _lock:
+        if _workers.get(worker.capability) is worker:
+            del _workers[worker.capability]
+
+
+def _exited(worker: Worker) -> bool:
+    """True only when the worker's process has DEFINITELY exited: a Popen is
+    attached and `poll()` answered a real exit code.
+
+    Stricter than `not _alive(worker)` on purpose, because this is asked on the
+    request path. `_alive` reads a missing handle as dead — right for the
+    reaper, which is tidying a table — but here "cannot tell" must not cost a
+    caller its model: a worker planted without a Popen (every fixture in the
+    tests, an adopted process) has nothing to poll, and a test double whose
+    `poll()` returns a stand-in object is not reporting an exit code. Only an
+    `int` is.
+    """
+    proc = worker.proc
+    if proc is None:
+        return False
+    code = proc.poll()
+    return isinstance(code, int) and not isinstance(code, bool)
+
+
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     """The resident, READY worker for a capability — what generation needs.
 
@@ -2092,6 +2176,18 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
             return None
         if model is not None and worker.model != model:
             return None
+    # **The 502-forever check.** A worker that died while idle — a SIGSEGV out
+    # of a native library, a memory kill — used to stay in the table as `ready`,
+    # so every request was proxied to a dead port and answered `the model
+    # process did not answer`, indefinitely: nothing re-checked the process, so
+    # nothing respawned it until an unload or the idle reaper cleared the slot.
+    # Measured at 46 seconds of 502s on a photo-search app before its caller
+    # gave up, against a ~10s respawn once somebody notices. Polling here turns
+    # that first failed request into the `ModelNotReady` callers already wait
+    # on. Outside `_lock`, like the resolution below: `poll()` is a syscall.
+    if _exited(worker):
+        _drop_gone(worker)
+        return None
     resolved = registry.for_capability(capability)
     if resolved is not None and resolved.code != worker.runner_code:
         evict_stale_engines()
@@ -2504,11 +2600,7 @@ def refresh_memory() -> None:
             continue
         if not _alive(worker):
             # The one thing the supervisor knows better than the worker does.
-            worker.state = "error"
-            worker.error = "the model process is gone"
-            with _lock:
-                if _workers.get(worker.capability) is worker:
-                    del _workers[worker.capability]
+            _drop_gone(worker)
             continue
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):

@@ -3370,6 +3370,51 @@ def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
     return worker
 
 
+class _ExitedProc:
+    """A Popen whose process has already died — `poll()` answers its exit code."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+def test_a_ready_worker_whose_process_died_is_dropped_on_the_next_request(monkeypatch):
+    """The 502-forever bug. A worker that died while idle — a native SIGSEGV, a
+    memory kill — stayed in the table as `ready`, so every request was proxied
+    to a dead port and answered `the model process did not answer`, and
+    nothing ever respawned it. `ready_worker` now polls the process it is
+    about to hand out: gone means dropped, so this request gets
+    `ModelNotReady` (a fresh load) instead of a 502."""
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(-11)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is None
+    assert registry.TEXT_GENERATION not in supervisor._workers
+    assert worker.state == "error"
+    assert "gone" in worker.error
+
+
+def test_a_ready_worker_with_a_live_process_is_still_served(monkeypatch):
+    """The other half: `poll()` returning None is alive, and the worker is
+    handed out exactly as before. The engine-match check below it is untouched,
+    so a fake runner code must resolve to nothing rather than to a mismatch."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(None)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
+
+
+def test_a_ready_worker_with_no_process_handle_is_not_judged(monkeypatch):
+    """A worker planted without a Popen (every fixture in this file, an adopted
+    process) cannot be polled, and "cannot tell" must not read as "gone" on
+    the request path — the reaper's poll keeps its own stricter rule."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    assert worker.proc is None
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
+
+
 def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
     from fused_render.shell import prefs
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
@@ -10398,6 +10443,54 @@ def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
 
     monkeypatch.delenv("FUSED_MODEL_MIRROR")
     assert "FUSED_MODEL_MIRROR" not in supervisor._child_env("t", _suggested_id())
+
+
+def test_on_macos_a_worker_is_spawned_in_the_posix_spawn_shape(monkeypatch):
+    """The fork-crash fix. CPython uses `posix_spawn` only for a Popen with no
+    `cwd`, `close_fds=False` and no `start_new_session`; anything else forks,
+    and a forked child runs the server's atfork handlers — which is how a
+    resident PROJ killed every worker with `code -11` and an empty stderr.
+    The directory travels in the environment instead."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"close_fds": False}
+    assert env[supervisor.WORKER_CWD_ENV] == "/runners/x"
+
+
+def test_elsewhere_a_worker_keeps_its_own_session_and_cwd(monkeypatch):
+    """Off macOS the shape is unchanged: `cwd` on the Popen, descriptors
+    closed, and the platform's own new-session/new-group flag — which is
+    `SPAWN_KWARGS` itself, so this reads the constant rather than naming
+    `start_new_session`: on a Windows runner that key is `creationflags`."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"cwd": "/runners/x", "close_fds": True, **supervisor.SPAWN_KWARGS}
+    assert supervisor.WORKER_CWD_ENV not in env
+
+
+def test_no_spawn_site_bypasses_the_spawn_shape_helper():
+    """Both Popen sites go through `_spawn_kwargs`, and neither passes `cwd`,
+    `close_fds` or the session flag directly — the arguments that silently
+    turn `posix_spawn` back into `fork()`. Checked on the source, because a
+    keyword added to one call is exactly the regression nobody would notice
+    until a geo page had rendered on someone's Mac."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(supervisor))
+    popens = [node for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.Popen"]
+    assert len(popens) >= 2, f"{len(popens)} Popen sites, expected the two worker spawns"
+    forbidden = {"cwd", "close_fds", "start_new_session", "preexec_fn"}
+    for call in popens:
+        names = {kw.arg for kw in call.keywords if kw.arg is not None}
+        starred = [ast.unparse(kw.value) for kw in call.keywords if kw.arg is None]
+        assert not names & forbidden, (
+            f"Popen at line {call.lineno} sets {names & forbidden} directly — "
+            f"route it through _spawn_kwargs")
+        assert any(x.startswith("_spawn_kwargs(") for x in starred), (
+            f"Popen at line {call.lineno} does not spread _spawn_kwargs(...)")
 
 
 def test_neither_spawn_site_forgets_the_model(monkeypatch):
