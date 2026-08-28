@@ -3315,6 +3315,10 @@ export interface AiCatalogCapability {
     defaultWidth: number;
     defaultHeight: number;
     defaultSteps: number;
+    /** Whether the resolved engine accepts a reference image at all
+     *  (`registry.VideoTraits.supports_image`, SPEC AI-15) — so the
+     *  Playground cannot offer a control the render will not honour. */
+    supportsImage: boolean;
   } | null;
 }
 
