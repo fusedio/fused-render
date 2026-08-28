@@ -333,17 +333,33 @@ video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
 | `frames` | `97` (~4s at 24fps) | the engine's grid, `1 + 8n`, `n` 1–21 (9–169 frames) | **rounded UP to the next valid value** — never down, and never to "nearest" — `100` becomes `105`, `30` becomes `33`; a value below 9 becomes 9 (the grid starts at its second point, `n=1`) |
 | `steps` | `8` | **2–50** | clamped; not a number → 400. The floor is 2, not 1 |
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
+| `image` | — | one existing file, page-relative | condition on this reference image instead of rendering from `prompt` alone — see below. A single string; an array or any other type → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 
-**These numbers are the RESOLVED ENGINE's, not the route's** — the frame grid, canvas default and step default all come from whichever runner serves the request (`registry.VideoTraits`), and `fused.ai.models.catalog()`'s `videoTraits` hands you the same numbers if you need to draw a control that agrees with the server. The rails around them (`n` in 1–21, steps 2–50, the 32-multiple canvas and the pixel ceiling) are the app's own and hold for every engine.
+**These numbers are the RESOLVED ENGINE's, not the route's** — the frame grid, canvas default, step default and whether `image` is honoured at all come from whichever runner serves the request (`registry.VideoTraits`), and `fused.ai.models.catalog()`'s `videoTraits` hands you the same numbers (including `supportsImage`) if you need to draw a control that agrees with the server. The rails around them (`n` in 1–21, steps 2–50, the 32-multiple canvas and the pixel ceiling) are the app's own and hold for every engine.
 
 **No `guidance`** — the engine is CFG-distilled and takes no such parameter; passing one is refused `bad_request` like any other unsupported option, the same envelope rule `fused.ai.image` documents (D413). **No live preview either** (`previewUrl`/`previewPath` do not exist on this reply).
 
-Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, seed}` — the render that actually happened, not the one you asked for (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
+Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that actually happened, not the one you asked for (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
 
 - **`seed` comes back whether or not you passed one.**
 - **The server owns where the mp4 goes**: `<home>/ai/videos/<YYYYmmdd-HHMMSS>-<uid>.mp4`, time-ordered, outlives the tab, nothing cleans these up.
 - **One row and one file per render.**
+
+### A reference image: `{image}` — one image, frame 0, strength 1.0
+
+```js
+const vid = await fused.ai.video({
+  prompt: "the boat drifts down the gutter and out of frame",
+  image: "boat.png",   // beside this page, like fused.ai.transcribe's `path`
+});
+```
+
+- **One image, a single string — no `images` list, no per-image frame index or strength.** Conditions the render at frame 0 with strength 1.0, the same fixed shape `/api/ai/image`'s own edit `image` uses for its own single base image. A missing file, a directory, or anything that is not a plain string (an array included) is `bad_request` before a job opens.
+- **`image` is page-relative exactly like `fused.ai.transcribe`'s `path`** (RH-1) — `"boat.png"` means beside this page, not beside wherever the server was launched from.
+- **`width`/`height` default from the reference image, not from the engine's own `704x480`.** The image is fit to the engine's own longer default side without upscaling, then snapped to a multiple of **64** — coarser than the 32-multiple grid the rest of this route uses, because the engine's own two-stage pipeline re-derives its output size on that coarser grid and a default landing off it would be silently moved again before rendering. An explicit `width`/`height` still wins. A file this app's PNG/JPEG/WebP header reader cannot parse falls back to the engine's own default canvas rather than failing the render.
+- **Read `fused.ai.models.catalog()`'s `videoTraits.supportsImage` before offering this control.** It is an ENGINE fact — whichever runner is currently resolved for `text-to-video` — not a guarantee this build always carries; a page that draws a reference-image picker unconditionally can offer a control the resolved engine will reject.
+- **Unexercised on real hardware as of this writing**: the CRF pass this needs (`imageio-ffmpeg` staged onto `PATH`) has the plumbing but has not been driven end to end by a real conditioned render — expect to be the first page that actually exercises it, and to find out from a live run rather than from this doc whether it holds up.
 
 ### Availability: check it before you build the button
 

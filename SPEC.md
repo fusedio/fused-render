@@ -8639,29 +8639,31 @@ an AI Models page that could say what was on disk but not what was *running*.
     `_memory_and_device` reads the live worker, and `supervisor.unload`'s own
     exception is logged and swallowed so a failed teardown cannot mask a
     measurement's real error.
-- **AI-15** **A fifth capability, `text-to-video`, and the first with no
-  "everywhere" runner.** `fused.ai.video({prompt, ...})` renders text to a
-  short mp4 WITH AUDIO through LTX-2.3, on `ltx-2-mlx` — a pure-MLX,
-  MIT-licensed port whose `DistilledPipeline` reads MLX safetensors directly,
-  so the `ltx-video` runner loads a model into its own interpreter the same
-  way `mflux-image` does. `POST /api/ai/video` mirrors `/api/ai/image` —
-  job-backed, server-decided path and seed — minus `guidance` (the engine is
+- **AI-15** **A fifth capability, `text-to-video` — and, since D611, optionally
+  IMAGE-to-video too — the first capability with no "everywhere" runner.**
+  `fused.ai.video({prompt, image, ...})` renders a short mp4 WITH AUDIO
+  through LTX-2.3, on `ltx-2-mlx` — a pure-MLX, MIT-licensed port whose
+  `DistilledPipeline` reads MLX safetensors directly, so the `ltx-video`
+  runner loads a model into its own interpreter the same way `mflux-image`
+  does. `POST /api/ai/video` mirrors `/api/ai/image` — job-backed,
+  server-decided path and seed — minus `guidance` (the engine is
   CFG-distilled and takes no such parameter, so one is refused as an unknown
   option rather than silently accepted) and minus a live preview (none exists
   in this cut), plus `frames`: the engine's valid grid is `1 + 8n` (its VAE's
   temporal compression is 8, the grid its own upstream CLI defaults to), so a
   requested count is rounded UP to the next grid point rather than merely
   clamped. **The request SHAPE is the resolved runner's own fact, not the
-  route's** — `registry.VideoTraits` carries the frame grid, canvas default
-  and step default per runner (`704×480` at 8 steps here), and
-  `catalog.describe`'s `videoTraits` hands the identical numbers to the
-  Playground's sliders so a control cannot show a value the render will not
-  use. The shared rails around them — `n` in [1, 21], steps in [2, 50], a
-  32-multiple canvas up to 768×1344 pixels — are the APP's choices, held
-  across every engine. **No fallback exists anywhere else**: the engine is
-  MLX, so off Apple Silicon `catalog()` reports `default: null` for this
-  capability for the first time, and every call answers 409 with the reason
-  rather than ever reaching a render.
+  route's** — `registry.VideoTraits` carries the frame grid, canvas default,
+  step default and (D611) whether the engine accepts a reference image at all
+  per runner (`704×480` at 8 steps here), and `catalog.describe`'s
+  `videoTraits` hands the identical numbers to the Playground's sliders so a
+  control cannot show a value the render will not use. The shared rails
+  around them — `n` in [1, 21], steps in [2, 50], a 32-multiple canvas up to
+  768×1344 pixels — are the APP's choices, held across every engine. **No
+  fallback exists anywhere else**: the engine is MLX, so off Apple Silicon
+  `catalog()` reports `default: null` for this capability for the first time,
+  and every call answers 409 with the reason rather than ever reaching a
+  render.
 - **AI-15a** **Two repos are fetched, not one, and both are reported
   downloads.** `DistilledPipeline` needs the LTX weights AND a Gemma-3 text
   encoder it does not ship, so `download` fetches
@@ -8704,6 +8706,40 @@ an AI Models page that could say what was on disk but not what was *running*.
   already fetched its 144GB; and `/api/ai/video`'s cross-engine refusal is
   kept as deliberately unreachable code, generic over runners, so a second
   video engine's arrival does not have to remember to add it back.
+- **AI-15c** **`image` (D611): one reference image, conditioning at frame 0
+  with strength 1.0 — the same single-string scope AI-9f already made for
+  `/api/ai/image`'s own `image`, restated here rather than generalized. No
+  `images` list, no per-image frame index or strength: `DistilledPipeline`'s
+  own `generate_two_stage` builds real I2V conditioning at both stages for
+  the ONE image it is given, and a multi-anchor surface is unverified on this
+  app's hardware, not merely unimplemented. Path resolution — page-relative
+  to `base`, existence, is-a-file — runs through `_resolve_reference_image`
+  in `ai_runtime.py`, the same function `/api/ai/image`'s `image` calls,
+  rather than a third hand-rolled copy of `/api/ai/transcribe`'s own `path`
+  rule; the two routes' error text differs only in which bridge function it
+  names. `/api/ai/video` accepts `base` for the first time as of this
+  entry — video had no page-relative path to resolve before `image` needed
+  one — injected by `runtime.js`'s `aiVideo` from the page's own `?path=`
+  exactly as `aiImage` already does. **The default canvas derives from the
+  reference's own aspect ratio, snapped to a multiple of 64** rather than the
+  32-multiple grid the rest of this route enforces (AI-15's own shared
+  rails): the engine's two-stage pipeline re-derives its own output size via
+  `snap_output_dimensions(..., two_stage=True)`, coarser than the app's
+  ordinary video snap, and a default that stopped at 32 could be silently
+  re-snapped by the engine to a size the reply never claimed. An explicit
+  `width`/`height` in the body still wins over the derived default, and a
+  reference this app's own PNG/WebP/JPEG header reader cannot parse falls
+  back to the engine's own tuned canvas silently rather than failing the
+  render — the same "convenience default, not a validation" rule AI-9f's
+  `_edit_default_size` already states for the image route.
+  `registry.VideoTraits.supports_image` is the ENGINE fact this all sits on
+  (`ltx-video`'s row: `True`), carried to the Playground through
+  `catalog.py`'s `videoTraits` payload as `supportsImage` so its
+  reference-image control cannot appear for an engine that would refuse it.
+  **Unexercised in this build**: the CRF round-trip through `imageio-ffmpeg`
+  (`worker.py:271-312`'s PATH plumbing exists for exactly this) has never
+  actually run end to end, and neither has a real conditioned render on
+  Apple Silicon hardware — both need a live check this PR could not perform.
 - **AI-16** **"Will this fit?" is answered over a FOOTPRINT — what the model
   costs RESIDENT — never over a download size, and the answer carries the basis
   it was reached on** (D497, TARGET). `ai_runtime._fit_verdict` is handed

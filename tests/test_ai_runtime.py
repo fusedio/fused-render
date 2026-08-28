@@ -4783,6 +4783,33 @@ def test_the_SKILL_names_the_image_FIELD_TOO_when_an_edit_is_asked_for(
     _wait_job(started["jobId"])
 
 
+def test_the_SKILL_names_every_field_a_video_resolves_with(client, fake_video_runner):
+    """Same drift guard as the image route's own version of this test, over
+    `/api/ai/video`'s reply."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url"}
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
+def test_the_SKILL_names_the_video_image_FIELD_TOO_when_a_reference_is_given(
+        client, fake_video_runner, base_photo):
+    """Same drift guard as the image route's own version, over the reply a
+    conditioned render resolves with — `image` only ever appears there, so a
+    plain text-to-video POST would never catch the skill going stale about
+    it."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "x", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert "image" in started
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
+    assert "image" in section
+    _wait_job(started["jobId"])
+
+
 def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
                                                                fake_image_runner):
     """The preview is a promise about a path, not about a file. A model with no
