@@ -222,14 +222,17 @@ def _arm_release_timer():
     Cancels whatever timer a PRIOR execution left pending first: a burst of
     renders must not pay the re-fault cost of clearing and re-growing the
     allocator pool between each one — only the LAST execution in a burst gets
-    to start the clock, which is the whole reason this is a timer and not the
-    unconditional `finally`-call this shipped as originally. Correctness in
-    the race between "the old timer's wait already elapsed" and "cancel just
-    ran" is `_fire_release`'s job, via the generation token.
+    to start the clock, which is the whole reason this is a timer and not an
+    unconditional `finally`-call (the first cut of this change, before an
+    idle timer replaced it). Correctness in the race between "the old
+    timer's wait already elapsed" and "cancel just ran" is `_fire_release`'s
+    job, via the generation token.
 
     A no-op when no `release` hook was supplied (`serve(release=...)` never
-    called) — nothing to ever arm for `mlx_text`, `llamacpp_text`, and the
-    rest of the runners this deliberately excludes.
+    called) — see `_release`'s own docstring for exactly which runners that
+    is and why (six wired, several deliberately not); this docstring used to
+    keep its own, shorter list and it drifted out of date the moment
+    `mlx_text` was wired in, which is why it no longer tries to repeat it.
     """
     global _release_timer, _release_generation
     if _release is None:

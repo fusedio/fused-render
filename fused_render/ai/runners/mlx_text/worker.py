@@ -359,8 +359,8 @@ def release():
     image, speech or embed worker is also loaded, each with its own idle
     pool — this is the runner most likely to be resident continuously through
     a whole session, which is exactly the case an idle-only release exists
-    for, as against the per-call design this shipped as originally and would
-    have thrashed a fast chat loop.
+    for, as against the per-call design this change's first cut used and
+    would have thrashed a fast chat loop.
 
     `getattr` because a real but older mlx wheel, or this repo's stubbed
     `mlx.core` in tests, may not have `clear_cache` at all — absence is a
