@@ -23,12 +23,15 @@ started at a terminal status and returned real content, and the ONE thing
 that stops the re-fetch loop. Getting it wrong is not free — a fetch can
 catch the subagent's own file mid-flush and return a real but truncated
 answer, which round 7 first left permanently stuck — so a re-open
-explicitly clears it (round 8) rather than trusting one read forever. The
-give-up notice (a separate, always-live signal) paints on every failure
-that has nothing better to show, never gated on "is something already
-cached" (round 8's HIGH): the failure slot and the turns slot are
-independent, so a failure never erases a good answer, and gating the
-notice on one existing was only ever hiding a truncated transcript.
+explicitly clears it (round 8) rather than trusting one read forever. A
+re-open landing WHILE a fetch is already in flight is handled too (round
+9): that in-flight fetch is not allowed to trust its own answer as
+`final`, and one more real fetch is chased once it resolves. The give-up
+notice (a separate, always-live signal) paints on every failure,
+UNCONDITIONALLY — never gated on "is something already cached" (round 8's
+HIGH): the failure slot and the turns slot are independent, so a failure
+never erases a good answer, and gating the notice on one existing was
+only ever hiding a truncated transcript.
 
 Same harness as tests/test_claude_template_segments.py (same `_DOM`, same
 anchors): read that file's module docstring for why node-and-textual-anchors
@@ -490,11 +493,14 @@ main();
     assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>FINAL ANSWER</md>"
 
 
-def test_a_re_open_after_the_final_terminal_fetch_does_not_refetch(
+def test_a_later_tick_does_not_refetch_after_the_final_terminal_fetch(
         probe_src, tmp_path):
     """The flip side of the fix above: once a fetch that ITSELF started at a
     terminal status has come back with real content, that copy is final —
-    a later tick (or re-open) must not go back to the wire for it again."""
+    a later tick must not go back to the wire for it again. (A re-open is
+    a DIFFERENT case, deliberately: see the reexpand-clears-`final` tests
+    below, which cover round 8's and round 9's fixes to that path — this
+    test only ever ticks, it never re-opens.)"""
     got = _run(probe_src, """
 async function main() {
   runPythonQueue.push({turns: [{role: "user", text: "early"}]});
@@ -750,6 +756,37 @@ main();
     assert len(errors) == 1 and "down" in errors[0]["text"]
 
 
+def test_the_error_notice_does_not_blink_while_a_retry_is_in_flight(
+        probe_src, tmp_path):
+    """Round 9, LOW 3: the top-of-pump paint used to clear the error slot
+    UNCONDITIONALLY, before deciding whether to fetch again — so for the
+    whole duration of every retry's own network round trip, a give-up
+    notice already on record disappeared, and only came back if that
+    retry ALSO failed. A failure already on record for this agent must
+    stay visible while a new attempt is still pending, not blink off and
+    (maybe) back on once per tick."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  await new Promise((r) => setTimeout(r, 0));   // fetch #1 fails; notice painted
+  runPythonQueue.push({__defer: true, value: {turns: []}});
+  el.update(%s);                                 // fetch #2 starts (still below the bound)
+  const treeMidFlight = dump(el.el);              // notice must STILL be showing
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({treeMidFlight}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
+    errors = _by_class(got["treeMidFlight"], "sub-turn-error")
+    assert len(errors) == 1 and errors[0]["text"], (
+        "the notice blinked off while a retry was in flight")
+
+
 def test_repeated_close_reopen_cycles_each_paint_their_own_failure(
         probe_src, tmp_path):
     """Code review round 7, HIGH 2 (the reviewer's probe scenario):
@@ -820,6 +857,77 @@ main();
     errors = _by_class(got["tree"], "sub-turn-error")
     assert len(errors) == 1 and errors[0]["text"], (
         "the give-up notice must show ALONGSIDE the partial turn, not be hidden by it")
+
+
+def test_a_single_failure_below_the_bound_with_no_further_tick_still_shows_the_notice(
+        probe_src, tmp_path):
+    """Round 9, MEDIUM 2: the round 8 HIGH fix touches TWO branches — the
+    bound-reached branch (pumpSubagentLog's top guard) and the per-fetch
+    failure branch (its tail, after a fetch that itself just failed) — and
+    a test that only ever reaches the bound can pass with just ONE of them
+    restored. This isolates the other one: a partial already cached, a
+    SINGLE failure nowhere near the bound, and — critically — no further
+    tick at all. A restored/finished conversation gets exactly this, and
+    it is the tail branch alone that has to show the notice here."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "partial"}]});
+  runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: one turn, cached at "running"
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // terminal -> ONE failed fetch, failN=1
+  await new Promise((r) => setTimeout(r, 0));
+  // No further tick, no re-open.
+  console.log(JSON.stringify({tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "partial"
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and errors[0]["text"], (
+        "a single below-bound failure with no further tick must still show the notice")
+
+
+def test_a_reopen_while_a_fetch_is_in_flight_still_gets_a_real_refetch(
+        probe_src, tmp_path):
+    """Round 9, MEDIUM 1: closing and re-opening a chip WHILE its fetch is
+    already running schedules nothing new (`subagentLoading` already has
+    this agentId) — but that in-flight fetch started BEFORE this re-open
+    cleared `final`, and can still resolve with a short/truncated read and
+    mark it `final` right back, silently eating the user's explicit "look
+    again" (the reviewer's exact probe scenario). The in-flight fetch's
+    answer must not be trusted as final, and one more real fetch must be
+    chased automatically once it resolves — not left for a tick, or a
+    THIRD open, that may never come."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__defer: true,
+    value: {turns: [{role: "user", text: "truncated"}]}});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1 starts, deferred
+  clickSummary(el.el);                  // close (schedules nothing; still open==false gate)
+  runPythonQueue.push({turns: [
+    {role: "user", text: "truncated"},
+    {role: "assistant", text: "", segments: [{kind: "text", text: "the rest of it"}]},
+  ]});
+  clickSummary(el.el);                  // re-open WHILE fetch #1 is still in flight
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);                   // fetch #1 resolves: a short/truncated read
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")), tmp_path)
+    assert got["calls"] == 2, "the re-open must still cause a REAL second fetch"
+    assistants = _by_class(got["tree"], "sub-turn-assistant")
+    assert len(assistants) == 1
+    seg_text = _by_class(assistants[0], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>the rest of it</md>"
 
 
 def test_a_success_after_earlier_failures_clears_the_failure_state(

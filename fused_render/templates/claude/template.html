@@ -14287,25 +14287,37 @@ function subagentStatusLine(seg, now) {
 // (or the very next tick) doesn't show a blank frame while a fetch is in
 // flight — plus ONE fact worth remembering across ticks: `final`, true only
 // for a fetch that itself started at a terminal status and came back with
-// real content (set in `pumpSubagentLog`, nowhere else). That is a single
+// real content. Set in `pumpSubagentLog` when such a fetch resolves, and
+// cleared (never set) by `reexpand` there too — a re-open is an explicit
+// request to look again, so it has to be able to undo a `final` a prior,
+// possibly truncated read left behind (round 8). That is still a single
 // condition on data already in hand, never an inference about whether a
 // copy can be TRUSTED — the four review rounds that each put a HIGH into
 // exactly that inference (a settled flag derived from statuses, an
 // explicit flag an empty read could still smuggle past, a role-flip reuse
 // bug in the renderer underneath it, and — round 7 — a "final" comparison
-// against the WRONG status) are why this stays this narrow: one flag, set
-// in one place, read in one place.
+// against the WRONG status) are why this stays this narrow: one flag, read
+// in one place, written from the two places that legitimately know its
+// answer (a fetch's own completion, and a user asking to look again).
 const subagentCache = new Map();
 const subagentLoading = new Set();     // agentIds with a fetch in flight
+// agentIds whose re-open (reexpand) landed WHILE a fetch was already in
+// flight (round 9, MEDIUM 1): that in-flight fetch was scheduled before the
+// re-open cleared `final`, so it can still resolve with a short/truncated
+// read and re-mark it `final` — silently eating the user's explicit "look
+// again". Recorded here and consumed once that fetch completes: its result
+// is never trusted as `final`, and one more real fetch is chased
+// immediately (see pumpSubagentLog).
+const subagentRefetchWanted = new Set();
 const subagentFailCount = new Map();   // agentId -> consecutive failures
 const subagentFailMessage = new Map(); // agentId -> the last error's message
 // A server error, an executor timeout on a large transcript, or a torn-down
 // page gives a rejected fetch — bounded here so that does not become a
 // 400 ms retry storm for the rest of the page's life. This bound no longer
-// gates whether the give-up notice is SHOWN (round 8: it paints on every
-// failure that has nothing else to show, see pumpSubagentLog) — only
-// whether the chip keeps automatically retrying. A single transient blip
-// now flashes the notice for about one poll tick before the next success
+// gates whether the give-up notice is SHOWN (round 8: it paints
+// unconditionally on every failure, see pumpSubagentLog) — only whether
+// the chip keeps automatically retrying. A single transient blip now
+// flashes the notice for about one poll tick before the next success
 // clears it; accepted cost of always painting, not a claim that the blip
 // never shows at all. This is real error handling, not an optimisation —
 // kept even after the cache itself stopped being a source of truth.
@@ -14468,13 +14480,33 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
     // in flight) is the one gesture that recovers from that.
     const entry = subagentCache.get(agentId);
     if (entry && entry.final) entry.final = false;
+    // The gate right below this is `subagentLoading` — if a fetch for this
+    // agent is ALREADY running, this reexpand schedules nothing new, and
+    // that already-scheduled fetch may have started before `final` was
+    // just cleared and can still resolve with a short/truncated read and
+    // set it right back (round 9, MEDIUM 1). Recording the request here
+    // means that fetch's own completion (in pumpSubagentLog, below) knows
+    // not to trust its answer as `final`, and to chase one more real fetch
+    // immediately once it lands.
+    if (subagentLoading.has(agentId)) subagentRefetchWanted.add(agentId);
   }
   const status = seg.status || "running";
   const cached = subagentCache.get(agentId);
 
   // Paint whatever is already on hand immediately — no flash of an empty
-  // log while the fetch below is in flight.
-  renderSubagentPump(logEl, cached && cached.turns, false, null);
+  // log while the fetch below is in flight. The error slot is left ALONE
+  // when a failure is already on record for this agent (round 9, LOW 3):
+  // routing this through renderSubagentPump's "not failed" path clears it
+  // unconditionally, and doing that at the TOP of every tick — before the
+  // fetch below even starts — blanked the give-up notice for the whole
+  // duration of each retry's own network round trip, a visible blink once
+  // per tick for as long as the agent kept failing.
+  const turnsEl = logEl.children[0];
+  if (turnsEl && cached) renderSubagentTranscript(turnsEl, cached.turns);
+  if (!subagentFailMessage.has(agentId)) {
+    const errorEl = logEl.children[1];
+    if (errorEl && errorEl.textContent) errorEl.textContent = "";
+  }
 
   // Stop only once a fetch that ITSELF started at a terminal status came
   // back with real content — `cached.final`, set only there (below), and
@@ -14518,6 +14550,13 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   } finally {
     subagentLoading.delete(agentId);
   }
+  // Consumed here, once: true only if a reexpand landed WHILE this exact
+  // fetch was already in flight (round 9, MEDIUM 1) — that reexpand's
+  // "look again" was scheduled onto THIS fetch rather than a new one, so
+  // this fetch's own answer must not be trusted as `final` even if it
+  // otherwise qualifies, and one more real fetch is owed once this one is
+  // done being processed (see the very end of this function).
+  const wantedRefetch = subagentRefetchWanted.delete(agentId);
 
   // The shared, agentId-keyed state is updated UNCONDITIONALLY, before any
   // check of what THIS chip currently points at: a successful fetch is
@@ -14545,8 +14584,11 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
       // came back with real content — the one condition `pumpSubagentLog`'s
       // top guard trusts to stop asking again (see there). A fetch made
       // while still running never sets this, no matter how much it
-      // returned: the agent could still write more.
-      final: status !== "running" && outcome.turns.length > 0,
+      // returned: the agent could still write more. Also never set when a
+      // reexpand arrived mid-flight (`wantedRefetch`): that request is
+      // owed a fetch made AFTER its own "look again", not this one, which
+      // may be exactly the short/truncated read it was trying to escape.
+      final: !wantedRefetch && status !== "running" && outcome.turns.length > 0,
     });
     subagentCacheTrim();
     subagentFailCount.delete(agentId);
@@ -14582,6 +14624,17 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
     // to reach it; the bound's only remaining job is stopping automatic
     // PER-TICK retries (see the top guard).
     renderSubagentPump(cur, null, true, subagentFailMessage.get(agentId));
+  }
+
+  // A reexpand that landed mid-flight is still owed a REAL fetch (round 9,
+  // MEDIUM 1) — chase it once, immediately, rather than waiting for a poll
+  // tick that a restored/finished conversation may never produce again.
+  // Bounded: `wantedRefetch` was already consumed (deleted) above, so this
+  // cannot recurse again unless a FRESH reexpand arrives while THIS chase
+  // is itself in flight, which is a new, legitimate request.
+  if (wantedRefetch) {
+    pumpSubagentLog(el, getLogEl, getSeg)
+      .catch((e) => console.error("subagent log pump failed", e));
   }
 }
 
