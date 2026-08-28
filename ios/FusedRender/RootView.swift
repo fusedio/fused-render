@@ -170,6 +170,18 @@ struct ConnectedView: View {
         return loc.path == "/" || loc.path == "/index.html" || loc.path == "/pair"
     }
 
+    /// The page's own <title> once it lands; until then (or for a page without
+    /// one) the app's name from the manifest, else its folder name.
+    private var appTitle: String {
+        if !web.title.isEmpty { return web.title }
+        guard let loc = web.location,
+              let entry = URLComponents(url: loc, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "path" })?.value else { return "…" }
+        let folder = (entry as NSString).deletingLastPathComponent
+        if let app = Manifest.load().first(where: { $0.path == folder }) { return app.label }
+        return (folder as NSString).lastPathComponent
+    }
+
     var body: some View {
         WebView(server: server, pairURL: $model.pendingPairURL, controller: web)
             .ignoresSafeArea(edges: .bottom)
@@ -195,7 +207,7 @@ struct ConnectedView: View {
                 .accessibilityLabel("All apps")
             }
             VStack(spacing: 0) {
-                Text(onGrid ? "Apps" : (web.title.isEmpty ? "…" : web.title))
+                Text(onGrid ? "Apps" : appTitle)
                     .font(.headline)
                     .lineLimit(1)
                 Text(server.host)

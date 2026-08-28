@@ -75,6 +75,10 @@ struct WebView: UIViewRepresentable {
         web.backgroundColor = .systemBackground
         context.coordinator.webView = web
         controller.webView = web
+        // The page's <title> lands after didFinish for most apps; watch it.
+        context.coordinator.titleObservation = web.observe(\.title, options: [.new]) { [controller] web, _ in
+            Task { @MainActor in controller.title = web.title ?? "" }
+        }
         web.load(URLRequest(url: pairURL ?? server.baseURL))
         return web
     }
@@ -105,6 +109,7 @@ struct WebView: UIViewRepresentable {
         var server: Server
         var baseURL: URL
         var lastPending: URL?
+        var titleObservation: NSKeyValueObservation?
         weak var webView: WKWebView?
         let controller: WebController
         let bridge = CaptureBridge()
