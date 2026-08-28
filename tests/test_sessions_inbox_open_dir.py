@@ -238,6 +238,35 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     # review #804 round 2: the git companion's "Fix with AI" seed no longer
     # rides this src at all — the claude template PULLS it at its own boot
     # instead (see ListingPreviewPane.tsx/Listing.tsx) — so this string is back
-    # to exactly its pre-"Fix with AI" shape.
-    assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`" in pane, (
+    # to exactly its pre-"Fix with AI" shape. The trailing flag itself moved on
+    # in D621 (`_preview=1` -> `_noopen=1`, tested separately below) — this
+    # assertion pins only the `_file` target, unconditionally the folder.
+    assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`" in pane, (
         "the companion iframe's _file target is no longer unconditionally the folder")
+
+
+def test_the_companion_iframe_is_marked_noopen_not_preview():
+    """D621: the companion pane (claude/git/mcp) is fully interactive — you
+    type in it — unlike a card or a card-peek thumbnail. `_preview=1` used to
+    ride its src to do a job it never asked for: `runtime.js`'s `IS_THUMBNAIL`
+    reads that same flag off any same-origin ancestor and, once set, disables
+    `fused.daemon.start/stop/restart/setAutostart/call` and degrades
+    `fused.daemon.watch` to a single one-shot read — for the companion
+    document itself AND for anything it frames (the claude template's own
+    `#leftframe`, two levels down from Listing). `_noopen=1` asks for only
+    the one thing this call site wants (do not record this render as an app
+    open) and carries no thumbnail claim at all.
+
+    This is intentionally a source-text assertion, not a DOM/behavior test:
+    there is no harness here that boots the explorer, iframes a template
+    through `/render`, and reads `window.fused` from inside it — `runtime.js`
+    is asserted against directly in `test_runtime_js.py`-style tests instead.
+    """
+    pane = _read(_PANE)
+    assert "&_noopen=1`" in pane, "the companion iframe's src lost the _noopen=1 stamp"
+    # A prose comment nearby is allowed to SAY `_preview=1` (explaining what it
+    # is not); what must never come back is the literal query-string span.
+    assert "&_preview=1`" not in pane, (
+        "the companion iframe's src carries _preview=1 again — this re-marks it (and "
+        "everything it frames, including the claude template's own #leftframe) as a "
+        "display-only thumbnail: fused.daemon.* goes dead inside a pane the user types in")
