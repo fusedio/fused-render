@@ -4,7 +4,7 @@ These run the real decoration builder against the real vendored markdown
 grammar, through scripts/vendor-codemirror/live-preview-probe.mjs, rather than
 pinning template *source* the way the runtime.js wiring assertions do (D137) —
 tests/test_markdown_template.py used to do that for this template and was
-deleted with the redesign that made it false line by line (D611): a 1549-line
+deleted with the redesign that made it false line by line (D620): a 1549-line
 source pin cannot survive a redesign, and this file's execution-based coverage
 does not depend on the source staying still.
 
@@ -106,7 +106,7 @@ def decorate(note_file, caret=0, scanned=False, params=None, writable=None):
     UNSCANNED, because that is what a mount-backed root, a refused scan and a
     failed one all produce — and it is the state most of this file runs in.
     `params` drives fused.params — there is no mode left to hold in one
-    (MD-1a/D611), but `graph`/`depth`/`outline` still live there (MD-20).
+    (MD-1a/D620), but `graph`/`depth`/`outline` still live there (MD-20).
     `writable` overrides the template's `writable` module variable directly
     (see template-harness.mjs): the harness's `fused.stat` always answers
     `writable: true` and the probe never runs the template's own `load()` far
@@ -173,7 +173,7 @@ def test_a_heading_reveals_only_its_own_line(note_file):
 
 
 def test_a_writable_note_reveals_at_the_caret_by_default(note_file):
-    """There is no mode any more (MD-1a/D611): a writable note is editable, full
+    """There is no mode any more (MD-1a/D620): a writable note is editable, full
     stop, so the caret reveal that used to need an explicit `edit=1` param now
     happens with no params at all — `writable` defaults `true`.
     """
@@ -354,7 +354,7 @@ def test_a_bare_url_renders_as_a_link_without_rewriting_it(note_file):
     # caret can land here) -- only Ctrl/Cmd-click or middle-click opens it.
     # The delegated click handler keys off this second class to tell a bare
     # autolink apart from an opaque `[label](url)` WIDGET, where a plain
-    # click opens (D611 link-activation fix).
+    # click opens (D620 link-activation fix).
     assert link[0]["cls"].split() == ["lp-link", "lp-bare-link"], link
     # A MARK, not a widget: the text under it is untouched, so the document
     # still says exactly what the user typed and the caret can still sit in it.

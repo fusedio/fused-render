@@ -813,11 +813,36 @@ export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
   return p;
 }
 
-// One task-attachment image in, its stored path out (POST /api/schedule/shot).
-// The path is what scheduleMessage's `images` carries; the bytes live under
-// the server's task-shots dir, where the scheduled run is pre-allowed to Read.
-export function uploadTaskShot(dataUrl: string): Promise<{ path: string }> {
-  return postJson<{ path: string }>("/api/schedule/shot", { data: dataUrl });
+// One task attachment in, its stored path out (POST /api/schedule/shot). The
+// path is what scheduleMessage's `images` carries; the bytes live under the
+// server's task-shots dir, where the scheduled run is pre-allowed to Read.
+//
+// MULTIPART, not the data-URL JSON this was until 2026-08-28 (D618): the card
+// takes ANY file at ANY size now, and base64 is a 33% tax paid twice on a 40 MB
+// log. The browser sets the multipart boundary Content-Type, so we must NOT set
+// it ourselves; X-Fused still forces the write guard (see importTemplates).
+//
+// `kind` is the server's answer and may DISAGREE with what the client guessed:
+// a `.tif` goes up as bytes no browser draws and comes back as a PNG the chip
+// can show, at the converted path.
+export interface TaskShotUpload {
+  path: string;
+  kind: "image" | "file";
+  width?: number;
+  height?: number;
+}
+
+export async function uploadTaskShot(file: File): Promise<TaskShotUpload> {
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  const res = await fetch("/api/schedule/shot", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as TaskShotUpload;
 }
 
 export function rawUrl(fsPath: string): string {
@@ -3695,6 +3720,17 @@ export interface RecurrenceRule {
   count?: number; // total occurrences; exclusive with until
 }
 
+// One attachment on a scheduled task, as the store holds it. `path` is a
+// task-shots resident (the server refuses anything else); `name` is the user's
+// own filename; `kind` is the chat's own two-way split — a thumbnail or a 📄,
+// a picture viewer or a template preview — and never the browser-only "pane"
+// and "overview" kinds, which need a screen somebody was looking at.
+export interface TaskAttachment {
+  path: string;
+  name: string;
+  kind: "image" | "file";
+}
+
 export interface ScheduledMessage {
   id: string;
   target: string;
@@ -3703,6 +3739,12 @@ export interface ScheduledMessage {
   // Task-shot paths attached in the New task form (server: schedule.shots_dir()).
   // Read back so an edit — which is cancel + re-create — can re-state them.
   images?: string[];
+  // The same attachments carrying the two things a path does not: the filename
+  // the user recognises (a stored path is a minted timestamp) and the kind the
+  // browser settled at attach time (a `.tif` was transcoded, so its extension
+  // lies). The server derives this for an entry stored before the field existed,
+  // so it is only ever absent on a response from an older build.
+  attachments?: TaskAttachment[];
   session_id: string;
   // WHERE `session_id` came from: true only when the server LEARNED it (a
   // repeating template's first run reported the session it opened, and that id
@@ -3831,10 +3873,17 @@ export function scheduleMessage(body: {
   // A no-op where there is nothing to move — a task whose session exists is
   // numbered on the session id, and that key is untouched by an edit.
   replaces?: string;
-  // Paths returned by uploadTaskShot, at most 4. The server refuses anything
-  // not living under its own task-shots dir, so this can only name images this
-  // form itself uploaded.
+  // Paths returned by uploadTaskShot — any file type, any count (D618). The
+  // server refuses anything not living under its own task-shots dir, so this
+  // can only name files this form itself uploaded. Still spelled `images`
+  // because every stored entry spells it that way.
   images?: string[];
+  // The same uploads with `name` and `kind` (D619). What the FIRED RUN needs:
+  // its message carries the claude page's own `<pane-shot>` block, and that
+  // block's receipt rows show a thumbnail or 📄 plus the file's name — neither
+  // of which a minted path can supply. Sent alongside `images`, never instead
+  // of it, so an entry keeps the shape every existing reader expects.
+  attachments?: TaskAttachment[];
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

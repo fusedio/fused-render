@@ -62,7 +62,7 @@
     --scrim-bg-hover: rgba(0, 0, 0, 0.75);
     --scrim-border: rgba(255, 255, 255, 0.25);
     --scrim-fg: #ffffff;
-    /* Code's OWN palette (6b.2, D611 follow-up) — distinct from the four UI
+    /* Code's OWN palette (6b.2, D620 follow-up) — distinct from the four UI
        tokens above on purpose: a syntax palette needs several MUTUALLY
        DISTINGUISHABLE hues, which "reuse the app's one accent" cannot give
        it. Unused here — dark mode still renders through oneDark's own
@@ -413,7 +413,7 @@
   /* ---- panel chrome, shared by the left rail and the right panel ---------
      ONE set of classes for both panels' head row, collapse chevron and
      collapsed edge button (owner: "follow a structure similar to the left
-     one"; D611 follow-up). There is no floating corner cluster any more —
+     one"; D620 follow-up). There is no floating corner cluster any more —
      each panel's own toggle lives IN that panel, at its INNER edge (the edge
      nearest the document), which is also what removes the two bugs a
      floating button had: it sat on top of the panel's own head when open,
@@ -1819,7 +1819,7 @@
           : /^www\./i.test(raw) ? "https://" + raw
           : raw.includes("@") ? "mailto:" + raw
           : "https://" + raw;
-        // `lp-bare-link` (6b follow-up, D611 link-activation fix): this is a
+        // `lp-bare-link` (6b follow-up, D620 link-activation fix): this is a
         // MARK over live document text, not a widget — the caret can and
         // should still land here on an ordinary click (it is editable prose,
         // unlike a `[label](url)` widget). So a plain click here EDITS, same
@@ -3876,7 +3876,7 @@
 
     // One delegated handler for every link surface: wikilink and markdown-link
     // widgets and backlink rows all carry data-path; ghosts carry data-create.
-    // ---- opening a `[label](url)`/bare-URL link (D611 follow-up) -----------
+    // ---- opening a `[label](url)`/bare-URL link (D620 follow-up) -----------
     // The note surface used to open read-only by default, and inside a
     // NON-editable CM view a plain `<a>` activates natively (the browser
     // handles the click). Now that a writable note is always editable
