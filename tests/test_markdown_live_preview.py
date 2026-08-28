@@ -1,9 +1,12 @@
 """Behavioural tests for the markdown template's Live Preview (SPEC §32, MD-18a).
 
-Unlike tests/test_markdown_template.py — which pins template *source* the way
-the runtime.js wiring assertions do (D137) — these run the real decoration
-builder against the real vendored markdown grammar, through
-scripts/vendor-codemirror/live-preview-probe.mjs.
+These run the real decoration builder against the real vendored markdown
+grammar, through scripts/vendor-codemirror/live-preview-probe.mjs, rather than
+pinning template *source* the way the runtime.js wiring assertions do (D137) —
+tests/test_markdown_template.py used to do that for this template and was
+deleted with the redesign that made it false line by line (D611): a 1549-line
+source pin cannot survive a redesign, and this file's execution-based coverage
+does not depend on the source staying still.
 
 That is deliberate. buildDecorations is the one part of this template whose
 correctness is invisible in a diff, because it depends entirely on what the
@@ -92,7 +95,7 @@ def note_file(tmp_path_factory):
     return str(path)
 
 
-def decorate(note_file, caret=0, scanned=False, params=None):
+def decorate(note_file, caret=0, scanned=False, params=None, writable=None):
     """The decoration set the template would render, with the caret at `caret`.
 
     Reaching a parsed result at all is itself an assertion: CodeMirror rejects a
@@ -102,20 +105,24 @@ def decorate(note_file, caret=0, scanned=False, params=None):
     `scanned` decides whether graph.py answered with a real scan. The default is
     UNSCANNED, because that is what a mount-backed root, a refused scan and a
     failed one all produce — and it is the state most of this file runs in.
-    `params` drives fused.params, so a param-held mode can be exercised. With no
-    params the template opens READ-ONLY (MD-1a), which is why every test about
-    the caret reveal passes `EDITING` — the reveal is an editing behaviour.
+    `params` drives fused.params — there is no mode left to hold in one
+    (MD-1a/D611), but `graph`/`depth`/`outline` still live there (MD-20).
+    `writable` overrides the template's `writable` module variable directly
+    (see template-harness.mjs): the harness's `fused.stat` always answers
+    `writable: true` and the probe never runs the template's own `load()` far
+    enough to call it, so this is the only way to exercise the unwritable-file
+    path — the caret reveals by default everywhere else, since a writable note
+    is simply always editable now.
     """
     _require_node()
     opts = {"scanned": bool(scanned), "params": params or {}}
+    if writable is not None:
+        opts["writable"] = writable
     proc = subprocess.run(
         ["node", PROBE, TEMPLATE, note_file, str(caret), json.dumps(opts)],
         cwd=VENDOR, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)["decorations"]
-
-
-EDITING = {"edit": "1"}   # the non-default mode a caret reveal needs (MD-1a)
 
 
 def at(decorations, text, kind=None):
@@ -147,7 +154,7 @@ def test_markup_is_hidden_away_from_the_caret(note_file):
 
 def test_the_caret_s_line_shows_its_source_again(note_file):
     caret = NOTE.index("**bold**") + 3
-    revealed = decorate(note_file, caret=caret, params=EDITING)
+    revealed = decorate(note_file, caret=caret)
     # Same range, no longer replaced — shown dimmed instead.
     assert not at(revealed, "**", "hide")
     assert at(revealed, "**", "mark")[0]["cls"] == "lp-mark"
@@ -158,36 +165,43 @@ def test_the_caret_s_line_shows_its_source_again(note_file):
 
 
 def test_a_heading_reveals_only_its_own_line(note_file):
-    revealed = decorate(note_file, caret=NOTE.index("# Heading one") + 3,
-                        params=EDITING)
+    revealed = decorate(note_file, caret=NOTE.index("# Heading one") + 3)
     # `#` shown, and the space after it is NOT swallowed while revealed — that
     # swallow exists only so hidden-marker text does not start indented.
     assert at(revealed, "#", "mark")
     assert not at(revealed, "# ", "hide")
 
 
-def test_read_only_mode_reveals_nothing_wherever_the_caret_is(note_file):
-    """In read-only mode the document reads as fully rendered (MD-1a).
+def test_a_writable_note_reveals_at_the_caret_by_default(note_file):
+    """There is no mode any more (MD-1a/D611): a writable note is editable, full
+    stop, so the caret reveal that used to need an explicit `edit=1` param now
+    happens with no params at all — `writable` defaults `true`.
+    """
+    caret = NOTE.index("**bold**") + 3
+    revealed = decorate(note_file, caret=caret)
+    assert at(revealed, "**", "mark")
+    assert not at(revealed, "**", "hide")
+
+
+def test_an_unwritable_file_reveals_nothing_wherever_the_caret_is(note_file):
+    """An unwritable file reads as fully rendered, whatever the caret does
+    (MD-1a/MD-15) — `writable` is the only gate left, now that there is no
+    read/write mode.
 
     `editable.of(false)` leaves no caret, so nothing would reveal anyway — but a
     browser text selection inside a non-editable CM view still lands in the
     state's selection, and that would un-render whatever the user swiped over.
-    One guard in `selectedLines` makes the mode deterministic instead of
-    dependent on how the browser reports a selection.
+    One guard in `selectedLines` makes this deterministic instead of dependent
+    on how the browser reports a selection.
     """
     caret = NOTE.index("**bold**") + 3
-    # The control: in editing mode this exact caret reveals the markers.
-    assert at(decorate(note_file, caret=caret, params=EDITING), "**", "mark")
-    # No `edit` param at all — read-only is the DEFAULT a note opens in, so this
-    # pins the default and the mode in one call. `"0"` is the same state.
-    reading = decorate(note_file, caret=caret)
-    assert reading == decorate(note_file, caret=caret, params={"edit": "0"})
-    assert at(reading, "**", "hide"), "read-only mode must not reveal source"
-    assert not at(reading, "**", "mark")
-    # And the rest of the document renders exactly as it does in editing mode:
-    # a mode changes writability, never appearance.
-    assert at(reading, "**bold**", "mark")[0]["cls"] == "lp-bold"
-    assert at(reading, "# Heading one", "mark")[0]["cls"] == "lp-h1"
+    locked = decorate(note_file, caret=caret, writable=False)
+    assert at(locked, "**", "hide"), "an unwritable file must not reveal source"
+    assert not at(locked, "**", "mark")
+    # And the rest of the document renders exactly as it does when writable:
+    # writability changes nothing about appearance.
+    assert at(locked, "**bold**", "mark")[0]["cls"] == "lp-bold"
+    assert at(locked, "# Heading one", "mark")[0]["cls"] == "lp-h1"
 
 
 # ------------------------------------------------------------ what renders
@@ -237,8 +251,7 @@ def test_a_checkbox_stays_rendered_under_the_caret(note_file):
 
 
 def test_a_table_and_a_rule_yield_to_the_caret(note_file):
-    inside = decorate(note_file, caret=NOTE.index("| 1 | 2 |") + 2,
-                      params=EDITING)
+    inside = decorate(note_file, caret=NOTE.index("| 1 | 2 |") + 2)
     assert not at(inside, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     # A different line's rule is unaffected — reveal is per-line, not per-doc.
     assert at(inside, "---", "widget")
@@ -353,7 +366,7 @@ def test_an_angle_autolink_hides_its_brackets_and_gives_them_back(note_file):
     assert at(plain, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
 
     caret = NOTE.index("<https://example.com/b>") + 4
-    revealed = decorate(note_file, caret=caret, params=EDITING)
+    revealed = decorate(note_file, caret=caret)
     assert not at(revealed, "<", "hide")
     assert at(revealed, "<", "mark")[0]["cls"] == "lp-mark"
     # Still a link while revealed: showing the source must not un-style it.
@@ -499,7 +512,7 @@ def test_heading_spacing_does_not_move_when_the_caret_lands_on_it(note_file):
     # with the caret on the line, arrowing down through a note would make
     # everything below the caret jump by the heading's margin.
     heading = NOTE.index("# Heading one") + 3
-    revealed = decorate(note_file, caret=heading, params=EDITING)
+    revealed = decorate(note_file, caret=heading)
     assert has_line_class(revealed, "lp-h1-line")
     # The markers ARE revealed on that line, so this is genuinely the revealed
     # state and not a caret that missed.

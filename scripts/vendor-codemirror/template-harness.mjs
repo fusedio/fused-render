@@ -17,13 +17,35 @@ import fs from "node:fs";
 import {
   EditorState, RangeSetBuilder, EditorSelection, StateEffect, StateField, Prec,
 } from "@codemirror/state";
-import { syntaxTree, ensureSyntaxTree } from "@codemirror/language";
+import {
+  syntaxTree, ensureSyntaxTree, HighlightStyle, syntaxHighlighting, StreamLanguage,
+} from "@codemirror/language";
 import {
   Decoration, WidgetType, ViewPlugin, MatchDecorator, keymap, EditorView,
 } from "@codemirror/view";
 import { markdown, markdownLanguage, markdownKeymap } from "@codemirror/lang-markdown";
 import { autocompletion } from "@codemirror/autocomplete";
 import { indentMore, indentLess } from "@codemirror/commands";
+// MD-28: the code-block highlighting the markdown template now wires up at
+// script-load time (`CM.HighlightStyle.define(...)` runs eagerly, not lazily),
+// so the harness's fake `CM` needs the same surface `entry.js` re-exports —
+// otherwise `loadTemplateScript` throws before a probe ever runs.
+import { python } from "@codemirror/lang-python";
+import { javascript } from "@codemirror/lang-javascript";
+import { json } from "@codemirror/lang-json";
+import { yaml } from "@codemirror/lang-yaml";
+// Renamed on import: `loadTemplateScript` below already has a local `html`
+// holding the template's file contents, and that `const` would otherwise
+// shadow this one throughout the function (a TDZ ReferenceError, not a
+// silent bug — but confusing either way).
+import { html as htmlLang } from "@codemirror/lang-html";
+import { css } from "@codemirror/lang-css";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
+import { tags } from "@lezer/highlight";
+
+const shellLang = StreamLanguage.define(shell);
+const tomlLang = StreamLanguage.define(toml);
 
 // Every top-level name a probe may want out of the template. Asking for one
 // that does not exist is a ReferenceError from inside the generated function,
@@ -102,9 +124,16 @@ function fakeNoteScan(doc) {
  *                         "missing" (MD-11).
  * @param options.params   what fused.params.get returns, so a mode held in a
  *                         param (MD-20) can be driven from a probe.
+ * @param options.writable overrides the template's `writable` module variable
+ *                         (MD-1a/MD-15) after `load()` has run and bailed (no
+ *                         `_file`, so `load()` never reaches `fused.stat` and
+ *                         `writable` stays at its `true` default) — the only
+ *                         way a probe can exercise the unwritable-file path
+ *                         without driving the whole `load()`/`buildEditor`
+ *                         flow through these DOM stubs.
  */
 export function loadTemplateScript(templatePath, options = {}) {
-  const { doc = "", scanned = false, params = {} } = options;
+  const { doc = "", scanned = false, params = {}, writable } = options;
 
   globalThis.CM = {
     EditorState, EditorView, Decoration, WidgetType, ViewPlugin, MatchDecorator,
@@ -118,6 +147,10 @@ export function loadTemplateScript(templatePath, options = {}) {
       || syntaxTree(state),
     autocompletion, indentMore, indentLess, markdown, markdownLanguage,
     markdownKeymap, basicSetup: [], oneDark: [],
+    // MD-28: real language support for `codeLanguageFor`'s map, and the
+    // pieces `lightCodeHighlight` is built from at script-load time.
+    python, javascript, json, yaml, html: htmlLang, css, shellLang, tomlLang,
+    HighlightStyle, syntaxHighlighting, tags,
   };
   globalThis.document = {
     getElementById: stub, createElement: fakeElement, addEventListener() {},
@@ -150,6 +183,8 @@ export function loadTemplateScript(templatePath, options = {}) {
 
   const html = fs.readFileSync(templatePath, "utf8");
   const script = html.split("<script>\n")[1].split("</script>")[0];
+  const writableOverride = writable === undefined ? ""
+    : `\nwritable = ${JSON.stringify(writable)};`;
   return new Function(
-    script + "\nreturn { " + EXPORTS.join(", ") + " };")();
+    script + writableOverride + "\nreturn { " + EXPORTS.join(", ") + " };")();
 }

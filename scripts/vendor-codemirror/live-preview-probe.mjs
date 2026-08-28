@@ -23,8 +23,10 @@
 //                           root, a refused scan or a failed one produces — and
 //                           resolution is UNKNOWN, which must not render as
 //                           "missing" (MD-11).
-//   {"params": {"edit":"0"}} what fused.params.get returns, so a mode held in a
-//                           param (MD-20) can be driven from here.
+//   {"params": {...}}       what fused.params.get returns (MD-20).
+//   {"writable": false}     overrides the template's `writable` module
+//                           variable (MD-1a/MD-15) — the only editability gate
+//                           now that there is no read/write mode.
 //
 // Each widget's DOM is built and reported too (class, title, dataset, text):
 // what a wikilink renders AS is the behaviour, and it is not visible in either
@@ -45,6 +47,7 @@ const doc = fs.readFileSync(docPath, "utf8");
 
 const { buildDecorations, refreshLinks } = loadTemplateScript(templatePath, {
   doc, scanned: opts.scanned === true, params: opts.params || {},
+  writable: opts.writable,
 });
 
 // The template's own load() bailed (no `_file`), so the link facts are asked for
