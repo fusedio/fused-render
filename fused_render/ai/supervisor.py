@@ -234,6 +234,13 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: What the OS says the worker process is holding RIGHT NOW — macOS
+    #: `phys_footprint`, i.e. the number Activity Monitor shows, RSS elsewhere
+    #: (D597, `worker_base.os_footprint_bytes`). ADDITIVE beside
+    #: `resident_bytes`: that field feeds `peak_resident_bytes` ->
+    #: `footprints.py` -> `fit.py`'s "measured" rung, and redefining it would
+    #: re-verdict every model the user has ever run.
+    os_footprint_bytes: int | None = None
     #: The high-water mark of what this model has cost, as the runner
     #: reported it (SPEC AI-8c, D497) — `worker_base.peak_resident_bytes()`,
     #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
@@ -1078,6 +1085,9 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                footprint = health.get("os_footprint_bytes")
+                worker.os_footprint_bytes = (
+                    footprint if isinstance(footprint, int) else None)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
@@ -2503,6 +2513,29 @@ def refresh_memory() -> None:
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):
             worker.resident_bytes = health["resident_bytes"]
+        # THE LIVE OS FOOTPRINT HAS TO BE RE-READ HERE (D599). It was assigned
+        # only in the LOAD loop, which exits the moment the worker reaches
+        # `ready` — so the value froze at whatever the last load-time poll saw,
+        # before MLX had faulted in its Metal buffers. Measured on a live FLUX
+        # worker: the row showed 436 MB against a real `phys_footprint` of
+        # 24 GB, and 436 MB was a genuine reading of a worker that had not yet
+        # allocated its GPU pool. This is the ONE function that keeps polling a
+        # ready worker, so a figure that changes after load has to be read
+        # here or it is never read again.
+        #
+        # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
+        # the two `isinstance`-gated fields around it. Those two feed
+        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
+        # holding the last known number through a failed poll is right. This
+        # one is display-only and describes RIGHT NOW, so a worker that
+        # answers "I have no such counter" (the non-Darwin fallback) must
+        # clear the cell rather than leave a stale number standing next to a
+        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
+        # the previous value alone, which is the transient case.
+        if health:
+            footprint_now = health.get("os_footprint_bytes")
+            worker.os_footprint_bytes = (
+                footprint_now if isinstance(footprint_now, int) else None)
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this
@@ -2573,6 +2606,11 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # The OS's "right now" figure (D597) — what a user's system
+                # monitor shows, which `residentBytes` does NOT on Apple
+                # Silicon (Metal buffers are charged to `phys_footprint`, not
+                # RSS). Null where no counter could be read; never coerced.
+                "osFootprintBytes": w.os_footprint_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.
@@ -2606,12 +2644,59 @@ def describe() -> dict:
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
     total = sum(row["residentBytes"] or 0 for row in loaded)
+    # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
+    # (D594). `residentBytes` above is the worker process's RSS — real, but
+    # "not the model's size" (its own field comment says so), which is why the
+    # summed version was removed from the status-bar chip. The honest per-model
+    # figure is `fit.footprint_bytes`, which already owns the whole precedence
+    # ladder (measured > declared > download) and reports WHICH rung answered.
+    # Reused rather than re-derived: a second ladder here would drift from the
+    # AI Models page's fit badge, which speaks this exact vocabulary.
+    #
+    # ONE `load_store()` for the whole response, passed into every call — the
+    # store is a disk read plus a machine-identity check, and doing it per row
+    # is the cost `footprint_bytes`' own `footprint_store` parameter exists to
+    # avoid (SPEC AI-16).
+    store = footprints.load_store()
+    for row in loaded:
+        footprint, basis = fit.footprint_bytes(
+            row["capability"], row["model"], footprint_store=store)
+        # NULL IS NOT ZERO: a model with nothing measured and nothing declared
+        # has NO cost figure, and the page must fall back to RSS alone rather
+        # than colour a guess or print 0.
+        row["footprintBytes"] = footprint
+        row["footprintBasis"] = basis
     return {
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
         "totalResidentBytes": total or None,
+        # THE DENOMINATOR, once per payload rather than per row — it is a
+        # per-machine constant. The WIRED limit where it applies, not raw total
+        # RAM: on Apple Silicon that is the real ceiling a model has to fit
+        # under (`fit._DEFAULT_WIRED_FRACTION`), and colouring against total
+        # RAM would call a model comfortable while it is about to swap. Total
+        # RAM is the fallback off Darwin, and None when neither can be read —
+        # in which case there is no ceiling to colour against and the page
+        # shows the figure uncoloured.
+        "memoryCeilingBytes": _memory_ceiling_bytes(),
     }
+
+
+def _memory_ceiling_bytes() -> float | None:
+    """What a model has to fit under on this machine, in bytes, or None.
+
+    The wired limit first (`fit._wired_limit_bytes` — Apple Silicon's hard
+    ceiling, which is what actually bounds a model there), then total physical
+    RAM, then nothing. Both rungs come from `fit`, so this adds no new
+    measurement of its own — it only chooses between two numbers `fit` already
+    computes, and returns None rather than a guess when neither is readable.
+    """
+    ram_gb = fit.machine_ram_gb()
+    if ram_gb is None:
+        return None
+    wired = fit._wired_limit_bytes(ram_gb)
+    return wired if wired is not None else ram_gb * fit.GB_BYTES
 
 
 def reset() -> None:

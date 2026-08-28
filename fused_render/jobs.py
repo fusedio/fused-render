@@ -481,11 +481,32 @@ def dismiss(job_id: str, *, now: float | None = None) -> bool:
 
 
 def clear_finished(*, now: float | None = None) -> int:
-    """Dismiss every finished (or stalled) record at once. Returns how many."""
+    """Dismiss every TERMINAL record at once (the bulk "Clear" button).
+    Returns how many.
+
+    Used to also take `is_stalled(...)` rows — the SAME set `dismiss` (above)
+    accepts one at a time — which meant Clear silently orphaned live work.
+    `is_stalled` only means "no report in `STALE_AFTER_S`" (30s); a job can be
+    genuinely `RUNNING` and merely quiet for that long — a slow model load, a
+    generation between report ticks, a throttled background tab — and the
+    work itself does not stop when its row does: `ai/supervisor._cancel_state`
+    returns None for a missing row, and `_is_cancelled` reads None as "not
+    cancelled". The row is gone, though, and `fused.watchJob` gives up after
+    a few consecutive misses and reports the work as stopped — so a user
+    reads Clear as having cancelled their AI job, while the real process
+    keeps running with nothing on screen reporting it, which is precisely
+    the failure this whole feature exists to prevent, reached through its
+    own Clear button.
+
+    The per-row ✕ (`dismiss`) is deliberately NOT changed: closing one
+    specific stalled row is a choice by a user who usually knows what it
+    was (see that function's own docstring) — only the BULK sweep, which
+    cannot know that about any of the rows it takes, is wrong to extend to
+    a row that may still be doing real work.
+    """
     now = time.time() if now is None else now
     with _lock:
-        gone = [j.id for j in _jobs.values()
-                if j.state != RUNNING or is_stalled(j, now)]
+        gone = [j.id for j in _jobs.values() if j.state != RUNNING]
         for job_id in gone:
             _forget(job_id, now)
         return len(gone)

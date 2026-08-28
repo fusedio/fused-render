@@ -307,6 +307,44 @@ def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
     assert [r["id"] for r in listing(client)] == ["run"]
 
 
+def test_clear_does_not_sweep_a_stalled_but_still_running_row():
+    """`clear_finished` used to take any record where `state != RUNNING` OR
+    `is_stalled(...)` — so a Clear press swept a RUNNING job whose reporter
+    had merely gone quiet for `STALE_AFTER_S`, which a long model load, a
+    slow generation between report ticks, or a throttled background tab all
+    satisfy. The work itself does not stop (`ai/supervisor._cancel_state`
+    returns None, read as "not cancelled", for a missing row) — only the
+    RECORD of it does, and the page's `fused.watchJob` reads a missing row
+    as work that stopped, telling the user their AI job was cancelled by a
+    button that never touched it. `clear_finished` now takes terminal
+    records only; a stalled row is still reachable one at a time through its
+    own ✕ (`dismiss`, unchanged — see `test_a_stalled_row_can_be_dismissed`
+    above), by a user who usually knows what that row was."""
+    jobs.upsert({"id": "stalled", "title": "long load", "state": "running"}, now=1000.0)
+    jobs.upsert({"id": "done", "title": "finished", "state": "done"}, now=1000.0)
+    at = 1000.0 + jobs.STALE_AFTER_S + 1
+    assert jobs.list_jobs(now=at)[0]["id"] in ("stalled", "done")  # sanity: both present
+    assert any(r["stalled"] for r in jobs.list_jobs(now=at) if r["id"] == "stalled")
+
+    cleared = jobs.clear_finished(now=at)
+
+    assert cleared == 1
+    remaining = [r["id"] for r in jobs.list_jobs(now=at)]
+    assert remaining == ["stalled"]
+
+
+def test_dismiss_still_takes_one_stalled_row_at_a_time():
+    """The per-row ✕ stays exactly as permissive as before — only the BULK
+    sweep (`clear_finished`) changed. A user closing one specific stalled row
+    usually knows what it was; a bulk Clear does not know what any of its
+    rows are."""
+    jobs.upsert({"id": "stalled", "title": "long load", "state": "running"}, now=1000.0)
+    at = 1000.0 + jobs.STALE_AFTER_S + 1
+
+    assert jobs.dismiss("stalled", now=at) is True
+    assert jobs.list_jobs(now=at) == []
+
+
 # ---------------------------------------------------------------- the sweeper
 
 

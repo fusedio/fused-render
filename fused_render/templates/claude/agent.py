@@ -3025,6 +3025,37 @@ def _segments_from_rows(rows: list) -> list:
     return out
 
 
+def _tool_detail(name, inp) -> str:
+    """The one short thing worth saying about a tool call on the status line.
+
+    Bash carries its own `description` (the model writes one per call); the
+    file tools name a file; Task/Agent describe the job. Anything else is just
+    its name. Kept to one line and ~80 chars — this rides inside "(47s · …)".
+    """
+    if not isinstance(inp, dict):
+        return ""
+    name = str(name or "")
+    if name == "Bash":
+        d = inp.get("description") or ""
+        if not d:
+            d = str(inp.get("command") or "").strip().splitlines()[:1]
+            d = d[0] if d else ""
+    elif name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+        d = os.path.basename(str(inp.get("file_path") or inp.get("notebook_path") or ""))
+    elif name in ("Task", "Agent"):
+        d = inp.get("description") or inp.get("subagent_type") or ""
+    elif name in ("Grep", "Glob"):
+        d = inp.get("pattern") or ""
+    elif name == "Skill":
+        d = inp.get("skill") or ""
+    elif name in ("WebFetch", "WebSearch"):
+        d = inp.get("url") or inp.get("query") or ""
+    else:
+        d = ""
+    d = " ".join(str(d).split())
+    return d if len(d) <= 80 else d[:77] + "…"
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -3096,6 +3127,25 @@ def _poll(run_id: str, file: str = "") -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
+    # thing the CLI already writes to out.jsonl and the page used to ignore, so
+    # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
+    # a 40 KB Write streaming its input, a slow Stop hook — sat under a frozen
+    # "Thinking… (47s)" that was indistinguishable from a hang (Akshil,
+    # 2026-08-28). See `_activity` for the wire shape.
+    # Tools in flight, BY ID and in start order. One assistant message can
+    # carry several tool_use blocks (parallel calls); their results come back
+    # as separate `user` rows, so "a result arrived" is not "the tool phase is
+    # over" — only the LAST open call's result is (Bugbot, PR #908). The line
+    # shows the most recently started call that has not returned.
+    tools_open = {}        # tool_use id -> {"id", "name", "detail"}
+    tool_input_bytes = 0   # input_json_delta bytes streamed for the newest block
+    tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
+    thinking_tokens = 0    # CLI's running estimate for the message in flight
+    hooks_open = {}        # hook_id -> hook_name, started and not yet responded
+    bg_tasks = {}          # task_id -> description, started and not yet finished
+    agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
+    after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
     # the loop is done. Collected rather than parsed a second time: the file is
     # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
@@ -3137,16 +3187,84 @@ def _poll(run_id: str, file: str = "") -> dict:
             was_retrying, retry = retry, None
         else:
             was_retrying = None
+        # A subagent's rows come through the same stream tagged with the id of
+        # the Task/Agent call that spawned them (SDK contract; not yet seen in a
+        # local run, so counted rather than rendered). They must not move the
+        # main line's phase — the parent is still "running Agent".
+        if row.get("parent_tool_use_id"):
+            agent_rows += 1
+            continue
+        if t in ("stream_event", "assistant"):
+            after_tool = False
         if t == "system":
             new_session = row.get("session_id", new_session)
-            if row.get("subtype") == "api_retry":
+            sub = row.get("subtype")
+            if sub == "api_retry":
                 info = _retry_info(row)
                 if info is not None:
                     retry = info
                     retry_total += 1
                     retry_status = info["status"]
+            elif sub == "status":
+                # `{"status": "requesting"}` is the CLI saying the request is
+                # out and no token is back yet — the one gap the stream itself
+                # cannot describe, and the most common "what is it doing".
+                if row.get("status") == "requesting":
+                    phase = "requesting"
+                    after_tool = False
+            elif sub == "thinking_tokens":
+                est = row.get("estimated_tokens")
+                if isinstance(est, (int, float)):
+                    thinking_tokens = max(thinking_tokens, int(est))
+            elif sub == "hook_started" and row.get("hook_id"):
+                hooks_open[row["hook_id"]] = str(row.get("hook_name") or "hook")
+            elif sub == "hook_response":
+                hooks_open.pop(row.get("hook_id"), None)
+            elif sub == "task_started" and row.get("task_id"):
+                bg_tasks[row["task_id"]] = str(row.get("description") or "")
+            elif sub == "task_notification":
+                bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "task_updated":
+                if (row.get("patch") or {}).get("status") in (
+                        "completed", "killed", "failed", "stopped"):
+                    bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "background_tasks_changed":
+                # Authoritative list when the CLI sends one.
+                tasks = row.get("tasks")
+                if isinstance(tasks, list):
+                    bg_tasks = {
+                        str(x.get("task_id")): str(x.get("description") or "")
+                        for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
+            for blk in (row.get("message") or {}).get("content") or []:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use" \
+                        and blk.get("id"):
+                    tool_inputs[blk["id"]] = blk.get("input") or {}
+                    if blk["id"] in tools_open:
+                        tools_open[blk["id"]]["detail"] = _tool_detail(
+                            blk.get("name"), tool_inputs[blk["id"]])
+        elif t == "user":
+            # The tool's result went back in. From here until `status:
+            # requesting` (or the next delta) the run is packing the result
+            # into the next request — brief, but "Working" with no tool open
+            # was the lie this used to tell.
+            content = (row.get("message") or {}).get("content")
+            results = [b for b in (content if isinstance(content, list) else [])
+                       if isinstance(b, dict) and b.get("type") == "tool_result"]
+            for b in results:
+                # Close the call this result answers. An id we never saw
+                # opened (older CLI, or a result whose start row was lost)
+                # falls back to closing the oldest open call, so a missing id
+                # can never leave a finished tool on the line forever.
+                tid = b.get("tool_use_id")
+                if tid in tools_open:
+                    del tools_open[tid]
+                elif tools_open:
+                    del tools_open[next(iter(tools_open))]
+            if results and not tools_open:
+                tool_input_bytes = 0
+                after_tool = True
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -3160,6 +3278,10 @@ def _poll(run_id: str, file: str = "") -> dict:
                     phase = "composing"
                 elif delta.get("type") == "thinking_delta":
                     phase = "thinking"
+                elif delta.get("type") == "input_json_delta":
+                    tool_input_bytes += len(delta.get("partial_json") or "")
+            elif et == "message_start":
+                thinking_tokens = 0
             elif et == "message_delta":
                 usage = ev.get("usage") or {}
                 tokens_current = usage.get("output_tokens", tokens_current)
@@ -3170,9 +3292,15 @@ def _poll(run_id: str, file: str = "") -> dict:
                 # break their texts concatenate mid-word ("orange.After").
                 pending_sep = bool(text_parts)
             elif et == "content_block_start":
-                block = (ev.get("content_block") or {}).get("type")
+                cb = ev.get("content_block") or {}
+                block = cb.get("type")
                 if block == "tool_use":
                     phase = "tooling"
+                    tid = cb.get("id") or ""
+                    tools_open[tid] = {
+                        "id": tid, "name": str(cb.get("name") or "tool"),
+                        "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
+                    tool_input_bytes = 0
         elif t == "result":
             saw_result = True
             idle = True
@@ -3189,6 +3317,10 @@ def _poll(run_id: str, file: str = "") -> dict:
     # indistinguishable from a hang, which is what an overload used to look like.
     if retry is not None:
         phase = "retrying"
+    elif after_tool and phase == "tooling" and not tools_open:
+        # Result in, nothing back yet, no `status` row (older CLI): the honest
+        # word is still "sending", not "Working" over a tool that has finished.
+        phase = "requesting"
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
@@ -3336,6 +3468,15 @@ def _poll(run_id: str, file: str = "") -> dict:
             # schedule.py) left this page reporting the kill as a crash. See
             # `_cancel`, which writes the marker.
             "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            "activity": {
+                "tool": next(reversed(tools_open.values())) if tools_open else None,
+                "tools_open": len(tools_open),
+                "tool_input_bytes": tool_input_bytes if tools_open else 0,
+                "thinking_tokens": thinking_tokens if phase == "thinking" else 0,
+                "hook": next(reversed(hooks_open.values())) if hooks_open else "",
+                "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
+                "agent_rows": agent_rows,
+            },
             "segments": _segments_from_rows(parsed)}
 
 
