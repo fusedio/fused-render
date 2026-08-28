@@ -214,6 +214,21 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             .map { "\($0.name)=\($0.value)" }
             .joined(separator: "; ")
 
+        // /api/fs/upload refuses a missing parent; make `<app dir>/captures/`
+        // (or whatever the caller named) first. "Already exists" is fine.
+        var mkdirComps = comps
+        mkdirComps.path = "/api/fs/mkdir"
+        if let mkdirURL = mkdirComps.url {
+            var mk = URLRequest(url: mkdirURL)
+            mk.httpMethod = "POST"
+            mk.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            mk.setValue("1", forHTTPHeaderField: "X-Fused")
+            if !cookieHeader.isEmpty { mk.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
+            mk.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+            mk.httpBody = try JSONSerialization.data(withJSONObject: ["path": (path as NSString).deletingLastPathComponent])
+            _ = try? await URLSession.shared.data(for: mk)
+        }
+
         let boundary = "fused-" + UUID().uuidString
         var body = Data()
         func field(_ name: String, _ value: String) {
