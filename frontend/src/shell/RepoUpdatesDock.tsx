@@ -239,7 +239,15 @@ function RepoRowView({
           {row.name}
         </span>
         {/* The one action, then the dismiss ✕ — the same left-to-right
-            order every row in this card follows. */}
+            order every row in this card follows. The ✕ is not merely NEXT,
+            though: notifications.css pins it to the row's right edge with an
+            auto margin (D609, user: "the x icon should always be at the very
+            right of the card"), so any slack in the head falls between the
+            action and the ✕ rather than after it. That is a statement about
+            what the ✕ is — a dismissal of this ROW, not a third step in the
+            action group it would otherwise read as part of — so it belongs on
+            the row's boundary. The ORDER here is unchanged; only where the
+            leftover width goes is. */}
         <button
           type="button"
           className="q-all"
