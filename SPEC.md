@@ -10876,7 +10876,20 @@ the rules around it.
   does not write itself, any UI that shows or clears an app's `.fused/`, and
   any `window.fused` accessor for the paths.
 
-## 48. Image-to-3D — A Mesh From a Picture, Locally (D620, D621, D622)
+## 48. Image-to-3D — A Mesh From a Picture, Locally (D620-D624) — PARKED, NOT SHIPPED
+
+**Status: PR #914 held in draft. Do not treat this section as describing a
+shipped capability.** The integration below (routes, worker, registry,
+Playground UI) is complete and tested, but the engine it wraps misses the
+product's own reliability and speed bar — D624 has the full account: a real
+scheduler bug in the MLX port was found and fixed (our fork,
+`iamsdas/Hunyuan3D-2.1-mlx@7e62963`; upstream PR
+[dgrauet/Hunyuan3D-2.1-mlx#8](https://github.com/dgrauet/Hunyuan3D-2.1-mlx/pull/8)),
+but even fixed, only 1 of 5 real test inputs renders (including three of the
+fork's own `example_images/` assets), and the one success took 187s at a
+reduced setting — the fork's own documented settings extrapolate to 9-10
+minutes against a 2-minute product bar. Read D624 before doing anything with
+this capability; the sections below describe what was BUILT, not what WORKS.
 
 Goal: `fused.ai.mesh({image})` — a `.glb` mesh generated from one picture, on
 this machine, with the identical job-shaped contract `fused.ai.image` and
@@ -11007,3 +11020,13 @@ this section is one new capability occupying each of them, not a new pattern.
 - **Sequenced-after, deliberately absent here**: the PBR texture stage
   (MESH-4), `text-to-3d` (MESH-8), a quantized DiT tier, and any
   mesh-simplification option beyond the octree-resolution ceiling (MESH-6).
+- **MESH-11** **The capability is PARKED (D624), not shipped.** Everything
+  above describes what was built — it does not mean the capability is
+  usable. Even with MESH-7b's scheduler fix, only 1 of 5 real test images
+  produced a mesh (three failures were the fork's own `example_images/`
+  assets), and the one success took 187s at a reduced setting against a
+  2-minute product bar; the fork's own documented settings extrapolate to
+  9-10 minutes. See D624 for the full reliability table, the timing
+  numbers, and the identified-but-unfixed performance defects (dense MoE
+  compute, per-expert host syncs, CFG batch doubling) that would need to
+  land before this is worth revisiting.

@@ -16,10 +16,30 @@
 # is deliberately empty. Nothing about the shape pipeline itself is forked
 # code; this is a packaging shim living next to unmodified upstream.
 #
-# **Pinned to a commit SHA, not a branch or a tag.** `00fed0736aad06ef4068
-# ee78b3faf85e0e8d408f` is the fork commit that adds the packaging file
-# above, one past `5fe21945b790fbb7fb28c510e89babd7b9feabe6` (the upstream
-# HEAD it was branched from, 2026-08-28). Bumping the sha to pick up a real
+# **Pinned to a commit SHA, not a branch or a tag.** `7e6296381fef64ffe576
+# 85cc1f5770a23acb1fc2` is our own fix for a real correctness bug found and
+# proven while investigating the image-to-3D empty-mesh defect (2026-08-28):
+# `pipeline_mlx.py` always calls `mlx_arsenal`'s `FlowMatchEulerDiscrete
+# Scheduler.set_timesteps` with an ASCENDING explicit sigma schedule, but
+# that scheduler's own `set_timesteps` appends a trailing 0.0 (correct for
+# its OWN documented DESCENDING default, never exercised here) rather than
+# the trailing 1.0 the torch reference scheduler appends for the identical
+# explicit-sigmas call. Left uncorrected, the LAST Euler step of every
+# render subtracts the full predicted velocity from the sample instead of
+# doing nothing (`sigma_next - sigma == -1.0` instead of `0.0`), which
+# reproduced as an empty SDF volume (zero near-surface voxels) on every
+# image and step count tested. `mlx_arsenal` is not at fault — this
+# pipeline calls it outside the convention its default was written for; the
+# fix overwrites the scheduler's own last sigma after `set_timesteps`
+# returns, entirely inside our fork, `mlx_arsenal` untouched. Verified on
+# the fork's own `tests/test_stage1_to_stage2.py` fixture (a real mesh,
+# 38121 verts / 112914 faces, where the bug produced an empty volume
+# before) — NOT yet verified as a general fix across arbitrary inputs; see
+# this build's own perf/reliability write-up for what is and is not
+# established. One past `00fed0736aad06ef4068ee78b3faf85e0e8d408f` (the
+# packaging-only commit this pin held before), itself one past
+# `5fe21945b790fbb7fb28c510e89babd7b9feabe6` (the upstream HEAD the fork
+# was branched from, 2026-08-28). Bumping the sha to pick up a real
 # upstream change is a normal, deliberate act; it should happen with a
 # render behind it, like every other version ceiling on this page.
 #
@@ -63,4 +83,4 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-hy3dshape = { git = "https://github.com/iamsdas/Hunyuan3D-2.1-mlx", rev = "00fed0736aad06ef4068ee78b3faf85e0e8d408f", subdirectory = "hy3dshape" }
+hy3dshape = { git = "https://github.com/iamsdas/Hunyuan3D-2.1-mlx", rev = "7e6296381fef64ffe57685cc1f5770a23acb1fc2", subdirectory = "hy3dshape" }
