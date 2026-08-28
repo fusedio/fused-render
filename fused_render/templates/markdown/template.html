@@ -421,12 +421,17 @@
      `.panel-head` carries the type register (11px uppercase, 0.08em
      tracking, `--ghost`) both panels' heads use — including the GRAPH
      sub-head inside the right panel, which shares the register but has no
-     button of its own. `.mirror` is the one modifier: same DOM order (label,
-     optional count, spacer, button) in both panels, and `row-reverse` alone
-     flips which edge the button lands on — the rail's un-mirrored head puts
-     its button at its own right (inner) edge, the right panel's mirrored
-     head puts its button at its own left (inner) edge, with no separate copy
-     of the layout. */
+     button of its own. `.mirror` is the one modifier, and it moves ONLY the
+     button, not the whole row: `flex-direction: row-reverse` was tried first
+     and reversed the LABEL too, pushing "BACKLINKS" to the panel's outer
+     edge — wrong on two counts, both panels read left-to-right so the label
+     belongs at the reading (left) edge in either one, and it disagreed with
+     every other left-aligned line in the panel below it. `order: -1` on just
+     the button is the fix: the button jumps to the front of the row (the
+     panel's inner edge) while the label, count and spacer stay in their
+     normal left-to-right order right behind it — chevron nearest the
+     document in both panels, label always reading from the left, same
+     `padding-left` in both. */
   .panel-head {
     display: flex;
     align-items: center;
@@ -439,7 +444,7 @@
     font-weight: 600;
     color: var(--ghost);
   }
-  .panel-head.mirror { flex-direction: row-reverse; }
+  .panel-head.mirror .panel-collapse-btn { order: -1; }
   .panel-head .spacer { flex: 1; }
   /* A count that could be misread as an ORDINAL right after a label ("outline
      1", "backlinks 3" reading as "#1"/"#3") is not allowed to be a bare
@@ -805,7 +810,17 @@
   }
   .fmt-sep { width: 1px; align-self: stretch; margin: 1px 0; background: var(--border); }
   .fmt-turn { position: relative; }
-  #fmt-turn-btn {
+  /* `#fmt-bubble #fmt-turn-btn`, NOT the bare id: `#fmt-bubble button` above
+     is (1 id, 1 type) = 0,1,0,1, and a bare `#fmt-turn-btn` is (1 id) =
+     0,1,0,0 — LOWER specificity, so the base rule's `width: 26px` silently
+     won over this rule's `width: auto` (found by the owner reading the CSS,
+     not by looking at the page: the symptom was the label clipping against
+     a fixed 26px box with no wrap). Prefixing the ancestor id makes this
+     0,2,0,0, which beats it outright. Exactly the same shape of bug as the
+     `#graph-sec[hidden]` one (MD-19c) — an id-scoped base rule silently
+     outranking a later, less specific override, no error, just a control
+     that looks wrong. */
+  #fmt-bubble #fmt-turn-btn {
     width: auto;
     padding: 0 6px;
     font-size: 11px;
@@ -826,8 +841,13 @@
   }
   #fmt-turn-menu[hidden] { display: none; }
   /* Full-width text rows, not icon buttons — overrides `#fmt-bubble button`'s
-     fixed square size (equal specificity, later in source: it wins). */
-  #fmt-turn-menu button {
+     fixed square size. `#fmt-bubble #fmt-turn-menu button` rather than the
+     bare `#fmt-turn-menu button`: the bare form is only EQUAL specificity to
+     `#fmt-bubble button` (0,1,0,1 each) and depended on winning by source
+     order alone — exactly the fragile shape the `#fmt-turn-btn` bug (below)
+     turned out to be real, so this is hardened the same way rather than left
+     to keep winning by luck of position. */
+  #fmt-bubble #fmt-turn-menu button {
     display: block;
     width: 100%;
     height: auto;
@@ -836,7 +856,7 @@
     color: var(--fg);
     font-size: 12px;
   }
-  #fmt-turn-menu button:hover { background: var(--bg); color: var(--fg); }
+  #fmt-bubble #fmt-turn-menu button:hover { background: var(--bg); color: var(--fg); }
 
   /* ---- the image lightbox (6a) --------------------------------------------
      A backdrop overlay, not a rendering change: the underlying `<img

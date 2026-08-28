@@ -3177,10 +3177,16 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   uses** (`.panel-head`, `.panel-collapse-btn`, `.panel-reopen-btn` — see
   MD-19b), mirrored rather than duplicated: identical DOM order (label,
   optional count, a flex spacer, the button), and one modifier class
-  (`.mirror`, `flex-direction: row-reverse`) is the entire difference between
-  the rail's button landing at ITS inner (right) edge and this panel's at ITS
-  inner (left) edge — both always nearest the document, never floating over
-  it. Collapsed, the same **26px edge-chip button** the rail uses reappears
+  (`.mirror`, `order: -1` on the button alone) is the entire difference
+  between the rail's button landing at ITS inner (right) edge and this
+  panel's at ITS inner (left) edge — both always nearest the document, never
+  floating over it, with the LABEL staying at the reading (left) edge in
+  both, matching every left-aligned line below it in the panel. (`mirror`'s
+  first draft reversed the whole row with `flex-direction: row-reverse`,
+  which flipped the label too, pushing "BACKLINKS" to the panel's outer edge
+  — wrong on both counts a mirror is supposed to respect: text does not
+  mirror, and it disagreed with the panel's own left-aligned content below
+  it.) Collapsed, the same **26px edge-chip button** the rail uses reappears
   at this panel's outer edge (top-right), sharing `.panel-reopen-btn` with
   only a `.right` vs `.left` modifier telling them apart.
   **The head carries a count, unlike the rail's** (MD-19b) — set apart as its
