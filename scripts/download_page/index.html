@@ -158,8 +158,6 @@
     line-height: 1.1; letter-spacing: -0.03em; font-weight: 660;
     max-width: 26ch;
   }
-  /* Section subtitles hidden for now; drop this rule to bring them back. */
-  .deck, .deck-list { display: none; }
   .deck {
     margin-top: 12px; max-width: 56ch;
     color: var(--ink-2); font-size: var(--t-md); line-height: 1.5;
@@ -169,6 +167,8 @@
     margin-top: 12px;
     display: flex; flex-direction: column; gap: 7px;
   }
+  /* Section subtitles + bullet lists hidden for now; drop this rule to bring them back. */
+  .deck, .deck-list { display: none; }
   .deck-list li {
     position: relative; padding-left: 18px;
     font-size: var(--t-base); color: var(--ink-2); line-height: 1.5;
