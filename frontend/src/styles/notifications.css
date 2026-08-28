@@ -332,12 +332,43 @@
    (see DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
    longer survive a collapse the way they did as a short card). Carries the
    plate `.dl-host` used to wear before this card was split into a chip and a
-   panel: same width cap for the same reason (a card left to its content
+   panel: same 340px width figure, same --bg-alt/8px-radius/shadow plate a
+   toast wears, so an open panel still reads as the same system rather than a
+   different kind of popover.
+
+   IT IS A CAP NOW, NOT A FIXED WIDTH (D608, 2026-08-28). Until then this rule
+   argued FOR a fixed width on the ground that "a card left to its content
    width jumps every time a row's title or byte count changes length, and at
-   that width "1.21 / 7.54 GB" and its percentage crowd the title into an
-   ellipsis), same --bg-alt/8px-radius/shadow plate a toast wears, so an open
-   panel still reads as the same system rather than a different kind of
-   popover.
+   that width '1.21 / 7.54 GB' and its percentage crowd the title into an
+   ellipsis". That reasoning is preserved because it is not wrong — the width
+   DOES vary with content now, and that is a real cost. The user overruled it,
+   twice, with a screenshot: the Notifications panel holding one repo row
+   (`sandbox [Update] ✕` / `Newer changes available`, ~270px of content) sat in
+   a 340px card with a visible void on its right. Fitting the content is the
+   settled call; the variation is bounded on both sides — `min-width` below is
+   the floor, the 340px `max-width` is the ceiling, so a panel now lives in a
+   ~100px band rather than jumping freely.
+
+   `max-content`, NOT `fit-content` — the distinction is the whole fix, and a
+   previous attempt got it wrong. `fit-content` resolves as
+   `min(max-content, max(min-content, available))`, and for an ABSOLUTELY
+   POSITIONED box `available` is its containing block: `.dl-host`, content-sized
+   to the chip alone (see below), roughly 100–180px. `fit-content` therefore
+   clamps this panel toward the chip's width — the same crushed panel the
+   `max-width: 100%` paragraph below describes. `max-content` is defined as the
+   box's preferred width given UNLIMITED available space and never consults the
+   containing block, so it is the only content-sizing keyword that survives here.
+
+   `min-width` IS LOAD-BEARING, not cosmetic. Under `max-content` a block-level
+   child with no intrinsic content contributes nothing to the parent's preferred
+   width — a job row's `.dl-bar` (a plain stretching track) is exactly that. The
+   floor is what guarantees every panel a sane width whatever its rows happen to
+   contain, and it is also what keeps the empty states ("No jobs",
+   "No engines running") from shrinking to the width of their own sentence. It
+   carries the SAME `calc(100vw - 32px)` guard the cap does, because a
+   `min-width` beats a `max-width` per CSS: a bare `240px` floor would grow the
+   panel back past the viewport edge on anything narrower than 272px, which is
+   the one case where the cap alone would otherwise have held.
 
    NO `max-width: 100%` (code review finding #1, HIGH — this is what caused
    the user's screenshot): a percentage `max-width` on an absolutely
@@ -353,7 +384,9 @@
   bottom: 100%;
   right: 0;
   margin-bottom: 8px;
-  width: min(340px, calc(100vw - 32px));
+  width: max-content;
+  min-width: min(240px, calc(100vw - 32px));
+  max-width: min(340px, calc(100vw - 32px));
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
