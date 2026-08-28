@@ -58,6 +58,10 @@ struct WebView: UIViewRepresentable {
         web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = true
         web.scrollView.contentInsetAdjustmentBehavior = .never
+        // Pull down to reload — the grid (fresh listing) and any app page alike.
+        let refresh = UIRefreshControl()
+        refresh.addTarget(context.coordinator, action: #selector(Coordinator.pulled(_:)), for: .valueChanged)
+        web.scrollView.refreshControl = refresh
         web.isOpaque = false
         web.backgroundColor = .systemBackground
         context.coordinator.webView = web
@@ -91,7 +95,21 @@ struct WebView: UIViewRepresentable {
             self.controller = controller
         }
 
+        @objc func pulled(_ sender: UIRefreshControl) {
+            guard let web = webView else { sender.endRefreshing(); return }
+            if web.url != nil { web.reload() } else { web.load(URLRequest(url: baseURL)) }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            webView.scrollView.refreshControl?.endRefreshing()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            webView.scrollView.refreshControl?.endRefreshing()
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.scrollView.refreshControl?.endRefreshing()
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack
             // The grid just loaded (paired, current): refresh what the widgets

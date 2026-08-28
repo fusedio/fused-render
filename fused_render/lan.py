@@ -246,12 +246,13 @@ def _not_found() -> Response:
 # http://render.fused.local/pair?t=<token>; the phone scans it, /pair sets a
 # long-lived device cookie and lands on the grid. No PIN, no approval dialog.
 # The token is minted over LOOPBACK (the desktop's own API — a LAN peer cannot
-# mint one) and is good for five minutes, AS MANY TIMES AS NEEDED — Preferences
-# rotates the code every five minutes. Multi-use is deliberate (owner's call):
-# iOS's Control Center scanner opens the URL in a sandboxed in-app browser whose
-# "Open in Safari" re-opens the SAME URL, so a single-use token paired the
-# sandbox and told Safari the code had expired. Every browser that opens a
-# live URL becomes its own device row; the list shows them all. The cookie is
+# mint one), is good for five minutes and pairs ONE device: Preferences shows a
+# fresh code the moment a pairing lands (it watches the device list) and every
+# five minutes regardless. Single-use is the owner's call (2026-08-28): a code
+# photographed off the screen must not pair a second device. The known cost —
+# iOS's Control Center scanner opens the URL in a sandboxed in-app browser
+# whose "Open in Safari" re-opens the same, now spent, URL — is accepted; the
+# Camera app and the native shell pair the right browser first time. The cookie is
 # 128 bits of randomness; the store keeps its SHA-256 plus a name derived from
 # the user agent, so a stolen store file cannot forge a cookie and the
 # Preferences list can say "iPhone · Safari, last seen 2h ago" and revoke it.
@@ -312,11 +313,12 @@ def mint_pair_token() -> str:
     return token
 
 
-def _pair_token_valid(token: str) -> bool:
+def _spend_pair_token(token: str) -> bool:
+    """True once per token: valid and not used before."""
     import time
 
     with _pair_lock:
-        exp = _pair_tokens.get(token)
+        exp = _pair_tokens.pop(token, None)
     return exp is not None and exp >= time.monotonic()
 
 
@@ -475,19 +477,32 @@ def _with_cookie(response: Response, secret: str) -> Response:
     return response
 
 
+#: Called with the new device's public record when a phone pairs — the desktop
+#: app hooks a notification here ("iPhone · Fused Render app paired"); the CLI
+#: leaves it None and logs.
+on_paired = None
+
+
 def _handle_pair(scope) -> Response:
-    """A live token pairs THIS browser and lands it on the grid. Multi-use for
-    the token's five minutes (see the section comment): the Control Center
-    scanner's sandbox and the Safari it hands off to both open the same URL."""
+    """A live token pairs THIS browser and lands it on the grid. SINGLE use
+    (owner's call, 2026-08-28): one scan, one device; Preferences shows a fresh
+    code the moment a pairing lands. A code that was already used, or has run
+    out, gets the expired page."""
     query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
     token = (query.get("t") or [""])[0]
-    if not token or not _pair_token_valid(token):
+    if not token or not _spend_pair_token(token):
         return _pair_page(
             "That code has expired",
-            "Pairing codes last five minutes. Open Preferences → Share on local network on "
-            "the computer — it shows a fresh one — and scan again.",
+            "Each code pairs one device and lasts five minutes. Open Preferences → Render "
+            "local network on the computer — it shows a fresh one — and scan again.",
             "Not paired.")
-    secret, _record = _pair_device(_header(scope, b"user-agent"))
+    secret, record = _pair_device(_header(scope, b"user-agent"))
+    logger.info("lan: paired %s", record.get("name"))
+    if on_paired is not None:
+        try:
+            on_paired(record)
+        except Exception:  # noqa: BLE001 — a notification must never fail a pairing
+            logger.warning("lan: on_paired hook failed", exc_info=True)
     return _with_cookie(RedirectResponse("/", status_code=302), secret)
 
 

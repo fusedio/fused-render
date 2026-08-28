@@ -348,6 +348,17 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     from fused_render import lan
 
     lan.attach(app)
+
+    def _paired(record: dict) -> None:
+        # A phone just paired: say so on the desktop (the single-use QR has
+        # already rotated in Preferences). rumps is macOS-only; the CLI path
+        # (cli.py) only logs.
+        import rumps
+
+        rumps.notification("Fused Render", f"{record.get('name', 'A device')} paired",
+                           "It can now open your apps from this Wi-Fi.")
+
+    lan.on_paired = _paired
     lan.start_if_enabled()
     return server, thread
 

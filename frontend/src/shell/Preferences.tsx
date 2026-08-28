@@ -290,7 +290,7 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
         </span>
       </label>
       {running && lan.url && (
-        <LanPairing url={lan.url} />
+        <LanPairing url={lan.url} deviceCount={devices.length} />
       )}
       {running && (
         <LanDevices devices={devices} onRevoke={revoke} />
@@ -303,13 +303,17 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
   );
 }
 
-// The QR code: a pairing URL good for five minutes, as many scans as needed
-// (the Control Center scanner's sandbox and the Safari it hands off to both
-// open it). A new one replaces it when the old one runs out.
-function LanPairing({ url }: { url: string }) {
+// The QR code: a pairing URL good for five minutes and ONE device. A new one
+// replaces it the moment a pairing lands (the device count changes — the
+// section polls it) and when the old one runs out.
+function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [ipUrl, setIpUrl] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    setNonce((n) => n + 1);
+  }, [deviceCount]);
 
   useEffect(() => {
     let alive = true;
@@ -341,9 +345,10 @@ function LanPairing({ url }: { url: string }) {
       />
       <div className="lan-pair-text">
         <p>
-          <b>Scan with the iPhone's Camera app</b> to pair it — not the Control Center QR scanner,
-          whose in-app browser can't pair Safari. The code changes every five minutes; a paired
-          phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+          <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center
+          scanner, whose in-app browser can't pair Safari). Each code pairs one device; a new code
+          appears right after, and every five minutes. A paired phone then opens{" "}
+          <a href={url} target="_blank" rel="noreferrer">{url}</a>.
         </p>
         <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
           New code
