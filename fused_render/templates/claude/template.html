@@ -280,7 +280,7 @@
      (#annbtn.on = mode armed, #annrec.on = recording live), via :has on the
      wrapper — no third writer to fall out of step.
 
-     Idle faces: 💬 Comment · 🎙 Record. A mode ON means ONE control (Akshil,
+     Idle faces: 💬 Comment · 🎙 Annotate. A mode ON means ONE control (Akshil,
      2026-08-19): the mic hides outright, and the Comment seat morphs into
      the mode's exit. */
   #annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }
@@ -3622,7 +3622,7 @@
            two mode buttons under the pointer, the back button and the kebab
            all hold still (Akshil, 2026-08-19 — it used to appear between
            Record and ⋮ and shuffled the whole right cluster on every toggle).
-           At rest the strip is [← Chats … 💬 Comment 🎙 Record ⋮]. -->
+           At rest the strip is [← Chats … 💬 Comment 🎙 Annotate ⋮]. -->
       <!-- WHAT a click pins, chosen up front: the element under it, or the
            exact spot. Appears while the mode is armed — typed comment and
            recording alike (Akshil, 2026-08-19) — it is a property of the
@@ -3663,8 +3663,8 @@
         <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
                 title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
         <button id="annrec" type="button" aria-pressed="false"
-                aria-label="Record a spoken walkthrough"
-                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Record</span></button>
+                aria-label="Annotate with a spoken walkthrough"
+                title="Annotate with a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Annotate</span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -7199,8 +7199,8 @@ async function annRecEnd() {
   // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
+  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
   // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
   // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
   // long the stop takes — milliseconds where the app records natively, longer
@@ -7385,8 +7385,8 @@ async function annRecDiscard() {
   // the same disabled status annRecEnd shows — never an enabled Done.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
+  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
   annBtn.disabled = true;
   annBtn.setAttribute("aria-label", "Discarding the recording");
   annBtn.title = "Discarding the recording…";
