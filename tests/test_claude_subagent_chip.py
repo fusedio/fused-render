@@ -180,6 +180,17 @@ const attachCodeCopy = (el) => { attachCalls.push(el.uid); };
 const runPythonLog = [];
 const runPythonQueue = [];
 const pendingResolvers = [];
+// The real page defines this later in the same file — this probe only
+// extracts up through the end of renderSegments, which is BEFORE that
+// point, so pumpSubagentLog's `await sleep(400)` (round 4's pacing fix)
+// needs its own stub here. Resolves IMMEDIATELY regardless of `ms` — these
+// tests assert BEHAVIOUR (how many fetches, what ends up on screen), not
+// wall-clock timing, and a real 400 ms wait per test would make the suite
+// slow for no better signal. `sleepCalls` records what was asked for, so
+// the one test that cares whether the pacing is THERE at all can check the
+// duration without waiting for it.
+const sleepCalls = [];
+const sleep = (ms) => { sleepCalls.push(ms); return Promise.resolve(); };
 const AGENT = "./agent.py";
 const FILE = "/proj/page.html";
 let SESSION_ID = "sess1";
@@ -1005,3 +1016,187 @@ main();
     assert got["addCalls"] == 0, "no session_id must never even register as loading"
     assert got["stillLoading"] is False
     assert got["calls"] == 0, "no session_id means no fetch is ever attempted"
+
+
+# ------------------------------------------------- round 4
+
+def test_the_partial_notice_never_welds_into_a_later_turn(probe_src, tmp_path):
+    """Code review round 4, finding #1 (HIGH): `renderSubagentTranscript`
+    diffs `container.children[i]` positionally, and the partial notice used
+    to sit at index `list.length` — so when a LONGER turn list arrived
+    later (a partial cache of N turns, then a terminal fetch of N+1 that
+    includes the agent's own concluding message), index N reused the notice
+    element as the new turn, and `renderSegments` appended views into it
+    without ever clearing the notice's leftover text. This is the exact
+    empirical scenario the reviewer verified: 1 turn partial, then 2 turns
+    non-partial."""
+    container_script = """
+const container = document.createElement("div");
+renderSubagentTranscript(container, [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+], {partial: true});
+renderSubagentTranscript(container, [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+  {role: "assistant", text: "", segments: [{kind: "text", text: "all done"}]},
+], {partial: false});
+console.log(JSON.stringify({tree: dump(container)}));
+"""
+    got = _run(probe_src, container_script, tmp_path)
+    kids = got["tree"]["children"]
+    assert len(kids) == 2
+    # A "text" segment renders through renderMd into the ".seg-text" child's
+    # innerHTML (this stub's `<md>...</md>` wrapper) — the turn DIV itself
+    # never gets innerHTML written to it, only its nested child.
+    seg_text = _by_class(kids[1], "seg-text")
+    assert len(seg_text) == 1
+    assert seg_text[0]["html"] == "<md>all done</md>"
+    # THE bug: the notice div was set via `.textContent =`, which this stub
+    # stores as the element's OWN `_text` — reusing that same element as the
+    # new turn (welding) leaves `_text` in place forever, since renderSegments
+    # only ever APPENDS child views and never clears the container's own
+    # text. `dump()`'s `text` field is textContent, which combines a node's
+    # own `_text` with its children's — so under the bug this reads the old
+    # notice sentence PLUS nothing from the child (whose content lives in
+    # innerHTML, not textContent); fixed, it reads as empty, since a
+    # freshly-created (or notice-cleared) div has no leftover `_text` at all.
+    assert kids[1]["text"] == "", (
+        "the partial notice's text welded into the final turn: %r" % kids[1]["text"])
+
+
+def test_the_partial_notice_survives_a_same_length_repaint(probe_src, tmp_path):
+    """The fix must not just delete the notice and never bring it back: a
+    repaint at the SAME turn count that is STILL partial keeps showing it."""
+    got = _run(probe_src, """
+const container = document.createElement("div");
+renderSubagentTranscript(container, [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
+], {partial: true});
+renderSubagentTranscript(container, [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
+], {partial: true});
+console.log(JSON.stringify({
+  n: container.children.length,
+  lastCls: container.children[container.children.length - 1].className,
+}));
+""", tmp_path)
+    assert got["n"] == 2
+    assert got["lastCls"] == "sub-turn-partial"
+
+
+def test_via_pump_a_growing_partial_to_final_transcript_is_not_contaminated(
+        probe_src, tmp_path):
+    """The end-to-end version through `pumpSubagentLog` itself, not just the
+    renderer in isolation: a mid-run cache of 1 turn, then a terminal fetch
+    that returns 2 turns (the agent's own concluding message included)."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [
+    {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+  ]});
+  runPythonQueue.push({turns: [
+    {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+    {role: "assistant", text: "", segments: [{kind: "text", text: "all done"}]},
+  ]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: cached at "running"
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // terminal -> catch-up fetch #2
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    log = _by_class(got["tree"], "chip-subagent-log")[0]
+    assistants = _by_class(log, "sub-turn-assistant")
+    assert len(assistants) == 2
+    seg_text = _by_class(assistants[1], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>all done</md>"
+    assert assistants[1]["text"] == "", (
+        "the partial notice's text welded into the final turn: %r"
+        % assistants[1]["text"])
+    assert _by_class(log, "sub-turn-partial") == []
+
+
+# ------------------------------------------------- round 4: pacing
+
+def test_the_catch_up_chase_is_paced_not_instant(probe_src, tmp_path):
+    """Code review round 4, finding #2 (MEDIUM): the self-driving catch-up
+    used to recurse with no delay at all — a 200 ms server hiccup right at
+    the Task's own completion fired all 5 retries back-to-back in
+    milliseconds, exhausting the whole page-lifetime budget on one blip.
+    `sleepCalls` (this file's stub) records what pumpSubagentLog asks
+    `sleep` for before its recursive call; it must be the same 400 ms
+    cadence as the poll tick."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "blip"});
+  runPythonQueue.push({turns: [{role: "user", text: "ok"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  el.update(%s);
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({sleepCalls}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    assert got["sleepCalls"] == [400]
+
+
+# ------------------------------------------------- round 4: empty-turns settling
+
+def test_an_empty_successful_response_never_overwrites_a_good_cache(
+        probe_src, tmp_path):
+    """Code review round 4, finding #3: `_subagent_transcript` returns
+    `{"turns": []}` for a bad id or a file that is momentarily unreadable —
+    a resolved fetch, not a failure. If that lands AFTER a good, non-empty
+    cache is already on hand, it must not destroy it."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "the real transcript"}]});
+  runPythonQueue.push({turns: []});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: good, non-empty, cached
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // terminal -> catch-up fetch #2: empty
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "the real transcript"
+
+
+def test_reexpanding_after_an_empty_settled_cache_gets_a_fresh_fetch(
+        probe_src, tmp_path):
+    """Code review round 4, finding #3: a successful-but-empty response at a
+    TERMINAL status used to settle permanently — `subagentShouldFetch`
+    false forever, and `reexpand` only cleared the fail count, which was
+    never what stopped this. Reexpand must also drop the cache entry, so
+    collapsing and reopening is a real recovery path here too."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: []});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: empty, at a terminal status
+  await new Promise((r) => setTimeout(r, 0));
+  const settledBefore = !subagentShouldFetch(
+    subagentCache.get("a1"), subagentFailCount.get("a1") || 0, "ok");
+  clickSummary(el.el);                  // close
+  runPythonQueue.push({turns: [{role: "user", text: "recovered"}]});
+  clickSummary(el.el);                  // re-open: reexpand:true drops the cache
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({settledBefore, tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       ), tmp_path)
+    assert got["settledBefore"] is True, "an empty response must settle (kind: ok, no more fetching) until reexpand"
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "recovered"

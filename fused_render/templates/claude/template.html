@@ -13509,6 +13509,17 @@ function subagentCacheTrim() {
     subagentCache.delete(subagentCache.keys().next().value);
   }
 }
+// Same bound, same reason, for the two maps a run of failures grows: unlike
+// `subagentCache` (trimmed above already), these were unbounded before
+// (pre-existing, flagged in round 4 review) — cheap enough to close here
+// without any restructuring.
+function subagentFailTrim() {
+  while (subagentFailCount.size > SUBAGENT_CACHE_MAX) {
+    const oldest = subagentFailCount.keys().next().value;
+    subagentFailCount.delete(oldest);
+    subagentFailMessage.delete(oldest);
+  }
+}
 
 // One assistant/user turn of a subagent's own transcript. Assistant turns go
 // through `renderSegments` — the SAME tool-chip/thinking/text machinery the
@@ -13521,6 +13532,17 @@ function subagentCacheTrim() {
 function renderSubagentTranscript(container, turns, opts) {
   const list = Array.isArray(turns) ? turns : [];
   const partial = !!(opts && opts.partial);
+  // The notice (if the PREVIOUS render left one) is dropped BEFORE the
+  // positional diff below, not after: it used to sit at index `list.length`
+  // of the OLD turn count, and a longer new list (round 3's own bug, caught
+  // by round 4's review) reused that slot as turn N — writing the notice's
+  // text into what is now the agent's own concluding message, permanently,
+  // because renderSegments appends views into an element without ever
+  // clearing whatever text was already sitting in it. Removing it first
+  // means the loop below only ever sees TURN elements at their real
+  // indices; `partial` decides fresh, at the end, whether to add it back.
+  const lastChild = container.children[container.children.length - 1];
+  if (lastChild && lastChild.className === "sub-turn-partial") lastChild.remove();
   for (let i = 0; i < list.length; i++) {
     const turn = list[i] || {};
     let turnEl = container.children[i];
@@ -13653,8 +13675,18 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   // `subagentFailCount` is cumulative over the page's whole lifetime rather
   // than "this burst", so without this a handful of failures hours apart
   // (a dev-server restart, an executor recycle) would sit on the bound
-  // forever even though nothing is currently wrong.
-  if (opts && opts.reexpand) subagentFailCount.delete(agentId);
+  // forever even though nothing is currently wrong. The cache entry is
+  // dropped too (round 4, finding #3): a successful-but-EMPTY response —
+  // `_subagent_transcript` returns `{"turns": []}` for a bad id or a file
+  // not (yet, or any longer) on disk, which is a resolved fetch, not a
+  // failure — settles as a permanently blank log with nothing left to
+  // retry, since `subagentFailCount` alone never touched it. Re-opening is
+  // this feature's one manual recovery gesture, so it has to be able to
+  // clear THAT state too, not only a fail count.
+  if (opts && opts.reexpand) {
+    subagentFailCount.delete(agentId);
+    subagentCache.delete(agentId);
+  }
   const status = seg.status || "running";
 
   // Paint whatever is ALREADY known before deciding whether to fetch
@@ -13699,13 +13731,33 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   // transient `os.listdir` error or a half-written `.meta.json` hitting a
   // `json.load` failure) — neither is a reason to throw the answer away.
   if (outcome.ok) {
-    subagentCache.set(agentId, { turns: outcome.turns, fetchedAtStatus: startStatus });
+    // An EMPTY answer must never overwrite a non-empty one already on hand:
+    // `_subagent_transcript` returns no turns for a bad id or a file that
+    // is not (or no longer) readable, which reads as "the agent said
+    // nothing" — turning a good, already-fetched transcript into nothing at
+    // all would be strictly worse than just leaving the stale copy in
+    // place (round 4, finding #3). `fetchedAtStatus` is updated to THIS
+    // fetch's status regardless of which turns are kept: it is the field
+    // `subagentShouldFetch` reads to decide whether the copy is settled, and
+    // leaving it at the OLD (running) value here — even though the turns it
+    // describes are still the old, real ones — would keep this exact branch
+    // permanently unsettled, chasing forever the moment a subagent's file
+    // becomes unreadable after one good read (this is not hypothetical: it
+    // is what broke the very first version of this fix under test).
+    const existing = subagentCache.get(agentId);
+    const keepExisting = !outcome.turns.length
+      && existing && existing.turns && existing.turns.length;
+    subagentCache.set(agentId, {
+      turns: keepExisting ? existing.turns : outcome.turns,
+      fetchedAtStatus: startStatus,
+    });
     subagentCacheTrim();
     subagentFailCount.delete(agentId);
     subagentFailMessage.delete(agentId);
   } else {
     subagentFailCount.set(agentId, (subagentFailCount.get(agentId) || 0) + 1);
     subagentFailMessage.set(agentId, outcome.message);
+    subagentFailTrim();
   }
 
   // Everything past here is about WHAT IS ON SCREEN, which only makes sense
@@ -13738,7 +13790,21 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   // further fetches instead — recursing here regardless of status2 would
   // free-run as fast as the network allows rather than on that cadence.
   if (status2 !== "running" && subagentShouldFetch(cached2, failN2, status2)) {
-    pumpSubagentLog(el, getLogEl, getSeg);
+    // Paced on the SAME 400 ms cadence as the poll tick this is standing in
+    // for — not fired at machine speed. Round 4's review: a transient
+    // server hiccup (an executor recycle, one dev-server restart) at the
+    // exact moment the Task finishes used to fire all `MAX_SUBAGENT_
+    // FETCH_ATTEMPTS` retries back-to-back in milliseconds, burning the
+    // page-lifetime budget on one blip instead of leaving room for the
+    // "one retry next tick recovers it" case the bound's own comment
+    // promises.
+    await sleep(400);
+    // `.catch` rather than awaited: a throw from deep inside this recursive
+    // chain (a bug elsewhere, not this function's own network handling,
+    // which already catches) must not become an unhandled promise
+    // rejection — pre-existing risk the reviewer flagged, cheap enough to
+    // close here.
+    pumpSubagentLog(el, getLogEl, getSeg).catch(() => {});
   }
 }
 
@@ -13996,7 +14062,7 @@ function buildToolChip(seg, key) {
   // gesture that recovers it short of a full reload.
   el.addEventListener("toggle", () => {
     if (lastSeg && lastSeg.name === "Task" && lastSeg.subagent) {
-      pumpSubagentLog(el, getSubagentLog, getLastSeg, { reexpand: true });
+      pumpSubagentLog(el, getSubagentLog, getLastSeg, { reexpand: true }).catch(() => {});
     }
   });
 
@@ -14045,7 +14111,7 @@ function buildToolChip(seg, key) {
     // of the transcript — no second poll loop for a Task chip's own log.
     if (next.name === "Task" && next.subagent) {
       if (subagentStatusEl) subagentStatusEl.textContent = subagentStatusLine(next);
-      pumpSubagentLog(el, getSubagentLog, getLastSeg);
+      pumpSubagentLog(el, getSubagentLog, getLastSeg).catch(() => {});
     }
   }
   function rebuild(next) {
