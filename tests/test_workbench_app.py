@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -135,8 +136,7 @@ def test_generated_shell_route_returns_html_as_a_str(tmp_path, monkeypatch):
 
 def test_generated_asset_route_serves_bytes(tmp_path, monkeypatch):
     compiled = compile_workbench_app(str(_app(tmp_path)), "Executable")
-    asset_name = next(name for name in compiled.files if "_asset_" in name)
-    udf = _load(compiled, asset_name, monkeypatch)
+    udf = _load(compiled, "assets.py", monkeypatch)
 
     asset = udf(name="note.txt")
     assert asset.body == b"hello from an asset\n"
@@ -242,26 +242,107 @@ def test_generated_route_dispatches_decorated_udf(tmp_path, monkeypatch):
     assert json.loads(response.body) == 9
 
 
-def test_long_route_names_do_not_collide_on_one_udf(tmp_path):
-    """The readable tail is truncated; the slug must stay unique regardless."""
-    stem = "a" * 80
-    for suffix in ("alpha", "beta"):
-        (tmp_path / f"{stem}_{suffix}.py").write_text("def main():\n    return 1\n")
+def _page_calling(tmp_path: Path, *paths: str) -> Path:
+    calls = "".join(f'fused.runPython("{path}", {{}});' for path in paths)
+    page = tmp_path / "index.html"
+    page.write_text(f"<script>{calls}</script>")
+    return page
+
+
+def test_a_route_is_named_after_its_file(tmp_path):
+    """The name people paste should read like the file it came from."""
+    (tmp_path / "my_endpoint.py").write_text("def main():\n    return 1\n")
+    compiled = compile_workbench_app(
+        str(_page_calling(tmp_path, "./my_endpoint.py")), "My_app"
+    )
+
+    assert compiled.entrypoints == {"./my_endpoint.py": "my_endpoint"}
+    assert "my_endpoint.py" in compiled.files
+    # The shell is the app's own address: …/<token>/<canvas name>.
+    assert compiled.shell_slug == "My_app"
+
+
+def test_generated_names_survive_the_server_rewrite_unchanged(tmp_path):
+    """resolve_udf_name_from_object maps [^a-zA-Z0-9_] to _ on every name.
+
+    Emit anything outside that set and the server's idea of the name stops
+    matching the one baked into the page's entrypoint map, so every call 404s.
+    """
+    for stem in ("my-endpoint", "Weird Name!", "café", "2fast"):
+        (tmp_path / f"{stem}.py").write_text("def main():\n    return 1\n")
+    page = _page_calling(tmp_path, *(f"./{stem}.py" for stem in ("my-endpoint", "Weird Name!", "café", "2fast")))
+    compiled = compile_workbench_app(str(page), "Rewrites")
+
+    names = [compiled.shell_slug, *compiled.entrypoints.values()]
+    for name in names:
+        assert re.sub(r"[^a-zA-Z0-9_]", "_", name) == name, name
+        assert not name.startswith("_"), name
+
+
+def test_names_that_sanitize_alike_are_kept_apart(tmp_path):
+    """`a-b.py` and `a_b.py` are distinct upstream and collide once sanitized."""
+    for stem in ("a-b", "a_b"):
+        (tmp_path / f"{stem}.py").write_text("def main():\n    return 1\n")
+    compiled = compile_workbench_app(
+        str(_page_calling(tmp_path, "./a-b.py", "./a_b.py")), "Collide"
+    )
+
+    names = sorted(compiled.entrypoints.values())
+    assert names == ["a_b", "a_b_2"]
+    assert all(f"{name}.py" in compiled.files for name in names)
+
+
+def test_an_app_file_cannot_take_the_asset_route_name(tmp_path):
+    """The page reads its files through `assets`; a file of that name yields."""
+    (tmp_path / "assets.py").write_text("def main():\n    return 1\n")
+    (tmp_path / "note.txt").write_text("hi\n")
     page = tmp_path / "index.html"
     page.write_text(
-        "<script>"
-        f'fused.runPython("./{stem}_alpha.py", {{}});'
-        f'fused.runPython("./{stem}_beta.py", {{}});'
-        "</script>"
+        '<script>fused.runPython("./assets.py", {});fused.readFile("./note.txt");</script>'
     )
-    compiled = compile_workbench_app(str(page), "Collide")
+    compiled = compile_workbench_app(str(page), "Reserved")
+
+    assert compiled.entrypoints == {"./assets.py": "assets_2"}
+    assert "assets.py" in compiled.files
+
+
+def test_a_leading_underscore_name_is_never_emitted(tmp_path):
+    """is_underscore_prefixed_python_file drops such a file from the canvas."""
+    (tmp_path / "run.py").write_text("def main():\n    return 1\n")
+    compiled = compile_workbench_app(str(_page_calling(tmp_path, "./run.py")), "_hidden")
+
+    assert compiled.shell_slug == "hidden"
+    assert not any(name.startswith("_") for name in compiled.files)
+
+
+def test_a_very_long_name_is_truncated_but_stays_unique(tmp_path):
+    """Truncation is the one case that can still merge two distinct names."""
+    stem = "a" * 120
+    for suffix in ("alpha", "beta"):
+        (tmp_path / f"{stem}_{suffix}.py").write_text("def main():\n    return 1\n")
+    compiled = compile_workbench_app(
+        str(_page_calling(tmp_path, f"./{stem}_alpha.py", f"./{stem}_beta.py")),
+        "Longnames",
+    )
 
     slugs = list(compiled.entrypoints.values())
-    assert len(slugs) == 2
     assert len(set(slugs)) == 2, f"two entrypoints share one UDF name: {slugs}"
     assert all(len(slug) <= 96 for slug in slugs)
-    for slug in slugs:
-        assert f"{slug}.py" in compiled.files
+    assert all(f"{slug}.py" in compiled.files for slug in slugs)
+
+
+def test_names_hold_still_when_the_app_changes(tmp_path):
+    """The point of dropping the digest: a redeploy keeps the same app URL."""
+    (tmp_path / "my_endpoint.py").write_text("def main():\n    return 1\n")
+    page = _page_calling(tmp_path, "./my_endpoint.py")
+    first = compile_workbench_app(str(page), "Stable_app")
+
+    (tmp_path / "my_endpoint.py").write_text("def main():\n    return 2\n")
+    second = compile_workbench_app(str(page), "Stable_app")
+
+    assert first.digest != second.digest
+    assert first.shell_slug == second.shell_slug
+    assert first.entrypoints == second.entrypoints
 
 
 def test_compile_keeps_export_blockers(tmp_path):

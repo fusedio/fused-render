@@ -219,6 +219,18 @@ def deploy_workbench_app(
     web_base, udf_base = _bases(environment)
     workbench_url = _last_url(pushed.stdout) or f"{web_base}/workbench"
     warnings = list(compiled.warnings)
+    # UDF names follow the app's own file names, so they hold still across
+    # deploys and the app URL with them. They did not always: an earlier
+    # scheme put the content digest in every name, which renamed everything
+    # on every push. Say so once, when a previous deploy of this page really
+    # did answer to a different name, rather than warning forever.
+    previous = next(iter(list_deployments(html_path)), None)
+    if previous and previous.get("shell_slug") not in (None, compiled.shell_slug):
+        warnings.append(
+            f"The app URL moved: this deploy answers to '{compiled.shell_slug}', where "
+            f"the last one answered to '{previous['shell_slug']}'. Links to the old "
+            "address will not resolve."
+        )
     share_url = None
     app_url = None
     shared = False

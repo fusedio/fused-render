@@ -29,6 +29,7 @@ from fused_render.export import (
 
 MAX_GENERATED_FILE_BYTES = 4_000_000
 MAX_GENERATED_TOTAL_BYTES = 12_000_000
+MAX_UDF_NAME = 96
 _SLUG_CHARS = re.compile(r"[^A-Za-z0-9_]+")
 _CANVAS_NAME = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 _CACHE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -49,22 +50,47 @@ class CompiledWorkbenchApp:
         return sum(len(value) for value in self.files.values())
 
 
-def _udf_slug(prefix: str, digest: str, value: str = "") -> str:
-    """A stable, unique UDF name for one generated route.
+def _udf_name(value: str, taken: set[str], fallback: str = "run") -> str:
+    """The UDF name for one generated file — the author's own name for it.
 
-    The readable tail is truncated to fit the 96-char budget, so two long route
-    names that agree on their first bytes would otherwise land on one slug —
-    and one generated .py would silently overwrite the other, leaving both
-    entrypoints pointing at whichever file was written last.  A hash of the
-    FULL value goes in ahead of the truncated tail so the slug stays unique
-    however much of the tail survives.
+    A generated UDF is addressed by its filename stem: the server derives the
+    name from the file (code_proxy/shared.py::infer_meta_json) and the route is
+    ``<udf_base>/<token>/<name>``.  So the name people see and paste is decided
+    here, and it should read like the file it came from — ``my_endpoint.py``
+    becomes ``my_endpoint``, not a digest.
+
+    Three server rules shape what may be emitted, each silent when broken:
+
+    * ``resolve_udf_name_from_object`` rewrites the name with
+      ``re.sub(r"[^a-zA-Z0-9_]", "_", raw)``.  Emit anything outside that set
+      and the server's name stops matching the one baked into the page's
+      entrypoint map, so every call 404s.  These names are identities under
+      that substitution.
+    * ``is_underscore_prefixed_python_file`` drops a leading-underscore file
+      from the canvas entirely, so the UDF would simply not exist.  Stripped
+      here, with ``fallback`` covering a name that was nothing else.
+    * ``canvas push`` keeps one file per stem and only warns about the rest,
+      so ``taken`` disambiguates with ``_2``, ``_3``, … the way
+      ``export._route_name`` already does upstream.
+
+    No digest: the canvas belongs to this one app and a push replaces its UDF
+    set wholesale, so nothing stale accumulates — and leaving it out is what
+    keeps the app URL the same from one deploy to the next.
     """
-    slug = f"fr_{prefix}_{digest[:8]}"
-    if value:
-        mark = hashlib.blake2b(value.encode("utf-8"), digest_size=4).hexdigest()
-        tail = _SLUG_CHARS.sub("_", value).strip("_")
-        slug += "_" + mark + ("_" + tail if tail else "")
-    return slug[:96].rstrip("_")
+    base = _SLUG_CHARS.sub("_", value).strip("_") or fallback
+    if len(base) > MAX_UDF_NAME:
+        # Truncation is the one case that can still merge two distinct names,
+        # so the full value's hash rides along — but only here, rather than
+        # taxing every readable name with it.
+        mark = hashlib.blake2b(value.encode("utf-8"), digest_size=3).hexdigest()
+        base = base[: MAX_UDF_NAME - len(mark) - 1].rstrip("_") + "_" + mark
+    name = base
+    suffix = 2
+    while name in taken:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    taken.add(name)
+    return name
 
 
 def _cache_seconds(value: str) -> int:
@@ -402,11 +428,16 @@ def compile_workbench_app(
     archive = _deterministic_archive(page_dir, plan)
     digest_input = html.encode("utf-8") + b"\0" + archive + b"\0" + cache_max_age.encode()
     digest = hashlib.sha256(digest_input).hexdigest()
-    shell_slug = _udf_slug("shell", digest)
+    # Claim order matters: the shell and the asset route take their names
+    # first, so an app file called assets.py yields to them with assets_2
+    # rather than quietly replacing the route the page reads its files from.
+    taken: set[str] = set()
+    shell_slug = _udf_name(canvas_name.strip(), taken, fallback="app")
+    asset_slug = _udf_name("assets", taken) if plan.assets else None
     entrypoints = {
-        item.path: _udf_slug("run", digest, item.name) for item in plan.entrypoints
+        item.path: _udf_name(item.name, taken)
+        for item in sorted(plan.entrypoints, key=lambda entry: entry.path)
     }
-    asset_slug = _udf_slug("asset", digest) if plan.assets else None
     assets_map = {item.path: item.name for item in plan.assets}
     seed = {
         "shell": shell_slug,
