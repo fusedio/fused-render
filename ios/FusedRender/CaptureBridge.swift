@@ -33,6 +33,12 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
     // MARK: messages
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        // Only the app page itself, served by the paired computer. An iframe of
+        // another origin inside an app could otherwise start the mic or snapshot
+        // the page and have it uploaded under this phone's cookie.
+        guard message.frameInfo.isMainFrame,
+              !message.frameInfo.securityOrigin.host.isEmpty,
+              message.frameInfo.securityOrigin.host == server?.host else { return }
         guard let body = message.body as? [String: Any],
               let id = body["id"] as? String,
               let op = body["op"] as? String else { return }
@@ -212,7 +218,9 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
 
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let cookieHeader = cookies
-            .filter { c in pageURL.host.map { $0.hasSuffix(c.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) } ?? false }
+            // Exact host only: a suffix match would hand render.fused.local's
+            // cookie to a page on xrender.fused.local.
+            .filter { c in pageURL.host.map { $0 == c.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) } ?? false }
             .map { "\($0.name)=\($0.value)" }
             .joined(separator: "; ")
 

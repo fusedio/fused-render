@@ -146,10 +146,14 @@ final class AppModel: ObservableObject {
     /// A widget or quick action: `fusedrender://open?host&port&path`. Go to
     /// that computer and straight to the page, skipping the grid. The known
     /// record for that host carries the scheme and CA.
+    ///
+    /// Only a computer this phone already paired with. Any app can open a
+    /// fusedrender:// URL; one naming a stranger's host would put the webview
+    /// — bridge and all — on that host's page. The link's port/scheme are
+    /// ignored too: the known record decides how the computer is reached.
     func open(deepLink url: URL) -> Bool {
-        guard let link = DeepLink(url) else { return false }
-        let server = known.first(where: { $0.host == link.host })
-            ?? Server(name: link.host, host: link.host, port: link.port, scheme: link.scheme)
+        guard let link = DeepLink(url),
+              let server = known.first(where: { $0.host == link.host }) else { return false }
         remember(server)
         var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         c.path = "/render"

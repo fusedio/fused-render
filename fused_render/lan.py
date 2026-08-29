@@ -302,7 +302,7 @@ def _hash(secret: str) -> str:
 
 
 def mint_pair_token() -> str:
-    """A five-minute, multi-use pairing token. Loopback callers only (the router
+    """A five-minute, single-use pairing token. Loopback callers only (the router
     below is on the inner app; the LAN wrapper never forwards it)."""
     import secrets
     import time
@@ -475,9 +475,12 @@ def _unauthorized(scope) -> Response:
     return JSONResponse({"error": "not paired"}, status_code=401)
 
 
-def _with_cookie(response: Response, secret: str) -> Response:
+def _with_cookie(response: Response, secret: str, *, secure: bool) -> Response:
+    # A cookie minted over https (the app) must never travel over http: without
+    # `Secure`, a plain http://render.fused.local link inside a page would replay
+    # it in cleartext on the Wi-Fi. Browsers pair over http and keep a plain one.
     response.set_cookie(COOKIE, secret, max_age=COOKIE_MAX_AGE_S, httponly=True,
-                        samesite="lax", path="/")
+                        samesite="lax", path="/", secure=secure)
     return response
 
 
@@ -507,7 +510,8 @@ def _handle_pair(scope) -> Response:
             on_paired(record)
         except Exception:  # noqa: BLE001 — a notification must never fail a pairing
             logger.warning("lan: on_paired hook failed", exc_info=True)
-    return _with_cookie(RedirectResponse("/", status_code=302), secret)
+    return _with_cookie(RedirectResponse("/", status_code=302), secret,
+                        secure=scope.get("scheme") == "https")
 
 
 _RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")

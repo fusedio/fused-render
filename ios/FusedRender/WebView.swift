@@ -58,7 +58,7 @@ struct WebView: UIViewRepresentable {
         if let url = Bundle.main.url(forResource: "runtime-ios", withExtension: "js"),
            let source = try? String(contentsOf: url, encoding: .utf8) {
             config.userContentController.addUserScript(
-                WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+                WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
         let web = WKWebView(frame: .zero, configuration: config)
         bridge.webView = web
