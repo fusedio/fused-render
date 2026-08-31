@@ -2253,6 +2253,41 @@ export async function removeCurrentApp(
   return r.json();
 }
 
+/** Rename the app's FOLDER on disk. The server settles the move the same way
+ *  an out-of-band move is settled: stores repointed, Claude sessions carried
+ *  along. Answers the new canonical path. */
+export function renameCurrentApp(
+  path: string,
+  name: string,
+): Promise<{ ok: boolean; path: string }> {
+  return postJson<{ ok: boolean; path: string }>("/api/current-apps/rename", {
+    path,
+    name,
+  });
+}
+
+/** Mark every message of every task under the app's folder read — clears the
+ *  row's unread dot in one gesture. */
+export function readCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; marked: number; tasks: number }> {
+  return postJson<{ ok: boolean; marked: number; tasks: number }>(
+    "/api/current-apps/read",
+    { path },
+  );
+}
+
+/** Archive every task under the app's folder — the ✕'s task half without its
+ *  desk half: the row stays. */
+export function archiveCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; archived: number; cancelled: number }> {
+  return postJson<{ ok: boolean; archived: number; cancelled: number }>(
+    "/api/current-apps/archive",
+    { path },
+  );
+}
+
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
 // carrying `prompt`, due now — the New task form's own path, so the app's
 // Tasks tab lists it and the scheduler spawns the session. 409 = name
