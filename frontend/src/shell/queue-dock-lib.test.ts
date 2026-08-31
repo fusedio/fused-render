@@ -210,7 +210,7 @@ describe("queueCount", () => {
 /**
  * The ONE list as the card would actually draw it, for one moment in time: the queue
  * half's rows (`q:<entry id>`) followed by the job rows it draws beside them
- * (`j:<job id>`). Mirrors QueueDock and DownloadManager exactly — the same calls in
+ * (`j:<job id>`). Mirrors ActivityDock and DownloadManager exactly — the same calls in
  * the same order — because the property under test is about the two halves TOGETHER,
  * and neither half alone can be wrong or right about it.
  *
@@ -486,7 +486,7 @@ describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
   // job snapshot (~1s behind the turn) and the Tasks page's own poll (20s, plus
   // the server's liveness window on top). "If finished in one, finished in the
   // other" (Akshil, 2026-08-19) — so the running→terminal flip detected here is
-  // what QueueDock pokes the shared tasks store with (tasksPulse.pokeTasks).
+  // what ActivityDock pokes the shared tasks store with (tasksPulse.pokeTasks).
   const running = () => job({ id: `${SCHEDULE_JOB_PREFIX}e1` });
 
   it("fires on a run flipping running → terminal", () => {
@@ -538,7 +538,7 @@ describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
 describe("the live row's shimmer", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs");
   const { join } = require("node:path") as typeof import("node:path");
-  const DOCK = readFileSync(join(import.meta.dir, "QueueDock.tsx"), "utf8");
+  const DOCK = readFileSync(join(import.meta.dir, "ActivityDock.tsx"), "utf8");
   const CSS = readFileSync(
     join(import.meta.dir, "../styles/notifications.css"),
     "utf8",

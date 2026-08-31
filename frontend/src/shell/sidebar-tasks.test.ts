@@ -486,7 +486,7 @@ describe("one nav dot, worn by two rows", () => {
 // it never fetches over a feeder, and every producer of "a run just ended"
 // actually calls it.
 
-const QUEUE_DOCK = readFileSync(join(SHELL, "QueueDock.tsx"), "utf8");
+const QUEUE_DOCK = readFileSync(join(SHELL, "ActivityDock.tsx"), "utf8");
 const EVENTS = readFileSync(
   join(SHELL, "../platform/lib/scheduleEvents.ts"),
   "utf8",
