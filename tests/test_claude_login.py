@@ -40,7 +40,25 @@ def _clean(monkeypatch):
     """
     claude_login.reset()
     monkeypatch.setattr(claude_login, "_windows", lambda: False)
+    # AND STUB THE RE-PROBE. On a clean exit `_run` calls
+    # `claude_health.summary_refreshed()` from its worker thread, which spawns a
+    # real `claude auth status` through whatever `subprocess.Popen` is patched at
+    # that moment. A straggler thread from one test then lands in the NEXT test's
+    # fake and overwrites the kwargs it was about to assert on — seen as an
+    # intermittent `KeyError: 'stdin'`, roughly one run in six alongside the
+    # other claude_* files. The tests that are ABOUT the re-probe patch this
+    # themselves, and their patch wins by applying second.
+    monkeypatch.setattr(claude_health, "summary_refreshed", lambda: {})
     yield
+    # Settle the worker before the next test patches Popen again — the fixture
+    # tearing down is not the same thing as the thread having finished.
+    login = claude_login._active
+    if login is not None:
+        try:
+            login.proc.kill()
+        except Exception:  # noqa: BLE001 - a fake that refuses is still done with
+            pass
+        login.settled.wait(5)
     claude_login.reset()
 
 
