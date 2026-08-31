@@ -4,6 +4,7 @@ import itertools
 import json
 import mimetypes
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -40,6 +41,7 @@ from fused_render.server.gitignore import _git_ignored, _is_repo_root
 # fresh dict there, and a by-value copy here would keep serving the orphaned
 # pre-reload cache.
 from fused_render.server import mount as _server_mount
+from fused_render.shell import fda as shell_fda
 from fused_render.server.mount import (
     _STAT_CACHE,
     _fs_stat,
@@ -264,6 +266,10 @@ def api_fs_list(path: str, cursor: str | None = None):
         with os.scandir(path) as it:
             dents = list(itertools.islice(it, _server_walk.LIST_MAX_ENTRIES + 1))
     except OSError as e:
+        # A PermissionError here is the moment the Full Disk Access warning
+        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
+        # exactly this EPERM, sometimes with no prompt ever shown.
+        shell_fda.note_denied(e)
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
@@ -600,9 +606,29 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # than fall back to a local file read.
     if shell_mounts.is_mount_backed(path):
         return _error("mount serve unavailable", status=503)
-    st = await asyncio.to_thread(_stat_or_none, path)
-    if st is None:
+    # Not _stat_or_none here: it folds EVERY OSError into "missing", and on a
+    # TCC-denied path the stat itself raises EPERM — the file would 404 as
+    # "no such file" when it exists and was refused, and the Full Disk Access
+    # warning (shell/fda.py) would never hear about it.
+    try:
+        st = await asyncio.to_thread(os.stat, path)
+    except FileNotFoundError:
         return _error(f"no such file: {path}", status=404)
+    except OSError as e:
+        shell_fda.note_denied(e)
+        return _error(f"cannot read {path}: {e}", status=403)
+    if not stat.S_ISREG(st.st_mode):
+        return _error(f"no such file: {path}", status=404)
+    # Probe-open before handing the path to FileResponse: a TCC-denied file
+    # would otherwise raise PermissionError inside Starlette's response send —
+    # a generic 500, and the Full Disk Access warning (shell/fda.py) never
+    # hears about the one failure it exists to explain. The probe is a single
+    # open/close on a file the stat above already confirmed exists.
+    try:
+        await asyncio.to_thread(lambda: open(path, "rb").close())
+    except OSError as e:
+        shell_fda.note_denied(e)
+        return _error(f"cannot read {path}: {e}", status=403)
     media_type, _ = mimetypes.guess_type(path)
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 

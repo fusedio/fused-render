@@ -43,12 +43,15 @@ def test_force_env_flips_offered_both_ways(monkeypatch):
     assert fda_mod.offered() is False
 
 
-def test_demo_forces_offered_and_ungranted(monkeypatch):
+def test_demo_forces_offered_ungranted_and_denied(monkeypatch):
     # A terminal-launched dev server inherits the terminal's TCC identity,
-    # which usually has FDA — "demo" is how the card gets exercised anyway.
+    # which usually has FDA — "demo" is how the strip gets exercised anyway,
+    # so it also forces `denied` without manufacturing a real PermissionError.
     monkeypatch.setenv(fda_mod.FORCE_ENV, "demo")
+    monkeypatch.setattr(fda_mod, "_denied", False)
     assert fda_mod.offered() is True
     assert fda_mod.granted() is False
+    assert fda_mod.snapshot()["denied"] is True
 
 
 def test_snapshot_is_none_when_not_offered(monkeypatch):
@@ -64,13 +67,34 @@ def test_snapshot_is_none_when_the_probe_is_inconclusive(monkeypatch):
     assert fda_mod.snapshot() is None
 
 
-def test_snapshot_carries_granted_and_dismissed(tmp_path, monkeypatch):
+def test_snapshot_carries_granted_dismissed_and_denied(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(fda_mod.FORCE_ENV, "1")
     monkeypatch.setattr(fda_mod, "granted", lambda: False)
-    assert fda_mod.snapshot() == {"granted": False, "dismissed": False}
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    assert fda_mod.snapshot() == {"granted": False, "dismissed": False, "denied": False}
     fda_mod.set_dismissed()
-    assert fda_mod.snapshot() == {"granted": False, "dismissed": True}
+    monkeypatch.setattr(fda_mod, "_denied", True)
+    assert fda_mod.snapshot() == {"granted": False, "dismissed": True, "denied": True}
+
+
+# ---- note_denied(): what makes the warning worth showing ----------------------
+
+
+def test_denied_flips_only_on_a_permission_error(monkeypatch):
+    monkeypatch.setenv(fda_mod.FORCE_ENV, "1")
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    fda_mod.note_denied(FileNotFoundError("gone"))
+    assert fda_mod._denied is False
+    fda_mod.note_denied(PermissionError("EPERM"))
+    assert fda_mod._denied is True
+
+
+def test_denied_is_inert_when_not_offered(monkeypatch):
+    monkeypatch.setenv(fda_mod.FORCE_ENV, "0")
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    fda_mod.note_denied(PermissionError("EPERM"))
+    assert fda_mod._denied is False
 
 
 # ---- granted() probe semantics ----------------------------------------------
@@ -151,8 +175,33 @@ def test_settings_opens_the_fda_pane(tmp_path, monkeypatch):
 def test_config_carries_fda_only_when_offered(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(fda_mod, "granted", lambda: False)
+    monkeypatch.setattr(fda_mod, "_denied", False)
     body = client.get("/api/config").json()
-    assert body["fda"] == {"granted": False, "dismissed": False}
+    assert body["fda"] == {"granted": False, "dismissed": False, "denied": False}
 
     monkeypatch.setenv(fda_mod.FORCE_ENV, "0")
     assert "fda" not in client.get("/api/config").json()
+
+
+def test_a_refused_listing_flips_denied(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(fda_mod, "granted", lambda: False)
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    gated = tmp_path / "gated"
+    gated.mkdir()
+
+    assert client.get("/api/config").json()["fda"]["denied"] is False
+
+    # Deny ONLY the gated path: fs_read's `os` is the global module, so a
+    # blanket patch would still be live during the /api/config reads below.
+    real_scandir = os.scandir
+
+    def _deny(path, *a, **kw):
+        if str(path) == str(gated):
+            raise PermissionError(path)
+        return real_scandir(path, *a, **kw)
+
+    import fused_render.server.routers.fs_read as fs_read_mod
+    monkeypatch.setattr(fs_read_mod.os, "scandir", _deny)
+    client.get("/api/fs/list", params={"path": str(gated)})
+    assert client.get("/api/config").json()["fda"]["denied"] is True

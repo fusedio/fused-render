@@ -9,12 +9,14 @@ grant survives upgrades. macOS has no API to request FDA: an app can only
 DETECT it and open the right Settings pane. That is everything this module
 does; the shell renders the warning strip (platform/ui/FdaStrip.tsx, same
 posture as the Claude Code setup strip) off the `fda` field /api/config
-gets from snapshot(). The strip shows at launch whenever FDA is missing —
-without it the per-folder prompts can be lost entirely (a backend read
-under a protected folder while the app is not frontmost records a silent
-deny), which strands the user on "permission denied" with no prompt ever
-shown. That failure is why the warning no longer waits for the session to
-touch a protected folder first.
+gets from snapshot(). The strip shows on the first PermissionError an fs
+route actually hits (note_denied) — the moment trouble is real, not at
+launch. The per-folder prompts can be lost entirely (a backend read under
+a protected folder while the app is not frontmost records a silent deny),
+which used to strand the user on "permission denied" with no prompt ever
+shown and no explanation; the denial itself is now the trigger, so that
+silent-deny case still surfaces the warning without nagging every fresh
+install up front.
 
 Detection probes paths that only FDA unlocks. FDA-class paths never raise a
 TCC prompt (unlike the per-folder categories) — a failed probe is silent,
@@ -98,6 +100,27 @@ def granted() -> bool | None:
     return None
 
 
+#: Whether THIS session has hit a PermissionError on an fs route — the moment
+#: macOS actually refused a read, prompted or silent. The strip renders only
+#: after that: a user whose files all open fine never needs a word about Full
+#: Disk Access. In-memory on purpose — persisting it would bring the strip
+#: back at launch on every later session, which is the up-front nag this
+#: trigger exists to avoid. Bare bool write under the GIL; no lock needed.
+_denied = False
+
+
+def note_denied(exc: BaseException) -> None:
+    """Record an fs-route failure; flips the session's denied flag when it is
+    a PermissionError. Called from the fs routes' error paths — off the hot
+    path by construction, since a request only lands here once it has already
+    failed."""
+    global _denied
+    if _denied or not offered():
+        return
+    if isinstance(exc, PermissionError):
+        _denied = True
+
+
 def _path() -> str:
     return os.path.join(storage.home_dir(), "fda.json")
 
@@ -120,13 +143,19 @@ def snapshot() -> dict | None:
     Omitted when the warning isn't offered (non-mac, dev server) and when the
     probe is inconclusive — an absent field is the shell's "render nothing
     AND stop watching", so uncertainty never nags and never polls.
+
+    `denied` is the trigger: the strip renders only once this session has
+    actually hit a PermissionError (note_denied); until then the shell only
+    keeps watching this field. "demo" forces it, so a dev server can render
+    the strip without manufacturing a real denial.
     """
     if not offered():
         return None
     state = granted()
     if state is None:
         return None
-    return {"granted": state, "dismissed": dismissed()}
+    denied = _denied or os.environ.get(FORCE_ENV) == "demo"
+    return {"granted": state, "dismissed": dismissed(), "denied": denied}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

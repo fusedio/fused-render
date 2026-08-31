@@ -1,6 +1,5 @@
 // Full Disk Access warning — a strip on the front door, in the same posture
-// as ClaudeHealthStrip: says what is still needed before the user has spent
-// anything finding out.
+// and styling as ClaudeHealthStrip.
 //
 // It replaced the touch-triggered notification card (FdaCard). The card only
 // appeared once the session read under a protected folder, on the theory that
@@ -9,8 +8,15 @@
 // while the app is not frontmost gets its prompt suppressed and a DENY cached
 // silently, so the user's first sign of trouble is "permission denied" with
 // no prompt ever shown and no idea why. Full Disk Access — granted once in
-// System Settings — sidesteps the whole category, so the app now insists on
-// it up front: the strip shows at launch whenever FDA is missing.
+// System Settings — sidesteps the whole category.
+//
+// WHEN it shows is the design: not at launch (an up-front whole-disk ask on
+// a machine whose files all open fine is the wrong first impression), but the
+// moment an fs route actually hits a PermissionError — the server flips
+// `fda.denied` on that first denial (fused_render/shell/fda.py), which also
+// catches the silent-deny case above, since the cached deny still surfaces
+// as EPERM on the next read. Until then this renders nothing and quietly
+// watches /api/config.
 //
 // macOS has no API to request FDA; explain + open the exact Settings pane is
 // the entire affordance. The `fda` field of /api/config gates everything
@@ -28,13 +34,22 @@ import { pushToast } from "@platform/lib/toast";
 //: dismissal converges the same way.
 const GRANT_POLL_MS = 3000;
 
+//: While hidden but eligible (fda present, not granted, not dismissed), watch
+//: for the session's first denial so the strip appears when trouble starts.
+const WATCH_MS = 5000;
+
+// hidden → (watching) → showing. "watching" renders nothing: the machine
+// qualifies but no fs route has been refused yet.
+type Stage = "hidden" | "watching" | "showing";
+
 export function FdaStrip() {
-  const [showing, setShowing] = useState(false);
+  const [stage, setStage] = useState<Stage>("hidden");
   // "Open System Settings" was pressed: the steps collapse into a one-line
   // "turn it on over there" so the strip reads as in-progress, not nagging.
   const [waiting, setWaiting] = useState(false);
-  const showingRef = useRef(showing);
-  showingRef.current = showing;
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+  const showing = stage === "showing";
 
   useEffect(() => {
     let disposed = false;
@@ -42,7 +57,8 @@ export function FdaStrip() {
       .then((config) => {
         if (disposed) return;
         const fda = config.fda;
-        setShowing(Boolean(fda && !fda.granted && !fda.dismissed));
+        if (!fda || fda.granted || fda.dismissed) return;
+        setStage(fda.denied ? "showing" : "watching");
       })
       .catch(() => {}); // no config, no warning — the server card owns outages
     return () => {
@@ -50,20 +66,36 @@ export function FdaStrip() {
     };
   }, []);
 
+  // While "watching", wait for the session's first denial.
+  useEffect(() => {
+    if (stage !== "watching") return;
+    const timer = window.setInterval(() => {
+      getConfig()
+        .then((config) => {
+          if (stageRef.current !== "watching") return;
+          const fda = config.fda;
+          if (!fda || fda.granted || fda.dismissed) setStage("hidden");
+          else if (fda.denied) setStage("showing");
+        })
+        .catch(() => {});
+    }, WATCH_MS);
+    return () => window.clearInterval(timer);
+  }, [stage]);
+
   useEffect(() => {
     if (!showing) return;
     const timer = window.setInterval(() => {
       getConfig()
         .then((config) => {
-          if (!showingRef.current) return;
+          if (stageRef.current !== "showing") return;
           const fda = config.fda;
           if (fda?.granted) {
-            setShowing(false);
+            setStage("hidden");
             // "info" is this app's confirmation tone — there is no green toast
             // (Toast.tsx), and every other success ("Path copied") is info too.
             pushToast({ msg: "Full Disk Access is on — no more prompts", tone: "info" });
           } else if (!fda || fda.dismissed) {
-            setShowing(false);
+            setStage("hidden");
           }
         })
         .catch(() => {});
@@ -74,7 +106,7 @@ export function FdaStrip() {
   if (!showing) return null;
 
   const close = () => {
-    setShowing(false);
+    setStage("hidden");
     dismissFdaNudge().catch(() => {});
   };
 
@@ -99,10 +131,10 @@ export function FdaStrip() {
       <ul className="claude-health-issues">
         <li className="claude-health-issue">
           <p className="claude-health-issue-detail">
-            Without it, macOS blocks files in Desktop, Documents, Downloads and
-            external volumes — sometimes with no permission prompt at all, just
-            "permission denied". Granting Full Disk Access once fixes every
-            folder permanently.
+            macOS just refused FusedRender access to a file or folder —
+            sometimes it does this with no permission prompt at all, just
+            "permission denied". Granting Full Disk Access once fixes Desktop,
+            Documents, Downloads and external volumes permanently.
           </p>
           {waiting ? (
             <p className="claude-health-issue-detail">
