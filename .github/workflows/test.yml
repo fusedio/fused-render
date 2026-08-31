@@ -201,9 +201,19 @@ jobs:
           sudo chmod +x /usr/local/bin/rclone
           rclone version
 
+      # `-q`, not `-v`: `-v` prints one line per test, and there are >11,000 of
+      # them, so it buried this job's actual output ~5:1 and pushed the log past
+      # what the Actions UI will render in one piece. It bought nothing that is
+      # not still here — pytest's own "short test summary info" names every
+      # failure by nodeid either way, and under `-n auto` the per-test lines
+      # arrive interleaved across workers, so they never read as a run order.
+      # The rest of the volume is the warnings summary, which is ~1,600 lines of
+      # `tests/x.py: N warnings` attribution for the 19 `@app.on_event`
+      # deprecations in server/app.py — fixed by migrating those to a lifespan
+      # handler, not by a pytest flag.
       - name: Run tests
         run: >
-          python -m pytest tests/ -v
+          python -m pytest tests/ -q
           --cov=fused_render --cov-report=term-missing --cov-report=xml --cov-report=html
 
       # One representative version avoids 4 duplicate reports/artifacts for
@@ -312,8 +322,10 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $rcloneExe.DirectoryName
           & $rcloneExe.FullName version
 
+      # `-q` for the reason the Linux job above spells out: this job collects
+      # ~11,200 tests, and one `-v` line each is most of a 10k+ line log.
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -q
 
   # The optional fused execution engine (D69) — the engine the migration plan
   # promotes to default, after which the built-in executor goes away. Until this
