@@ -1676,14 +1676,14 @@
   // carried N listeners, so a single click cancelled every install.
   //
   // The count is what lets the row outlive an individual waiter. It is normally 1
-  // now, because `installEnv` dedups by key before `showInstall` is ever reached
-  // (SPEC PY-16 makes five scripts in one folder ONE key, and they join one
-  // promise rather than each opening a row). It is kept rather than removed
+  // now, because `installEnv` dedups by key before `ensureInstallRow` is ever
+  // reached (SPEC PY-16 makes five scripts in one folder ONE key, and they join
+  // one promise rather than each opening a row). It is kept rather than removed
   // because the invariant it encodes — the row goes when the LAST waiter settles,
   // never when the first does — is the one that has to hold if anything ever
-  // reaches `showInstall` twice for a key, and it costs a single integer. Living
-  // inside the entry means "which row" and "how many waiters" are one piece of
-  // state that cannot disagree with itself.
+  // reaches `ensureInstallRow` twice for a key, and it costs a single integer.
+  // Living inside the entry means "which row" and "how many waiters" are one
+  // piece of state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
@@ -1819,18 +1819,19 @@
       "align-items:center", "width:100%",
     ].join(";");
     el.appendChild(rows);
-    // `mountTimer` is part of the state, not a local in `showInstall`: the delay has
-    // to be cancellable from `hideInstall` (an install that finishes inside the
-    // window must not mount an overlay afterwards) and must not be restarted by a
-    // second install arriving while it is still pending.
+    // `mountTimer` is part of the state, not a local in `ensureInstallRow`: the
+    // delay has to be cancellable from `hideInstall` (an install that finishes
+    // inside the window must not mount an overlay afterwards) and must not be
+    // restarted by a second install arriving while it is still pending.
     installUi = { el, rows, mounted: false, mountTimer: null };
     return installUi;
   }
 
-  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY in
-  // `showInstall` even though mounting is delayed: `installEnv` registers its cancel
-  // handler and paints its first record immediately, so the nodes have to exist
-  // before the overlay does. A row that is never mounted is simply never seen.
+  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY
+  // in `ensureInstallRow` even though mounting is delayed: `installEnv` registers
+  // its cancel handler and paints its first record immediately, so the nodes have
+  // to exist before the overlay does. A row that is never mounted is simply never
+  // seen.
   function installRow() {
     const el = document.createElement("div");
     el.style.cssText = [
@@ -1894,13 +1895,11 @@
   }
 
   // Get-or-create this key's { row, count } entry, incrementing count exactly
-  // once. Split out of `showInstall` so the confirm step (which needs the row
-  // BEFORE anything is known about whether this call ends up preparing or
-  // asking a question first) and `showInstall` itself (still called directly
-  // wherever a caller wants the "preparing" paint immediately) share the one
-  // place that entry bookkeeping happens — two increments for one call would
-  // leave `hideInstall` decrementing past zero for whichever call never
-  // matched.
+  // once. Its own function (rather than inlined into `startInstall`) because
+  // the confirm step needs the row BEFORE anything is known about whether this
+  // call ends up preparing or asking a question first — the one place entry
+  // bookkeeping happens, so two increments for one call can never leave
+  // `hideInstall` decrementing past zero for whichever call never matched.
   function ensureInstallRow(need) {
     const ui = installOverlay();
     let entry = installing.get(need.key);
@@ -1943,13 +1942,6 @@
       ? "contacting the installer… (" + requirements + ")"
       : "contacting the installer…";
     installBarIndeterminate(row, true);
-  }
-
-  function showInstall(need) {
-    const { ui, row } = ensureInstallRow(need);
-    mountInstallSoon(ui);
-    paintPreparing(row, need);
-    return row;
   }
 
   function hideInstall(key) {

@@ -508,6 +508,26 @@ globalThis.document = {
 """
 
 
+# `showInstall` used to be runtime.js's own convenience wrapper around
+# `ensureInstallRow` + `mountInstallSoon` + `paintPreparing` (get-or-create the
+# row, arm the mount timer, paint the "preparing" state). `startInstall` now
+# calls those three directly — it needs the row BEFORE deciding whether this
+# install asks a question first — so `showInstall` had no callers left and was
+# deleted as dead code. These tests still want it: it is the one call that
+# exercises exactly that trio together, which is what most of the tests below
+# are actually testing (row reuse across concurrent installs, the mount delay,
+# the indeterminate bar). Recreated here rather than resurrected in the
+# shipped runtime.
+_SHOW_INSTALL_TEST_HELPER = """
+function showInstall(need) {
+  const { ui, row } = ensureInstallRow(need);
+  mountInstallSoon(ui);
+  paintPreparing(row, need);
+  return row;
+}
+"""
+
+
 def _loader_js():
     """The install-loader block of runtime.js, verbatim."""
     import fused_render
@@ -575,7 +595,7 @@ def _run_runpython(scenario):
         pytest.skip("node is needed to run runPython's own JS")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
                                      encoding="utf-8") as f:
-        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + scenario)
+        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + _SHOW_INSTALL_TEST_HELPER + scenario)
         harness = f.name
     try:
         out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
@@ -829,7 +849,7 @@ def _run_loader(scenario):
         pytest.skip("node is needed to run the loader's own JS")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
                                      encoding="utf-8") as f:
-        f.write(_JS_PRELUDE + _loader_js() + scenario)
+        f.write(_JS_PRELUDE + _loader_js() + _SHOW_INSTALL_TEST_HELPER + scenario)
         harness = f.name
     try:
         out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
