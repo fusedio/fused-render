@@ -105,6 +105,27 @@
 #                  an int8 weight-only transformer costs per step on CUDA, ROCm,
 #                  MPS or CPU. So the `catalog.py` note promises a smaller
 #                  download and nothing about the clock.
+#   bitsandbytes   reads the OTHER quantized component in the same repo
+#                  torchao is named for above — `tonera/FLUX.2-klein-4B-
+#                  int8-diffusers` is MIXED quantization, not uniform int8 as
+#                  the catalog's `quantization` label alone suggests: its
+#                  `transformer/config.json` carries `"quant_method":
+#                  "torchao"` but `text_encoder/config.json` carries
+#                  `"quant_method": "bitsandbytes"` (4-bit NF4, double quant,
+#                  bf16 compute dtype). `from_pretrained` builds the text
+#                  encoder BEFORE the transformer, so without this line the
+#                  only `diffusers-image` suggestion — what a bare
+#                  `fused.ai.image()` starts — failed with `ImportError: Using
+#                  `bitsandbytes` 4-bit quantization requires bitsandbytes`
+#                  raised on the text encoder, before the torchao transformer
+#                  this file already declared for was ever reached. See
+#                  `catalog.py`'s entry for the fuller account. `>=0.46.1` is
+#                  what that ImportError itself demands (bitsandbytes'
+#                  `import_utils` version-gates 4-bit loading below that
+#                  release); `<1` for the same reason `torchao` above gets a
+#                  major rather than a pre-1.0 minor ceiling — nothing in
+#                  `torch_image.py` calls bitsandbytes directly, diffusers
+#                  does, and it version-gates the calls it makes.
 #   pillow         writes the PNG
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
@@ -121,6 +142,7 @@ dependencies = [
     "protobuf",
     "gguf",
     "torchao>=0.15,<1",
+    "bitsandbytes>=0.46.1,<1",
     "pillow",
     "huggingface_hub",
     "psutil",

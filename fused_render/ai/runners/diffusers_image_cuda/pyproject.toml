@@ -54,6 +54,7 @@ dependencies = [
     "protobuf",
     "gguf",
     "torchao>=0.15,<1",
+    "bitsandbytes>=0.46.1,<1",
     "pillow",
     "huggingface_hub",
     "psutil",

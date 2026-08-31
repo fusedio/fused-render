@@ -606,6 +606,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # encoder and VAE still come from their safetensors. Forcing
             # `use_safetensors=False` would break those two instead.
             #
+            # **The repo is MIXED quantization, not uniform torchao, and this
+            # comment used to describe only half of it.** `text_encoder/
+            # config.json` carries its own `"quant_method": "bitsandbytes"` —
+            # 4-bit NF4, double quant, bf16 compute dtype — a second backend
+            # `from_pretrained` needs to import BEFORE it ever reaches the
+            # transformer above. Omitting `bitsandbytes` from the three
+            # `diffusers_image*` runner manifests (it was omitted from all
+            # three) meant the ONLY entry in this list — what a bare
+            # `fused.ai.image()` starts — failed on every engine with
+            #
+            #     ImportError: Using `bitsandbytes` 4-bit quantization
+            #     requires bitsandbytes: `pip install -U
+            #     bitsandbytes>=0.46.1`
+            #
+            # raised while building the text encoder, before the torchao
+            # transformer this comment was already careful about was ever
+            # constructed — the same class of defect the `.bin`-vs-
+            # `.safetensors` reasoning above exists to keep out: a format this
+            # comment did not account for making the recommended model refuse
+            # to load. See the runner manifests' own `bitsandbytes` entries for
+            # the version reasoning and the ROCm-specific verification.
             # It is the only entry, so it is what a bare `fused.ai.image()`
             # starts: the ordering rule
             # (`test_every_suggestion_list_is_ordered_smallest_first`) holds
