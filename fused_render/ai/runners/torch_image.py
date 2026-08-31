@@ -147,25 +147,150 @@ def download(model_id):
     return {"snapshot": snapshot, "gguf": gguf}
 
 
+#: How much VRAM `_place` refuses to plan into, on top of every component
+#: size it measures — 3 GiB by default, overridable with `FUSED_RENDER_AI_
+#: VRAM_HEADROOM_GB` (a float, e.g. `1.5`). This is a CONSERVATIVE PLACEHOLDER,
+#: not a measured figure: the denoising loop's own activations (latents,
+#: attention maps, the VAE's decode buffers) cost real VRAM on top of the
+#: weights this module CAN measure in-process, and nobody has yet profiled
+#: how that scales with resolution on the hardware this shipped for (a 15.9
+#: GiB RX 9060 XT running FLUX.2-klein-4B). 3 GiB is a guess wide enough to
+#: survive a 1024² render without starving diffusers' allocator; it is also
+#: the ONE NUMBER standing between a placement decision that fits and a mid
+#: -render OOM at a resolution nobody has actually measured here. Narrowing
+#: it needs a real profile (`torch.cuda.max_memory_allocated()` across a
+#: sweep of resolutions), not a smaller guess.
+_VRAM_HEADROOM_BYTES = 3 * (1 << 30)
+
+#: Env var for `_VRAM_HEADROOM_BYTES`, same "set AND parsable" precedence as
+#: `prefs.ai_idle_unload_minutes_override` — an unset or unparsable value is
+#: silently ignored rather than treated as an intentional zero, so a typo in
+#: this variable degrades to the documented default instead of removing the
+#: safety margin it exists to keep.
+_VRAM_HEADROOM_ENV = "FUSED_RENDER_AI_VRAM_HEADROOM_GB"
+
+
+def _vram_headroom_bytes():
+    raw = os.environ.get(_VRAM_HEADROOM_ENV)
+    if not raw:
+        return _VRAM_HEADROOM_BYTES
+    try:
+        return int(float(raw) * (1 << 30))
+    except ValueError:
+        return _VRAM_HEADROOM_BYTES
+
+
+def _component_bytes(module):
+    """Bytes a loaded `torch.nn.Module` component will cost on a device —
+    parameters AND buffers, because a component can hold real weight-sized
+    tensors in either bucket (a GGUF-quantized transformer's scale/zero-point
+    tensors are commonly registered as buffers, not parameters, and skipping
+    them would undercount exactly the component this feature was built to
+    place). Measured while the component is still on CPU — `_place` runs
+    before ANY `.to()`/offload call, so this is the true per-component size
+    for any repo, with no catalog lookup and no reliance on a config file
+    agreeing with what actually got loaded.
+    """
+    total = 0
+    for param in module.parameters():
+        total += param.numel() * param.element_size()
+    for buf in module.buffers():
+        total += buf.numel() * buf.element_size()
+    return total
+
+
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
-    Three cases and one wrinkle. On CUDA, `enable_model_cpu_offload` keeps a
-    model bigger than the card's VRAM working. On Apple Silicon that same call
-    is counterproductive — "GPU memory" there is the SAME unified pool as system
-    RAM, so offloading buys nothing and adds transfers — hence a plain move. And
-    MPS generators are unreliable, so the seed is taken on the CPU whatever the
-    pipeline runs on; a reproducible seed is worth more than the microsecond.
+    Three cases on CUDA/ROCm now, not one — SPEC/D measured on the user's own
+    machine: a FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9
+    GiB RX 9060 XT with 2.0 GiB already used system-wide. The unconditional
+    `enable_model_cpu_offload()` this branch used to call regardless of card
+    size left `RssAnon` at 11.7 GiB (the weights, parked in system RAM by
+    accelerate) and the worker's own VRAM at 0.59 GiB (HIP context and
+    staging only) — the wrong side of the trade on a card that could hold
+    the whole model, or at least its hot path, resident:
 
-    The two are returned separately because they genuinely differ on MPS, and
-    collapsing them is what hid the device from `/health` for as long as this
-    function only answered the seed's question: a FLUX render on a Windows CPU
-    is tens of minutes, and nothing on screen said which case the user was in.
+    1. **All-GPU** — every component's measured size plus `_vram_headroom_
+       bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
+       ("cuda")`, nothing streamed per render.
+    2. **Hot-GPU** — the whole model does not fit, but the HOT set does: the
+       denoiser (`transformer`, or `unet` on a pipeline that still calls it
+       that) plus the `vae`, the two components that run on every step of
+       generation. The text encoder runs once per render and is left to
+       offload's per-call fetch — on this machine's numbers that is 2.8 GiB
+       of pinned VRAM against an 8.05 GB component that would otherwise be
+       fetched and freed once anyway. Diffusers' own `pipelines/pipeline_
+       utils.py` (~line 1279, verified against the installed package) is
+       what makes this work: `enable_model_cpu_offload` gives every component
+       named in `pipe._exclude_from_cpu_offload` a plain `model.to(device)`
+       and an offload hook to everything else. That list is a CLASS
+       attribute defaulting to `[]` on the pipeline base — appending to it
+       in place would leak the hot-set names onto every OTHER instance (and
+       future instance) of the same pipeline class, so it is copied first.
+    3. **Offload** — neither fits: today's unconditional `enable_model_cpu_
+       offload()`, unchanged.
+
+    A raising `mem_get_info()` or a raising component measurement (an older
+    torch, an exotic component type this probe did not anticipate) degrades
+    straight to case 3 — the same "a probe must never break loading" reasoning
+    `release()`'s per-backend try/except documents just below, applied to the
+    measurement instead of the reclaim.
+
+    The MPS and CPU branches are untouched: MPS's unified memory makes
+    offloading pure overhead there (see below), and CPU has nothing to place.
+    MPS generators are unreliable, so the seed is taken on the CPU whatever
+    the pipeline runs on; a reproducible seed is worth more than the
+    microsecond. The two return values differ on MPS, and collapsing them is
+    what hid the device from `/health` for as long as this function only
+    answered the seed's question: a FLUX render on a Windows CPU is tens of
+    minutes, and nothing on screen said which case the user was in.
+
+    Every case reports which one happened, alongside `device`, so `/health`
+    (and `fit`, eventually) can tell "on a GPU" apart from "on a GPU but
+    streaming every component through it".
     """
     import torch
 
     if torch.cuda.is_available():
-        pipe.enable_model_cpu_offload()
+        placement = None
+        hot_names = []
+        try:
+            free, _ = torch.cuda.mem_get_info()
+            headroom = _vram_headroom_bytes()
+            sizes = {
+                name: _component_bytes(component)
+                for name, component in pipe.components.items()
+                if isinstance(component, torch.nn.Module)
+            }
+            total_bytes = sum(sizes.values())
+            denoiser_name = "transformer" if "transformer" in sizes else (
+                "unet" if "unet" in sizes else None)
+            hot_names = [n for n in (denoiser_name, "vae") if n in sizes]
+            hot_bytes = sum(sizes[n] for n in hot_names)
+            if total_bytes + headroom <= free:
+                placement = "all-gpu"
+            elif hot_names and hot_bytes + headroom <= free:
+                placement = "hot-gpu"
+            else:
+                placement = "offload"
+        except Exception:  # noqa: BLE001 - the size probe must never break loading
+            placement = None
+
+        if placement == "all-gpu":
+            pipe.to("cuda")
+        elif placement == "hot-gpu":
+            # Copy before append — see the docstring's point 2. Reading
+            # through `pipe.` falls back to the CLASS attribute when the
+            # instance has never set one of its own, exactly the case being
+            # guarded against here.
+            pipe._exclude_from_cpu_offload = list(pipe._exclude_from_cpu_offload) + hot_names
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.enable_model_cpu_offload()
+            placement = "offload"
+
+        worker_base.set_state(placement=placement)
         return "cuda", "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         pipe.to("mps")
