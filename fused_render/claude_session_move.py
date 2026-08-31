@@ -194,18 +194,38 @@ def _path_rewrites(old_root: str, new_root: str) -> list:
     `/A/app-old`: the next character must end the path or start a deeper
     segment, in whichever alphabet the spelling uses.
     """
+    from fused_render._view_url_codec import canonical_fs_path
+
     old = os.path.abspath(old_root).rstrip(os.sep)
     new = os.path.abspath(new_root).rstrip(os.sep)
+    # On Windows the abspath spelling is backslashed while the shell writes
+    # its canonical forward-slash form into urls and app-state blocks; on
+    # POSIX the two collapse into one (deduped below).
+    cold, cnew = canonical_fs_path(old), canonical_fs_path(new)
+    plain = rb'(?=$|[/\\"\'\s?&#)\],:;])'
     pairs = [
-        (old.encode("utf-8"), new.encode("utf-8"), rb'(?=$|[/\\"\'\s?&#)\],:;])'),
-        # A JSON string doubles backslashes, so a Windows path has a third
+        (old, new, plain),
+        (cold, cnew, plain),
+        # A JSON string doubles backslashes, so a Windows path has another
         # spelling inside the very lines being rewritten.
-        (json.dumps(old)[1:-1].encode("utf-8"), json.dumps(new)[1:-1].encode("utf-8"),
+        (json.dumps(old)[1:-1], json.dumps(new)[1:-1],
          rb'(?=$|["\'\s?&#)\],:;]|\\\\)'),
-        (urllib.parse.quote(old, safe="").encode("ascii"),
-         urllib.parse.quote(new, safe="").encode("ascii"), rb'(?=$|[%"\\&#?])'),
+        (urllib.parse.quote(cold, safe=""), urllib.parse.quote(cnew, safe=""),
+         rb'(?=$|[%"\\&#?])'),
+        (urllib.parse.quote(old, safe=""), urllib.parse.quote(new, safe=""),
+         rb'(?=$|[%"\\&#?])'),
     ]
-    return [(re.compile(re.escape(o) + tail), n) for o, n, tail in pairs if o != n]
+    out, seen = [], set()
+    for o, n, tail in pairs:
+        ob, nb = o.encode("utf-8"), n.encode("utf-8")
+        if ob == nb or ob in seen:
+            continue
+        seen.add(ob)
+        # `sub` reads the replacement as a template: a backslash in a Windows
+        # destination would be an escape (or a raised re.error), so it is
+        # doubled to mean itself literally.
+        out.append((re.compile(re.escape(ob) + tail), nb.replace(b"\\", b"\\\\")))
+    return out
 
 
 def _rewrite_cwd(src: str, dst: str, old_root: str, new_root: str) -> None:
