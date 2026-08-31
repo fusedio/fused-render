@@ -701,11 +701,11 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
 # unlike calls.py, prefs.py's own reads carry no TTL.
 
 
-def test_ai_idle_unload_minutes_defaults_to_ten(tmp_path, monkeypatch):
+def test_ai_idle_unload_minutes_defaults_to_five(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     ai_idle = client.get("/api/prefs").json()["ai_idle"]
-    assert ai_idle["minutes"] == 10
-    assert ai_idle["effective_minutes"] == 10
+    assert ai_idle["minutes"] == 5
+    assert ai_idle["effective_minutes"] == 5
     assert ai_idle["forced_by"] is None
 
 
@@ -738,10 +738,10 @@ def test_a_hand_edited_out_of_range_ai_idle_minutes_falls_back_to_the_default(
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True)
     (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": 99999}))
-    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 5
 
     (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": "soon"}))
-    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 5
 
 
 def test_ai_idle_env_override_wins_but_leaves_the_stored_value_intact(tmp_path, monkeypatch):

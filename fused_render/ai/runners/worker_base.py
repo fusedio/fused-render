@@ -185,7 +185,7 @@ def run_on_generate_thread(fn, *args, **kwargs):
 #: coincidence: both exist because 30s is short enough that "idle" means
 #: something a user would recognise, and this timer is that reaper's much
 #: cheaper, purely in-process cousin. The reaper polls every 30s whether a
-#: worker has been unused for `prefs.effective_ai_idle_unload_minutes()` (10
+#: worker has been unused for `prefs.effective_ai_idle_unload_minutes()` (5
 #: minutes by default) and, past that, KILLS THE PROCESS — losing the loaded
 #: weights entirely, the next request pays a full reload. This timer fires
 #: once, 30 SECONDS after the worker's own last execution, and only hands

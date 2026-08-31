@@ -88,7 +88,7 @@ DEFAULT_CALLS_RETENTION_DAYS = 14
 #: (SPEC AI-13). Minutes, not seconds — a sensible window is measured in
 #: minutes and a seconds control invites off-by-1000 mistakes. `0` disables
 #: the reaper entirely, same "0 = off" shape as `calls_retention_days`.
-DEFAULT_AI_IDLE_UNLOAD_MINUTES = 10
+DEFAULT_AI_IDLE_UNLOAD_MINUTES = 5
 #: The env var a *set, parsable* value of which overrides the stored pref —
 #: same precedence as `FUSED_RENDER_CALLS_RETENTION_DAYS`, so a machine-level
 #: policy (a shared workstation someone wants to keep more aggressive than
@@ -301,7 +301,7 @@ def calls_retention_days() -> int:
 
 def ai_idle_unload_minutes() -> int:
     """How long a resident model may sit idle before the reaper unloads it
-    (default 10). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
+    (default 5). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
     value = read_prefs().get("ai_idle_unload_minutes")
     if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 1_440:
         return value

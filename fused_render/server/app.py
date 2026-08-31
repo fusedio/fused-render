@@ -422,7 +422,7 @@ def create_app(start_dir: str) -> FastAPI:
         await shutdown_ai_session()
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
-    # nothing has used it for the configured window (default 10 min, 0 = off).
+    # nothing has used it for the configured window (default 5 min, 0 = off).
     # A startup event and deliberately not the create_app body, for the same
     # reason as `_startup_schedule` above: tests build apps with no lifespan,
     # and this starts a thread that lives for the process — building one per
