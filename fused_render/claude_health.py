@@ -496,6 +496,106 @@ def install_command() -> str:
     return INSTALL_COMMAND_WINDOWS if os.name == "nt" else INSTALL_COMMAND_POSIX
 
 
+# --- the terminal's PATH, as opposed to ours ----------------------------------
+#
+# The app finding the CLI and the user's terminal finding it are different facts,
+# and the native installer is why they diverge: `claude install` creates
+# ~/.local/bin/claude and then only PRINTS the shell-profile line — it never
+# edits an rc file. Worse, when the app runs the installer it does so with
+# `augmented_path()` (claude_install._child_env), which already contains
+# ~/.local/bin, so the installer sees the directory "on PATH" and prints no
+# warning at all. The one messenger the user had is silenced by our own
+# environment prep. So the app measures the fact itself and owns the repair.
+
+#: Which rc file the PATH line belongs in, by shell. bash on macOS reads
+#: ~/.bash_profile for login shells (Terminal.app opens login shells), and
+#: ~/.bashrc everywhere else. fish is deliberately absent: its syntax is not
+#: `export`, and appending a bash line to fish config would break the shell we
+#: were trying to fix — a fish user gets the fact reported with no command.
+def _shell_rc() -> Optional[str]:
+    shell = os.path.basename(os.environ.get("SHELL") or "")
+    if shell == "zsh" or shell == "":
+        # zsh is the macOS default; an unset SHELL on darwin still means zsh in
+        # every terminal the user will actually open.
+        return "~/.zshrc" if (shell or sys.platform == "darwin") else None
+    if shell == "bash":
+        return "~/.bash_profile" if sys.platform == "darwin" else "~/.bashrc"
+    return None
+
+
+def path_fix(path: str) -> Optional[dict]:
+    """The command that puts `path`'s directory on the terminal's PATH, or None.
+
+    None when there is nothing safe to offer: Windows (install.ps1 edits the
+    user PATH itself), a shell we cannot write a correct line for (fish), or a
+    directory outside the user's home (a system dir missing from PATH is a
+    machine configuration problem, not something to append over).
+
+    `$HOME`-relative on purpose, in both the line and what the user sees: the
+    literal expansion would bake a username into a dotfile that may be synced
+    between machines.
+    """
+    if os.name == "nt":
+        return None
+    rc = _shell_rc()
+    if not rc:
+        return None
+    home = os.path.expanduser("~")
+    bindir = os.path.dirname(os.path.abspath(path))
+    if not (bindir == home or bindir.startswith(home + os.sep)):
+        return None
+    rel = "$HOME" + bindir[len(home):]
+    line = f'export PATH="{rel}:$PATH"'
+    return {
+        "rc_file": rc,
+        "line": line,
+        "command": f"echo '{line}' >> {rc}",
+    }
+
+
+def add_to_shell_path() -> dict:
+    """Append the PATH line to the user's shell rc — the strip's one-click fix.
+
+    Idempotent by DIRECTORY, not by line: any mention of the bin directory in
+    the rc file means the user (or a previous press) already handled it, and a
+    second identical line would be clutter that outlives the button.
+
+    Returns `{ok, rc_file, line}` or `{ok: False, error}` — the error text is
+    shown verbatim, so it is written as a sentence.
+    """
+    path, _source = resolve(allow_shell=False)
+    if not path or not executable(path):
+        return {"ok": False, "error": "there is no Claude Code on this machine "
+                                      "to put on the PATH — install it first"}
+    fix = path_fix(path)
+    if not fix:
+        return {"ok": False, "error": "this shell's profile isn't one the app "
+                                      "can safely edit — add the directory to "
+                                      "your PATH by hand"}
+    rc_path = os.path.expanduser(fix["rc_file"])
+    bindir = os.path.dirname(os.path.abspath(path))
+    rel = "$HOME" + bindir[len(os.path.expanduser("~")):]
+    try:
+        existing = ""
+        if os.path.exists(rc_path):
+            with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        if bindir in existing or rel in existing:
+            return {"ok": True, "rc_file": fix["rc_file"], "line": fix["line"],
+                    "already": True}
+        # EXACTLY the line the strip showed next to the button — same doctrine
+        # as install_argv: what the user is told will run and what runs are the
+        # same sentence. No banner comment, no extra blank line beyond the one
+        # that keeps the append off the end of an unterminated last line.
+        with open(rc_path, "a", encoding="utf-8") as f:
+            lead = "" if (not existing or existing.endswith("\n")) else "\n"
+            f.write(f"{lead}{fix['line']}\n")
+    except OSError as exc:
+        return {"ok": False, "error": f"could not write {fix['rc_file']}: {exc}"}
+    return {"ok": True, "rc_file": fix["rc_file"], "line": fix["line"],
+            "already": False}
+
+
 #: Install methods where `claude update` genuinely updates something, and the
 #: ones where it is a documented no-op.
 #:
@@ -699,7 +799,7 @@ _LOCK = threading.Lock()
 #: answer `null` on macOS by rule, and every one of those snapshots would keep
 #: being served to the fixed code — the strip staying silent on a signed-out
 #: machine because a stale file said the question was unanswerable.
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4
 
 #: How long a snapshot may be served before it is re-measured.
 #:
@@ -832,6 +932,29 @@ def _measure(allow_shell: bool = True) -> dict:
     doctor = _doctor(path) if (usable and (broken or outdated)) else None
     method = install_method(path, doctor)
     plan = update_plan(method)
+
+    # DOES THE USER'S TERMINAL SEE IT — a separate fact from `found`, because
+    # the native installer never edits an rc file (it only prints the PATH line,
+    # and claude_install's augmented PATH suppresses even that). Decided by
+    # `source` where source already answers it, and by one login-shell probe
+    # where it does not:
+    #   * "path"  — the PATH we inherited has it; a terminal's PATH is a
+    #     superset of that in practice. True.
+    #   * "shell" — the login shell itself found it. True by definition.
+    #   * "candidate" — we found it only because we knew where to look. Ask the
+    #     login shell; silence means the terminal really cannot see it. The
+    #     probe costs a second or two and runs only on exactly the machines
+    #     where the answer might be False.
+    #   * "override" / Windows / not found — None: unknown or not ours to say
+    #     (install.ps1 edits the user PATH itself).
+    on_shell_path: Optional[bool] = None
+    if usable and os.name != "nt":
+        if source in ("path", "shell"):
+            on_shell_path = True
+        elif source == "candidate" and allow_shell:
+            on_shell_path = _shell_probe() is not None
+    fix = path_fix(path) if (usable and on_shell_path is False) else None
+
     return {
         "found": usable,
         "path": path,
@@ -861,6 +984,15 @@ def _measure(allow_shell: bool = True) -> dict:
         "update_manager": plan["manager"],
         "update_blocked_reason": plan["reason"],
         "doctor": doctor,
+        # True / False / None-for-unknown: can a TERMINAL find `claude`, as
+        # opposed to this app. False is the only value the strip acts on, and
+        # it is only ever set on the strength of a login-shell probe that came
+        # back empty — never inferred from where WE found the binary.
+        "on_shell_path": on_shell_path,
+        # The exact line the one-click fix will run, shown before it runs.
+        # None whenever there is nothing safe to offer (fish, Windows, a
+        # binary outside the home directory).
+        "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),
         "fingerprint": _fingerprint(path),
     }

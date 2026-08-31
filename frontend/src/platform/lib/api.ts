@@ -241,6 +241,16 @@ export interface ClaudeHealth {
   /** `claude doctor`'s own report, when it was run. Only measured while
       something already looks wrong — a healthy machine never pays for it. */
   doctor: ClaudeDoctor | null;
+  /** Whether a TERMINAL can find `claude`, as opposed to this app. The native
+      installer never edits an rc file, so the app can be fully working while
+      `claude` in a terminal says "command not found". Only an explicit `false`
+      — a login-shell probe that came back empty — may show the fix; `null`
+      means unknown or not ours to say (Windows, an override). */
+  on_shell_path: boolean | null;
+  /** The exact rc-append line the one-click fix runs, shown before it runs.
+      null when there is nothing safe to offer (fish, Windows, a binary outside
+      the home directory). */
+  path_fix_command: string | null;
   checked_at: number;
 }
 
@@ -289,6 +299,19 @@ export function startClaudeInstall(
 
 export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
   return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** Append the PATH line to the user's shell profile — the fix for a CLI the
+    app can see and the terminal cannot. Rejects with the server's sentence
+    when it refuses (a shell it cannot safely edit, an unwritable rc file). */
+export function linkClaudePath(): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson("/api/claude/link-path", {});
 }
 
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
