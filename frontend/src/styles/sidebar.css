@@ -1209,6 +1209,13 @@ a.bookmark-name::after {
   margin-left: 6px;
 }
 
+/* The unread dot sits BEFORE the name (owner, 2026-08-31), never over the
+   glyph — the glyph slot is identity, the dot is state. */
+.current-app-unread {
+  position: static;
+  flex: 0 0 auto;
+}
+
 .current-app-archive:disabled {
   opacity: 0.5;
   cursor: default;

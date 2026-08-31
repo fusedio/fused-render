@@ -35,7 +35,7 @@ import IconPicker from "@platform/ui/IconPicker";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { opensElsewhere } from "@shell/tasks-lib";
+import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   appPageTabFromSearch,
@@ -293,6 +293,17 @@ function CurrentAppRow({
           </svg>
         )}
       </span>
+      {/* The unread dot sits IN FRONT of the name (owner, 2026-08-31): a task
+          under this app finished and has not been read — the Tasks row's green,
+          worn per app. Yellow outranks green (one dot per row, the Tasks rule),
+          so it hides while anything runs; it clears when the task is read,
+          since it draws the raw doneUnread state, not a visit-stamped one. */}
+      {app.unread && !app.running && (
+        <span
+          className="sidebar-rail-dot is-unread current-app-unread"
+          aria-hidden="true"
+        />
+      )}
       <a
         className="bookmark-name"
         href={href}
@@ -342,20 +353,27 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => r.status === "in_progress").map((r) => r.project || ""),
     [rows],
   );
+  // The projects with a finished-and-unread task — the raw doneUnread state
+  // the Tasks row's count chip reads, not the visit-stamped `unseen`: a dot
+  // per app clears by the task being READ, not by glancing at some page.
+  const unreadProjects = useMemo(
+    () => rows.filter(isDoneUnread).map((r) => r.project || ""),
+    [rows],
+  );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const entries = useCurrentApps(keySignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects);
+    const found = currentApps(entries, runningProjects, unreadProjects);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, orderEpoch]);
+  }, [entries, runningProjects, unreadProjects, orderEpoch]);
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
   // an arrangement the user made, and only they can change it.
