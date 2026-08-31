@@ -1298,6 +1298,32 @@ never imports server).
   removed)* — a separate axis,
   and the page's copy states this so "Fused engine" is never read as "runs
   on my Fused env".
+- **PF-3a** *Effective* also means **runnable on this machine** (**D626**).
+  `fused`'s handler hardcodes one per-call scratch root —
+  `os.makedirs(f"/tmp/exec/{uuid4()}")`, a literal with no env var and no
+  argument — and on a desktop
+  that is machine-wide: whichever account opens the app first creates
+  `/tmp/exec` under its own umask, and every other account on the box then gets
+  `PermissionError: [Errno 13] Permission denied: '/tmp/exec/<uuid>'` on every
+  run. It is raised in the CHILD, so it comes back as the run's `error` and the
+  page's overlay shows it as the *user's script* failing. `engine.
+  exec_root_blocked()` therefore (a) creates/repairs the root at `/tmp`'s own
+  mode — `0o1777`, world-writable and sticky, so every account gets its own
+  call dirs and none can remove another's — including a root we already own,
+  which is what unblocks the *other* account without it doing anything; and
+  (b) reports the cases it cannot fix (another account's unwritable root, a
+  symlink, a non-directory), which `prefs._fused_runnable()` ANDs into the
+  PF-3 resolve so dispatch degrades to builtin **the same way a missing package
+  does**. Repair is by `O_NOFOLLOW` file descriptor, never a path `chmod`:
+  `/tmp` is world-writable, so a planted `/tmp/exec -> ~/.ssh` would otherwise
+  make the repair a local escalation. Uncached (three syscalls, no write once
+  the mode is right) so it self-heals in both directions with no restart, and
+  logged on transitions only. `GET /api/prefs`'s `engine.blocked_reason` carries
+  the reason so the page can say why an *installed* engine is not running —
+  a separate field from `fused_available`, which only ever meant "the package
+  is here". The residual race (root fine at dispatch, gone by the child's
+  `makedirs`) is translated by `engine.run_python` into an `EngineError` naming
+  the cause, so no path leaves that traceback looking like the script's.
 - **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
   set it beats the pref entirely. `server._forced_engine()` runs **once at
   startup** purely to validate (raises on a bad value; `=fused` still fails

@@ -963,6 +963,12 @@ export interface EnginePrefs {
   // that beats the pref (the page shows the switch locked).
   forced_by: string | null;
   fused_available: boolean;
+  // Why an INSTALLED fused engine still is not the effective one (D626) — today
+  // only its hardcoded per-call scratch root (`/tmp/exec`) belonging to another
+  // account on the machine, which is unfixable from here and degrades to
+  // builtin. `null` when nothing blocks it, and `null` when the package is
+  // absent too — that case is `fused_available: false`.
+  blocked_reason: string | null;
 }
 
 export interface Prefs {

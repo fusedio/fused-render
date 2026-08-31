@@ -30,7 +30,9 @@ and the **execution engine** for /api/run:
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
     ``@fused.udf``/``result`` entrypoints. Effective only while the ``fused``
-    package is importable (``fused_engine_available``); otherwise execution
+    package is importable (``fused_engine_available``) **and** this machine can
+    actually run it (``_fused_runnable`` — D626 added the fused runner's
+    scratch root to that test); otherwise execution
     falls back to builtin and the page says so, which is what keeps a default
     that depends on the environment from being a default that breaks in one.
   * ``"builtin"`` — the built-in executor: fresh subprocess per call, the
@@ -353,6 +355,31 @@ def fused_engine_available() -> bool:
     return _engine.available_nonblocking()
 
 
+def _fused_runnable() -> bool:
+    """`fused_engine_available()` AND this machine can actually run the engine.
+
+    The second half is the fused runner's hardcoded per-call scratch root
+    (`engine.EXEC_ROOT`, D626): on a Mac with more than one account, whichever
+    account opened the app first owns `/tmp/exec` and the others cannot create
+    their run directory inside it — so every page under the fused engine died
+    with the child's `PermissionError` in the error overlay. `engine.
+    exec_root_blocked()` repairs what it can and reports what it cannot, and the
+    AND is what turns "cannot" into the same graceful degrade a missing package
+    already gets.
+
+    ANDed HERE, in the resolver, and not into `fused_engine_available()`, which
+    answers a different question the Preferences page asks separately: whether
+    the package is installed (`fused_available`). Conflating the two would have
+    the page report the extra as missing on a machine where it is installed and
+    merely blocked.
+    """
+    if not fused_engine_available():
+        return False
+    from fused_render import engine as _engine
+
+    return _engine.exec_root_blocked() is None
+
+
 def effective_engine() -> str:
     """The engine /api/run uses **right now** — the single resolver both the
     server's dispatch (`server.current_engine`) and the Preferences page
@@ -365,7 +392,9 @@ def effective_engine() -> str:
     resolved **live** on every call — an `=auto` override, or a `fused` pref,
     both reflect a mid-session install/removal without a server restart
     (the earlier startup-frozen resolution let the page and dispatch drift
-    after an install).
+    after an install). "Available" here is `_fused_runnable()` — importable
+    AND runnable on this machine, which since D626 also means the fused
+    runner's scratch root is usable by this account.
     """
     from fused_render import engine as _engine
 
@@ -373,9 +402,10 @@ def effective_engine() -> str:
     if forced is not None:
         if forced == "builtin":
             return "builtin"
-        # auto / fused: fused iff importable now (=fused was startup-validated).
-        return "fused" if fused_engine_available() else "builtin"
-    return "fused" if (selected_engine() == "fused" and fused_engine_available()) else "builtin"
+        # auto / fused: fused iff importable now (=fused was startup-validated)
+        # and runnable here (D626).
+        return "fused" if _fused_runnable() else "builtin"
+    return "fused" if (selected_engine() == "fused" and _fused_runnable()) else "builtin"
 
 
 def engine_state() -> dict:
@@ -385,13 +415,23 @@ def engine_state() -> dict:
     /api/run dispatch uses, so the page never reports a different running
     engine than the one executing pages. ``forced_by`` is the raw
     FUSED_RENDER_ENGINE value when set (the process override that beats the
-    pref).
+    pref). ``blocked_reason`` is why an installed engine still is not
+    running, when something other than the package is in the way.
     """
+    from fused_render import engine as _engine
+
+    available = fused_engine_available()
     return {
         "selected": selected_engine(),
         "effective": effective_engine(),
         "forced_by": os.environ.get("FUSED_RENDER_ENGINE"),
-        "fused_available": fused_engine_available(),
+        "fused_available": available,
+        # Why an INSTALLED fused engine still is not the effective one (D626) —
+        # today only its per-call scratch root being another account's. `null`
+        # when nothing blocks it, and when the package is absent at all, which
+        # `fused_available` already reports: two fields, one cause each, so the
+        # page never has to guess which of them a single flag meant.
+        "blocked_reason": _engine.exec_root_blocked() if available else None,
     }
 
 

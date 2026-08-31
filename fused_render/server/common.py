@@ -28,7 +28,9 @@ def _forced_engine() -> str | None:
     FUSED_RENDER_ENGINE forces the /api/run engine for the whole process:
     `builtin` never touches the `fused` package even if importable; `auto`
     opts in to it iff importable; `fused` demands it (a missing package is a
-    startup error, not a silent fallback). **Unset returns None** — the
+    startup error, not a silent fallback — a machine that has the package but
+    cannot run the engine, D626, still degrades rather than refusing to boot).
+    **Unset returns None** — the
     engine then follows the persisted preference (shell/prefs.py, default
     **fused-when-importable** since D204, which reversed D70's builtin
     default here), re-read per request so the Preferences page's switch
@@ -55,6 +57,21 @@ def _forced_engine() -> str | None:
         logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
     if _engine.available():
+        # Importable, but is it runnable HERE? The fused runner's per-call
+        # scratch root can belong to another account on the machine (D626), and
+        # `prefs.effective_engine` degrades to builtin for that — so the startup
+        # log has to say so too, or it becomes the one place that states the
+        # contract and states it wrongly. Deliberately NOT a startup error even
+        # for `=fused`: that override exists to catch a MISSING PACKAGE, and
+        # refusing to boot over a scratch directory would take the whole app
+        # down in exchange for a page that renders fine on the built-in
+        # executor. `exec_root_blocked()` has already logged the reason and the
+        # remedy; this line is the engine choice it produces.
+        blocked = _engine.exec_root_blocked()
+        if blocked is not None:
+            logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=%s, but "
+                        "the fused engine cannot run here)", requested)
+            return "builtin"
         logger.info("execution engine: fused (forced by FUSED_RENDER_ENGINE)")
         # Probe the app's interpreter now, while logging is configured and no
         # request is waiting (PY-17): it decides whether every header-less script

@@ -64,6 +64,7 @@ import logging
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import threading
@@ -756,6 +757,200 @@ def _resolve_app_interpreter() -> tuple[str | None, bool]:
     return None, conclusive
 
 
+# --------------------------------------------------------------------------
+# The handler's hardcoded scratch root: /tmp/exec (D626)
+# --------------------------------------------------------------------------
+#
+# `fused`'s Lambda handler — the same file the LOCAL backend spawns, verbatim —
+# opens every call with
+#
+#     call_dir = f"/tmp/exec/{uuid.uuid4()}"
+#     os.makedirs(call_dir, exist_ok=True)
+#
+# (`fused/agent_core/backends/aws/handler/handler.py`; `python_compute`'s module
+# docstring documents the layout as the per-call isolation boundary). On Lambda
+# `/tmp` is the function's own private scratch and that is exactly right. On a
+# desktop it is a MACHINE-WIDE directory shared by every account on the box, and
+# whichever account runs first creates `/tmp/exec` under its own umask —
+# `drwxr-xr-x <that user>`. Every OTHER account on that Mac then cannot create
+# its own call dir inside it, and every run dies with
+#
+#     PermissionError: [Errno 13] Permission denied: '/tmp/exec/<uuid>'
+#
+# raised in the CHILD — so a non-zero exit turns it into `ExecutionResult.error`
+# (`compute_base._result_from_run`), `_split_error` below reads `PermissionError`
+# off its last line, and the page's error overlay presents it as though the
+# user's own script raised it. Reported from a newly created macOS profile on a
+# machine whose other account had opened the app first: "a sine wave generator
+# app shows a PermissionError instead of the app".
+#
+# Nothing upstream parameterizes that path — it is a literal, with no env var
+# and no argument — so this file owns it, in two halves, because prevention
+# cannot help an account that is already locked out:
+#
+#   * Create the root OURSELVES at `/tmp`'s own mode (`0o1777`): every account
+#     may make its own call dir, and the sticky bit still stops them from
+#     removing each other's. Applied to a root we already own as well, so a
+#     `/tmp/exec` this app left at 0755 before this code existed gets widened on
+#     the next check — which unblocks the OTHER account without it doing
+#     anything, and re-widens after a `/tmp` sweep removes the directory. The
+#     per-call dirs inside are the handler's to create and keep their 0755; this
+#     only ever touches the shared parent, whose contents were world-readable
+#     under 0755 anyway.
+#   * When the root belongs to someone else and we cannot write into it there is
+#     nothing to fix: `chmod` and `rmdir` both require being the owner (or
+#     root), and `/tmp`'s sticky bit blocks the `rmdir` besides. So report why,
+#     and let the engine resolve to `builtin`, which needs no such directory —
+#     the app opens and the page renders, it just is not the fused engine
+#     rendering it. Same posture as a missing `fused` package (`available()`):
+#     an environment that cannot run this engine degrades, it does not error.
+#
+# `prefs.effective_engine` ANDs this into its resolve, so the fallback happens at
+# DISPATCH rather than inside a run — which keeps the one property §20.2 is built
+# on: the engine the Preferences page and the Calls log name is the engine that
+# actually executed the page.
+#
+# Module-level rather than a constant inside the functions because it is also the
+# test seam: `monkeypatch.setattr(engine, "EXEC_ROOT", tmp_path)` redirects the
+# checks. It deliberately is NOT an env var — the handler's path is a literal, so
+# a `FUSED_RENDER_EXEC_ROOT` would move only these checks and not one byte of
+# where a run actually writes, which is a worse lie than no knob at all.
+EXEC_ROOT = "/tmp/exec"
+
+#: `/tmp`'s own mode — world-writable and sticky. See the block above.
+_EXEC_ROOT_MODE = 0o1777
+
+#: The reason last written to the log, so the warning fires on TRANSITIONS
+#: instead of once per /api/run (this runs on the dispatch path). `""` is
+#: "nothing logged yet", distinct from `None` = "checked, and it was fine".
+_exec_root_logged: str | None = ""
+_exec_root_log_lock = threading.Lock()
+
+
+def _widen_exec_root() -> None:
+    """chmod an exec root we own up to `_EXEC_ROOT_MODE`. Best effort, no verdict.
+
+    Through a FILE DESCRIPTOR opened `O_NOFOLLOW|O_DIRECTORY`, never by path.
+    `/tmp` is world-writable, so any local account can plant `/tmp/exec` as a
+    symlink, and a path-based `os.chmod` would then apply this mode to the
+    symlink's TARGET: `/tmp/exec -> ~/.ssh` would turn "make the scratch root
+    shareable" into a local privilege escalation against ourselves, and the
+    owner check would not catch it — the target is owned by us, which is
+    precisely the attack. The open refuses a symlink (ELOOP) and the `fchmod`
+    lands on the directory that open returned, so there is also no window
+    between reading the owner and changing the mode.
+    """
+    try:
+        fd = os.open(EXEC_ROOT, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    except OSError as e:
+        logger.debug("not widening %s: %s", EXEC_ROOT, e)
+        return
+    try:
+        st = os.fstat(fd)
+        # Only ours, and only when the mode is not already the target: the
+        # common path does no write at all, and a root owned by anyone else is
+        # left strictly alone (we could not chmod it anyway).
+        if st.st_uid == os.geteuid() and stat.S_IMODE(st.st_mode) != _EXEC_ROOT_MODE:
+            os.fchmod(fd, _EXEC_ROOT_MODE)
+            logger.info("widened %s to %04o so every account on this machine can "
+                        "create its own run directory there",
+                        EXEC_ROOT, _EXEC_ROOT_MODE)
+    except OSError as e:
+        logger.debug("could not widen %s: %s", EXEC_ROOT, e)
+    finally:
+        os.close(fd)
+
+
+def _exec_root_reason() -> str | None:
+    """Ensure/repair `EXEC_ROOT`; return why a run still could not use it, or None."""
+    if os.name == "nt":
+        # `/tmp/exec` is drive-relative on Windows and the POSIX owner/mode model
+        # this repairs does not exist there. Create it if we can and say nothing
+        # either way: a Windows account that genuinely cannot write there falls
+        # through to the run-level failure, which is where it has always been.
+        try:
+            os.makedirs(EXEC_ROOT, exist_ok=True)
+        except OSError as e:
+            return f"{EXEC_ROOT} cannot be created ({e.strerror or e})"
+        return None
+
+    try:
+        st = os.lstat(EXEC_ROOT)
+    except FileNotFoundError:
+        st = None
+    except OSError as e:
+        return f"{EXEC_ROOT} cannot be inspected ({e.strerror or e})"
+
+    if st is None:
+        try:
+            # `mode=` is masked by the umask (0o1777 lands as 0o1755 under the
+            # usual 022), so the widen below is what actually sets it — this
+            # argument only narrows the window before it.
+            os.mkdir(EXEC_ROOT, _EXEC_ROOT_MODE)
+        except FileExistsError:
+            pass  # another process — or another account — got there first
+        except OSError as e:
+            return f"{EXEC_ROOT} cannot be created ({e.strerror or e})"
+        _widen_exec_root()
+    elif stat.S_ISLNK(st.st_mode):
+        # Nothing this app created, and following it is the escalation described
+        # in `_widen_exec_root`. Refuse the engine rather than resolve the link.
+        return (f"{EXEC_ROOT} is a symbolic link, which this app will not follow "
+                "or replace")
+    elif not stat.S_ISDIR(st.st_mode):
+        return f"{EXEC_ROOT} exists and is not a directory"
+    else:
+        _widen_exec_root()
+
+    if not os.access(EXEC_ROOT, os.W_OK | os.X_OK):
+        # A root of ours was widened above, so reaching here means it is another
+        # account's (or root's) and unwritable. `os.access` can be wrong under
+        # POSIX ACLs; wrong in this direction costs the fused engine and the page
+        # still renders, wrong in the other puts the child's PermissionError back
+        # on the page — so a false negative is the failure to prefer, and
+        # `run_python` still translates the residual race below.
+        detail = ""
+        try:
+            st = os.stat(EXEC_ROOT)
+            detail = (f" (owned by uid {st.st_uid}, mode "
+                      f"{stat.S_IMODE(st.st_mode):04o}; this account is uid "
+                      f"{os.geteuid()})")
+        except OSError:
+            pass
+        return (f"this account cannot create a directory inside {EXEC_ROOT}"
+                f"{detail}, and the fused engine's runner needs one per call")
+    return None
+
+
+def exec_root_blocked() -> str | None:
+    """Why the fused engine cannot run on this machine right now, or None.
+
+    Cheap enough for the dispatch path — one `lstat`, one `open`+`fstat`, one
+    `access`, and no write once the root is right — and deliberately UNCACHED, so
+    it self-heals in both directions with no restart: a `/tmp` sweep that removed
+    the root has it recreated (correctly moded) on the next resolve, and a
+    blocking directory that goes away is noticed on the one after. Idempotent
+    despite the repair, which is what makes it safe to call per request.
+    """
+    global _exec_root_logged
+    reason = _exec_root_reason()
+    with _exec_root_log_lock:
+        if reason == _exec_root_logged:
+            return reason
+        previous, _exec_root_logged = _exec_root_logged, reason
+    if reason is not None:
+        logger.warning(
+            "execution engine: falling back to builtin — the fused engine cannot "
+            "run here: %s. Pages still render; the built-in executor needs no such "
+            "directory. %s holds only scratch data, so removing it (an "
+            "administrator can; a reboot clears /tmp too) restores the fused "
+            "engine — whichever account recreates it next does so world-writable.",
+            reason, EXEC_ROOT)
+    elif previous:
+        logger.info("%s is usable again — the fused engine can run here", EXEC_ROOT)
+    return reason
+
+
 def available() -> bool:
     """True iff the fused local backend is importable in this process.
 
@@ -787,6 +982,15 @@ def warm() -> None:
         _available_cached = ok
     logger.info("engine warm-up: fused backend %s (%.1fs)",
                 "ready" if ok else "unavailable", time.monotonic() - t0)
+    if ok:
+        # Create/repair the runner's hardcoded scratch root here, on the same
+        # startup thread, rather than leaving it to the first /api/run: the
+        # repair is what unblocks a SECOND account on the machine, and doing it
+        # at warm-up means the fallback (and its remedy) is in the log before a
+        # page is ever opened instead of arriving mid-render. Uncached, so every
+        # later resolve still re-checks — this is the first check, not the only
+        # one.
+        exec_root_blocked()
 
 
 def warm_in_background() -> None:
@@ -1338,6 +1542,28 @@ async def run_python(path: str, params: dict) -> dict:
         )
 
     if r.error:
+        # The race `exec_root_blocked()` cannot close: the root was fine when the
+        # engine was resolved and stopped being fine before the child's
+        # `os.makedirs` — a `/tmp` sweep plus a first run from another account in
+        # between, which recreates it under that account's umask. `r.error` is
+        # that child's stderr verbatim, so left alone the PermissionError reaches
+        # the overlay looking like the user's script raised it (the report this
+        # whole path exists for). Name the real cause instead, and — because the
+        # re-check repairs what it can — leave the retry able to succeed.
+        if EXEC_ROOT in r.error and "Permission denied" in r.error:
+            reason = exec_root_blocked() or (
+                f"{EXEC_ROOT} was briefly not writable by this account while the "
+                "run was starting")
+            logger.warning("fused engine run of %s died on its scratch root: %s",
+                           path, reason)
+            return _error_dict(
+                "EngineError",
+                f"fused-render could not run {os.path.basename(abs_path)} through "
+                f"the fused engine: {reason}. Nothing is wrong with your script — "
+                "reload to retry, or switch the execution engine to builtin in "
+                "Preferences.",
+                r.error,
+            )
         cleaned = _clean_error(r.error, abs_path)
         err_type, message = _split_error(cleaned)
         return {
