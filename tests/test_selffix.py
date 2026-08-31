@@ -12,6 +12,7 @@ about the one thing the digest must not notice: the app merely being run.
 """
 import json
 import os
+import shlex
 import threading
 
 import pytest
@@ -1593,3 +1594,62 @@ def test_a_marker_another_process_already_removed_is_a_clean_dismiss(
         m.setattr(selffix.os, "unlink", vanished)
         assert selffix.clear() is True
     assert selffix.status() is None
+
+
+def test_the_source_reinstall_command_survives_a_path_with_spaces(tmp_path,
+                                                                  monkeypatch):
+    """The command is pasted, not read.
+
+    It renders in a `<code>` block with a copy button beside it, so the panel
+    is inviting the user to run it — and `git -C /Users/me/My Checkouts/... `
+    unquoted is three arguments git cannot make sense of. A home directory
+    with a space in it is ordinary on macOS and Windows alike.
+    """
+    root = tmp_path / "My Checkouts" / "fused render" / "fused_render"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(selffix, "install_root", lambda: str(root))
+    monkeypatch.setattr(selffix, "install_method", lambda: "source")
+    monkeypatch.setattr(selffix.platform, "system", lambda: "Darwin")
+
+    command = selffix.reinstall_advice()["command"]
+    assert command.startswith("git -C ")
+    assert command.endswith(" status")
+    quoted = command[len("git -C "):-len(" status")]
+    assert shlex.split(f"git -C {quoted} status") == [
+        "git", "-C", str(root.parent), "status"], command
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
+def test_an_ordinary_checkout_path_is_not_gratuitously_quoted(system, tmp_path,
+                                                              monkeypatch):
+    """Quoting only where it is needed, on EVERY branch of `_shell_path`.
+
+    The command is read at least as often as it is run, and quotes around a
+    path that never needed them are noise the reader has to look past. Both
+    platforms are named here because the Windows branch does its own quoting
+    rather than deferring to `shlex.quote`, so leaving it out left "only when
+    needed" true of the POSIX half and unpinned on the other.
+    """
+    root = tmp_path / "src" / "fused_render"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(selffix, "install_root", lambda: str(root))
+    monkeypatch.setattr(selffix, "install_method", lambda: "source")
+    monkeypatch.setattr(selffix.platform, "system", lambda: system)
+
+    assert selffix.reinstall_advice()["command"] == (
+        f"git -C {root.parent} status")
+
+
+def test_windows_gets_double_quotes_not_shlex_single_ones(tmp_path, monkeypatch):
+    """`shlex.quote` is POSIX, and its single quotes are LITERAL to cmd.exe —
+    pasting them there asks git for a directory whose name begins with one.
+    `"` cannot appear in a Windows path at all, so wrapping is always safe."""
+    root = tmp_path / "Program Files" / "fused_render"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(selffix, "install_root", lambda: str(root))
+    monkeypatch.setattr(selffix, "install_method", lambda: "source")
+    monkeypatch.setattr(selffix.platform, "system", lambda: "Windows")
+
+    command = selffix.reinstall_advice()["command"]
+    assert command == f'git -C "{root.parent}" status', command
+    assert "'" not in command

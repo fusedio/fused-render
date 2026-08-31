@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import platform
 import sys
 import threading
@@ -1325,6 +1326,26 @@ def install_method() -> str:
     return "pip"
 
 
+def _shell_path(path: str) -> str:
+    """A path quoted for the shell the user will paste it into.
+
+    The reinstall command is not illustrative: it is rendered in a `<code>`
+    block with a copy button beside it, so it is meant to be pasted and run.
+    A home directory with a space in it — ordinary on macOS and Windows alike —
+    is enough to turn `git -C <path> status` into three arguments git cannot
+    make sense of.
+
+    Windows gets double quotes rather than `shlex.quote`'s single ones, because
+    `"` is not a legal character in a Windows path (so wrapping is always safe)
+    while a single quote is literal to cmd.exe and would be pasted through into
+    the path. Quoting only when it is needed keeps the ordinary case clean —
+    the command is read as often as it is run.
+    """
+    if platform.system() == "Windows":
+        return f'"{path}"' if any(c.isspace() for c in path) else path
+    return shlex.quote(path)
+
+
 def reinstall_advice() -> dict:
     """How to get a clean copy of the latest version, for THIS kind of install.
 
@@ -1380,7 +1401,7 @@ def reinstall_advice() -> dict:
         return {
             "method": method,
             "headline": "Restore this checkout with git",
-            "command": f"git -C {os.path.dirname(install_root())} status",
+            "command": f"git -C {_shell_path(os.path.dirname(install_root()))} status",
             "note": "This is a source checkout, so the fix is in your working "
                     "tree — review it, keep it or revert it. The badge clears "
                     "once the tree matches what the release ships.",
