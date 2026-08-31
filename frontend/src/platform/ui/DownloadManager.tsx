@@ -81,7 +81,7 @@
 // overlays page content even collapsed, which is what made a page like the
 // Claude template unusable under it. It is handed to `StatusBar` now instead,
 // mounted inside `#main` where it RESERVES layout space rather than floating
-// over it; the toasts, `FdaCard` and `ServerStatusBanner` are unaffected and
+// over it; the toasts and `ServerStatusBanner` are unaffected and
 // stay in NotificationHost's column, since none of them are long-lived
 // enough to be worth a permanently reserved strip. This component still
 // positions nothing itself — `StatusBar` owns the chip's place in the bar,

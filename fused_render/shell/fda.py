@@ -7,8 +7,14 @@ once in System Settings — silences all of them permanently, and because the
 release build is Developer ID signed with a stable bundle id (D73), the
 grant survives upgrades. macOS has no API to request FDA: an app can only
 DETECT it and open the right Settings pane. That is everything this module
-does; the shell renders the nudge (platform/ui/FdaCard.tsx) off the `fda`
-field /api/config gets from snapshot().
+does; the shell renders the warning strip (platform/ui/FdaStrip.tsx, same
+posture as the Claude Code setup strip) off the `fda` field /api/config
+gets from snapshot(). The strip shows at launch whenever FDA is missing —
+without it the per-folder prompts can be lost entirely (a backend read
+under a protected folder while the app is not frontmost records a silent
+deny), which strands the user on "permission denied" with no prompt ever
+shown. That failure is why the warning no longer waits for the session to
+touch a protected folder first.
 
 Detection probes paths that only FDA unlocks. FDA-class paths never raise a
 TCC prompt (unlike the per-folder categories) — a failed probe is silent,
@@ -92,75 +98,35 @@ def granted() -> bool | None:
     return None
 
 
-#: Whether THIS session has read under a protected-folder category — the
-#: moment macOS fires (or would fire) an Allow prompt. The nudge renders only
-#: after that moment: a user who never leaves unprotected territory never
-#: sees a TCC prompt, so a card about prompts would be noise to them. In-
-#: memory on purpose — persisting it would bring the card back at launch on
-#: every later session, which is exactly the out-of-nowhere nag this exists
-#: to avoid. Bare bool write under the GIL; no lock needed.
-_touched = False
-
-#: The TCC per-folder categories, each a prompt the first time the app reads
-#: under it. /Volumes covers both removable and network volumes (the boot
-#: volume itself is not browsed via /Volumes in this app).
-def _protected_roots() -> list[str]:
-    return [
-        os.path.expanduser("~/Desktop"),
-        os.path.expanduser("~/Documents"),
-        os.path.expanduser("~/Downloads"),
-        "/Volumes",
-    ]
-
-
-def note_touch(path: str) -> None:
-    """Record that `path` is being read; flips the session's touched flag when
-    it falls under a protected category. Called from the fs routes on every
-    list/stat — first line bails, so the steady-state cost is one bool read."""
-    global _touched
-    if _touched or not offered():
-        return
-    # Every path above the OS in this app is forward-slashed (see
-    # canonical_fs_path), so compare in that shape — os.sep would silently
-    # never match on Windows (where only forced tests reach this anyway).
-    norm = path.replace("\\", "/")
-    for root in _protected_roots():
-        root = root.replace("\\", "/")
-        if norm == root or norm.startswith(root + "/"):
-            _touched = True
-            return
-
-
 def _path() -> str:
     return os.path.join(storage.home_dir(), "fda.json")
 
 
 def dismissed() -> bool:
+    # `strip_dismissed`, not the old `banner_dismissed`: the launch-time strip
+    # replaced the touch-triggered card, and a machine that dismissed the old
+    # card should see the redesigned warning once more.
     data = storage.read_json(_path())
-    return bool(isinstance(data, dict) and data.get("banner_dismissed"))
+    return bool(isinstance(data, dict) and data.get("strip_dismissed"))
 
 
 def set_dismissed() -> None:
-    storage.write_json(_path(), {"banner_dismissed": True})
+    storage.write_json(_path(), {"strip_dismissed": True})
 
 
 def snapshot() -> dict | None:
     """The `fda` field of /api/config, or None to omit it.
 
-    Omitted when the nudge isn't offered (non-mac, dev server) and when the
+    Omitted when the warning isn't offered (non-mac, dev server) and when the
     probe is inconclusive — an absent field is the shell's "render nothing
     AND stop watching", so uncertainty never nags and never polls.
-
-    `relevant` is the touched flag: the card renders only once this session
-    has read under a protected folder — the moment the Allow prompts start —
-    and until then the shell only keeps watching this field.
     """
     if not offered():
         return None
     state = granted()
     if state is None:
         return None
-    return {"granted": state, "dismissed": dismissed(), "relevant": _touched}
+    return {"granted": state, "dismissed": dismissed()}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

@@ -35,13 +35,10 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
-  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
-  // on the packaged mac app when the probe is conclusive. FdaCard renders
-  // off this; absent means render nothing and stop watching. `relevant`
-  // flips when this session first reads under a TCC-protected folder — the
-  // moment the Allow prompts start, which is the only moment the card is
-  // worth showing.
-  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
+  // Full Disk Access state (fused_render/shell/fda.py) — present only on the
+  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
+  // absent means render nothing and stop watching.
+  fda?: { granted: boolean; dismissed: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
