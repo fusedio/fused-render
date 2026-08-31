@@ -256,8 +256,12 @@ function CurrentAppRow({
       {/* The glyph is the icon picker's toggle — the Bookmarks pattern
           (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
           disk as the folder's icon.svg rather than in the bookmarks tree. */}
+      {/* `current-app-icon-toggle` marks the glyphs that toggle THIS
+          section's picker — the selector the IconPicker below whitelists.
+          The "+ New app" glyph deliberately lacks it, so a click there
+          closes an open picker instead of leaving it under the modal. */}
       <span
-        className="bookmark-glyph current-app-glyph"
+        className="bookmark-glyph current-app-glyph current-app-icon-toggle"
         title="Change icon"
         onClick={(e) => onGlyphClick(e, app.path)}
       >
@@ -537,6 +541,7 @@ export default function CurrentAppsSection() {
       {iconPicker && (
         <IconPicker
           anchor={iconPicker}
+          toggleSelector=".current-app-icon-toggle"
           onPick={(icon) => onPickIcon(icon)}
           onRemove={() => onPickIcon(null)}
           onClose={() => setIconPicker(null)}

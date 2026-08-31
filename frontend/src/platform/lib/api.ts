@@ -2166,7 +2166,9 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
 /** The URL to draw an app icon from: the raw file, with its mtime as a cache
  *  key so an edited icon.svg shows up without a hard reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
-  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
+  // Full float mtime, not the floored second — a same-second replacement of
+  // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
+  return rawUrl(icon) + (mtime ? "&v=" + mtime : "");
 }
 
 /** Write (or replace) the app folder's `icon.svg` — the Projects row glyph
