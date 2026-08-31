@@ -7297,15 +7297,18 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     started = _post_transcribe(client, path=recording).json()
     job = started["jobId"]
 
-    # Evict it exactly as the cap does, mid-load.
+    # Evict it exactly as the cap does, mid-load. `waiting_for`, not a
+    # "Waiting for" substring in `detail` any more — the merge (this change)
+    # makes `detail` the LOAD row's own line verbatim, and `waiting_for` is
+    # what actually names the wait now.
     deadline = time.monotonic() + 5
     row = None
     while time.monotonic() < deadline:
         row = _row_now(job)
-        if row and "Waiting for" in (row.get("detail") or ""):
+        if row and row.get("waiting_for"):
             break
         time.sleep(0.02)
-    assert row and "Waiting for" in (row.get("detail") or ""), row
+    assert row and row.get("waiting_for"), row
     with jobs._lock:
         jobs._jobs.pop(job, None)
 
@@ -7319,10 +7322,16 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     assert rebuilt is not None, "the wait could not rebuild its row"
     # STILL WAITING — so it was the wait's own tick that rebuilt it, not a
     # later reporter. That is what makes this test about `_wait_ready`.
-    assert "Waiting for" in (rebuilt.get("detail") or ""), rebuilt
+    assert rebuilt.get("waiting_for"), rebuilt
     assert rebuilt["title"] == os.path.basename(recording)
-    assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
-    _wait_job(job, timeout=40)
+    # `cancellable` survives the rebuild from `transcribe_row_fields`'s
+    # payload; `unit` does NOT stay "s" here — the merge (this change) mirrors
+    # the LOAD row's own unit ("", nothing byte-shaped reported yet at
+    # "Starting the model process…") for as long as the wait holds, and only
+    # restores the transcription's own "s" once the wait ends (below).
+    assert rebuilt["cancellable"] is True
+    final = _wait_job(job, timeout=40)
+    assert final["unit"] == "s"
 
 
 def _watcher_giveup_window_s():
