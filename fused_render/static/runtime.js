@@ -2049,41 +2049,38 @@
   // different projects can never be conflated into one approval.
   const approvedInstalls = new Set();
 
-  // "Install dependencies for X?" Resolves on Install, rejects on Cancel.
-  // Repaints the SAME row `startInstall` will hand to `paintPreparing` a
-  // moment later — one element identity throughout an install, never a modal
-  // swapped out from under the page — with the progress track hidden (there
-  // is no progress yet to show) and the Install button revealed beside
-  // Cancel, which stays exactly where the running install's cancel button
-  // will be.
+  // The shared shape behind every yes/no this loader ever asks on a row:
+  // hide the progress track (there is no progress yet — or not yet AGAIN —
+  // to show), paint the question into the same title/detail nodes the
+  // eventual progress paint will reuse, reveal Install beside Cancel, and
+  // resolve/reject on whichever is clicked. One element identity throughout
+  // an install, never a modal swapped out from under the page.
   //
-  // No package list: the whole point of `nonstandard` (projectenv.py) is that
-  // naming every ordinary PyPI dependency trains a reflexive click, so only
-  // what did NOT classify as an ordinary released version is named. An
-  // all-PyPI manifest — the common case — names nothing at all.
-  function confirmInstall(need, row, ui) {
+  // `installLabel` lets a caller relabel the affirmative button for its own
+  // question (`confirmBuildRetry`'s "Install anyway" reads very differently
+  // from the ordinary "Install") while still driving the exact same
+  // resolve/reject/mount plumbing.
+  function askRow(row, ui, title, detail, installLabel) {
     return new Promise((resolve, reject) => {
       row.track.style.display = "none";
-      row.title.textContent =
-        "Install dependencies for " + (need.name || "the environment") + "?";
-      const nonstandard = need.nonstandard || [];
-      row.detail.textContent = nonstandard.length
-        ? nonstandard.map((d) => d.name + " — " + d.reason).join("\n")
-        : "A one-time download. Nothing listed.";
+      row.title.textContent = title;
+      row.detail.textContent = detail;
+      row.install.textContent = installLabel;
       row.install.style.display = "";
 
       const settle = (approved) => {
         row.install.removeEventListener("click", onInstall);
-        row.cancel.removeEventListener("click", onCancelConfirm);
+        row.cancel.removeEventListener("click", onCancel);
         row.install.style.display = "none";
+        row.install.textContent = "Install";
         row.track.style.display = "";
         if (approved) resolve();
         else reject();
       };
       const onInstall = () => settle(true);
-      const onCancelConfirm = () => settle(false);
+      const onCancel = () => settle(false);
       row.install.addEventListener("click", onInstall);
-      row.cancel.addEventListener("click", onCancelConfirm);
+      row.cancel.addEventListener("click", onCancel);
 
       // A QUESTION must appear at once — `mountInstallSoon`'s delay exists to
       // keep a merely-FAST install from flashing a modal open and shut (D213),
@@ -2100,6 +2097,66 @@
         ui.mounted = true;
       }
     });
+  }
+
+  // "Install dependencies for X?" Resolves on Install, rejects on Cancel.
+  //
+  // No package list: the whole point of `nonstandard` (projectenv.py) is that
+  // naming every ordinary PyPI dependency trains a reflexive click, so only
+  // what did NOT classify as an ordinary released version is named. An
+  // all-PyPI manifest — the common case — names nothing at all.
+  function confirmInstall(need, row, ui) {
+    const nonstandard = need.nonstandard || [];
+    const detail = nonstandard.length
+      ? nonstandard.map((d) => d.name + " — " + d.reason).join("\n")
+      : "A one-time download. Nothing listed.";
+    return askRow(
+      row, ui,
+      "Install dependencies for " + (need.name || "the environment") + "?",
+      detail, "Install"
+    );
+  }
+
+  // The resolver's OWN wording for "this can only be satisfied by building
+  // from source", surfaced by uv's `--no-build` (the default `_build` now
+  // passes — see `_env_install_worker.py`). Anchored on the hint line rather
+  // than the "Because … has no usable wheels" line above it: the hint is the
+  // one sentence uv writes FOR THIS SITUATION SPECIFICALLY (it names
+  // `--no-build` itself), where the other line's wording changes shape
+  // between "all versions of X" and "X==1.2.3" depending on whether the
+  // requirement carries a pin — one pattern to keep in sync with uv's output
+  // instead of several.
+  //
+  // Verified against a real `uv sync --no-build` failure (uv 0.12.5):
+  //   hint: Wheels are required for `uwsgi` because building from source is
+  //   disabled for all packages (i.e., with `--no-build`)
+  //
+  // Returns the package name, or null when `message` is not this shape at
+  // all — a plain resolver failure (a bad version pin, no network, a genuinely
+  // nonexistent package) must fall through to the ordinary error path
+  // unchanged, not be swallowed into a retry prompt that names nothing.
+  const NO_BUILD_HINT = /hint: Wheels are required for `([^`]+)` because building from source is disabled/;
+  function noBuildPackage(message) {
+    const m = typeof message === "string" && message.match(NO_BUILD_HINT);
+    return m ? m[1] : null;
+  }
+
+  // "`foolib` has no ready-to-use package for this computer." The one
+  // dependency Task 1's static classification cannot see coming — whether a
+  // plain `foo>=1.0` publishes a wheel is a fact about the index, not the
+  // declaration — so it is caught here instead, at the resolver's own
+  // failure, and named individually rather than folded into the earlier
+  // question (which had already been answered by the time this exists to
+  // ask). Declining leaves the ORIGINAL resolver error standing — nothing
+  // about declining a build is itself a cancellation of the install.
+  function confirmBuildRetry(row, ui, pkg) {
+    return askRow(
+      row, ui,
+      pkg + " has no ready-to-use package for this computer.",
+      "Installing it anyway runs that package's own setup code to build it. " +
+        "Only do this if you trust " + pkg + ".",
+      "Install anyway"
+    );
   }
 
   function startInstall(need, pyPath, ownPath) {
@@ -2179,16 +2236,12 @@
       return step();
     };
 
-    // The actual install, run only once the question above (if any) is
-    // answered Install. Registers the REAL cancel handler here rather than
-    // for the whole of `startInstall`: while the question is still on screen
-    // nothing has started for `onCancel` to reach, and attaching it earlier
-    // would fire both it and the confirm's own Cancel off a single click.
-    const runInstall = () => {
-      row.cancel.addEventListener("click", onCancel);
-      mountInstallSoon(ui);
-      paintPreparing(row, need);
-      return envPost("/api/env/install", { py: pyPath, html: ownPath })
+    // One POST + poll cycle. Split out of `runInstall` so the no-wheel retry
+    // below (Task 5) can run a SECOND cycle — with `allowBuild: true` — off
+    // the same row, the same `activeKey` handling and the same cancel
+    // handler, rather than a parallel copy of all three.
+    const tryInstall = (allowBuild) =>
+      envPost("/api/env/install", { py: pyPath, html: ownPath, allow_build: allowBuild })
         .then(({ res, data }) => {
           if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
           // The installer's key wins over the pre-flight's from here on (see
@@ -2200,8 +2253,6 @@
         })
         .then(
           (prog) => {
-            row.cancel.removeEventListener("click", onCancel);
-            hideInstall(need.key);
             if (cancelled) {
               // The install finished anyway — a cancel the server could not honour,
               // or one that lost a race with the last poll. The user's intent still
@@ -2215,12 +2266,42 @@
             return prog;
           },
           (err) => {
-            row.cancel.removeEventListener("click", onCancel);
-            hideInstall(need.key);
             if (cancelled) {
               const e = new Error("the install was cancelled");
               e.type = "EnvInstallCancelled";
               throw e;
+            }
+            // A resolver failure this run itself chose NOT to allow — never on
+            // the retry attempt, or a package with a genuinely missing wheel
+            // (not merely one this run refused to build) would loop forever
+            // offering the same question. `noBuildPackage` returns null for
+            // every other failure (bad pin, no network, a nonexistent name),
+            // which falls straight through to the ordinary error below.
+            const pkg = !allowBuild && noBuildPackage(err.message);
+            if (pkg) {
+              // The mid-install Cancel handler is unregistered for the
+              // question's duration — same reasoning as the very first
+              // confirm above: while this question is on screen nothing is
+              // running for `onCancel` to reach, and leaving it attached
+              // would fire both it and this question's own Cancel off one
+              // click.
+              row.cancel.removeEventListener("click", onCancel);
+              return confirmBuildRetry(row, ui, pkg).then(
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  paintPreparing(row, need);
+                  return tryInstall(true);
+                },
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  // Declining a source build is not cancelling the install —
+                  // it is standing by the resolver's original answer, which is
+                  // what the client still needs to see.
+                  err.type = "EnvInstallError";
+                  err.traceback = err.message;
+                  throw err;
+                }
+              );
             }
             // Verbatim, and tagged so a page can tell an install failure from its
             // script's own error.
@@ -2229,6 +2310,28 @@
             throw err;
           }
         );
+
+    // The actual install, run only once the question above (if any) is
+    // answered Install. Registers the REAL cancel handler here rather than
+    // for the whole of `startInstall`: while the question is still on screen
+    // nothing has started for `onCancel` to reach, and attaching it earlier
+    // would fire both it and the confirm's own Cancel off a single click.
+    const runInstall = () => {
+      row.cancel.addEventListener("click", onCancel);
+      mountInstallSoon(ui);
+      paintPreparing(row, need);
+      return tryInstall(false).then(
+        (prog) => {
+          row.cancel.removeEventListener("click", onCancel);
+          hideInstall(need.key);
+          return prog;
+        },
+        (err) => {
+          row.cancel.removeEventListener("click", onCancel);
+          hideInstall(need.key);
+          throw err;
+        }
+      );
     };
 
     const approvalKey = need.project || need.key;

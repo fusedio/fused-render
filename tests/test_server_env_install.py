@@ -873,6 +873,64 @@ installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
     )
 
 
+def test_a_no_wheel_failure_offers_install_anyway_and_retries_with_allow_build():
+    """The gap static detection cannot see: a plain-looking dependency that
+    turns out to publish no wheel for this platform, caught only at resolve
+    time. `--no-build` (Task 4) is what turns that into this exact uv wording
+    instead of a silent source build; this is the retry it exists to make
+    non-fatal.
+
+    The harness's default auto-click (`__autoInstall`, see _JS_PRELUDE) only
+    fires for a button whose `textContent === "Install"` — this retry's
+    button reads "Install anyway", so it is deliberately NOT auto-approved,
+    and the scenario clicks it itself once it appears.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true,
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+// Polls specifically for the RETRY question, not the ordinary confirm above
+// it (which the harness's default auto-click already answers Install for) —
+// both show the same `install` button, just relabelled, so the label is
+// what tells the two apart.
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "the retry must re-POST naming allow_build: true"
+
+
 def test_cancelling_cancels_the_install_that_is_actually_running():
     """Same key mix-up, in the direction that leaves a download running: the
     cancel POST has to name the installer's key, not the pre-flight one. The
