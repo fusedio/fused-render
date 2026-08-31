@@ -612,6 +612,7 @@ _UV_SOURCE_REASONS = (
     ("git", "from a git repository"),
     ("url", "from a URL"),
     ("path", "from a local path"),
+    ("workspace", "from a workspace member"),
     ("index", "from a custom index"),
 )
 
@@ -632,10 +633,14 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
        The requirement names its own source; there is no "a released version
        of foo" for it to mean.
     2. A `[tool.uv.sources]` entry that routes a plain-looking `dependencies`
-       name (`foolib`) to a `git`/`url`/`path`/`index`. Read `dependencies`
-       alone and this looks like an ordinary PyPI name — only the sources
-       table says otherwise, which is exactly why a name-only prompt would
-       otherwise miss it.
+       name (`foolib`) to a `git`/`url`/`path`/`workspace`/`index`. Read
+       `dependencies` alone and this looks like an ordinary PyPI name — only
+       the sources table says otherwise, which is exactly why a name-only
+       prompt would otherwise miss it. uv also accepts a LIST of source
+       tables for one name (platform-conditional sources, each with its own
+       `marker`) — every entry in the list is checked, not just a first one
+       assumed to be a dict, so a git/url/path/workspace source confined to
+       one platform's entry is still named rather than silently skipped.
     3. A project-wide custom index: `[tool.uv]`'s `index-url`/`default-index`/
        `extra-index-url`, or a `[[tool.uv.index]]` table with no
        `explicit = true`. This is not a fact about any one dependency — it is
@@ -675,13 +680,38 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
     uv = uv if isinstance(uv, dict) else {}
 
     # Shape 2: [tool.uv.sources] entries that redirect a plain name elsewhere.
+    # A source is either a single table, or (uv's platform-conditional form) a
+    # LIST of tables, each usually carrying its own `marker`:
+    #
+    #   [tool.uv.sources]
+    #   httpx = [{ git = "...", marker = "sys_platform == 'darwin'" }]
+    #
+    # Normalised to a list of tables either way, so both shapes are checked
+    # identically. A bare `isinstance(entry, dict)` guard here used to skip
+    # the list form entirely — uv still fetches from git for it, just never
+    # named in the prompt.
     sources = uv.get("sources")
     if isinstance(sources, dict):
-        for name, entry in sources.items():
-            if not isinstance(name, str) or not isinstance(entry, dict):
+        for name, source in sources.items():
+            if not isinstance(name, str):
                 continue
-            for key, reason in _UV_SOURCE_REASONS:
-                if key in entry:
+            if isinstance(source, dict):
+                entries = [source]
+            elif isinstance(source, list):
+                entries = [e for e in source if isinstance(e, dict)]
+            else:
+                continue
+            # One reason per name, from the FIRST matching key in the FIRST
+            # entry that has one — same "checked in this order" rule
+            # `_UV_SOURCE_REASONS` documents for a single table, extended
+            # across every platform variant so a name is still reported once
+            # rather than once per marker it happens to carry.
+            for entry in entries:
+                reason = next(
+                    (reason for key, reason in _UV_SOURCE_REASONS if key in entry),
+                    None,
+                )
+                if reason:
                     found.append({"name": name, "reason": reason})
                     break
 

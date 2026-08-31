@@ -432,6 +432,60 @@ def test_a_tool_uv_sources_entry_is_flagged_by_its_kind(home, key, reason):
     ]
 
 
+def test_a_workspace_true_source_is_flagged(home):
+    """`workspace = true` routes a name to another member of the same
+    workspace — a local package, same non-PyPI risk shape as `path`, and not
+    previously in `_UV_SOURCE_REASONS` at all."""
+    proj = _write_project(home / "proj", ["foolib"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv.sources]\nfoolib = { workspace = true }\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "foolib", "reason": "from a workspace member"},
+    ]
+
+
+def test_a_list_form_tool_uv_sources_entry_is_flagged(home):
+    """uv accepts a LIST of source tables for one name — usually
+    platform-conditional, each carrying its own `marker`:
+
+        [tool.uv.sources]
+        httpx = [{ git = "https://github.com/encode/httpx", marker = "sys_platform == 'darwin'" }]
+
+    A bare `isinstance(entry, dict)` guard used to skip this shape entirely —
+    `uv sync` still fetches from git for it, just never named in the prompt.
+    """
+    proj = _write_project(home / "proj", ["httpx"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv.sources]\n'
+        'httpx = [{ git = "https://github.com/encode/httpx", marker = "sys_platform == \'darwin\'" }]\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "httpx", "reason": "from a git repository"},
+    ]
+
+
+def test_a_list_form_source_with_no_matching_key_names_nothing(home):
+    """A list-form entry whose tables carry none of `_UV_SOURCE_REASONS`'
+    keys (registry pins with markers, say) must not be flagged — only actual
+    non-standard routing is."""
+    proj = _write_project(home / "proj", ["httpx"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv.sources]\n'
+        'httpx = [{ marker = "sys_platform == \'darwin\'" }]\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == []
+
+
 def test_a_project_wide_index_url_is_reported_under_its_host(home):
     proj = _write_project(home / "proj", ["cowsay"])
     (proj / "pyproject.toml").write_text(
