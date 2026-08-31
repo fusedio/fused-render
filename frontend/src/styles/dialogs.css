@@ -333,6 +333,22 @@
   cursor: default;
 }
 
+/* Cancel, beside a sign-in that is waiting on a browser window. Quiet on
+   purpose: the affirmative control in that row is the one already pressed, and
+   two accent fills side by side would make calling it off look like the
+   next step rather than the way out. */
+.claude-health-action-quiet {
+  background: transparent;
+  color: var(--fg-muted);
+  border-color: var(--border);
+  font-weight: 500;
+}
+
+.claude-health-action-quiet:hover:not(:disabled) {
+  color: var(--fg);
+  filter: none;
+}
+
 /* What the button will run, beside the button. Disclosure, not decoration: this
    pipes a remote script into a shell, and doing that quietly behind a friendly
    label is the part that would not be OK. */
