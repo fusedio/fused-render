@@ -142,8 +142,10 @@ export function FdaStrip() {
             setStage("hidden");
           } else if (!fda.denied) {
             // Another tab dismissed (the server cleared its flag). Back to
-            // watching, not hidden: the next denial must resurface the strip.
+            // watching, not hidden: the next denial must resurface the strip —
+            // and start it on the steps, not a stale "In System Settings…".
             noteNotDenied();
+            setWaiting(false);
             setStage("watching");
           }
         })
@@ -158,6 +160,8 @@ export function FdaStrip() {
   // and go back to watching so the next denial brings strip + toast back.
   const close = () => {
     noteNotDenied();
+    // Next episode starts on the steps, not a stale "In System Settings…".
+    setWaiting(false);
     setStage("watching");
     dismissFdaNudge().catch(() => {});
   };
