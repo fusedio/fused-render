@@ -4517,6 +4517,43 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
+#: Where the supervisor wants this worker to run from, when it could not pass
+#: `cwd=` to Popen. Mirrors `supervisor.WORKER_CWD_ENV` — spelled here too because
+#: this module is imported from the runner's own interpreter, where
+#: `fused_render` is not importable.
+WORKER_CWD_ENV = "FUSED_AI_WORKER_CWD"
+
+
+def _adopt_spawn_shape():
+    """Do for ourselves the two things a `fork()`-based spawn used to do.
+
+    On macOS the supervisor starts workers with `posix_spawn` (see
+    `supervisor._spawn_kwargs` for the crash that forced it), and CPython only
+    takes that path for a Popen with no `cwd` and no `start_new_session`. So
+    the working directory arrives in an environment variable, and the worker
+    makes itself a session leader — which is what `_kill_tree`'s `killpg`
+    keys on, so an unload still takes the whole tree down.
+
+    Both are best-effort. A missing directory is the supervisor's fact to
+    report (the runner folder it named does not exist), not this worker's to
+    die on before it can say anything; and `setsid` fails with EPERM when the
+    process already leads a session, which is exactly the case on the
+    platforms that still spawn with `start_new_session=True`.
+    """
+    cwd = os.environ.get(WORKER_CWD_ENV)
+    if cwd:
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+    setsid = getattr(os, "setsid", None)
+    if setsid is not None:
+        try:
+            setsid()
+        except OSError:
+            pass
+
+
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
          release=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
@@ -4537,6 +4574,7 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     """
     global JOB_ID, _measure, _measure_peak, _release
 
+    _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
     _release = release
