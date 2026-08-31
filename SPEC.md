@@ -275,6 +275,14 @@ const { text, model, usage } = await fused.ai(prompt, {
   old process-per-call design bought.
   **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
   page that calls it (§18.2) — gate with `fused.env === "local"` instead.
+  **Visible while it runs**: each call opens one server-owned row in the status
+  bar's Activity section (§36), titled with the prompt and detailed "Claude —
+  remote" so remote work is tellable from a local model's, dropped the moment
+  the call succeeds. It is not cancellable (nothing in the relay polls the flag,
+  and a ✕ that does nothing is worse than none), it says when it is waiting its
+  turn behind another call rather than looking busy, and it heartbeats for as
+  long as the call runs (AI-5h) — without which any call slower than
+  `STALE_AFTER_S` reported itself as no longer being reported.
 
 ### 4.2 `runPython(path, params)`
 
@@ -6599,6 +6607,28 @@ an AI Models page that could say what was on disk but not what was *running*.
   it, because `stop` cannot reach a beat already inside its POST and that tick
   would land after the work finished, flipping a row the supervisor had just
   marked done back to running.
+
+  **The `/api/ai` RELAY is a reporter too, and was the last one that was not.**
+  Its remote-Claude row (§36's server-owned twin of a local generation's) opened
+  once and then said nothing until the answer landed, so every Claude turn
+  slower than half a minute — and RH-11's timeout allows TEN MINUTES of them —
+  announced that the process running it had stopped reporting, dimmed itself and
+  withdrew its ✕, and then returned a perfectly good completion. Nothing was
+  wrong but the reporting, which is the exact failure this rule names. Its
+  heartbeat carries **no fields at all**, which is the fieldless-upsert form of
+  "re-send the last payload": `jobs.upsert` applies only the keys PRESENT, so an
+  id alone stamps `updated_at` and is structurally incapable of moving a bar, of
+  overwriting the detail, or of being read as the opening report that would
+  reopen a row the user dismissed or the sweep forgot. A tick after the outcome
+  is impossible rather than merely unlikely — the beat re-reads the same
+  `_remote_job_closed` flag the terminal report sets, so cancelling the beat is
+  hygiene against a leaked task rather than the thing keeping the row honest.
+  The same row now describes the WAIT, too: RH-11 serializes calls through one
+  shared CLI process, so a call parked behind another has not started, and says
+  so rather than drawing the identical row as the call that is generating —
+  `supervisor`'s `_QUEUED_DETAIL` rule at the one other place this app queues
+  work behind a lock, and the row most exposed to the stale window in the first
+  place, since its wait is the other call's whole turn.
 - **AI-5i** **The weights are fetched on several connections, and an interrupted
   fetch resumes.** `snapshot_download` opens one connection per file and one file
   at a time, so a model whose bytes are a single 4.6GB shard downloaded at
