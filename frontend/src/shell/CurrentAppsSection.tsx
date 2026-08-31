@@ -26,9 +26,12 @@ import React, {
 } from "react";
 import {
   getCurrentApps,
+  removeAppIcon,
   removeCurrentApp,
+  setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
+import IconPicker from "@platform/ui/IconPicker";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
@@ -52,6 +55,22 @@ import {
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
+
+/** The picked emoji as a standalone icon.svg document — square viewBox, no
+ *  fixed size, transparent ground (a colour emoji carries its own colours, so
+ *  it reads on both themes; see skills/fused-render-app-icon). The same file
+ *  a hand-authored icon.svg would be, just generated. */
+function emojiIconSvg(emoji: string): string {
+  const safe = emoji
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<text x="32" y="32" text-anchor="middle" dominant-baseline="central" ' +
+    `font-size="52">${safe}</text></svg>`
+  );
+}
 
 // The section fold, "1" when hidden — the Bookmarks section's own key pattern.
 export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
@@ -173,11 +192,13 @@ function CurrentAppRow({
   active,
   drag,
   onRemoved,
+  onGlyphClick,
 }: {
   app: CurrentApp;
   active: boolean;
   drag: RowDragProps;
   onRemoved: () => void;
+  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
@@ -232,7 +253,14 @@ function CurrentAppRow({
       draggable
       {...drag}
     >
-      <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
+      {/* The glyph is the icon picker's toggle — the Bookmarks pattern
+          (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
+          disk as the folder's icon.svg rather than in the bookmarks tree. */}
+      <span
+        className="bookmark-glyph current-app-glyph"
+        title="Change icon"
+        onClick={(e) => onGlyphClick(e, app.path)}
+      >
         {app.iconUrl ? (
           // The app's own icon.svg in the generic mark's slot, drawn as is —
           // the author's colours, no mask or tint (owner, 2026-08-27). Not
@@ -390,6 +418,43 @@ export default function CurrentAppsSection() {
   });
 
   const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
+
+  // ---- the icon picker -------------------------------------------------------
+  // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to
+  // itself. A pick is wrapped in a standalone svg and written to the folder's
+  // icon.svg (POST /api/apps/icon) — the file the row and the tab favicon
+  // already read — and the refetch brings back the new mtime, which is what
+  // busts the <img> cache. Remove deletes the file; the row falls back to the
+  // generic mark.
+  const [iconPicker, setIconPicker] = useState<{
+    path: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const onGlyphClick = useCallback(
+    (e: React.MouseEvent<HTMLSpanElement>, path: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setIconPicker((cur) =>
+        cur?.path === path ? null : { path, top: rect.top, left: rect.left },
+      );
+    },
+    [],
+  );
+  const onPickIcon = async (icon: string | null) => {
+    const target = iconPicker;
+    setIconPicker(null);
+    if (!target) return;
+    try {
+      if (icon === null) await removeAppIcon(target.path);
+      else await setAppIcon(target.path, emojiIconSvg(icon));
+    } catch {
+      // A failed write leaves the old glyph; the refetch shows the truth.
+    }
+    refetch();
+  };
+
   const render = useCallback(
     (app: CurrentApp) => (
       <CurrentAppRow
@@ -398,10 +463,11 @@ export default function CurrentAppsSection() {
         active={app.path === onPath}
         drag={dragProps(app.path)}
         onRemoved={refetch}
+        onGlyphClick={onGlyphClick}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onPath, apps, refetch],
+    [onPath, apps, refetch, onGlyphClick],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
@@ -454,6 +520,14 @@ export default function CurrentAppsSection() {
           </span>
           <span className="bookmark-name">New app</span>
         </div>
+      )}
+      {iconPicker && (
+        <IconPicker
+          anchor={iconPicker}
+          onPick={(icon) => onPickIcon(icon)}
+          onRemove={() => onPickIcon(null)}
+          onClose={() => setIconPicker(null)}
+        />
       )}
       {composing && (
         // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
