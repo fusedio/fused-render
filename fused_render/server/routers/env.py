@@ -67,6 +67,12 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     # would let this endpoint's answer disagree with the pre-flight's over a
     # marker-scoped dependency.
     reqs = projectenv.applicable_dependencies_of(project)
+    # Same reasoning as `reqs` above, one level more specific: the confirm
+    # dialog in `runtime.js` is built from THIS answer, not from the
+    # pre-flight's, so a folder edited between the two requests can never
+    # make the dialog name (or fail to name) something this call disagrees
+    # with.
+    nonstandard = projectenv.nonstandard_dependencies_of(project)
 
     # envinstall speaks to the fused backend: `_backend_attr` raises RuntimeError
     # BY DESIGN when an upstream attribute is missing (guessing would build the
@@ -85,7 +91,8 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     except (ImportError, RuntimeError) as e:
         return _error(str(e))
     return JSONResponse({"ok": True, "key": key, "project": project,
-                         "requirements": reqs, "progress": record})
+                         "requirements": reqs, "nonstandard": nonstandard,
+                         "progress": record})
 
 
 # `key` comes straight off the wire and becomes a path component, so its
