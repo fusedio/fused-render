@@ -2179,7 +2179,37 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
 /** The URL to draw an app icon from: the raw file, with its mtime as a cache
  *  key so an edited icon.svg shows up without a hard reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
-  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
+  // Full float mtime, not the floored second — a same-second replacement of
+  // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
+  return rawUrl(icon) + (mtime ? "&v=" + mtime : "");
+}
+
+/** Write (or replace) the app folder's `icon.svg` — the Projects row glyph
+ *  and the tab favicon. `svg` is a complete standalone document; the sidebar's
+ *  icon picker wraps the chosen emoji in one. */
+export async function setAppIcon(
+  path: string,
+  svg: string,
+): Promise<{ path: string; replaced: boolean }> {
+  const r = await fetch("/api/apps/icon", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ path, svg }),
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
+}
+
+/** Delete the app folder's `icon.svg` — back to the generic mark. */
+export async function removeAppIcon(
+  path: string,
+): Promise<{ removed: boolean }> {
+  const r = await fetch(`/api/apps/icon?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project

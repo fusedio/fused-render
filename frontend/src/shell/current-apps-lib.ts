@@ -80,10 +80,11 @@ export function currentApps(
 /** api.ts `appIconUrl` restated (raw file + mtime cache key) — that module is
  *  not importable here for the same DOM-free reason as the codec above. */
 function iconUrlFor(icon: string, mtime?: number | null): string {
+  // The FULL float mtime as the cache key, not the floored second: picking a
+  // new icon twice inside one second must still change the URL, or the row
+  // keeps serving the browser's cached previous emoji (Bugbot, 2026-08-31).
   return (
-    "/api/fs/raw?path=" +
-    encodeURIComponent(icon) +
-    (mtime ? "&v=" + Math.floor(mtime) : "")
+    "/api/fs/raw?path=" + encodeURIComponent(icon) + (mtime ? "&v=" + mtime : "")
   );
 }
 

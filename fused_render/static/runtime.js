@@ -341,7 +341,8 @@
   // before the document's own stylesheet, let alone its first paint.
   //
   // The theme is READ here rather than pushed in from the shell: reading the
-  // same localStorage key (same origin) plus this document's own matchMedia
+  // same localStorage key (same origin), a same-origin ancestor's resolved
+  // theme, or failing both this document's own matchMedia
   // means the shell never has to reach into a view, so a theme change is never
   // a re-render and can never remount or reload a live iframe. Cross-window
   // convergence rides the `storage` event, which fires in every other
@@ -353,6 +354,45 @@
   var THEME_KEY = "fused-render:theme";
   var DARK_QUERY = "(prefers-color-scheme: dark)";
 
+  // With the preference on System, only a TOP-LEVEL document may ask
+  // matchMedia. Inside an iframe, `prefers-color-scheme` is not the OS: the
+  // browser derives it from the computed `color-scheme` of the parent's
+  // <iframe> element (CSS Color Adjust §"preferred color scheme"). This
+  // script is parser-blocking at the very top of the child's <head>, so in a
+  // nested chain (embed shell → fusedapp template → entry page) it can run
+  // before an ancestor's own color-scheme has been applied — the query then
+  // answers with a transient default, and Chrome does not fire the matchMedia
+  // `change` event when the inherited value settles, so the wrong answer
+  // froze until the next refresh, winning or losing the race at random.
+  // Instead a framed document INHERITS the nearest same-origin ancestor's
+  // already-resolved theme (they run this same script, or are the shell whose
+  // index.html bootstrap sets `data-theme` pre-paint), and the mutation
+  // observer in startTheme keeps it following later flips.
+  // The inherit is race-free where matchMedia was not: an ancestor's copy of
+  // this script is parser-blocking at the top of ITS <head>, and its iframes
+  // are created by content that parses after it — so by the time this child
+  // document exists, every same-origin ancestor already carries `data-theme`
+  // or `style.colorScheme` (the embed shell sets `data-theme` in index.html's
+  // pre-paint bootstrap, likewise before any iframe mounts).
+  //
+  // Returns { theme, win } — `win` is the ancestor the value came from, so
+  // startTheme can observe THAT document for later flips (observing a nearer
+  // non-participating ancestor would freeze the theme on an OS flip).
+  function inheritedTheme() {
+    var w = window;
+    try {
+      while (w.parent !== w) {
+        w = w.parent;
+        var el = w.document.documentElement;
+        var t = el.getAttribute("data-theme") || el.style.colorScheme;
+        if (t === "light" || t === "dark") return { theme: t, win: w };
+      }
+    } catch (e) {
+      /* cross-origin ancestor — stop climbing, resolve on our own */
+    }
+    return null;
+  }
+
   function resolvedTheme() {
     var pref = null;
     try {
@@ -361,6 +401,8 @@
       /* private mode / blocked storage — fall through to the OS preference */
     }
     if (pref === "light" || pref === "dark") return pref;
+    var inherited = inheritedTheme();
+    if (inherited) return inherited.theme;
     try {
       return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
     } catch (e) {
@@ -412,6 +454,22 @@
       window.matchMedia(DARK_QUERY).addEventListener("change", apply);
     } catch (e) {
       /* no matchMedia — a pinned Light/Dark still works */
+    }
+    // Framed documents inherit their theme (see inheritedTheme) — but a
+    // System-mode OS flip only reaches the top-level document's matchMedia,
+    // and no `storage` event fires for it. Follow the resolving ancestor's
+    // theme by observing the attributes it writes; each frame does this, so
+    // the flip cascades down a nested chain one document at a time.
+    try {
+      var source = inheritedTheme();
+      if (source) {
+        new MutationObserver(apply).observe(source.win.document.documentElement, {
+          attributes: true,
+          attributeFilter: ["data-theme", "style"],
+        });
+      }
+    } catch (e) {
+      /* cross-origin parent — matchMedia above is all we have */
     }
   }
 
