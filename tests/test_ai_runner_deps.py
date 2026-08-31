@@ -243,6 +243,54 @@ def test_a_runner_naming_a_split_distribution_names_its_other_half(folder):
             f"{entry['companion']}.\n\n{entry['reason']}")
 
 
+# -- the three diffusers_image* manifests' dependency parity -----------------
+#
+# Same shape as the onnx_embed four-way check below, for the same reason: these
+# three folders are declared, in their own header comments, to be one
+# dependency list with only `torch` (and ROCm's extra `triton-rocm`, which
+# rides in for the reason that folder's header explains) swapped per hardware.
+# A hand-maintained list that drifts between them would mean "which engine
+# row the user picked" quietly also means "which quantization backends are
+# available" — which is exactly the shape of the bitsandbytes omission this
+# suite exists to catch: it was missing from all three, so nothing here would
+# have caught it landing in only one or two either.
+_DIFFUSERS_IMAGE_FOLDERS = ("diffusers_image", "diffusers_image_cuda",
+                            "diffusers_image_rocm")
+
+#: Names legitimately absent from the comparison because they encode WHERE
+#: torch comes from rather than WHAT the runner needs: `torch` itself is
+#: pinned identically in all three but sourced from a different index per
+#: folder, and `triton-rocm` exists only because ROCm's torch wheel declares
+#: it as a transitive dependency PyPI cannot satisfy (see
+#: `diffusers_image_rocm/pyproject.toml`'s header) — it has no counterpart to
+#: agree with on the other two folders by construction, not by drift.
+_DIFFUSERS_IMAGE_HARDWARE_SPECIFIC = {"torch", "triton-rocm"}
+
+
+def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
+    """The guard the bitsandbytes bug needed and did not have.
+
+    `tonera/FLUX.2-klein-4B-int8-diffusers` — the sole, `recommended: True`
+    `diffusers-image` suggestion — ships a torchao transformer AND a
+    bitsandbytes-NF4 text encoder, so all three folders need both
+    quantization backends or the model a bare `fused.ai.image()` starts
+    fails with an ImportError raised before the transformer is ever built
+    (see `catalog.py`'s entry). `bitsandbytes` could have been added to one
+    folder and forgotten in the other two — the venvs are built independently
+    on the user's machine, so nothing short of this comparison would notice —
+    and this test exists so that class of drift is a red CI line instead of a
+    hardware-specific failure report.
+    """
+    shared = None
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        declared = _declared(os.path.join(RUNNERS_DIR, name))
+        rest = sorted(d for d in declared
+                       if d not in _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC)
+        if shared is None:
+            shared = rest
+        assert rest == shared, name
+
+
 def test_the_split_table_is_not_quietly_unused():
     """A table nothing matches is a guard that has silently stopped guarding —
     the dependency renamed, the runner deleted, the entry left behind reading
