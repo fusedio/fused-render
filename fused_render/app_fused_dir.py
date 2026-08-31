@@ -202,7 +202,7 @@ def _after_move(app_dir: str, recorded: str) -> None:
     if os.path.isdir(recorded):
         logger.info("%s still exists — a copy, not a move; record left intact", recorded)
         return
-    from fused_render import claude_session_move
+    from fused_render import app_state_move, claude_session_move
 
     new = os.path.abspath(app_dir)
     meta = read_meta(app_dir) or {}
@@ -225,6 +225,12 @@ def _after_move(app_dir: str, recorded: str) -> None:
             continue
         if os.path.isdir(source):
             continue
+        # The server's own stores — bookmarks, shell recents, scheduled
+        # targets, the pin, the desk (current_apps), the registered-apps
+        # registry, app_recents — all name the source path. From each source,
+        # not just the origin: an earlier incomplete hop already pointed them
+        # at its intermediate path. Idempotent, so a retry costs nothing.
+        app_state_move.rewrite_stores(source, new)
         result = claude_session_move.relocate(source, new)
         moved += result["moved"]
         pending += result["pending"]

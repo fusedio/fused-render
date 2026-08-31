@@ -217,6 +217,53 @@ def test_a_live_session_holds_the_move_back(app, claude_store):
     assert m["migrations"][0]["pending"] == ["live-1"]
 
 
+def test_a_move_re_roots_bookmarks_and_app_stores(app, claude_store, tmp_path, monkeypatch):
+    """The stores that name the old path by absolute path (bookmarks, the
+    desk, the registered registry) or by workspace-relative key (app_recents)
+    all follow the move; entries about OTHER apps are untouched."""
+    import urllib.parse
+
+    home = tmp_path / "fused-home"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    from fused_render.shell.seed import fused_dir
+    old = os.path.join(fused_dir(), "local", "demo-viz")
+    new_root = os.path.abspath(str(app))  # tmp_path/Fused/local/demo
+
+    enc = "/".join(urllib.parse.quote(s, safe="!*'()")
+                   for s in (old.lstrip("/") + "/index.html").split("/"))
+    (home / "bookmarks.json").write_text(json.dumps([
+        {"name": "mine", "url": "/explorer/view/" + enc + "?sel=index.html"},
+        {"name": "other", "url": "/explorer/view/Users/x/other/app.html"},
+    ]))
+    (home / "current_apps.json").write_text(json.dumps(
+        {"apps": [{"path": old, "addedAt": "t"}], "seen": []}))
+    (home / "registered_apps.json").write_text(json.dumps(
+        {"entries": [{"path": old, "openedAt": "t"}]}))
+    (home / "app_recents.json").write_text(json.dumps(
+        {"entries": [{"path": "local/demo-viz", "openedAt": "t"},
+                     {"path": "local/keep", "openedAt": "t"}]}))
+
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta_file.write_text(json.dumps(meta))
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    marks = json.loads((home / "bookmarks.json").read_text())
+    assert "demo-viz" not in marks[0]["url"] and "demo" in marks[0]["url"]
+    assert marks[1]["url"] == "/explorer/view/Users/x/other/app.html"
+    desk = json.loads((home / "current_apps.json").read_text())
+    assert desk["apps"][0]["path"] == new_root.replace(os.sep, "/")
+    reg = json.loads((home / "registered_apps.json").read_text())
+    assert reg["entries"][0]["path"] == new_root
+    rec = json.loads((home / "app_recents.json").read_text())
+    assert {e["path"] for e in rec["entries"]} == {"local/demo", "local/keep"}
+
+
 def test_a_rename_the_munge_cannot_see_rewrites_in_place(app, claude_store):
     """`de_mo` -> `de-mo` lands in the SAME bucket: src is dst. The file
     stays and only its cwd lines move — it must not be mistaken for an

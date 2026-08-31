@@ -212,6 +212,16 @@ def _remap_file_param(query: str, src: str, dst: str) -> str | None:
 
 # ---------------------------------------------------------------- state files
 
+def rewrite_absolute_paths(src: str, dst: str) -> None:
+    """Re-root every store here that writes absolute paths, `src` -> `dst`.
+
+    Public because the same four stores go stale when ONE APP FOLDER moves,
+    not just when the whole workspace does — `app_state_move.rewrite_stores`
+    (D548) hands this an app's old and new roots. All the rewriters are plain
+    prefix remaps, so the radius of the move never mattered to them."""
+    _rewrite_state(src, dst)
+
+
 def _rewrite_state(src: str, dst: str) -> None:
     # community installs.json is deliberately absent here: the community
     # marketplace no longer produces installed copies (fused_render/

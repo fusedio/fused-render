@@ -11190,7 +11190,15 @@ the rules around it.
   already exists at the destination (a copy-on-resume got there first) is left
   to the destination. Only a complete relocate repoints `app_dir`, appending
   `{"from", "to", "at", "sessions"}` to a `migrations` list so the evidence is
-  kept rather than erased; an incomplete one leaves `app_dir` at the origin
+  kept rather than erased; the server's own stores that name the old path —
+  bookmarks, shell recents, scheduled targets, the menu-bar pin (all via
+  `workspace_migration.rewrite_absolute_paths`, the D337 rewriters handed an
+  app's roots instead of the workspace's), plus `current_apps.json`,
+  `registered_apps.json` and the workspace-relative `app_recents.json`
+  (`fused_render/app_state_move.py`) — are re-rooted on the same open,
+  idempotently, an app moved out of the workspace dropping its
+  `app_recents` key (the registered store owns it from there); an
+  incomplete one leaves `app_dir` at the origin
   but still appends the hop with its `pending` ids, so if the folder moves
   AGAIN before the live session ends the next relocate searches that
   intermediate path too, and the transcripts already carried there are not
