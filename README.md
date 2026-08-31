@@ -17,37 +17,59 @@ Right-click a file in Explorer → **Open with** → fused-render, and it opens 
 your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
 to enable it.
 
-## Install
+## Download
 
-**macOS app** — the packaged FusedRender.app (bundles the `fused` CLI and
-rclone; no Python required):
+**[render.fused.io](https://render.fused.io)** — the download page detects the
+machine you're on and hands you the right build:
+
+- **macOS** — `.dmg`, Apple silicon
+- **Windows** — 64-bit `.exe` installer
+- **Linux** — AppImage
+
+Each one is the packaged app: it carries its own Python runtime plus the
+`fused` CLI and rclone, so there is nothing to install first and nothing to
+build. macOS is the native build; Windows and Linux have limited support.
+
+If the first run goes wrong, the page's
+[troubleshooting section](https://render.fused.io/#troubleshooting) has the
+errors people actually hit — Claude Code missing, not signed in, limit
+reached — with the fix for each.
+
+### Other ways in
+
+**Homebrew** — the same macOS app, from the tap:
 
 ```
 brew install --cask fusedio/tap/fused-render
 ```
 
-or download the DMG from the [releases page](https://github.com/fusedio/fused-render/releases).
+**GitHub releases** — every build the download page serves is also attached to
+its [release](https://github.com/fusedio/fused-render/releases), if you want an
+older version or a checksum.
 
-**Python package** — each release also attaches a wheel (see the release
-notes for its URL): `pip install <wheel-url>`. From a source checkout:
+**Python package** — for running fused-render inside a Python environment you
+already have, rather than as a desktop app. Each release attaches a wheel (see
+the release notes for its URL): `pip install <wheel-url>`. From a source
+checkout:
 
 ```
 pip install -e .
 ```
 
-Requires Python 3.11+. Installs FastAPI, uvicorn, and pyarrow (used by the
-built-in parquet preview).
-
-Building from source and the local dev loop live in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Requires Python 3.11+. Pulls in FastAPI, uvicorn, duckdb and pyarrow — what the
+built-in table and parquet previews run on. Building from source and the local
+dev loop live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Run
+
+The downloaded app does this for you — open it and the tab appears. From a pip
+install it's a command:
 
 ```
 fused-render
 ```
 
-Opens a browser tab at `http://127.0.0.1:1777/`, starting in your home
+Either way you land on `http://127.0.0.1:1777/`, starting in your home
 directory. Useful flags:
 
 ```
