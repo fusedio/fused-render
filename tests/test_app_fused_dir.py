@@ -93,9 +93,17 @@ def _transcript(projects, cwd, sid, extra_line=None):
 
     bucket = projects / munge(cwd)
     bucket.mkdir(exist_ok=True)
+    import urllib.parse
+
+    # The leading app-state block is how the claude template knows which pane
+    # a chat was opened on: `entry` plain, `url` percent-encoded.
+    state = ('<live-app-state>App state {"entry": "%s", "url": "/render?_file=%s"}'
+             "</live-app-state>hi"
+             % (os.path.join(cwd, "index.html"),
+                urllib.parse.quote(os.path.join(cwd, "index.html"), safe="")))
     lines = [
         json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
-        json.dumps({"type": "user", "cwd": cwd, "message": {"content": "hi"}}),
+        json.dumps({"type": "user", "cwd": cwd, "message": {"content": state}}),
         json.dumps({"type": "assistant", "cwd": cwd, "message": {"content": "ok"}}),
     ]
     if extra_line is not None:
@@ -163,6 +171,12 @@ def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_s
     assert moved[1] == "not json {"
     assert json.loads(moved[2])["cwd"] == new_root
     assert (dst / "aaaa-1" / "tool-results" / "x.txt").read_text() == "r"
+    # The pane identity moved too — both spellings, nothing left of the old.
+    import urllib.parse
+    body = (dst / "aaaa-1.jsonl").read_text()
+    assert os.path.join(new_root, "index.html") in body
+    assert urllib.parse.quote(os.path.join(new_root, "index.html"), safe="") in body
+    assert old not in body
     sub = projects / munge(os.path.join(new_root, "sub", "deeper"))
     assert json.loads((sub / "bbbb-2.jsonl").read_text().splitlines()[1])["cwd"] == \
         os.path.join(new_root, "sub", "deeper")

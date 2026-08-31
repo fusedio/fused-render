@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import time
+import urllib.parse
 
 from fused_render import session_liveness
 
@@ -177,27 +178,54 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _rewrite_cwd(src: str, dst: str, old_root: str, new_root: str) -> None:
-    """Copy `src` to `dst`, repointing every `cwd` under `old_root`.
+def _path_rewrites(old_root: str, new_root: str) -> list:
+    """Compiled (pattern, replacement) pairs repointing `old_root` wherever a
+    transcript spells it.
 
-    Only a line that changes is re-serialised; everything else — unparseable
-    lines included — is copied byte for byte, so a transcript that did not
-    need rewriting is not reformatted on the way past.
+    Two spellings, because a session's identity is more than its `cwd`: the
+    leading `<live-app-state>` block that tells the claude template WHICH pane
+    a chat was opened on carries the file as a plain path (`entry`) and inside
+    a percent-encoded `_file=` url — leave those behind and a migrated session
+    lists under the folder but opens the dead path, and the file's own list
+    can never match it. Tool records (`cwd` fields, file_path arguments, …)
+    use the plain spelling and are repointed by the same pair.
+
+    Anchored on a boundary so `/A/app` never rewrites the sibling
+    `/A/app-old`: the next character must end the path or start a deeper
+    segment, in whichever alphabet the spelling uses.
     """
+    old = os.path.abspath(old_root).rstrip(os.sep)
+    new = os.path.abspath(new_root).rstrip(os.sep)
+    pairs = [
+        (old.encode("utf-8"), new.encode("utf-8"), rb'(?=$|[/\\"\'\s?&#)\],:;])'),
+        # A JSON string doubles backslashes, so a Windows path has a third
+        # spelling inside the very lines being rewritten.
+        (json.dumps(old)[1:-1].encode("utf-8"), json.dumps(new)[1:-1].encode("utf-8"),
+         rb'(?=$|["\'\s?&#)\],:;]|\\\\)'),
+        (urllib.parse.quote(old, safe="").encode("ascii"),
+         urllib.parse.quote(new, safe="").encode("ascii"), rb'(?=$|[%"\\&#?])'),
+    ]
+    return [(re.compile(re.escape(o) + tail), n) for o, n, tail in pairs if o != n]
+
+
+def _rewrite_cwd(src: str, dst: str, old_root: str, new_root: str) -> None:
+    """Copy `src` to `dst`, repointing every spelling of `old_root`.
+
+    Only a line that mentions the old path is touched; everything else —
+    unparseable lines included — is copied byte for byte, so a transcript
+    that did not need rewriting is not reformatted on the way past. The
+    replacement is textual, not structural, on purpose: the old path appears
+    in `cwd` fields, app-state blocks, tool arguments and tool output alike,
+    and every one of them is stale for the same reason. Path bytes contain
+    nothing JSON escapes (`re.escape` guards the pattern side), so a valid
+    line stays valid.
+    """
+    rewrites = _path_rewrites(old_root, new_root)
     tmp = dst + ".tmp"
     with open(src, "rb") as fin, open(tmp, "wb") as fout:
         for raw in fin:
-            if b'"cwd"' in raw:
-                try:
-                    obj = json.loads(raw)
-                except ValueError:
-                    obj = None
-                cwd = obj.get("cwd") if isinstance(obj, dict) else None
-                rel = _under(cwd, old_root) if isinstance(cwd, str) else None
-                if rel is not None:
-                    obj["cwd"] = os.path.join(new_root, rel) if rel else new_root
-                    raw = json.dumps(obj, ensure_ascii=False,
-                                     separators=(",", ":")).encode("utf-8") + b"\n"
+            for pattern, replacement in rewrites:
+                raw = pattern.sub(replacement, raw)
             fout.write(raw)
     os.replace(tmp, dst)
 

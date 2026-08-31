@@ -11176,9 +11176,13 @@ the rules around it.
   (`fused_render/claude_session_move.py`): every Claude transcript whose own
   `cwd` line is the old path or a directory under it is carried from its
   `~/.claude/projects/<munged cwd>/` bucket to the bucket for the matching path
-  under the new root, `cwd` fields repointed and the `<id>/` side dir along
-  with it, so the Tasks list, "continue in terminal" and `--resume` all find
-  the conversations at the new home. Membership is decided per transcript by
+  under the new root, every spelling of the old path repointed — `cwd`
+  fields, the leading `<live-app-state>` block's plain `entry` and
+  percent-encoded `_file=` url (a file-scoped session's pane identity, which
+  is what lists it under its file and what "open" navigates to), tool
+  records — and the `<id>/` side dir along with it, so the Tasks list,
+  "continue in terminal" and `--resume` all find the conversations at the
+  new home. Membership is decided per transcript by
   its recorded `cwd`, never by bucket name — the munge is lossy and
   `-A-app-` also prefixes the sibling `/A/app-old`. A transcript whose session
   is live (a pid-checked `~/.claude/sessions/` entry, or a turn in flight per
