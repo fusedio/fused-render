@@ -121,7 +121,7 @@ def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkey
         # `key` included because `start` reports the key it used and the endpoint
         # hands that straight to the client (D214) — a double that omits it is not
         # standing in for the real function.
-        lambda project: started.append(project) or {"stage": "spawn", "done": False,
+        lambda project, allow_build=False: started.append(project) or {"stage": "spawn", "done": False,
                                                     "key": "0" * 16},
     )
     resp = client.post(
@@ -151,7 +151,7 @@ def test_install_reports_a_nonstandard_source_beside_the_requirements(tmp_path, 
     _declare(tmp_path, '"foolib @ git+https://example.com/foolib.git"')
     target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
     monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda project: {"done": False, "key": "0" * 16})
+                        lambda project, allow_build=False: {"done": False, "key": "0" * 16})
     resp = client.post("/api/env/install", json={"py": str(target)}, headers=HEADERS)
     assert resp.status_code == 200
     body = resp.json()
@@ -168,7 +168,7 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     _declare(tmp_path / "sub", '"pyproj"')
     _py(tmp_path / "sub", "rel.py", "def main():\n    return 1\n")
     monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda project: {"done": False, "key": "0" * 16})
+                        lambda project, allow_build=False: {"done": False, "key": "0" * 16})
     resp = client.post(
         "/api/env/install",
         json={"py": "rel.py", "html": str(tmp_path / "sub" / "page.html")},
