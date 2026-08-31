@@ -286,14 +286,21 @@
 .am-subgroup-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 12px;
 }
 
 .am-section-head {
+  justify-content: space-between;
   border-bottom: 1px solid var(--border);
   padding-bottom: 6px;
   margin-bottom: var(--am-gap-head);
+}
+
+/* Flush left, not space-between: the size is a subtotal FOR the title beside
+   it, not a fact about the row's far edge, so it sits one gap after the name
+   instead of stranded ~800px away at the row's end. */
+.am-subgroup-head {
+  justify-content: flex-start;
 }
 
 .am-section-title {
@@ -387,6 +394,7 @@
    — a flick that reaches the end of one capability's row must not turn into the
    browser's back gesture. */
 .am-carousel {
+  --am-cpv: 3;
   display: flex;
   gap: var(--am-gap-card);
   overflow-x: auto;
@@ -425,10 +433,17 @@
    scrolls with its own prev/next arrows (rendered whenever there is overflow
    in that direction, not hover-gated — see Carousel.tsx), so the
    scrollbar's only job left is the drag handle, not the announcement. It
-   stays fully transparent at rest and only draws a thin thumb on
-   hover/focus, which also keeps macOS "always show scrollbars" from turning
-   it into a permanent dark stripe under every row — that setting still
-   paints track+thumb at rest, but a transparent thumb paints nothing.
+   stays fully transparent at rest and only draws a thin thumb while the row
+   is actually scrolling, or while keyboard focus is visible inside it — not
+   on hover. Hover was the first cut, but the carousel element IS the row: a
+   `:hover` reveal painted the thumb for as long as the pointer sat anywhere
+   over any card, so it popped in and out as the pointer wandered the page
+   rather than tracking an actual scroll. `Carousel.tsx` now stamps
+   `is-scrolling` on scroll and clears it 800ms after the last event, so the
+   thumb reads as "this row just moved," which also keeps macOS "always show
+   scrollbars" from turning it into a permanent dark stripe under every row —
+   that setting still paints track+thumb at rest, but a transparent thumb
+   paints nothing.
    `scrollbar-width: none` (or its `::-webkit-scrollbar { display: none }`
    equivalent) was ruled out for the same reason a standard-property mix was:
    it would remove the drag handle for anyone without a trackpad or scroll
@@ -448,50 +463,130 @@
   border-radius: 999px;
 }
 
-.am-carousel:hover::-webkit-scrollbar-thumb,
-.am-carousel:focus-within::-webkit-scrollbar-thumb {
+/* A second arm besides `is-scrolling`, so a keyboard user tabbing through
+   the row's cards can still see where the thumb is without ever scrolling
+   it. This used to be `:focus-within`, which matched on ANY focus inside the
+   row — including the one a mouse click leaves behind, since clicking Load,
+   Try, (i) or an arrow focuses that control — so the thumb stayed painted
+   until focus left the row entirely, long after the click that caused it.
+   `:has(:focus-visible)` only matches when the browser itself would draw a
+   focus ring in there, which is the keyboard case this arm is actually
+   for. */
+.am-carousel.is-scrolling::-webkit-scrollbar-thumb,
+.am-carousel:has(:focus-visible)::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--fg-muted) 40%, transparent);
   background-clip: padding-box;
   border: 2px solid transparent;
 }
 
-.am-carousel::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 55%, transparent);
-  background-clip: padding-box;
+/* An EXACT FRACTION of the row per view, not a fixed card width, so every
+   card in a view is the same width and the eye learns one rhythm — a card
+   half in view reads as "there is more" rather than as a narrower card. The
+   fraction itself steps with the row's own width via `--am-cpv` (container
+   queries below): three cards on an ordinary window, more as the row grows,
+   so a card never stretches past ~480px on a wide monitor — a fixed third of
+   a 2200px row was pushing 720px, wider than a card has any business being.
+   The 360px floor is unchanged and still governs narrow windows, where even
+   the lowest count would crush the footer's buttons into each other; below
+   it the row shows fewer cards than `--am-cpv` and scrolls. */
+.am-carousel > .am-card {
+  flex: 0 0
+    max(
+      360px,
+      calc((100% - (var(--am-cpv) - 1) * var(--am-gap-card)) / var(--am-cpv))
+    );
+  scroll-snap-align: start;
 }
 
-/* THREE cards per view: the basis is a third of the row, so every card is the
-   same width whatever the window and the eye learns one rhythm — a card half in
-   view reads as "there is more" rather than as a narrower card. The 360px floor
-   is for narrow windows, where a true third would crush the footer's buttons
-   into each other; below it the row shows fewer than three and scrolls. */
-.am-carousel > .am-card {
-  flex: 0 0 max(360px, calc((100% - 2 * var(--am-gap-card)) / 3));
-  scroll-snap-align: start;
+/* Card count steps up with the WRAP's own width, not the viewport's — the
+   grid sits inside a sidebar-plus-content shell, so a container query keyed
+   to `.am-carousel-wrap` (below) answers "how wide is this row really" where
+   a media query would answer a different question. Breakpoints are picked so
+   a card's share of the row stays inside the ~360-480px band this design
+   calls a card's width: below 1480px three cards already sit under 480px;
+   above it a fourth keeps them there, and so on up to six. */
+@container am-carousel (min-width: 1480px) {
+  .am-carousel {
+    --am-cpv: 4;
+  }
+}
+
+@container am-carousel (min-width: 1880px) {
+  .am-carousel {
+    --am-cpv: 5;
+  }
+}
+
+@container am-carousel (min-width: 2280px) {
+  .am-carousel {
+    --am-cpv: 6;
+  }
 }
 
 /* The arrows live OUTSIDE the flow — absolutely placed over the row's edges —
    because their whole brief is "say the row scrolls without moving anything":
-   with exact thirds there is no half-visible card left to say it, and a control
+   with exact fractions there is no half-visible card left to say it, and a control
    that appears in the flow would shift the very cards it points at. Vertical
    centring is against the wrapper, so a click scrolls sideways and nothing on
    the page moves up or down. */
 .am-carousel-wrap {
   position: relative;
+  container: am-carousel / inline-size;
 }
 
-/* A full-height fade with the chevron in it, not a floating disc: the gradient
-   dissolves the edge card into the page background, which is itself the "there
-   is more" signal — the row visibly runs out of view instead of ending at a
-   crisp border. The strip stops above the scrollbar's lane (`bottom: 6px`
-   mirrors the row's padding) so the fade never sits on the bar it shares an
-   edge with. */
-.am-caro-btn {
+/* A full-height fade with the chevron over it, not a floating disc: the
+   gradient dissolves the edge card into the page background, which is itself
+   the "there is more" signal — the row visibly runs out of view instead of
+   ending at a crisp border. The strip stops above the scrollbar's lane
+   (`bottom: 6px` mirrors the row's padding) so the fade never sits on the bar
+   it shares an edge with.
+
+   The fade lives on the WRAP, as a `pointer-events: none` pseudo-element,
+   rather than on the button: a full-height, 56px-wide button covered a real
+   control (Load, trash) on whichever card ended up under it, stealing its
+   click. Only the chevron itself — a compact, vertically-centred hit target —
+   is a `<button>`; the fade beside it is decoration a click passes straight
+   through.
+
+   24px wide, not 32: even a vertically-centred button that width still
+   overlapped a Load button on the partially-visible edge card underneath.
+   24px sits inside the zone the fade has already made illegible (≥75%
+   opaque at that distance from the edge), so there is nothing legible left
+   to cover.
+
+   24px TALL too, not the fade's full 56px: the row itself is only ~134px
+   tall, so a 56px-tall centred button still reached down into the card
+   footer's Load button below it. 24px centred lands on the card's subtitle
+   line, which is text, not a control, so the button's hit area no longer
+   sits on anything the reader can click. */
+.am-carousel-wrap.has-prev::before,
+.am-carousel-wrap.has-next::after {
+  content: "";
   position: absolute;
   top: 0;
   bottom: 6px;
-  z-index: 1;
   width: 56px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.am-carousel-wrap.has-prev::before {
+  left: 0;
+  background: linear-gradient(to left, transparent, var(--bg) 75%);
+}
+
+.am-carousel-wrap.has-next::after {
+  right: 0;
+  background: linear-gradient(to right, transparent, var(--bg) 75%);
+}
+
+.am-caro-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 24px;
+  height: 24px;
   border: 0;
   background: transparent;
   color: var(--fg-muted);
@@ -508,12 +603,10 @@
 
 .am-caro-btn.prev {
   left: 0;
-  background: linear-gradient(to left, transparent, var(--bg) 75%);
 }
 
 .am-caro-btn.next {
   right: 0;
-  background: linear-gradient(to right, transparent, var(--bg) 75%);
 }
 
 /* Cards in a row are the SAME height, and their footers line up.
@@ -540,7 +633,7 @@
      the card beside it, and a row of four cards had four footers on three
      baselines. The height is the button's own: 12px text at 1.5, plus its 3px
      padding and 1px border on each side. */
-  min-height: 26px;
+  min-height: 28px;
 }
 
 /* The two destinations named in the page's captions: the cache directory this
@@ -588,6 +681,7 @@
    overflow the plate. */
 .am-card-name {
   min-width: 0;
+  font-size: 14px;
   color: inherit;
   text-decoration: none;
   white-space: normal;
@@ -702,7 +796,13 @@
   text-decoration: none;
   background: transparent;
   color: var(--accent);
-  border: 1px solid var(--accent);
+  /* Text stays full accent — that's the "this goes somewhere else" signal —
+     but the border used to match it stroke for stroke, and a border repeated
+     on every card in the grid out-shouted the one filled state (Loaded) that
+     is supposed to be the loudest mark on the page. Cut to a third of the
+     way to the plain border so the shape still reads as a button, not as a
+     second accent voice. */
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
 /* Doubled selector to outrank `.cc-iconbtn:hover`, which is the same weight and
@@ -1710,7 +1810,7 @@
    opacity still dims it for a refused or busy card. */
 .am-card-power {
   flex: 0 0 auto;
-  padding: 3px 9px;
+  padding: 4px 10px;
   font: inherit;
   font-size: 12px;
   color: var(--fg);
