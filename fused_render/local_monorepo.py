@@ -111,6 +111,69 @@ def _drop_boilerplate_gitignore(app_dir: str) -> None:
             pass
 
 
+# The starter CLAUDE.md's Version-control paragraph, both eras, verbatim —
+# keep _NEW_VC in step with fused_render/app_starter/CLAUDE.md. Adopted apps
+# carry the OLD text, which tells Claude to finish a turn with a bare
+# `git add -A`: whole-tree since git 2.0, i.e. an instruction to sweep every
+# sibling app into the commit the moment the folder joins the shared repo.
+_OLD_VC = """This folder is a local git repository (initialised at creation with the
+starter as its first commit). **Commit as you work, in small chunks** — after
+every coherent change, even tiny ones (a copy tweak, a single style fix, one
+function). Never batch a whole task into one commit, and never leave the tree
+dirty at the end of a turn: finish every turn with `git add -A` and a commit.
+Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
+Don't push, don't add remotes, don't rewrite history — this repo is purely
+local undo history for the app."""
+
+_NEW_VC = """This folder lives inside the workspace apps repository — one local git repo
+at the parent `local/` folder, shared by every app beside this one (the
+starter landed as this folder's first commit). **Commit as you work, in small
+chunks** — after every coherent change, even tiny ones (a copy tweak, a
+single style fix, one function). Never batch a whole task into one commit,
+and never leave this folder dirty at the end of a turn.
+
+**Always scope git to this folder.** Stage with `git add -A -- .` and commit
+with `git commit -m "…" -- .`, run from this directory. Never run a bare
+`git add -A`, `git commit -a`, or an unscoped `git commit` — sibling apps
+share the repository, and an unscoped command sweeps their in-progress work
+into your commit. (`git status -- .` and `git log -- .` are the scoped reads.)
+Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
+Don't push, don't add remotes, don't rewrite history, don't touch paths
+outside this folder — the repo is purely local undo history for the apps."""
+
+# The narrowest fallback for a user-edited CLAUDE.md where the block above no
+# longer matches whole: the one actively dangerous sentence.
+_OLD_SWEEP = "finish every turn with `git add -A` and a commit."
+_NEW_SWEEP = ("finish every turn with `git add -A -- .` and a scoped "
+              "`git commit -m \"…\" -- .` (never a bare `git add -A` — "
+              "sibling apps share this repository).")
+
+
+def _update_claude_md(app_dir: str) -> None:
+    """Swap the adopted app's CLAUDE.md version-control text for the scoped
+    one — whole paragraph when it is still the starter's, else just the bare
+    `git add -A` sentence; a fully rewritten file is left alone. Best-effort;
+    runs before the adopt commit so the edit rides it."""
+    path = os.path.join(app_dir, "CLAUDE.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeError):
+        return
+    if _OLD_VC in text:
+        updated = text.replace(_OLD_VC, _NEW_VC, 1)
+    elif _OLD_SWEEP in text:
+        updated = text.replace(_OLD_SWEEP, _NEW_SWEEP, 1)
+    else:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+    except OSError:
+        logger.warning("CLAUDE.md update failed for %s", app_dir,
+                       exc_info=True)
+
+
 def migrate(root: str) -> tuple[int, bool]:
     """Fold every per-app repo under `<root>/local` into the shared repo.
     Returns `(adopted, complete)` — `complete` False when any app failed and
@@ -128,6 +191,12 @@ def migrate(root: str) -> tuple[int, bool]:
         app_dir = os.path.join(local, name)
         if name.startswith(".") or not os.path.isdir(app_dir):
             continue
+        if os.path.islink(app_dir):
+            # A symlinked entry points at a tree that is NOT ours to adopt —
+            # isdir follows the link, and rmtree of the target's `.git` would
+            # destroy a real repository the user merely parked a link to.
+            logger.info("local monorepo: %s is a symlink — skipped", name)
+            continue
         try:
             git_dir = os.path.join(app_dir, ".git")
             if os.path.exists(git_dir):
@@ -138,17 +207,19 @@ def migrate(root: str) -> tuple[int, bool]:
                 _merge_excludes(app_dir, local)
                 shutil.rmtree(git_dir, onerror=_force_rm)
             _drop_boilerplate_gitignore(app_dir)
+            _update_claude_md(app_dir)
             # Adopt whatever the folder holds — a dirty tree as-is (its adopt
             # commit is the new baseline), a repo-less folder the same way.
-            if app_git._git(local, "add", "-A", "--", name).returncode != 0:
+            if app_git._git(local, "add", "-A", "--",
+                            app_git._pathspec(name)).returncode != 0:
                 complete = False
                 continue
             if app_git._git(local, "diff", "--cached", "--quiet",
-                            "--", name).returncode == 0:
+                            "--", app_git._pathspec(name)).returncode == 0:
                 continue  # already tracked and clean (e.g. a retried run)
             if app_git._git(local, "commit", "-q", "-m",
                             f"Adopt {name} into the workspace repo",
-                            "--", name).returncode != 0:
+                            "--", app_git._pathspec(name)).returncode != 0:
                 complete = False
                 continue
             adopted += 1

@@ -167,6 +167,15 @@ def app_dir_for(path: str) -> str | None:
     return os.path.join(root, parts[0], parts[1])
 
 
+def _pathspec(spec: str) -> str:
+    """`spec` armored for use as a git pathspec. Git treats `*`, `?`, `[…]`
+    and a leading `:` as pathspec magic, and app folder names may carry any
+    of them — `:(literal)` turns all of it off, so an app named `[draft]`
+    scopes to its own folder instead of pattern-matching siblings. The legacy
+    `.` scope has no magic and stays bare."""
+    return spec if spec == "." else ":(literal)" + spec
+
+
 def _repo_scope(app_dir: str) -> tuple[str, str] | None:
     """Where a commit about `app_dir` goes: `(repo_dir, pathspec)`, or None
     when the folder resolves to no repo we own.
@@ -254,14 +263,15 @@ def init_repo(app_dir: str) -> bool:
                 return False
             name = os.path.basename(app_dir)
             local = local_repo_root()
-            if _git_retry_lock(local, "add", "-A", "--", name).returncode != 0:
+            if _git_retry_lock(local, "add", "-A", "--",
+                               _pathspec(name)).returncode != 0:
                 return False
             if _git(local, "diff", "--cached", "--quiet",
-                    "--", name).returncode == 0:
+                    "--", _pathspec(name)).returncode == 0:
                 return False
             return _git_retry_lock(
                 local, "commit", "-q", "-m", "New app from starter",
-                "--", name).returncode == 0
+                "--", _pathspec(name)).returncode == 0
         # Legacy: an app outside the shared tag gets its own repository.
         if _git(app_dir, "init", "-q").returncode != 0:
             return False
@@ -296,7 +306,7 @@ def commit(path: str, message: str) -> bool:
         # Repos initialized before a _GITIGNORE pattern existed must not
         # sweep new bookkeeping files into history via the scoped add below.
         _ensure_excludes(repo_dir)
-        r = _git_retry_lock(repo_dir, "add", "-A", "--", spec)
+        r = _git_retry_lock(repo_dir, "add", "-A", "--", _pathspec(spec))
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): add failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,
@@ -306,10 +316,10 @@ def commit(path: str, message: str) -> bool:
         # sidecar): no commit, and no error either. Scoped, so a sibling
         # app's staged work neither triggers nor rides this commit.
         if _git(repo_dir, "diff", "--cached", "--quiet",
-                "--", spec).returncode == 0:
+                "--", _pathspec(spec)).returncode == 0:
             return False
         r = _git_retry_lock(repo_dir, "commit", "-q", "-m",
-                            message or "Update", "--", spec)
+                            message or "Update", "--", _pathspec(spec))
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): commit failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,

@@ -100,6 +100,17 @@ def test_sibling_apps_never_ride_each_others_commits(workspace):
     assert st.stdout.strip()
     assert app_git.commit(str(b / "index.html"), "Edit beta")
     assert _log(b, scoped=True)[0] == "Edit beta"
+    # Pathspec-magic name: `[draft]` must scope to ITS folder, not pattern-
+    # match siblings (the `:(literal)` armor in _pathspec).
+    m = _make_app(workspace, name="[draft]")
+    (m / "index.html").write_text("<html>m2</html>")
+    (a / "index.html").write_text("<html>a3</html>")
+    assert app_git.commit(str(m / "index.html"), "Edit draft")
+    assert _log(m, scoped=True)[0] == "Edit draft"
+    st = subprocess.run(["git", "-C", str(workspace / "local"), "status",
+                         "--porcelain", "--", ":(literal)alpha"],
+                        capture_output=True, text=True)
+    assert st.stdout.strip()  # alpha's edit still uncommitted
 
 
 def test_legacy_per_app_repo_keeps_committing_into_itself(workspace):
@@ -222,6 +233,8 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
     (b / "index.html").write_text("<html></html>")  # never had a repo
     # Our old per-app boilerplate: fully covered by the root file → deleted.
     (b / ".gitignore").write_text(app_git._GITIGNORE)
+    # The old starter's unscoped-git instructions must be rewritten on adopt.
+    (b / "CLAUDE.md").write_text("# App\n\n" + local_monorepo._OLD_VC + "\n")
     c = local / "gamma"; c.mkdir()
     (c / "index.html").write_text("<html></html>")
     _own_repo(c)
@@ -239,6 +252,10 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
     # Boilerplate per-app .gitignore gone (root one covers it); user's kept.
     assert not (b / ".gitignore").exists()
     assert (a / ".gitignore").exists()
+    # CLAUDE.md's bare `git add -A` instruction rewritten to the scoped verbs.
+    md = (b / "CLAUDE.md").read_text()
+    assert "git add -A -- ." in md
+    assert local_monorepo._OLD_SWEEP not in md
     # The dirty file was adopted as-is into alpha's baseline.
     tracked = subprocess.run(["git", "-C", str(local), "ls-files", "alpha"],
                              capture_output=True, text=True).stdout

@@ -2315,7 +2315,9 @@ def _commit_turn(file: str, message: str) -> None:
         if not (os.path.dirname(app_dir) == local
                 and os.path.isdir(os.path.join(local, ".git"))):
             return
-        repo_dir, spec = local, os.path.basename(app_dir)
+        # :(literal) — folder names may carry pathspec magic (*, ?, […],
+        # a leading :); mirrors app_git._pathspec.
+        repo_dir, spec = local, ":(literal)" + os.path.basename(app_dir)
     subject = " ".join((message or "").split())
     subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
         if subject else "Claude turn"
