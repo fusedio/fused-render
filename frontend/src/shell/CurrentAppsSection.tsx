@@ -35,7 +35,7 @@ import {
   type CurrentAppEntry,
 } from "@platform/lib/api";
 import IconPicker from "@platform/ui/IconPicker";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -502,9 +502,9 @@ export default function CurrentAppsSection() {
   };
 
   // ---- the row's right-click menu ---------------------------------------------
-  // The app-card vocabulary where it overlaps (appCardMenu.ts): "Open in
-  // Explorer" is the app's FOLDER in fused-render's own explorer. The rest are
-  // the desk's own verbs — the dot, the tasks, the row itself.
+  // "Open app" is the app page header's own button (AppPage.tsx) — the entry
+  // page in a new tab. The rest are the desk's own verbs — the dot, the
+  // tasks, the row itself.
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -566,10 +566,14 @@ export default function CurrentAppsSection() {
 
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      label: "Open in Explorer",
-      icon: MenuIcons.folder,
-      disabled: !app.exists,
-      onClick: () => navigate(app.path, { isDir: true }),
+      // The app page header's own "Open app": the entry page full-size in the
+      // explorer, in a new tab so the current page stays put.
+      label: "Open app",
+      icon: MenuIcons.open,
+      disabled: !app.exists || !app.entry,
+      onClick: () => {
+        if (app.entry) window.open(urlForFsPath(app.entry), "_blank", "noopener");
+      },
     },
     {
       label: "Rename…",

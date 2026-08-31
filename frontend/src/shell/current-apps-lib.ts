@@ -39,6 +39,10 @@ export interface CurrentApp {
   path: string;
   /** The folder name — the row's label. */
   name: string;
+  /** The page to run (canonical path), or null when the folder has none —
+   *  the context menu's "Open app", the same target as the app page's own
+   *  "Open app" button. */
+  entry: string | null;
   /** `linked` for a registry folder outside the workspace, else `workspace`. */
   kind: "workspace" | "linked";
   /** The folder is still on disk. A missing one still lists — removing it is
@@ -75,6 +79,7 @@ export function currentApps(
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
+    entry: e.entry,
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
