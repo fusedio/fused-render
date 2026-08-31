@@ -448,6 +448,10 @@ def pyproject_path(project_dir: str) -> str:
     return os.path.join(project_dir, "pyproject.toml")
 
 
+def uv_toml_path(project_dir: str) -> str:
+    return os.path.join(project_dir, "uv.toml")
+
+
 def lock_path(project_dir: str) -> str:
     return os.path.join(project_dir, "uv.lock")
 
@@ -465,16 +469,15 @@ def has_lock(project_dir: str) -> bool:
     return os.path.isfile(lock_path(project_dir))
 
 
-def _load_manifest(project_dir: str) -> dict | None:
-    """Parse `<project_dir>/pyproject.toml`, or None when absent/unreadable.
+def _load_toml(path: str) -> dict | None:
+    """Parse a TOML file, or None when absent/unreadable.
 
     tomllib is 3.11+ stdlib and `requires-python` is now >=3.11, so the `tomli`
     arm below is unreachable in this interpreter; it is kept because this helper
     is copied into template backends that may run elsewhere, and it costs a
-    single failed import. Unlike the PEP 723 reader this replaces, a
-    missing parser is NOT an error the user can act on — every install of
-    fused-render has one — so both names are tried and anything else reads as
-    "no manifest".
+    single failed import. A missing parser is NOT an error the user can act
+    on — every install of fused-render has one — so both names are tried and
+    anything else reads as "no such file".
     """
     try:
         import tomllib
@@ -484,20 +487,45 @@ def _load_manifest(project_dir: str) -> dict | None:
         except ImportError:
             logger.warning(
                 "neither tomllib (Python 3.11+) nor tomli is available; "
-                "pyproject.toml files cannot be read"
+                "%s cannot be read", path
             )
             return None
     try:
-        with open(pyproject_path(project_dir), "rb") as f:
+        with open(path, "rb") as f:
             return tomllib.load(f)
     except OSError:
         return None
     except tomllib.TOMLDecodeError as e:
-        # Not raised: a broken manifest must not 500 the request. It reads as
-        # "no environment", which lands the script on the app interpreter and
-        # fails with a real ImportError naming the package it wanted.
-        logger.warning("invalid TOML in %s: %s", pyproject_path(project_dir), e)
+        # Not raised: a broken file must not 500 the request. For the
+        # manifest this reads as "no environment", which lands the script on
+        # the app interpreter and fails with a real ImportError naming the
+        # package it wanted; for uv.toml (see `_load_uv_toml`) it reads as
+        # "no project-wide index configuration to disclose", the same
+        # fail-open the manifest gets.
+        logger.warning("invalid TOML in %s: %s", path, e)
         return None
+
+
+def _load_manifest(project_dir: str) -> dict | None:
+    """Parse `<project_dir>/pyproject.toml`, or None when absent/unreadable."""
+    return _load_toml(pyproject_path(project_dir))
+
+
+def _load_uv_toml(project_dir: str) -> dict | None:
+    """Parse `<project_dir>/uv.toml`, or None when absent/unreadable.
+
+    Real config uv itself obeys for the folder — `_env_install_worker.py`'s
+    `_MIRRORED_NAMES` copies it into a read-only project's mirror precisely
+    because `uv sync` reads it — so `nonstandard_dependencies_of` (below) has
+    to read it too, for the same project-wide index shapes it already reads
+    out of `pyproject.toml`'s `[tool.uv]`. `uv.toml` uses the SAME key names
+    at the TOP LEVEL rather than nested under `[tool.uv]`, since the file is
+    itself a dedicated uv config file with no other section to nest under.
+    Left unread, a folder shipping `uv.toml` with a private `index-url` would
+    route every package through it while the prompt still said "a one-time
+    download" — the exact thing this classifier exists to prevent.
+    """
+    return _load_toml(uv_toml_path(project_dir))
 
 
 def has_project_env(project_dir: str) -> bool:
@@ -625,7 +653,8 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
     NONE of those: naming the common case is what turns a question into a
     reflex, so silence here is deliberate, not a gap.
 
-    Three shapes, all readable from the manifest alone — no network, no
+    Three shapes, all readable from the manifest (and, for shape 3, from
+    `uv.toml` alongside it — see that shape's own note) — no network, no
     resolution, so this can run on the request path:
 
     1. A PEP 508 direct reference right in `[project].dependencies`
@@ -643,7 +672,12 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
        one platform's entry is still named rather than silently skipped.
     3. A project-wide custom index: `[tool.uv]`'s `index-url`/`default-index`/
        `extra-index-url`, or a `[[tool.uv.index]]` table with no
-       `explicit = true`. This is not a fact about any one dependency — it is
+       `explicit = true` — read from `uv.toml` too (same key names, at the
+       top level rather than nested under `[tool.uv]` — see
+       `_load_uv_toml`), since `uv sync` obeys either file for this folder
+       and a private index declared only in `uv.toml` is exactly as capable
+       of routing every package somewhere else as one declared in
+       `pyproject.toml`. This is not a fact about any one dependency — it is
        a candidate source for EVERY requirement in the graph — so it is
        reported once, under the index's host, instead of against whichever
        dependencies happen to resolve from it. An `explicit` index is the
@@ -717,7 +751,30 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
 
     # Shape 3: a project-wide custom index, reported once under its host —
     # it redirects every package, not just the one it happens to be named
-    # after.
+    # after. Collected from BOTH `pyproject.toml`'s `[tool.uv]` and
+    # `uv.toml` (same key names, top level in the latter — see
+    # `_load_uv_toml`): uv itself reads either, or both, for this folder, so
+    # a private index declared only in `uv.toml` must be disclosed exactly
+    # like one declared in `[tool.uv]` — leaving it out would let a folder
+    # shipping `uv.toml` route every package through an attacker's index
+    # while the prompt still said "a one-time download."
+    index_urls = _tool_uv_index_urls(uv)
+    uv_toml = _load_uv_toml(project_dir)
+    if isinstance(uv_toml, dict):
+        index_urls += _tool_uv_index_urls(uv_toml)
+    for url in index_urls:
+        host = urllib.parse.urlparse(url).netloc or url
+        found.append({"name": host, "reason": "a custom package index for everything"})
+
+    return found
+
+
+def _tool_uv_index_urls(uv: dict) -> list[str]:
+    """The project-wide index URLs named in a `[tool.uv]`-shaped table:
+    `index-url`/`default-index`, `extra-index-url` (string or list), and any
+    `[[index]]` table with no `explicit = true`. Shared between
+    `pyproject.toml`'s `[tool.uv]` and `uv.toml`'s top level, which use
+    identical keys (see `_load_uv_toml`)."""
     index_urls: list[str] = []
     for key in ("index-url", "default-index"):
         value = uv.get(key)
@@ -737,11 +794,7 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
                 and isinstance(table.get("url"), str)
             ):
                 index_urls.append(table["url"])
-    for url in index_urls:
-        host = urllib.parse.urlparse(url).netloc or url
-        found.append({"name": host, "reason": "a custom package index for everything"})
-
-    return found
+    return index_urls
 
 
 # Top-level import name -> distribution name, for the pairs where the two DIFFER

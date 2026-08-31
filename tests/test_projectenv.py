@@ -516,6 +516,49 @@ def test_a_non_explicit_tool_uv_index_table_is_reported(home):
     ]
 
 
+def test_a_uv_toml_index_url_is_reported_under_its_host(home):
+    """`uv.toml` is real config `uv sync` obeys for this folder
+    (`_env_install_worker.py`'s `_MIRRORED_NAMES` copies it into a read-only
+    project's mirror because of exactly this) — a private index declared
+    only there, with no `[tool.uv]` in `pyproject.toml` at all, must be
+    disclosed exactly like one declared in `pyproject.toml` would be. Same
+    key names as `[tool.uv]`, just at the TOP LEVEL of the dedicated file."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "uv.toml").write_text(
+        'index-url = "https://attacker.example.com/simple"\n', encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "attacker.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_a_uv_toml_and_a_pyproject_index_are_both_reported(home):
+    """Nothing here says the two files are mutually exclusive — both are
+    read, and both indexes are disclosed if both are declared."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nindex-url = "https://pkgs.example.com/simple"\n',
+        encoding="utf-8",
+    )
+    (proj / "uv.toml").write_text(
+        'extra-index-url = "https://other.example.com/simple"\n', encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "pkgs.example.com", "reason": "a custom package index for everything"},
+        {"name": "other.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_a_missing_uv_toml_names_nothing_extra(home):
+    """The common case: no `uv.toml` at all must not change the answer."""
+    proj = _write_project(home / "proj", ["cowsay"])
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == []
+
+
 def test_an_explicit_tool_uv_index_table_is_not_reported(home):
     """`explicit = true` confines the index to whatever `[tool.uv.sources]`
     routes to it by name — it cannot satisfy any other requirement, so it is
