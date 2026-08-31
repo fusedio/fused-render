@@ -486,7 +486,18 @@ function makeEl() {
       (this._h[t] = this._h[t] || []).push(f);
       if (t === "click" && this.textContent === "Install" && globalThis.__autoInstall !== false) {
         globalThis.__installPrompts += 1;
-        queueMicrotask(f);
+        // A MACROTASK, not `queueMicrotask`: a real click lands whenever the
+        // user gets to it — long after `askRow` returns, on its own turn of
+        // the event loop — never in the SAME microtask flush that just wired
+        // the listener up. `queueMicrotask` used to sit here instead, and it
+        // could not have caught Defect 1 (the Install button doing nothing in
+        // a real browser) even in principle: firing the handler before the
+        // attaching call stack ever unwinds is a strictly EARLIER, easier
+        // case than any real click, so every test built on it only ever
+        // proved "the handler works when invoked immediately", not "the
+        // handler is still the live listener by the time a real click
+        // reaches it".
+        setTimeout(f, 0);
       }
     },
     removeEventListener(t, f) {
@@ -766,6 +777,47 @@ runPython("a.py", {}, { key: "a" }).then(() => {
     assert "monospace" in result["afterFont"], (
         "the detail line must go back to monospace once the question is "
         f"answered (paintPreparing's own text follows), saw {result['afterFont']!r}"
+    )
+
+
+def test_a_real_delayed_click_on_install_still_posts():
+    """Defect 1 (manual browser testing): clicking Install did nothing — no
+    `/api/env/install` POST ever fired, and `askRow`'s promise never settled.
+    Every OTHER test in this file answers the confirm through the harness's
+    `__autoInstall` stub, which used to fire the click handler via
+    `queueMicrotask` the INSTANT `addEventListener` registered it — strictly
+    earlier than any real click could ever land, and unable in principle to
+    catch a listener that stops working by the time a real, later click
+    reaches it. This test answers Install the way a human does instead: it
+    turns the stub off, waits for several real macrotask ticks (standing in
+    for the seconds a person spends reading the question) before the button
+    even exists, keeps waiting once it does, and only then clicks it — the
+    same `_h.click[0]()` path the existing cancel tests already use to reach
+    a button the fake DOM never renders.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+let ticks = 0;
+(function clickInstallAfterADelay() {
+  const entry = installing.get("%(a)s");
+  // Ten real macrotask turns before the row even exists, then ten more once
+  // it does — standing in for the reading time a real click waits out, which
+  // `queueMicrotask` firing inside `addEventListener` itself could never
+  // model.
+  if (!entry || ticks < 10) { ticks += 1; return setTimeout(clickInstallAfterADelay, 0); }
+  entry.row.install._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["result"] == 42, result
+    assert result["installs"] == 1, (
+        f"a real, delayed click on Install must still POST to /api/env/install, "
+        f"saw {result['installs']}"
     )
 
 
