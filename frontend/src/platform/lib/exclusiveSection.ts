@@ -21,15 +21,18 @@
 // know.
 import { useEffect, useRef } from "react";
 
-/** Lifetime order — Activity, Notifications — which is also the order
- *  `StatusBar.tsx` renders them in and the order that breaks every tie below.
- *  Activity used to be four separate chips (Models, Engines, Jobs) each with
- *  their own entry here; the status-bar merge folded Models and Engines into
- *  the same chip Jobs already owned (`platform/ui/DownloadManager.tsx`), so
- *  there is only one entry for all three now.
+/** Lifetime order — Models, Activity, Notifications — which is also the
+ *  order `StatusBar.tsx` renders them in and the order that breaks every tie
+ *  below. Activity used to be four separate chips (Models, Engines, Jobs)
+ *  each with their own entry here; the status-bar merge folded all three into
+ *  one "Activity" chip, then a follow-up revision split Models back out into
+ *  its own chip (`shell/ModelsDock.tsx`) — Engines stayed folded into
+ *  Activity (`platform/ui/DownloadManager.tsx`) since only Models' filled/
+ *  outlined dot is load-bearing for the user. So there are three entries now:
+ *  one for Models, one for Activity (jobs + engines), one for Notifications.
  *  Named rather than inferred so the tie-break cannot silently change if the
  *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["activity", "notifications"] as const;
+export const SECTION_ORDER = ["models", "activity", "notifications"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {
@@ -48,19 +51,23 @@ const closers = new Map<SectionKey, { current: () => void }>();
 // effect-execution order. A later commit gets a higher tick, so an ordinary
 // user click always beats whatever was already open, whichever section it is.
 //
-// WHICH TIES ACTUALLY HAPPEN — exactly ONE kind, now (narrowed by D587, then
-// D603, then the status-bar merge): two sections auto-opening on one poll
-// response, which can only ever be Activity vs Notifications — the only two
-// entries left. Neither a resident model nor a running engine can put
-// Activity into this race: both ride into its own `useAutoExpandOnNew` call
-// as `alsoDrawn`, which counts for occupancy but never sets the announcing
-// override (`autoExpand.ts`), so only a genuine job arrival can make Activity
-// want to open at all.
+// WHICH TIES ACTUALLY HAPPEN — exactly ONE kind, still (narrowed by D587,
+// then D603, then the status-bar merge, then the Models-chip split): two
+// sections auto-opening on one poll response, which can only ever be
+// Activity vs Notifications. Models can never be one side of this race: its
+// own `useAutoExpandOnNew` call is fed an empty `ids` list and every resident
+// model rides in as `alsoDrawn` instead (occupancy for its auto-CLOSE-on-
+// drain, never the announcing override), so nothing can ever put Models into
+// `arrived` — it only ever enters `entries` on a direct user click, and a
+// lone click has no sibling to tie against. A running engine is the same
+// story for Activity: it rides in as Activity's own `alsoDrawn`, so only a
+// genuine job arrival can make Activity want to open at all.
 //
 // THE RELOAD TIE IS GONE (D603 deleted all fold keys, so nothing wants to be
-// open at mount) and so is the THREE/FOUR-WAY shape the leading entries used
-// to have to arbitrate — with two entries left, `SECTION_ORDER` only ever has
-// one real tie to break: Activity vs Notifications, decided in Activity's
+// open at mount) and so is the FOUR-WAY shape the leading entries used to
+// have to arbitrate — with three entries and only two of them (Activity,
+// Notifications) capable of auto-opening at all, `SECTION_ORDER` only ever
+// has one real tie to break: Activity vs Notifications, decided in Activity's
 // favour by this order.
 //
 // The microtask is what bounds a "commit": React runs layout/passive effects

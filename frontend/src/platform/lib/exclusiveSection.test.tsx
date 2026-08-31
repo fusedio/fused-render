@@ -3,10 +3,11 @@
 // beating an earlier one — because both were previously at the mercy of
 // effect-execution order.
 //
-// TWO SECTIONS NOW, NOT FOUR (status-bar merge): `SECTION_ORDER` shrank to
-// `["activity", "notifications"]` once Models and Engines folded into the
-// same chip Jobs already owned. The only tie this arbiter can ever see today
-// is Activity vs Notifications, so that is the one case these tests pin.
+// THREE SECTIONS NOW (Models, Activity, Notifications) — `SECTION_ORDER` is
+// `["models", "activity", "notifications"]`. Models can never auto-open (its
+// own `useAutoExpandOnNew` call never feeds anything into `ids`), so the only
+// tie this arbiter can ever see is still Activity vs Notifications, which is
+// the one case these tests pin.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useExclusiveSection, type SectionKey } from "./exclusiveSection";

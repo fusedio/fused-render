@@ -50,6 +50,7 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import StatusBar from "@platform/ui/StatusBar";
+import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -987,20 +988,25 @@ export default function App({ config }: { config: Config }) {
       {!IS_EMBED && sidebar}
       <div id="main">
         {main}
-        {/* Two sections, not two surfaces: ActivityDock is the shell's
-            wrapper around the platform activity card (it fills that card's
-            queue/engines/models slots), handed in from here rather than
-            imported there because it speaks explorerUrl (shell/schedule-lib)
-            and apps/ai_models/lib's shared runtime poll, neither of which
-            platform may import (frontend/scripts/check-boundaries.mjs).
-            RepoUpdatesDock is its own sibling section (SPEC §36), handed in
-            the same way and for the same reason: it speaks explorer/lib's
-            staged-Claude-ask store. Inside `#main` (D563, not
-            NotificationHost's fixed column) and behind the same `!IS_EMBED`
-            guard as the sidebar, so a pane in panel/tab mode does not grow
-            its own bar. */}
+        {/* Three sections, not three surfaces: ModelsDock is the shell's
+            wrapper around Models' own chip (it speaks apps/ai_models/lib's
+            shared runtime poll, which platform may not import). ActivityDock
+            is the shell's wrapper around the platform activity card (it
+            fills that card's queue/engines slots), handed in from here
+            rather than imported there because it speaks explorerUrl
+            (shell/schedule-lib) and platform/lib/api's engine poll — the
+            latter platform already owns, but it is grouped with the queue
+            poll in one shell composer rather than split across a shell file
+            and a platform file for one poll (`shell/ActivityDock.tsx`'s own
+            header has the fuller argument). RepoUpdatesDock is its own
+            sibling section (SPEC §36), handed in the same way and for the
+            same reason: it speaks explorer/lib's staged-Claude-ask store.
+            Inside `#main` (D563, not NotificationHost's fixed column) and
+            behind the same `!IS_EMBED` guard as the sidebar, so a pane in
+            panel/tab mode does not grow its own bar. */}
         {!IS_EMBED && (
           <StatusBar
+            models={<ModelsDock />}
             /* D586: failures are re-routed from Activity to Notifications, and
                this is the one place both sections are in scope. Plain prop
                wiring on purpose — the alternative was a shared store, which

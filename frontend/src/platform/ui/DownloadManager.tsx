@@ -2,19 +2,23 @@
 // piece of work in progress: the long-running operations any page reported (SPEC
 // §36, D244) and the scheduled messages about to run or running now.
 //
-// STATUS-BAR MERGE: this chip absorbed the two other PERSISTENT-status chips
-// that used to sit beside it — Models (shell/ModelsDock.tsx) and Engines
-// (shell/EnginesDock.tsx), both now deleted. Its panel draws up to three
-// labelled sections in order — Running (everything below, unchanged), then
-// Background tasks (engine rows), then Models (resident-model rows) — a
-// section only when it has rows, a heading only when 2+ sections are present
-// at once. See `EnginesSlot`/`ModelsSlot` below for why the row rendering
+// STATUS-BAR MERGE, THEN A PARTIAL REVERT: this chip absorbed the two other
+// PERSISTENT-status chips that used to sit beside it — Models
+// (shell/ModelsDock.tsx) and Engines (shell/EnginesDock.tsx), both deleted at
+// the time. A follow-up revision then split Models back out into its own chip
+// (shell/ModelsDock.tsx again, resurrected) because the user relies on that
+// chip's own filled/outlined dot to know whether the machine is holding any
+// model weights, and a dot shared with jobs/engines answered a different
+// question. Engines stayed merged here — nothing comparable was ever asked of
+// its own indicator. So this panel draws up to TWO labelled sections in order
+// — Running (everything below, unchanged), then Background tasks (engine
+// rows) — a section only when it has rows, a heading only when 2+ sections
+// are present at once. See `EnginesSlot` below for why the row rendering
 // could move into platform (it only needs `platform/lib/api` types) while the
-// two pollers that FEED them stayed in shell (`shell/ActivityDock.tsx`, the
-// new sole caller of this component). The chip's own `StatusDot` still
-// answers a narrower question than "does this chip have anything to show":
-// see `runningCount`, below, for why a resident model or a running engine
-// alone leaves it unfilled.
+// poller that FEEDS it stayed in shell (`shell/ActivityDock.tsx`, the sole
+// caller of this component). The chip's own `StatusDot` still answers a
+// narrower question than "does this chip have anything to show": see
+// `runningCount`, below, for why a running engine alone leaves it unfilled.
 //
 // It exists because that work used to be invisible the moment you looked away
 // from it: a page pulling an 8GB model drew its own bar inside itself, and the
@@ -130,8 +134,8 @@ import {
   type Job,
   type QueueCount,
 } from "@platform/lib/jobs";
-import { formatSize, repoName } from "@platform/lib/format";
-import type { AiLoadedModel, RunningEngine } from "@platform/lib/api";
+import { repoName } from "@platform/lib/format";
+import type { RunningEngine } from "@platform/lib/api";
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
 // plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
@@ -326,19 +330,19 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
-// ---- Models & Engines rows (status-bar merge) ------------------------------
-// FORMERLY shell/ModelsDock.tsx and shell/EnginesDock.tsx, each its own
-// chip/panel. The status-bar consolidation collapsed Models, Engines and Jobs
-// into one "Activity" chip (see DownloadManagerView's own header for the
-// section layout), so the row rendering moved here, alongside the job rows it
-// now shares a panel with. This is legal under `check-boundaries.mjs`: these
-// rows only need `AiLoadedModel`/`RunningEngine` (platform/lib/api, which
-// platform already owns) and the mutation calls `unloadAiModel`/`stopEngine`
-// (also platform/lib/api) — nothing shell-only. Only the DATA SOURCES for
-// them — `useAiRuntime` (apps/ai_models) and the running-engines poll — are
-// shell-only, and those stay in `shell/ActivityDock.tsx`, which hands this
-// component plain `AiLoadedModel[]`/`RunningEngine[]` data plus the two
-// mutation callbacks.
+// ---- Engine rows (status-bar merge) ----------------------------------------
+// FORMERLY shell/EnginesDock.tsx, its own chip/panel. The status-bar
+// consolidation collapsed Engines and Jobs into one "Activity" chip (see
+// DownloadManagerView's own header for the section layout), so the row
+// rendering moved here, alongside the job rows it now shares a panel with.
+// (Models made the same trip during the merge and then made it back: see
+// this file's own header comment and `shell/ModelsDock.tsx`.) This is legal
+// under `check-boundaries.mjs`: these rows only need `RunningEngine`
+// (platform/lib/api, which platform already owns) and the mutation call
+// `stopEngine` (also platform/lib/api) — nothing shell-only. Only the DATA
+// SOURCE for them — the running-engines poll — is shell-only, and it stays in
+// `shell/ActivityDock.tsx`, which hands this component plain
+// `RunningEngine[]` data plus the mutation callback.
 
 /** A useful NAME for an engine row, never the opaque id when something better
  *  exists: the folder's basename for a background app, the module for a warm
@@ -390,134 +394,15 @@ function EngineRow({
   );
 }
 
-/** Which colour band a byte figure falls in against this machine's ceiling —
- *  or null when there is nothing honest to colour: no figure, or no readable
- *  ceiling. See the (former) ModelsDock.tsx history for the fuller argument;
- *  moved here verbatim with the row it colours. */
-export function memoryBand(
-  bytes: number | null,
-  ceilingBytes: number | null,
-): "easy" | "tight" | "no" | null {
-  if (!bytes || !ceilingBytes) return null;
-  const used = bytes / ceilingBytes;
-  if (used > 1) return "no";
-  return used > 0.7 ? "tight" : "easy";
-}
-
-function MemoryCell({
-  model,
-  ceilingBytes,
-}: {
-  model: AiLoadedModel;
-  ceilingBytes: number | null;
-}) {
-  const heldBytes =
-    model.osFootprintBytes === null
-      ? null
-      : Math.max(model.osFootprintBytes, model.residentBytes ?? 0);
-  const band = memoryBand(heldBytes, ceilingBytes);
-  const bandClass = band ? ` is-mem-${band}` : "";
-  const now = formatSize(model.residentBytes);
-  const held = formatSize(heldBytes);
-  const cost = formatSize(model.footprintBytes);
-  const heldAddsSomething = heldBytes !== null && heldBytes > (model.residentBytes ?? 0);
-
-  const basisWord =
-    model.footprintBasis === "measured"
-      ? "measured on this machine"
-      : model.footprintBasis === "declared"
-        ? "estimated from the model's declared size"
-        : "estimated from the download size";
-  const title =
-    [
-      now ? `${now} resident right now` : null,
-      heldAddsSomething ? `at least ${held} held in total, including the GPU pool` : null,
-      cost ? `Measured cost ${cost}, ${basisWord}` : null,
-      ceilingBytes ? `Machine ceiling ${formatSize(ceilingBytes)}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ") || undefined;
-
-  const heldCell = held ? (
-    <span className={"dl-mem-live" + bandClass}>{held} held</span>
-  ) : null;
-
-  if (!now) {
-    return (
-      <span className="dl-amount" title={title}>
-        {heldCell}
-      </span>
-    );
-  }
-  return (
-    <span className="dl-amount" title={title}>
-      {`${now} now`}
-      {heldAddsSomething ? <> ({heldCell})</> : null}
-    </span>
-  );
-}
-
-function ModelRow({
-  model,
-  ceilingBytes,
-  onUnload,
-}: {
-  model: AiLoadedModel;
-  ceilingBytes: number | null;
-  onUnload: (model: string) => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  const unload = async () => {
-    setBusy(true);
-    setFailure(null);
-    try {
-      await onUnload(model.model);
-    } catch {
-      setFailure("Could not unload — check your connection and retry.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title dl-title-id" title={model.model}>
-          {repoName(model.model)}
-        </span>
-        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
-          {busy ? "Unloading…" : "Unload"}
-        </button>
-      </div>
-      <div className="dl-row-figures">
-        {model.state === "ready" ? (
-          <MemoryCell model={model} ceilingBytes={ceilingBytes} />
-        ) : (
-          <span className="dl-amount">{model.state}</span>
-        )}
-      </div>
-      {failure && <div className="dl-status">{failure}</div>}
-    </div>
-  );
-}
-
-/** The `engines`/`models` slots (status-bar merge): plain data plus the one
- *  mutation each row needs, handed in by `shell/ActivityDock.tsx` (the only
- *  place either poll lives). Ids are for occupancy only (`alsoDrawn` below,
- *  in the merged panel's auto-expand wiring) — an engine or model arriving
- *  must never itself pop the panel open (D587's rule, now shared by the
- *  merged chip: only Running/job arrivals announce). */
+/** The `engines` slot (status-bar merge): plain data plus the one mutation
+ *  the row needs, handed in by `shell/ActivityDock.tsx` (the only place the
+ *  poll lives). Ids are for occupancy only (`alsoDrawn` below, in the merged
+ *  panel's auto-expand wiring) — an engine arriving must never itself pop the
+ *  panel open (D587's rule, now shared by the merged chip: only Running/job
+ *  arrivals announce). */
 export interface EnginesSlot {
   engines: RunningEngine[];
   onStop: (engineId: string) => Promise<void>;
-}
-
-export interface ModelsSlot {
-  models: AiLoadedModel[];
-  ceilingBytes: number | null;
-  onUnload: (model: string) => Promise<void>;
 }
 
 // Exported for jobrow.test.tsx only — every other caller goes through
@@ -806,7 +691,6 @@ export function DownloadManagerView({
   initialCollapsed,
   queue,
   engines,
-  models,
   refresh,
   patch,
 }: {
@@ -828,9 +712,6 @@ export function DownloadManagerView({
   /** The Background tasks section (formerly EnginesDock's own chip). Optional
    *  and data-only — see `EnginesSlot`'s own doc. */
   engines?: EnginesSlot;
-  /** The Models section (formerly ModelsDock's own chip). Optional and
-   *  data-only — see `ModelsSlot`'s own doc. */
-  models?: ModelsSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
@@ -906,12 +787,11 @@ export function DownloadManagerView({
   // job id (`sys:schedule:<entry id>`) literally embeds the entry id these
   // queue rows are keyed by, so this is a live overlap rather than a
   // theoretical one.
-  // ENGINE AND MODEL ROWS COUNT FOR OCCUPANCY, NEVER ANNOUNCE (status-bar
-  // merge): they ride in as `alsoDrawn` beside the queue's own entry ids,
-  // exactly like `queue.drawn` already did — an engine coming up or a model
-  // becoming resident is a state readout the same way it was in its own
-  // now-deleted chip (D587's "never auto-opens" rule for both), so only a job
-  // arrival may set `ids` here.
+  // ENGINE ROWS COUNT FOR OCCUPANCY, NEVER ANNOUNCE (status-bar merge): they
+  // ride in as `alsoDrawn` beside the queue's own entry ids, exactly like
+  // `queue.drawn` already did — an engine coming up is a state readout the
+  // same way it was in its own now-deleted chip (D587's "never auto-opens"
+  // rule), so only a job arrival may set `ids` here.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     jobs.map((j) => `job:${j.id}`),
     collapsed,
@@ -920,7 +800,6 @@ export function DownloadManagerView({
       alsoDrawn: [
         ...(queue?.drawn ?? []).map((id) => `queue:${id}`),
         ...(engines?.engines ?? []).map((e) => `engine:${e.engine_id}`),
-        ...(models?.models ?? []).map((m) => `model:${m.model}`),
       ],
     },
   );
@@ -947,12 +826,11 @@ export function DownloadManagerView({
   // span this used to render; see `.is-idle` below) — rather than vanishing.
   //
   // EVERYTHING THIS CHIP CAN SHOW decides idle/muting (status-bar merge): a
-  // resident model or a running engine alone is no longer nothing, now that
-  // this is the one chip that shows them. `runningCount` below is a narrower
-  // question — is there WORK — and stays scoped to jobs/queue only.
+  // running engine alone is no longer nothing, now that this chip shows it
+  // too. `runningCount` below is a narrower question — is there WORK — and
+  // stays scoped to jobs/queue only.
   const engineCount = engines?.engines.length ?? 0;
-  const modelCount = models?.models.length ?? 0;
-  const idle = jobs.length === 0 && queued === 0 && engineCount === 0 && modelCount === 0;
+  const idle = jobs.length === 0 && queued === 0 && engineCount === 0;
 
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
@@ -1013,11 +891,11 @@ export function DownloadManagerView({
 
   // THE DOT ANSWERS "IS THERE WORK RIGHT NOW", NOT "IS THERE ANYTHING TO SHOW"
   // (status-bar merge, brief's own rule): jobs running or queued fill it; a
-  // resident model or a running engine — persistent STATE, not work in
-  // progress — does not, even though the panel still shows them when opened
-  // and the chip is not muted for having them (see `idle`, above, which DOES
-  // count them). A machine holding three models and no jobs therefore draws
-  // an active, clickable "Activity" chip with an outlined (unfilled) dot.
+  // running engine — persistent STATE, not work in progress — does not, even
+  // though the panel still shows it when opened and the chip is not muted for
+  // having it (see `idle`, above, which DOES count it). A machine running a
+  // background engine and no jobs therefore draws an active, clickable
+  // "Activity" chip with an outlined (unfilled) dot.
   const runningCount = jobs.length + queued;
 
   return (
@@ -1037,12 +915,14 @@ export function DownloadManagerView({
         title={open ? "Hide activity" : "Show activity"}
       >
         {/* `Activity` (status-bar merge): this chip is no longer only jobs —
-            it now also carries the resident models and running engines that
-            used to be their own chips beside it, so `Jobs` (D579's own word
-            for the narrower set) no longer names everything it shows.
-            `Activity` was rejected back then for being the vaguest of three
-            labels over a chip that was ONLY jobs; it is the right word again
-            now that the chip covers all three. */}
+            it now also carries the running engines that used to be their own
+            chip beside it, so `Jobs` (D579's own word for the narrower set)
+            no longer names everything it shows. `Activity` was rejected back
+            then for being the vaguest of three labels over a chip that was
+            ONLY jobs; it is the right word again now that the chip covers
+            both. (Models made this same trip during the merge and then split
+            back out into its own chip — `shell/ModelsDock.tsx` — so it is not
+            one of the things "Activity" has to cover any more.) */}
         {/* The label, and the bar's one shared indicator beside it (D588,
             D590). `StatusDot` must stay a DIRECT child of this button — that
             is what centres it (its own header has the argument). It answers
@@ -1070,18 +950,19 @@ export function DownloadManagerView({
             <div className="dl-panel-empty">No activity</div>
           ) : (
             <>
-              {/* THREE POSSIBLE SECTIONS, in this order (status-bar merge):
-                  Running (the old Jobs chip's own content, unchanged),
-                  Background tasks (the old Engines chip) and Models (the old
-                  Models chip). A section renders only when it has rows, and
-                  the heading itself only when 2+ sections are present at
-                  once — a single section carrying a header nobody needed to
-                  disambiguate is the redundant-label problem the brief calls
-                  out; see `.dl-section-head` in notifications.css. */}
+              {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
+                  Running (the old Jobs chip's own content, unchanged) and
+                  Background tasks (the old Engines chip). A section renders
+                  only when it has rows, and the heading itself only when 2+
+                  sections are present at once — a single section carrying a
+                  header nobody needed to disambiguate is the redundant-label
+                  problem the brief calls out; see `.dl-section-head` in
+                  notifications.css. (A third section, Models, lived here
+                  during the status-bar merge and moved back out into its own
+                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
               {(() => {
                 const runningVisible = jobs.length > 0 || queued > 0;
-                const sectionCount =
-                  (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0) + (modelCount > 0 ? 1 : 0);
+                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
                 const showHeadings = sectionCount > 1;
                 return (
                   <>
@@ -1134,21 +1015,6 @@ export function DownloadManagerView({
                         </div>
                       </div>
                     )}
-                    {modelCount > 0 && (
-                      <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Models</div>}
-                        <div className="dl-rows">
-                          {models!.models.map((m) => (
-                            <ModelRow
-                              key={m.model}
-                              model={m}
-                              ceilingBytes={models!.ceilingBytes}
-                              onUnload={models!.onUnload}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </>
                 );
               })()}
@@ -1163,11 +1029,9 @@ export function DownloadManagerView({
 export default function DownloadManager({
   queue,
   engines,
-  models,
 }: {
   queue?: QueueSlot;
   engines?: EnginesSlot;
-  models?: ModelsSlot;
 }) {
   const { jobs: reported, settled, refresh, patch } = useJobs();
   return (
@@ -1176,7 +1040,6 @@ export default function DownloadManager({
       ready={settled}
       queue={queue}
       engines={engines}
-      models={models}
       refresh={refresh}
       patch={patch}
     />

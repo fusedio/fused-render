@@ -1,13 +1,14 @@
 // Signal a genuinely NEW item arriving in a folded notification card — and,
 // since D574, OPEN that card's own panel so the arrival is actually on screen
-// rather than only hinted at. Shared by both status-bar chips —
-// platform/ui/DownloadManager.tsx (Activity — jobs, engines and models all
-// feed the one call there now, the status-bar merge having folded the
-// now-deleted shell/ModelsDock.tsx and shell/EnginesDock.tsx into it) and
-// shell/RepoUpdatesDock.tsx (Notifications) — since each needs the exact same
-// wiring around the same pure decision (jobs.ts `trackSeenIds`): remember
-// which ids were visible last render, and notice when the current set
-// contains one that wasn't.
+// rather than only hinted at. Shared by every status-bar chip that has one —
+// shell/ModelsDock.tsx (Models — never actually opens, see its own call
+// site), platform/ui/DownloadManager.tsx (Activity — jobs and engines feed
+// the one call there, the status-bar merge having folded the now-deleted
+// shell/EnginesDock.tsx into it; Models made the same trip and then moved
+// back out into its own chip) and shell/RepoUpdatesDock.tsx (Notifications)
+// — since each needs the exact same wiring around the same pure decision
+// (jobs.ts `trackSeenIds`): remember which ids were visible last render, and
+// notice when the current set contains one that wasn't.
 //
 // D567 STOPPED IT OPENING ANYTHING; D574 PUTS THE OPEN BACK, by explicit user
 // request: "when we have something new, always show the notification. don't
@@ -111,13 +112,17 @@ export interface AutoExpandState {
  * a switch to flip. `alsoDrawn` answers it directly, so the two remaining
  * knobs are about genuinely different things:
  *
- *  - Activity's engine and model rows (`alsoDrawn`, status-bar merge) must
- *    never open the panel on their own — an engine coming up or a model
- *    becoming resident is state, not news — but they MUST still count toward
- *    the drain that closes it: "closing is not opening" is the same argument
- *    the (now-deleted) standalone Models/Engines chips made for their own
- *    drain-close behaviour with the since-removed `neverOpen` flag. Jobs are
- *    the one source in Activity that stays in `ids`.
+ *  - Activity's engine rows (`alsoDrawn`, status-bar merge) must never open
+ *    the panel on their own — an engine coming up is state, not news — but
+ *    they MUST still count toward the drain that closes it: "closing is not
+ *    opening" is the same argument the (now-deleted) standalone Engines chip
+ *    made for its own drain-close behaviour with the since-removed
+ *    `neverOpen` flag. Jobs are the one source in Activity that stays in
+ *    `ids`. Models' own resident-model rows (`shell/ModelsDock.tsx`) use this
+ *    same knob for the identical reason, one level up: `ids` there is always
+ *    `[]`, so nothing can ever announce, and every model rides in as
+ *    `alsoDrawn` purely for the drain-close (D580's "close when the last
+ *    model unloads").
  *  - Notifications (`alsoDrawn` = its failure rows) draws TWO row sources but
  *    may only be opened by one of them: a repo falling behind is news (D574), a
  *    background failure must never throw a panel over the page (D586). Feeding

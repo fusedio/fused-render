@@ -23,13 +23,11 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 
 import {
   DownloadManagerView,
-  memoryBand,
   type EnginesSlot,
-  type ModelsSlot,
   type QueueSlot,
 } from "@platform/ui/DownloadManager";
 import { jobAmount, type Job } from "@platform/lib/jobs";
-import type { AiLoadedModel, RunningEngine } from "@platform/lib/api";
+import type { RunningEngine } from "@platform/lib/api";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -158,9 +156,10 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   // opens (VS Code/Cursor status-bar idiom — no chevron, hover only).
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
   expect(tree).not.toBeNull();
-  // `Activity` (status-bar merge) — this chip also carries the Models and
-  // Background-tasks sections since Models/Engines folded into it; see
-  // DownloadManagerView's own header for why the narrower `Jobs` (D579) no
+  // `Activity` (status-bar merge) — this chip also carries the
+  // Background-tasks section since Engines folded into it (Models made the
+  // same trip and then split back out into its own chip, `shell/ModelsDock.tsx`);
+  // see DownloadManagerView's own header for why the narrower `Jobs` (D579) no
   // longer names everything it shows.
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
@@ -876,38 +875,16 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
 });
 
 // ============================================================================
-// THE ACTIVITY MERGE — Models and Engines sections (status-bar merge).
+// THE ACTIVITY MERGE — the Engines section (status-bar merge). Models made
+// this same trip and then moved back out into its own chip
+// (`shell/ModelsDock.tsx`, resurrected) in a follow-up revision — its own
+// tests live in `shell/ModelsDock.test.tsx` again, not here.
 //
-// Moved from the now-deleted `shell/ModelsDock.test.tsx` (no EnginesDock test
-// existed): `ModelsCardView`/`EnginesCardView` are gone as their own chips,
-// and the row rendering they owned (`ModelRow`/`MemoryCell`/`memoryBand`,
-// `EngineRow`/`engineLabel`) moved into this file's own component. The
-// standalone-chip assertions those files made (their own toggle/idle/circle)
-// no longer describe anything real, so they are not reproduced here — see
-// DECISIONS.md. What DOES carry over: the pure `memoryBand` rule and the row
-// structure/behaviour tests, now exercised through the `models`/`engines`
-// props below.
+// No EnginesDock test file existed pre-merge: `EnginesCardView` is gone as
+// its own chip, and the row rendering it owned (`EngineRow`/`engineLabel`)
+// moved into this file's own component. What carries over is the row
+// structure/behaviour, now exercised through the `engines` prop below.
 // ============================================================================
-
-const aiModel = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
-  model: "mlx-community/Qwen3-8B-MLX-4bit",
-  capability: "text",
-  runner: "mlx",
-  state: "ready",
-  detail: null,
-  error: null,
-  residentBytes: 4_000_000_000,
-  osFootprintBytes: 4_000_000_000,
-  footprintBytes: null,
-  footprintBasis: null,
-  device: "mps",
-  loadedAt: 0,
-  startedAt: 0,
-  jobId: "",
-  idleSeconds: 0,
-  unloadsInSeconds: null,
-  ...over,
-});
 
 const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
   engine_id: "e1",
@@ -923,102 +900,18 @@ function renderActivity(props: {
   reported?: Job[];
   queue?: Partial<QueueSlot>;
   engines?: EnginesSlot;
-  models?: ModelsSlot;
 }): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView
       reported={props.reported ?? []}
       queue={props.queue ? fullQueue(props.queue) : undefined}
       engines={props.engines}
-      models={props.models}
       initialCollapsed={false}
       refresh={() => {}}
       patch={() => {}}
     />,
   ).toJSON() as ReactTestRendererJSON | null;
 }
-
-describe("the Models section (moved off ModelsDock's own chip)", () => {
-  test("no models loaded is not what makes the panel idle by itself — an empty models slot alongside no jobs still shows 'No activity'", () => {
-    const tree = renderActivity({ models: { models: [], ceilingBytes: null, onUnload: async () => {} } });
-    expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
-  });
-
-  test("a resident model keeps the chip un-muted (idle=false) but its dot unfilled — resident state is not 'work right now'", () => {
-    const tree = renderActivity({
-      models: { models: [aiModel()], ceilingBytes: null, onUnload: async () => {} },
-    });
-    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
-      "is-idle",
-    );
-    expect(circleFilled(tree)).toBe(false);
-  });
-
-  test("a running job alongside a resident model still fills the dot — from the job, not the model", () => {
-    const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
-    const tree = renderActivity({
-      reported: [running],
-      models: { models: [aiModel()], ceilingBytes: null, onUnload: async () => {} },
-    });
-    expect(circleFilled(tree)).toBe(true);
-  });
-
-  test("expanded draws one row per model — its name, its memory figures, an Unload button, no gauge", () => {
-    const tree = renderActivity({
-      models: {
-        models: [aiModel({ model: "mlx-community/Qwen3-8B-MLX-4bit", residentBytes: null, osFootprintBytes: 4_200_000_000 })],
-        ceilingBytes: null,
-        onUnload: async () => {},
-      },
-    });
-    const row = findAll(tree, "dl-row")[0];
-    expect(text(findAll(row, "dl-title")[0])).toBe("Qwen3-8B-MLX-4bit");
-    expect(findAll(row, "dl-title")[0].props.title).toBe("mlx-community/Qwen3-8B-MLX-4bit");
-    expect(text(findAll(row, "dl-amount")[0])).toBe("3.9 GB held");
-    expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Unload");
-    expect(findAll(tree, "dl-bar")).toHaveLength(0);
-  });
-
-  test("pressing Unload calls onUnload with the model id and shows Unloading… mid-flight", async () => {
-    const pending: Array<() => void> = [];
-    const seen: string[] = [];
-    const onUnload = (id: string) => {
-      seen.push(id);
-      return new Promise<void>((resolve) => pending.push(resolve));
-    };
-    const renderer = create(
-      <DownloadManagerView
-        reported={[]}
-        models={{ models: [aiModel()], ceilingBytes: null, onUnload }}
-        initialCollapsed={false}
-        refresh={() => {}}
-        patch={() => {}}
-      />,
-    );
-    const before = renderer.toJSON() as ReactTestRendererJSON;
-    const button = findAll(before, "dl-row-cancel")[0];
-    act(() => {
-      (button.props as { onClick: () => void }).onClick();
-    });
-    expect(seen).toEqual(["mlx-community/Qwen3-8B-MLX-4bit"]);
-    const mid = renderer.toJSON() as ReactTestRendererJSON;
-    expect(text(findAll(mid, "dl-row-cancel")[0])).toBe("Unloading…");
-    await act(async () => {
-      pending.pop()?.();
-    });
-  });
-
-  // The memory-band rule itself, at the unit — D594/D600's argument (see the
-  // (former) ModelsDock.tsx history) still holds: the HELD figure, never the
-  // raw footprint, is what gets banded.
-  test("memoryBand: easy/tight/no against the ceiling, null with nothing to judge", () => {
-    expect(memoryBand(500_000_000, 25_769_803_776)).toBe("easy");
-    expect(memoryBand(20_000_000_000, 25_769_803_776)).toBe("tight");
-    expect(memoryBand(30_000_000_000, 25_769_803_776)).toBe("no");
-    expect(memoryBand(null, 25_769_803_776)).toBe(null);
-    expect(memoryBand(500_000_000, null)).toBe(null);
-  });
-});
 
 describe("the Background tasks section (moved off EnginesDock's own chip)", () => {
   test("a running engine keeps the chip un-muted but its dot unfilled", () => {
@@ -1061,38 +954,27 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
   });
 });
 
-describe("three sections sharing one Activity panel", () => {
+describe("two sections sharing one Activity panel", () => {
   test("a section heading renders only when 2+ sections are present", () => {
-    // ONE non-empty source (models only): no heading needed to disambiguate.
+    // ONE non-empty source (engines only): no heading needed to disambiguate.
     const one = renderActivity({
-      models: { models: [aiModel()], ceilingBytes: null, onUnload: async () => {} },
+      engines: { engines: [runningEngine()], onStop: async () => {} },
     });
     expect(findAll(one, "dl-section-head")).toHaveLength(0);
 
-    // TWO non-empty sources (models + engines): both get a heading.
+    // TWO non-empty sources (running + engines): both get a heading.
+    const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
     const two = renderActivity({
-      models: { models: [aiModel()], ceilingBytes: null, onUnload: async () => {} },
+      reported: [running],
       engines: { engines: [runningEngine()], onStop: async () => {} },
     });
     const heads = findAll(two, "dl-section-head").map(text);
-    expect(heads).toEqual(["Background tasks", "Models"]);
-  });
-
-  test("Running, Background tasks, then Models — in that order — when all three are present", () => {
-    const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
-    const tree = renderActivity({
-      reported: [running],
-      engines: { engines: [runningEngine()], onStop: async () => {} },
-      models: { models: [aiModel()], ceilingBytes: null, onUnload: async () => {} },
-    });
-    const heads = findAll(tree, "dl-section-head").map(text);
-    expect(heads).toEqual(["Running", "Background tasks", "Models"]);
+    expect(heads).toEqual(["Running", "Background tasks"]);
   });
 
   test("everything empty draws the single 'No activity' empty state, nothing else", () => {
     const tree = renderActivity({
       engines: { engines: [], onStop: async () => {} },
-      models: { models: [], ceilingBytes: null, onUnload: async () => {} },
     });
     expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
     expect(findAll(tree, "dl-section")).toHaveLength(0);
@@ -1101,13 +983,13 @@ describe("three sections sharing one Activity panel", () => {
     );
   });
 
-  test("a model or engine arriving does not open the panel — only a job arrival does", () => {
+  test("an engine arriving does not open the panel — only a job arrival does", () => {
     // Mirrors the (deleted) Models/Engines chips' own `neverOpen` contract,
     // now expressed through Activity's `alsoDrawn` wiring.
     const renderer = create(
       <DownloadManagerView
         reported={[]}
-        models={{ models: [], ceilingBytes: null, onUnload: async () => {} }}
+        engines={{ engines: [], onStop: async () => {} }}
         ready
         refresh={() => {}}
         patch={() => {}}
@@ -1118,14 +1000,14 @@ describe("three sections sharing one Activity panel", () => {
       renderer.update(
         <DownloadManagerView
           reported={[]}
-          models={{ models: [aiModel()], ceilingBytes: null, onUnload: async () => {} }}
+          engines={{ engines: [runningEngine()], onStop: async () => {} }}
           ready
           refresh={() => {}}
           patch={() => {}}
         />,
       );
     });
-    // Still collapsed — a model becoming resident is not news.
+    // Still collapsed — an engine coming up is not news.
     expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
   });
 });

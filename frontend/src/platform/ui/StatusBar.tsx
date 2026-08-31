@@ -1,20 +1,26 @@
 // The bottom status bar (SPEC §36, D563, redesigned D565): a thin strip
-// inside `#main` holding TWO ALWAYS-PRESENT categories — Activity and
-// Notifications — left to right, so a page's content ends above it instead of
-// a floating card overlaying it.
+// inside `#main` holding THREE ALWAYS-PRESENT categories — Models, Activity
+// and Notifications — left to right, so a page's content ends above it
+// instead of a floating card overlaying it.
 //
-// STATUS-BAR MERGE: this bar used to hold four categories — Models, Engines,
-// Jobs and Notifications (D591 added Engines; D579 renamed Jobs/Notifications
-// from Activity/Updates). Models and Engines were their own PERSISTENT-status
-// chips (what is resident/running right now), separate from Jobs and
-// Notifications' TRANSIENT work that appears and resolves. User feedback was
-// that four chips for what reads as one idea — "what is the machine doing" —
-// was one too many; Models and Engines folded into the chip Jobs already
-// owned, which is renamed `Activity` to cover all three
-// (`platform/ui/DownloadManager.tsx` — see its own header for the panel's
-// three labelled sections). The `models`/`engines` props below are DELETED
-// along with `shell/ModelsDock.tsx`/`shell/EnginesDock.tsx`; `activity` is
-// the merged chip and `repoUpdates` (Notifications) is untouched.
+// STATUS-BAR MERGE, THEN A PARTIAL REVERT: this bar used to hold four
+// categories — Models, Engines, Jobs and Notifications (D591 added Engines;
+// D579 renamed Jobs/Notifications from Activity/Updates). Models and Engines
+// were their own PERSISTENT-status chips (what is resident/running right
+// now), separate from Jobs and Notifications' TRANSIENT work that appears and
+// resolves. User feedback was that four chips for what reads as one idea —
+// "what is the machine doing" — was one too many, so Models and Engines both
+// folded into the chip Jobs already owned, renamed `Activity`
+// (`platform/ui/DownloadManager.tsx`). A follow-up revision then split Models
+// back out into its own chip again (`shell/ModelsDock.tsx`, resurrected):
+// the user relies on that chip's own filled/outlined `StatusDot` to know
+// whether the machine is holding any model weights, and a dot shared with
+// jobs and engines no longer answered that question on its own. Engines
+// stayed folded into Activity — nothing comparable was ever asked of its own
+// indicator. `models` is therefore back as a prop below, `engines` is DELETED
+// along with `shell/EnginesDock.tsx`, `activity` still carries jobs + engines
+// (`platform/ui/DownloadManager.tsx` — see its own header for the panel's two
+// labelled sections), and `repoUpdates` (Notifications) is untouched.
 //
 // USER COMPLAINT THIS EXISTS TO FIX (round 1): "the collapsed notification is
 // also taking too much space. lets have a bottom status bar where the
@@ -36,12 +42,23 @@
 // all, and the user's own words reject that — the categories are a
 // fixed status readout, like a real status bar, not a notification stack that
 // happens to sit at the bottom. Each section still draws its own IDLE state
-// when it has nothing to say ("No activity" / "No notifications") — plain,
-// muted text with no chevron, since there is no panel behind an idle section
-// worth opening — rather than an empty box shouting for attention.
+// when it has nothing to say ("No models loaded" / "No activity" / "No
+// notifications") — plain, muted text with no chevron, since there is no
+// panel behind an idle section worth opening — rather than an empty box
+// shouting for attention.
 //
-// COLLAPSED IS A CHIP, EXPANDED IS A PANEL, and both sections work the same
-// way: a `.dl-toggle` chip that opens a `.dl-panel` floating above it.
+// COLLAPSED IS A CHIP, EXPANDED IS A PANEL, and all three sections work the
+// same way: a `.dl-toggle` chip that opens a `.dl-panel` floating above it.
+//
+// LIFETIME ORDER, LEFT TO RIGHT: Models is PERSISTENT status, true the
+// instant anything is resident — it does not "resolve" the way a download
+// finishes — so it sits leftmost, the same principle D591 originally gave
+// Models and Engines together. Activity and Notifications are TRANSIENT work
+// that appears and resolves, the same lifetime-ordering principle
+// NotificationHost.tsx documents for its own column (a toast is seconds,
+// work in progress is minutes, the server card outlives the session) —
+// applied here to what is always true versus what is currently happening,
+// rather than to how long each lives.
 //
 // EVERY CHIP IS A LABEL PLUS ONE CIRCLE — outlined when the section holds
 // nothing, filled when it holds anything (D588/D590, user: "no count. just a
@@ -49,10 +66,12 @@
 // D573, the aggregate percentage (`dl-pct`) in D581, Models' size readout in
 // D589, the counts in D588/D590, and the "something unacknowledged" dot
 // (`.dl-new-dot`) in D588 — the one circle answers "is there anything here",
-// which is all a bar this thin has room to say. On Activity that circle
-// specifically answers "is there work right now" — see DownloadManagerView's
-// own header for why a resident model or a running engine alone leaves it
-// unfilled. `.is-idle` muting is the only other state a chip carries.
+// which is all a bar this thin has room to say. On Models that circle fills
+// whenever ANY model is resident — the exact signal that earned this section
+// its own chip back — and on Activity it answers a narrower question, "is
+// there work right now": see DownloadManagerView's own header for why a
+// running engine alone leaves ITS dot unfilled. `.is-idle` muting is the
+// only other state a chip carries.
 //
 // THE FOLD IS NOT PERSISTED, AND NOT LIFTED HERE (D603). Every section starts
 // collapsed on every load, unconditionally. Each section still OWNS its own
@@ -60,18 +79,19 @@
 // what each section renders. One panel is open at a time
 // (`lib/exclusiveSection.ts`, D582). A panel opens on a USER action, or
 // transiently for a job arrival in Activity, or a repo/failure arrival in
-// Notifications (`lib/autoExpand.ts`).
+// Notifications (`lib/autoExpand.ts`); Models never auto-opens (D587,
+// unaffected by any of this — see `shell/ModelsDock.tsx`).
 //
-// `activity`/`repoUpdates` are handed in rather than imported, for the exact
-// layering reason NotificationHost.tsx's own header comment states for the
-// two entries this bar took over: a queue row has to offer "Open in
+// `models`/`activity`/`repoUpdates` are handed in rather than imported, for
+// the exact layering reason NotificationHost.tsx's own header comment states
+// for the entries this bar took over: a queue row has to offer "Open in
 // Explorer", whose one answer lives in shell/schedule-lib; a repo row's
-// refusal stages a prompt into explorer/lib's own store; the Activity chip's
-// engine and model rows need apps/ai_models/lib's shared runtime poll and
-// platform/lib/api's engine poll — and platform may not import shell
-// (frontend/scripts/check-boundaries.mjs). So the shell composes both
-// (`shell/ActivityDock.tsx`, `shell/RepoUpdatesDock.tsx`) and this file keeps
-// owning where they sit.
+// refusal stages a prompt into explorer/lib's own store; Models needs
+// apps/ai_models/lib's shared runtime poll; Activity's engine rows need
+// platform/lib/api's engine poll — and platform may not import shell or apps
+// (frontend/scripts/check-boundaries.mjs). So the shell composes all three
+// (`shell/ModelsDock.tsx`, `shell/ActivityDock.tsx`,
+// `shell/RepoUpdatesDock.tsx`) and this file keeps owning where they sit.
 // Omitted, the bare download manager stands in `activity`'s place — same
 // fallback NotificationHost used to provide, for the same reason: this
 // component must not depend on a shell that may not be there.
@@ -84,14 +104,17 @@ import type { ReactNode } from "react";
 import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
+  models,
   activity,
   repoUpdates,
 }: {
+  models?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
 }) {
   return (
     <div className="status-bar">
+      {models}
       {activity ?? <DownloadManager />}
       {repoUpdates}
     </div>

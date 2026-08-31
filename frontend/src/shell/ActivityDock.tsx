@@ -1,19 +1,21 @@
-// The shell's composer for the status bar's Activity chip (status-bar merge).
-// This is the ONE place `<DownloadManager>` is instantiated, and it is the
-// sole reason `shell/QueueDock.tsx`, `shell/ModelsDock.tsx` and
-// `shell/EnginesDock.tsx` — three separate composers, one per chip that used
-// to exist — are gone. `DownloadManager` (platform/ui/DownloadManager.tsx)
-// now draws ALL THREE of their row kinds in one panel: Running (the queue's
-// rows plus job rows, unchanged from what QueueDock used to hand it),
-// Background tasks (running engines) and Models (resident AI models). Its
-// header comment has the panel layout; this file only owns getting the three
-// DATA SOURCES to it.
+// The shell's composer for the status bar's Activity chip (status-bar merge,
+// later revised to split Models back out into its own chip). This is the ONE
+// place `<DownloadManager>` is instantiated, and it is the sole reason
+// `shell/QueueDock.tsx` and `shell/EnginesDock.tsx` — two separate composers,
+// one per chip that used to exist — are gone. `DownloadManager`
+// (platform/ui/DownloadManager.tsx) now draws BOTH their row kinds in one
+// panel: Running (the queue's rows plus job rows, unchanged from what
+// QueueDock used to hand it) and Background tasks (running engines). Its
+// header comment has the panel layout; this file only owns getting the two
+// DATA SOURCES to it. (Models — resident AI models — made this same trip
+// during the merge and then split back out into its own chip,
+// `shell/ModelsDock.tsx`, once its own filled/outlined dot needed to answer a
+// question this chip's shared "is there work right now" dot could not.)
 //
 // WHY THE SOURCES STAY HERE, NOT IN PLATFORM — the same boundary argument
 // StatusBar.tsx has always made for QueueDock/RepoUpdatesDock/ModelsDock:
-// `explorerUrl` (queue rows) lives in shell/schedule-lib, and the resident-
-// model poll (`useAiRuntime`) lives in apps/ai_models/lib — platform may not
-// import either (frontend/scripts/check-boundaries.mjs). The running-engines
+// `explorerUrl` (queue rows) lives in shell/schedule-lib, and platform may
+// not import it (frontend/scripts/check-boundaries.mjs). The running-engines
 // poll itself has no such dependency (`getRunningEngines`/`stopEngine` are
 // already platform/lib/api), but it is grouped here anyway rather than split
 // across a shell file and a platform file for one poll: `DownloadManager`'s
@@ -25,7 +27,6 @@ import {
   getRunningEngines,
   getScheduleQueue,
   stopEngine,
-  unloadAiModel,
   type RunningEngine,
   type ScheduledMessage,
 } from "@platform/lib/api";
@@ -39,7 +40,6 @@ import {
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
 import DownloadManager from "@platform/ui/DownloadManager";
-import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
   drawnIds,
@@ -271,7 +271,6 @@ function QueueRowView({
 export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) => void } = {}) {
   const { snap, refresh } = useQueue();
   const { engines, refresh: refreshEngines } = useRunningEngines();
-  const runtime = useAiRuntime();
   // The card's own job snapshot, handed up on every one of ITS polls — about
   // once a second while anything is live, against this half's six.
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -336,15 +335,6 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
     refreshEngines();
   };
 
-  const onUnloadModel = async (model: string) => {
-    // The response IS a fresh runtime snapshot (`{stopped, ...describe()}`,
-    // ai_runtime.py's own route) — publishing it updates every reader (this
-    // panel, the sidebar dot) on the click itself, rather than waiting out
-    // the next poll tick.
-    const result = await unloadAiModel(model);
-    publishAiRuntime(result);
-  };
-
   return (
     <DownloadManager
       queue={{
@@ -374,11 +364,6 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
         note: note ? <div className="q-note">{note}</div> : null,
       }}
       engines={{ engines, onStop: onStopEngine }}
-      models={{
-        models: runtime.loaded,
-        ceilingBytes: runtime.memoryCeilingBytes,
-        onUnload: onUnloadModel,
-      }}
     />
   );
 }
