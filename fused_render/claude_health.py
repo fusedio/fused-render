@@ -507,20 +507,55 @@ def install_command() -> str:
 # warning at all. The one messenger the user had is silenced by our own
 # environment prep. So the app measures the fact itself and owns the repair.
 
-#: Which rc file the PATH line belongs in, by shell. bash on macOS reads
-#: ~/.bash_profile for login shells (Terminal.app opens login shells), and
-#: ~/.bashrc everywhere else. fish is deliberately absent: its syntax is not
-#: `export`, and appending a bash line to fish config would break the shell we
-#: were trying to fix — a fish user gets the fact reported with no command.
+#: Which rc file the PATH line belongs in, by shell. bash on macOS gets the
+#: login-shell startup file it ALREADY reads (the first existing of
+#: ~/.bash_profile, ~/.bash_login, ~/.profile — Terminal.app opens login
+#: shells), and ~/.bashrc everywhere else; zsh gets $ZDOTDIR/.zshrc when
+#: ZDOTDIR is set, plain ~/.zshrc otherwise. fish is deliberately absent: its
+#: syntax is not `export`, and appending a bash line to fish config would
+#: break the shell we were trying to fix — a fish user gets the fact reported
+#: with no command.
 def _shell_rc() -> Optional[str]:
     shell = os.path.basename(os.environ.get("SHELL") or "")
     if shell == "zsh" or shell == "":
+        if not (shell or sys.platform == "darwin"):
+            return None
         # zsh is the macOS default; an unset SHELL on darwin still means zsh in
-        # every terminal the user will actually open.
-        return "~/.zshrc" if (shell or sys.platform == "darwin") else None
+        # every terminal the user will actually open. zsh reads $ZDOTDIR/.zshrc
+        # when ZDOTDIR is set — writing ~/.zshrc then would land in a file zsh
+        # never sources, and the button would report a success that fixed
+        # nothing.
+        zdotdir = os.environ.get("ZDOTDIR")
+        if zdotdir:
+            return _home_relative(os.path.join(zdotdir, ".zshrc"))
+        return "~/.zshrc"
     if shell == "bash":
-        return "~/.bash_profile" if sys.platform == "darwin" else "~/.bashrc"
+        if sys.platform != "darwin":
+            return "~/.bashrc"
+        # macOS Terminal opens login shells, and login bash reads only the
+        # FIRST of ~/.bash_profile, ~/.bash_login, ~/.profile that exists.
+        # Creating ~/.bash_profile on a machine that lives off ~/.profile
+        # would shadow the user's whole profile to add one line — so append to
+        # the file bash already reads, and only default to ~/.bash_profile
+        # when none of the three exists yet.
+        for cand in ("~/.bash_profile", "~/.bash_login", "~/.profile"):
+            if os.path.exists(os.path.expanduser(cand)):
+                return cand
+        return "~/.bash_profile"
     return None
+
+
+def _home_relative(path: str) -> str:
+    """`path` spelled with a `~/` prefix when it lives under $HOME.
+
+    The rc path is both shown to the user and re-expanded with expanduser(),
+    so the tilde form is preferred; a path outside home comes back absolute,
+    which expanduser() passes through untouched.
+    """
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
 
 
 def path_fix(path: str) -> Optional[dict]:
@@ -549,7 +584,8 @@ def path_fix(path: str) -> Optional[dict]:
     return {
         "rc_file": rc,
         "line": line,
-        "command": f"echo '{line}' >> {rc}",
+        "command": f"echo '{line}' >> {rc}" if " " not in rc
+                   else f"echo '{line}' >> \"{rc}\"",
     }
 
 
