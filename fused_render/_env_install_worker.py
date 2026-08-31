@@ -1447,6 +1447,33 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
     and re-offer as an explicit "install anyway" (`runtime.js`'s retry to
     `/api/env/install` with `allow_build: true`), rather than a build silently
     proceeding with no consent asked for it.
+
+    `--no-install-project` rides along with `--no-build`, not on its own: uv's
+    `--no-build` forbids building ANY sdist-only distribution, and the LOCAL
+    PROJECT ITSELF is one such distribution the instant it declares
+    `[build-system]` at all — which a bare `uv init` scaffold does by default
+    (`uv_build`), with zero dependencies of its own. Without
+    `--no-install-project`, `--no-build` therefore fails EVERY such folder
+    outright ("can't be installed because it is marked as `--no-build` but has
+    no binary distribution", naming the project itself, not a dependency), and
+    that failure's wording does not match `NO_BUILD_HINT` in runtime.js, so no
+    "Install anyway" retry is ever offered — the folder is permanently stuck.
+    Verified against real `uv 0.12.5`: a fresh `uv init` folder fails on
+    `uv sync --no-default-groups --no-build` alone, and succeeds with
+    `--no-install-project` added; a folder with a genuinely wheel-less
+    dependency (`uwsgi`) still gets refused, and the refusal still carries the
+    `hint: Wheels are required for ...` line `NO_BUILD_HINT` matches, so the
+    retry path is unaffected.
+
+    The trade-off this accepts: the project's own package is no longer
+    installed editable into the venv, so a SRC-LAYOUT folder whose scripts
+    `import mypkg` (relying on that editable install to put `mypkg` on
+    `sys.path`) would lose that import. Flat-layout script folders — the norm
+    here, and what PY-16 describes — are unaffected: Python already puts a
+    script's own directory on `sys.path`, with no editable install involved at
+    all. A src-layout project that wants its own package importable would need
+    to either declare it as an ordinary dependency (so uv builds *a* wheel for
+    it, not skip the build) or run `uv sync` by hand outside this app.
     """
     uv = shutil.which("uv")
     if uv is None:
@@ -1480,7 +1507,12 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
     # which is the same answer PY-16 already gives it.
     cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
     if not allow_build:
+        # See the docstring above for why these two are never split: `--no-build`
+        # alone refuses to build the LOCAL PROJECT too, bricking any folder with
+        # a `[build-system]` table (every `uv init` scaffold) and zero
+        # dependencies of its own.
         cmd.append("--no-build")
+        cmd.append("--no-install-project")
 
     # `_uv_env` scrubs PYTHON* and VIRTUAL_ENV: without the first, every
     # dependency uv has to BUILD rather than download as a wheel failed inside

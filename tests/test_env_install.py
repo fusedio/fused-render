@@ -2246,7 +2246,8 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
     worker._build(proj, venv_dir, cache, "3.12")
 
     assert seen["cmd"] == [
-        "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12", "--no-build",
+        "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12",
+        "--no-build", "--no-install-project",
     ]
     assert "--frozen" not in seen["cmd"], "no lock yet, so uv must resolve and write one"
     assert seen["cwd"] == proj
@@ -2472,6 +2473,36 @@ def test_no_build_is_the_default(tmp_path, monkeypatch):
 
 
 @requires_fused
+def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch):
+    """`--no-build` alone refuses to build the LOCAL PROJECT too, not just its
+    dependencies — a plain `uv init` scaffold declares `[build-system]` with
+    zero dependencies of its own, and fails outright
+    ("Distribution `x==0.1.0 @ editable+.` can't be installed because it is
+    marked as `--no-build` but has no binary distribution") with wording that
+    does not match `NO_BUILD_HINT` in runtime.js, so no retry is ever offered
+    and the folder is permanently stuck. Verified against real uv 0.12.5.
+
+    `--no-install-project` must ride along with `--no-build` to prevent this.
+    The trade-off (a src-layout project's own package is no longer installed
+    editable into the venv) is documented in `_build`'s docstring and in
+    DECISIONS-install-consent.md.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_build_no_install_project")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert "--no-install-project" in seen["cmd"]
+
+
+@requires_fused
 def test_allow_build_drops_no_build(tmp_path, monkeypatch):
     """The explicit "install anyway" retry (runtime.js, after a no-wheel
     resolver error) sets `allow_build=True`, and that must be the ONLY way
@@ -2492,6 +2523,7 @@ def test_allow_build_drops_no_build(tmp_path, monkeypatch):
                   allow_build=True)
 
     assert "--no-build" not in seen["cmd"]
+    assert "--no-install-project" not in seen["cmd"]
 
 
 @requires_fused
