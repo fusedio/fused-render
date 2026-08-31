@@ -2073,7 +2073,7 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
     worker._build(proj, venv_dir, cache, "3.12")
 
     assert seen["cmd"] == [
-        "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12",
+        "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12", "--no-build",
     ]
     assert "--frozen" not in seen["cmd"], "no lock yet, so uv must resolve and write one"
     assert seen["cwd"] == proj
@@ -2257,6 +2257,68 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
     worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
 
     assert "--no-default-groups" in seen["cmd"]
+
+
+def _fake_build_run(seen, venv_dir):
+    def _fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    return _fake_run
+
+
+@requires_fused
+def test_no_build_is_the_default(tmp_path, monkeypatch):
+    """A dependency with no matching wheel must fail resolution, not silently
+    run that package's own build backend with no consent asked for it —
+    static detection (projectenv.nonstandard_dependencies_of) has no way to
+    see a missing wheel coming, so the safe default has to be enforced here,
+    at the one place that actually resolves against the index.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_build_default")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert "--no-build" in seen["cmd"]
+
+
+@requires_fused
+def test_allow_build_drops_no_build(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (runtime.js, after a no-wheel
+    resolver error) sets `allow_build=True`, and that must be the ONLY way
+    `--no-build` is absent — silence must never be the thing that allows a
+    source build.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_allow_build")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12",
+                  allow_build=True)
+
+    assert "--no-build" not in seen["cmd"]
 
 
 @requires_fused
@@ -2977,7 +3039,7 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     )
     d = str(tmp_path / "prog")
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "cache"), "", "", ""])
 
     assert seen == [sys.executable], (
         "an empty interpreter slot must mean this worker's own python — the one "
@@ -3067,7 +3129,7 @@ def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "install",
                         lambda *a, **k: order.append("install"))
     worker.main(["k", str(tmp_path / "prog"), str(tmp_path / "proj"),
-                 str(tmp_path / "venv"), str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "venv"), str(tmp_path / "cache"), "", "", ""])
 
     assert order == ["setsid", "install"]
 
@@ -3519,12 +3581,12 @@ def test_the_worker_maps_an_EMPTY_acquire_slot_back_to_no_acquisition(tmp_path, 
         lambda *a, **kw: seen.update(args=a, kwargs=kw),
     )
     worker.main(["k", str(tmp_path), str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "cache"), "", "", ""])
     assert seen["kwargs"]["acquire_python"] is None
 
     seen.clear()
     worker.main(["k", str(tmp_path), str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", "3.12"])
+                 str(tmp_path / "cache"), "", "3.12", ""])
     assert seen["kwargs"]["acquire_python"] == "3.12"
 
 
@@ -3645,10 +3707,10 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     )
     d = str(tmp_path / "prog")
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                str(tmp_path / "cache"), "", ""])
+                str(tmp_path / "cache"), "", "", ""])
     assert seen == [sys.executable]
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                str(tmp_path / "cache"), "/usr/bin/python3", ""])
+                str(tmp_path / "cache"), "/usr/bin/python3", "", ""])
     assert seen == [sys.executable, "/usr/bin/python3"]
 
 

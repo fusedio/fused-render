@@ -1380,7 +1380,8 @@ def _sync_root(project_dir, venv_dir):
     return mirror
 
 
-def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None):
+def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
+           allow_build=False):
     """`uv sync` the project into `venv_dir`; returns that venv's interpreter.
 
     `tracker` is a `_UvProgress` that every line of uv's stderr is fed into as
@@ -1434,6 +1435,18 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     has to run `uv sync` by hand (doing so would create an in-folder `.venv` and
     diverge from the home-dir store). Without a lock at all uv resolves and
     WRITES one, which is how a folder gains reproducibility by being run once.
+
+    `allow_build=False` (the default) adds `--no-build`, which fails resolution
+    outright rather than letting uv fall back to a source build for a
+    dependency with no matching wheel. Static detection
+    (`projectenv.nonstandard_dependencies_of`) can only read the manifest — it
+    has no way to know a plain `foo>=1.0` happens to publish no wheel for this
+    platform until uv actually tries to resolve it, and a source build runs
+    that package's OWN `build-system` backend with no consent asked for it.
+    `--no-build` turns that into a clean resolver error the client can catch
+    and re-offer as an explicit "install anyway" (`runtime.js`'s retry to
+    `/api/env/install` with `allow_build: true`), rather than a build silently
+    proceeding with no consent asked for it.
     """
     uv = shutil.which("uv")
     if uv is None:
@@ -1466,6 +1479,8 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     # place. A folder whose dependencies live only in a group installs nothing,
     # which is the same answer PY-16 already gives it.
     cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
+    if not allow_build:
+        cmd.append("--no-build")
 
     # `_uv_env` scrubs PYTHON* and VIRTUAL_ENV: without the first, every
     # dependency uv has to BUILD rather than download as a wheel failed inside
@@ -1560,7 +1575,7 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
 
 
 def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
-            python_executable=None, acquire_python=None):
+            python_executable=None, acquire_python=None, allow_build=False):
     os.makedirs(progress_dir, exist_ok=True)
     summary = os.path.basename(os.path.abspath(project_dir)) or project_dir
     # None means "the backend's own interpreter", and this worker was spawned
@@ -1694,7 +1709,8 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         venv_python = with_heartbeat(
             "install", _INSTALL_PCT,
             f"resolving and installing the dependencies of {summary}",
-            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker),
+            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker,
+                           allow_build=allow_build),
             progress=tracker,
         )
         write("done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
@@ -1737,23 +1753,28 @@ def _detach():
 
 def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
-    <python_executable> <acquire_python>`
+    <python_executable> <acquire_python> <allow_build>`
 
-    The empty string means None in ALL THREE optional slots (argv cannot carry
-    it): translated here and nowhere else, so `install` receives the real
+    The empty string means None in the first THREE optional slots (argv cannot
+    carry it): translated here and nowhere else, so `install` receives the real
     values. Read as the literal `""` instead, `uv_cache_dir` would hand `_build`
     a directory named nothing to create and point `UV_CACHE_DIR` at, and the
-    last slot would have this worker try to download a Python version called
-    nothing on every ordinary install.
+    `acquire_python` slot would have this worker try to download a Python
+    version called nothing on every ordinary install.
+
+    `allow_build` is not that idiom — argv already gives every slot a string,
+    so there is no "missing" case to disambiguate — it is just truthy/falsy on
+    the literal text: `"1"` for True, `""` for the (default) False.
     """
     _detach()
-    if len(args) < 7:
+    if len(args) < 8:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
     (key, progress_dir, project_dir, venv_dir, uv_cache_dir,
-     python_executable, acquire_python) = args[:7]
+     python_executable, acquire_python, allow_build) = args[:8]
     install(key, progress_dir, project_dir, venv_dir, uv_cache_dir or None,
-            python_executable or None, acquire_python=acquire_python or None)
+            python_executable or None, acquire_python=acquire_python or None,
+            allow_build=bool(allow_build))
 
 
 if __name__ == "__main__":

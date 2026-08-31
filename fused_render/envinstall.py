@@ -1539,7 +1539,8 @@ def _worker_env() -> dict:
     return env
 
 
-def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int:
+def _spawn(key: str, project_dir: str, acquire_python: str | None = None,
+           allow_build: bool = False) -> int:
     """Launch the detached worker; returns its pid.
 
     Detached so the build outlives the request that started it and any page
@@ -1604,6 +1605,15 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     cannot do both in one run: the interpreter is reported under
     `PYTHON_BOOTSTRAP_KEY` and the packages under the project's own key, and one
     worker reports under one key.
+
+    Slot 7 is `allow_build`, `"1"` or `""` — whether a dependency with no
+    matching wheel may fall back to building from source (see `_build`'s
+    `--no-build`). Off by default: a source build runs code the manifest never
+    named as a dependency (the package's own build backend), and the whole
+    point of the install-consent prompt this feeds is that nothing runs
+    without being asked first. The one caller allowed to set it True is
+    `/api/env/install`'s retry after the resolver's own no-wheel error —
+    `runtime.js` re-prompts naming the specific package before making it.
     """
     from fused_render import projectenv
 
@@ -1630,7 +1640,8 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
              # for why: an explicit sibling cache used to be unconditional,
              # and fragmented per branch as a result.
              projectenv.uv_cache_dir() or "",
-             _python_executable() or "", acquire_python or ""],
+             _python_executable() or "", acquire_python or "",
+             "1" if allow_build else ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
@@ -1668,8 +1679,18 @@ def _reported(key: str, record: dict, claimed: bool = False) -> dict:
     return {**record, "key": key, "claimed": claimed}
 
 
-def start(project_dir: str) -> dict:
+def start(project_dir: str, allow_build: bool = False) -> dict:
     """Begin (or join) the install for `project_dir`; returns its progress.
+
+    `allow_build` reaches the worker only on the branch that actually spawns
+    one — a caller that joins an install already running, or finds one already
+    done, has no say over a `uv sync` invocation that either already happened
+    or is somebody else's; the flag only ever governed on the FIRST call for a
+    key. Default False, matching `_build`'s: every existing caller (the
+    bundled AI runners, through `ai/supervisor.py`) keeps its `--no-build`
+    behaviour unchanged, and the one caller that means to allow a source build
+    (`/api/env/install`'s explicit retry, after the resolver's own no-wheel
+    error) says so.
 
     Idempotent in the two ways that matter: already installed is a no-op, and an
     install already running is joined rather than duplicated. Two workers running
@@ -1732,7 +1753,7 @@ def start(project_dir: str) -> dict:
         os.unlink(_progress_path(key))
     except OSError:
         pass
-    pid = _spawn(key, project_dir, acquire_python=acquire_python)
+    pid = _spawn(key, project_dir, acquire_python=acquire_python, allow_build=allow_build)
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.

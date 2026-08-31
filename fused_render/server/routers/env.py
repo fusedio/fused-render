@@ -81,8 +81,19 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     # page loaded before the engine preference was switched, or any direct API
     # call — and uncaught they become a 500 the loader shows as a bare
     # "HTTP 500", discarding the diagnostic that was the whole point.
+    # False unless the request says otherwise — the client only ever sets this
+    # on its explicit "install anyway" retry, after a first attempt's resolver
+    # error named a dependency with no matching wheel (`runtime.js`'s
+    # `startInstall`). Read straight off the body rather than trusted from
+    # `nonstandard` above: a source build can be needed by a dependency
+    # `nonstandard_dependencies_of` never flags at all — an ordinary-looking
+    # `foo>=1.0` that simply publishes no wheel for this platform is
+    # undetectable from the manifest, which is the whole reason this is a
+    # retry rather than something decided up front.
+    allow_build = bool(body.get("allow_build"))
+
     try:
-        record = envinstall.start(project)
+        record = envinstall.start(project, allow_build=allow_build)
         # The key comes back FROM `start`, never recomputed here: when this machine
         # has no pinned Python yet the install reports under
         # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a
