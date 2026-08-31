@@ -273,7 +273,20 @@ function CurrentAppRow({
             draggable={false}
           />
         ) : (
-          "▣"
+          // The brand's four-point star (the app icon's sparkle) as the
+          // generic mark, on currentColor so it follows the glyph's tokens
+          // (muted at rest, accent on the active row) — the SidebarFrame
+          // cube's own posture.
+          <svg
+            className="current-app-star"
+            width="12"
+            height="12"
+            viewBox="0 0 64 64"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
+          </svg>
         )}
       </span>
       <a
