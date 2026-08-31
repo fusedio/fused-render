@@ -2,6 +2,11 @@
 // ones that are NOT obvious — a tie inside a single commit, and a later request
 // beating an earlier one — because both were previously at the mercy of
 // effect-execution order.
+//
+// TWO SECTIONS NOW, NOT FOUR (status-bar merge): `SECTION_ORDER` shrank to
+// `["activity", "notifications"]` once Models and Engines folded into the
+// same chip Jobs already owned. The only tie this arbiter can ever see today
+// is Activity vs Notifications, so that is the one case these tests pin.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useExclusiveSection, type SectionKey } from "./exclusiveSection";
@@ -40,30 +45,11 @@ async function nextTick() {
   });
 }
 
-// The RELOAD case: two persisted preferences both say open. Models is a
-// legitimate winner here — D587 forbids Models auto-OPENING, not being open,
-// and a saved preference is the user's own choice.
-test("two sections wanting open in the SAME commit resolve to Models, deterministically", () => {
+test("two sections wanting open in the SAME commit resolve to Activity, deterministically", () => {
   const closed: SectionKey[] = [];
   const renderer = mount(
     <>
-      <Section sectionKey="models" wantOpen onForceClose={() => closed.push("models")} />
-      <Section sectionKey="jobs" wantOpen onForceClose={() => closed.push("jobs")} />
-    </>,
-  );
-  // Same commit means the same tick, so this is a genuine tie and SECTION_ORDER
-  // breaks it — Models first. The loser is force-closed; the winner is not
-  // touched at all, because the arbiter only ever closes.
-  expect(closed).toEqual(["jobs"]);
-  act(() => renderer.unmount());
-});
-
-test("a reload where all three preferences say open still leaves only Models", () => {
-  const closed: SectionKey[] = [];
-  const renderer = mount(
-    <>
-      <Section sectionKey="models" wantOpen onForceClose={() => closed.push("models")} />
-      <Section sectionKey="jobs" wantOpen onForceClose={() => closed.push("jobs")} />
+      <Section sectionKey="activity" wantOpen onForceClose={() => closed.push("activity")} />
       <Section
         sectionKey="notifications"
         wantOpen
@@ -71,77 +57,72 @@ test("a reload where all three preferences say open still leaves only Models", (
       />
     </>,
   );
-  expect(closed).not.toContain("models");
-  expect(new Set(closed)).toEqual(new Set(["jobs", "notifications"]));
+  // Same commit means the same tick, so this is a genuine tie and SECTION_ORDER
+  // breaks it — Activity first. The loser is force-closed; the winner is not
+  // touched at all, because the arbiter only ever closes.
+  expect(closed).toEqual(["notifications"]);
   act(() => renderer.unmount());
 });
 
 test("a LATER request beats whatever was already open, whichever section it is", async () => {
   const closed: SectionKey[] = [];
-  function Bar({ jobsOpen }: { jobsOpen: boolean }) {
+  function Bar({ notificationsOpen }: { notificationsOpen: boolean }) {
     return (
       <>
-        <Section sectionKey="models" wantOpen onForceClose={() => closed.push("models")} />
-        <Section sectionKey="jobs" wantOpen={jobsOpen} onForceClose={() => closed.push("jobs")} />
+        <Section sectionKey="activity" wantOpen onForceClose={() => closed.push("activity")} />
+        <Section
+          sectionKey="notifications"
+          wantOpen={notificationsOpen}
+          onForceClose={() => closed.push("notifications")}
+        />
       </>
     );
   }
-  const renderer = mount(<Bar jobsOpen={false} />);
+  const renderer = mount(<Bar notificationsOpen={false} />);
   expect(closed).toHaveLength(0);
 
   await nextTick();
-  act(() => renderer.update(<Bar jobsOpen />));
+  act(() => renderer.update(<Bar notificationsOpen />));
 
-  // Recency wins: Models closes even though it is first in SECTION_ORDER,
+  // Recency wins: Activity closes even though it is first in SECTION_ORDER,
   // because SECTION_ORDER only ever breaks ties.
-  expect(closed).toEqual(["models"]);
+  expect(closed).toEqual(["activity"]);
   act(() => renderer.unmount());
 });
 
 test("a section that merely STAYS open cannot keep out-bidding a sibling", async () => {
   const closed: SectionKey[] = [];
-  function Bar({ n, jobsOpen }: { n: number; jobsOpen: boolean }) {
+  function Bar({ n, notificationsOpen }: { n: number; notificationsOpen: boolean }) {
     return (
       <>
-        <Section sectionKey="models" wantOpen onForceClose={() => closed.push("models")} />
-        <Section sectionKey="jobs" wantOpen={jobsOpen} onForceClose={() => closed.push("jobs")} />
+        <Section sectionKey="activity" wantOpen onForceClose={() => closed.push("activity")} />
+        <Section
+          sectionKey="notifications"
+          wantOpen={notificationsOpen}
+          onForceClose={() => closed.push("notifications")}
+        />
         {/* Re-renders without changing either section's want. */}
         <span>{n}</span>
       </>
     );
   }
-  const renderer = mount(<Bar n={0} jobsOpen={false} />);
-  // Several commits pass with Models simply remaining open. A tick is stamped
-  // only on the false -> true edge, so none of these re-stamps it.
+  const renderer = mount(<Bar n={0} notificationsOpen={false} />);
+  // Several commits pass with Activity simply remaining open. A tick is
+  // stamped only on the false -> true edge, so none of these re-stamps it.
   for (const n of [1, 2, 3]) {
     await nextTick();
-    act(() => renderer.update(<Bar n={n} jobsOpen={false} />));
+    act(() => renderer.update(<Bar n={n} notificationsOpen={false} />));
   }
   await nextTick();
-  act(() => renderer.update(<Bar n={4} jobsOpen />));
+  act(() => renderer.update(<Bar n={4} notificationsOpen />));
 
-  expect(closed).toEqual(["models"]);
+  expect(closed).toEqual(["activity"]);
   act(() => renderer.unmount());
 });
 
-// The AUTO-OPEN case, narrowed by D587: Models has no auto-open path any more
-// (`autoExpand.ts`'s `neverOpen`), so a same-tick auto-open contest is only
-// ever Jobs vs Notifications, and Jobs is the first ELIGIBLE section rather
-// than the first section outright. Pinned separately from the reload test
-// above because the two now resolve to different winners for different
-// reasons, and one test asserting "Models wins ties" would hide that.
-test("a Jobs vs Notifications tie resolves to Jobs — Models cannot enter this contest", () => {
-  const closed: SectionKey[] = [];
-  const renderer = mount(
-    <>
-      <Section sectionKey="jobs" wantOpen onForceClose={() => closed.push("jobs")} />
-      <Section
-        sectionKey="notifications"
-        wantOpen
-        onForceClose={() => closed.push("notifications")}
-      />
-    </>,
-  );
-  expect(closed).toEqual(["notifications"]);
-  act(() => renderer.unmount());
-});
+// THE AUTO-OPEN CASE is the SAME contest as the same-commit tie above, now
+// that there are only two sections: since D587 (carried into the status-bar
+// merge via Activity's own `alsoDrawn` wiring for its engine/model rows), the
+// only source that can ever WANT Activity's panel open is a job arrival, so
+// the one same-tick auto-open contest left IS Activity vs Notifications —
+// already pinned by the first test in this file.

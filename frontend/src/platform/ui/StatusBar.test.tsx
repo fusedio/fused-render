@@ -1,5 +1,6 @@
-// StatusBar's own composition rules (D565, code review finding #8): three
-// sections, left to right by lifetime, always rendered — replacing
+// StatusBar's own composition rules (D565, code review finding #8; narrowed
+// to two sections by the status-bar merge): Activity and Notifications, left
+// to right, always rendered — replacing
 // `tests/test_queue_dock.py::test_the_bar_reserves_space_inside_main_not_the_floating_column`,
 // which only ever grepped the stylesheet for a literal `.status-bar:empty`
 // string and could not see whether the bar actually behaves this way. The
@@ -21,10 +22,9 @@ function classesOf(node: ReactTestRendererJSON | ReactTestRendererJSON[] | null)
     .map((n) => n.props?.className as string);
 }
 
-test("renders all three sections, left to right by lifetime: models, activity, repoUpdates", () => {
+test("renders both sections, left to right: activity, repoUpdates", () => {
   const tree = create(
     <StatusBar
-      models={<div className="fake-models">m</div>}
       activity={<div className="fake-activity">a</div>}
       repoUpdates={<div className="fake-updates">u</div>}
     />,
@@ -32,17 +32,16 @@ test("renders all three sections, left to right by lifetime: models, activity, r
   const bar = tree as ReactTestRendererJSON;
   expect(bar.props.className).toBe("status-bar");
   expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual([
-    "fake-models",
     "fake-activity",
     "fake-updates",
   ]);
 });
 
-test("an omitted models or repoUpdates section renders nothing for that slot — not an empty wrapper", () => {
+test("an omitted repoUpdates section renders nothing for that slot — not an empty wrapper", () => {
   const tree = create(<StatusBar activity={<div className="fake-activity">a</div>} />).toJSON();
   const bar = tree as ReactTestRendererJSON;
   // React drops `undefined` children outright — the bar has exactly the one
-  // real section, no placeholder node standing in for the other two.
+  // real section, no placeholder node standing in for the other.
   expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual(["fake-activity"]);
 });
 

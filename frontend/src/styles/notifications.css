@@ -130,23 +130,24 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Status bar (SPEC §36, D563, redesigned D565, D573) ------------------- */
+/* ---- Status bar (SPEC §36, D563, redesigned D565, D573, status-bar merge) - */
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
-   which overlaid page content even collapsed. Four entries, left to right by
-   lifetime (StatusBar.tsx's own doc has the ordering principle): `models` and
-   `engines` (persistent), `activity` and `repoUpdates` (transient), each a
-   `.dl-host` chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different
-   categories of status bar should be always present") — there used to be a
-   `:empty { display: none }` rule collapsing the strip to nothing when both
-   sections were empty; the categories are a fixed readout now, so that rule is
-   gone and `#main` is permanently shorter by this bar's height, which is the
-   accepted cost of the call. `tabular-nums` here, not per element, so every
-   ticking figure in the bar's SUBTREE inherits it — no chip carries a digit any
-   more (D588/D590 took the counts, D589 Models' size), but a `.dl-panel` is a
-   descendant of this element, and a row's `.dl-pct`/`.dl-amount`/status line
-   tick constantly where proportional digits would twitch.
+   which overlaid page content even collapsed. TWO entries now (used to be
+   four — `models`/`engines`/`activity`/`repoUpdates` — until Models and
+   Engines folded into `activity`, StatusBar.tsx's own doc has the story):
+   `activity` and `repoUpdates`, each a `.dl-host` chip+panel pair. ALWAYS
+   PRESENT (D565, user verdict: "different categories of status bar should be
+   always present") — there used to be a `:empty { display: none }` rule
+   collapsing the strip to nothing when both sections were empty; the
+   categories are a fixed readout now, so that rule is gone and `#main` is
+   permanently shorter by this bar's height, which is the accepted cost of the
+   call. `tabular-nums` here, not per element, so every ticking figure in the
+   bar's SUBTREE inherits it — no chip carries a digit any more (D588/D590
+   took the counts, D589 Models' size), but a `.dl-panel` is a descendant of
+   this element, and a row's `.dl-pct`/`.dl-amount`/status line tick
+   constantly where proportional digits would twitch.
 
    D573 (user: "the chevron doesn't belong to the status bar. lets follow
    vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
@@ -184,8 +185,17 @@
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's and
-   ModelsDock.tsx's sibling sections share below.
+   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling
+   section shares below.
+
+   THREE POSSIBLE SECTIONS SINCE THE STATUS-BAR MERGE — Running, Background
+   tasks, Models — each its own `.dl-section` (below) inside one `.dl-panel`,
+   replacing the three separate chips (Jobs, Engines, Models) that used to
+   hold them. `.dl-row` is shared by all three kinds of row regardless of
+   which section draws it — a model row, an engine row and a job row are
+   shaped alike (name, a qualifier, one action, an optional status line) —
+   which is why nothing here had to change to accommodate the merge beyond
+   the section wrapper itself.
 
    Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
    `.dl-panel` (below) can float above it, anchored to its own RIGHT edge
@@ -585,6 +595,31 @@
   border-color: var(--fg-muted);
 }
 
+/* ---- Activity's own labelled sections (status-bar merge) ------------------ */
+/* One `.dl-section` per non-empty group — Running, Background tasks, Models —
+   wrapping that group's own `.dl-rows`/footer. Plain block, no border of its
+   own: the hairline between two sections is the same `.dl-rows > * + *` rule
+   already draws between two rows, applied one level up so Running's last row
+   and Background tasks' first one read as continuing one list rather than two
+   pasted-together boxes. */
+.dl-section + .dl-section {
+  border-top: 1px solid var(--border);
+}
+
+/* Rendered only when 2+ sections are present at once (DownloadManagerView's
+   own doc) — a lone section carrying a label nobody needed to tell it apart
+   from a sibling is a redundant header, the same "PLURALITY, NOT PRESENCE"
+   principle D604 already applied to Clear/Cancel queued. Quiet on purpose:
+   this is a sub-heading inside an already-labelled chip, not a second chip. */
+.dl-section-head {
+  padding: 6px 10px 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
    would push its own header off-screen. Never rendered at all while
@@ -645,7 +680,7 @@
    wider than its own content rather than following it.
 
    Stated on `.dl-row` and NOT on `.q-row`: model rows and engine rows are
-   `.dl-row` too (ModelsDock/EnginesDock both render one), so all three of the
+   `.dl-row` too (the Activity chip's Models/Background-tasks sections both render one), so all three of the
    bar-and-figures panels keep their width, while a `.q-row` panel — a repo
    notification, a scheduled queue row — is free to hug its content, which is
    the whole of what D610 changes. */
@@ -703,12 +738,12 @@
    specific rule rather than a tweak to that one. `.dl-title` carries D596's
    two-line clamp plus `overflow-wrap: anywhere` because a JOB row's title is
    a long PROMPT and the model id already has its own line below (`.dl-model`,
-   next). `ModelRow` (ModelsDock.tsx) has no such second line — its `.dl-title`
+   next). `ModelRow` (platform/ui/DownloadManager.tsx) has no such second line — its `.dl-title`
    *is* the model id — so inheriting the prompt rule let `overflow-wrap:
    anywhere` snap "FLUX.2-Klein-4B-4bit" at the hyphen into "FLUX.2-" over
    "Klein-4B-4bit", which is exactly what `.dl-model`'s own comment below
    forbids: "a model id is a single unbreakable token and wrapping one
-   mid-word reads worse than truncating it". `EnginesDock.tsx` renders a
+   mid-word reads worse than truncating it". The Background-tasks section's own row renders a
    `.dl-title` too, and carries THIS class as well (code review: the "folder
    name" read of that row was wrong — `engineLabel` falls back to
    `engine.module || engine.engine_id` whenever `folder` is empty, and a
@@ -1048,7 +1083,7 @@
   }
 }
 
-/* ---- Queue rows in that card (shell/QueueDock.tsx) ----------------------- */
+/* ---- Queue rows in that card (shell/ActivityDock.tsx) ----------------------- */
 /* Work that is about to run or running now: past-due scheduled messages waiting
    to be claimed, and the turns already in flight. These are ROWS, not a card —
    they sit in .dl-rows above the job rows, which is where the same run lands once

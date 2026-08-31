@@ -1,11 +1,13 @@
 // Signal a genuinely NEW item arriving in a folded notification card — and,
 // since D574, OPEN that card's own panel so the arrival is actually on screen
-// rather than only hinted at. Shared by all four status-bar sections —
-// shell/ModelsDock.tsx, shell/EnginesDock.tsx, platform/ui/DownloadManager.tsx
-// (Jobs) and shell/RepoUpdatesDock.tsx (Notifications) — since each needs the
-// exact same wiring around the same pure decision (jobs.ts `trackSeenIds`):
-// remember which ids were visible last render, and notice when the current
-// set contains one that wasn't.
+// rather than only hinted at. Shared by both status-bar chips —
+// platform/ui/DownloadManager.tsx (Activity — jobs, engines and models all
+// feed the one call there now, the status-bar merge having folded the
+// now-deleted shell/ModelsDock.tsx and shell/EnginesDock.tsx into it) and
+// shell/RepoUpdatesDock.tsx (Notifications) — since each needs the exact same
+// wiring around the same pure decision (jobs.ts `trackSeenIds`): remember
+// which ids were visible last render, and notice when the current set
+// contains one that wasn't.
 //
 // D567 STOPPED IT OPENING ANYTHING; D574 PUTS THE OPEN BACK, by explicit user
 // request: "when we have something new, always show the notification. don't
@@ -109,9 +111,13 @@ export interface AutoExpandState {
  * a switch to flip. `alsoDrawn` answers it directly, so the two remaining
  * knobs are about genuinely different things:
  *
- *  - Models/Engines (`neverOpen`) must never open on their own but MUST still
- *    close on drain — closing is not opening, and Unload-the-last-row getting
- *    the panel out of the way was explicitly good (D580).
+ *  - Activity's engine and model rows (`alsoDrawn`, status-bar merge) must
+ *    never open the panel on their own — an engine coming up or a model
+ *    becoming resident is state, not news — but they MUST still count toward
+ *    the drain that closes it: "closing is not opening" is the same argument
+ *    the (now-deleted) standalone Models/Engines chips made for their own
+ *    drain-close behaviour with the since-removed `neverOpen` flag. Jobs are
+ *    the one source in Activity that stays in `ids`.
  *  - Notifications (`alsoDrawn` = its failure rows) draws TWO row sources but
  *    may only be opened by one of them: a repo falling behind is news (D574), a
  *    background failure must never throw a panel over the page (D586). Feeding
@@ -121,12 +127,6 @@ export interface AutoExpandState {
  *    open against a repo-row drain.
  */
 export interface AutoExpandOptions {
-  /** Never auto-OPEN. Structural: with this set, `setOverride("open")` is
-   *  unreachable for this caller, so no future arrival can slip through. There
-   *  is no separate indicator this leaves behind — D588 replaced every
-   *  "something NEW" mark with one per-chip circle for "is there anything
-   *  here", which each chip derives from its own list. */
-  neverOpen?: boolean;
   /** MORE ROWS THIS PANEL DRAWS, which count for occupancy but never announce.
    *
    *  THE DEFECT THIS FIXES (code review 2026-08-28, finding 1). The drain gate
@@ -157,7 +157,7 @@ export function useAutoExpandOnNew(
   ids: readonly string[],
   collapsed: boolean,
   ready = true,
-  { neverOpen = false, alsoDrawn = NOTHING_ELSE }: AutoExpandOptions = {},
+  { alsoDrawn = NOTHING_ELSE }: AutoExpandOptions = {},
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
   const [override, setOverride] = useState<Override>(null);
@@ -205,12 +205,11 @@ export function useAutoExpandOnNew(
     if (arrived) {
       // Announce only what the user cannot already see. Setting `"open"` here
       // is also what CLEARS a standing `"closed"` override, which is the half
-      // the old `collapsed`-only test could never reach.
-      // Open unless this caller forbids it (D587). There is no dot to set any
-      // more: D588 replaced every "something NEW" indicator with a single
-      // per-chip circle for "is there anything here", which the chip derives
-      // from its own list and needs no hook state for.
-      if (!panelOpen && !neverOpen) setOverride("open");
+      // the old `collapsed`-only test could never reach. There is no dot to
+      // set any more: D588 replaced every "something NEW" indicator with a
+      // single per-chip circle for "is there anything here", which the chip
+      // derives from its own list and needs no hook state for.
+      if (!panelOpen) setOverride("open");
       return;
     }
 
