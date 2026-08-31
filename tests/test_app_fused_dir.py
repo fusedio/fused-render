@@ -88,6 +88,41 @@ def claude_store(tmp_path, monkeypatch):
     return projects, sessions
 
 
+def _absent_root() -> str:
+    """An absolute path that does not exist, on POSIX **and** on Windows.
+
+    `os.path.join(os.sep, "somewhere", ...)` is not enough. On Windows that is
+    `\\somewhere\\else\\demo` — drive-RELATIVE: `ntpath.isabs` says True, but
+    `splitdrive` returns no drive, so `os.path.abspath` prepends the current
+    drive and the string CHANGES. Every path function under test abspaths its
+    input (`claude_session_move.munge`, `_under`, `_path_rewrites`;
+    `workspace_migration._remap` documents that it requires it), so a fixture
+    seeded with the un-drived spelling never matches what production searches
+    for: the transcript's `cwd` is left unrewritten, and the assertions that
+    follow it fail — on Windows only.
+
+    Calling `abspath` here is what makes the fixture and production agree, and
+    is the same thing `test_file_history.py` does for its own absent path.
+    """
+    return os.path.abspath(os.path.join(os.sep, "somewhere", "else", "demo"))
+
+
+def test_the_absent_root_fixture_is_absolute_on_every_platform():
+    """The guard for the Windows-only breakage this file had.
+
+    `abspath(p) == p` is the contract every path function under test relies on,
+    and `os.path.isabs` is NOT that contract: on Windows it answers True for the
+    drive-relative `\\somewhere\\else\\demo`, which `abspath` then rewrites by
+    prepending a drive. A fixture whose spelling changes under `abspath` can
+    never match what production searches for — which is why these tests passed
+    on POSIX and failed on Windows. Assert the fixed point, not `isabs`.
+    """
+    root = _absent_root()
+    assert os.path.abspath(root) == root      # the load-bearing one
+    assert os.path.isabs(root)
+    assert not os.path.exists(root)           # still absent, or it is not a move
+
+
 def _transcript(projects, cwd, sid, extra_line=None):
     from fused_render.claude_session_move import munge
 
@@ -145,7 +180,7 @@ def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_s
     projects, _ = claude_store
     app_fused_dir.ensure(str(app))
     meta_file = app / ".fused" / "meta.json"
-    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    old = _absent_root()
     meta = json.loads(meta_file.read_text())
     meta["app_dir"] = old
     meta["custom"] = "kept"
@@ -201,7 +236,7 @@ def test_a_live_session_holds_the_move_back(app, claude_store):
     projects, sessions = claude_store
     app_fused_dir.ensure(str(app))
     meta_file = app / ".fused" / "meta.json"
-    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    old = _absent_root()
     meta = json.loads(meta_file.read_text())
     meta["app_dir"] = old
     meta_file.write_text(json.dumps(meta))
@@ -221,8 +256,6 @@ def test_a_move_re_roots_bookmarks_and_app_stores(app, claude_store, tmp_path, m
     """The stores that name the old path by absolute path (bookmarks, the
     desk, the registered registry) or by workspace-relative key (app_recents)
     all follow the move; entries about OTHER apps are untouched."""
-    import urllib.parse
-
     home = tmp_path / "fused-home"
     home.mkdir()
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
@@ -231,10 +264,18 @@ def test_a_move_re_roots_bookmarks_and_app_stores(app, claude_store, tmp_path, m
     old = os.path.join(fused_dir(), "local", "demo-viz")
     new_root = os.path.abspath(str(app))  # tmp_path/Fused/local/demo
 
-    enc = "/".join(urllib.parse.quote(s, safe="!*'()")
-                   for s in (old.lstrip("/") + "/index.html").split("/"))
+    # The shell's own encoder, not a hand-rolled one: `old.lstrip("/")` and
+    # `.split("/")` assume forward slashes, so on Windows the whole backslashed
+    # path became ONE segment and `quote` turned it into
+    # `C%3A%5CUsers%5C...%5Cdemo-viz` — a spelling `_remap_url` cannot decode,
+    # so the bookmark was never re-rooted and only this test noticed.
+    # `view_url_path` canonicalises first, which is the form bookmarks.json
+    # actually holds on every platform.
+    from fused_render._view_url_codec import view_url_path
+
+    enc_url = view_url_path(os.path.join(old, "index.html"))
     (home / "bookmarks.json").write_text(json.dumps([
-        {"name": "mine", "url": "/explorer/view/" + enc + "?sel=index.html"},
+        {"name": "mine", "url": enc_url + "?sel=index.html"},
         {"name": "other", "url": "/explorer/view/Users/x/other/app.html"},
     ]))
     (home / "current_apps.json").write_text(json.dumps(
@@ -299,7 +340,7 @@ def test_a_second_move_before_the_live_session_ends_loses_nothing(app, claude_st
 
     projects, sessions = claude_store
     app_fused_dir.ensure(str(app))
-    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    old = _absent_root()
     meta = json.loads((app / ".fused" / "meta.json").read_text())
     meta["app_dir"] = old
     (app / ".fused" / "meta.json").write_text(json.dumps(meta))
