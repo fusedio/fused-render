@@ -1679,6 +1679,106 @@ def _reported(key: str, record: dict, claimed: bool = False) -> dict:
     return {**record, "key": key, "claimed": claimed}
 
 
+# How often the mirror thread below re-reads `progress(key)`. Matches
+# `ai/supervisor.py`'s own bring-up loop (`time.sleep(0.5)`), which polls the
+# identical file for the identical reason — a shorter interval buys nothing a
+# human can perceive on a multi-second-to-multi-minute download, and a longer
+# one delays the dock noticing a cancel request.
+_JOB_MIRROR_POLL_S = 0.5
+
+# `jobs.py`'s own message for a record `cancel()` (above) wrote: the ONE error
+# string that means "the user asked to stop", as opposed to a genuine resolver
+# failure. Matched verbatim rather than inferred from context, because the
+# mirror thread and `cancel()` do not otherwise share any state — the string
+# IS the signal.
+_CANCELLED_ERROR = "the install was cancelled"
+
+
+def _mirror_into_jobs(key: str, project_dir: str) -> None:
+    """Give this install a row in the shell's jobs dock, for as long as it can
+    run — which can outlive the request that started it. `_spawn` detaches the
+    worker on purpose (see its own docstring), and the page that clicked
+    Install may navigate away, close its tab, or simply be a page whose script called
+    `envinstall.start` through some path with no loader UI of its own at all
+    (`ai/supervisor.py` is exactly that). A report driven by the PAGE cannot
+    cover any of those: the moment its document goes away, the row the jobs
+    dock already understands as "stalled" (`jobs.py`'s `STALE_AFTER_S`) is
+    what a page-driven report would produce — which is precisely the case
+    this dock exists to make visible instead of hiding.
+
+    So the SERVER mirrors it, in a short daemon thread reading `progress(key)`
+    on a plain poll loop and writing what it sees into `jobs.upsert(...,
+    server=True)` under a deterministic id (`sys:env-install:<key>`) — a
+    `sys:` id because the row belongs to a build THIS PROCESS is running, not
+    to whichever page happened to trigger it (jobs.py's OWNER_SERVER: the
+    dock's ✕ becomes a real cancel, not a request the reporter might ignore).
+
+    The thread is the STOP condition's owner too: it exits the moment
+    `progress(key)` reports `done`, and on the way there, it is what turns a
+    press of the dock's own ✕ (`jobs.request_cancel`, read back as
+    `cancel_requested` on the record `upsert` returns) into the SAME
+    `envinstall.cancel(key)` the loader's own Cancel button calls — one
+    cancellation path for both surfaces, rather than the dock's ✕ silently
+    doing nothing because nothing downstream ever reads it.
+
+    Best-effort throughout: a `jobs.upsert` failure must never take the
+    install down with it, only leave its dock row missing or stale for one
+    tick — which the dock already renders honestly.
+    """
+    from fused_render import jobs, projectenv
+
+    job_id = f"sys:env-install:{key}"
+    title = f"Preparing {projectenv.display_name(project_dir)}"
+
+    def run() -> None:
+        try:
+            jobs.upsert(
+                {"id": job_id, "title": title, "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True},
+                server=True,
+            )
+        except (jobs.JobError, ValueError):
+            pass
+        while True:
+            prog = progress(key) or {}
+            fields: dict[str, Any] = {}
+            detail = prog.get("detail")
+            if isinstance(detail, str):
+                fields["detail"] = detail
+            for name in ("done", "total"):
+                # `_UvProgress`'s byte counters (`_env_install_worker.py`),
+                # when uv has printed enough to have any — None otherwise,
+                # which `jobs.upsert` reads as "leave it indeterminate", the
+                # same fallback `ai/supervisor.py`'s own mirror already relies
+                # on for the identical fields.
+                value = prog.get(f"bytes_{name}")
+                if value is not None:
+                    fields[name] = value
+            if prog.get("bytes_total"):
+                fields["unit"] = "bytes"
+            error = prog.get("error")
+            finished = bool(prog.get("done"))
+            if finished:
+                if error == _CANCELLED_ERROR:
+                    fields["state"] = "cancelled"
+                elif error:
+                    fields["state"] = "error"
+                    fields["message"] = str(error)
+                else:
+                    fields["state"] = "done"
+            try:
+                record = jobs.upsert({"id": job_id, **fields}, server=True)
+            except (jobs.JobError, ValueError):
+                record = None
+            if finished:
+                return
+            if record is not None and record.get("cancel_requested"):
+                cancel(key)
+            time.sleep(_JOB_MIRROR_POLL_S)
+
+    threading.Thread(target=run, name="env-install-jobs-mirror", daemon=True).start()
+
+
 def start(project_dir: str, allow_build: bool = False) -> dict:
     """Begin (or join) the install for `project_dir`; returns its progress.
 
@@ -1754,6 +1854,14 @@ def start(project_dir: str, allow_build: bool = False) -> dict:
     except OSError:
         pass
     pid = _spawn(key, project_dir, acquire_python=acquire_python, allow_build=allow_build)
+    # A row in the shell's jobs dock, for as long as this install can run —
+    # which can outlive the request that started it (`_spawn` detaches the
+    # worker on purpose, and the page that clicked Install may navigate away
+    # or close). Started here, once, by the ONE call that actually claimed the
+    # key: the four callers that would otherwise join a running install never
+    # reach this line at all (see the `_claim` branch above), so there is
+    # never a second thread mirroring the same key.
+    _mirror_into_jobs(key, project_dir)
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.

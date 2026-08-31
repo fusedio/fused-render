@@ -806,6 +806,149 @@ def test_start_says_whether_THIS_CALL_claimed_the_install(
     assert "claimed" not in (envinstall.progress(first["key"]) or {})
 
 
+# --- a jobs-dock row for every venv install -----------------------------------
+#
+# `start()`'s claiming call spawns a short daemon thread mirroring
+# `progress(key)` into `jobs.upsert(..., server=True)` — the mechanism that
+# keeps a build visible after the page that started it navigates away or
+# closes (a page-driven report cannot survive that; see `_mirror_into_jobs`'s
+# own docstring). Real threads, polled fast (`_JOB_MIRROR_POLL_S` monkeypatched
+# down) rather than mocked away, because the thing actually at stake is that a
+# SEPARATE thread converges on the SAME state `progress()` reports — mocking
+# that boundary would test nothing.
+
+
+@pytest.fixture(autouse=True)
+def _clean_jobs_registry():
+    """The registry is process-global — empty it before and after, the same
+    discipline test_jobs_api.py's `clean_registry` fixture uses, so a mirror
+    thread left running past one test's assertions cannot leave a row for the
+    next test to trip over."""
+    from fused_render import jobs
+
+    jobs.reset()
+    yield
+    jobs.reset()
+
+
+def _job(job_id):
+    from fused_render import jobs
+
+    return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+
+
+def _wait_until(predicate, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError(f"condition never became true within {timeout}s")
+
+
+@requires_fused
+def test_start_mirrors_the_install_into_a_jobs_dock_row(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A row appears under the deterministic `sys:env-install:<key>` id and
+    reaches `done` once the worker's own record does — the dock's view of an
+    install a page-driven report could not have survived watching."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+
+    row = _wait_until(lambda: _job(job_id))
+    assert row["kind"] == "task"
+    assert row["owner"] == jobs.OWNER_SERVER
+    assert row["state"] == jobs.RUNNING
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+    assert row["state"] == "done"
+
+
+@requires_fused
+def test_dismissing_the_dock_row_cancels_the_real_install(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The mirror thread is what turns the dock's ✕ into a real cancel: it
+    reads `cancel_requested` back off its own `upsert` call and turns it into
+    the SAME `envinstall.cancel(key)` the loader's own Cancel button reaches —
+    one cancellation path underneath both surfaces, not two.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    # This test's own pid, so `_pid_alive` reads it as genuinely alive and
+    # `_recorded_progress`'s crash diagnosis (a not-done record whose pid is
+    # NOT alive) never fires and races the assertion below. `_kill` is
+    # stubbed so `cancel()`'s real effect — marking the record — is what gets
+    # exercised, without this test process actually signalling itself.
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    jobs.request_cancel(job_id)
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    prog = envinstall.progress(key)
+    assert prog["error"] == "the install was cancelled", (
+        "the dock's cancel request never reached envinstall.cancel"
+    )
+
+
+@requires_fused
+def test_a_joining_caller_starts_no_second_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Only the call that CLAIMS the key may open a row for it — a joiner
+    reporting its own copy would race the owner's thread over the same id,
+    each unaware of the other's writes."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    started = []
+    real_thread = threading.Thread
+
+    class _CountingThread(real_thread):
+        def __init__(self, *a, **kw):
+            started.append(1)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(envinstall.threading, "Thread", _CountingThread)
+
+    first = envinstall.start(proj)  # claims — spawns the mirror
+    envinstall.start(proj)  # joins — must not spawn a second one
+
+    assert len(started) == 1, f"expected exactly one mirror thread, saw {len(started)}"
+
+    # Let the one real thread this test did start run to completion rather
+    # than leaving a daemon polling forever behind a `jobs.reset()` for the
+    # rest of the suite to trip over.
+    key = first["key"]
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(f"sys:env-install:{key}")) and j["state"] == "done" and j)
+
+
 @requires_fused
 def test_the_resolved_script_interpreter_reaches_the_worker(
     tmp_path, monkeypatch, _fresh_script_python
