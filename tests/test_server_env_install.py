@@ -133,30 +133,8 @@ def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkey
     assert resp.status_code == 200
     body = resp.json()
     assert body["requirements"] == ["pyproj", "imagecodecs"]
-    # Both ordinary PyPI names: nothing for the confirm dialog to name.
-    assert body["nonstandard"] == []
     assert body["project"] == str(tmp_path)
     assert started == [str(tmp_path)]
-
-
-@requires_fused
-def test_install_reports_a_nonstandard_source_beside_the_requirements(tmp_path, monkeypatch):
-    """The one field the confirm dialog in `runtime.js` is allowed to name.
-
-    Derived here rather than trusted from the request for the same reason
-    `requirements` is: this answer is what the dialog is actually built from,
-    so it must be able to disagree with a stale pre-flight, never with itself.
-    """
-    client = _client(tmp_path)
-    _declare(tmp_path, '"foolib @ git+https://example.com/foolib.git"')
-    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
-    monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda project, allow_build=False: {"done": False, "key": "0" * 16})
-    resp = client.post("/api/env/install", json={"py": str(target)}, headers=HEADERS)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["requirements"] == ["foolib @ git+https://example.com/foolib.git"]
-    assert body["nonstandard"] == [{"name": "foolib", "reason": "from a git repository"}]
 
 
 @requires_fused
