@@ -186,7 +186,9 @@ export function FdaStrip() {
             macOS just refused FusedRender access to a file or folder —
             sometimes it does this with no permission prompt at all, just
             "permission denied". Granting Full Disk Access once fixes Desktop,
-            Documents, Downloads and external volumes permanently.
+            Documents, Downloads and external volumes permanently. FusedRender
+            is completely local: your files are read on this Mac and no data
+            ever leaves your computer.
           </p>
           {waiting ? (
             <p className="claude-health-issue-detail">
