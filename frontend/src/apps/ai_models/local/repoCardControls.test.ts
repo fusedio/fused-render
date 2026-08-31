@@ -221,10 +221,15 @@ describe("Try is an outline, not a fill", () => {
     // sits on: Load is right next to it, and Load is the control that costs
     // memory. A lime plate beside it made the cheap navigation the loudest mark
     // on the card and the consequential button the quiet one.
+    // The border then softened again: a full-accent stroke repeated on every
+    // card out-shouted the one filled state (Loaded) that is supposed to be
+    // the loudest mark on the page, so it sits a third of the way between the
+    // plain border and the accent. The INK stays full accent — that is the
+    // "this goes somewhere else" signal.
     const body = block(CSS, ".am-card-try");
     expect(body).toContain("background: transparent");
     expect(body).toContain("color: var(--accent)");
-    expect(body).toContain("border: 1px solid var(--accent)");
+    expect(body).toContain("border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border))");
     expect(body).not.toContain("var(--on-accent)");
   });
 
@@ -252,7 +257,10 @@ describe("what the card's face keeps, and what the (i) takes", () => {
     // Six cards reading `mlx-community/…` spend their first third saying nothing
     // that tells them apart, and the name itself then ellipsises. The owner is
     // not lost — it leads the line directly below.
-    expect(CARD).toContain("{modelName(repo.id)}");
+    // The head prefers the CURATED label when the catalog names the repo
+    // (AI-2c: display names are curated, never derived at runtime), and the
+    // mechanical strip survives only as the fallback for uncatalogued repos.
+    expect(CARD).toContain("{label ?? modelName(repo.id)}");
     // The hint rides the ID, not the whole line: the line spans the card, and a
     // hint on it fired over the empty space between id and size.
     expect(CARD).toContain('<div className="am-card-sub">');

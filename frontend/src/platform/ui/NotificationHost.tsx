@@ -23,8 +23,8 @@
 // FIXED, so even collapsed their header sat on top of whatever page was under
 // it. `StatusBar` hosts them now, inside `#main`, where collapsing them
 // actually gives the page its space back rather than merely shrinking a card
-// still floating over it. What stays here — toasts, `FdaCard`,
-// `ServerStatusBanner` — is either seconds-long or exceptional enough that
+// still floating over it. What stays here — toasts, `ServerStatusBanner` —
+// is either seconds-long or exceptional enough that
 // overlaying the page is the right call for it: see `StatusBar`'s own header
 // comment for the two long-lived cards' reasoning, which used to live here.
 //
@@ -32,7 +32,6 @@
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
 // not the window's. Only the top-level document shows the server card (an
 // embed would otherwise render one per pane, all saying the same thing).
-import FdaCard from "@platform/ui/FdaCard";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import Toast from "@platform/ui/Toast";
 import { dismissToast, useToasts } from "@platform/lib/toast";
@@ -57,10 +56,6 @@ export default function NotificationHost() {
           />
         </div>
       ))}
-      {/* Full Disk Access nudge (macOS packaged app only): longer-lived than a
-          toast — once granted or dismissed it never comes back — so it sits
-          just above the one entry that outlives the session. */}
-      {!IS_EMBED && <FdaCard />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );
