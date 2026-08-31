@@ -144,12 +144,16 @@ const METRICS: Record<string, MetricSpec[]> = {
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],
   "text-to-image": [
-    // NOT total seconds as the PRIMARY: the step count is per-model by design
-    // (a distilled model runs at 4 where another needs 28), so the per-step
-    // figure is the only comparable one across models. Total render time is
-    // still worth its own series — see ai/benchmark.py.
-    { key: "secondsPerStep", label: "Per step", unit: "s/step", higherIsBetter: false, digits: 2 },
+    // Total seconds IS the primary now. It was not, while the step count was
+    // per-model: the two could not be compared, so per-step stood in. The
+    // workload fixes steps for every model (ai/benchmark.py), which makes the
+    // wall-clock figure directly comparable AND the one a person actually
+    // waits — while per-step, which divides a total that includes fixed text
+    // encoding and VAE decode, is the derived number rather than the honest
+    // one. Kept as its own series because it still separates a slow step from
+    // a slow load.
     { key: "totalSeconds", label: "Total render", unit: "s", higherIsBetter: false, digits: 1 },
+    { key: "secondsPerStep", label: "Per step", unit: "s/step", higherIsBetter: false, digits: 2 },
     { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],
