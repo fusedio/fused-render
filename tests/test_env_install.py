@@ -950,6 +950,52 @@ def test_a_joining_caller_starts_no_second_mirror_thread(
 
 
 @requires_fused
+def test_the_bootstrap_rounds_jobs_row_is_titled_for_the_interpreter(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """D214's two rounds (interpreter, then packages) each mirror into their
+    own jobs-dock row under a DIFFERENT id (the key differs — bootstrap vs.
+    venv), so this is not the duplicate-row bug `report_job=False` fixes.
+    But both rounds used to share the exact SAME title
+    (`f"Preparing {display_name}"`), which reads as one row finishing and
+    instantly restarting rather than as two distinct downloads — and round
+    1's title was wrong on its own terms besides: it downloads a Python
+    interpreter, not the project. Round 1 must get an accurate title of its
+    own; round 2 keeps the existing one.
+    """
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    bootstrap = envinstall.start(proj)
+    bootstrap_row = _wait_until(lambda: _job(f"sys:env-install:{bootstrap['key']}"))
+    assert bootstrap_row["title"] != f"Preparing {projectenv.display_name(proj)}", (
+        "the interpreter round must not be titled as if it were preparing the project"
+    )
+    assert "Python" in bootstrap_row["title"], bootstrap_row["title"]
+    envinstall._write(bootstrap["key"], {
+        "stage": "done", "pct": 100, "detail": "downloaded", "done": True,
+        "error": None, "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(f"sys:env-install:{bootstrap['key']}"))
+                and j["state"] == "done" and j)
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+    envinstall.reset_venv_validation_cache()
+    packages = envinstall.start(proj)
+    assert packages["key"] != bootstrap["key"], "the two rounds must report under different ids"
+    packages_row = _wait_until(lambda: _job(f"sys:env-install:{packages['key']}"))
+    assert packages_row["title"] == f"Preparing {projectenv.display_name(proj)}"
+    envinstall._write(packages["key"], {
+        "stage": "done", "pct": 100, "detail": "installed", "done": True,
+        "error": None, "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(f"sys:env-install:{packages['key']}"))
+                and j["state"] == "done" and j)
+
+
+@requires_fused
 def test_report_job_false_opts_out_of_the_generic_mirror(
     tmp_path, monkeypatch, _fresh_script_python
 ):

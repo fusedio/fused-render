@@ -1694,7 +1694,7 @@ _JOB_MIRROR_POLL_S = 0.5
 _CANCELLED_ERROR = "the install was cancelled"
 
 
-def _mirror_into_jobs(key: str, project_dir: str) -> None:
+def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = False) -> None:
     """Give this install a row in the shell's jobs dock, for as long as it can
     run — which can outlive the request that started it. `_spawn` detaches the
     worker on purpose (see its own docstring), and the page that clicked
@@ -1724,11 +1724,26 @@ def _mirror_into_jobs(key: str, project_dir: str) -> None:
     Best-effort throughout: a `jobs.upsert` failure must never take the
     install down with it, only leave its dock row missing or stale for one
     tick — which the dock already renders honestly.
+
+    `downloading_python` is `start()`'s own `acquire_python` flag, one call
+    earlier: D214's bootstrap round reports under `PYTHON_BOOTSTRAP_KEY`
+    rather than the project's venv key, and `_mirror_into_jobs` runs once
+    for THAT round and again, separately, for the packages round that
+    follows once the interpreter is pinned — two real rows for two real
+    downloads, under two different job ids (the key differs), so this is not
+    the duplicate-row problem `report_job=False` exists to fix. But both
+    rounds used to share the SAME title, `f"Preparing {display_name}"` —
+    which reads as a bug (a row that finishes and appears to instantly start
+    over) rather than as two distinct pieces of work, and round 1's title
+    was also wrong on its own terms: it is downloading a Python interpreter,
+    not preparing the project. `downloading_python=True` gives it a title
+    that says so.
     """
     from fused_render import jobs, projectenv
 
     job_id = f"sys:env-install:{key}"
-    title = f"Preparing {projectenv.display_name(project_dir)}"
+    name = projectenv.display_name(project_dir)
+    title = f"Downloading Python for {name}" if downloading_python else f"Preparing {name}"
 
     def run() -> None:
         try:
@@ -1875,7 +1890,7 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True) 
     # said `report_job=False` — it already mirrors this exact install into a
     # row of its own (see the parameter's own docstring).
     if report_job:
-        _mirror_into_jobs(key, project_dir)
+        _mirror_into_jobs(key, project_dir, downloading_python=bool(acquire_python))
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.
