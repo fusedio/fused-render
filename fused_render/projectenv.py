@@ -59,6 +59,7 @@ import os
 import shutil
 import sys
 import threading
+import urllib.parse
 
 from fused_render.shell.storage import home_dir
 
@@ -601,6 +602,116 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     stripping them would lose information for no gain.
     """
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
+
+
+# [tool.uv.sources] entry key -> why it makes that dependency non-standard.
+# Checked in this order so an entry carrying more than one key (uv allows
+# `git = ... , subdirectory = ...`, for instance) still gets ONE reason rather
+# than being reported twice.
+_UV_SOURCE_REASONS = (
+    ("git", "from a git repository"),
+    ("url", "from a URL"),
+    ("path", "from a local path"),
+    ("index", "from a custom index"),
+)
+
+
+def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
+    """Dependencies that will NOT be installed as a released version from the
+    default index, as `{"name", "reason"}` pairs — the one thing the install
+    prompt is allowed to name (see `runtime.js`'s `startInstall`). Everything
+    else in the manifest is an ordinary PyPI requirement, and the prompt shows
+    NONE of those: naming the common case is what turns a question into a
+    reflex, so silence here is deliberate, not a gap.
+
+    Three shapes, all readable from the manifest alone — no network, no
+    resolution, so this can run on the request path:
+
+    1. A PEP 508 direct reference right in `[project].dependencies`
+       (`foo @ https://.../foo.whl`, or a VCS form `foo @ git+https://...`).
+       The requirement names its own source; there is no "a released version
+       of foo" for it to mean.
+    2. A `[tool.uv.sources]` entry that routes a plain-looking `dependencies`
+       name (`foolib`) to a `git`/`url`/`path`/`index`. Read `dependencies`
+       alone and this looks like an ordinary PyPI name — only the sources
+       table says otherwise, which is exactly why a name-only prompt would
+       otherwise miss it.
+    3. A project-wide custom index: `[tool.uv]`'s `index-url`/`default-index`/
+       `extra-index-url`, or a `[[tool.uv.index]]` table with no
+       `explicit = true`. This is not a fact about any one dependency — it is
+       a candidate source for EVERY requirement in the graph — so it is
+       reported once, under the index's host, instead of against whichever
+       dependencies happen to resolve from it. An `explicit` index is the
+       opposite case: confined to whatever `[tool.uv.sources]` routes to it
+       by name, so it carries no risk beyond what shape 2 already reports for
+       that one entry, and is left out here.
+
+    Order and duplicates are not contracts callers rely on; this only ever
+    feeds a one-line-per-entry prompt.
+    """
+    meta = _load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return []
+
+    found: list[dict[str, str]] = []
+
+    # Shape 1: a direct reference inside `dependencies` itself. Filtered
+    # through `applicable_dependencies_of` so a direct reference behind a
+    # marker that doesn't hold here (PY-17's platform case, one more time)
+    # is not named for a package this platform will never try to install.
+    for requirement in applicable_dependencies_of(project_dir):
+        req = requirement.split(";", 1)[0]  # the marker plays no part below
+        if "@" not in req:
+            continue
+        name, _, url = req.partition("@")
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            continue
+        reason = "from a git repository" if url.startswith("git+") else "from a URL"
+        found.append({"name": name, "reason": reason})
+
+    tool = meta.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    uv = uv if isinstance(uv, dict) else {}
+
+    # Shape 2: [tool.uv.sources] entries that redirect a plain name elsewhere.
+    sources = uv.get("sources")
+    if isinstance(sources, dict):
+        for name, entry in sources.items():
+            if not isinstance(name, str) or not isinstance(entry, dict):
+                continue
+            for key, reason in _UV_SOURCE_REASONS:
+                if key in entry:
+                    found.append({"name": name, "reason": reason})
+                    break
+
+    # Shape 3: a project-wide custom index, reported once under its host —
+    # it redirects every package, not just the one it happens to be named
+    # after.
+    index_urls: list[str] = []
+    for key in ("index-url", "default-index"):
+        value = uv.get(key)
+        if isinstance(value, str):
+            index_urls.append(value)
+    extra = uv.get("extra-index-url")
+    if isinstance(extra, str):
+        index_urls.append(extra)
+    elif isinstance(extra, list):
+        index_urls.extend(u for u in extra if isinstance(u, str))
+    tables = uv.get("index")
+    if isinstance(tables, list):
+        for table in tables:
+            if (
+                isinstance(table, dict)
+                and not table.get("explicit")
+                and isinstance(table.get("url"), str)
+            ):
+                index_urls.append(table["url"])
+    for url in index_urls:
+        host = urllib.parse.urlparse(url).netloc or url
+        found.append({"name": host, "reason": "a custom package index for everything"})
+
+    return found
 
 
 # Top-level import name -> distribution name, for the pairs where the two DIFFER

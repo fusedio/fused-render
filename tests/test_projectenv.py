@@ -367,6 +367,117 @@ def test_a_dependency_whose_marker_excludes_this_platform_is_not_an_environment(
 
 
 # ---------------------------------------------------------------------------
+# Dependencies that will not come from the default index as a released
+# version — the classification the install prompt names.
+# ---------------------------------------------------------------------------
+
+
+def test_an_ordinary_manifest_names_nothing(home):
+    """The common case: plain PyPI names, version ranges only. This is the
+    silence the install prompt relies on — an empty list here is what keeps
+    the prompt from naming a package a user has no reason to think about."""
+    proj = _write_project(home / "proj", ["cowsay", "altair>=5,<6"])
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == []
+
+
+def test_a_pep508_direct_url_reference_is_flagged(home):
+    proj = _write_project(home / "proj", ["foolib @ https://example.com/foolib-1.0-py3-none-any.whl"])
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "foolib", "reason": "from a URL"},
+    ]
+
+
+def test_a_pep508_direct_git_reference_is_flagged_as_git(home):
+    proj = _write_project(home / "proj", ["foolib @ git+https://example.com/foolib.git"])
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "foolib", "reason": "from a git repository"},
+    ]
+
+
+def test_a_direct_reference_behind_a_marker_that_does_not_hold_here_is_not_flagged(home):
+    """Detection has to agree with `applicable_dependencies_of`, or the prompt
+    would name a package this platform will never even try to install."""
+    proj = _write_project(home / "proj", [
+        "foolib @ https://example.com/foolib.whl ; sys_platform == 'never'",
+    ])
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == []
+
+
+@pytest.mark.parametrize("key,reason", [
+    ("git", "from a git repository"),
+    ("url", "from a URL"),
+    ("path", "from a local path"),
+    ("index", "from a custom index"),
+], ids=["git", "url", "path", "index"])
+def test_a_tool_uv_sources_entry_is_flagged_by_its_kind(home, key, reason):
+    """`[tool.uv.sources]` routes a plain-looking `dependencies` name
+    elsewhere — from the dependency string alone this reads as an ordinary
+    PyPI name, so only the sources table says otherwise."""
+    proj = _write_project(home / "proj", ["foolib"])
+    value = "https://pkgs.example.com" if key == "index" else (
+        "https://example.com/repo" if key in ("git", "url") else "../vendor/foolib"
+    )
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + f'\n[tool.uv.sources]\nfoolib = {{ {key} = "{value}" }}\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "foolib", "reason": reason},
+    ]
+
+
+def test_a_project_wide_index_url_is_reported_under_its_host(home):
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nindex-url = "https://pkgs.example.com/simple"\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "pkgs.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_a_non_explicit_tool_uv_index_table_is_reported(home):
+    """A `[[tool.uv.index]]` table with no `explicit = true` is a candidate
+    index for EVERY requirement in the graph, exactly like `index-url` —
+    unlike an `explicit` one, which is confined to the single dependency
+    routed to it via `[tool.uv.sources]` and is not flagged here."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[[tool.uv.index]]\nname = "internal"\nurl = "https://pkgs.example.com/simple"\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "pkgs.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_an_explicit_tool_uv_index_table_is_not_reported(home):
+    """`explicit = true` confines the index to whatever `[tool.uv.sources]`
+    routes to it by name — it cannot satisfy any other requirement, so it is
+    not the "redirects everything" case this classifier exists to name."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[[tool.uv.index]]\nname = "internal"\nurl = "https://pkgs.example.com/simple"\n'
+        'explicit = true\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == []
+
+
+# ---------------------------------------------------------------------------
 # The venv key: the folder's absolute path, hashed as given
 # ---------------------------------------------------------------------------
 
