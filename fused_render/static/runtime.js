@@ -2109,7 +2109,7 @@
     const nonstandard = need.nonstandard || [];
     const detail = nonstandard.length
       ? nonstandard.map((d) => d.name + " — " + d.reason).join("\n")
-      : "A one-time download. Nothing listed.";
+      : "A one-time download.";
     return askRow(
       row, ui,
       "Install dependencies for " + (need.name || "the environment") + "?",
