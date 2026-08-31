@@ -612,11 +612,13 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # warning (shell/fda.py) would never hear about it.
     try:
         st = await asyncio.to_thread(os.stat, path)
-    except FileNotFoundError:
-        return _error(f"no such file: {path}", status=404)
-    except OSError as e:
+    except PermissionError as e:
         shell_fda.note_denied(e)
         return _error(f"cannot read {path}: {e}", status=403)
+    except OSError:
+        # Any other OSError keeps the historical _stat_or_none contract:
+        # ENOENT, ENOTDIR, ELOOP and friends all report as missing.
+        return _error(f"no such file: {path}", status=404)
     if not stat.S_ISREG(st.st_mode):
         return _error(f"no such file: {path}", status=404)
     # Probe-open before handing the path to FileResponse: a TCC-denied file
@@ -626,9 +628,13 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # open/close on a file the stat above already confirmed exists.
     try:
         await asyncio.to_thread(lambda: open(path, "rb").close())
-    except OSError as e:
+    except PermissionError as e:
         shell_fda.note_denied(e)
         return _error(f"cannot read {path}: {e}", status=403)
+    except OSError:
+        # A non-permission open failure (EIO, a file racing away) keeps its
+        # previous behavior: FileResponse surfaces it as the send-time error.
+        pass
     media_type, _ = mimetypes.guess_type(path)
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 

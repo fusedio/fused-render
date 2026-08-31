@@ -42,8 +42,76 @@ const WATCH_MS = 5000;
 // qualifies but no fs route has been refused yet.
 type Stage = "hidden" | "watching" | "showing";
 
+//: One toast per tab: the notifier can remount (it lives in NotificationHost,
+//: but panes re-mount hosts), and the strip re-explains on Home anyway — the
+//: toast's job is only to break the news wherever the user happens to be.
+let toastShown = false;
+
+/** Global companion to the strip, mounted in NotificationHost so it lives on
+ *  every page: the strip renders only on Home and /apps, but the denial that
+ *  makes it relevant usually happens elsewhere — in the explorer, opening the
+ *  very file that was refused. This watches the same `fda` field and breaks
+ *  the news as a toast the moment `denied` flips, with the Settings pane one
+ *  click away; the strip on Home remains the full explanation. */
+export function FdaDeniedNotifier() {
+  useEffect(() => {
+    let disposed = false;
+    let timer = 0;
+    const check = () => {
+      getConfig()
+        .then((config) => {
+          if (disposed) return;
+          const fda = config.fda;
+          if (!fda || fda.granted || fda.dismissed) {
+            window.clearInterval(timer);
+            return;
+          }
+          if (fda.denied && !toastShown) {
+            toastShown = true;
+            window.clearInterval(timer);
+            // Persistent (ttlMs: 0): this explains an error the user just hit
+            // somewhere else in the UI, and a 6s window to read + act on a
+            // System Settings round-trip is not a real window.
+            pushToast({
+              msg:
+                "macOS denied FusedRender access to a file — grant Full Disk " +
+                "Access once to fix this permanently",
+              tone: "error",
+              ttlMs: 0,
+              action: {
+                label: "Open System Settings",
+                onClick: () => {
+                  openFdaSettings().catch(() => {});
+                },
+              },
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    check();
+    timer = window.setInterval(check, WATCH_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+  return null;
+}
+
+// The last stage seen, so walking between Home and /apps — which both render
+// this — starts from what we already know instead of flashing a visible strip
+// away and back while the fresh getConfig is in flight (same seed-not-
+// short-circuit pattern as ClaudeHealthStrip's `cached`). The fetch still
+// runs on every mount and overwrites this.
+let cachedStage: Stage = "hidden";
+
 export function FdaStrip() {
-  const [stage, setStage] = useState<Stage>("hidden");
+  const [stage, setStageState] = useState<Stage>(cachedStage);
+  const setStage = (next: Stage) => {
+    cachedStage = next;
+    setStageState(next);
+  };
   // "Open System Settings" was pressed: the steps collapse into a one-line
   // "turn it on over there" so the strip reads as in-progress, not nagging.
   const [waiting, setWaiting] = useState(false);
@@ -57,8 +125,11 @@ export function FdaStrip() {
       .then((config) => {
         if (disposed) return;
         const fda = config.fda;
-        if (!fda || fda.granted || fda.dismissed) return;
-        setStage(fda.denied ? "showing" : "watching");
+        // Explicit "hidden" rather than an early return: the seeded stage can
+        // say "showing" from a previous mount while a grant or another tab's
+        // dismissal has since landed.
+        if (!fda || fda.granted || fda.dismissed) setStage("hidden");
+        else setStage(fda.denied ? "showing" : "watching");
       })
       .catch(() => {}); // no config, no warning — the server card owns outages
     return () => {
