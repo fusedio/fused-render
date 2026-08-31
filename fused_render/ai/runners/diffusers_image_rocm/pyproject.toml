@@ -76,7 +76,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
     "gguf",
-    "torchao>=0.15,<1",
+    "torchao>=0.15,<0.18",
     "bitsandbytes>=0.46.1,<1",
     "pillow",
     "huggingface_hub",

@@ -89,10 +89,36 @@
 #                  and it is also the first release whose
 #                  `Int8WeightOnlyConfig` carries the `granularity` field the
 #                  repo's config was serialized with, so the floor is the
-#                  library's requirement rather than a guess. `<1` rather than a
-#                  pre-1.0 minor ceiling, unlike `diffusers` above, because
-#                  nothing in `torch_image.py` calls torchao: diffusers does,
-#                  and it version-gates the calls it makes.
+#                  library's requirement rather than a guess. `<0.18` because
+#                  the sole `recommended: True` diffusers-image model,
+#                  `tonera/FLUX.2-klein-4B-int8-diffusers`, fails to load on
+#                  0.18.0 with `ValueError: Failed to create instance of
+#                  Int8WeightOnlyConfig: version 1 of Int8WeightOnlyConfig has
+#                  been removed, please use version 2`: that repo's
+#                  `transformer/config.json` serializes its
+#                  `Int8WeightOnlyConfig` at `_version: 1`, which 0.15.0
+#                  through 0.17.0 merely warn about as deprecated (the
+#                  dataclass still defaults to `version: int = 1`) and 0.18.0
+#                  refuses outright (the default moved to `version: int = 2`
+#                  and the version-1 path was deleted). This is NOT something
+#                  diffusers can version-gate the way it gates the pipeline
+#                  calls `diffusers` above is ceilinged for: the
+#                  deserialization happens inside torchao itself, driven by
+#                  bytes serialized into a third-party Hub repo this app does
+#                  not control. There is accordingly nothing here to
+#                  upgrade — 0.18.0 is already torchao's newest release, and
+#                  the repo (755 downloads, 1 like, last modified 2026-01-18)
+#                  is not going to be re-serialized to fix this. A ceiling is
+#                  the only fix, and a cheap one: torchao's PyPI metadata
+#                  declares no runtime `requires_dist` outside
+#                  `extra == "dev"`, so it cannot conflict with the pinned
+#                  torch in any of the three folders. No CI test loads a real
+#                  model over the network, so THIS CEILING IS THE ONLY THING
+#                  standing between a future bump and a broken recommended
+#                  model — do not widen it back to `<1` without first
+#                  confirming a torchao release has restored a working
+#                  version-1 path (or the Hub repo has been re-serialized to
+#                  version 2).
 #                  **It installs on every platform this app ships to** — PyPI
 #                  carries a manylinux x86_64 wheel and a `py3-none-any` wheel
 #                  beside it, which is what macOS and Windows resolve to — so
@@ -122,10 +148,13 @@
 #                  `catalog.py`'s entry for the fuller account. `>=0.46.1` is
 #                  what that ImportError itself demands (bitsandbytes'
 #                  `import_utils` version-gates 4-bit loading below that
-#                  release); `<1` for the same reason `torchao` above gets a
-#                  major rather than a pre-1.0 minor ceiling — nothing in
-#                  `torch_image.py` calls bitsandbytes directly, diffusers
-#                  does, and it version-gates the calls it makes.
+#                  release); `<1` rather than a pre-1.0 minor ceiling because
+#                  nothing in `torch_image.py` calls bitsandbytes directly:
+#                  diffusers does, and it version-gates the calls it makes —
+#                  unlike `torchao` above, whose ceiling is narrower because
+#                  what breaks there is a config format serialized into a
+#                  third-party model repo, not a diffusers call diffusers
+#                  itself can gate.
 #   pillow         writes the PNG
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
@@ -141,7 +170,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
     "gguf",
-    "torchao>=0.15,<1",
+    "torchao>=0.15,<0.18",
     "bitsandbytes>=0.46.1,<1",
     "pillow",
     "huggingface_hub",

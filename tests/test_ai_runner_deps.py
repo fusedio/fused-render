@@ -154,6 +154,26 @@ def _runner_folders():
     )
 
 
+def _declared_specifier(folder, distribution):
+    """The raw version-specifier string a runner declares for one distribution
+    (e.g. `">=0.15,<0.18"` for `torchao`), or None if it does not declare it."""
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    for spec in data.get("project", {}).get("dependencies", []):
+        bare = spec.split("[")[0].split(";")[0]
+        name = bare
+        cut = len(bare)
+        for operator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+            index = bare.find(operator)
+            if index != -1:
+                cut = min(cut, index)
+        name = bare[:cut]
+        if name.strip().replace("_", "-").lower() != distribution:
+            continue
+        return spec[cut:].strip()
+    return None
+
+
 def _declared(folder):
     """The distribution names a runner declares, normalized.
 
@@ -289,6 +309,46 @@ def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
         if shared is None:
             shared = rest
         assert rest == shared, name
+
+
+def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release():
+    """`tonera/FLUX.2-klein-4B-int8-diffusers` — the sole `recommended: True`
+    `diffusers-image` suggestion — fails to load on torchao 0.18.0 with
+    `ValueError: Failed to create instance of Int8WeightOnlyConfig: version 1
+    of Int8WeightOnlyConfig has been removed, please use version 2`, because
+    that repo's `transformer/config.json` serializes its
+    `Int8WeightOnlyConfig` at `_version: 1` and 0.18.0 is the first torchao
+    release that refuses to deserialize that version at all (0.15.0 through
+    0.17.0 only warn). The `version: 1` lives in a third-party Hub repo, not
+    in this codebase, so there is nothing to fix here except keep torchao
+    below 0.18 — and no test in this suite loads a real model over the
+    network, so THIS specifier is the only thing standing between a future
+    `torchao<1`-style bump and a broken recommended model. See the
+    `torchao` entry in `diffusers_image/pyproject.toml`'s header for the
+    full account.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+    except ImportError:
+        SpecifierSet = None
+
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        folder = os.path.join(RUNNERS_DIR, name)
+        specifier = _declared_specifier(folder, "torchao")
+        assert specifier, f"{name} no longer declares torchao at all"
+        if SpecifierSet is not None:
+            assert "0.18.0" not in SpecifierSet(specifier), (
+                f"{name} declares torchao{specifier}, which admits 0.18.0 — "
+                f"that release deserializes the recommended diffusers-image "
+                f"model's Int8WeightOnlyConfig(version=1) into a ValueError "
+                f"instead of loading it. Keep the ceiling below 0.18."
+            )
+        else:
+            assert "<0.18" in specifier, (
+                f"{name} declares torchao{specifier}, which does not "
+                f"plainly exclude 0.18.0 — that release breaks the "
+                f"recommended diffusers-image model's quantized transformer."
+            )
 
 
 def test_the_split_table_is_not_quietly_unused():
