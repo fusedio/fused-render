@@ -79,3 +79,90 @@ per-source behaviour (only Jobs ever auto-opened).
   this change never touches).
 - `bunx tsc --noEmit` is clean. `node scripts/check-boundaries.mjs` passes
   (412 files).
+
+## Revision: Models split back out, panel widths unified (2026-08-31)
+
+User review of the merge asked for two changes.
+
+### 1. Models is its own chip again
+Final chip order, left to right: **Models, Activity, Notifications**. The
+merge's `platform/ui/DownloadManager.tsx` Models section (`ModelRow`/
+`MemoryCell`/`memoryBand`) is deleted from that file; `shell/ModelsDock.tsx`
+is resurrected from `git show 33fc407d^:frontend/src/shell/ModelsDock.tsx`
+with one adaptation — the merge deleted `autoExpand.ts`'s `neverOpen` option
+entirely (nothing else ever used it), so the pre-merge
+`useAutoExpandOnNew(ids, collapsed, ready, { neverOpen: true })` call becomes
+`useAutoExpandOnNew([], collapsed, ready, { alsoDrawn: [...model ids] })`: an
+always-empty `ids` list can never contain an "arrival", so `autoOpen` can
+never become true — structurally the same guarantee `neverOpen` used to give,
+with no separate flag. Every resident model still rides in as `alsoDrawn`,
+which is what keeps D580's "close when the last model unloads" behaviour
+working. `shell/ModelsDock.test.tsx` is resurrected the same way from
+`git show 33fc407d^:frontend/src/shell/ModelsDock.test.tsx`, unchanged (every
+assertion still describes the resurrected component's real behaviour).
+
+Activity keeps jobs (Running) + engines (Background tasks) — Engines was
+never asked to stand apart the way Models was, so it stays folded.
+`platform/ui/DownloadManager.tsx`'s `ModelsSlot` interface, `ModelRow`,
+`MemoryCell`, `memoryBand`, and every model-shaped branch in
+`DownloadManagerView` (the `alsoDrawn` concat, `modelCount`, the `idle`
+predicate, the `Models` section JSX) are deleted outright, not left inert.
+`shell/ActivityDock.tsx` drops `useAiRuntime`/`publishAiRuntime`/
+`unloadAiModel` and the `models` prop it used to hand `<DownloadManager>`.
+`platform/lib/exclusiveSection.ts`'s `SECTION_ORDER` becomes `["models",
+"activity", "notifications"]`. `platform/ui/StatusBar.tsx` regains a `models`
+prop, rendered first; `shell/App.tsx` imports `ModelsDock` and passes
+`models={<ModelsDock />}`.
+
+`DownloadManager.test.tsx`'s Models describe block (the one moved off
+`ModelsDock.test.tsx` during the merge) is deleted along with the code it
+exercised; the "three sections" describe block becomes "two sections" with
+its model references replaced by a second engine-based case, and its
+neverOpen-contract test now exercises an arriving engine instead of a model.
+`StatusBar.test.tsx` gains a `models` chip in its composition test.
+
+### 2. One shared panel width for every non-empty panel
+`notifications.css`'s `.dl-panel` used to be `width: max-content; max-width:
+min(340px, calc(100vw - 32px))` unconditionally (D608/D610) — every panel hugs
+its own content, so Models/Activity/Notifications visibly popped open at
+different widths. New rule, added right after `.dl-panel`:
+```css
+.dl-panel:has(.dl-rows) {
+  width: min(340px, calc(100vw - 32px));
+}
+```
+`.dl-rows` is the wrapper every non-empty section already renders
+(`DownloadManagerView`'s Running/Background-tasks lists, `ModelsCardView`'s
+row list, `RepoUpdatesCardView`'s row list) and nothing else does, so
+`:has(.dl-rows)` is a reliable "this panel has rows" signal with no class to
+keep in sync from JS — the codebase already uses `:has()` this way elsewhere
+(`tasks.css`'s `.tasks-row:has(.tasks-act:focus-visible)`). An empty panel
+(`.dl-panel-empty` alone) is untouched and still hugs its one sentence via the
+base rule's `max-content`, exactly as D608/D610 left it.
+
+The stale D608/D610 history in `.dl-panel`'s own comment (arguing for
+`max-content` specifically so panels DON'T share a width) is rewritten to
+describe this as round 3 of that history rather than silently contradicting
+it. Two downstream comments that documented the old "bar-and-figures panels
+keep width via `.dl-row`'s own 238px floor, `.q-row` panels hug" distinction
+(`.dl-row`'s own comment, and `.dl-x`'s "THAT ZERO-SLACK CASE IS NOW THE
+COMMON ONE" paragraph) are rewritten to say the `.dl-row` floor is now a
+harmless belt-and-suspenders minimum rather than the mechanism that actually
+sets a non-empty panel's width — the 238px floor is left in place rather than
+deleted (a floor that costs nothing and might still matter for a hypothetical
+`.dl-row` outside a `:has(.dl-rows)` panel is not the same "stranded code"
+case as a whole feature's dead branches).
+
+### Tests / verification
+`shell/ModelsDock.test.tsx` (25 tests) and `platform/ui/DownloadManager.test.tsx`
++ `StatusBar.test.tsx` + `platform/lib/exclusiveSection.test.tsx` +
+`autoExpand.test.tsx` (58 tests) pass on their own. A full `bun test src`
+(with `TMPDIR` pointed off the sandbox's quota-constrained `/tmp` — this
+sandbox's Bash tool went fully unresponsive for a stretch mid-session,
+disk-quota related, the same local-env flakiness already on record, but
+recovered) confirms the wider picture: 2909 pass, 1 pre-existing unrelated
+failure (`appCardMenu.test.ts` / `appShot.ts`'s `window.addEventListener is
+not a function`, a file this change never touches — the same failure the
+merge's own DECISIONS.md entry recorded), across 2910 tests in 123 files.
+`bunx tsc --noEmit` is clean. `node scripts/check-boundaries.mjs` passes (414
+files).
