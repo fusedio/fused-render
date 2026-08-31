@@ -207,11 +207,20 @@ def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_s
     assert json.loads(moved[2])["cwd"] == new_root
     assert (dst / "aaaa-1" / "tool-results" / "x.txt").read_text() == "r"
     # The pane identity moved too — both spellings, nothing left of the old.
+    # Spelled as the FILE holds them, not as `os.path.join` returns them: these
+    # paths sit inside JSON strings, so on Windows their separators are escaped
+    # and the single-backslash form never appears in the raw bytes at all (the
+    # assertion could not pass there, however correct the rewrite).
+    # `json.dumps(p)[1:-1]` is precisely the spelling
+    # `claude_session_move._path_rewrites` rewrites, and is a no-op on POSIX.
     import urllib.parse
     body = (dst / "aaaa-1.jsonl").read_text()
-    assert os.path.join(new_root, "index.html") in body
-    assert urllib.parse.quote(os.path.join(new_root, "index.html"), safe="") in body
-    assert old not in body
+    entry = os.path.join(new_root, "index.html")
+    assert json.dumps(entry)[1:-1] in body
+    assert urllib.parse.quote(entry, safe="") in body
+    # The escaped spelling is the one that was there to remove — plain `old`
+    # never appears on Windows, so asserting it alone is vacuous there.
+    assert json.dumps(old)[1:-1] not in body
     sub = projects / munge(os.path.join(new_root, "sub", "deeper"))
     assert json.loads((sub / "bbbb-2.jsonl").read_text().splitlines()[1])["cwd"] == \
         os.path.join(new_root, "sub", "deeper")
