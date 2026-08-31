@@ -627,6 +627,14 @@ def active_run() -> str:
 def clear(*, now: float | None = None) -> bool:
     """Forget the modification. Returns whether there was a marker to forget.
 
+    **RAISES if the marker could not be removed**, which is the one failure here
+    that must not be swallowed: both dismiss buttons hide the badge on the
+    server's 200 rather than waiting for the next poll (VersionChip and
+    SelfFixPanel both say so in as many words — "the marker is known-gone"), so
+    a success returned over a marker still on disk buys a badge that vanishes
+    and comes back a minute later, which reads as the dismiss having failed
+    while telling the user it worked. Better to say so at the click.
+
     The baseline stays: it describes the release, not the modification, and
     keeping it means a LATER fix session on the same version still knows what
     pristine looked like without re-walking a tree that is no longer pristine.
@@ -652,7 +660,14 @@ def clear(*, now: float | None = None) -> bool:
         if not os.path.exists(path):
             return False
         marker = _read_json(path) or {}
-        _discard(path)
+        # NOT `_discard`, deliberately. That helper is best-effort and right for
+        # the read paths that use it — they retry on the next read, and nobody
+        # is waiting on the answer. Here somebody clicked, so the OSError is the
+        # answer and it goes to them (the route turns it into a 500).
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass  # another process got there first; gone is gone
         try:
             _write_json(dismissed_path(), {
                 "schema": SCHEMA,
@@ -661,8 +676,10 @@ def clear(*, now: float | None = None) -> bool:
                 "at": now,
             })
         except OSError:
-            # The badge is already gone for now; only its persistence across a
-            # re-stamp is lost. Not worth failing the user's click over.
+            # The marker IS gone by now, so the badge really has cleared; only
+            # its persistence across a re-stamp is lost. Not worth failing the
+            # user's click over — unlike the unlink above, whose failure means
+            # the badge is still there.
             logger.info("could not record the self-fix dismissal", exc_info=True)
         return True
 

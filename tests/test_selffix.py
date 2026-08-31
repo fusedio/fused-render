@@ -24,6 +24,9 @@ from fused_render.server.routers import selffix as selffix_routes
 # Captured before the autouse pin below replaces it, so the one test that is
 # ABOUT the resolution can exercise the real thing.
 REAL_CLAUDE_FOUND = selffix_routes._claude_found
+# Same idea for the stamp watcher, which `_no_detached_watcher` stubs out for
+# every test: the two that are ABOUT it call this and get the real thing.
+REAL_WATCH_FIX = selffix_routes._watch_fix
 
 
 @pytest.fixture()
@@ -59,6 +62,33 @@ def _pin_the_claude_cli(monkeypatch):
     themselves.
     """
     monkeypatch.setattr(selffix_routes, "_claude_found", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_detached_watcher(monkeypatch):
+    """No test may leave the real stamp watcher running.
+
+    `/api/selffix/start` finishes by launching `_watch_fix` on a DAEMON thread
+    (routers/selffix.py) — that is the whole point of it: nobody polls a run
+    started from an HTTP request, so the stamp has to outlive the request. It
+    also outlives the test, and that is the problem. The thread re-resolves
+    `state_dir()` on every ~16s tick, so once this test's `install` fixture has
+    torn its `install_root` patch down, the next tick stamps the DEVELOPER'S
+    REAL PACKAGE — which is exactly what happened: a `modified.json` under
+    `fused_render/.fused-render-selffix/` whose recorded incident path was a
+    relative climb back out to the tmp install it was actually started in.
+
+    Gitignored, so it never showed up in `git status`; the tell was a later test
+    reading a marker it had not written.
+
+    Same shape and same remedy as conftest's `_no_real_user_plugin_sync` and
+    `_no_schedule_loop_thread`: the redirect fixtures move WHERE things are
+    written, but a thread nobody joins outlives the redirect, so the only sound
+    boundary is stopping the spawn. The two tests that are ABOUT the watcher go
+    through `REAL_WATCH_FIX`, captured above — the same escape hatch
+    `REAL_CLAUDE_FOUND` already gives the missing-CLI test, for the same reason.
+    """
+    monkeypatch.setattr(selffix_routes, "_watch_fix", lambda *a, **k: None)
 
 
 @pytest.fixture()
@@ -1045,7 +1075,7 @@ def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypa
 
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready", fake_record)
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed",
+    REAL_WATCH_FIX("run-7", "/i.md", "/r.md", "download failed",
                               BEFORE[0])
 
     state = selffix.status()
@@ -1059,7 +1089,7 @@ def test_the_watcher_leaves_an_untouched_installation_alone(install, monkeypatch
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
                         lambda agent, run_id, on_tick=None: on_tick({"done": True}))
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0])
+    REAL_WATCH_FIX("run-7", "/i.md", "/r.md", "", BEFORE[0])
     assert selffix.status() is None
 
 
@@ -1506,3 +1536,60 @@ def test_an_in_tree_pointer_survives_the_installation_being_MOVED(install, tmp_p
 
     assert selffix.active_run() == "run-before-the-move", (
         "the pointer stopped being found once its installation moved")
+
+
+def test_a_dismiss_that_could_not_remove_the_marker_says_so(client, install,
+                                                            monkeypatch):
+    """The one failure in `clear` that must not be swallowed.
+
+    Both dismiss buttons hide the badge on the server's 200 rather than waiting
+    for the next poll — VersionChip and SelfFixPanel each say so in a comment,
+    the second in as many words ("the marker is known-gone: say so now"). That
+    inference is only sound if a 200 means the file is actually off disk. Let
+    the unlink fail quietly and the user gets the badge removed, then handed
+    back a minute later by the next `/api/config`, which reads as the dismiss
+    having failed while the app told them it worked.
+    """
+    _pristine()
+    selffix.mark_modified(run_id="r1", digest="d", now=1000.0)
+    assert selffix.status() is not None
+
+    def denied(path):
+        raise PermissionError(13, "Permission denied", path)
+
+    # A CONTEXT, not `monkeypatch.undo()`: undo drops every patch this test's
+    # monkeypatch holds, `install`'s `install_root` among them, and the assert
+    # below would then read the REAL package — where it happily found a marker
+    # left by something else and passed for the wrong reason.
+    with monkeypatch.context() as m:
+        m.setattr(selffix.os, "unlink", denied)
+        refused = post(client, "/api/selffix/clear")
+    assert refused.status_code == 500, refused.text
+    assert "could not clear the marker" in refused.json()["error"]
+
+    # ...and the badge is still there, because the marker is.
+    assert selffix.status() is not None, (
+        "the marker was reported cleared but is still on disk")
+
+
+def test_a_marker_another_process_already_removed_is_a_clean_dismiss(
+        install, monkeypatch):
+    """`FileNotFoundError` is the one OSError that means it WORKED.
+
+    The existence check and the unlink are not atomic across processes — a
+    reconcile in a second server can drop the marker in between — and gone is
+    gone, so that race is a successful dismiss rather than something to report.
+    """
+    _pristine()
+    selffix.mark_modified(run_id="r1", digest="d", now=1000.0)
+
+    real_unlink = selffix.os.unlink
+
+    def vanished(path):
+        real_unlink(path)
+        raise FileNotFoundError(2, "No such file or directory", path)
+
+    with monkeypatch.context() as m:
+        m.setattr(selffix.os, "unlink", vanished)
+        assert selffix.clear() is True
+    assert selffix.status() is None

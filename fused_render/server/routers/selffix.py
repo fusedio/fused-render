@@ -441,4 +441,12 @@ def api_selffix_clear(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    return {"cleared": selffix.clear()}
+    try:
+        return {"cleared": selffix.clear()}
+    except OSError as exc:
+        # The marker is still on disk, so the badge is not going anywhere. Both
+        # dismiss buttons hide it on THIS response and let the poll confirm, so
+        # a 200 here would clear the badge for a minute and then bring it back;
+        # a 500 puts the reason on screen instead, through the error path both
+        # already have.
+        return _error(f"could not clear the marker: {exc}", status=500)
