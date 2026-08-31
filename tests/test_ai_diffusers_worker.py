@@ -1129,3 +1129,81 @@ def test_a_pipeline_with_NO_sigma_schedule_still_RENDERS(monkeypatch, base, tmp_
     worker = loaded_worker(monkeypatch, base, pipe)
     worker.generate(_request(tmp_path))
     assert os.listdir(tmp_path) == ["fox.png"]
+
+
+# -- the NF4 text encoder, and the third-party quantizer registration ------------
+#
+# `_GGUF_RECIPES`' `quantize_4bit` halves what the klein recipe holds (measured
+# on an RX 9060 XT: `memory_allocated` 10.15GiB -> 5.10GiB at 512x512 / 4 steps,
+# with the warm render unchanged, 5.72s -> 5.76s). These pin the CONFIG rather
+# than the effect, since nothing here loads a real model.
+
+
+class _NoMonkey:
+    """`load_worker` wants a monkeypatch; these two calls need no patching."""
+
+    def setitem(self, *a):
+        pass
+
+    def syspath_prepend(self, *a):
+        pass
+
+
+def test_a_recipe_that_names_no_components_asks_for_no_quantization():
+    """`None` is the parameter's own default, so a recipe without the key
+    reaches exactly the `from_pretrained` call it reached before this
+    existed — including the empty-list case, which is a recipe that has been
+    edited down to nothing rather than one that never asked."""
+    worker = load_worker(_NoMonkey(), FakeBase())
+    assert worker._load_quantization(None) is None
+    assert worker._load_quantization({}) is None
+    assert worker._load_quantization({"quantize_4bit": []}) is None
+
+
+def test_the_klein_recipe_quantizes_its_TEXT_ENCODER_and_nothing_else(
+        monkeypatch, base):
+    """The transformer is already Q4_K_M and is passed to `from_pretrained` as a
+    BUILT object, so asking diffusers to quantize it too would be asking it to
+    re-quantize GGUF weights. The text encoder is the 7.5GB bf16 component that
+    made this worth doing — ~70% of what the worker held before."""
+    torch = fake_torch()
+    torch.bfloat16 = "bfloat16"
+    seen = {}
+
+    class FakeQuantConfig:
+        def __init__(self, quant_backend=None, quant_kwargs=None,
+                     components_to_quantize=None):
+            seen.update({"backend": quant_backend, "kwargs": quant_kwargs,
+                         "components": components_to_quantize})
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.PipelineQuantizationConfig = FakeQuantConfig
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    recipe = worker._recipe(MODEL)
+    assert recipe["quantize_4bit"] == ["text_encoder"]
+    assert worker._load_quantization(recipe) is not None
+
+    assert seen["components"] == ["text_encoder"]
+    assert seen["backend"] == "bitsandbytes_4bit"
+    # NF4 rather than bitsandbytes' fp4 default, double quant on, and a compute
+    # dtype matching the pipeline's `torch_dtype` — that last one defaults to
+    # float32, which would dequantize every matmul into the wrong dtype.
+    assert seen["kwargs"]["load_in_4bit"] is True
+    assert seen["kwargs"]["bnb_4bit_quant_type"] == "nf4"
+    assert seen["kwargs"]["bnb_4bit_use_double_quant"] is True
+    assert seen["kwargs"]["bnb_4bit_compute_dtype"] == torch.bfloat16
+
+
+def test_a_missing_sdnq_does_not_stop_an_ordinary_model_loading(monkeypatch, base):
+    """`_register_extra_quantizers` runs on EVERY load, including the many with
+    nothing to do with sdnq, so an absent optional backend has to be a no-op.
+    A model that genuinely needs it still fails loudly — diffusers raises on
+    the `quant_method` it cannot resolve, naming it — so this swallow hides
+    nothing, it just lets the other models through."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setitem(sys.modules, "sdnq", None)   # a None entry raises on import
+    worker._register_extra_quantizers()

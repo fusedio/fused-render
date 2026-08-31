@@ -93,12 +93,53 @@ _loaded = {}
 #: read from `formats.COMPONENT_REPOS` rather than repeated here: that repo also
 #: lands in the Hub cache, where the AI Models page has to be able to say what
 #: it is, and the page runs in a process that cannot import this venv.
+#:
+#: **`quantize_4bit` names the components to quantize AT LOAD, and it exists
+#: because swapping the transformer only fixed the smaller half of the bill.**
+#: The recipe below replaces a 7.75GB bf16 transformer with a 2.43GiB Q4_K_M
+#: GGUF and leaves everything else at bf16 — but this repo's TEXT ENCODER is
+#: 7.5GB on its own, so after the swap the encoder is ~70% of what the worker
+#: holds. Measured on a 15.9GiB RX 9060 XT, 512x512 at 4 steps, prompt and seed
+#: fixed:
+#:
+#:   * bf16 text encoder: `memory_allocated` 10.15GiB, `drm-memory-vram`
+#:     10.37GiB, warm render 5.66s / 5.72s, load+`to("cuda")` 3.45s + 3.00s.
+#:   * NF4 text encoder: `memory_allocated` 5.10GiB, `drm-memory-vram` 5.35GiB,
+#:     warm render 5.76s, load+`to("cuda")` 5.32s + 0.18s.
+#:
+#: So it HALVES the resident set and is a wash on the clock — 5.76s against
+#: 5.72s is inside the run-to-run spread, and the total time to a loaded
+#: pipeline actually FALLS (5.50s vs 6.45s), because quantizing costs ~1.9s at
+#: load and then there are half as many bytes to copy to the card. Peak during
+#: a render drops too (6.65GiB vs a 12.28GiB reserved high-water), which is
+#: what `_place()` is measuring against.
+#:
+#: **NF4 rather than int8, and bitsandbytes rather than a second repo**, for
+#: three converging reasons: `bitsandbytes` is already declared in all three
+#: manifests and verified on this hardware (see any of their headers), so this
+#: costs no new dependency; `tonera/FLUX.2-klein-4B-int8-diffusers` — the model
+#: `catalog.py` already recommends — ships its OWN text encoder as bnb NF4
+#: (`"load_in_4bit": true, "bnb_4bit_quant_type": "nf4"`), so this is the same
+#: format the app already loads rather than a new one; and quantizing at load
+#: needs no pre-quantized upload to exist for a given repo, which a table of
+#: editorial judgements should not have to wait for.
+#:
+#: **What this does NOT fix is the download.** The bf16 encoder is still
+#: fetched and then quantized in this process, so `keep` is unchanged and the
+#: bytes on disk are what they were — see `catalog.py`'s SDNQ entry for the
+#: other route, which is smaller to fetch and faster per render but arrives as
+#: a whole separate repo.
+#:
+#: A recipe WITHOUT this key quantizes nothing, which is why it is a list of
+#: component names rather than a boolean: the next recipe may want its VAE left
+#: alone, or a pipeline with three text encoders may want two of them.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
+        "quantize_4bit": ["text_encoder"],
         # `*` crosses `/` in fnmatch, so `tokenizer*/*` covers a `tokenizer_2`
         # a future FLUX may add, and nothing at the root ever matches.
         "keep": ["model_index.json", "scheduler/*", "tokenizer*/*",
@@ -114,6 +155,88 @@ def _component_file(recipe):
 
 def _recipe(model_id):
     return _GGUF_RECIPES.get(model_id)
+
+
+def _register_extra_quantizers():
+    """Teach diffusers the quantization backends it does not ship, by importing
+    the packages that register themselves into its mapping.
+
+    Today that is exactly one: `sdnq`, which
+    `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` (`catalog.py`) is serialized
+    with. diffusers 0.39 knows autoround, bitsandbytes, gguf, modelopt, quanto
+    and torchao — every other quantized repo this app loads is one of those,
+    and needs nothing here.
+
+    **Imported for a SIDE EFFECT, which is why it looks like an unused
+    import.** `sdnq/quantizer.py` ends by mutating
+    `diffusers.quantizers.auto.AUTO_QUANTIZER_MAPPING` and its transformers
+    twin. Nothing in this file calls an sdnq name, and nothing should: the
+    whole integration is that `from_pretrained` can now resolve
+    `"quant_method": "sdnq"` out of a component's `config.json` on its own.
+    See the runner manifests for the version ceiling that risk buys.
+
+    **Absence is tolerated here, unlike `_load_quantization`'s refusal to
+    swallow its own failure.** The asymmetry is real: that function runs only
+    when a recipe explicitly asked for quantization, so failing it silently
+    would load a model at four times its promised size. This runs on EVERY
+    load, including the many that have nothing to do with sdnq, and a missing
+    optional package must not be what stops an ordinary bf16 pipeline from
+    loading. A model that genuinely needs it still fails loudly — diffusers
+    raises on the unknown `quant_method` it cannot resolve, naming it — so
+    nothing is hidden, it is just reported by the layer that actually knows the
+    requirement was unmet.
+    """
+    try:
+        import sdnq  # noqa: F401 - imported to register, not to call
+    except Exception:  # noqa: BLE001 - an optional backend must never break loading
+        pass
+
+
+def _load_quantization(recipe):
+    """The `quantization_config=` for `recipe`'s `quantize_4bit` components, or
+    None when it names none — see `_GGUF_RECIPES` for the measured numbers and
+    why NF4.
+
+    **Double quantization is on.** It quantizes the per-block constants the
+    first pass produces, which is the difference between ~0.5 and ~0.4 bits of
+    overhead per weight — small in ratio, but this is a 7.5GB component and the
+    accuracy cost is the one bitsandbytes documents as negligible. It is also
+    what `tonera/FLUX.2-klein-4B-int8-diffusers`'s own text encoder was
+    serialized with (`"bnb_4bit_use_double_quant": true`), so the two models
+    this runner loads now hold their encoders in the same format.
+
+    **`bnb_4bit_compute_dtype` matches the pipeline's `torch_dtype`, and has
+    to.** NF4 is a STORAGE format: every matmul dequantizes to the compute
+    dtype first, and a float32 compute dtype against bf16 activations is both
+    slower and a dtype mismatch waiting to surface inside an attention block.
+    The default is float32, so leaving it out would be choosing the wrong one
+    silently.
+
+    Deliberately NOT wrapped in a try/except. A `_place()` probe that raises
+    must degrade to offload because a measurement is advisory; a quantization
+    the recipe explicitly asked for is not — if it cannot be applied, the model
+    would load at four times the size this recipe promises `_place()` it needs,
+    and quietly land in offload on a card that could have held it. Loud is
+    correct: `worker_base` turns the raise into the page's load error, with the
+    library's own message about what was missing.
+    """
+    components = (recipe or {}).get("quantize_4bit")
+    if not components:
+        return None
+
+    import torch
+    from diffusers import PipelineQuantizationConfig
+
+    return PipelineQuantizationConfig(
+        quant_backend="bitsandbytes_4bit",
+        quant_kwargs={
+            "load_in_4bit": True,
+            "bnb_4bit_quant_type": "nf4",
+            "bnb_4bit_use_double_quant": True,
+            "bnb_4bit_compute_dtype": torch.bfloat16,
+        },
+        components_to_quantize=list(components),
+    )
 
 
 # --------------------------------------------------------------- model loading
@@ -363,6 +486,10 @@ def _place(pipe):
 def load(model_id, fetched):
     import torch
 
+    # Before either branch below: the no-recipe branch is the one that loads
+    # the SDNQ repo, and `from_pretrained` reads `quant_method` out of the
+    # component configs itself — so the mapping has to be populated first.
+    _register_extra_quantizers()
     recipe = _recipe(model_id)
     if recipe:
         import diffusers
@@ -381,8 +508,17 @@ def load(model_id, fetched):
         # diffusers resolves the components it still needs from the cache we
         # just filled, and skips the transformer subfolder because one is
         # passed here — which is also why `download` did not fetch it.
+        #
+        # `quantization_config=None` when the recipe names nothing is the
+        # library's own default for the parameter, so the no-recipe and
+        # no-`quantize_4bit` paths reach exactly the call they reached before.
+        # `components_to_quantize` is what keeps this off the transformer: it
+        # is already quantized and already BUILT, passed in above as an object
+        # rather than a name, and asking diffusers to quantize it again would
+        # be asking it to re-quantize GGUF weights.
         pipe = pipeline_cls.from_pretrained(
-            model_id, transformer=transformer, torch_dtype=torch.bfloat16)
+            model_id, transformer=transformer, torch_dtype=torch.bfloat16,
+            quantization_config=_load_quantization(recipe))
     else:
         from diffusers import AutoPipelineForText2Image
 
