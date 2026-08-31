@@ -29,8 +29,6 @@ import sys
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import storage
-
 router = APIRouter()
 
 #: Deep-link straight to System Settings -> Privacy & Security -> Full Disk
@@ -121,22 +119,6 @@ def note_denied(exc: BaseException) -> None:
         _denied = True
 
 
-def _path() -> str:
-    return os.path.join(storage.home_dir(), "fda.json")
-
-
-def dismissed() -> bool:
-    # `strip_dismissed`, not the old `banner_dismissed`: the launch-time strip
-    # replaced the touch-triggered card, and a machine that dismissed the old
-    # card should see the redesigned warning once more.
-    data = storage.read_json(_path())
-    return bool(isinstance(data, dict) and data.get("strip_dismissed"))
-
-
-def set_dismissed() -> None:
-    storage.write_json(_path(), {"strip_dismissed": True})
-
-
 def snapshot() -> dict | None:
     """The `fda` field of /api/config, or None to omit it.
 
@@ -144,10 +126,12 @@ def snapshot() -> dict | None:
     probe is inconclusive — an absent field is the shell's "render nothing
     AND stop watching", so uncertainty never nags and never polls.
 
-    `denied` is the trigger: the strip renders only once this session has
-    actually hit a PermissionError (note_denied); until then the shell only
-    keeps watching this field. "demo" forces it, so a dev server can render
-    the strip without manufacturing a real denial.
+    `denied` is the trigger: the strip renders only while the current denial
+    stands unacknowledged. Dismissing clears it ON THE SERVER (every tab
+    converges), and the NEXT PermissionError raises it again — an ✕ is "not
+    now", not "never": a user still hitting refused reads still needs the
+    warning. "demo" forces it, so a dev server can render the strip without
+    manufacturing a real denial.
     """
     if not offered():
         return None
@@ -155,7 +139,7 @@ def snapshot() -> dict | None:
     if state is None:
         return None
     denied = _denied or os.environ.get(FORCE_ENV) == "demo"
-    return {"granted": state, "dismissed": dismissed(), "denied": denied}
+    return {"granted": state, "denied": denied}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -190,9 +174,11 @@ def api_fda_settings(x_fused: str | None = Header(default=None)):
 
 @router.post("/api/fda/dismiss")
 def api_fda_dismiss(x_fused: str | None = Header(default=None)):
-    """Persist "Not now" — the nudge never renders again on this machine."""
+    """Acknowledge the current denial: clears the server-side flag so every
+    tab's strip hides. The next PermissionError raises it again."""
     guard = _require_fused(x_fused) or _require_offered()
     if guard is not None:
         return guard
-    set_dismissed()
+    global _denied
+    _denied = False
     return {"ok": True}

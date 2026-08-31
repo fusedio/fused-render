@@ -21,8 +21,9 @@
 // macOS has no API to request FDA; explain + open the exact Settings pane is
 // the entire affordance. The `fda` field of /api/config gates everything
 // (fused_render/shell/fda.py): absent (non-mac, dev server, inconclusive
-// probe) means render nothing, `dismissed` is persisted server-side so "✕"
-// holds across sessions on this machine.
+// probe) means render nothing. "✕" acknowledges the CURRENT denial on the
+// server — every tab converges to hidden — and the next PermissionError
+// raises strip and toast again: dismiss is "not now", not "never".
 import { useEffect, useRef, useState } from "react";
 
 import { dismissFdaNudge, getConfig, openFdaSettings } from "@platform/lib/api";
@@ -34,17 +35,19 @@ import { pushToast } from "@platform/lib/toast";
 //: dismissal converges the same way.
 const GRANT_POLL_MS = 3000;
 
-//: While hidden but eligible (fda present, not granted, not dismissed), watch
-//: for the session's first denial so the strip appears when trouble starts.
+//: While hidden but eligible (fda present, not granted), watch for the next
+//: denial so the strip appears when trouble starts — or starts again.
 const WATCH_MS = 5000;
 
 // hidden → (watching) → showing. "watching" renders nothing: the machine
 // qualifies but no fs route has been refused yet.
 type Stage = "hidden" | "watching" | "showing";
 
-//: One toast per tab, since the strip can re-detect `denied` on every
-//: remount. The toast just breaks the news through the app's normal toast
-//: queue; the strip itself is the explanation and the fix.
+//: One toast per DENIAL EPISODE, not per tab lifetime: the strip re-detects
+//: `denied` on every remount, so the flag suppresses repeats — but a
+//: dismissal ends the episode (noteNotDenied resets this), and the next
+//: denial gets its own toast. The toast just breaks the news through the
+//: app's normal queue; the strip itself is the explanation and the fix.
 let toastShown = false;
 
 function noteDenialToast() {
@@ -54,6 +57,10 @@ function noteDenialToast() {
     msg: "macOS denied FusedRender access to a file — grant Full Disk Access to fix this",
     tone: "error",
   });
+}
+
+function noteNotDenied() {
+  toastShown = false;
 }
 
 // The last stage seen, so walking between Home and /apps — which both render
@@ -85,11 +92,14 @@ export function FdaStrip() {
         // Explicit "hidden" rather than an early return: the seeded stage can
         // say "showing" from a previous mount while a grant or another tab's
         // dismissal has since landed.
-        if (!fda || fda.granted || fda.dismissed) setStage("hidden");
+        if (!fda || fda.granted) setStage("hidden");
         else if (fda.denied) {
           noteDenialToast();
           setStage("showing");
-        } else setStage("watching");
+        } else {
+          noteNotDenied();
+          setStage("watching");
+        }
       })
       .catch(() => {}); // no config, no warning — the server card owns outages
     return () => {
@@ -97,7 +107,7 @@ export function FdaStrip() {
     };
   }, []);
 
-  // While "watching", wait for the session's first denial.
+  // While "watching", wait for the next denial.
   useEffect(() => {
     if (stage !== "watching") return;
     const timer = window.setInterval(() => {
@@ -105,7 +115,7 @@ export function FdaStrip() {
         .then((config) => {
           if (stageRef.current !== "watching") return;
           const fda = config.fda;
-          if (!fda || fda.granted || fda.dismissed) setStage("hidden");
+          if (!fda || fda.granted) setStage("hidden");
           else if (fda.denied) {
             noteDenialToast();
             setStage("showing");
@@ -128,8 +138,13 @@ export function FdaStrip() {
             // "info" is this app's confirmation tone — there is no green toast
             // (Toast.tsx), and every other success ("Path copied") is info too.
             pushToast({ msg: "Full Disk Access is on — no more prompts", tone: "info" });
-          } else if (!fda || fda.dismissed) {
+          } else if (!fda) {
             setStage("hidden");
+          } else if (!fda.denied) {
+            // Another tab dismissed (the server cleared its flag). Back to
+            // watching, not hidden: the next denial must resurface the strip.
+            noteNotDenied();
+            setStage("watching");
           }
         })
         .catch(() => {});
@@ -139,8 +154,11 @@ export function FdaStrip() {
 
   if (!showing) return null;
 
+  // "Not now": acknowledge on the server (clears `denied`, every tab hides)
+  // and go back to watching so the next denial brings strip + toast back.
   const close = () => {
-    setStage("hidden");
+    noteNotDenied();
+    setStage("watching");
     dismissFdaNudge().catch(() => {});
   };
 

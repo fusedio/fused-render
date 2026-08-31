@@ -38,9 +38,9 @@ export interface Config {
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
   // packaged mac app when the probe is conclusive. FdaStrip renders off this;
   // absent means render nothing and stop watching. `denied` flips when this
-  // session first hits a PermissionError on an fs route — the moment the
-  // warning is worth showing.
-  fda?: { granted: boolean; dismissed: boolean; denied: boolean };
+  // session hits a PermissionError on an fs route — the moment the warning
+  // is worth showing; dismissing clears it server-side until the next one.
+  fda?: { granted: boolean; denied: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
