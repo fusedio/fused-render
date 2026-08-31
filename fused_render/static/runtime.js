@@ -1840,6 +1840,15 @@
     ].join(";");
     const title = document.createElement("div");
     title.style.cssText = "font-size:17px;font-weight:600;";
+    // Monospace by DEFAULT — this line's original job is uv's own verbatim
+    // resolver error, which is code-shaped output a monospace face makes easier
+    // to scan. `askRow` (the consent question, and its "install anyway" retry)
+    // overrides this to a proportional face for its own use: that text is prose
+    // a non-technical user reads, not output to parse, and monospace under a
+    // proportional bold title reads as a debug dump. `askRow`'s own `settle`
+    // restores the monospace default once the question is answered, since
+    // whatever paints next (the "preparing…" line, the resolver's own error) is
+    // squarely this line's original job again.
     const detail = document.createElement("div");
     detail.style.cssText =
       "opacity:0.8;max-width:60ch;white-space:pre-wrap;word-break:break-word;" +
@@ -2056,6 +2065,12 @@
     return new Promise((resolve, reject) => {
       row.track.style.display = "none";
       row.title.textContent = title;
+      // Prose, not output: `detail` defaults to the monospace face its ORIGINAL
+      // job (uv's verbatim resolver error) wants, but a question is a sentence a
+      // non-technical user reads, not text to parse — rendered monospace under
+      // the proportional bold title, it looks like a debug dump landed in the
+      // middle of a plain-English question.
+      row.detail.style.fontFamily = "ui-sans-serif,system-ui,-apple-system,sans-serif";
       row.detail.textContent = detail;
       row.install.textContent = installLabel;
       row.install.style.display = "";
@@ -2066,6 +2081,10 @@
         row.install.style.display = "none";
         row.install.textContent = "Install";
         row.track.style.display = "";
+        // Back to the monospace default: whatever paints `detail` next —
+        // `paintPreparing`'s "contacting the installer…", the resolver's own
+        // verbatim error — is this line's original job again.
+        row.detail.style.fontFamily = "ui-monospace,Menlo,Consolas,monospace";
         if (approved) resolve();
         else reject();
       };

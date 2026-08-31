@@ -731,6 +731,44 @@ runPython("a.py", {}, { key: "a" }).then(
     )
 
 
+def test_the_confirm_questions_detail_line_is_proportional_not_monospace():
+    """Defect 4 (manual browser testing): the question's detail line ("A
+    one-time download.") rendered in the same monospace face `detail` uses for
+    uv's own verbatim resolver error — a code font under a proportional bold
+    title, on a sentence a non-technical user is meant to just read. `askRow`
+    now switches `detail` to a proportional face while the question is up and
+    restores the monospace default the moment it settles, since whatever
+    paints next (`paintPreparing`, a real resolver error) is that line's
+    original job again.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+let duringFont = null;
+let capturedRow = null;
+runPython("a.py", {}, { key: "a" }).then(() => {
+  // The row is gone from `installing` by now (`hideInstall` removes it once
+  // the install settles) — read the SAME node this test captured earlier
+  // rather than looking it up again.
+  console.log(JSON.stringify({ duringFont, afterFont: capturedRow.detail.style.fontFamily }));
+});
+(function clickOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry || entry.row.install.style.display !== "") return setTimeout(clickOnceAsked, 0);
+  capturedRow = entry.row;
+  duringFont = entry.row.detail.style.fontFamily;
+  entry.row.install._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert "monospace" not in result["duringFont"], (
+        f"the consent QUESTION must not render in the monospace error/progress "
+        f"face, saw {result['duringFont']!r}"
+    )
+    assert "monospace" in result["afterFont"], (
+        "the detail line must go back to monospace once the question is "
+        f"answered (paintPreparing's own text follows), saw {result['afterFont']!r}"
+    )
+
+
 def test_a_late_response_from_before_the_install_still_retries():
     """The race the page-scoped set could not survive.
 
