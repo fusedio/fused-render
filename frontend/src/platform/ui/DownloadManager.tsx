@@ -2,6 +2,24 @@
 // piece of work in progress: the long-running operations any page reported (SPEC
 // §36, D244) and the scheduled messages about to run or running now.
 //
+// STATUS-BAR MERGE, THEN A PARTIAL REVERT: this chip absorbed the two other
+// PERSISTENT-status chips that used to sit beside it — Models
+// (shell/ModelsDock.tsx) and Engines (shell/EnginesDock.tsx), both deleted at
+// the time. A follow-up revision then split Models back out into its own chip
+// (shell/ModelsDock.tsx again, resurrected) because the user relies on that
+// chip's own filled/outlined dot to know whether the machine is holding any
+// model weights, and a dot shared with jobs/engines answered a different
+// question. Engines stayed merged here — nothing comparable was ever asked of
+// its own indicator. So this panel draws up to TWO labelled sections in order
+// — Running (everything below, unchanged), then Background tasks (engine
+// rows) — a section only when it has rows, a heading only when 2+ sections
+// are present at once. See `EnginesSlot` below for why the row rendering
+// could move into platform (it only needs `platform/lib/api` types) while the
+// poller that FEEDS it stayed in shell (`shell/ActivityDock.tsx`, the sole
+// caller of this component). The chip's own `StatusDot` still answers a
+// narrower question than "does this chip have anything to show": see
+// `runningCount`, below, for why a running engine alone leaves it unfilled.
+//
 // It exists because that work used to be invisible the moment you looked away
 // from it: a page pulling an 8GB model drew its own bar inside itself, and the
 // shell tears a page's frame down on every navigation, so browsing to another
@@ -125,6 +143,7 @@ import {
   fixSessionUrl,
   startSelfFix,
 } from "@platform/lib/selffix";
+import type { RunningEngine } from "@platform/lib/api";
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
 // plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
@@ -396,6 +415,81 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
             : "Fix this"}
     </button>
   );
+}
+
+// ---- Engine rows (status-bar merge) ----------------------------------------
+// FORMERLY shell/EnginesDock.tsx, its own chip/panel. The status-bar
+// consolidation collapsed Engines and Jobs into one "Activity" chip (see
+// DownloadManagerView's own header for the section layout), so the row
+// rendering moved here, alongside the job rows it now shares a panel with.
+// (Models made the same trip during the merge and then made it back: see
+// this file's own header comment and `shell/ModelsDock.tsx`.) This is legal
+// under `check-boundaries.mjs`: these rows only need `RunningEngine`
+// (platform/lib/api, which platform already owns) and the mutation call
+// `stopEngine` (also platform/lib/api) — nothing shell-only. Only the DATA
+// SOURCE for them — the running-engines poll — is shell-only, and it stays in
+// `shell/ActivityDock.tsx`, which hands this component plain
+// `RunningEngine[]` data plus the mutation callback.
+
+/** A useful NAME for an engine row, never the opaque id when something better
+ *  exists: the folder's basename for a background app, the module for a warm
+ *  app worker, and the id itself for a template engine. Pure and exported so
+ *  it is testable without a render. */
+export function engineLabel(engine: RunningEngine): string {
+  if (engine.folder) {
+    const parts = engine.folder.split(/[/\\]/).filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1];
+  }
+  return engine.module || engine.engine_id;
+}
+
+function EngineRow({
+  engine,
+  onStop,
+}: {
+  engine: RunningEngine;
+  onStop: (engineId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const stop = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onStop(engine.engine_id);
+    } catch {
+      setFailure("Could not stop — check your connection and retry.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dl-row">
+      <div className="dl-row-head">
+        <span className="dl-title dl-title-id" title={engine.folder || engine.engine_id}>
+          {engineLabel(engine)}
+        </span>
+        <span className="dl-amount">{engine.kind}</span>
+        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
+          {busy ? "Stopping…" : "Stop"}
+        </button>
+      </div>
+      {failure && <div className="dl-status">{failure}</div>}
+    </div>
+  );
+}
+
+/** The `engines` slot (status-bar merge): plain data plus the one mutation
+ *  the row needs, handed in by `shell/ActivityDock.tsx` (the only place the
+ *  poll lives). Ids are for occupancy only (`alsoDrawn` below, in the merged
+ *  panel's auto-expand wiring) — an engine arriving must never itself pop the
+ *  panel open (D587's rule, now shared by the merged chip: only Running/job
+ *  arrivals announce). */
+export interface EnginesSlot {
+  engines: RunningEngine[];
+  onStop: (engineId: string) => Promise<void>;
 }
 
 // Exported for jobrow.test.tsx only — every other caller goes through
@@ -740,6 +834,7 @@ export function DownloadManagerView({
   ready,
   initialCollapsed,
   queue,
+  engines,
   refresh,
   patch,
 }: {
@@ -758,6 +853,9 @@ export function DownloadManagerView({
    *  so a test mounting this view with a fixed list keeps the old behaviour. */
   ready?: boolean;
   queue?: QueueSlot;
+  /** The Background tasks section (formerly EnginesDock's own chip). Optional
+   *  and data-only — see `EnginesSlot`'s own doc. */
+  engines?: EnginesSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
@@ -833,11 +931,21 @@ export function DownloadManagerView({
   // job id (`sys:schedule:<entry id>`) literally embeds the entry id these
   // queue rows are keyed by, so this is a live overlap rather than a
   // theoretical one.
+  // ENGINE ROWS COUNT FOR OCCUPANCY, NEVER ANNOUNCE (status-bar merge): they
+  // ride in as `alsoDrawn` beside the queue's own entry ids, exactly like
+  // `queue.drawn` already did — an engine coming up is a state readout the
+  // same way it was in its own now-deleted chip (D587's "never auto-opens"
+  // rule), so only a job arrival may set `ids` here.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     jobs.map((j) => `job:${j.id}`),
     collapsed,
     ready,
-    { alsoDrawn: (queue?.drawn ?? []).map((id) => `queue:${id}`) },
+    {
+      alsoDrawn: [
+        ...(queue?.drawn ?? []).map((id) => `queue:${id}`),
+        ...(engines?.engines ?? []).map((e) => `engine:${e.engine_id}`),
+      ],
+    },
   );
   // OPEN is the persisted preference OR a transient auto-open (D574) — never
   // `collapsed` alone from here down, and the auto-open half is deliberately
@@ -853,16 +961,20 @@ export function DownloadManagerView({
   // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
   // section, and only transiently — see `exclusiveSection.ts` on why the
   // arbiter must not touch the saved preference.
-  useExclusiveSection("jobs", open, forceClose);
+  useExclusiveSection("activity", open, forceClose);
 
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
-  // used to describe): the bar's three sections are always on screen, this
-  // one included, so "nothing happening" draws an IDLE chip — same button,
-  // same hover wash, muted text (D573 retires the separate unpressable
-  // `.dl-idle` span this used to render; see `.is-idle` below) — rather
-  // than vanishing. Both halves empty is what decides idle, same test as
-  // the old early return.
-  const idle = jobs.length === 0 && queued === 0;
+  // used to describe): the bar's sections are always on screen, this one
+  // included, so "nothing happening" draws an IDLE chip — same button, same
+  // hover wash, muted text (D573 retires the separate unpressable `.dl-idle`
+  // span this used to render; see `.is-idle` below) — rather than vanishing.
+  //
+  // EVERYTHING THIS CHIP CAN SHOW decides idle/muting (status-bar merge): a
+  // running engine alone is no longer nothing, now that this chip shows it
+  // too. `runningCount` below is a narrower question — is there WORK — and
+  // stays scoped to jobs/queue only.
+  const engineCount = engines?.engines.length ?? 0;
+  const idle = jobs.length === 0 && queued === 0 && engineCount === 0;
 
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
@@ -921,18 +1033,14 @@ export function DownloadManagerView({
     refresh();
   };
 
-  // IS THERE ANYTHING HERE — that is the whole question the chip asks now
-  // (D588/D590, user: "no count. just a circle outlined or filled"). D573 had
-  // already reduced the bar to a category NAME plus a count, retiring
-  // `jobsSummary`'s richer "2 running · 1 queued" sentence; D588/D590 then took
-  // the count too, and `jobsSummary` itself is deleted (code review finding 8) —
-  // it had outlived its last caller by four decisions.
-  //
-  // Still a SUM rather than a boolean, because both halves have to be able to
-  // fill the circle on their own: every row this section shows, running/queued/
-  // terminal alike, which is exactly what `.dl-rows` below draws. The name says
-  // count, but nothing renders the number — see the `StatusDot` call site.
-  const totalCount = jobs.length + queued;
+  // THE DOT ANSWERS "IS THERE WORK RIGHT NOW", NOT "IS THERE ANYTHING TO SHOW"
+  // (status-bar merge, brief's own rule): jobs running or queued fill it; a
+  // running engine — persistent STATE, not work in progress — does not, even
+  // though the panel still shows it when opened and the chip is not muted for
+  // having it (see `idle`, above, which DOES count it). A machine running a
+  // background engine and no jobs therefore draws an active, clickable
+  // "Activity" chip with an outlined (unfilled) dot.
+  const runningCount = jobs.length + queued;
 
   return (
     <div className="dl-host" ref={hostRef}>
@@ -948,22 +1056,27 @@ export function DownloadManagerView({
         className={"dl-toggle" + (idle ? " is-idle" : "")}
         onClick={toggle}
         aria-expanded={open}
-        title={open ? "Hide jobs" : "Show jobs"}
+        title={open ? "Hide activity" : "Show activity"}
       >
-        {/* `Jobs`, NOT `Activity` (D579, user: "what about jobs?") — this
-            codebase's own word for exactly this set (`fused_render/jobs.py`,
-            `/api/jobs`, the `Job` dataclass, `KINDS`), so the label and the
-            store it reads from finally agree. It also avoids the subset trap
-            that ruled out `Downloads` and `Tasks`: downloads, background
-            tasks AND the scheduled queue are all jobs, so it covers
-            everything this section shows without over- or underclaiming.
-            `Activity` was the vaguest of the three labels and half of why it
-            collided with the old `Updates`. */}
+        {/* `Activity` (status-bar merge): this chip is no longer only jobs —
+            it now also carries the running engines that used to be their own
+            chip beside it, so `Jobs` (D579's own word for the narrower set)
+            no longer names everything it shows. `Activity` was rejected back
+            then for being the vaguest of three labels over a chip that was
+            ONLY jobs; it is the right word again now that the chip covers
+            both. (Models made this same trip during the merge and then split
+            back out into its own chip — `shell/ModelsDock.tsx` — so it is not
+            one of the things "Activity" has to cover any more.) */}
         {/* The label, and the bar's one shared indicator beside it (D588,
             D590). `StatusDot` must stay a DIRECT child of this button — that
-            is what centres it (its own header has the argument). */}
-        <span className="dl-summary">Jobs</span>
-        <StatusDot on={totalCount > 0} label={totalCount > 0 ? "jobs running" : "no jobs"} />
+            is what centres it (its own header has the argument). It answers
+            "is there work right now" — see `runningCount`, above — not "is
+            there anything to show", which is `idle`'s question. */}
+        <span className="dl-summary">Activity</span>
+        <StatusDot
+          on={runningCount > 0}
+          label={runningCount > 0 ? "jobs running" : "no jobs running"}
+        />
       </button>
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed
@@ -978,63 +1091,77 @@ export function DownloadManagerView({
       {open && (
         <div className="dl-panel">
           {idle ? (
-            <div className="dl-panel-empty">No jobs</div>
+            <div className="dl-panel-empty">No activity</div>
           ) : (
             <>
-              {/* ONE list, in lifecycle order: the queue's rows first (running, then
-                  starting, then waiting) and the job rows under them, which is where
-                  the same run lands once its turn has ended. A scheduled message
-                  therefore moves down this list rather than jumping between two
-                  cards. */}
-              <div className="dl-rows">
-                {queue?.rows}
-                {jobs.map((job) => (
-                  <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-                ))}
-              </div>
-              {queue?.note}
-              {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
-                  up"). These bulk actions used to render ABOVE the rows, where
-                  a full-width padded band holding one small right-aligned
-                  button read as a blank row that had failed to render — the
-                  first thing in the panel. It was a header when it also
-                  carried a count and a title on its left; D588/D590 removed
-                  both and left a header with nothing to head. Under the list,
-                  the same button reads as acting on what is above it, which is
-                  what it does. */}
-              {/* Still omitted outright when neither child has anything to
-                  offer (code review finding #3) — a footer with nothing in it
-                  is the same defect one position lower. This panel's footer can
-                  hold TWO buttons, so nothing here may assume a single child. */}
-              {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
-                  one-row panel: "the notification card size is still not
-                  done"). Clear is dismiss-ALL, so at exactly one row it is
-                  redundant — that row's own ✕ does the identical thing in one
-                  click, adjacent to the thing it affects — and the band it
-                  needs cost 32px of an 88px card, ~36% of the height, most of
-                  it empty to the left of one small button with a hairline
-                  making the emptiness look deliberate.
-                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
-                  withdrawable rows for exactly this reason ("for a single one
-                  the row's own ✕ — right there on screen — is the same action
-                  with a better name on it"); this brings the sibling controls
-                  into line with a rule the codebase had already settled. */}
-              {(queue?.cancelAll || clearable > 1) && (
-                <div className="dl-head">
-                  {/* Two actions, and they are not the same one twice: Cancel queued
-                      withdraws messages that have not gone yet (the shell's, and only
-                      when the shell decides enough rows are genuinely withdrawable —
-                      `queue.cancelAll`'s own doc), Clear dismisses rows for work that
-                      has ENDED. So a terminal row is clearable without a live one
-                      being touched. */}
-                  {queue?.cancelAll}
-                  {clearable > 1 && (
-                    <button className="dl-clear" onClick={clear} title="Dismiss finished">
-                      Clear
-                    </button>
-                  )}
-                </div>
-              )}
+              {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
+                  Running (the old Jobs chip's own content, unchanged) and
+                  Background tasks (the old Engines chip). A section renders
+                  only when it has rows, and the heading itself only when 2+
+                  sections are present at once — a single section carrying a
+                  header nobody needed to disambiguate is the redundant-label
+                  problem the brief calls out; see `.dl-section-head` in
+                  notifications.css. (A third section, Models, lived here
+                  during the status-bar merge and moved back out into its own
+                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
+              {(() => {
+                const runningVisible = jobs.length > 0 || queued > 0;
+                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
+                const showHeadings = sectionCount > 1;
+                return (
+                  <>
+                    {runningVisible && (
+                      <div className="dl-section">
+                        {showHeadings && <div className="dl-section-head">Running</div>}
+                        {/* ONE list, in lifecycle order: the queue's rows first
+                            (running, then starting, then waiting) and the job
+                            rows under them, which is where the same run lands
+                            once its turn has ended. A scheduled message
+                            therefore moves down this list rather than jumping
+                            between two cards. */}
+                        <div className="dl-rows">
+                          {queue?.rows}
+                          {jobs.map((job) => (
+                            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                          ))}
+                        </div>
+                        {queue?.note}
+                        {/* A FOOTER, NOT A HEADER (D602, user: "notification UI
+                            is messed up"). Still omitted outright when neither
+                            child has anything to offer (code review finding
+                            #3), and plurality-gated on Clear (D604): a lone
+                            terminal row's own ✕ already does what Clear would.
+                            `queue-dock-lib.ts`'s `showCancelAll` requires the
+                            same two-row threshold for the identical reason. */}
+                        {(queue?.cancelAll || clearable > 1) && (
+                          <div className="dl-head">
+                            {/* Two actions, and they are not the same one
+                                twice: Cancel queued withdraws messages that
+                                have not gone yet, Clear dismisses rows for
+                                work that has ENDED. */}
+                            {queue?.cancelAll}
+                            {clearable > 1 && (
+                              <button className="dl-clear" onClick={clear} title="Dismiss finished">
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {engineCount > 0 && (
+                      <div className="dl-section">
+                        {showHeadings && <div className="dl-section-head">Background tasks</div>}
+                        <div className="dl-rows">
+                          {engines!.engines.map((e) => (
+                            <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </>
           )}
         </div>
@@ -1043,13 +1170,20 @@ export function DownloadManagerView({
   );
 }
 
-export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
+export default function DownloadManager({
+  queue,
+  engines,
+}: {
+  queue?: QueueSlot;
+  engines?: EnginesSlot;
+}) {
   const { jobs: reported, settled, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
       ready={settled}
       queue={queue}
+      engines={engines}
       refresh={refresh}
       patch={patch}
     />

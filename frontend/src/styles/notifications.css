@@ -130,23 +130,25 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Status bar (SPEC §36, D563, redesigned D565, D573) ------------------- */
+/* ---- Status bar (SPEC §36, D563, redesigned D565, D573, status-bar merge) - */
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
-   which overlaid page content even collapsed. Four entries, left to right by
-   lifetime (StatusBar.tsx's own doc has the ordering principle): `models` and
-   `engines` (persistent), `activity` and `repoUpdates` (transient), each a
-   `.dl-host` chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different
-   categories of status bar should be always present") — there used to be a
-   `:empty { display: none }` rule collapsing the strip to nothing when both
-   sections were empty; the categories are a fixed readout now, so that rule is
-   gone and `#main` is permanently shorter by this bar's height, which is the
-   accepted cost of the call. `tabular-nums` here, not per element, so every
-   ticking figure in the bar's SUBTREE inherits it — no chip carries a digit any
-   more (D588/D590 took the counts, D589 Models' size), but a `.dl-panel` is a
-   descendant of this element, and a row's `.dl-pct`/`.dl-amount`/status line
-   tick constantly where proportional digits would twitch.
+   which overlaid page content even collapsed. THREE entries now (used to be
+   four — `models`/`engines`/`activity`/`repoUpdates` — until Models and
+   Engines folded into `activity`, then Models split back out into its own
+   entry again; StatusBar.tsx's own doc has the full story): `models`,
+   `activity` and `repoUpdates`, each a `.dl-host` chip+panel pair. ALWAYS
+   PRESENT (D565, user verdict: "different categories of status bar should be
+   always present") — there used to be a `:empty { display: none }` rule
+   collapsing the strip to nothing when both sections were empty; the
+   categories are a fixed readout now, so that rule is gone and `#main` is
+   permanently shorter by this bar's height, which is the accepted cost of the
+   call. `tabular-nums` here, not per element, so every ticking figure in the
+   bar's SUBTREE inherits it — no chip carries a digit any more (D588/D590
+   took the counts, D589 Models' size), but a `.dl-panel` is a descendant of
+   this element, and a row's `.dl-pct`/`.dl-amount`/status line tick
+   constantly where proportional digits would twitch.
 
    D573 (user: "the chevron doesn't belong to the status bar. lets follow
    vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
@@ -184,8 +186,20 @@
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's and
-   ModelsDock.tsx's sibling sections share below.
+   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling
+   section shares below.
+
+   TWO POSSIBLE SECTIONS IN THIS CARD — Running, Background tasks — each its
+   own `.dl-section` (below) inside one `.dl-panel`, replacing the two
+   separate chips (Jobs, Engines) that used to hold them. (A third section,
+   Models, lived here during the status-bar merge and moved back out into its
+   own chip — `shell/ModelsDock.tsx` — in a follow-up revision; its rows still
+   use `.dl-row`, so the shape described below is unchanged.) `.dl-row` is
+   shared by every kind of row regardless of which section or chip draws it —
+   a model row, an engine row and a job row are shaped alike (name, a
+   qualifier, one action, an optional status line) — which is why nothing
+   here had to change to accommodate the merge beyond
+   the section wrapper itself.
 
    Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
    `.dl-panel` (below) can float above it, anchored to its own RIGHT edge
@@ -336,39 +350,59 @@
    toast wears, so an open panel still reads as the same system rather than a
    different kind of popover.
 
-   IT IS A CAP NOW, NOT A FIXED WIDTH (D608, 2026-08-28). Until then this rule
-   argued FOR a fixed width on the ground that "a card left to its content
-   width jumps every time a row's title or byte count changes length, and at
-   that width '1.21 / 7.54 GB' and its percentage crowd the title into an
-   ellipsis". That reasoning is preserved because it is not wrong — the width
-   DOES vary with content now, and that is a real cost. The user overruled it,
-   twice, with a screenshot: the Notifications panel holding one repo row
-   (`sandbox [Update] ✕` / `Newer changes available`, ~270px of content) sat in
-   a 340px card with a visible void on its right. Fitting the content is the
-   settled call; the variation is bounded above by the 340px `max-width` here,
-   and below by per-row floors on `.dl-row` and `.dl-panel-empty` (D610) rather
-   than by anything on this box.
+   A SHARED FIXED WIDTH WHEN THE PANEL HAS ROWS, MAX-CONTENT WHEN IT DOES NOT
+   (superseding D608/D610, 2026-08-28→2026-08-31). Three rounds on this box's
+   width, in order:
+     1. Originally a FIXED width: "a card left to its content width jumps
+        every time a row's title or byte count changes length, and at that
+        width '1.21 / 7.54 GB' and its percentage crowd the title into an
+        ellipsis".
+     2. D608 turned it into a CAP instead (`max-content`, bounded above by
+        this same 340px number): the user overruled the fixed width, twice,
+        with a screenshot — the Notifications panel holding one repo row
+        (`sandbox [Update] ✕` / `Newer changes available`, ~270px of content)
+        sat in a 340px card with a visible void on its right. D610 then gave
+        `.dl-row`/`.dl-panel-empty` their own per-row floors so a Jobs/Models/
+        Engines panel did not shrink below what D608's own cap used to
+        guarantee, while a `.q-row` panel (repo rows, queue rows) was free to
+        hug its content.
+     3. THIS ROUND REVERSES (2) FOR NON-EMPTY PANELS, by explicit user
+        request: every chip's panel — Models, Activity, Notifications — should
+        open at the SAME width when it has anything to show, so adjacent
+        panels do not visibly jump in width as the user moves between chips.
+        An EMPTY panel (`.dl-panel-empty` alone, no `.dl-rows`) still hugs its
+        one sentence exactly as D608/D610 left it — a lone idle sentence in a
+        340px card was itself the D610 complaint, and that reasoning still
+        holds for the empty case. The `:has(.dl-rows)` rule below is what
+        switches between the two: `.dl-rows` is the wrapper every non-empty
+        section renders (DownloadManagerView's Running/Background-tasks
+        sections, ModelsCardView's row list, RepoUpdatesCardView's row list),
+        so it is a reliable "this panel has rows" signal without any JS class
+        toggling — the codebase already uses `:has()` this way elsewhere
+        (e.g. `.tasks-row:has(.tasks-act:focus-visible)` in tasks.css).
 
-   `max-content`, NOT `fit-content` — the distinction is the whole fix, and a
-   previous attempt got it wrong. `fit-content` resolves as
-   `min(max-content, max(min-content, available))`, and for an ABSOLUTELY
-   POSITIONED box `available` is its containing block: `.dl-host`, content-sized
-   to the chip alone (see below), roughly 100–180px. `fit-content` therefore
-   clamps this panel toward the chip's width — the same crushed panel the
-   `max-width: 100%` paragraph below describes. `max-content` is defined as the
-   box's preferred width given UNLIMITED available space and never consults the
-   containing block, so it is the only content-sizing keyword that survives here.
+   `max-content`, NOT `fit-content`, for the base (empty) case — the
+   distinction is the whole fix from D608, and a previous attempt got it
+   wrong. `fit-content` resolves as `min(max-content, max(min-content,
+   available))`, and for an ABSOLUTELY POSITIONED box `available` is its
+   containing block: `.dl-host`, content-sized to the chip alone (see below),
+   roughly 100–180px. `fit-content` therefore clamps this panel toward the
+   chip's width — the same crushed panel the `max-width: 100%` paragraph below
+   describes. `max-content` is defined as the box's preferred width given
+   UNLIMITED available space and never consults the containing block, so it is
+   the only content-sizing keyword that survives here.
 
-   NO `min-width` HERE (D610). D608 shipped one — `min(240px, calc(100vw -
-   32px))` — and it was the source of a second complaint: it held the panel
-   240px wide under a repo row whose own content is 138px, and D609's edge-pinned
-   ✕ turned that 100px of surplus into a visible void between `Update` and the
-   ✕. A floor on the PANEL cannot tell the difference between a card that needs
-   width and one that does not, so it has moved onto the two things that
-   actually need it — see `.dl-panel-empty` and `.dl-row` below. This box now
-   states only the ceiling, and a panel whose rows ask for nothing hugs them.
-   Read D610 before reinstating anything here; a blanket floor is what the void
-   is made of.
+   NO `min-width` ON THE EMPTY BASE (D610's call, still true for that case):
+   D608 shipped one — `min(240px, calc(100vw - 32px))` — and it was the
+   source of a second complaint: it held the panel 240px wide under a repo row
+   whose own content is 138px, and D609's edge-pinned ✕ turned that 100px of
+   surplus into a visible void between `Update` and the ✕. A floor on the
+   PANEL cannot tell the difference between a card that needs width and one
+   that does not, so the empty case still states only the 340px ceiling — see
+   `.dl-panel-empty` for its own, deliberately smaller floor. The `:has()` rule
+   below is what now gives a non-empty panel a real width instead of a floor;
+   read D610 before reinstating a `min-width` on the base rule itself, since a
+   blanket floor there is what the original void was made of.
 
    NO `max-width: 100%` (code review finding #1, HIGH — this is what caused
    the user's screenshot): a percentage `max-width` on an absolutely
@@ -401,6 +435,20 @@
      that column while it is open, without reaching for anything above the
      app's own stacking scale. */
   z-index: 2001;
+}
+
+/* THE SHARED FIXED WIDTH FOR A NON-EMPTY PANEL — see `.dl-panel`'s own
+   comment above for the three-round history this settles. `.dl-rows` is
+   rendered by every section that has anything to list (DownloadManagerView's
+   Running/Background-tasks, ModelsCardView's row list,
+   RepoUpdatesCardView's row list) and by nothing else, so `:has(.dl-rows)`
+   is exactly "this panel has rows" with no class to keep in sync from JS.
+   Same 340px number as the base rule's `max-width` — this simply stops it
+   being a CEILING or a coincidence of content and makes it the actual width,
+   the same way D608 originally shipped before the empty-panel complaint that
+   this rule's sibling comment describes; the empty case is untouched. */
+.dl-panel:has(.dl-rows) {
+  width: min(340px, calc(100vw - 32px));
 }
 
 /* THE PANEL'S FOOTER — bulk action buttons only (Cancel queued / Clear), under
@@ -585,6 +633,31 @@
   border-color: var(--fg-muted);
 }
 
+/* ---- Activity's own labelled sections (status-bar merge) ------------------ */
+/* One `.dl-section` per non-empty group — Running, Background tasks, Models —
+   wrapping that group's own `.dl-rows`/footer. Plain block, no border of its
+   own: the hairline between two sections is the same `.dl-rows > * + *` rule
+   already draws between two rows, applied one level up so Running's last row
+   and Background tasks' first one read as continuing one list rather than two
+   pasted-together boxes. */
+.dl-section + .dl-section {
+  border-top: 1px solid var(--border);
+}
+
+/* Rendered only when 2+ sections are present at once (DownloadManagerView's
+   own doc) — a lone section carrying a label nobody needed to tell it apart
+   from a sibling is a redundant header, the same "PLURALITY, NOT PRESENCE"
+   principle D604 already applied to Clear/Cancel queued. Quiet on purpose:
+   this is a sub-heading inside an already-labelled chip, not a second chip. */
+.dl-section-head {
+  padding: 6px 10px 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
    would push its own header off-screen. Never rendered at all while
@@ -629,26 +702,22 @@
   border-top: 1px solid var(--border);
 }
 
-/* THE OTHER HALF OF D610's FLOOR, on the row kind that carries a progress bar.
-   Same `238px` and the same arithmetic as `.dl-panel-empty` above: border-box
-   plus the panel's 1px borders is the 240px card D608 drew, so a Jobs, Models
-   or Engines panel measures exactly what it did before — this rule exists to
-   make that a guarantee rather than an accident, not to change anything.
-
-   It is the BAR that needs it. `.dl-bar` is a plain stretching block with no
-   intrinsic width, so it contributes nothing to a `max-content` panel's
-   preferred width and takes whatever the row ends up being: measured at 218px
-   inside a 240px panel and 318px inside a 340px one, i.e. exactly the row's
-   content box both times. Flooring the ROW is therefore what floors the bar,
-   and it does so without a `min-width` on `.dl-bar` itself — which would have
-   been a second number saying the same thing, and would have forced the row
-   wider than its own content rather than following it.
-
-   Stated on `.dl-row` and NOT on `.q-row`: model rows and engine rows are
-   `.dl-row` too (ModelsDock/EnginesDock both render one), so all three of the
-   bar-and-figures panels keep their width, while a `.q-row` panel — a repo
-   notification, a scheduled queue row — is free to hug its content, which is
-   the whole of what D610 changes. */
+/* D610's FLOOR ON THE ROW KIND THAT CARRIES A PROGRESS BAR — NOW A BELT-AND-
+   SUSPENDERS FLOOR, SUPERSEDED AS THE LOAD-BEARING MECHANISM (see `.dl-panel`
+   and `.dl-panel:has(.dl-rows)` above). D610 stated this on `.dl-row` and not
+   `.q-row` specifically so a `max-content` panel holding a model/engine/job
+   row (`.dl-bar`'s own comment below explains why the BAR needed something to
+   floor it against) kept a sensible width while a `.q-row` panel — a repo
+   notification, a scheduled queue row — stayed free to hug its content.
+   `.dl-panel:has(.dl-rows)` now gives EVERY non-empty panel — `.q-row` ones
+   included — the same fixed 340px width directly, which is a strictly wider
+   guarantee than this 238px floor ever was, so this rule can no longer be the
+   thing that actually sets a row's width in practice. It stays as a harmless
+   floor (a `.dl-row` rendered somewhere outside a `:has(.dl-rows)` panel, if
+   that ever happens, still gets a sane minimum) rather than being deleted
+   outright — unlike the fixed-width case above, nothing currently depends on
+   removing it, and removing a floor that costs nothing is not the same
+   correctness argument as deleting dead branches. */
 .dl-row {
   min-width: min(238px, calc(100vw - 34px));
   padding: 8px 10px;
@@ -703,12 +772,12 @@
    specific rule rather than a tweak to that one. `.dl-title` carries D596's
    two-line clamp plus `overflow-wrap: anywhere` because a JOB row's title is
    a long PROMPT and the model id already has its own line below (`.dl-model`,
-   next). `ModelRow` (ModelsDock.tsx) has no such second line — its `.dl-title`
+   next). `ModelRow` (platform/ui/DownloadManager.tsx) has no such second line — its `.dl-title`
    *is* the model id — so inheriting the prompt rule let `overflow-wrap:
    anywhere` snap "FLUX.2-Klein-4B-4bit" at the hyphen into "FLUX.2-" over
    "Klein-4B-4bit", which is exactly what `.dl-model`'s own comment below
    forbids: "a model id is a single unbreakable token and wrapping one
-   mid-word reads worse than truncating it". `EnginesDock.tsx` renders a
+   mid-word reads worse than truncating it". The Background-tasks section's own row renders a
    `.dl-title` too, and carries THIS class as well (code review: the "folder
    name" read of that row was wrong — `engineLabel` falls back to
    `engine.module || engine.engine_id` whenever `folder` is empty, and a
@@ -963,22 +1032,25 @@
    stands in the ✕'s slot on a claimed row, and a pin that skipped it would make
    the controls jump sideways as a row moves queued -> sending.
 
-   Costs the panel nothing. An `auto` margin does not contribute to a box's
-   max-content contribution, so `.dl-panel`'s intrinsic width (`width:
-   max-content`, D608) is unchanged — measured identical before and after.
-   Where the row's own content is what set that width there is no free space,
-   the auto margin resolves to zero, and the ✕ lands flush right anyway: the two
-   states agree rather than the glyph jumping between them.
+   Costs an EMPTY panel nothing: an `auto` margin does not contribute to a
+   box's max-content contribution, so `.dl-panel`'s intrinsic width (`width:
+   max-content`, D608, still the rule for the empty case — see its own
+   comment) is unchanged there. Where the row's own content is what set that
+   width there is no free space, the auto margin resolves to zero, and the ✕
+   lands flush right anyway: the two states agree rather than the glyph
+   jumping between them.
 
-   THAT ZERO-SLACK CASE IS NOW THE COMMON ONE (D610), and this rule is quieter
-   than it was. A `.q-row` panel hugs its rows, so its ✕ is flush because there
-   is nothing left over — not because this margin moved it. The pin still does
-   real work wherever one row is narrower than the panel its neighbours set: a
-   Jobs panel holding a queue row above a job row is floored at 240px by the
-   `.dl-row`, and without this the queue row's ✕ would float mid-row while the
-   job row's sat at the edge. Keeping the rule stated is what makes "always at
-   the very right" a property of the ✕ rather than a coincidence of whichever
-   row happens to be widest. */
+   A NON-EMPTY PANEL NOW HAS REAL SLACK MOST OF THE TIME, and this is exactly
+   where the pin does its real work: `.dl-panel:has(.dl-rows)` fixes every
+   such panel at 340px (this file's own comment above), which is very
+   commonly wider than a short row's own content — a queue row above a job
+   row, or a lone short-named engine row — and without `margin-left: auto`
+   pinning every trailing control, a narrower row's ✕/Cancel/Stop would float
+   mid-row while its widest neighbour's sat at the true right edge. Keeping
+   the rule stated is what makes "always at the very right" a property of the
+   trailing control rather than a coincidence of whichever row happens to be
+   widest — true before this width change and, if anything, more load-bearing
+   after it. */
 .dl-x {
   flex: 0 0 auto;
   margin-left: auto;
@@ -1072,7 +1144,7 @@
   }
 }
 
-/* ---- Queue rows in that card (shell/QueueDock.tsx) ----------------------- */
+/* ---- Queue rows in that card (shell/ActivityDock.tsx) ----------------------- */
 /* Work that is about to run or running now: past-due scheduled messages waiting
    to be claimed, and the turns already in flight. These are ROWS, not a card —
    they sit in .dl-rows above the job rows, which is where the same run lands once

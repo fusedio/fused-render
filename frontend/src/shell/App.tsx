@@ -51,8 +51,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
-import EnginesDock from "@shell/EnginesDock";
-import QueueDock from "@shell/QueueDock";
+import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -463,12 +462,12 @@ function ClaudeConfigView() {
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
-  // FAILED JOBS, ON THEIR WAY FROM Jobs TO Notifications (D586). `QueueDock`
+  // FAILED JOBS, ON THEIR WAY FROM Activity TO Notifications (D586). `ActivityDock`
   // already receives `DownloadManager`'s full jobs snapshot on every poll and
   // forwards just the `error` rows here; `RepoUpdatesDock` draws them beside
   // its repo rows. This lives in `App` because it is the only place both
   // sections are in scope — `StatusBar` deliberately takes them as opaque
-  // `ReactNode`s and must not learn what its children are. `QueueDock` only
+  // `ReactNode`s and must not learn what its children are. `ActivityDock` only
   // calls up when the error-id SET changes, so this does not re-render the
   // shell on every poll.
   const [failedJobs, setFailedJobs] = useState<Job[]>([]);
@@ -989,29 +988,31 @@ export default function App({ config }: { config: Config }) {
       {!IS_EMBED && sidebar}
       <div id="main">
         {main}
-        {/* Three sections, not three surfaces: QueueDock is the shell's
-            wrapper around the platform activity card (it fills that card's
-            queue slot), handed in from here rather than imported there
-            because it speaks explorerUrl, which lives in this layer.
-            RepoUpdatesDock is its own sibling section (SPEC §36), handed in
-            the same way and for the same reason: it speaks explorer/lib's
-            staged-Claude-ask store, which platform may not import. ModelsDock
-            (D565) needs apps/ai_models/lib's shared runtime poll, which
-            platform may not import either (frontend/scripts/
-            check-boundaries.mjs) — shell may import anything, so all three
-            live here. Inside `#main` (D563, not NotificationHost's fixed
-            column) and behind the same `!IS_EMBED` guard as the sidebar, so
-            a pane in panel/tab mode does not grow its own bar. */}
+        {/* Three sections, not three surfaces: ModelsDock is the shell's
+            wrapper around Models' own chip (it speaks apps/ai_models/lib's
+            shared runtime poll, which platform may not import). ActivityDock
+            is the shell's wrapper around the platform activity card (it
+            fills that card's queue/engines slots), handed in from here
+            rather than imported there because it speaks explorerUrl
+            (shell/schedule-lib) and platform/lib/api's engine poll — the
+            latter platform already owns, but it is grouped with the queue
+            poll in one shell composer rather than split across a shell file
+            and a platform file for one poll (`shell/ActivityDock.tsx`'s own
+            header has the fuller argument). RepoUpdatesDock is its own
+            sibling section (SPEC §36), handed in the same way and for the
+            same reason: it speaks explorer/lib's staged-Claude-ask store.
+            Inside `#main` (D563, not NotificationHost's fixed column) and
+            behind the same `!IS_EMBED` guard as the sidebar, so a pane in
+            panel/tab mode does not grow its own bar. */}
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
-            engines={<EnginesDock />}
-            /* D586: failures are re-routed from Jobs to Notifications, and
+            /* D586: failures are re-routed from Activity to Notifications, and
                this is the one place both sections are in scope. Plain prop
                wiring on purpose — the alternative was a shared store, which
                would be a new subsystem for a list that one section already
                polls and the other only reads. */
-            activity={<QueueDock onFailed={setFailedJobs} />}
+            activity={<ActivityDock onFailed={setFailedJobs} />}
             repoUpdates={
               <RepoUpdatesDock failed={failedJobs} onFailedPatch={setFailedJobs} />
             }
