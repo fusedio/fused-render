@@ -2044,11 +2044,38 @@
   // packages round), so `installEnv`'s per-key dedup cannot collapse them —
   // without this, a user who had just clicked Install would be asked again,
   // for the install they had already approved, before the first one had even
-  // reached the network. Keyed by `need.project` (falling back to `need.key`
-  // when a caller has none — a defensive floor, not the expected path, since
-  // every server-built `needs_install` carries `project`) so two genuinely
-  // different projects can never be conflated into one approval.
+  // reached the network.
+  //
+  // Keyed by `need.project` PLUS a fingerprint of what was actually
+  // DISCLOSED (`nonstandardFingerprint`, below) — not by project alone.
+  // Project-alone was a real disclosure gap: approve an all-PyPI install for
+  // project X, then add `foolib @ git+https://…` to its pyproject.toml —
+  // editing the manifest and letting live-reload re-run it is this app's own
+  // core workflow (see `startInstall`'s `activeKey` comment) — and the SAME
+  // project key would still read as approved, so `confirmInstall` would be
+  // skipped and the git source fetched with the user never having seen it.
+  // Folding the disclosure into the key makes a changed disclosure re-ask
+  // while an unrelated version bump (which never touches `nonstandard`)
+  // still reuses the earlier approval — the nagging this Set exists to
+  // avoid. Falls back to `need.key` when a caller has no `project` — a
+  // defensive floor, not the expected path, since every server-built
+  // `needs_install` carries one — so two genuinely different projects can
+  // never be conflated into one approval.
   const approvedInstalls = new Set();
+
+  // A stable string naming exactly what the confirm dialog told the user —
+  // the same information `confirmInstall` renders, just serialized instead
+  // of joined into prose. Order-independent (sorted) so two reports of the
+  // same set in a different order do not read as a changed disclosure: nothing
+  // about `nonstandard_dependencies_of` promises a stable order (see its own
+  // docstring — "Order and duplicates are not contracts callers rely on").
+  function nonstandardFingerprint(need) {
+    const nonstandard = need.nonstandard || [];
+    return nonstandard
+      .map((d) => (d && d.name) + " " + (d && d.reason))
+      .sort()
+      .join("");
+  }
 
   // The shared shape behind every yes/no this loader ever asks on a row:
   // hide the progress track (there is no progress yet — or not yet AGAIN —
@@ -2368,7 +2395,7 @@
       );
     };
 
-    const approvalKey = need.project || need.key;
+    const approvalKey = (need.project || need.key) + " " + nonstandardFingerprint(need);
     if (approvedInstalls.has(approvalKey)) return runInstall();
 
     return confirmInstall(need, row, ui).then(

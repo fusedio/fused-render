@@ -928,6 +928,85 @@ runPython("a.py", {}, { key: "a" }).then(() => {
     assert "/proj/pyproject.toml" in result["watched"], result["watched"]
 
 
+def test_a_changed_disclosure_re_asks_even_for_an_already_approved_project():
+    """`approvedInstalls` used to be keyed on `need.project` ALONE. Approve an
+    all-PyPI install for project X; the user then adds
+    `foolib @ git+https://…` to its pyproject.toml; live-reload re-runs
+    (editing a manifest and letting live-reload pick it up is this app's own
+    core workflow) — `needs_install` fires again, this time carrying a
+    `nonstandard` entry naming the git dependency, but the SAME project key
+    already read as approved, so `confirmInstall` was skipped and the git
+    source fetched with the user never having seen it. That is precisely the
+    disclosure this feature exists to make.
+
+    Folding a fingerprint of `nonstandard` into the approval key fixes it: the
+    same project, with a NEW disclosure, must ask again.
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const allPyPI = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay"], nonstandard: [] };
+const withGitDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+installEnv(allPyPI, "a.py", "a.html")
+  .then(() => installEnv(withGitDep, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2
+    assert result["prompts"] == 2, (
+        "a new nonstandard disclosure on an already-approved project must re-ask, "
+        f"saw {result['prompts']} prompts"
+    )
+
+
+def test_an_unrelated_version_bump_does_not_re_ask():
+    """The other half of the same fix: a version bump never touches
+    `nonstandard` (ordinary PyPI requirements are never named there), so the
+    SAME project with the SAME disclosure must still reuse the earlier
+    approval — re-asking on every unrelated manifest edit is exactly the
+    nagging this feature exists to avoid.
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const before = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay==5.0"], nonstandard: [] };
+const afterBump = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay==6.0"], nonstandard: [] };
+installEnv(before, "a.py", "a.html")
+  .then(() => installEnv(afterBump, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2, "a re-run still installs the bumped version"
+    assert result["prompts"] == 1, (
+        f"an unrelated version bump must not re-ask, saw {result['prompts']} prompts"
+    )
+
+
 def _run_loader(scenario):
     import json
     import shutil
