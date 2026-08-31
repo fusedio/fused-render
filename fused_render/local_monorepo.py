@@ -53,11 +53,22 @@ def _force_rm(func, path, _exc):
         raise
 
 
-def _has_remote(app_dir: str) -> bool:
-    """Whether the app's own repo has any remote. A git that cannot answer
-    reads as "has one" — when in doubt, the safe direction is not deleting."""
+def _remote_state(app_dir: str) -> str:
+    """The app repo's remote situation: "remote", "none", or "broken".
+
+    "broken" is a `.git` that git itself cannot answer for — most likely a
+    HALF-DELETED one from an earlier run of this migration that died between
+    rmtree and stamp. Treating that as "has a remote" (the once-safe default)
+    would skip the folder forever while stamping the run complete, leaving a
+    dead nested `.git` shadowing the shared repo for everything below it.
+    A broken repo also has nothing a remote-skip protects: the skip exists so
+    an externally-synced clone keeps a `.git` the user can push, and a `.git`
+    git cannot read gives them nothing to push from — so "broken" is deleted
+    like "none" is."""
     r = app_git._git(app_dir, "remote")
-    return r.returncode != 0 or bool((r.stdout or "").strip())
+    if r.returncode != 0:
+        return "broken"
+    return "remote" if (r.stdout or "").strip() else "none"
 
 
 def _merge_excludes(app_dir: str, local: str) -> None:
@@ -200,10 +211,15 @@ def migrate(root: str) -> tuple[int, bool]:
         try:
             git_dir = os.path.join(app_dir, ".git")
             if os.path.exists(git_dir):
-                if _has_remote(app_dir):
+                state = _remote_state(app_dir)
+                if state == "remote":
                     logger.info("local monorepo: %s has a remote — left as "
                                 "its own repository", name)
                     continue
+                if state == "broken":
+                    logger.warning("local monorepo: %s has a .git git cannot "
+                                   "read (half-deleted earlier run?) — "
+                                   "deleting it and adopting", name)
                 _merge_excludes(app_dir, local)
                 shutil.rmtree(git_dir, onerror=_force_rm)
             _drop_boilerplate_gitignore(app_dir)

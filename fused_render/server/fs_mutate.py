@@ -1346,16 +1346,23 @@ def _fs_rename(body: dict, x_fused: str | None):
         return _error(f"cannot rename {src} -> {dst}: {e}")
     # A WHOLE app folder moved: record both sides in the shared repo, or the
     # old name's deletion sits uncommitted forever (see _record_app_removal).
+    # The dst-only case is the RESTORE path — undo-from-trash comes back as a
+    # rename whose src is the trash entry, and without a commit the restored
+    # folder would sit untracked at the repo root just as a deleted one would.
     try:
         from fused_render import app_git
 
         s, d = os.path.abspath(src), os.path.abspath(dst)
-        if app_git.app_dir_for(s) == s:
-            msg = f"Rename app {os.path.basename(s)} to {os.path.basename(d)}" \
-                if app_git.app_dir_for(d) == d else f"Move app {os.path.basename(s)} away"
+        src_is_app = app_git.app_dir_for(s) == s
+        dst_is_app = app_git.app_dir_for(d) == d
+        if src_is_app and dst_is_app:
+            msg = f"Rename app {os.path.basename(s)} to {os.path.basename(d)}"
             app_git.commit(s, msg)
-            if app_git.app_dir_for(d) == d:
-                app_git.commit(d, msg)
+            app_git.commit(d, msg)
+        elif src_is_app:
+            app_git.commit(s, f"Move app {os.path.basename(s)} away")
+        elif dst_is_app:
+            app_git.commit(d, f"Restore app {os.path.basename(d)}")
     except Exception:
         pass
     return _stat_payload(dst, os.path.isdir(dst))
