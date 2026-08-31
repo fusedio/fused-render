@@ -23,6 +23,7 @@ import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
+import { FdaStrip } from "@platform/ui/FdaStrip";
 import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
 import { tabHref } from "@apps/ai_models/routes";
 
@@ -466,6 +467,7 @@ export default function Home({ config }: { config: Config }) {
                 than spanning the window. Hidden while a search is live for the
                 same reason the strips are: the search result IS the page then. */}
             <ClaudeHealthStrip />
+            <FdaStrip />
             <Section id="home-sec-apps" title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <SkeletonRow count={shown} label="Loading apps" variant="app" />
