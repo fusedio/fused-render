@@ -290,6 +290,34 @@ export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
   return getJson<ClaudeInstallStatus>("/api/claude/install");
 }
 
+/** A browser sign-in, as the server holds it.
+
+    There is no `output` here, unlike the install record. The child's lines carry
+    the authorize URL's `state` and `code_challenge`, so the server keeps its
+    tail in memory and surfaces only the one derived sentence in `error`. */
+export interface ClaudeLoginStatus {
+  in_flight: boolean;
+  started_at: number | null;
+  /** The child's own diagnosis when a sign-in ended without signing in. */
+  error: string | null;
+}
+
+/** Start a browser sign-in. The CLI opens the page and completes on its own
+    loopback callback — no code is pasted, and none reaches the app. Rejects with
+    the server's sentence when one is already waiting. */
+export function startClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>("/api/claude/login", {});
+}
+
+export function getClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return getJson<ClaudeLoginStatus>("/api/claude/login");
+}
+
+export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boolean }> {
+  return postJson<ClaudeLoginStatus & { canceled: boolean }>(
+    "/api/claude/login/cancel", {});
+}
+
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
 export function runClaudeDoctor(): Promise<{
   ok: boolean;
