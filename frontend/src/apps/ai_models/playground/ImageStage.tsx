@@ -12,7 +12,8 @@
 // step-distilled and was benchmarked at 4 steps (D310) — the generic 28-step
 // default turned a ~30-second first image into minutes, which is the
 // difference between a playground and a demo that appears broken. A model
-// with no hint keeps the server's 28.
+// with no CATALOG hint falls back to `FALLBACK_STEPS`, not to the server's
+// 28 — see that constant.
 //
 // A model that can be handed a BASE IMAGE (AI-9f) also gets an attachment row
 // at the top of the composer: pick a file, or take one with the webcam. Which
@@ -61,6 +62,19 @@ import {
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
+// What an UNCATALOGUED image model starts at. Not the server's 28, which is a
+// generic diffusion default and wrong for everything this app actually ships:
+// the shortlist is step-distilled (FLUX.2 klein was benchmarked at 4, D310),
+// and the catalog says so per model. But the fallback is what a repo the
+// curation has no row for gets, and those are overwhelmingly the same family
+// under a different id -- `black-forest-labs/FLUX.2-klein-4B` is the base repo
+// of the very entry that declares `steps: 4`, and it landed here on 28: seven
+// times the denoising work for a model distilled not to need it, which reads
+// as "the GPU path is slow" rather than "the default is wrong". 4 makes the
+// unknown-model case start fast and be dragged up, instead of starting slow
+// and having to be diagnosed. The rail and the Max chip still reach
+// `SERVER_STEPS`; only the STARTING point moved.
+const FALLBACK_STEPS = 4;
 // Small, fast AND wide on purpose: 480x272 renders in a fraction of 1024²'s
 // time and is plenty to judge a prompt by — the first picture arriving quickly
 // IS the playground's pitch — and 16:9 is the shape the result reads best at
@@ -276,7 +290,7 @@ interface Run {
 
 export function ImageStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
   // The model's own benchmarked step count, when the curation measured one.
-  const modelSteps = entry.defaults?.steps ?? SERVER_STEPS;
+  const modelSteps = entry.defaults?.steps ?? FALLBACK_STEPS;
   const speedChips =
     entry.defaults?.steps != null
       ? [
