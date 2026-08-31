@@ -430,7 +430,7 @@
   /* Above `.notif-host`'s own 2000 (code review finding #5): `#main` — this
      panel's ancestor — precedes `<NotificationHost />` in App.tsx's markup,
      so on an EQUAL z-index the later sibling wins regardless of which one
-     the user actually opened, and a toast, FdaCard or the server banner
+     the user actually opened, and a toast or the server banner
      painted over an open panel. One higher is enough to always win against
      that column while it is open, without reaching for anything above the
      app's own stacking scale. */
@@ -1438,25 +1438,7 @@
   color: var(--warning-strong);
 }
 
-/* Full Disk Access nudge (FdaCard.tsx): an invitation, not an outage — plain
-   neutral tones on the same plate, no accent, no red. */
-.server-status-fda {
-  border-color: var(--border);
-  font-size: 13px;
-  padding: 12px 14px;
-}
-
-.server-status-fda .server-status-title {
-  color: var(--fg);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.server-status-fda-go {
-  margin-right: 8px;
-}
-
-/* The offer state's how-to, an ordered list inside the card body. */
+/* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
 .fda-steps {
   margin: 0;
   padding-left: 18px;
