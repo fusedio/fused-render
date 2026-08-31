@@ -3826,9 +3826,11 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
                              folder=str(folder), label="R")
     rounds = []
     installed = {"yes": False}
+    report_jobs = []
 
-    def fake_start(project_dir):
+    def fake_start(project_dir, report_job=True):
         rounds.append(project_dir)
+        report_jobs.append(report_job)
         # Round one is the interpreter, under a key that is NOT the venv key.
         return {"key": "bootstrap-key" if len(rounds) == 1 else "venv-key",
                 "done": False}
@@ -3852,6 +3854,9 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     # TWO rounds: the interpreter, then the packages. One would have installed a
     # python and then waited for packages nobody had asked for.
     assert len(rounds) == 2
+    # `_ensure_venv` mirrors this same install into its own job row — `start()`
+    # must not open a second, generic one alongside it.
+    assert report_jobs == [False, False]
 
 
 def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
@@ -3882,7 +3887,7 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -3938,7 +3943,7 @@ def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_pat
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -4028,7 +4033,7 @@ def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: False)
     monkeypatch.setattr(envinstall, "start",
-                        lambda d: {"key": "abc123", "done": False, "claimed": True})
+                        lambda d, report_job=True: {"key": "abc123", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: {"done": False, "stage": "sync"})
     monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
     # The real one — the fixture stubs it, and this test is about what it does.
@@ -4086,7 +4091,7 @@ def shared_install(fake_runner, monkeypatch):
 
     state = {"claims": 0, "done": False, "cancelled": [], "error": None}
 
-    def start(project_dir):
+    def start(project_dir, report_job=True):
         state["claims"] += 1
         return {"key": "shared-key", "done": False, "claimed": state["claims"] == 1}
 
@@ -4407,7 +4412,7 @@ def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: installed["yes"])
     monkeypatch.setattr(envinstall, "start",
-                        lambda d: {"key": "shared-key", "done": False, "claimed": True})
+                        lambda d, report_job=True: {"key": "shared-key", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: (
         installed.update(yes=True) or {"done": True, "error": None, "stage": "done"}))
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")

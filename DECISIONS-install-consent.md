@@ -509,3 +509,35 @@ round 2's `f"Preparing {name}"` unchanged. Regression test drives an actual
 two-round `start()` sequence (mocking `script_python_ready` False then True,
 same pattern `test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed`
 already uses) and asserts both rows' titles.
+
+## Stale test doubles after `envinstall.start()` gained `report_job`
+
+CI's `fused-engine` job failed: 10 tests in `tests/test_ai_runtime.py` raised
+`TypeError: <lambda>() got an unexpected keyword argument 'report_job'` at
+`ai/supervisor.py:1008`'s `envinstall.start(runner.folder, report_job=False)`.
+The `report_job` keyword (added earlier on this branch so the AI venv-bringup
+path doesn't open a second, duplicate jobs-dock row for the same install)
+was added to production's `envinstall.start()` but the test doubles standing
+in for it in `test_ai_runtime.py` — six of them, all predating the keyword —
+still had the old signature and blew up the moment the supervisor called
+through them with the new argument.
+
+Fixed all six: the `fake_start` in
+`test_the_venv_wait_polls_the_key_the_installer_reports` and the `start`
+closure in the `shared_install` fixture now take `report_job=True` and (for
+`fake_start`) record every value they were called with; the four bare
+lambdas now accept `report_job=True` and ignore it, since those tests aren't
+about what gets passed. Strengthened
+`test_the_venv_wait_polls_the_key_the_installer_reports` with
+`assert report_jobs == [False, False]` — the one assertion pinning that
+`_ensure_venv` actually passes `report_job=False` on both rounds, which
+nothing previously checked.
+
+Checked for the same staleness against the branch's other signature change
+(`_env_install_worker._build` gaining `--no-build`/`--no-install-project`
+and an `allow_build` slot): no other stale doubles found — every
+`envinstall.start` monkeypatch and every `worker._build(...)` call in the
+suite already matches the current signatures.
+
+Did not touch `envinstall.start` or `ai/supervisor.py` — production
+behaviour there is correct; only the doubles were behind.
