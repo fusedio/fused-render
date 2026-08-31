@@ -247,7 +247,8 @@ function CurrentAppRow({
         "bookmark-row current-app-row" +
         (active ? " active" : "") +
         (app.exists ? "" : " is-missing") +
-        (app.running ? " is-running" : "")
+        (app.running ? " is-running" : "") +
+        (app.unread && !app.running ? " is-unread" : "")
       }
       title={tip}
       draggable
@@ -293,17 +294,6 @@ function CurrentAppRow({
           </svg>
         )}
       </span>
-      {/* The unread dot sits IN FRONT of the name (owner, 2026-08-31): a task
-          under this app finished and has not been read — the Tasks row's green,
-          worn per app. Yellow outranks green (one dot per row, the Tasks rule),
-          so it hides while anything runs; it clears when the task is read,
-          since it draws the raw doneUnread state, not a visit-stamped one. */}
-      {app.unread && !app.running && (
-        <span
-          className="sidebar-rail-dot is-unread current-app-unread"
-          aria-hidden="true"
-        />
-      )}
       <a
         className="bookmark-name"
         href={href}
@@ -318,6 +308,18 @@ function CurrentAppRow({
       {app.running && (
         <span
           className="sidebar-rail-dot is-running current-app-running"
+          aria-hidden="true"
+        />
+      )}
+      {/* The unread dot: a task under this app finished and has not been read —
+          the Tasks row's green, worn per app, in the running dot's own slot
+          after the name (owner, 2026-08-31). Yellow outranks green (one dot per
+          row, the Tasks rule), so it hides while anything runs; it clears when
+          the task is read, since it draws the raw doneUnread state, not a
+          visit-stamped one. */}
+      {app.unread && !app.running && (
+        <span
+          className="sidebar-rail-dot is-unread current-app-unread"
           aria-hidden="true"
         />
       )}

@@ -1199,21 +1199,16 @@ a.bookmark-name::after {
 /* The running dot sits after the name, in flow: the name gives up its
    stretch so the dot hugs the text instead of drifting to the row's end
    (under the hover-only actions). */
-.current-app-row.is-running .bookmark-name {
+.current-app-row.is-running .bookmark-name,
+.current-app-row.is-unread .bookmark-name {
   flex: 0 1 auto;
 }
 
-.current-app-running {
-  position: static;
-  flex: 0 0 auto;
-  margin-left: 6px;
-}
-
-/* The unread dot sits BEFORE the name (owner, 2026-08-31), never over the
-   glyph — the glyph slot is identity, the dot is state. */
+.current-app-running,
 .current-app-unread {
   position: static;
   flex: 0 0 auto;
+  margin-left: 6px;
 }
 
 .current-app-archive:disabled {
