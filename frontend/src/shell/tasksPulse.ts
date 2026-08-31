@@ -143,7 +143,7 @@ export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
  *
  * Called by the surfaces that learn a scheduled run ended long before any timer
  * here would: the queue card's job snapshot (about a second behind the turn —
- * QueueDock) and the schedule's own done/failed events (App wiring
+ * ActivityDock) and the schedule's own done/failed events (App wiring
  * useScheduleEvents). Without this the sidebar and the Tasks page sat out
  * their 10–30s cadences while the status bar already said finished —
  * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if

@@ -1,7 +1,7 @@
 // The rules for repo-update rows in their own sibling notification card
 // (SPEC §36, D555 — no longer rows inside the jobs/downloads activity card),
 // kept pure so they can be tested without a DOM or a poll — the same split
-// queue-dock-lib.ts makes against QueueDock.tsx: what a row SAYS and WHICH
+// queue-dock-lib.ts makes against ActivityDock.tsx: what a row SAYS and WHICH
 // action it offers live here; the polling, the card's own plate/header/fold
 // and the pixels all live in RepoUpdatesDock.tsx.
 //

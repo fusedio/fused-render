@@ -1006,7 +1006,11 @@ def _attach_dirs(raw: str) -> list:
         # A root ("/", "C:/") has no parent to scope to — the rule would be the
         # whole disk. Also drops the shots dir if the page ever names it, since
         # its rule is unconditional.
-        if wired.rstrip("/").rstrip(":") in ("", "/"):
+        # Asked of the OS, not of the spelling: `os.path.dirname` of a root IS
+        # the root on every platform ("/" and "C:\\" alike), where a string
+        # strip of "C:/" left "C" and let the whole drive through on Windows.
+        normed = os.path.normpath(path)
+        if os.path.dirname(normed) == normed:
             continue
         if wired == _wire_path(SHOTS):
             continue

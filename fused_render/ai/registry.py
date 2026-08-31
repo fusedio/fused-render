@@ -1562,9 +1562,10 @@ _RUNNERS: tuple[Runner, ...] = (
 @dataclass(frozen=True)
 class VideoTraits:
     """The shape of a video request, for the one runner that will actually
-    serve it — the three facts `server/routers/ai_runtime.py`'s route used
-    to hardcode before this table existed: the frame-count grid, the default
-    canvas, and the default step count.
+    serve it — four facts `server/routers/ai_runtime.py`'s route either
+    hardcoded before this table existed (the frame-count grid, the default
+    canvas, the default step count) or would otherwise have to guess at
+    (whether the engine accepts a reference image at all).
 
     **The frame grid is `frames_base + frames_step * n`**, `n` starting at 0
     — `_snap_frames` (`ai_runtime.py`) rounds a request UP to the nearest
@@ -1591,6 +1592,13 @@ class VideoTraits:
     default_width: int
     default_height: int
     default_steps: int
+    #: Whether the engine accepts an I2V reference image at all — an ENGINE
+    #: fact (the SIGNATURE of `generate_and_save`/`generate_two_stage`), not
+    #: an app-chosen rail, so it lives here rather than as a shared constant
+    #: the way `_MIN_VIDEO_SIDE` and friends do. `catalog.py`'s video-traits
+    #: payload carries it through so the Playground cannot offer an image
+    #: control the resolved engine will not honour (SPEC AI-15).
+    supports_image: bool
 
 
 #: Runner code -> its `VideoTraits`. ABSENT for a runner with no video
@@ -1612,7 +1620,8 @@ VIDEO_TRAITS: dict[str, VideoTraits] = {
     # CLI's `--width`/`--height`/(distilled default) numbers.
     "ltx-video": VideoTraits(
         frames_base=1, frames_step=8, default_frames_n=12,
-        default_width=704, default_height=480, default_steps=8),
+        default_width=704, default_height=480, default_steps=8,
+        supports_image=True),
 }
 
 

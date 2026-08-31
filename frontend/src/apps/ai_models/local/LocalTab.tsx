@@ -221,6 +221,18 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     ),
   );
 
+  // Repo id -> the curated `label` (AI-2c, catalog.py): a human display name is
+  // a CURATED field, never one derived by mechanically stripping a repo id at
+  // runtime — `modelName()` (RepoCard.tsx) is exactly that mechanical strip,
+  // kept only as the fallback for a repo the curation does not name. Keyed by
+  // the same `m.repo ?? m.id` as `repoById` above, since a card's `repo.id` is
+  // the disk-side address, not the curated id a llama.cpp GGUF is filed under.
+  const labelByRepoId = new Map<string, string>(
+    (catalog ?? []).flatMap((entry) =>
+      entry.models.map((m) => [m.repo ?? m.id, m.label] as const),
+    ),
+  );
+
   // The click is held until something ELSE can speak for the pull — the runtime
   // reporting it, `settling` carrying it through the walk, or the walk finding
   // it on disk (a "download" that was a cache hit and finished before any poll
@@ -421,6 +433,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       <RepoCard
         key={r.path}
         repo={r}
+        label={labelByRepoId.get(r.id)}
         recommended={curated.has(r.id)}
         loaded={loadedById.get(r.id)}
         job={jobByModel.get(r.id)}

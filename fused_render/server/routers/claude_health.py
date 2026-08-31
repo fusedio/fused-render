@@ -121,3 +121,57 @@ async def api_claude_doctor(x_fused: str | None = Header(default=None)):
         return {"ok": True, "doctor": report, "path": path}
 
     return await run_in_threadpool(_run)
+
+
+# --- signing in ---------------------------------------------------------------
+#
+# The third repair, and the one that needed a second door rather than more code:
+# `/login` is a TUI slash command, but `claude auth login` opens the browser and
+# completes on its own loopback callback, so the app can start a real sign-in
+# without ever handling an OAuth code. See fused_render/claude_login.py.
+#
+# These are separate endpoints rather than a third `/api/claude/install` action
+# because this one waits on a person: it needs a cancel, and it must not occupy
+# the install slot while a browser window sits open.
+
+
+@router.post("/api/claude/login")
+async def api_claude_login(x_fused: str | None = Header(default=None)):
+    """Start a browser sign-in, and return the opening record.
+
+    The X-Fused guard, like its neighbours: this spawns a process AND opens a
+    browser window on the user's desktop, which is not something a blind
+    cross-origin POST may do.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    try:
+        return await run_in_threadpool(claude_login.start)
+    except claude_login.LoginError as e:
+        # A refusal with a sentence the strip shows as-is — "a sign-in is
+        # already waiting in your browser" is the whole value of the 409, since
+        # the window the user needs is already open behind the app.
+        return _error(str(e), status=409)
+
+
+@router.get("/api/claude/login")
+async def api_claude_login_status():
+    """The current sign-in record. A read — no guard, no spawn."""
+    from fused_render import claude_login
+
+    return claude_login.status()
+
+
+@router.post("/api/claude/login/cancel")
+async def api_claude_login_cancel(x_fused: str | None = Header(default=None)):
+    """Stop a sign-in the user gave up on. Idempotent, and guarded because it
+    signals a process."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    return await run_in_threadpool(claude_login.cancel)

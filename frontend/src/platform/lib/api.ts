@@ -35,13 +35,12 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
-  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
-  // on the packaged mac app when the probe is conclusive. FdaCard renders
-  // off this; absent means render nothing and stop watching. `relevant`
-  // flips when this session first reads under a TCC-protected folder — the
-  // moment the Allow prompts start, which is the only moment the card is
-  // worth showing.
-  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
+  // Full Disk Access state (fused_render/shell/fda.py) — present only on the
+  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
+  // absent means render nothing and stop watching. `denied` flips when this
+  // session hits a PermissionError on an fs route — the moment the warning
+  // is worth showing; dismissing clears it server-side until the next one.
+  fda?: { granted: boolean; denied: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -289,6 +288,34 @@ export function startClaudeInstall(
 
 export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
   return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** A browser sign-in, as the server holds it.
+
+    There is no `output` here, unlike the install record. The child's lines carry
+    the authorize URL's `state` and `code_challenge`, so the server keeps its
+    tail in memory and surfaces only the one derived sentence in `error`. */
+export interface ClaudeLoginStatus {
+  in_flight: boolean;
+  started_at: number | null;
+  /** The child's own diagnosis when a sign-in ended without signing in. */
+  error: string | null;
+}
+
+/** Start a browser sign-in. The CLI opens the page and completes on its own
+    loopback callback — no code is pasted, and none reaches the app. Rejects with
+    the server's sentence when one is already waiting. */
+export function startClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>("/api/claude/login", {});
+}
+
+export function getClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return getJson<ClaudeLoginStatus>("/api/claude/login");
+}
+
+export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boolean }> {
+  return postJson<ClaudeLoginStatus & { canceled: boolean }>(
+    "/api/claude/login/cancel", {});
 }
 
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
@@ -2211,7 +2238,37 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
 /** The URL to draw an app icon from: the raw file, with its mtime as a cache
  *  key so an edited icon.svg shows up without a hard reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
-  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
+  // Full float mtime, not the floored second — a same-second replacement of
+  // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
+  return rawUrl(icon) + (mtime ? "&v=" + mtime : "");
+}
+
+/** Write (or replace) the app folder's `icon.svg` — the Projects row glyph
+ *  and the tab favicon. `svg` is a complete standalone document; the sidebar's
+ *  icon picker wraps the chosen emoji in one. */
+export async function setAppIcon(
+  path: string,
+  svg: string,
+): Promise<{ path: string; replaced: boolean }> {
+  const r = await fetch("/api/apps/icon", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ path, svg }),
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
+}
+
+/** Delete the app folder's `icon.svg` — back to the generic mark. */
+export async function removeAppIcon(
+  path: string,
+): Promise<{ removed: boolean }> {
+  const r = await fetch(`/api/apps/icon?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
@@ -2226,6 +2283,41 @@ export async function removeCurrentApp(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** Rename the app's FOLDER on disk. The server settles the move the same way
+ *  an out-of-band move is settled: stores repointed, Claude sessions carried
+ *  along. Answers the new canonical path. */
+export function renameCurrentApp(
+  path: string,
+  name: string,
+): Promise<{ ok: boolean; path: string }> {
+  return postJson<{ ok: boolean; path: string }>("/api/current-apps/rename", {
+    path,
+    name,
+  });
+}
+
+/** Mark every message of every task under the app's folder read — clears the
+ *  row's unread dot in one gesture. */
+export function readCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; marked: number; tasks: number }> {
+  return postJson<{ ok: boolean; marked: number; tasks: number }>(
+    "/api/current-apps/read",
+    { path },
+  );
+}
+
+/** Archive every task under the app's folder — the ✕'s task half without its
+ *  desk half: the row stays. */
+export function archiveCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; archived: number; cancelled: number }> {
+  return postJson<{ ok: boolean; archived: number; cancelled: number }>(
+    "/api/current-apps/archive",
+    { path },
+  );
 }
 
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
@@ -3360,6 +3452,10 @@ export interface AiCatalogCapability {
     defaultWidth: number;
     defaultHeight: number;
     defaultSteps: number;
+    /** Whether the resolved engine accepts a reference image at all
+     *  (`registry.VideoTraits.supports_image`, SPEC AI-15) — so the
+     *  Playground cannot offer a control the render will not honour. */
+    supportsImage: boolean;
   } | null;
 }
 

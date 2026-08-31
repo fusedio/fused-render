@@ -12,7 +12,8 @@ The convention is one hidden folder at the app's root::
     <app>/.fused/
         data/       persistent state the app OWNS  — survives forever
         cache/      derived bytes the app can REBUILD — safe to delete
-        meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>"}
+        meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>",
+                     "migrations": [...]}   # only once the folder has moved
 
 `data` vs `cache` is the whole point of the split, and it is a promise made to
 the user, not a naming preference: everything under `cache/` must be
@@ -20,15 +21,20 @@ reconstructible from `data/` plus the outside world, so a "clear the cache"
 sweep (by the user, by us, by a disk cleaner) can never destroy something the
 app cannot get back. Anything that fails that test is data.
 
-**`meta.json` records where the app was set up, and is never rewritten.** The
-live path always wins — this module resolves everything from the `app_dir`
-argument it is given — so the recorded path is not a lookup key, it is a
-WITNESS. A mismatch means the folder was moved or copied since the state was
-created, which is the one fact an app cannot otherwise learn about itself, and
-it is exactly the moment a path-keyed cache entry or an absolute path stored in
-`data/` has quietly gone stale. Rewriting the field on sight would erase the
-evidence, so `ensure` leaves it alone and logs; deciding what a move MEANS is
-the app's call (a photo index would repoint, a scratchpad would not care).
+**`meta.json` records where the app was set up.** The live path always wins —
+this module resolves everything from the `app_dir` argument it is given — so
+the recorded path is not a lookup key, it is a WITNESS. A mismatch means the
+folder was moved or copied since the state was created, which is the one fact
+an app cannot otherwise learn about itself, and it is exactly the moment a
+path-keyed cache entry or an absolute path stored in `data/` has quietly gone
+stale. A COPY (the recorded folder still exists) leaves the record alone;
+deciding what it means is the app's call. A MOVE (the recorded folder is gone)
+is settled by the server: the Claude sessions about the old path and its
+subtree are carried to the new one (`claude_session_move.relocate`), and once
+they all are, `app_dir` is repointed and the move appended to `migrations`
+(`[{"from", "to", "at", "sessions"}]`) — the evidence is kept, not erased. A
+relocate that had to leave a live session behind leaves the record stale so
+the next open retries.
 
 Creation is the SERVER's job, not the app's: `record_app_open` calls `ensure`
 whenever a page carrying the fused-app marker is rendered (routers/apps.py), so
@@ -119,9 +125,9 @@ def ensure(app_dir: str) -> bool:
     `app_dir`. True when the folder is in place afterwards.
 
     Idempotent and additive: existing directories are left alone, and an
-    existing `meta.json` is NEVER rewritten — not even when its `app_dir`
-    disagrees with the live path, which is the divergence the app is meant to
-    see (module docstring). Only a genuinely missing file is written.
+    existing `meta.json` is rewritten only to settle a MOVE after its sessions
+    were carried over (`_after_move`); a copy's divergence is left for the app
+    to see (module docstring). Otherwise only a missing file is written.
 
     Refuses a mount-backed folder outright. A remote mount is not an app's
     private disk, `makedirs` on one is a network round trip on the render path,
@@ -163,7 +169,8 @@ def _ensure_meta(app_dir: str) -> None:
             # The witness fired: this folder is not where its state was made.
             logger.info(
                 ".fused/meta.json in %s records app_dir=%s — the app was moved "
-                "or copied; leaving the record intact", app_dir, recorded)
+                "or copied", app_dir, recorded)
+            _after_move(app_dir, recorded)
         return
     if os.path.exists(meta_path(app_dir)):
         return  # present but unreadable/malformed — the user's file, not ours
@@ -178,3 +185,87 @@ def _ensure_meta(app_dir: str) -> None:
             f.write("\n")
     except FileExistsError:
         pass
+
+
+def _after_move(app_dir: str, recorded: str) -> None:
+    """The witness fired. Decide copy from move, and settle a move.
+
+    The recorded folder still existing means this is a COPY — the sessions
+    belong to the original, and the record stays as evidence for the app. Gone
+    means MOVED: the Claude sessions about the old path (and any folder under
+    it) are carried to the new one (`claude_session_move.relocate`), and only
+    once every one of them has gone across is `meta.json` repointed — with the
+    move appended to `migrations`, so the evidence the witness held is kept
+    rather than erased. A relocate that had to leave a live session behind
+    leaves the record stale too, and the next open tries again.
+    """
+    if os.path.isdir(recorded):
+        logger.info("%s still exists — a copy, not a move; record left intact", recorded)
+        return
+    from fused_render import app_state_move, claude_session_move
+
+    new = os.path.abspath(app_dir)
+    meta = read_meta(app_dir) or {}
+    migrations = meta.get("migrations")
+    if not isinstance(migrations, list):
+        migrations = []
+    # Every place the sessions may be sitting: the recorded origin, plus the
+    # destination of each earlier hop that could not finish (a live session
+    # held it, the folder moved again before it ended). Those hops already
+    # carried the idle transcripts to their intermediate path, so a search
+    # from the origin alone would never see them again.
+    # The same copy-vs-move test applies to each of them: an intermediate
+    # folder that still exists is a copy of it, and its sessions stay there.
+    sources = [recorded] + [m["to"] for m in migrations
+                            if isinstance(m, dict) and m.get("pending")
+                            and isinstance(m.get("to"), str)]
+    moved, pending = [], []
+    for source in dict.fromkeys(sources):
+        if os.path.normcase(os.path.abspath(source)) == os.path.normcase(new):
+            continue
+        if os.path.isdir(source):
+            continue
+        # The server's own stores — bookmarks, shell recents, scheduled
+        # targets, the pin, the desk (current_apps), the registered-apps
+        # registry, app_recents — all name the source path. From each source,
+        # not just the origin: an earlier incomplete hop already pointed them
+        # at its intermediate path. Idempotent, so a retry costs nothing.
+        app_state_move.rewrite_stores(source, new)
+        result = claude_session_move.relocate(source, new)
+        moved += result["moved"]
+        pending += result["pending"]
+    # An open that finds this hop already recorded (a live session is still
+    # holding it) updates that entry rather than appending another.
+    prior = next((m for m in migrations if isinstance(m, dict) and m.get("pending")
+                  and isinstance(m.get("to"), str)
+                  and os.path.normcase(os.path.abspath(m["to"])) == os.path.normcase(new)),
+                 None)
+    entry = {
+        "from": recorded,
+        "to": new,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "sessions": len(moved) + (prior.get("sessions", 0) if prior else 0),
+    }
+    if prior is not None:
+        migrations.remove(prior)
+    if pending:
+        # Recorded so the next hop knows to look here too; `app_dir` stays
+        # at the origin so the witness keeps firing until this is settled.
+        entry["pending"] = pending
+        migrations.append(entry)
+        meta["migrations"] = migrations
+        logger.info("app moved %s -> %s: %d session(s) still live, retrying "
+                    "on the next open", recorded, app_dir, len(pending))
+    else:
+        for m in migrations:
+            if isinstance(m, dict):
+                m.pop("pending", None)
+        migrations.append(entry)
+        meta.update(app_dir=new, migrations=migrations)
+        logger.info("app moved %s -> %s: %d Claude session(s) carried over",
+                    recorded, app_dir, len(moved))
+    tmp = meta_path(app_dir) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, meta_path(app_dir))

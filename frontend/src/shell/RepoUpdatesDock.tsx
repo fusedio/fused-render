@@ -24,7 +24,7 @@
 // it never itself decides which repos are behind, and it never fetches git
 // directly.
 //
-// Same component/lib split as QueueDock.tsx/queue-dock-lib.ts and
+// Same component/lib split as ActivityDock.tsx/queue-dock-lib.ts and
 // DownloadManager.tsx/jobs.ts: row shaping, the branch-dependent action
 // choice, the dismissal rule and the header text are pure functions in
 // repo-updates-lib.ts, testable without a DOM; polling, mutation calls and
@@ -35,7 +35,7 @@
 // `DownloadManagerView`.
 //
 // WHY THIS FILE LIVES IN shell/, NOT platform/ — the same reason
-// StatusBar.tsx gives for QueueDock (platform/ui/StatusBar.tsx
+// StatusBar.tsx gives for ActivityDock (platform/ui/StatusBar.tsx
 // §"activity"): resolving a repo root to an explorer route is shell
 // knowledge, and frontend/scripts/check-boundaries.mjs forbids platform
 // importing shell. `navigate` (Fix with Claude's hop) lives in
@@ -68,7 +68,7 @@ import {
   type RepoStatus,
 } from "@shell/repo-updates-lib";
 
-// Same order of magnitude as QueueDock's own poll: fast enough that a row
+// Same order of magnitude as ActivityDock's own poll: fast enough that a row
 // appears soon after an app open triggers the server-side check, slow
 // enough to be a permanent background poll in every shell. The check itself
 // is throttled server-side (git_upstream.CHECK_TTL_S), so polling faster
@@ -186,6 +186,19 @@ function useDismissed() {
   return { dismissed, dismissOne, dismissAll };
 }
 
+// MIGRATED ONTO `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-status` (status-bar
+// merge, brief item 4), off the parallel `.q-row`/`.q-row-head`/`.q-title`/
+// `.q-status` family this row used to share with ActivityDock's own scheduled-
+// message rows. The dismiss ✕ was already `.dl-x`, so this is the last of
+// this row's classes to converge. `.q-all` STAYS for the primary action
+// (Update/Switch) and for "Fix with Claude" below: `.dl-row-cancel` — the
+// nearest `.dl-*` equivalent — is documented in notifications.css as reserved
+// for a specific verb family (Unload/Stop/Cancel, "prominent, not alarming"),
+// which this row's actions are not, so reusing it would misapply that
+// weight. `shell/ActivityDock.tsx`'s own queue rows (pending/live scheduled
+// messages) are UNTOUCHED by this migration — the brief names this card's
+// repo rows specifically — so `.q-row`/`.q-row-head`/`.q-title`/`.q-status`
+// stay live, still drawn by those rows.
 function RepoRowView({
   row,
   onDone,
@@ -233,9 +246,9 @@ function RepoRowView({
   };
 
   return (
-    <div className="q-row">
-      <div className="q-row-head">
-        <span className="q-title" title={row.repo.root}>
+    <div className="dl-row">
+      <div className="dl-row-head">
+        <span className="dl-title" title={row.repo.root}>
           {row.name}
         </span>
         {/* The one action, then the dismiss ✕ — the same left-to-right
@@ -268,7 +281,7 @@ function RepoRowView({
           ✕
         </button>
       </div>
-      <div className="q-status">{failure ? failure.message : repoStatusText(row)}</div>
+      <div className="dl-status">{failure ? failure.message : repoStatusText(row)}</div>
       {/* Refusal, not error text alone — the same failure-toast rule the git
           companion's own rows follow: a refusal is spoken AND offers a way
           out, never just swallowed. This surface has no chat of its own

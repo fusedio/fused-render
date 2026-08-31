@@ -333,11 +333,18 @@ def _fs_stat(path: str):
         st = _mount_safe_stat(path)
     except FileNotFoundError:
         return _error(f"no such file or directory: {path}", status=404)
-    except OSError:
+    except OSError as e:
         if is_mount_backed(path):
             return _error(
                 f"mount is slow or unresponsive, could not stat {path}",
                 status=503)
+        # A TCC-denied local path lands here as EPERM. Tell the Full Disk
+        # Access warning (shell/fda.py), and say "denied" rather than the
+        # historical "no such file" — a path the OS refused is not gone.
+        if isinstance(e, PermissionError):
+            from fused_render.shell import fda as shell_fda
+            shell_fda.note_denied(e)
+            return _error(f"cannot read {path}: {e}", status=403)
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick

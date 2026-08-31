@@ -1,5 +1,7 @@
-// StatusBar's own composition rules (D565, code review finding #8): three
-// sections, left to right by lifetime, always rendered — replacing
+// StatusBar's own composition rules (D565, code review finding #8; the
+// status-bar merge narrowed this to two sections, a follow-up revision split
+// Models back out into its own chip for a third): Models, Activity and
+// Notifications, left to right, always rendered — replacing
 // `tests/test_queue_dock.py::test_the_bar_reserves_space_inside_main_not_the_floating_column`,
 // which only ever grepped the stylesheet for a literal `.status-bar:empty`
 // string and could not see whether the bar actually behaves this way. The
@@ -21,7 +23,7 @@ function classesOf(node: ReactTestRendererJSON | ReactTestRendererJSON[] | null)
     .map((n) => n.props?.className as string);
 }
 
-test("renders all three sections, left to right by lifetime: models, activity, repoUpdates", () => {
+test("renders all three sections, left to right: models, activity, repoUpdates", () => {
   const tree = create(
     <StatusBar
       models={<div className="fake-models">m</div>}
@@ -38,11 +40,11 @@ test("renders all three sections, left to right by lifetime: models, activity, r
   ]);
 });
 
-test("an omitted models or repoUpdates section renders nothing for that slot — not an empty wrapper", () => {
+test("omitted sections render nothing for their slot — not an empty wrapper", () => {
   const tree = create(<StatusBar activity={<div className="fake-activity">a</div>} />).toJSON();
   const bar = tree as ReactTestRendererJSON;
   // React drops `undefined` children outright — the bar has exactly the one
-  // real section, no placeholder node standing in for the other two.
+  // real section, no placeholder node standing in for the others.
   expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual(["fake-activity"]);
 });
 

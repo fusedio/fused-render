@@ -3,7 +3,7 @@
 // `hasNew` — each chip draws one circle off its own list, so there is no
 // "something new" state left here to test.
 //
-// Rather than through a dock: `ModelsDock`'s own tests cover only its pure view (the
+// Rather than through a dock: the (former) `ModelsDock`'s own tests used to cover only its pure view (the
 // stateful half needs `useAiRuntime`), and these rules are where the two
 // defects that actually shipped on this branch lived.
 import { expect, test } from "bun:test";
@@ -82,41 +82,12 @@ test("a drained section still hears the next arrival — no permanent deafness",
   h.unmount();
 });
 
-// ---------------------------------------------------------------- neverOpen (Models)
-
-// D587, user: "the models popover should never auto open. that is user only".
-test("neverOpen leaves the panel shut on an arrival", () => {
-  const h = harness({ neverOpen: true });
-  h.render(["a"], true); // seeds
-  h.render(["a", "b"], true);
-  expect(h.last().autoOpen).toBe(false);
-  expect(h.last().open).toBe(false);
-  h.unmount();
-});
-
-// KNOCK-ON of finding 1 (coordinator: "verify that specific case rather than
-// reasoning about it"). Fixing the deafness must NOT hand Models an auto-open
-// path: it has to go from "closed" to "closed with a dot", never to "open".
-test("a drained neverOpen section stays closed on the next arrival, never opens", () => {
-  const h = harness({ neverOpen: true });
-  h.render(["a"], false); // seeds, open by preference
-  h.render([], false); // drains -> auto-closes (kept: closing is not opening)
-  expect(h.last().open).toBe(false);
-
-  h.render(["b"], false); // a new model becomes resident
-  expect(h.last().open).toBe(false);
-  expect(h.last().autoOpen).toBe(false);
-  h.unmount();
-});
-
-test("neverOpen KEEPS auto-close on drain — D580 was explicitly good", () => {
-  const h = harness({ neverOpen: true });
-  h.render(["a"], false); // seeds, open
-  h.render([], false); // Unload on the last row
-  expect(h.last().autoClose).toBe(true);
-  expect(h.last().open).toBe(false);
-  h.unmount();
-});
+// `neverOpen` (the flag the two now-deleted standalone Models/Engines chips
+// passed here, D587: "the models popover should never auto open. that is
+// user only") was deleted along with them — nothing calls this hook wanting
+// an announce-suppressed-but-occupying source any more; the status-bar merge
+// folded both into Activity's `alsoDrawn`, which the tests below already
+// cover (occupancy without announcing, and a genuine drain-close).
 
 // ------------------------------------------------- alsoDrawn (a second source)
 

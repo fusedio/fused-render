@@ -154,23 +154,35 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
- *   fused.ai.video({prompt, model, width, height, frames, steps, seed,
+ *   fused.ai.video({prompt, model, width, height, frames, steps, seed, image,
  *                   onProgress}) -> Promise<{path, url, model, prompt, width,
- *                                            height, frames, steps, seed}>
- *     Text to video, with audio, locally (SPEC §40) — MiniMax H3, Apple
+ *                                            height, frames, steps, seed,
+ *                                            image}>
+ *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
  *     Silicon only (no fallback on other platforms: the first capability
  *     with no "everywhere" runner). Same shape as fused.ai.image minus
- *     guidance (H3 is CFG-distilled and takes no such parameter) and
+ *     guidance (the engine is CFG-distilled and takes no such parameter) and
  *     previewUrl (no live preview in this build), plus frames — snapped
- *     server-side to h3's own valid grid, so the resolved object may not
- *     echo the number you asked for. Minutes to hours long
+ *     server-side to the engine's own valid grid, so the resolved object may
+ *     not echo the number you asked for. Minutes to hours long
  *     (VIDEO_TIMEOUT_S is 2h): onProgress fires per denoising step with the
  *     download-manager record, and that row's ✕ really stops the render —
  *     a real process kill, not merely an abandoned request. The seed comes
  *     back whether or not one was passed. Rejects with .type "cancelled" |
- *     "ai_error" | "unavailable" (no Apple Silicon, or the h3 binary is not
- *     staged — reason in the message, checked BEFORE any Apple-Silicon-only
- *     capability could otherwise look merely broken).
+ *     "ai_error" | "unavailable" (no Apple Silicon, or the engine's weights
+ *     are not staged — reason in the message, checked BEFORE any
+ *     Apple-Silicon-only capability could otherwise look merely broken).
+ *     `image`: one reference image to condition on — a path on THIS
+ *     machine, resolved beside this page when relative (like
+ *     readFile/rawUrl). Conditions the render at frame 0 with strength 1.0;
+ *     there is no per-image frame index or strength to set, and no list of
+ *     several reference images — the same single-image scope
+ *     fused.ai.image's own `image` option uses for an edit (SPEC AI-9f).
+ *     Also DERIVES the default width/height from the reference's own
+ *     aspect ratio when you do not pass one, the way fused.ai.image derives
+ *     an edit's default from its base image — pass width/height explicitly
+ *     to override either one. Rejects with .type "bad_request" if `image`
+ *     is missing, not a regular file, or anything but a single string.
  *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
@@ -329,7 +341,8 @@
   // before the document's own stylesheet, let alone its first paint.
   //
   // The theme is READ here rather than pushed in from the shell: reading the
-  // same localStorage key (same origin) plus this document's own matchMedia
+  // same localStorage key (same origin), a same-origin ancestor's resolved
+  // theme, or failing both this document's own matchMedia
   // means the shell never has to reach into a view, so a theme change is never
   // a re-render and can never remount or reload a live iframe. Cross-window
   // convergence rides the `storage` event, which fires in every other
@@ -341,6 +354,45 @@
   var THEME_KEY = "fused-render:theme";
   var DARK_QUERY = "(prefers-color-scheme: dark)";
 
+  // With the preference on System, only a TOP-LEVEL document may ask
+  // matchMedia. Inside an iframe, `prefers-color-scheme` is not the OS: the
+  // browser derives it from the computed `color-scheme` of the parent's
+  // <iframe> element (CSS Color Adjust §"preferred color scheme"). This
+  // script is parser-blocking at the very top of the child's <head>, so in a
+  // nested chain (embed shell → fusedapp template → entry page) it can run
+  // before an ancestor's own color-scheme has been applied — the query then
+  // answers with a transient default, and Chrome does not fire the matchMedia
+  // `change` event when the inherited value settles, so the wrong answer
+  // froze until the next refresh, winning or losing the race at random.
+  // Instead a framed document INHERITS the nearest same-origin ancestor's
+  // already-resolved theme (they run this same script, or are the shell whose
+  // index.html bootstrap sets `data-theme` pre-paint), and the mutation
+  // observer in startTheme keeps it following later flips.
+  // The inherit is race-free where matchMedia was not: an ancestor's copy of
+  // this script is parser-blocking at the top of ITS <head>, and its iframes
+  // are created by content that parses after it — so by the time this child
+  // document exists, every same-origin ancestor already carries `data-theme`
+  // or `style.colorScheme` (the embed shell sets `data-theme` in index.html's
+  // pre-paint bootstrap, likewise before any iframe mounts).
+  //
+  // Returns { theme, win } — `win` is the ancestor the value came from, so
+  // startTheme can observe THAT document for later flips (observing a nearer
+  // non-participating ancestor would freeze the theme on an OS flip).
+  function inheritedTheme() {
+    var w = window;
+    try {
+      while (w.parent !== w) {
+        w = w.parent;
+        var el = w.document.documentElement;
+        var t = el.getAttribute("data-theme") || el.style.colorScheme;
+        if (t === "light" || t === "dark") return { theme: t, win: w };
+      }
+    } catch (e) {
+      /* cross-origin ancestor — stop climbing, resolve on our own */
+    }
+    return null;
+  }
+
   function resolvedTheme() {
     var pref = null;
     try {
@@ -349,6 +401,8 @@
       /* private mode / blocked storage — fall through to the OS preference */
     }
     if (pref === "light" || pref === "dark") return pref;
+    var inherited = inheritedTheme();
+    if (inherited) return inherited.theme;
     try {
       return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
     } catch (e) {
@@ -400,6 +454,22 @@
       window.matchMedia(DARK_QUERY).addEventListener("change", apply);
     } catch (e) {
       /* no matchMedia — a pinned Light/Dark still works */
+    }
+    // Framed documents inherit their theme (see inheritedTheme) — but a
+    // System-mode OS flip only reaches the top-level document's matchMedia,
+    // and no `storage` event fires for it. Follow the resolving ancestor's
+    // theme by observing the attributes it writes; each frame does this, so
+    // the flip cascades down a nested chain one document at a time.
+    try {
+      var source = inheritedTheme();
+      if (source) {
+        new MutationObserver(apply).observe(source.win.document.documentElement, {
+          attributes: true,
+          attributeFilter: ["data-theme", "style"],
+        });
+      }
+    } catch (e) {
+      /* cross-origin parent — matchMedia above is all we have */
     }
   }
 
@@ -3422,15 +3492,16 @@
 
   // fused.ai.video({prompt, ...}) -> Promise<{path, url, seed, ...}>
   //
-  // `aiImage`'s twin, minus `guidance` (H3 is CFG-distilled) and previewUrl
-  // (no live preview in this build), plus `frames`. Everything else about the
-  // waiting — onProgress per denoising step, the row's ✕ really stopping the
-  // render, the seed always coming back, resolving off the FILE when the row
-  // aged out from under a backgrounded tab — is the identical mechanism, so it
-  // is not restated here; see `aiImage`'s own comment for the reasoning.
+  // `aiImage`'s twin, minus `guidance` (the engine is CFG-distilled) and
+  // previewUrl (no live preview in this build), plus `frames`. Everything else
+  // about the waiting — onProgress per denoising step, the row's ✕ really
+  // stopping the render, the seed always coming back, resolving off the FILE
+  // when the row aged out from under a backgrounded tab — is the identical
+  // mechanism, so it is not restated here; see `aiImage`'s own comment for the
+  // reasoning.
   function aiVideo(opts) {
     opts = opts || {};
-    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed"];
+    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed", "image"];
     const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -3443,6 +3514,12 @@
     for (const key of videoKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
+    // `image`, when given, is page-relative exactly as `aiImage`'s own
+    // `image` is (RH-1): the page's own `?path=` becomes `body.base`. Sent
+    // unconditionally, same as there — a call with no `image` sends an
+    // unused `base` the server simply never reads.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/video", body).then((started) => {
       const watcher = watchJob(started.jobId);
       const done = () => ({ ...started, url: rawUrl(started.path) });

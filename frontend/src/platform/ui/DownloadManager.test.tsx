@@ -21,8 +21,13 @@
 import { describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-import { DownloadManagerView, type QueueSlot } from "@platform/ui/DownloadManager";
+import {
+  DownloadManagerView,
+  type EnginesSlot,
+  type QueueSlot,
+} from "@platform/ui/DownloadManager";
 import { jobAmount, type Job } from "@platform/lib/jobs";
+import type { RunningEngine } from "@platform/lib/api";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -151,10 +156,13 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   // opens (VS Code/Cursor status-bar idiom — no chevron, hover only).
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
   expect(tree).not.toBeNull();
-  // D579: `Activity` -> `Jobs` (user: "what about jobs?") — this codebase's
-  // own word for exactly this set (`fused_render/jobs.py`, `/api/jobs`).
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Jobs");
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
+  // `Activity` (status-bar merge) — this chip also carries the
+  // Background-tasks section since Engines folded into it (Models made the
+  // same trip and then split back out into its own chip, `shell/ModelsDock.tsx`);
+  // see DownloadManagerView's own header for why the narrower `Jobs` (D579) no
+  // longer names everything it shows.
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
   // D588: one circle, outlined because this section holds nothing. No count
   // element survives anywhere in the bar.
   expect(findAll(tree, "dl-count")).toHaveLength(0);
@@ -196,7 +204,7 @@ test("a done job and a failed job together leave this section with nothing to dr
   // it to take, and offering a button that would do nothing is the exact
   // blank-band problem code review finding #3 fixed below.
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
 });
 
 test("a scheduled run's own terminal row still counts and draws — the exemption is for stand-ins, not for AI rows", () => {
@@ -302,7 +310,7 @@ test("a failed job is drawn NOWHERE in this section — not a row, not the count
   // leaves it OUTLINED. A circle that still filled for a failure would be the
   // same bug the count version had.
   expect(circleFilled(tree)).toBe(false);
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
   const toggle = findAll(tree, "dl-toggle")[0];
   expect((toggle.props.className as string).split(" ")).not.toContain("is-failure");
 });
@@ -524,8 +532,8 @@ test("the chip's own click dismisses an auto-opened panel, leaving no dot behind
 // D580, the mirror of the above (user: "after a job finishes, ensure we close
 // the jobs popover if no jobs left"): the list draining to empty closes the
 // panel, so an auto-opened section cannot be left sitting on screen showing
-// `No jobs`. Fires only on the non-empty -> empty EDGE.
-test("the list draining to empty closes the panel instead of leaving it showing 'No jobs'", () => {
+// `No activity`. Fires only on the non-empty -> empty EDGE.
+test("the list draining to empty closes the panel instead of leaving it showing 'No activity'", () => {
   const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([job]);
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
@@ -534,9 +542,9 @@ test("the list draining to empty closes the panel instead of leaving it showing 
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(0);
-  // The chip itself stays — the bar's three sections are always present
-  // (D565) — and reads its idle label.
-  expect(text(findAll(after, "dl-summary")[0])).toBe("Jobs");
+  // The chip itself stays — the bar's sections are always present (D565) —
+  // and reads its idle label.
+  expect(text(findAll(after, "dl-summary")[0])).toBe("Activity");
   expect(circleFilled(after)).toBe(false);
 });
 
@@ -863,5 +871,143 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
     const rows = block(CSS, ".dl-rows");
     expect(rows).toContain("overflow-y: auto;");
     expect(rows).toContain("overflow-x: hidden;");
+  });
+});
+
+// ============================================================================
+// THE ACTIVITY MERGE — the Engines section (status-bar merge). Models made
+// this same trip and then moved back out into its own chip
+// (`shell/ModelsDock.tsx`, resurrected) in a follow-up revision — its own
+// tests live in `shell/ModelsDock.test.tsx` again, not here.
+//
+// No EnginesDock test file existed pre-merge: `EnginesCardView` is gone as
+// its own chip, and the row rendering it owned (`EngineRow`/`engineLabel`)
+// moved into this file's own component. What carries over is the row
+// structure/behaviour, now exercised through the `engines` prop below.
+// ============================================================================
+
+const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
+  engine_id: "e1",
+  kind: "template",
+  pid: 1,
+  version: "",
+  folder: "",
+  module: "",
+  ...over,
+} as RunningEngine);
+
+function renderActivity(props: {
+  reported?: Job[];
+  queue?: Partial<QueueSlot>;
+  engines?: EnginesSlot;
+}): ReactTestRendererJSON | null {
+  return create(
+    <DownloadManagerView
+      reported={props.reported ?? []}
+      queue={props.queue ? fullQueue(props.queue) : undefined}
+      engines={props.engines}
+      initialCollapsed={false}
+      refresh={() => {}}
+      patch={() => {}}
+    />,
+  ).toJSON() as ReactTestRendererJSON | null;
+}
+
+describe("the Background tasks section (moved off EnginesDock's own chip)", () => {
+  test("a running engine keeps the chip un-muted but its dot unfilled", () => {
+    const tree = renderActivity({ engines: { engines: [runningEngine()], onStop: async () => {} } });
+    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+      "is-idle",
+    );
+    expect(circleFilled(tree)).toBe(false);
+  });
+
+  test("draws the engine's label and kind, with a Stop button", () => {
+    const tree = renderActivity({
+      engines: {
+        engines: [runningEngine({ engine_id: "e2", kind: "background", folder: "/apps/geotiff" })],
+        onStop: async () => {},
+      },
+    });
+    const row = findAll(tree, "dl-row")[0];
+    expect(text(findAll(row, "dl-title")[0])).toBe("geotiff");
+    expect(text(findAll(row, "dl-amount")[0])).toBe("background");
+    expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop");
+  });
+
+  test("pressing Stop calls onStop with the engine id", async () => {
+    const seen: string[] = [];
+    const tree = create(
+      <DownloadManagerView
+        reported={[]}
+        engines={{ engines: [runningEngine({ engine_id: "e3" })], onStop: async (id) => { seen.push(id); } }}
+        initialCollapsed={false}
+        refresh={() => {}}
+        patch={() => {}}
+      />,
+    );
+    const button = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-cancel")[0];
+    await act(async () => {
+      (button.props as { onClick: () => void }).onClick();
+    });
+    expect(seen).toEqual(["e3"]);
+  });
+});
+
+describe("two sections sharing one Activity panel", () => {
+  test("a section heading renders only when 2+ sections are present", () => {
+    // ONE non-empty source (engines only): no heading needed to disambiguate.
+    const one = renderActivity({
+      engines: { engines: [runningEngine()], onStop: async () => {} },
+    });
+    expect(findAll(one, "dl-section-head")).toHaveLength(0);
+
+    // TWO non-empty sources (running + engines): both get a heading.
+    const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
+    const two = renderActivity({
+      reported: [running],
+      engines: { engines: [runningEngine()], onStop: async () => {} },
+    });
+    const heads = findAll(two, "dl-section-head").map(text);
+    expect(heads).toEqual(["Running", "Background tasks"]);
+  });
+
+  test("everything empty draws the single 'No activity' empty state, nothing else", () => {
+    const tree = renderActivity({
+      engines: { engines: [], onStop: async () => {} },
+    });
+    expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
+    expect(findAll(tree, "dl-section")).toHaveLength(0);
+    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).toContain(
+      "is-idle",
+    );
+  });
+
+  test("an engine arriving does not open the panel — only a job arrival does", () => {
+    // Mirrors the (deleted) Models/Engines chips' own `neverOpen` contract,
+    // now expressed through Activity's `alsoDrawn` wiring.
+    const renderer = create(
+      <DownloadManagerView
+        reported={[]}
+        engines={{ engines: [], onStop: async () => {} }}
+        ready
+        refresh={() => {}}
+        patch={() => {}}
+      />,
+    );
+    expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
+    act(() => {
+      renderer.update(
+        <DownloadManagerView
+          reported={[]}
+          engines={{ engines: [runningEngine()], onStop: async () => {} }}
+          ready
+          refresh={() => {}}
+          patch={() => {}}
+        />,
+      );
+    });
+    // Still collapsed — an engine coming up is not news.
+    expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
   });
 });

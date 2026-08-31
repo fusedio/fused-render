@@ -4,6 +4,7 @@ import itertools
 import json
 import mimetypes
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -21,7 +22,6 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
-from fused_render.shell import fda as shell_fda
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -41,6 +41,7 @@ from fused_render.shell import fda as shell_fda
 # fresh dict there, and a by-value copy here would keep serving the orphaned
 # pre-reload cache.
 from fused_render.server import mount as _server_mount
+from fused_render.shell import fda as shell_fda
 from fused_render.server.mount import (
     _STAT_CACHE,
     _fs_stat,
@@ -82,11 +83,6 @@ router = APIRouter()
 
 @router.get("/api/fs/stat")
 def api_fs_stat(path: str):
-    # The moment this app reads under a TCC-protected folder is the moment
-    # macOS starts prompting — which is when (and only when) the Full Disk
-    # Access nudge becomes worth showing (shell/fda.py). First line bails,
-    # so the steady-state cost is one bool read.
-    shell_fda.note_touch(path)
     # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
     # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
     # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
@@ -151,9 +147,6 @@ def api_fs_conditions(path: str):
 
 @router.get("/api/fs/list")
 def api_fs_list(path: str, cursor: str | None = None):
-    # See api_fs_stat: browsing into a protected folder is what makes the
-    # FDA nudge relevant.
-    shell_fda.note_touch(path)
     # A mount-backed listing must never issue kernel filesystem I/O: both
     # os.path.isdir and os.scandir below are kernel READDIR/GETATTR calls,
     # and on a flat remote prefix with millions of keys rclone's VFS must
@@ -273,6 +266,10 @@ def api_fs_list(path: str, cursor: str | None = None):
         with os.scandir(path) as it:
             dents = list(itertools.islice(it, _server_walk.LIST_MAX_ENTRIES + 1))
     except OSError as e:
+        # A PermissionError here is the moment the Full Disk Access warning
+        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
+        # exactly this EPERM, sometimes with no prompt ever shown.
+        shell_fda.note_denied(e)
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
@@ -609,9 +606,35 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # than fall back to a local file read.
     if shell_mounts.is_mount_backed(path):
         return _error("mount serve unavailable", status=503)
-    st = await asyncio.to_thread(_stat_or_none, path)
-    if st is None:
+    # Not _stat_or_none here: it folds EVERY OSError into "missing", and on a
+    # TCC-denied path the stat itself raises EPERM — the file would 404 as
+    # "no such file" when it exists and was refused, and the Full Disk Access
+    # warning (shell/fda.py) would never hear about it.
+    try:
+        st = await asyncio.to_thread(os.stat, path)
+    except PermissionError as e:
+        shell_fda.note_denied(e)
+        return _error(f"cannot read {path}: {e}", status=403)
+    except OSError:
+        # Any other OSError keeps the historical _stat_or_none contract:
+        # ENOENT, ENOTDIR, ELOOP and friends all report as missing.
         return _error(f"no such file: {path}", status=404)
+    if not stat.S_ISREG(st.st_mode):
+        return _error(f"no such file: {path}", status=404)
+    # Probe-open before handing the path to FileResponse: a TCC-denied file
+    # would otherwise raise PermissionError inside Starlette's response send —
+    # a generic 500, and the Full Disk Access warning (shell/fda.py) never
+    # hears about the one failure it exists to explain. The probe is a single
+    # open/close on a file the stat above already confirmed exists.
+    try:
+        await asyncio.to_thread(lambda: open(path, "rb").close())
+    except PermissionError as e:
+        shell_fda.note_denied(e)
+        return _error(f"cannot read {path}: {e}", status=403)
+    except OSError:
+        # A non-permission open failure (EIO, a file racing away) keeps its
+        # previous behavior: FileResponse surfaces it as the send-time error.
+        pass
     media_type, _ = mimetypes.guess_type(path)
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 

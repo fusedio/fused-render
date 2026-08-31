@@ -218,8 +218,10 @@ Notes:
 - **`_`-prefixed param names are the shell's**, and `_preview` is the one a page should read — only ever to do *less* work. See **"Reserved params and preview mode"**.
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
 - Uncaught `runPython` rejections auto-show a red traceback overlay — a good debugging default; catch the rejection yourself when you want custom error UI.
+- **A `<script src>` that 404s (broken relative path, missing file) does not trigger the traceback overlay** — the page just stays inert. If a view silently does nothing, check the browser console for a plain 404 before assuming Python failed.
 - **Reach the filesystem only through these helpers**, never by fetching `/api/fs/*` yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
 - `readFile`/`rawUrl` split: text you'll process → `readFile`; anything the browser should load itself (images, media, PDFs, download links) → `rawUrl`.
+- **A multi-file app's own sibling assets need the same treatment as data files.** The page is served at `/render?path=<abs path>`, not at its own directory — a bare `<script src="./app.js">` or `<link href="./style.css">` resolves against `/render` and 404s silently (the script just never runs; no overlay, no console error). Point it at `fused.rawUrl("app.js")` instead — `rawUrl` resolves a relative path against the page's own `?path=` for you.
 
 The editing pattern (used by the built-in code editor template):
 
@@ -300,7 +302,7 @@ Why this shape:
 
 **Every query key starting with `_` belongs to the shell, not to your page.** The runtime enforces it: `set()` throws, `get()` returns `undefined`, `getAll()` filters them out — `_file` being the single readable exception. So:
 
-- **Name page params plainly** (`limit`, `sort`, `offset`, `theme`). The shell's set — `_file`, `_mode`, `_preview`, `_nofocus`, `_layout`, `_side`, `_panel`, `_tab`, `_listing`, `_render`, `_rev` — grows without notice, and squatting on one means the shell overwrites your state or you overwrite the shell's.
+- **Name page params plainly** (`limit`, `sort`, `offset`, `theme`). The shell's set — `_file`, `_mode`, `_preview`, `_noopen`, `_nofocus`, `_layout`, `_side`, `_panel`, `_tab`, `_listing`, `_render`, `_rev` — grows without notice, and squatting on one means the shell overwrites your state or you overwrite the shell's.
 - **Read `_` params only through `fused.params`.** Reaching around it with `new URLSearchParams(location.search)` reads a value whose meaning is the shell's and can change under you. `_preview` is the one exception, below.
 - **Write the URL only through `fused.params.set`.** A `history.replaceState` built from your own params drops the shell's `_` keys and breaks the pane or tab the page is mounted in.
 
@@ -310,7 +312,7 @@ The shell renders pages nobody asked to *open*: `/apps` cards, listing-pane peek
 
 **Read the flag at boot and return early**, rendering something cheap and static — a title, a cached thumbnail, an inert placeholder. Under preview, start none of: `runPython` calls that import something heavy, scan a directory or hit the network; model loads and downloads; daemon starts; `fused.capture.*`, `writeFile`, `trackJob`; polling loops, `setInterval`, websockets, EventSource; anything that records an "open", mutates state, or unpacks on first use.
 
-Read it by climbing, because the flag is **inherited** — your page may be framed by a template that was the one stamped, and only the ancestor's URL carries it (this mirrors the runtime's own `selfOrAncestorHasFlag`):
+Read it by climbing, because the flag is **inherited** — your page may be framed by a template that was the one stamped, and only the ancestor's URL carries it (this mirrors the runtime's own `selfOrAncestorHasFlag`). This is safe only because the shell stamps `_preview` exclusively on non-interactive frames — a companion pane the user types into carries `_noopen=1` instead, precisely so a climbing `isPreview()` does not see it.
 
 ```js
 function isPreview() {
@@ -337,6 +339,8 @@ async function boot() {
 }
 boot();
 ```
+
+- **`_noopen=1` is not `_preview=1`.** A surface can be a real, interactive use of the page that simply shouldn't count as an "open" for recording purposes (the explorer's chat/git/mcp companion pane is one) — it carries `_noopen=1`, never `_preview`. Only `_preview` means "treat this as a picture, skip real work"; `_noopen` says nothing about gating and `isPreview()` should ignore it.
 
 Two more rules:
 
@@ -413,7 +417,8 @@ What the record count tells you, before you read anything else:
 | What you see | What it means |
 |---|---|
 | calls, all `ok` | It works. Report the timings. |
-| **zero records** | The page never called Python — its **JS** failed first. Look for a `page error` in the output: that is `window.onerror`, with the message and line number. |
+| zero records, but the page renders a visible placeholder | Correctly gated under `_preview` — expected, not a bug. |
+| zero records, and the page never rendered anything (blank/frozen) | JS failed before boot. Look for `page error` in the output: that is `window.onerror`, with the message and line number. |
 | one `error` | Python raised. The traceback and params are in the record. |
 | far more calls than interactions | A render loop — usually an `onChange` handler that calls `params.set` without a guard, so each write re-triggers itself. |
 | a high `stale` count | The page is issuing calls it throws away (superseded by the next one). Normal for a slider drag; suspicious otherwise. |
@@ -461,4 +466,4 @@ Nothing here holds state indefinitely — even `fused.engine(py)`, the warm vari
 - Using `readFile` for an image/video and stuffing bytes into the DOM → point the element's `src` at `fused.rawUrl(path)`.
 - Walking the filesystem (`os.walk`, `glob`, `find`) to answer "how many / how big / where are all my X files" → the index already knows; use `fused.fileIndex.query()` (`fused-render-index`).
 - Calling `fused.ai` on a page meant for export → the exporter rejects it textually (SPEC RH-11); a `fused.env` guard does not help.
-- Reporting "I wrote the files, try it" as verification → `fused-render calls --page <page>` says whether it actually ran. Zero records means the page's JS died before reaching Python — a different bug from a failing `main()`, and they look identical without the log.
+- Reporting "I wrote the files, try it" as verification → `fused-render calls --page <page>` says whether it actually ran. Zero records with nothing rendered means the page's JS died before reaching Python — a different bug from a failing `main()`, and they look identical without the log. Zero records with a visible placeholder rendered is not a bug at all — check `_preview` gating before assuming one.

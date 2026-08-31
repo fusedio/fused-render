@@ -1,11 +1,10 @@
-"""Tests for the Full Disk Access nudge (fused_render/shell/fda.py).
+"""Tests for the Full Disk Access warning (fused_render/shell/fda.py).
 
-The nudge is macOS-packaged-app-only, so every test that wants it on forces
+The warning is macOS-packaged-app-only, so every test that wants it on forces
 FUSED_RENDER_FDA_BANNER=1 — the same override a dev machine uses to exercise
-the card. FUSED_RENDER_HOME is redirected to a tmp dir so dismissal never
-touches the real ~/.fused-render.
+the strip. FUSED_RENDER_HOME is redirected to a tmp dir so nothing touches
+the real ~/.fused-render.
 """
-import json
 import os
 
 from fastapi.testclient import TestClient
@@ -43,12 +42,15 @@ def test_force_env_flips_offered_both_ways(monkeypatch):
     assert fda_mod.offered() is False
 
 
-def test_demo_forces_offered_and_ungranted(monkeypatch):
+def test_demo_forces_offered_ungranted_and_denied(monkeypatch):
     # A terminal-launched dev server inherits the terminal's TCC identity,
-    # which usually has FDA — "demo" is how the card gets exercised anyway.
+    # which usually has FDA — "demo" is how the strip gets exercised anyway,
+    # so it also forces `denied` without manufacturing a real PermissionError.
     monkeypatch.setenv(fda_mod.FORCE_ENV, "demo")
+    monkeypatch.setattr(fda_mod, "_denied", False)
     assert fda_mod.offered() is True
     assert fda_mod.granted() is False
+    assert fda_mod.snapshot()["denied"] is True
 
 
 def test_snapshot_is_none_when_not_offered(monkeypatch):
@@ -64,49 +66,33 @@ def test_snapshot_is_none_when_the_probe_is_inconclusive(monkeypatch):
     assert fda_mod.snapshot() is None
 
 
-def test_snapshot_carries_granted_dismissed_and_relevant(tmp_path, monkeypatch):
+def test_snapshot_carries_granted_and_denied(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(fda_mod.FORCE_ENV, "1")
     monkeypatch.setattr(fda_mod, "granted", lambda: False)
-    monkeypatch.setattr(fda_mod, "_touched", False)
-    assert fda_mod.snapshot() == {"granted": False, "dismissed": False, "relevant": False}
-    fda_mod.set_dismissed()
-    monkeypatch.setattr(fda_mod, "_touched", True)
-    assert fda_mod.snapshot() == {"granted": False, "dismissed": True, "relevant": True}
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    assert fda_mod.snapshot() == {"granted": False, "denied": False}
+    monkeypatch.setattr(fda_mod, "_denied", True)
+    assert fda_mod.snapshot() == {"granted": False, "denied": True}
 
 
-# ---- note_touch(): what makes the nudge relevant ------------------------------
+# ---- note_denied(): what makes the warning worth showing ----------------------
 
 
-def test_touch_flips_only_on_a_protected_path(monkeypatch, tmp_path):
+def test_denied_flips_only_on_a_permission_error(monkeypatch):
     monkeypatch.setenv(fda_mod.FORCE_ENV, "1")
-    monkeypatch.setattr(fda_mod, "_touched", False)
-    home = str(tmp_path)
-    monkeypatch.setattr(
-        fda_mod, "_protected_roots", lambda: [home + "/Desktop", "/Volumes"]
-    )
-    fda_mod.note_touch(home + "/Fused/project")
-    assert fda_mod._touched is False
-    # A sibling whose name merely EXTENDS a protected root must not count.
-    fda_mod.note_touch(home + "/Desktop-archive/x")
-    assert fda_mod._touched is False
-    fda_mod.note_touch(home + "/Desktop/report.pdf")
-    assert fda_mod._touched is True
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    fda_mod.note_denied(FileNotFoundError("gone"))
+    assert fda_mod._denied is False
+    fda_mod.note_denied(PermissionError("EPERM"))
+    assert fda_mod._denied is True
 
 
-def test_touch_covers_the_root_itself_and_volumes(monkeypatch, tmp_path):
-    monkeypatch.setenv(fda_mod.FORCE_ENV, "1")
-    monkeypatch.setattr(fda_mod, "_touched", False)
-    monkeypatch.setattr(fda_mod, "_protected_roots", lambda: ["/Volumes"])
-    fda_mod.note_touch("/Volumes")
-    assert fda_mod._touched is True
-
-
-def test_touch_is_inert_when_not_offered(monkeypatch):
+def test_denied_is_inert_when_not_offered(monkeypatch):
     monkeypatch.setenv(fda_mod.FORCE_ENV, "0")
-    monkeypatch.setattr(fda_mod, "_touched", False)
-    fda_mod.note_touch("/Volumes/usb")
-    assert fda_mod._touched is False
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    fda_mod.note_denied(PermissionError("EPERM"))
+    assert fda_mod._denied is False
 
 
 # ---- granted() probe semantics ----------------------------------------------
@@ -156,12 +142,19 @@ def test_dismiss_requires_the_fused_header(tmp_path, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_dismiss_persists_under_the_home_dir(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
+def test_dismiss_clears_denied_until_the_next_denial(tmp_path, monkeypatch):
+    # Dismiss is "not now", not "never": it clears the server-side flag, and
+    # the next PermissionError raises it again.
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(fda_mod, "granted", lambda: False)
+    monkeypatch.setattr(fda_mod, "_denied", True)
+
     resp = client.post("/api/fda/dismiss", headers=FUSED)
     assert resp.status_code == 200
-    with open(os.path.join(home, "fda.json")) as fh:
-        assert json.load(fh) == {"banner_dismissed": True}
+    assert client.get("/api/config").json()["fda"]["denied"] is False
+
+    fda_mod.note_denied(PermissionError("EPERM"))
+    assert client.get("/api/config").json()["fda"]["denied"] is True
 
 
 def test_endpoints_404_when_not_offered(tmp_path, monkeypatch):
@@ -187,24 +180,33 @@ def test_settings_opens_the_fda_pane(tmp_path, monkeypatch):
 def test_config_carries_fda_only_when_offered(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(fda_mod, "granted", lambda: False)
-    monkeypatch.setattr(fda_mod, "_touched", False)
+    monkeypatch.setattr(fda_mod, "_denied", False)
     body = client.get("/api/config").json()
-    assert body["fda"] == {"granted": False, "dismissed": False, "relevant": False}
+    assert body["fda"] == {"granted": False, "denied": False}
 
     monkeypatch.setenv(fda_mod.FORCE_ENV, "0")
     assert "fda" not in client.get("/api/config").json()
 
 
-def test_listing_a_protected_folder_makes_the_nudge_relevant(tmp_path, monkeypatch):
+def test_a_refused_listing_flips_denied(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(fda_mod, "granted", lambda: False)
-    monkeypatch.setattr(fda_mod, "_touched", False)
-    desktop = tmp_path / "Desktop"
-    desktop.mkdir()
-    monkeypatch.setattr(fda_mod, "_protected_roots", lambda: [str(desktop)])
+    monkeypatch.setattr(fda_mod, "_denied", False)
+    gated = tmp_path / "gated"
+    gated.mkdir()
 
-    client.get("/api/fs/list", params={"path": str(tmp_path)})
-    assert client.get("/api/config").json()["fda"]["relevant"] is False
+    assert client.get("/api/config").json()["fda"]["denied"] is False
 
-    client.get("/api/fs/list", params={"path": str(desktop)})
-    assert client.get("/api/config").json()["fda"]["relevant"] is True
+    # Deny ONLY the gated path: fs_read's `os` is the global module, so a
+    # blanket patch would still be live during the /api/config reads below.
+    real_scandir = os.scandir
+
+    def _deny(path, *a, **kw):
+        if str(path) == str(gated):
+            raise PermissionError(path)
+        return real_scandir(path, *a, **kw)
+
+    import fused_render.server.routers.fs_read as fs_read_mod
+    monkeypatch.setattr(fs_read_mod.os, "scandir", _deny)
+    client.get("/api/fs/list", params={"path": str(gated)})
+    assert client.get("/api/config").json()["fda"]["denied"] is True

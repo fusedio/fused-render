@@ -175,8 +175,15 @@ export default function ListingPreviewPane({
         <iframe
           className="pane-frame"
           src={withNoFocus(
+            // `_noopen=1`, not `_preview=1` (D622): this pane is fully
+            // interactive — you type in it — so it must not carry the
+            // display-only stamp `runtime.js`'s `IS_THUMBNAIL` reads off
+            // `_preview`, which would silently disable `fused.daemon.*` for
+            // every app it frames (its own left preview pane included, two
+            // levels down). `_noopen=1` says only the one thing this call
+            // site actually wants: don't record this render as an app open.
             `/render?path=${encodeURIComponent(sideEntry.path)}` +
-              `&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`
+              `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
           )}
           title={modeTitle(side)}
         />

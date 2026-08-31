@@ -26,7 +26,34 @@
       var theme;
       if (pref === "light" || pref === "dark") {
         theme = pref;
-      } else {
+      }
+      if (!theme) {
+        /* FRAMED shell (an /explorer/embed pane, e.g. the fusedapp template's
+           entry iframe): inherit the nearest same-origin ancestor's resolved
+           theme instead of asking matchMedia. Inside an iframe the media query
+           answers with the parent iframe element's color-scheme, not the OS,
+           and this races the ancestor's own paint — with no change event when
+           it settles — which made a System-pref .fused app land dark or light
+           at random per refresh. Ancestors resolve pre-paint, before any of
+           their iframes exist, so the climb never reads an unset one. Mirrors
+           inheritedTheme() in static/runtime.js; lib/theme.ts follows the
+           same rule for post-boot re-applies. */
+        try {
+          var w = window;
+          while (w.parent !== w) {
+            w = w.parent;
+            var el = w.document.documentElement;
+            var t = el.getAttribute("data-theme") || el.style.colorScheme;
+            if (t === "light" || t === "dark") {
+              theme = t;
+              break;
+            }
+          }
+        } catch (e) {
+          /* cross-origin ancestor — resolve on our own below */
+        }
+      }
+      if (!theme) {
         try {
           theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         } catch (e) {

@@ -7,8 +7,16 @@ once in System Settings — silences all of them permanently, and because the
 release build is Developer ID signed with a stable bundle id (D73), the
 grant survives upgrades. macOS has no API to request FDA: an app can only
 DETECT it and open the right Settings pane. That is everything this module
-does; the shell renders the nudge (platform/ui/FdaCard.tsx) off the `fda`
-field /api/config gets from snapshot().
+does; the shell renders the warning strip (platform/ui/FdaStrip.tsx, same
+posture as the Claude Code setup strip) off the `fda` field /api/config
+gets from snapshot(). The strip shows on the first PermissionError an fs
+route actually hits (note_denied) — the moment trouble is real, not at
+launch. The per-folder prompts can be lost entirely (a backend read under
+a protected folder while the app is not frontmost records a silent deny),
+which used to strand the user on "permission denied" with no prompt ever
+shown and no explanation; the denial itself is now the trigger, so that
+silent-deny case still surfaces the warning without nagging every fresh
+install up front.
 
 Detection probes paths that only FDA unlocks. FDA-class paths never raise a
 TCC prompt (unlike the per-folder categories) — a failed probe is silent,
@@ -20,8 +28,6 @@ import sys
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
-
-from fused_render.shell import storage
 
 router = APIRouter()
 
@@ -92,75 +98,48 @@ def granted() -> bool | None:
     return None
 
 
-#: Whether THIS session has read under a protected-folder category — the
-#: moment macOS fires (or would fire) an Allow prompt. The nudge renders only
-#: after that moment: a user who never leaves unprotected territory never
-#: sees a TCC prompt, so a card about prompts would be noise to them. In-
-#: memory on purpose — persisting it would bring the card back at launch on
-#: every later session, which is exactly the out-of-nowhere nag this exists
-#: to avoid. Bare bool write under the GIL; no lock needed.
-_touched = False
-
-#: The TCC per-folder categories, each a prompt the first time the app reads
-#: under it. /Volumes covers both removable and network volumes (the boot
-#: volume itself is not browsed via /Volumes in this app).
-def _protected_roots() -> list[str]:
-    return [
-        os.path.expanduser("~/Desktop"),
-        os.path.expanduser("~/Documents"),
-        os.path.expanduser("~/Downloads"),
-        "/Volumes",
-    ]
+#: Whether THIS session has hit a PermissionError on an fs route — the moment
+#: macOS actually refused a read, prompted or silent. The strip renders only
+#: after that: a user whose files all open fine never needs a word about Full
+#: Disk Access. In-memory on purpose — persisting it would bring the strip
+#: back at launch on every later session, which is the up-front nag this
+#: trigger exists to avoid. Bare bool write under the GIL; no lock needed.
+_denied = False
 
 
-def note_touch(path: str) -> None:
-    """Record that `path` is being read; flips the session's touched flag when
-    it falls under a protected category. Called from the fs routes on every
-    list/stat — first line bails, so the steady-state cost is one bool read."""
-    global _touched
-    if _touched or not offered():
+def note_denied(exc: BaseException) -> None:
+    """Record an fs-route failure; flips the session's denied flag when it is
+    a PermissionError. Called from the fs routes' error paths — off the hot
+    path by construction, since a request only lands here once it has already
+    failed."""
+    global _denied
+    if _denied or not offered():
         return
-    # Every path above the OS in this app is forward-slashed (see
-    # canonical_fs_path), so compare in that shape — os.sep would silently
-    # never match on Windows (where only forced tests reach this anyway).
-    norm = path.replace("\\", "/")
-    for root in _protected_roots():
-        root = root.replace("\\", "/")
-        if norm == root or norm.startswith(root + "/"):
-            _touched = True
-            return
-
-
-def _path() -> str:
-    return os.path.join(storage.home_dir(), "fda.json")
-
-
-def dismissed() -> bool:
-    data = storage.read_json(_path())
-    return bool(isinstance(data, dict) and data.get("banner_dismissed"))
-
-
-def set_dismissed() -> None:
-    storage.write_json(_path(), {"banner_dismissed": True})
+    if isinstance(exc, PermissionError):
+        _denied = True
 
 
 def snapshot() -> dict | None:
     """The `fda` field of /api/config, or None to omit it.
 
-    Omitted when the nudge isn't offered (non-mac, dev server) and when the
+    Omitted when the warning isn't offered (non-mac, dev server) and when the
     probe is inconclusive — an absent field is the shell's "render nothing
     AND stop watching", so uncertainty never nags and never polls.
 
-    `relevant` is the touched flag: the card renders only once this session
-    has read under a protected folder — the moment the Allow prompts start —
-    and until then the shell only keeps watching this field.
+    `denied` is the trigger: the strip renders only while the current denial
+    stands unacknowledged. Dismissing clears it ON THE SERVER (every tab
+    converges), and the NEXT PermissionError raises it again — an ✕ is "not
+    now", not "never": a user still hitting refused reads still needs the
+    warning. "demo" forces it, so a dev server can render the strip without
+    manufacturing a real denial.
     """
     if not offered():
         return None
     state = granted()
     if state is None:
         return None
-    return {"granted": state, "dismissed": dismissed(), "relevant": _touched}
+    denied = _denied or os.environ.get(FORCE_ENV) == "demo"
+    return {"granted": state, "denied": denied}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -195,9 +174,11 @@ def api_fda_settings(x_fused: str | None = Header(default=None)):
 
 @router.post("/api/fda/dismiss")
 def api_fda_dismiss(x_fused: str | None = Header(default=None)):
-    """Persist "Not now" — the nudge never renders again on this machine."""
+    """Acknowledge the current denial: clears the server-side flag so every
+    tab's strip hides. The next PermissionError raises it again."""
     guard = _require_fused(x_fused) or _require_offered()
     if guard is not None:
         return guard
-    set_dismissed()
+    global _denied
+    _denied = False
     return {"ok": True}

@@ -65,9 +65,35 @@ function saveThemePref(pref: ThemePref): void {
   }
 }
 
+// A FRAMED shell (an /explorer/embed pane) must not ask matchMedia: inside an
+// iframe the query reflects the parent iframe element's color-scheme, not the
+// OS, races the ancestor's paint, and Chrome fires no change event when the
+// inherited value settles — a System-pref .fused app landed dark or light at
+// random per refresh. Inherit the nearest same-origin ancestor's resolved
+// theme instead; ancestors resolve pre-paint, before their iframes exist, so
+// the climb never reads an unset one. Returns the resolving window too, so
+// subscribeThemePref can observe it for later flips. Mirrors inheritedTheme()
+// in static/runtime.js and the index.html bootstrap.
+function inheritedTheme(): { theme: Theme; win: Window } | null {
+  let w: Window = window;
+  try {
+    while (w.parent !== w) {
+      w = w.parent;
+      const el = w.document.documentElement;
+      const t = el.getAttribute("data-theme") || el.style.colorScheme;
+      if (t === "light" || t === "dark") return { theme: t, win: w };
+    }
+  } catch {
+    // cross-origin ancestor — resolve on our own
+  }
+  return null;
+}
+
 // The OS/browser preference. Defaults to dark when matchMedia is unavailable,
 // so a browser that can't answer keeps today's appearance.
 export function systemTheme(): Theme {
+  const inherited = inheritedTheme();
+  if (inherited) return inherited.theme;
   try {
     return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
   } catch {
@@ -114,10 +140,28 @@ function subscribeThemePref(onChange: () => void): () => void {
   } catch {
     media = null; // no matchMedia — pinned Light/Dark still works
   }
+  // A framed shell inherits its System theme (see inheritedTheme) — an OS
+  // flip only reaches the top-level document's matchMedia and raises no
+  // `storage` event, so follow the resolving ancestor's attribute writes;
+  // every frame does this, cascading the flip down one document at a time.
+  let observer: MutationObserver | null = null;
+  try {
+    const source = inheritedTheme();
+    if (source) {
+      observer = new MutationObserver(onChange);
+      observer.observe(source.win.document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme", "style"],
+      });
+    }
+  } catch {
+    observer = null; // cross-origin parent — matchMedia above is all we have
+  }
   return () => {
     window.removeEventListener(THEME_EVENT, onChange);
     window.removeEventListener("storage", onStorage);
     media?.removeEventListener("change", onChange);
+    observer?.disconnect();
   };
 }
 

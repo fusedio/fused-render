@@ -5,11 +5,11 @@
 //
 // IN PLATFORM, NOT SHELL, and that placement is load-bearing rather than
 // incidental: `frontend/scripts/check-boundaries.mjs` forbids platform from
-// importing shell, and the three participants straddle the line —
-// `DownloadManager.tsx` is platform while `ModelsDock.tsx` and
-// `RepoUpdatesDock.tsx` are shell. Shell may import platform, so the shared
-// state lives here and all three consume it. It is deliberately NOT lifted
-// into `StatusBar.tsx`: the cards reach it as opaque `ReactNode` props
+// importing shell, and the two participants straddle the line —
+// `DownloadManager.tsx` (the Activity chip) is platform while
+// `RepoUpdatesDock.tsx` (Notifications) is shell. Shell may import platform,
+// so the shared state lives here and both consume it. It is deliberately NOT
+// lifted into `StatusBar.tsx`: the cards reach it as opaque `ReactNode` props
 // precisely so the bar never has to know what its children are, and threading
 // open-state through it would spend that seam.
 //
@@ -21,14 +21,18 @@
 // know.
 import { useEffect, useRef } from "react";
 
-/** Lifetime order — Models, Engines, Jobs, Notifications — which is also the
+/** Lifetime order — Models, Activity, Notifications — which is also the
  *  order `StatusBar.tsx` renders them in and the order that breaks every tie
- *  below. Engines sits beside Models (D591) because both report what is
- *  RUNNING RIGHT NOW, where Jobs and Notifications are transient work that
- *  appears and resolves.
+ *  below. Activity used to be four separate chips (Models, Engines, Jobs)
+ *  each with their own entry here; the status-bar merge folded all three into
+ *  one "Activity" chip, then a follow-up revision split Models back out into
+ *  its own chip (`shell/ModelsDock.tsx`) — Engines stayed folded into
+ *  Activity (`platform/ui/DownloadManager.tsx`) since only Models' filled/
+ *  outlined dot is load-bearing for the user. So there are three entries now:
+ *  one for Models, one for Activity (jobs + engines), one for Notifications.
  *  Named rather than inferred so the tie-break cannot silently change if the
  *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["models", "engines", "jobs", "notifications"] as const;
+export const SECTION_ORDER = ["models", "activity", "notifications"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {
@@ -47,26 +51,24 @@ const closers = new Map<SectionKey, { current: () => void }>();
 // effect-execution order. A later commit gets a higher tick, so an ordinary
 // user click always beats whatever was already open, whichever section it is.
 //
-// WHICH TIES ACTUALLY HAPPEN — exactly ONE kind, now (narrowed by D587, then
-// again by D603):
-//  - TWO SECTIONS AUTO-OPENING on one poll response, which since D587 can only
-//    ever be Jobs vs Notifications. Models and Engines pass `neverOpen`
-//    (`autoExpand.ts`), so they have no auto-open path at all.
+// WHICH TIES ACTUALLY HAPPEN — exactly ONE kind, still (narrowed by D587,
+// then D603, then the status-bar merge, then the Models-chip split): two
+// sections auto-opening on one poll response, which can only ever be
+// Activity vs Notifications. Models can never be one side of this race: its
+// own `useAutoExpandOnNew` call is fed an empty `ids` list and every resident
+// model rides in as `alsoDrawn` instead (occupancy for its auto-CLOSE-on-
+// drain, never the announcing override), so nothing can ever put Models into
+// `arrived` — it only ever enters `entries` on a direct user click, and a
+// lone click has no sibling to tie against. A running engine is the same
+// story for Activity: it rides in as Activity's own `alsoDrawn`, so only a
+// genuine job arrival can make Activity want to open at all.
 //
-// THE RELOAD TIE IS GONE. It used to be the other case, and it was the
-// justification for `SECTION_ORDER`'s leading entry: two or more sections'
-// PERSISTED preferences saying open on a reload, which Models could win and
-// should, since a saved preference is the user's own choice and D587 forbids
-// Models AUTO-opening rather than being open. D603 deleted all four fold keys,
-// so nothing wants to be open at mount and that tie is unreachable.
-//
-// SO THE "MODELS FIRST" HALF OF THE ORDER NOW RESTS ON NOTHING, and this
-// comment says so rather than inventing a replacement rationale (code review
-// 2026-08-28, finding 15). The order is kept as-is because it mirrors
-// `StatusBar.tsx`'s lifetime ordering, which is a real and separately-argued
-// rule, and because the only live tie is decided by the Jobs-before-
-// Notifications half — but if a future section needs to win a tie against Jobs,
-// there is no prior decision here to argue with.
+// THE RELOAD TIE IS GONE (D603 deleted all fold keys, so nothing wants to be
+// open at mount) and so is the FOUR-WAY shape the leading entries used to
+// have to arbitrate — with three entries and only two of them (Activity,
+// Notifications) capable of auto-opening at all, `SECTION_ORDER` only ever
+// has one real tie to break: Activity vs Notifications, decided in Activity's
+// favour by this order.
 //
 // The microtask is what bounds a "commit": React runs layout/passive effects
 // synchronously within a commit, before the microtask queue drains.

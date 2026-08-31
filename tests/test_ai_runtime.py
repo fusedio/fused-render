@@ -3370,6 +3370,51 @@ def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
     return worker
 
 
+class _ExitedProc:
+    """A Popen whose process has already died — `poll()` answers its exit code."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+def test_a_ready_worker_whose_process_died_is_dropped_on_the_next_request(monkeypatch):
+    """The 502-forever bug. A worker that died while idle — a native SIGSEGV, a
+    memory kill — stayed in the table as `ready`, so every request was proxied
+    to a dead port and answered `the model process did not answer`, and
+    nothing ever respawned it. `ready_worker` now polls the process it is
+    about to hand out: gone means dropped, so this request gets
+    `ModelNotReady` (a fresh load) instead of a 502."""
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(-11)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is None
+    assert registry.TEXT_GENERATION not in supervisor._workers
+    assert worker.state == "error"
+    assert "gone" in worker.error
+
+
+def test_a_ready_worker_with_a_live_process_is_still_served(monkeypatch):
+    """The other half: `poll()` returning None is alive, and the worker is
+    handed out exactly as before. The engine-match check below it is untouched,
+    so a fake runner code must resolve to nothing rather than to a mismatch."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(None)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
+
+
+def test_a_ready_worker_with_no_process_handle_is_not_judged(monkeypatch):
+    """A worker planted without a Popen (every fixture in this file, an adopted
+    process) cannot be polled, and "cannot tell" must not read as "gone" on
+    the request path — the reaper's poll keeps its own stricter rule."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    assert worker.proc is None
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
+
+
 def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
     from fused_render.shell import prefs
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
@@ -4779,6 +4824,33 @@ def test_the_SKILL_names_the_image_FIELD_TOO_when_an_edit_is_asked_for(
         headers={"X-Fused": "1"}).json()
     assert "image" in started
     section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert "image" in section
+    _wait_job(started["jobId"])
+
+
+def test_the_SKILL_names_every_field_a_video_resolves_with(client, fake_video_runner):
+    """Same drift guard as the image route's own version of this test, over
+    `/api/ai/video`'s reply."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url"}
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
+def test_the_SKILL_names_the_video_image_FIELD_TOO_when_a_reference_is_given(
+        client, fake_video_runner, base_photo):
+    """Same drift guard as the image route's own version, over the reply a
+    conditioned render resolves with — `image` only ever appears there, so a
+    plain text-to-video POST would never catch the skill going stale about
+    it."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "x", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert "image" in started
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
     assert "image" in section
     _wait_job(started["jobId"])
 
@@ -6328,6 +6400,157 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
     row = _wait_job(started["jobId"], timeout=40)
     assert row["state"] == "done", row
     assert os.path.isfile(started["path"])
+
+
+# -- a reference image (I2V) -----------------------------------------------------
+# One image, a single string, conditioning at frame 0 with strength 1.0 — the
+# same scope decision `/api/ai/image`'s own `image` option made for editing,
+# restated for video. `_resolve_reference_image` is the shared helper both
+# routes call; these tests exercise it through `/api/ai/video`, the same way
+# the block above exercises `_edit_default_size` through `/api/ai/image`.
+
+
+def test_video_rejects_an_image_array(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ["a.png", "b.png"]},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_rejects_an_empty_image_string(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ""},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+
+
+def test_video_reference_image_needs_a_file_that_exists(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "/nope/nowhere.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "no such file" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_refuses_a_relative_image_with_no_base(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'image' must be absolute" in response.json()["error"]
+
+
+def test_video_resolves_a_relative_image_against_base(
+        client, fake_video_runner, base_photo):
+    """RH-1, same as `/api/ai/image`'s own version of this test: a relative
+    `image` resolves against the directory of `base`."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_video_absolute_image_ignores_base(client, fake_video_runner, base_photo):
+    _page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": photo},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_a_plain_text_to_video_request_has_no_image_key(client, fake_video_runner):
+    """A caller that never mentioned `image` sees no trace of it in the
+    reply — the byte-identical-to-today's-call promise, restated at the
+    route's own boundary."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert "image" not in started
+    _wait_job(started["jobId"])
+
+
+def test_video_canvas_derives_from_the_reference_image(
+        client, fake_video_runner, base_photo):
+    """`base_photo` is 2000x1000 (2:1) — fitted (without upscaling) to the
+    engine's own longer default side (`max(704, 480) == 704`), landing at
+    704x352, then snapped DOWN to the 64-multiple grid `snap_output_
+    dimensions(..., two_stage=True)` uses: 704 (already a multiple of 64)
+    x 320 (352 snapped down from 352 to 320)."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 320)
+    assert started["width"] % 64 == 0 and started["height"] % 64 == 0
+    _wait_job(started["jobId"])
+
+
+def test_a_small_reference_can_come_back_square(client, fake_video_runner, tmp_path):
+    """`_video_default_size`'s own docstring: the 64-multiple step pairs with
+    the SAME 256 floor `_edit_default_size` uses at 16, so aspect collapses
+    far more readily here — not only on an extreme ratio. A 300x200 (3:2)
+    reference is smaller than the engine's own 704 target on both axes (no
+    downscale happens), and each axis then floors independently: `max(256,
+    300 // 64 * 64) == 256`, `max(256, 200 // 64 * 64) == 256`. This pins
+    that as deliberate rather than incidental — see D621."""
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "small.png"
+    photo.write_bytes(_png_bytes(300, 200))
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "small.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (256, 256)
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_width_still_wins_over_the_derived_default(
+        client, fake_video_runner, base_photo):
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "width": 512},
+        headers={"X-Fused": "1"}).json()
+    # Height still comes from the reference image; only width was named.
+    assert (started["width"], started["height"]) == (512, 320)
+    _wait_job(started["jobId"])
+
+
+def test_an_unreadable_reference_falls_back_to_the_engines_own_default(
+        client, fake_video_runner, tmp_path):
+    """A file that exists, is a regular file, but is not one of the three
+    formats `_image_pixel_size` understands — the derived-default lookup
+    fails toward None, and the render still goes ahead at the ENGINE's own
+    default canvas rather than refusing the request outright."""
+    junk = tmp_path / "not-really-a-photo.png"
+    junk.write_bytes(b"this is not image data")
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": str(junk)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 480)
+    _wait_job(started["jobId"])
+
+
+def test_the_video_bridge_base_option_reaches_the_route(
+        client, fake_video_runner, base_photo):
+    """`base` is bridge-injected, not caller-facing (mirrors `_IMAGE_SERVER_
+    OPTIONS`'s own asymmetry) — this exercises it through the SERVER side,
+    since `base` alone with no `image` is a legitimate call the bridge
+    itself would make on every video render once `runtime.js` injects it."""
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "base": page},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
 
 
 # -- transcription (SPEC §40) ---------------------------------------------------
@@ -7885,6 +8108,11 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert match, "could not find aiVideo's whitelist array in runtime.js"
     js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
     assert js_keys == sorted(ai_runtime._VIDEO_OPTIONS)
+    # Same asymmetry as `_IMAGE_SERVER_OPTIONS` (D413): `base` is
+    # bridge-injected, so it must NOT be in the caller-facing set the bridge
+    # validates against, and must be in the wider server set.
+    assert "base" not in ai_runtime._VIDEO_OPTIONS
+    assert "base" in ai_runtime._VIDEO_SERVER_OPTIONS
 
 
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
@@ -10215,6 +10443,54 @@ def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
 
     monkeypatch.delenv("FUSED_MODEL_MIRROR")
     assert "FUSED_MODEL_MIRROR" not in supervisor._child_env("t", _suggested_id())
+
+
+def test_on_macos_a_worker_is_spawned_in_the_posix_spawn_shape(monkeypatch):
+    """The fork-crash fix. CPython uses `posix_spawn` only for a Popen with no
+    `cwd`, `close_fds=False` and no `start_new_session`; anything else forks,
+    and a forked child runs the server's atfork handlers — which is how a
+    resident PROJ killed every worker with `code -11` and an empty stderr.
+    The directory travels in the environment instead."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"close_fds": False}
+    assert env[supervisor.WORKER_CWD_ENV] == "/runners/x"
+
+
+def test_elsewhere_a_worker_keeps_its_own_session_and_cwd(monkeypatch):
+    """Off macOS the shape is unchanged: `cwd` on the Popen, descriptors
+    closed, and the platform's own new-session/new-group flag — which is
+    `SPAWN_KWARGS` itself, so this reads the constant rather than naming
+    `start_new_session`: on a Windows runner that key is `creationflags`."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"cwd": "/runners/x", "close_fds": True, **supervisor.SPAWN_KWARGS}
+    assert supervisor.WORKER_CWD_ENV not in env
+
+
+def test_no_spawn_site_bypasses_the_spawn_shape_helper():
+    """Both Popen sites go through `_spawn_kwargs`, and neither passes `cwd`,
+    `close_fds` or the session flag directly — the arguments that silently
+    turn `posix_spawn` back into `fork()`. Checked on the source, because a
+    keyword added to one call is exactly the regression nobody would notice
+    until a geo page had rendered on someone's Mac."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(supervisor))
+    popens = [node for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.Popen"]
+    assert len(popens) >= 2, f"{len(popens)} Popen sites, expected the two worker spawns"
+    forbidden = {"cwd", "close_fds", "start_new_session", "preexec_fn"}
+    for call in popens:
+        names = {kw.arg for kw in call.keywords if kw.arg is not None}
+        starred = [ast.unparse(kw.value) for kw in call.keywords if kw.arg is None]
+        assert not names & forbidden, (
+            f"Popen at line {call.lineno} sets {names & forbidden} directly — "
+            f"route it through _spawn_kwargs")
+        assert any(x.startswith("_spawn_kwargs(") for x in starred), (
+            f"Popen at line {call.lineno} does not spread _spawn_kwargs(...)")
 
 
 def test_neither_spawn_site_forgets_the_model(monkeypatch):

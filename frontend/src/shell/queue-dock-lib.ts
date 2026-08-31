@@ -1,7 +1,7 @@
 // The rules for the queue's rows in the one status-bar activity card, kept pure
 // so they can be tested without a DOM — the same split platform/lib/schedule-toast.ts
 // makes against scheduleEvents.ts: what a row SAYS lives here, the polling and the
-// pixels live in QueueDock.tsx, and the card around it is DownloadManager's.
+// pixels live in ActivityDock.tsx, and the card around it is DownloadManager's.
 //
 // The rule that matters most is not in this file, and that is the point: WHAT
 // COUNTS AS QUEUED is the server's answer (`GET /api/schedule/queue` = past due
@@ -97,11 +97,11 @@ export function openRows(rows: QueueRow[], jobs: Job[]): QueueRow[] {
 /**
  * Did a scheduled run END between these two job snapshots?
  *
- * Asked of every consecutive pair the card hands up (QueueDock's onJobs), and it
+ * Asked of every consecutive pair the card hands up (ActivityDock's onJobs), and it
  * is the trigger for the whole cross-surface sync: the job registry is about a
  * second behind the turn, so the moment a `sys:schedule:*` job stops running is
  * the moment this corner knows what the Tasks page will not learn from its own
- * 20-second poll for most of a minute. QueueDock pokes the shared tasks store on
+ * 20-second poll for most of a minute. ActivityDock pokes the shared tasks store on
  * a true answer (tasksPulse.pokeTasks), so the row and the popover flip together.
  *
  * "Ended" is running-then-not: a terminal state, or gone from the snapshot

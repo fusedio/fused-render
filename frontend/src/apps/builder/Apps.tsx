@@ -26,6 +26,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
+import { FdaStrip } from "@platform/ui/FdaStrip";
 
 // The grid's three phases. "partial" is a REAL, OPENABLE prefix of the final
 // grid — Home's recent-first row (see the fetch effect) — not a placeholder:
@@ -299,6 +300,7 @@ export default function Apps({ config }: { config: Config }) {
             would make a dismissible notice look like the app's own chrome.
             Renders nothing when there is nothing to say. */}
         <ClaudeHealthStrip />
+        <FdaStrip />
 
         <div className="apps-toolbar">
           {/* Facet selector: which chip set filters the grid. Switching facets

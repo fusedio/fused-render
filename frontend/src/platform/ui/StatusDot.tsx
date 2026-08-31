@@ -11,7 +11,7 @@
 //
 // IN PLATFORM because `check-boundaries.mjs` forbids platform importing shell,
 // and the chips straddle that line — `DownloadManager.tsx` is platform while
-// `ModelsDock.tsx`, `EnginesDock.tsx` and `RepoUpdatesDock.tsx` are shell.
+// `ActivityDock.tsx` and `RepoUpdatesDock.tsx` are shell.
 //
 // MUST STAY A DIRECT FLEX CHILD of `.dl-toggle`, which is what centres it:
 // that element is already `display: flex; align-items: center`, so the circle

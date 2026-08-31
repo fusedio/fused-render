@@ -1,7 +1,7 @@
 // Close an open status-bar panel when the user clicks anywhere else (D574,
 // user: "clicking anywhere else should background the notification"). Shared
 // by all three sections — platform/ui/DownloadManager.tsx,
-// shell/ModelsDock.tsx, shell/RepoUpdatesDock.tsx — which is why it is a hook
+// shell/ActivityDock.tsx, shell/RepoUpdatesDock.tsx — which is why it is a hook
 // here rather than three copies of the same listener.
 //
 // A HOOK, NOT A REUSE, because there was nothing to reuse: this app has three

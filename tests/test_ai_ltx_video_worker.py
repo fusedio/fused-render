@@ -746,3 +746,62 @@ def test_an_mlx_without_thread_local_streams_is_left_alone(
     _worker, pipeline = _pinned_run(monkeypatch, base, tmp_path, mlx_core)
 
     assert len(pipeline.calls) == 2, "the renders never reached the pipeline"
+
+
+# -- I2V: `image` reaches `generate_and_save` only when the request carries one --
+
+
+def test_generate_passes_image_to_generate_and_save_when_present(
+        monkeypatch, base, tmp_path):
+    """A reference image on the request reaches `DistilledPipeline.
+    generate_and_save` as its own `image=` kwarg — `generate_and_save`
+    (`ltx_pipelines_mlx/ti2vid_two_stages.py:603`) already threads it into
+    real I2V conditioning at both stages; this worker's only job is to pass
+    the one kwarg through."""
+    worker, made = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    ref = tmp_path / "reference.png"
+    ref.write_bytes(b"not a real image, just a path that exists")
+
+    worker.generate(_request(tmp_path, image=str(ref)))
+
+    assert made.calls[-1]["image"] == str(ref)
+
+
+def test_generate_omits_image_for_a_plain_text_to_video_request(
+        monkeypatch, base, tmp_path):
+    """A request with no `image` key must produce a BYTE-IDENTICAL call to
+    today's — no `image` kwarg at all, not `image=None` — so a change here
+    cannot regress the existing text-to-video path even if `generate_and_
+    save` ever grew stricter handling of an explicit `None`."""
+    worker, made = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))
+
+    assert "image" not in made.calls[-1]
+
+
+def test_generate_echoes_the_resolved_image_path_in_its_reply(
+        monkeypatch, base, tmp_path):
+    """The reply names which reference image was actually used, the same way
+    `/api/ai/image`'s reply echoes its own `image` back — a page that passed
+    a relative path can see what it resolved to."""
+    worker, _made = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    ref = tmp_path / "reference.png"
+    ref.write_bytes(b"not a real image, just a path that exists")
+
+    result = worker.generate(_request(tmp_path, image=str(ref)))
+
+    assert result["image"] == str(ref)
+
+
+def test_generate_reply_has_no_image_key_for_a_plain_request(
+        monkeypatch, base, tmp_path):
+    worker, _made = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    result = worker.generate(_request(tmp_path))
+
+    assert "image" not in result
