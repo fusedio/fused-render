@@ -351,6 +351,57 @@ def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release(
             )
 
 
+def test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_below_0_3():
+    """`Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` is a `diffusers-image`
+    suggestion whose every component config carries `"quant_method": "sdnq"`,
+    and diffusers 0.39 has no quantizer for that name — its
+    `quantizers/auto.py` mapping knows autoround, bitsandbytes, gguf, modelopt,
+    quanto and torchao. The package supplies one by MUTATING that mapping at
+    import (`AUTO_QUANTIZER_MAPPING["sdnq"] = SDNQQuantizer`, plus the
+    transformers twin), which `torch_image._register_extra_quantizers()`
+    triggers.
+
+    Two things are pinned here, for the same reason the torchao test above
+    pins one: no test in this suite loads a real model over the network, so a
+    specifier is the only guard.
+
+    * **Declared at all**, in all three folders — the parity test above only
+      proves the three AGREE, so removing the line from all three would sail
+      past it while making a suggested model unloadable everywhere at once.
+    * **Below 0.3.** The registration mutates a mapping that is not diffusers'
+      public API, and sdnq is a young project (0.2.1 through 0.2.6 at the time
+      of writing). A minor bump is where a project that young rearranges its
+      own module layout, and the failure mode is a silent no-registration
+      followed by an unknown-`quant_method` error at load — so this ceiling is
+      deliberately tighter than the `bitsandbytes<1` beside it.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+    except ImportError:
+        SpecifierSet = None
+
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        folder = os.path.join(RUNNERS_DIR, name)
+        specifier = _declared_specifier(folder, "sdnq")
+        assert specifier, (
+            f"{name} does not declare sdnq — without it "
+            f"`Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` fails to load with an "
+            f"unknown quantization method, on every platform at once."
+        )
+        if SpecifierSet is not None:
+            assert "0.3.0" not in SpecifierSet(specifier), (
+                f"{name} declares sdnq{specifier}, which admits 0.3.0 — that "
+                f"minor may move the module whose import registers the "
+                f"quantizer, and nothing here would notice until a load "
+                f"failed. Keep the ceiling below 0.3."
+            )
+        else:
+            assert "<0.3" in specifier, (
+                f"{name} declares sdnq{specifier}, which does not plainly "
+                f"exclude 0.3.0."
+            )
+
+
 def test_the_split_table_is_not_quietly_unused():
     """A table nothing matches is a guard that has silently stopped guarding —
     the dependency renamed, the runner deleted, the entry left behind reading

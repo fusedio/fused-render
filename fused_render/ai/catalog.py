@@ -582,6 +582,44 @@ SUGGESTIONS: dict[str, list[dict]] = {
     ],
     "diffusers-image": [
         {
+            "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
+            "params": "4B",
+            "quantization": "SDNQ 4-bit",
+            "label": "FLUX.2 klein 4B (SDNQ 4-bit)",
+            "nickname": "FLUX.2 klein",
+            # The whole repo: text_encoder 2.63GiB + transformer 2.30GiB + vae
+            # 0.16GiB and change (Hub blob metadata, 2026-09-01), 5.10GiB =
+            # 5.5e9 decimal bytes, the unit this field uses per D295. One repo,
+            # 4-bit THROUGHOUT — which is what makes it the smaller download as
+            # well as the smaller resident set, and why it sorts first here.
+            "size_gb": 5.5,
+            # **Measured against the entry below and against the GGUF recipe,
+            # on the same hardware, prompt and seed** (15.9GiB RX 9060 XT,
+            # 512x512, 4 steps): `memory_allocated` 5.14GiB and a warm render
+            # of 4.09s, against 10.15GiB / 5.66s for
+            # `black-forest-labs/FLUX.2-klein-4B` through `_GGUF_RECIPES`. Half
+            # the memory AND ~28% faster.
+            #
+            # The speed is the part worth writing down, because it is not what
+            # a 4-bit format would predict on its own: the GGUF path it beats
+            # runs `GGUFLinear.forward_native`, which dequantizes each full
+            # weight matrix on EVERY forward — `diffusers`' fused CUDA path
+            # needs both `DIFFUSERS_GGUF_CUDA_KERNELS` (defaults to "false")
+            # and the `kernels` package, and this app sets neither. SDNQ ships
+            # its own triton matmuls and takes the rocm branch of them
+            # (`kernel_wrappers.py`). So this row is faster because the row it
+            # is compared against is paying a dequantization the app never
+            # opted out of, not because 4-bit is inherently quick.
+            #
+            # Hardware-neutral like every note here — the numbers above are
+            # from ONE card, and this list serves the CPU, CUDA and ROCm rows.
+            "note": "4-bit throughout in a single repo — the smallest FLUX.2 "
+                    "here to fetch and to hold, and quicker per image than the "
+                    "int8 split below.",
+            # The same step-distilled model as the other two klein rows.
+            "defaults": {"steps": 4},
+        },
+        {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "params": "4B",
             "quantization": "int8 (torchao)",

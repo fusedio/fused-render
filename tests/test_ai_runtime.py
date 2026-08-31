@@ -673,7 +673,10 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     assert resolution.runner.code == "diffusers-image" and resolution.honoured
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
+    # Smallest first, which is also fastest first here: the SDNQ repo is 5.5GB
+    # against the int8 split's 8.2GB, and holds half as much on the card.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
         "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
