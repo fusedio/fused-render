@@ -186,3 +186,117 @@ Test commands run, per the plan's per-task verify lines:
 Additionally spot-checked (not required by the plan, but touched code):
 `tests/test_ai_runtime.py` (512 passed, 1 pre-existing skip).
 Never ran a bare `pytest` sweep, per the environment note.
+
+## Post-review fixes (manual browser testing found four defects)
+
+### Defect 2 — "Nothing listed" copy leak
+`confirmInstall`'s all-PyPI branch said "A one-time download. Nothing
+listed." — "Nothing listed" was the PLAN document's own table annotation
+describing that no packages get named; it leaked into the shipped string.
+Changed to "A one-time download." No test asserted the old string.
+
+### Defect 3 — dead `showInstall`
+`startInstall` calls `ensureInstallRow` / `mountInstallSoon` / `paintPreparing`
+directly (it needs the row before it knows whether this call ends up asking a
+question first), so nothing called `showInstall` any more — TypeScript
+flagged it as declared but never read. Deleted, and the comments that still
+described it as the live entry point were updated. `tests/test_server_env_install.py`
+used `showInstall` as a convenient single call exercising that exact trio;
+recreated it as a test-only helper (`_SHOW_INSTALL_TEST_HELPER`) rather than
+resurrecting it in the shipped runtime.
+
+### Defect 4 — monospace consent question
+`detail`'s monospace face is right for its original job (uv's verbatim
+resolver error) but wrong for the consent question, which is prose. `askRow`
+now sets `row.detail.style.fontFamily` to a proportional stack for the
+question's duration and restores the monospace default in `settle()`.
+
+### Defect 1 — Install click did nothing (the blocker)
+
+**This did NOT reproduce.** Root cause, as asked for: there isn't one in the
+current code. Extensive investigation across multiple independent angles
+found `askRow` / `confirmInstall` / `ensureInstallRow` / `startInstall` (the
+functions named in the bug report) to be correct, and — more importantly —
+building the REAL production server fresh (`fused_render.server.app.create_app`,
+via uvicorn on a throwaway port, no `scripts/dev.sh`, not port 2422) and
+driving it with a real headless-Chromium browser (Playwright) against the
+exact repro folder (`consent-demo`, venv key `73e1f9faac6029dd`, deleted
+before each attempt to match "not built") reproduced the OPPOSITE of the
+report: Install worked every time, including with deliberate 3-second and
+15-second waits between the prompt appearing and the click (standing in for
+a human actually reading the question) — the install completed and the
+page's own `#status` element showed "ok".
+
+What was checked and ruled out:
+- `askRow`'s listener wiring is symmetric between `row.install` and
+  `row.cancel` (same call shape, no shadowing, nothing removes one listener
+  early) — confirmed by reading and by an independent second-agent review
+  that reached the same conclusion from a cold start.
+- No CSS/attribute hides, disables, or covers the Install button.
+- No timer/poll runs during the confirm stage that could reset the row
+  (`paintInstall`/`installBarIndeterminate` only run once `runInstall`
+  starts, i.e. after Install is clicked).
+- D214's two-round (interpreter + packages) bootstrap does not apply here —
+  this machine already has Python 3.12 resolved (other venvs on it already
+  built successfully), confirmed by the real `/api/run` probe never carrying
+  a `python` key.
+- `nonstandard_dependencies_of` (the pre-flight classification) does static
+  TOML/PEP 508 parsing only — no subprocess, no file writes — so it cannot be
+  racing the live-reload file watcher into a spurious `window.location.reload()`
+  before a click lands. (This was the leading hypothesis for a while — a
+  reload mid-question would tear down the very listeners answering it, and
+  would look exactly like "nothing happens" — but nothing in the pre-flight
+  path can trigger one, and the real-server Playwright run above, with a real
+  15-second wait for exactly this kind of race to show up, still worked.)
+- The server's actual `/api/run` and `/api/env/install` response shapes were
+  probed directly (in-process `TestClient` against the real
+  `consent-demo` folder) and match what the client code assumes byte-for-byte
+  (key `73e1f9faac6029dd`, no `python` field, `nonstandard: []`).
+
+**Best guess for what the tester saw**: a stale tab. The six commits behind
+this feature (confirm gate, retry, jobs-dock mirror) landed over the course
+of development; a browser tab left open from before the confirm-gate commit
+landed — or simply not hard-refreshed after a later fix — would have shown
+an Install button wired to an earlier, genuinely broken version of this code.
+Not provable after the fact, but it is the only theory consistent with
+"current code is provably correct" plus "a human saw it fail every time in
+one session."
+
+**What shipped anyway**: the report named a real gap in the test harness,
+independent of whether Defect 1 itself was ever a real code bug. The
+`__autoInstall` stub in `tests/test_server_env_install.py` fired the Install
+click via `queueMicrotask` from INSIDE `addEventListener` itself — the
+instant the listener was registered, which is strictly EARLIER than any real
+click could ever land, and therefore could never have caught a listener that
+stops working by the time a real, later click reaches it (which is exactly
+the shape of bug the report describes). Switched the stub to a macrotask
+(`setTimeout`, matching how a real click actually arrives) and added
+`test_a_real_delayed_click_on_install_still_posts`, which turns auto-install
+off, waits several real macrotask ticks before the row even exists and
+several more once it does, and only then clicks — asserting the POST still
+fires. All 72 tests in the file still pass with the more realistic stub.
+
+**If this recurs**: re-verify against a hard-refreshed tab (or a fresh
+private window) against the live server first, before assuming the code
+regressed — the investigation above is thorough but the live/real-server
+Playwright repro is the strongest evidence and it could not reproduce the
+bug at all.
+
+### Also investigated — jobs-dock duplicate row for AI model loads (Task 6's flagged gap)
+
+Confirmed real, and fixed. `ai/supervisor.py`'s bring-up loop mirrors an AI
+model's environment build into its own jobs-dock row (`job_id_for(model)`,
+titled with the model, richer per-model detail — "Preparing {short} —
+installing…"), while `envinstall.start()` unconditionally opened a SECOND,
+generic row (`sys:env-install:<key>`, titled with the project's
+`display_name`) for the exact same `uv sync` call. These are not two
+different pieces of work — they are the same install reported twice through
+two different code paths — so a user watching a model load for the first
+time would see two jobs-dock rows for one thing happening.
+
+Fixed by adding `envinstall.start(..., report_job=True)`: `ai/supervisor.py`
+now passes `report_job=False`, since it already reports this exact install
+into its own row. Every other caller (the loader's own `/api/env/install`)
+keeps the generic mirror unchanged, since it has no row of its own for this
+key. Covered by `test_report_job_false_opts_out_of_the_generic_mirror` in
+`tests/test_env_install.py`.
