@@ -751,7 +751,7 @@ _release = None
 #: bytes()`'s `psutil` fallback both walk the process's own address space,
 #: and a CUDA/ROCm allocation lives in the driver, not there — so a
 #: `diffusers_image_rocm` worker holding a FLUX.2-klein-4B pipeline pinned to
-#: VRAM (`torch_image._place`'s "hot-gpu"/"all-gpu" cases) reported 0.59 GiB
+#: VRAM (`torch_image._place`'s "all-gpu" case) reported 0.59 GiB
 #: of actual VRAM use as if it were memory the reaper had already reclaimed,
 #: while `RssAnon` separately showed 11.7 GiB of weights parked in system RAM
 #: by `enable_model_cpu_offload()` — both real, neither visible to a probe

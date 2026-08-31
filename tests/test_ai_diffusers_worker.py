@@ -448,16 +448,21 @@ def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
     assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
 
 
-# -- size-aware, per-component GPU placement (`_place`) --------------------------
+# -- size-aware GPU placement (`_place`) ------------------------------------------
 #
 # Measured on the user's machine: FLUX.2-klein-4B via the ROCm GGUF recipe, a
 # 15.9 GiB RX 9060 XT. Loaded and idle, `_place()`'s old unconditional
 # `enable_model_cpu_offload()` left `RssAnon` at 11.7 GiB (the weights, parked
 # in system RAM) and the worker's own VRAM (`drm-total-vram`) at 0.59 GiB —
 # HIP context and staging only — on a card that was otherwise 2.0 GiB used out
-# of 15.9. Component sizes on disk: text encoder bf16 8.05 GB (used once per
-# render), transformer GGUF Q4_K_M 2.60 GB and VAE 0.17 GB (both on every
-# denoising step) — which is why "hot" below is transformer+VAE only.
+# of 15.9. Component sizes on disk: text encoder bf16 8.05 GB, transformer
+# GGUF Q4_K_M 2.60 GB, VAE 0.17 GB.
+#
+# A third placement — pinning transformer+VAE resident while the text encoder
+# offloaded per call — was built, measured, and removed; see `_place`'s own
+# docstring for why (unreachable for this exact pipeline shape, and not
+# actually cheaper than all-gpu once accelerate's offload hook CHAIN is
+# accounted for). What's left below is the two-way decision only.
 
 
 class _FakeParam:
@@ -519,12 +524,13 @@ class _FakePlacementPipe:
     2. Whatever remains: `.to(device)` (placed, stays resident) if its name
        is in `_exclude_from_cpu_offload`, a hook otherwise.
 
-    A fake that only counted calls to `enable_model_cpu_offload` (the
-    original version of this fixture) cannot tell a real pin from a no-op —
-    which is exactly how the `_exclude_from_cpu_offload`-only fix shipped
-    with a hot set that was still fully hooked, passing every test here.
-    This one records `hooked_names`/`placed_names` so a test can assert
-    which one the hot set actually landed in.
+    `_place` no longer has a branch that ever populates `_exclude_from_
+    cpu_offload` (the per-component pin this fixture was built to catch a
+    no-op fix for was removed — see `_place`'s docstring), so step 2 always
+    hooks everything here now. The two-pass emulation is kept anyway rather
+    than collapsed back to a call-counter: `hooked_names`/`placed_names`
+    still prove that plain offload actually hooks every component it should,
+    the same fidelity bar that caught the original no-op.
     """
 
     _exclude_from_cpu_offload = []
@@ -587,185 +593,58 @@ _GIB = 1 << 30
 
 
 def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
-                    unet_instead_of_transformer=False, extra_offloaded=None,
                     to_raises_on=None):
-    """`extra_offloaded` adds more `{name: bytes}` components that are never
-    hot but DO get measured and offloaded — a second text encoder, an image
-    encoder — the shape that makes `hot_bytes + max(other sizes)` (finding
-    #2's corrected threshold) differ from `hot_bytes + sum(other sizes)`
-    (over-conservative) and from the old, unbounded `hot_bytes` alone
-    (under-conservative, the OOM bug). With exactly one offloaded component
-    (the plain 3-component case) the "max of the rest" and "total minus hot"
-    are the same NUMBER, so hot-gpu and all-gpu share one threshold and the
-    hot-gpu branch cannot be exercised in isolation — see the tests that
-    need `extra_offloaded` for that reason.
-    """
-    transformer_key = "unet" if unet_instead_of_transformer else "transformer"
+    """A 4-component pipeline (`text_encoder`, `transformer`, `vae`, plus a
+    non-Module `tokenizer` that `_place` must skip when summing bytes and
+    never mistake for something `enable_model_cpu_offload` places)."""
     components = {
         "text_encoder": _make_component(nn, text_encoder_bytes),
-        transformer_key: _make_component(nn, transformer_bytes),
+        "transformer": _make_component(nn, transformer_bytes),
         "vae": _make_component(nn, vae_bytes),
-        # A non-Module component `_place` must skip when summing bytes and
-        # never mistake for something `enable_model_cpu_offload` places.
         "tokenizer": object(),
     }
-    for name, size in (extra_offloaded or {}).items():
-        components[name] = _make_component(nn, size)
     seq = "->".join(name for name, component in components.items()
                     if isinstance(component, nn.Module))
-    pipe = _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on)
-    return pipe, transformer_key
+    return _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on)
 
 
 def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
     torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
     assert pipe.to_calls == ["cuda"]
     assert pipe.offload_calls == 0
+    assert {"placement": "all-gpu"} in base.state_calls
 
 
-def test_place_pins_the_hot_path_when_the_whole_model_does_not_fit(monkeypatch, base):
-    """transformer+VAE stay RESIDENT — `.to(device)`, no offload hook — while
-    both text encoders get hooked, which is the whole point of "hot": the
-    denoiser and VAE run on every step, so being fetched-and-freed per call
-    like the text encoders would defeat the pin.
-
-    A SECOND offloaded component (`text_encoder_2`) is what makes this
-    scenario distinguishable from all-gpu at all: with only one offloaded
-    component, `hot + max(others)` and `total` are the same number, so the
-    two thresholds coincide and hot-gpu can never fire on its own (see
-    `_placement_pipe`'s docstring). free=15 GiB clears the hot-gpu bound
-    (2.6+0.17+8.05+3 headroom = 13.82) but not all-gpu's (2.6+0.17+8.05+8.05+3
-    = 21.87) — and NOT the over-conservative "sum the offloaded components"
-    bound either (same 21.87), which is the regression this pins: using
-    `max` rather than `sum` is what makes the hot path reachable here at
-    all.
-    """
-    torch, nn = _fake_torch_for_placement(free_bytes=15 * _GIB)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB),
-        extra_offloaded={"text_encoder_2": int(8.05 * _GIB)})
-
-    device, seed_device = worker._place(pipe)
-
-    assert (device, seed_device) == ("cuda", "cuda")
-    assert {"placement": "hot-gpu"} in base.state_calls
-    assert pipe.offload_calls == 1
-    assert pipe.to_calls == []  # the pin happens through offload, not a direct .to
-    assert set(pipe._exclude_from_cpu_offload) == {transformer_key, "vae"}
-    # The mechanics diffusers actually applies, not just the exclude list
-    # `_place` sets — this is what finding #1 got wrong: the hot names were
-    # in the exclude list AND still hooked, because they were never removed
-    # from `model_cpu_offload_seq`, which pops them first.
-    assert set(pipe.placed_names) == {transformer_key, "vae"}
-    assert set(pipe.hooked_names) == {"text_encoder", "text_encoder_2"}
-
-
-def test_place_pins_unet_when_the_pipeline_has_no_transformer(monkeypatch, base):
-    """Not every diffusers pipeline calls its denoiser `transformer` — an
-    older U-Net architecture names it `unet`, and the hot set has to follow
-    whichever one the pipeline actually has."""
-    torch, nn = _fake_torch_for_placement(free_bytes=15 * _GIB)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB), unet_instead_of_transformer=True,
-        extra_offloaded={"text_encoder_2": int(8.05 * _GIB)})
-
-    worker._place(pipe)
-
-    assert set(pipe._exclude_from_cpu_offload) == {"unet", "vae"}
-    assert set(pipe.placed_names) == {"unet", "vae"}
-    assert set(pipe.hooked_names) == {"text_encoder", "text_encoder_2"}
-
-
-def test_place_falls_back_to_plain_offload_when_even_the_hot_set_does_not_fit(
-    monkeypatch, base
-):
-    """Below the hot-gpu floor too (a card small enough that not even
-    transformer+VAE clear the headroom) — today's unconditional behaviour,
-    unchanged."""
+def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch, base):
+    """Below the all-gpu floor: today's unconditional `enable_model_cpu_
+    offload()`, and every component gets hooked — there is no pin to keep
+    any of them resident (see `_place`'s docstring for why that branch was
+    tried, measured, and removed)."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))  # < 3 GiB headroom
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
     assert pipe.offload_calls == 1
+    assert pipe.to_calls == []
     assert pipe._exclude_from_cpu_offload == []
     assert pipe.placed_names == []
-    assert set(pipe.hooked_names) == {transformer_key, "vae", "text_encoder"}
-
-
-def test_place_hot_gpu_threshold_accounts_for_the_largest_offloaded_component(
-    monkeypatch, base
-):
-    """Finding #2's regression: the OLD threshold checked only `hot_bytes +
-    headroom <= free`, ignoring that the text encoder still has to be FETCHED
-    onto the device while the pinned transformer+VAE are already resident —
-    peak VRAM under hot-gpu is `hot_bytes + max(offloaded sizes)`, not
-    `hot_bytes` alone.
-
-    A 10 GiB card, ~9 GiB free: `hot_bytes` (2.77 GiB) + 3 GiB headroom =
-    5.77, which clears 9 GiB — the OLD code called this hot-gpu, then OOM'd
-    fetching the 8.05 GB text encoder into the ~6.2 GiB that remained. The
-    unconditional offload this replaced would have run fine (peak ≈ 8.05 GiB
-    <= 9). The corrected threshold (2.77 + 8.05 + 3 = 13.82 <= 9? no) falls
-    back to plain offload instead, which is the same "no worse than before"
-    floor `_place`'s docstring already promises for every other guard here.
-    """
-    torch, nn = _fake_torch_for_placement(free_bytes=9 * _GIB)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB))
-
-    device, seed_device = worker._place(pipe)
-
-    assert (device, seed_device) == ("cuda", "cuda")
+    assert set(pipe.hooked_names) == {"transformer", "vae", "text_encoder"}
     assert {"placement": "offload"} in base.state_calls
-    assert {"placement": "hot-gpu"} not in base.state_calls
-    assert pipe._exclude_from_cpu_offload == []
-    assert pipe.placed_names == []
-    assert set(pipe.hooked_names) == {transformer_key, "vae", "text_encoder"}
-
-
-def test_place_copies_the_exclude_list_rather_than_mutating_the_class_attribute(
-    monkeypatch, base
-):
-    """`_exclude_from_cpu_offload` defaults to `[]` as a CLASS attribute on the
-    real diffusers pipeline base — appending to it in place would leak the
-    hot-set names onto every OTHER pipeline instance and class that has not
-    been placed yet. `_place` must copy before it appends."""
-    torch, nn = _fake_torch_for_placement(free_bytes=15 * _GIB)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB),
-        extra_offloaded={"text_encoder_2": int(8.05 * _GIB)})
-
-    worker._place(pipe)
-
-    assert _FakePlacementPipe._exclude_from_cpu_offload == []
-    assert pipe._exclude_from_cpu_offload is not _FakePlacementPipe._exclude_from_cpu_offload
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
@@ -776,9 +655,9 @@ def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base)
     torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB, mem_get_info_raises=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
@@ -795,9 +674,9 @@ def test_place_falls_back_to_offload_when_component_sizing_raises(monkeypatch, b
     torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     class _Boom(nn.Module):
         def parameters(self):
@@ -826,10 +705,10 @@ def test_place_falls_back_to_offload_when_the_all_gpu_move_itself_raises(
     torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB),
-                              to_raises_on="cuda")
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB),
+                            to_raises_on="cuda")
 
     device, seed_device = worker._place(pipe)
 
@@ -841,32 +720,19 @@ def test_place_falls_back_to_offload_when_the_all_gpu_move_itself_raises(
     assert {"placement": "all-gpu"} not in base.state_calls
 
 
-def test_place_reports_which_of_the_three_placements_happened(monkeypatch, base):
-    """`set_state` gets a `placement` key alongside `device` — the UI/`fit`
-    side of this feature, not just the mechanics diffusers sees."""
-    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
-    worker._place(pipe)
-    assert {"placement": "all-gpu"} in base.state_calls
-
-
 def test_place_mps_path_is_untouched_by_the_size_probe(monkeypatch, base):
     """MPS never measures anything and never calls `enable_model_cpu_offload`
     — unified memory makes offloading pure overhead there, per `_place`'s own
-    docstring, and this branch must be unreachable from the new CUDA logic."""
+    docstring, and this branch must be unreachable from the CUDA logic."""
     torch = fake_torch()
     torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     torch.backends = types.SimpleNamespace(
         mps=types.SimpleNamespace(is_available=lambda: True))
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
@@ -881,9 +747,9 @@ def test_place_cpu_path_is_untouched_by_the_size_probe(monkeypatch, base):
     torch.backends = types.SimpleNamespace(mps=None)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
@@ -896,16 +762,14 @@ def test_place_headroom_env_override_is_honoured(monkeypatch, base):
     """`FUSED_RENDER_AI_VRAM_HEADROOM_GB` overrides the 3 GiB default. total
     (~10.82 GiB) + the 3 GiB default headroom is 13.82, which does not clear
     12 GiB free — but total + a 0.5 GiB override is 11.32, which does
-    (all-gpu). What the DEFAULT headroom would have chosen at 12 GiB free
-    isn't asserted here — see the dedicated hot-gpu-threshold tests for
-    that — only that the override changes the outcome at all."""
+    (all-gpu). Only that the override changes the outcome is asserted here."""
     monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "0.5")
     torch, nn = _fake_torch_for_placement(free_bytes=12 * _GIB)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, _ = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                              vae_bytes=int(0.17 * _GIB),
-                              text_encoder_bytes=int(8.05 * _GIB))
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
     device, seed_device = worker._place(pipe)
 
@@ -917,28 +781,26 @@ def test_place_headroom_env_override_is_honoured(monkeypatch, base):
 def test_place_unparsable_headroom_env_override_is_ignored(monkeypatch, base):
     """The house pattern `prefs.ai_idle_unload_minutes_override` sets: a
     *set, unparsable* env value is treated as absent rather than crashing
-    placement or silently becoming a headroom of `0`. Same free/component
-    shape as the hot-gpu pin test above (needs the second offloaded
-    component for hot-gpu to be reachable at all — see `_placement_pipe`'s
-    docstring): if "soon" silently became a headroom of `0` instead of
-    falling back to the 3 GiB default, the hot-gpu bound would tighten from
-    13.82 to 10.82 GiB — still comfortably under the 15 GiB free here, so
-    that particular slip would NOT have flipped this test's outcome. What it
-    proves is narrower and still worth pinning: an unparsable override must
-    not raise or silently disable the guard outright."""
+    placement or silently becoming a headroom of `0`. total (~10.82 GiB): the
+    3 GiB default headroom puts the all-gpu bound at 13.82, which does NOT
+    clear 13 GiB free; a silently-zeroed headroom would put it at 10.82,
+    which WOULD — so an unparsable override falling through to `0` instead
+    of the documented default flips this test's outcome from offload to
+    all-gpu."""
     monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "soon")
-    torch, nn = _fake_torch_for_placement(free_bytes=15 * _GIB)
+    torch, nn = _fake_torch_for_placement(free_bytes=13 * _GIB)
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe, transformer_key = _placement_pipe(
-        nn, transformer_bytes=int(2.6 * _GIB), vae_bytes=int(0.17 * _GIB),
-        text_encoder_bytes=int(8.05 * _GIB),
-        extra_offloaded={"text_encoder_2": int(8.05 * _GIB)})
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
 
-    worker._place(pipe)
+    device, seed_device = worker._place(pipe)
 
-    assert set(pipe._exclude_from_cpu_offload) == {transformer_key, "vae"}
-    assert set(pipe.placed_names) == {transformer_key, "vae"}
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.offload_calls == 1
+    assert pipe.to_calls == []
+    assert {"placement": "offload"} in base.state_calls
 
 
 # -- releasing the allocator on an idle timer (D597) -----------------------------

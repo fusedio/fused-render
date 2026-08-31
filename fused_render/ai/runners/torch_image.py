@@ -221,70 +221,24 @@ def _component_bytes(module):
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
-    Three cases on CUDA/ROCm now, not one — SPEC/D measured on the user's own
-    machine: a FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9
-    GiB RX 9060 XT with 2.0 GiB already used system-wide. The unconditional
-    `enable_model_cpu_offload()` this branch used to call regardless of card
-    size left `RssAnon` at 11.7 GiB (the weights, parked in system RAM by
+    Two cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
+    FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9 GiB RX 9060
+    XT with 2.0 GiB already used system-wide. The unconditional `enable_
+    model_cpu_offload()` this branch used to call regardless of card size
+    left `RssAnon` at 11.7 GiB (the weights, parked in system RAM by
     accelerate) and the worker's own VRAM at 0.59 GiB (HIP context and
     staging only) — the wrong side of the trade on a card that could hold
-    the whole model, or at least its hot path, resident:
+    the whole model resident:
 
     1. **All-GPU** — every component's measured size plus `_vram_headroom_
        bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
        ("cuda")`, nothing streamed per render.
-    2. **Hot-GPU** — the whole model does not fit, but the HOT set does: the
-       denoiser (`transformer`, or `unet` on a pipeline that still calls it
-       that) plus the `vae`, the two components that run on every step of
-       generation. The text encoder runs once per render and is left to
-       offload's per-call fetch.
-
-       **Pinning takes TWO levers, not one, and this is the part an earlier
-       version of this function got wrong.** Diffusers' own `pipelines/
-       pipeline_utils.py` (`enable_model_cpu_offload`, verified against the
-       installed package around line 1249-1283) runs two passes: first it
-       pops every name in `pipe.model_cpu_offload_seq.split("->")` — a
-       CLASS-attribute string like `"text_encoder->transformer->vae"` — and
-       gives each one an offload hook UNCONDITIONALLY; only THEN does it look
-       at `pipe._exclude_from_cpu_offload` for whatever is left, `.to(device)`
-       -ing the names on that list and hooking everything else. A pipeline's
-       hot names (`transformer`/`unet`, `vae`) are always in the first pass —
-       that is precisely what makes them "hot" — so adding them to the
-       exclude list alone changes nothing: the first loop still pops and
-       hooks them before the exclude list is ever consulted. The exclude list
-       only governs components the seq string does NOT already claim.
-
-       The fix removes the hot names from a COPY of `model_cpu_offload_seq`
-       (so the first loop can no longer pop them) and adds them to a COPY of
-       `_exclude_from_cpu_offload` (so the second loop's `.to(device)` branch
-       picks them up instead). Both are class attributes on the pipeline base
-       — the seq a string, the exclude list a `[]` — and copying rather than
-       mutating in place is what stops either change from leaking onto every
-       OTHER instance (and future instance) of the same pipeline class.
-
-       The THRESHOLD for this case is `hot_bytes + max(every other measured
-       component's size) + headroom <= free`, not `hot_bytes + headroom <=
-       free`. Peak VRAM here is the pinned hot set PLUS whichever offloaded
-       component is being fetched onto the device at the time — on this
-       machine that is the 8.05 GB text encoder, fetched into VRAM that
-       already holds the resident transformer+VAE. `max` rather than `sum`
-       because offloaded components are fetched ONE AT A TIME by
-       `cpu_offload_with_hook`, never simultaneously — summing every
-       offloaded component's size would refuse hot-gpu in cases that
-       actually fit. On the measured RX 9060 XT (15.9 GiB, ~13.9 GiB free)
-       this pipeline has exactly one other component (the text encoder), so
-       `max(others)` and `total - hot_bytes` are the SAME number here and
-       the hot-gpu bound (2.77 + 8.05 + 3 = 13.82 GiB) coincides almost
-       exactly with the all-gpu bound — genuinely marginal, not the
-       comfortable safety margin case 1 has. A pipeline with more than one
-       offloaded component (FluxPipeline's two text encoders plus an image
-       encoder) is where hot-gpu and all-gpu diverge by more than rounding.
-    3. **Offload** — neither fits: today's unconditional `enable_model_cpu_
+    2. **Offload** — it does not fit: today's unconditional `enable_model_cpu_
        offload()`, unchanged.
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
-    straight to case 3 — the same "a probe must never break loading" reasoning
+    straight to case 2 — the same "a probe must never break loading" reasoning
     `release()`'s per-backend try/except documents just below, applied to the
     measurement instead of the reclaim. That promise covers the MEASUREMENT;
     the all-gpu case's own `pipe.to("cuda")` gets the identical treatment for
@@ -294,7 +248,59 @@ def _place(pipe):
     `numel * element_size`) can turn a move that looked safe into a raise. A
     load that would have SUCCEEDED via plain offload must not fail outright
     just because the faster path was tried first, so a raising `.to("cuda")`
-    falls back to `enable_model_cpu_offload()` exactly like case 3.
+    falls back to `enable_model_cpu_offload()` exactly like case 2.
+
+    **A third case — pinning the "hot" set (denoiser + VAE) resident while
+    leaving the text encoder to offload's per-call fetch — was built,
+    measured, and removed.** A code review surfaced five defects, and
+    chasing them down showed the branch could not pay for itself:
+
+    - *Unreachable for the shipping pipeline.* With exactly one non-hot
+      `nn.Module`, `hot_bytes + max(other) == total_bytes` exactly, so the
+      `elif` was byte-for-byte the `if` above it and could never be the
+      first to pass. FLUX.2-klein-4B — the pipeline this feature was built
+      for — is that shape (`text_encoder`, `transformer`, `vae`).
+    - *It did not save what it claimed.* accelerate's offload is a CHAIN:
+      `CpuOffload.pre_forward` offloads `prev_module_hook`'s model
+      (`accelerate/hooks.py:744-765`). With the full seq `"text_encoder->
+      transformer->vae"`, the transformer's first forward evicted the text
+      encoder before denoising even started. Truncating the seq to
+      `"text_encoder"` (removing the hot names, as an earlier revision of
+      this function did) deleted that link, so the text encoder stayed
+      resident for the ENTIRE denoising loop — making hot-gpu's steady-state
+      VRAM equal to all-gpu's while claiming to be the cheaper option.
+    - *The pin round-tripped every render anyway.* Every FLUX `__call__`
+      ends in `maybe_free_model_hooks()`, which re-enters `enable_model_
+      cpu_offload` and unconditionally runs `self.to("cpu", silence_dtype_
+      warnings=True)` (`diffusers/pipelines/pipeline_utils.py:1244`) before
+      re-placing the excluded set — so the "pinned" components made a
+      GPU→CPU→GPU trip on every single image, not just at load time.
+    - *No fallback on the pin*, unlike the all-gpu move beside it.
+    - *`max(others)` undercounts peak* for a pipeline that keeps several
+      non-hot components resident at once (a `safety_checker`/`watermarker`
+      already in a class's `_exclude_from_cpu_offload`, or a `controlnet`
+      absent from the seq) — an error in the OOM direction.
+
+    A survey of what could ever reach the branch found nothing worth keeping
+    it for, either. Measured from the HuggingFace API (raw repo totals,
+    which OVERCOUNT because these repos carry several precision variants of
+    the same weights): FLUX.1-schnell has 2 non-hot components with a 0.25
+    GB gap between `hot+max(other)` and `total`; SDXL 2 components with a
+    1.24 GB gap; SD3.5-medium 3 components with a 3.27 GB raw gap (~1.65 GB
+    at what actually loads in bf16). SD3.5's three text encoders are the
+    only structurally good fit for this — and even there, on the 15.9 GiB
+    RX 9060 XT this feature was built for (~13.9 GiB free, 3 GiB headroom)
+    SD3.5-medium at bf16 needs 19.3 GiB for all-gpu and 17.7 GiB for
+    hot-gpu, so it still lands in plain offload; quantized far enough to
+    reach hot-gpu, it fits all-gpu outright instead.
+
+    Recorded here so the next person with the same idea finds the
+    accelerate-chain reason it is not as easy as it looks, rather than
+    reinventing it: pinning is a hook-chain problem, not a "which components
+    stay resident" problem, and the seq-truncation fix has to preserve the
+    chain through whatever it keeps hot. If a three-text-encoder pipeline
+    (SD3.5 and friends) ever joins the catalog, that is when to revisit —
+    and the chain semantics above are the thing to get right this time.
 
     The MPS and CPU branches are untouched: MPS's unified memory makes
     offloading pure overhead there (see below), and CPU has nothing to place.
@@ -322,7 +328,6 @@ def _place(pipe):
 
     if torch.cuda.is_available():
         placement = None
-        hot_names = []
         try:
             free, _ = torch.cuda.mem_get_info()
             headroom = _vram_headroom_bytes()
@@ -332,23 +337,7 @@ def _place(pipe):
                 if isinstance(component, torch.nn.Module)
             }
             total_bytes = sum(sizes.values())
-            denoiser_name = "transformer" if "transformer" in sizes else (
-                "unet" if "unet" in sizes else None)
-            hot_names = [n for n in (denoiser_name, "vae") if n in sizes]
-            hot_bytes = sum(sizes[n] for n in hot_names)
-            # The largest OTHER component, not the sum of them — see the
-            # docstring's point 2. `default=0` covers a pipeline whose only
-            # components ARE the hot set (nothing left to fetch, so nothing
-            # to add).
-            peak_other_bytes = max(
-                (size for name, size in sizes.items() if name not in hot_names),
-                default=0)
-            if total_bytes + headroom <= free:
-                placement = "all-gpu"
-            elif hot_names and hot_bytes + peak_other_bytes + headroom <= free:
-                placement = "hot-gpu"
-            else:
-                placement = "offload"
+            placement = "all-gpu" if total_bytes + headroom <= free else "offload"
         except Exception:  # noqa: BLE001 - the size probe must never break loading
             placement = None
 
@@ -358,16 +347,6 @@ def _place(pipe):
             except Exception:  # noqa: BLE001 - the move must degrade like the probe above
                 pipe.enable_model_cpu_offload()
                 placement = "offload"
-        elif placement == "hot-gpu":
-            # Two levers, copied rather than mutated in place — see the
-            # docstring's point 2. Reading through `pipe.` falls back to the
-            # CLASS attribute when the instance has never set one of its
-            # own, exactly the case being guarded against here.
-            pipe.model_cpu_offload_seq = "->".join(
-                name for name in pipe.model_cpu_offload_seq.split("->")
-                if name not in hot_names)
-            pipe._exclude_from_cpu_offload = list(pipe._exclude_from_cpu_offload) + hot_names
-            pipe.enable_model_cpu_offload()
         else:
             pipe.enable_model_cpu_offload()
             placement = "offload"
