@@ -410,6 +410,44 @@ def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch
     assert worker._loaded["vae"] == "AutoencoderKLFlux2"
 
 
+# -- the headroom env var's own edge cases (`_vram_headroom_bytes`) --------------
+#
+# No torch involved: the function reads only `os.environ`, so these exercise
+# it directly rather than through `_place`.
+
+
+def test_vram_headroom_negative_env_is_ignored(monkeypatch, base):
+    """A negative headroom would make `_place` plan into MORE VRAM than is
+    free — the opposite of what this knob exists to guard against — so it
+    must degrade to the documented default exactly like an unparsable string
+    does, not be accepted as "a very small margin"."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "-4")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
+def test_vram_headroom_infinite_env_is_ignored(monkeypatch, base):
+    """`float("inf")` parses without raising, and `int(inf * (1 << 30))`
+    raises `OverflowError` — a class the old `except ValueError:` did not
+    catch. It used to reach `_place`'s outer blanket `except`, which silently
+    turned the load into plain offload instead of the documented default;
+    this pins the direct, cheaper fix instead."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "inf")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
+def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
+    """Finite but not remotely a plausible headroom in GiB — the same
+    "sanity beats trust" reasoning as the negative case, at the other end."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "2000")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
 # -- size-aware, per-component GPU placement (`_place`) --------------------------
 #
 # Measured on the user's machine: FLUX.2-klein-4B via the ROCm GGUF recipe, a

@@ -163,20 +163,39 @@ def download(model_id):
 _VRAM_HEADROOM_BYTES = 3 * (1 << 30)
 
 #: Env var for `_VRAM_HEADROOM_BYTES`, same "set AND parsable" precedence as
-#: `prefs.ai_idle_unload_minutes_override` — an unset or unparsable value is
-#: silently ignored rather than treated as an intentional zero, so a typo in
-#: this variable degrades to the documented default instead of removing the
-#: safety margin it exists to keep.
+#: `prefs.ai_idle_unload_minutes_override` — an unset, unparsable, OR
+#: out-of-range (negative, infinite, or implausibly large) value is silently
+#: ignored rather than treated as an intentional zero, so a typo in this
+#: variable degrades to the documented default instead of removing the safety
+#: margin it exists to keep. See `_vram_headroom_bytes` for why "parses" is
+#: not the same question as "sane".
 _VRAM_HEADROOM_ENV = "FUSED_RENDER_AI_VRAM_HEADROOM_GB"
 
 
 def _vram_headroom_bytes():
+    """`_VRAM_HEADROOM_BYTES`, or the env override — sanity-checked, not just
+    parsed. A bare `float()`/`except ValueError` pair let two bad values
+    through: `-4` parses fine and returns a NEGATIVE headroom, which makes
+    `_place` plan into MORE VRAM than is free — the opposite of the margin
+    this knob exists to keep — and `inf` (or any string large enough to
+    overflow) parses fine too, then raises `OverflowError` out of `int(...)`,
+    a class `except ValueError` never caught. That second one used to reach
+    `_place`'s own outer blanket `except`, so it "worked" by accident —
+    silently landing on plain offload — rather than by returning the
+    documented default the way every other unparsable value does. Both are
+    now caught before `int()` ever runs: a plausible headroom is `0 <= value
+    < 1024` (GiB), and anything outside that — negative, infinite, or just
+    absurd — is treated exactly like a value that failed to parse at all.
+    """
     raw = os.environ.get(_VRAM_HEADROOM_ENV)
     if not raw:
         return _VRAM_HEADROOM_BYTES
     try:
-        return int(float(raw) * (1 << 30))
-    except ValueError:
+        value = float(raw)
+        if not (0 <= value < 1024):
+            return _VRAM_HEADROOM_BYTES
+        return int(value * (1 << 30))
+    except (ValueError, OverflowError):
         return _VRAM_HEADROOM_BYTES
 
 
