@@ -587,6 +587,44 @@ def generate(body):
     }
 
 
+def _gpu_footprint():
+    """`worker_base.serve(footprint=...)`'s hook: what this worker is holding
+    in a DISCRETE GPU's own memory, invisible to RSS and (off darwin) to
+    `os_footprint_bytes()`'s platform reading — see `worker_base._footprint`'s
+    own docstring for the gap this closes and the measured numbers that found
+    it (a ROCm FLUX.2-klein-4B worker: 11.7 GiB of weights in RSS, 0.59 GiB of
+    driver context neither RSS nor a `psutil` read can see).
+
+    **`memory_reserved()`, not `memory_allocated()`** — deliberately the
+    opposite choice from `memory()` above, which sums `memory_allocated()`
+    because it feeds `resident_bytes()` -> `peak_resident_bytes()` ->
+    `fit.py`'s "measured" rung, where the question is "what did the tensors
+    actually cost". This hook answers a different question — "what is the
+    driver holding onto RIGHT NOW" — and `release()`'s `torch.cuda.empty_
+    cache()` call hands back the RESERVED pool, not merely whatever happened
+    to be allocated at that instant. Reporting `memory_allocated()` here would
+    make the idle-release timer firing invisible in `os_footprint_bytes()`:
+    the number would already have looked small before the reclaim, since
+    allocated tracks live tensors and a finished render has none.
+
+    **CUDA only, never MPS** — the trap this docstring exists to name: on
+    darwin, `worker_base.os_footprint_bytes()`'s `phys_footprint` reading
+    ALREADY counts the Metal pool a torch-on-MPS build allocates through
+    (`resident_bytes()`'s own docstring measured 23 GB of it, invisible to
+    RSS but not to `phys_footprint`). Reporting an MPS figure through this
+    hook on top of that would double the same bytes into the total — the
+    additive combination `os_footprint_bytes()` performs is only correct
+    because CUDA/ROCm VRAM and Linux RSS are genuinely disjoint; Metal's pool
+    and `phys_footprint` are not. Hence the single `torch.cuda.is_available()`
+    gate below and nothing checking `torch.backends.mps` at all.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        return int(torch.cuda.memory_reserved())
+    return None
+
+
 def main():
     """Serve, forever. The entry point each variant's `worker.py` shell calls.
 
@@ -595,4 +633,5 @@ def main():
     body is a path insert and a call to this.
     """
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, release=release)
+                      streaming=False, memory=memory, release=release,
+                      footprint=_gpu_footprint)

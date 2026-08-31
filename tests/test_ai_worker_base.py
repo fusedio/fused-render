@@ -1153,6 +1153,97 @@ def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path
     assert base._measure_peak is not None and base._measure_peak() == 7
 
 
+# -- a runner's own LIVE footprint hook, added into os_footprint_bytes ----------
+
+
+def test_serve_wires_footprint_into_the_hook(base, monkeypatch, tmp_path):
+    """`serve(footprint=...)` is a FOURTH optional hook beside `memory=`/
+    `peak_memory=`/`release=` — the same wiring test shape as `test_serve_
+    wires_peak_memory_into_the_peak_probe` above, just for the module global
+    `os_footprint_bytes()` reads instead of the one `peak_resident_bytes()`
+    reads."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, footprint=lambda: 11,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._footprint is not None and base._footprint() == 11
+
+
+def test_no_footprint_hook_is_a_silent_no_op(base):
+    """`_footprint` defaults to `None` — a runner that never calls `serve
+    (footprint=...)` (every MLX runner, torch on CPU/MPS) must not have
+    `os_footprint_bytes()` start raising on the plain attribute access."""
+    assert base._footprint is None
+
+
+def _fake_psutil_rss(monkeypatch, rss):
+    """The same fake-psutil shape `test_resident_bytes_...` above uses, reused
+    here so `os_footprint_bytes()`'s non-darwin fallback path (the one this
+    dev machine and CI both take) is exercised with a known platform figure."""
+    import types
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(
+            Process=lambda pid: types.SimpleNamespace(
+                memory_info=lambda: types.SimpleNamespace(rss=rss))))
+
+
+def test_os_footprint_bytes_adds_the_runners_hook_to_the_platform_figure(base, monkeypatch):
+    """ADDITIVE, not `max` — the correction this function already makes
+    between `phys_footprint` and `resident_size` does NOT apply here, because
+    those two overlap (both come off the same `task_vm_info` read) while a
+    Linux/CUDA worker's VRAM and its RSS are DISJOINT address spaces: the
+    driver's allocation is not backed by anything `psutil` walks. Summing is
+    therefore the better lower bound, and taking the larger of the two would
+    silently drop the smaller pool from the number entirely — reporting
+    "0.6 GiB held" for a worker actually holding 12.6 GiB of weights in RAM
+    plus 0.6 GiB of driver context, the exact FLUX.2-klein-4B/ROCm shape this
+    hook exists for."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_psutil_rss(monkeypatch, 2_000_000_000)
+    base._footprint = lambda: 600_000_000
+    assert base.os_footprint_bytes() == 2_600_000_000
+
+
+def test_os_footprint_bytes_falls_back_to_the_platform_figure_with_no_hook(base, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_psutil_rss(monkeypatch, 2_000_000_000)
+    assert base._footprint is None
+    assert base.os_footprint_bytes() == 2_000_000_000
+
+
+def test_os_footprint_bytes_swallows_a_raising_footprint_hook(base, monkeypatch):
+    """The same swallow-and-continue discipline every other probe in this file
+    follows (`_measure`, `_measure_peak`, the darwin `ctypes` read below): a
+    runner's own probe raising must never take `/health` down with it."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_psutil_rss(monkeypatch, 2_000_000_000)
+
+    def boom():
+        raise RuntimeError("torch not built with cuda")
+
+    base._footprint = boom
+    assert base.os_footprint_bytes() == 2_000_000_000
+
+
+def test_os_footprint_bytes_ignores_a_hook_answering_nothing(base, monkeypatch):
+    """A hook returning `None` (torch present but no CUDA device, MPS instead)
+    contributes nothing — same "never a guess" rule the platform readings
+    already follow."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_psutil_rss(monkeypatch, 2_000_000_000)
+    base._footprint = lambda: None
+    assert base.os_footprint_bytes() == 2_000_000_000
+
+
 # -- download progress, measured from the disk (AI-5b) --------------------------
 
 

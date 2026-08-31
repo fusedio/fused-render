@@ -741,6 +741,31 @@ _rss_peak = None
 #: leaves behind.
 _release = None
 
+#: A runner's own LIVE footprint probe, when it has one — the FOURTH optional
+#: hook beside `_measure`/`_measure_peak`/`_release` above, set by
+#: `serve(footprint=...)`. Answers a question none of the platform-level
+#: readings inside `os_footprint_bytes()` can: how much of a DISCRETE GPU's
+#: own memory this worker is holding.
+#:
+#: Why the gap exists: on Linux `resident_bytes()`'s RSS and `os_footprint_
+#: bytes()`'s `psutil` fallback both walk the process's own address space,
+#: and a CUDA/ROCm allocation lives in the driver, not there — so a
+#: `diffusers_image_rocm` worker holding a FLUX.2-klein-4B pipeline pinned to
+#: VRAM (`torch_image._place`'s "hot-gpu"/"all-gpu" cases) reported 0.59 GiB
+#: of actual VRAM use as if it were memory the reaper had already reclaimed,
+#: while `RssAnon` separately showed 11.7 GiB of weights parked in system RAM
+#: by `enable_model_cpu_offload()` — both real, neither visible to a probe
+#: that only reads `/proc/<pid>/status`. macOS never had this hole: `phys_
+#: footprint` already counts the Metal pool a torch-on-MPS or MLX worker uses,
+#: which is why this hook is wired ONLY for CUDA in `torch_image.main()` — an
+#: MPS figure added on top of `phys_footprint` would double-count the same
+#: bytes the platform reading already found.
+#:
+#: `torch_image.main()` supplies `torch.cuda.memory_reserved()`, not `_
+#: allocated()` — see that call site for why reserved is the number that
+#: actually moves when `release()`'s `empty_cache()` fires.
+_footprint = None
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
@@ -862,6 +887,20 @@ def os_footprint_bytes():
     wherever no such counter exists (every non-macOS platform, and any darwin
     failure above), and to None if even that is unavailable: never a guess, the
     same rule the other two probes follow.
+
+    **`_footprint`'s figure is ADDED to the platform figure above, not `max`ed
+    into it** — a deliberate DIFFERENT rule from the `max` this function
+    already takes between `phys_footprint` and `resident_size`. Those two
+    OVERLAP (same `task_vm_info` read, so whichever is bigger already includes
+    everything the smaller one counted); a Linux worker's RSS and a discrete
+    GPU's VRAM do not — they are disjoint address spaces, and `psutil` cannot
+    see the driver's allocation at all. Taking `max` of two disjoint figures
+    would silently discard the smaller one from the total; summing is the
+    better lower bound, which is all this function has ever promised to be.
+    See `_footprint`'s own docstring for the measured numbers this closes the
+    gap for (a ROCm/FLUX.2-klein worker: 11.7 GiB of weights in RSS, 0.59 GiB
+    of driver context invisible to it) and why the hook itself never fires on
+    darwin/MPS, where `phys_footprint` already counts that pool.
     """
     footprint = None
     resident = None
@@ -901,7 +940,20 @@ def os_footprint_bytes():
         except Exception:  # noqa: BLE001 - psutil raises its own family
             resident = None
     candidates = [n for n in (footprint, resident) if isinstance(n, int) and n > 0]
-    return max(candidates) if candidates else None
+    platform_figure = max(candidates) if candidates else None
+
+    gpu = None
+    if _footprint is not None:
+        try:
+            probed = _footprint()
+        except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+            probed = None
+        if isinstance(probed, int) and probed > 0:
+            gpu = probed
+
+    if platform_figure is None:
+        return gpu
+    return platform_figure + gpu if gpu is not None else platform_figure
 
 
 def peak_resident_bytes():
@@ -4555,7 +4607,7 @@ def _adopt_spawn_shape():
 
 
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
-         release=None, argv=None):
+         release=None, footprint=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
@@ -4571,13 +4623,21 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     (win, loss, or cancel alike) if nothing new has started by then — see
     `_release`, `_arm_release_timer` and `_fire_release` for the mechanism and
     why only some runners pass one.
+
+    `footprint` is a fourth, independent optional hook: a runner's own reading
+    of memory that lives OUTSIDE its own address space — a discrete GPU's
+    VRAM, which neither RSS nor macOS's `phys_footprint` can see. `os_
+    footprint_bytes()` adds it to the platform figure it already computes; see
+    that function's and `_footprint`'s own docstrings for why addition, not
+    `max`, and why `torch_image.main()` is the only caller that supplies one.
     """
-    global JOB_ID, _measure, _measure_peak, _release
+    global JOB_ID, _measure, _measure_peak, _release, _footprint
 
     _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
     _release = release
+    _footprint = footprint
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

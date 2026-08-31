@@ -831,6 +831,53 @@ def test_release_survives_both_backends_raising(monkeypatch, base):
     worker.release()  # must not raise
 
 
+# -- the live-VRAM footprint hook (`worker_base.serve(footprint=...)`) ----------
+
+
+def test_main_wires_a_footprint_hook_into_serve(monkeypatch, base):
+    """`main()` is the one caller of `worker_base.serve` in this file — the
+    same wiring `memory=`/`release=` already get, plus the new fourth hook."""
+    worker = load_worker(monkeypatch, base)
+    worker.main()
+    assert base.serve_kwargs["footprint"] is worker._gpu_footprint
+
+
+def test_the_footprint_hook_reports_reserved_not_allocated_bytes(monkeypatch, base):
+    """RESERVED, not allocated: reserved is what the driver has actually been
+    asked for, and it is the figure `release()`'s `torch.cuda.empty_cache()`
+    call actually returns to the OS — so it is the number that visibly moves
+    when the idle release fires. `memory_allocated()` would keep reporting
+    only the tensors currently live and miss exactly the pool this hook
+    exists to show being reclaimed."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        memory_allocated=lambda: 111,
+        memory_reserved=lambda: 222)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._gpu_footprint() == 222
+
+
+def test_the_footprint_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, base):
+    """CUDA only, never MPS: on darwin `phys_footprint` (`os_footprint_bytes`
+    in `worker_base`) already counts the Metal pool a torch-on-MPS build
+    reports through, so adding an MPS figure on top would double-count the
+    same bytes. This hook must answer `None` on an MPS or CPU build, exactly
+    like the CPU/MPS branches of `_place` never call `enable_model_cpu_
+    offload` — same boundary, restated for the memory probe instead of the
+    placement decision."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._gpu_footprint() is None
+
+
 def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
         monkeypatch, base, tmp_path):
     """Step 1 has no predecessor, so it has no velocity and no estimate — and
