@@ -300,3 +300,212 @@ into its own row. Every other caller (the loader's own `/api/env/install`)
 keeps the generic mirror unchanged, since it has no row of its own for this
 key. Covered by `test_report_job_false_opts_out_of_the_generic_mirror` in
 `tests/test_env_install.py`.
+
+## Second code review round — 8 findings, all fixed
+
+One commit per finding (`git log --oneline` on this branch shows them in
+order). Test commands run per finding are the three named in the task:
+`pytest tests/test_server_env_install.py`, `pytest tests/test_env_install.py`,
+`pytest tests/test_projectenv.py` — plus all three together at the end (294
+passed). Never ran a bare `pytest` sweep.
+
+### 1 (CRITICAL) — `--no-build` bricked any project declaring `[build-system]`
+
+Reproduced and fixed exactly as directed. Verified against the real `uv
+0.12.5` on this machine, in a throwaway `/tmp` directory (`uv init
+--no-workspace initproj`, zero dependencies):
+
+- `uv sync --no-default-groups --no-build` alone: fails —
+  `` error: Distribution `initproj==0.1.0 @ editable+.` can't be installed
+  because it is marked as `--no-build` but has no binary distribution ``.
+  Confirms the report's premise: this text does not contain a `hint:` line,
+  so `NO_BUILD_HINT` in runtime.js never matched it and no retry was ever
+  offered — the folder was permanently stuck.
+- Same command with `--no-install-project` added: succeeds, venv created,
+  nothing to install.
+- Adding `dependencies = ["uwsgi"]` (a real sdist-only package) and re-running
+  with `--no-install-project` still in place: still refused, and the refusal
+  still carries `` hint: Wheels are required for `uwsgi` because building
+  from source is disabled for all packages (i.e., with `--no-build`) `` —
+  confirming `--no-install-project` does not mask the retry path Task 5
+  depends on.
+
+Fix: `_env_install_worker.py`'s `_build` now appends `--no-install-project`
+in the same `if not allow_build:` branch as `--no-build`. Trade-off
+documented in `_build`'s own docstring and above: a src-layout project's own
+package is no longer installed editable into the venv, so a script relying on
+that editable install to `import mypkg` would lose it. Flat-layout script
+folders (the norm here, per PY-16) are unaffected — Python already puts a
+script's own directory on `sys.path` with no editable install involved. A
+src-layout project that genuinely needs its own package importable would have
+to declare it as an ordinary dependency (so uv builds *a* wheel for it) or run
+`uv sync` by hand outside this app. Not expected to come up in practice: the
+folders this feature targets are scripts, not distributable packages.
+
+### 2 (HIGH) — a locked project never got the retry prompt
+
+Reproduced with the exact repro from the task (`uv lock && uv sync
+--no-default-groups --no-build --no-install-project`, same `initproj` +
+`uwsgi` folder): the refusal shape at install time, once a lock already
+resolves cleanly, has NO `hint:` line at all —
+`` error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+can't be installed because it is marked as `--no-build` but has no binary
+distribution ``. `NO_BUILD_HINT` genuinely could not match this; `_sync_root`
+deliberately keeps `uv.lock` across builds and a folder gains one just by
+being run once, so this was highly reachable, exactly as flagged.
+
+Fix: added `NO_BUILD_DISTRIBUTION` as a second alternative in
+`noBuildPackage` (runtime.js), anchored on `` Distribution `NAME==VERSION
+@ SOURCE` can't be installed because it is marked as `--no-build` `` and
+capturing the name up to the first `=` (never the version). Regression test
+mirrors the existing no-wheel-retry test but with this exact error shape.
+
+### 3 (HIGH) — a manifest edit could install new nonstandard deps with no prompt
+
+Confirmed the mechanism: `approvedInstalls` was a `Set` of `need.project ||
+need.key` strings, so once a project's key was in the set, EVERY later
+`startInstall` call for that project skipped `confirmInstall` outright,
+regardless of what `need.nonstandard` said this time. Editing
+`pyproject.toml` and letting live-reload re-run is the app's own documented
+core workflow (see `startInstall`'s `activeKey` comment), so this was not a
+contrived edge case.
+
+Fix: added `nonstandardFingerprint(need)` — a stable, order-independent
+serialization of `need.nonstandard` — and folded it into the approval key
+(`(need.project || need.key) + " " + nonstandardFingerprint(need)`). A
+project whose disclosure changes gets a fresh key and re-asks; a project
+whose disclosure is untouched (the overwhelming majority of edits — version
+bumps, added ordinary PyPI deps, code changes) reuses the earlier approval
+exactly as before. Two regression tests: one proving a changed disclosure
+re-asks (posts == 2, prompts == 2), one proving an unrelated version bump
+does not (posts == 2 — the install still happens — but prompts == 1).
+
+### 4 (MEDIUM) — `allow_build` is client-asserted
+
+Read the plan's own accepted risk ("the prompt is not unforgeable... a
+deliberately hostile page can reach `window.top`... Deferred") and agree with
+the finding that `allow_build` is a real escalation past that baseline: the
+baseline lets a hostile page get ITS OWN declared dependencies installed
+un-prompted; `allow_build` lets it get an arbitrary build backend EXECUTED
+un-prompted, which is a materially bigger blast radius (arbitrary code at
+build time, not just "whatever `pip install` would have done anyway").
+
+Considered a narrowing: only honour `allow_build=True` when the server's own
+last-recorded `progress()` for this project's key already shows a
+`--no-build` refusal, so a single blind POST could never trigger a build.
+Rejected it as false comfort rather than shipping it: the same attacker who
+can POST to this endpoint (no real auth, just `X-Fused`) also AUTHORED the
+folder's `pyproject.toml`, so they can trivially manufacture that "prior
+failure" themselves — declare a source-only dependency, POST once without
+`allow_build`, watch it fail exactly as designed, then POST again with
+`allow_build: true`. It costs the attacker one extra fetch() call in the same
+hostile page and gives a real defender nothing to rely on. Documented the
+exposure honestly at the read site instead (`server/routers/env.py`, beside
+`allow_build = bool(body.get("allow_build"))`), and flagging it here as a
+genuine follow-up: the real fix is the unforgeable-prompt work the plan
+already defers (a native dialog in the supervisor process, which has no
+response channel yet — `supervisor/protocol.py`).
+
+**Follow-up for whoever picks up the unforgeable-prompt work**: when that
+lands, `allow_build` should very likely require a SEPARATE, more explicit
+confirmation than the ordinary install prompt — "run this package's setup
+code" is a different consent question than "install these packages", and
+today both go through the same client-asserted channel with no distinction
+server-side.
+
+### 5 (MEDIUM) — dead `nonstandard` response field and a false comment
+
+Confirmed the field was genuinely dead: `confirmInstall` runs BEFORE the
+`/api/env/install` POST is ever made (it has to — the whole point is asking
+before any network activity), so it is built from the PRE-FLIGHT's
+`need.nonstandard` (`/api/run`'s `needs_install`, via `engine.py`), never
+from this endpoint's response. Grepped runtime.js for `data.nonstandard` —
+zero hits.
+
+Dropped the field (`env.py`'s `JSONResponse` no longer includes it) and the
+`nonstandard_dependencies_of(project)` call that fed it, rather than wiring
+the client to re-check it before spawning. Reasoning: the real-world race
+this field could have guarded — a manifest edited between the pre-flight
+request and this POST — is dominated by the same
+edit-and-let-live-reload-rerun workflow Finding 3's fix already re-asks on,
+for the NEXT run. The remaining window (between a user's click and this POST
+landing, typically milliseconds) was never actually checked by anything
+before this fix either, so removing the field changes no real behaviour —
+only removes a false comment claiming the dialog was "built from THIS
+answer, not from the pre-flight's." Deleted the one test that existed purely
+to assert the now-removed field
+(`test_install_reports_a_nonstandard_source_beside_the_requirements`);
+`nonstandard_dependencies_of` itself stays fully covered by
+`tests/test_projectenv.py`, which is the layer that actually owns its
+correctness.
+
+### 6 (MEDIUM) — list-form `[tool.uv.sources]` and `workspace = true` skipped
+
+Confirmed both gaps by reading `nonstandard_dependencies_of`'s Shape 2 loop:
+`isinstance(entry, dict)` unconditionally `continue`d past a list value, and
+`_UV_SOURCE_REASONS` had no `"workspace"` key at all despite `workspace =
+true` being a real, undocumented-here uv source form (a name that resolves to
+another member of the same workspace — a local package, the same "not from
+PyPI" risk shape as `path`).
+
+Fix: normalised a source value (dict OR list) to a list of tables and
+iterated all of them, taking the first key from `_UV_SOURCE_REASONS` found in
+the first table that has one — same "checked in this order, one reason per
+name" rule the single-table case already used, just extended across every
+platform-conditional entry. Added `("workspace", "from a workspace member")`
+to `_UV_SOURCE_REASONS`. Three new tests: a `workspace = true` case, a
+list-form case that matches (`git`, behind a `marker`), and a list-form case
+that matches nothing (only a bare `marker`, no source key) to prove silence
+is still silence when nothing non-standard is actually there.
+
+### 7 (MEDIUM) — `uv.toml`'s project-wide index shapes went undisclosed
+
+Confirmed the asymmetry: `_env_install_worker.py`'s `_MIRRORED_NAMES`
+includes `uv.toml` specifically BECAUSE `uv sync` reads it as real
+configuration for the folder (its own comment there says so), but
+`nonstandard_dependencies_of` only ever loaded `pyproject.toml`. `uv.toml`
+uses the identical key names to `pyproject.toml`'s `[tool.uv]` table, just at
+the file's TOP LEVEL rather than nested under `[tool.uv]` (it is itself a
+dedicated uv config file, so there is no `[tool.uv]` to nest under).
+
+Fix: extracted the index-URL-collection logic shared between the two shapes
+into `_tool_uv_index_urls(uv: dict) -> list[str]`, added `_load_uv_toml`
+(sharing the TOML-parsing guts with `_load_manifest` via a new `_load_toml`
+helper), and Shape 3 now unions the index URLs from BOTH `pyproject.toml`'s
+`[tool.uv]` and `uv.toml`'s top level — reporting both if a folder somehow
+declares an index in each. Three new tests: `uv.toml` alone, both files at
+once (both reported), and no `uv.toml` at all (answer unchanged from before
+this fix — the common case).
+
+Scope note: the finding named "the project-wide index shapes" specifically
+(`index-url`/`default-index`/`extra-index-url`/`[[index]]`), and that is what
+got read from `uv.toml`. `uv.toml` can also carry a top-level `[sources]`
+table equivalent to `[tool.uv.sources]` (Shape 2) — not covered here, since
+it was not what the finding asked for and Shape 2's per-dependency reasoning
+(git/url/path/workspace/index) does not obviously need the same doubling
+Shape 3 needed (a project-wide index is a NEW class of risk uv.toml could
+introduce that pyproject.toml's absence of `[tool.uv]` would otherwise hide
+completely; a `uv.toml`-only `[sources]` entry would very likely ALSO route
+through `uv sync` unnoticed by the prompt, but proving that and wiring it up
+was out of scope for this pass — flagging it here as a real follow-up gap,
+not a deliberate exclusion on the merits).
+
+### 8 (LOW) — the D214 two-round bootstrap's identical jobs-dock titles
+
+Confirmed: round 1 (`PYTHON_BOOTSTRAP_KEY`) and round 2 (the venv key) each
+get their own `_mirror_into_jobs` call with their own job id (the key
+differs), so this was never the exact duplicate-row bug `report_job=False`
+fixed for the AI path (two rows for ONE piece of work) — it is two rows for
+two REAL, sequential pieces of work, both titled identically
+(`f"Preparing {display_name}"`), which reads as a glitch (a row finishing and
+instantly restarting) rather than as "first Python, then packages." Round
+1's title was also inaccurate on its own terms: nothing about downloading a
+prebuilt CPython interpreter is "preparing" the user's project.
+
+Fix: `_mirror_into_jobs` takes a new `downloading_python: bool = False`
+parameter (`start()` passes its own `acquire_python` truthiness one call
+earlier) and titles round 1 `f"Downloading Python for {name}"`, leaving
+round 2's `f"Preparing {name}"` unchanged. Regression test drives an actual
+two-round `start()` sequence (mocking `script_python_ready` False then True,
+same pattern `test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed`
+already uses) and asserts both rows' titles.
