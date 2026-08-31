@@ -12,6 +12,7 @@ about the one thing the digest must not notice: the app merely being run.
 """
 import json
 import os
+import platform
 import shlex
 import threading
 
@@ -1596,60 +1597,80 @@ def test_a_marker_another_process_already_removed_is_a_clean_dismiss(
     assert selffix.status() is None
 
 
-def test_the_source_reinstall_command_survives_a_path_with_spaces(tmp_path,
-                                                                  monkeypatch):
-    """The command is pasted, not read.
+# QUOTING IS UNIT-TESTED ON `_shell_path`, WIRING IS TESTED ON THE HOST.
+#
+# The split is forced, and the first version of these tests learned it the hard
+# way on the windows leg. `_shell_path` is pure string work, so every platform
+# and path shape can be exercised anywhere. `reinstall_advice` around it calls
+# `os.path.dirname`, which is ALSO platform-specific — on Linux it splits only
+# on "/", so a `C:\...` literal comes back as "" — and `platform.system()`
+# cannot be faked away from the flavour of `os.path` in the same process. Faking
+# the platform while taking the path from the runner asserts about two platforms
+# at once; faking it while writing a literal for the other one asserts about a
+# path `os.path` cannot parse. So the wiring test uses the host's own shape and
+# does not fake the platform at all.
+_POSIX_PLAIN = "/home/me/src/fused_render"
+_POSIX_SPACES = "/Users/me/My Checkouts/fused render"
+_WIN_PLAIN = r"C:\Users\me\src"
+_WIN_SPACES = r"C:\Program Files\fused render"
 
-    It renders in a `<code>` block with a copy button beside it, so the panel
-    is inviting the user to run it — and `git -C /Users/me/My Checkouts/... `
-    unquoted is three arguments git cannot make sense of. A home directory
-    with a space in it is ordinary on macOS and Windows alike.
+
+@pytest.mark.parametrize("system,path,expected", [
+    # A space is what breaks the paste, and it is ordinary on both.
+    ("Darwin", _POSIX_SPACES, "'/Users/me/My Checkouts/fused render'"),
+    ("Linux", _POSIX_SPACES, "'/Users/me/My Checkouts/fused render'"),
+    ("Windows", _WIN_SPACES, r'"C:\Program Files\fused render"'),
+    # ...and quoting only where it is needed: the command is read at least as
+    # often as it is run, and quotes a path never needed are noise.
+    ("Darwin", _POSIX_PLAIN, _POSIX_PLAIN),
+    ("Linux", _POSIX_PLAIN, _POSIX_PLAIN),
+    ("Windows", _WIN_PLAIN, _WIN_PLAIN),
+])
+def test_shell_path_quotes_for_the_shell_it_names(system, path, expected,
+                                                 monkeypatch):
+    """Every branch of the platform switch, both with and without spaces.
+
+    Windows gets DOUBLE quotes rather than `shlex.quote`'s single ones: `"` is
+    not a legal character in a Windows path so wrapping is always safe there,
+    while a single quote is literal to cmd.exe and would be pasted straight
+    through into the path.
+    """
+    monkeypatch.setattr(selffix.platform, "system", lambda: system)
+    assert selffix._shell_path(path) == expected
+
+
+def test_the_platform_switch_is_about_the_SHELL_not_the_path_shape(monkeypatch):
+    """Why the wiring test below cannot fake the platform.
+
+    `shlex.quote` quotes a Windows-shaped path even with no spaces in it,
+    because a backslash is shell-special on POSIX. "Does this path need
+    quoting?" therefore has two different answers depending on which shell is
+    asking — which is what makes a faked platform plus a runner-shaped path a
+    test about neither.
+    """
+    monkeypatch.setattr(selffix.platform, "system", lambda: "Darwin")
+    assert selffix._shell_path(_WIN_PLAIN) != _WIN_PLAIN
+    assert selffix._shell_path(_POSIX_PLAIN) == _POSIX_PLAIN
+
+
+def test_the_source_reinstall_command_survives_a_path_with_spaces(tmp_path,
+                                                                 monkeypatch):
+    """The wiring, on the host's own path flavour and real platform.
+
+    The command renders in a `<code>` block with a copy button beside it, so the
+    panel is inviting the user to run it — and `git -C /Users/me/My Checkouts/…`
+    unquoted is three arguments git cannot make sense of. What this pins is that
+    the parent directory arrives as ONE argument whatever the host is.
     """
     root = tmp_path / "My Checkouts" / "fused render" / "fused_render"
     root.mkdir(parents=True)
     monkeypatch.setattr(selffix, "install_root", lambda: str(root))
     monkeypatch.setattr(selffix, "install_method", lambda: "source")
-    monkeypatch.setattr(selffix.platform, "system", lambda: "Darwin")
 
     command = selffix.reinstall_advice()["command"]
-    assert command.startswith("git -C ")
-    assert command.endswith(" status")
+    assert command.startswith("git -C ") and command.endswith(" status"), command
     quoted = command[len("git -C "):-len(" status")]
-    assert shlex.split(f"git -C {quoted} status") == [
-        "git", "-C", str(root.parent), "status"], command
-
-
-@pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
-def test_an_ordinary_checkout_path_is_not_gratuitously_quoted(system, tmp_path,
-                                                              monkeypatch):
-    """Quoting only where it is needed, on EVERY branch of `_shell_path`.
-
-    The command is read at least as often as it is run, and quotes around a
-    path that never needed them are noise the reader has to look past. Both
-    platforms are named here because the Windows branch does its own quoting
-    rather than deferring to `shlex.quote`, so leaving it out left "only when
-    needed" true of the POSIX half and unpinned on the other.
-    """
-    root = tmp_path / "src" / "fused_render"
-    root.mkdir(parents=True)
-    monkeypatch.setattr(selffix, "install_root", lambda: str(root))
-    monkeypatch.setattr(selffix, "install_method", lambda: "source")
-    monkeypatch.setattr(selffix.platform, "system", lambda: system)
-
-    assert selffix.reinstall_advice()["command"] == (
-        f"git -C {root.parent} status")
-
-
-def test_windows_gets_double_quotes_not_shlex_single_ones(tmp_path, monkeypatch):
-    """`shlex.quote` is POSIX, and its single quotes are LITERAL to cmd.exe —
-    pasting them there asks git for a directory whose name begins with one.
-    `"` cannot appear in a Windows path at all, so wrapping is always safe."""
-    root = tmp_path / "Program Files" / "fused_render"
-    root.mkdir(parents=True)
-    monkeypatch.setattr(selffix, "install_root", lambda: str(root))
-    monkeypatch.setattr(selffix, "install_method", lambda: "source")
-    monkeypatch.setattr(selffix.platform, "system", lambda: "Windows")
-
-    command = selffix.reinstall_advice()["command"]
-    assert command == f'git -C "{root.parent}" status', command
-    assert "'" not in command
+    if platform.system() == "Windows":
+        assert quoted == f'"{root.parent}"', command
+    else:
+        assert shlex.split(quoted) == [str(root.parent)], command
