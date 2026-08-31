@@ -96,9 +96,13 @@ def _has_remote(dir_path: str) -> bool:
 
 
 def _repo_clean(app_dir: str) -> bool:
-    if not os.path.isdir(os.path.join(app_dir, ".git")):
+    """Whether the app folder is clean IN THE REPO THAT OWNS IT — its own
+    `.git`, or the shared `local` repo (D626), status scoped to the folder."""
+    scope = app_git._repo_scope(app_dir)
+    if scope is None:
         return False
-    r = app_git._git(app_dir, "status", "--porcelain")
+    repo_dir, spec = scope
+    r = app_git._git(repo_dir, "status", "--porcelain", "--", spec)
     return r.returncode == 0 and not (r.stdout or "").strip()
 
 
@@ -207,12 +211,19 @@ def migrate_workspace(root: str) -> int:
         if not stamp_entry(entry):
             continue
         changed += 1
-        if was_clean:
-            # Honest history in the app's own undo-log repo; a dirty repo is
-            # deliberately left dirty (see module docstring).
-            app_git._git(app_dir, "add", "-A")
-            app_git._git(app_dir, "commit", "-q", "-m",
-                         "Add fused-app meta tag (fused-render migration)")
+        scope = app_git._repo_scope(app_dir)
+        if was_clean and scope is not None:
+            # Honest history in the app's undo-log repo (its own, or the
+            # shared `local` one — _repo_scope resolves, the pathspec keeps
+            # sibling apps out); a dirty folder is deliberately left dirty
+            # (see module docstring). _repo_scope rather than app_git.commit
+            # because legacy apps live at depths 1-3 (D301) while
+            # app_dir_for recognises depth 2 only.
+            repo_dir, spec = scope
+            app_git._git(repo_dir, "add", "-A", "--", spec)
+            app_git._git(repo_dir, "commit", "-q", "-m",
+                         "Add fused-app meta tag (fused-render migration)",
+                         "--", spec)
     return changed
 
 

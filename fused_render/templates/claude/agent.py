@@ -2290,18 +2290,32 @@ def _commit_turn(file: str, message: str) -> None:
     and the app's CLAUDE.md instructs claude to commit its own work in small
     chunks as it goes — when it did, the tree is clean and this is a no-op.
     This sweep only catches the turns where that instruction was not honoured,
-    so no turn's work is ever left outside history. Hard-scoped: a
-    target outside an app dir, or an app dir without a `.git`, commits nothing
-    — this template also chats about files in arbitrary folders, and silently
-    committing into a user's real repository is the one wrong move.
+    so no turn's work is ever left outside history. Hard-scoped, mirroring
+    app_git._repo_scope (D166 — keep the two in step): an app heading its OWN
+    `.git` (unmigrated, or migration-skipped) commits there; otherwise an app
+    directly under a `<workspace>/local` that IS a repo commits into that
+    shared repo, PATHSPEC-SCOPED to its folder — a bare `add -A` is whole-tree
+    since git 2.0 and would sweep a concurrent session's work on a sibling app
+    into this commit. A target outside an app dir, or one resolving to no repo
+    we own, commits nothing — this template also chats about files in
+    arbitrary folders, and silently committing into a user's real repository
+    is the one wrong move.
 
     Best-effort throughout: no git, index.lock contention, nothing staged —
     all mean "no commit", never a poll error. Identity rides per-invocation
     (`-c user.*`) so a machine with no git config still commits, and `git -C`
     replaces cwd= to keep Popen on the posix_spawn path (see apps.py)."""
     app_dir = _app_dir_for(file)
-    if not app_dir or not os.path.isdir(os.path.join(app_dir, ".git")):
+    if not app_dir:
         return
+    if os.path.isdir(os.path.join(app_dir, ".git")):
+        repo_dir, spec = app_dir, "."
+    else:
+        local = os.path.join(_workspace_dir(), "local")
+        if not (os.path.dirname(app_dir) == local
+                and os.path.isdir(os.path.join(local, ".git"))):
+            return
+        repo_dir, spec = local, os.path.basename(app_dir)
     subject = " ".join((message or "").split())
     subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
         if subject else "Claude turn"
@@ -2312,7 +2326,7 @@ def _commit_turn(file: str, message: str) -> None:
         # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
         import shutil
         return subprocess.run(
-            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", repo_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
@@ -2329,7 +2343,7 @@ def _commit_turn(file: str, message: str) -> None:
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
-        exclude = os.path.join(app_dir, ".git", "info", "exclude")
+        exclude = os.path.join(repo_dir, ".git", "info", "exclude")
         if os.path.isdir(os.path.dirname(exclude)):
             try:
                 with open(exclude, encoding="utf-8") as fh:
@@ -2342,11 +2356,11 @@ def _commit_turn(file: str, message: str) -> None:
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
                     fh.write("\n".join(missing) + "\n")
-        if git("add", "-A").returncode != 0:
+        if git("add", "-A", "--", spec).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet").returncode == 0:
-            return  # nothing to commit (turn changed no files)
-        git("commit", "-q", "-m", subject)
+        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+            return  # nothing to commit (turn changed no files under this app)
+        git("commit", "-q", "-m", subject, "--", spec)
     except Exception:
         pass
 
