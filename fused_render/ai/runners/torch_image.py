@@ -237,16 +237,48 @@ def _place(pipe):
        denoiser (`transformer`, or `unet` on a pipeline that still calls it
        that) plus the `vae`, the two components that run on every step of
        generation. The text encoder runs once per render and is left to
-       offload's per-call fetch — on this machine's numbers that is 2.8 GiB
-       of pinned VRAM against an 8.05 GB component that would otherwise be
-       fetched and freed once anyway. Diffusers' own `pipelines/pipeline_
-       utils.py` (~line 1279, verified against the installed package) is
-       what makes this work: `enable_model_cpu_offload` gives every component
-       named in `pipe._exclude_from_cpu_offload` a plain `model.to(device)`
-       and an offload hook to everything else. That list is a CLASS
-       attribute defaulting to `[]` on the pipeline base — appending to it
-       in place would leak the hot-set names onto every OTHER instance (and
-       future instance) of the same pipeline class, so it is copied first.
+       offload's per-call fetch.
+
+       **Pinning takes TWO levers, not one, and this is the part an earlier
+       version of this function got wrong.** Diffusers' own `pipelines/
+       pipeline_utils.py` (`enable_model_cpu_offload`, verified against the
+       installed package around line 1249-1283) runs two passes: first it
+       pops every name in `pipe.model_cpu_offload_seq.split("->")` — a
+       CLASS-attribute string like `"text_encoder->transformer->vae"` — and
+       gives each one an offload hook UNCONDITIONALLY; only THEN does it look
+       at `pipe._exclude_from_cpu_offload` for whatever is left, `.to(device)`
+       -ing the names on that list and hooking everything else. A pipeline's
+       hot names (`transformer`/`unet`, `vae`) are always in the first pass —
+       that is precisely what makes them "hot" — so adding them to the
+       exclude list alone changes nothing: the first loop still pops and
+       hooks them before the exclude list is ever consulted. The exclude list
+       only governs components the seq string does NOT already claim.
+
+       The fix removes the hot names from a COPY of `model_cpu_offload_seq`
+       (so the first loop can no longer pop them) and adds them to a COPY of
+       `_exclude_from_cpu_offload` (so the second loop's `.to(device)` branch
+       picks them up instead). Both are class attributes on the pipeline base
+       — the seq a string, the exclude list a `[]` — and copying rather than
+       mutating in place is what stops either change from leaking onto every
+       OTHER instance (and future instance) of the same pipeline class.
+
+       The THRESHOLD for this case is `hot_bytes + max(every other measured
+       component's size) + headroom <= free`, not `hot_bytes + headroom <=
+       free`. Peak VRAM here is the pinned hot set PLUS whichever offloaded
+       component is being fetched onto the device at the time — on this
+       machine that is the 8.05 GB text encoder, fetched into VRAM that
+       already holds the resident transformer+VAE. `max` rather than `sum`
+       because offloaded components are fetched ONE AT A TIME by
+       `cpu_offload_with_hook`, never simultaneously — summing every
+       offloaded component's size would refuse hot-gpu in cases that
+       actually fit. On the measured RX 9060 XT (15.9 GiB, ~13.9 GiB free)
+       this pipeline has exactly one other component (the text encoder), so
+       `max(others)` and `total - hot_bytes` are the SAME number here and
+       the hot-gpu bound (2.77 + 8.05 + 3 = 13.82 GiB) coincides almost
+       exactly with the all-gpu bound — genuinely marginal, not the
+       comfortable safety margin case 1 has. A pipeline with more than one
+       offloaded component (FluxPipeline's two text encoders plus an image
+       encoder) is where hot-gpu and all-gpu diverge by more than rounding.
     3. **Offload** — neither fits: today's unconditional `enable_model_cpu_
        offload()`, unchanged.
 
@@ -254,7 +286,15 @@ def _place(pipe):
     torch, an exotic component type this probe did not anticipate) degrades
     straight to case 3 — the same "a probe must never break loading" reasoning
     `release()`'s per-backend try/except documents just below, applied to the
-    measurement instead of the reclaim.
+    measurement instead of the reclaim. That promise covers the MEASUREMENT;
+    the all-gpu case's own `pipe.to("cuda")` gets the identical treatment for
+    the same reason — `_vram_headroom_bytes()`'s margin is explicitly a
+    guess, `free` is sampled once before the move rather than continuously,
+    and a competing process (or a component whose real device cost exceeds
+    `numel * element_size`) can turn a move that looked safe into a raise. A
+    load that would have SUCCEEDED via plain offload must not fail outright
+    just because the faster path was tried first, so a raising `.to("cuda")`
+    falls back to `enable_model_cpu_offload()` exactly like case 3.
 
     The MPS and CPU branches are untouched: MPS's unified memory makes
     offloading pure overhead there (see below), and CPU has nothing to place.
@@ -265,9 +305,18 @@ def _place(pipe):
     answered the seed's question: a FLUX render on a Windows CPU is tens of
     minutes, and nothing on screen said which case the user was in.
 
-    Every case reports which one happened, alongside `device`, so `/health`
-    (and `fit`, eventually) can tell "on a GPU" apart from "on a GPU but
-    streaming every component through it".
+    Every case reports which one happened via `set_state(placement=...)`,
+    which reaches the WORKER's own `/health` endpoint (`worker_base.snapshot`)
+    — but nothing downstream reads it today. `supervisor._health` only lifts
+    `state`/`detail`/`resident_bytes`/`os_footprint_bytes`/`device` out of
+    that response into the `Worker` it is polling, and `describe()` (what the
+    app's own `/health`-adjacent API and the AI Models page actually see)
+    forwards none of those extra fields either. So `placement` exists,
+    survives one hop, and stops — it is not yet visible outside this
+    process. Forwarding it is a small, separate change (a `Worker.placement`
+    field plus one more key in `describe()`'s dict); this function sets the
+    state on the assumption that whoever wires that up later will find it
+    waiting here, not because the wiring exists yet.
     """
     import torch
 
@@ -287,9 +336,16 @@ def _place(pipe):
                 "unet" if "unet" in sizes else None)
             hot_names = [n for n in (denoiser_name, "vae") if n in sizes]
             hot_bytes = sum(sizes[n] for n in hot_names)
+            # The largest OTHER component, not the sum of them — see the
+            # docstring's point 2. `default=0` covers a pipeline whose only
+            # components ARE the hot set (nothing left to fetch, so nothing
+            # to add).
+            peak_other_bytes = max(
+                (size for name, size in sizes.items() if name not in hot_names),
+                default=0)
             if total_bytes + headroom <= free:
                 placement = "all-gpu"
-            elif hot_names and hot_bytes + headroom <= free:
+            elif hot_names and hot_bytes + peak_other_bytes + headroom <= free:
                 placement = "hot-gpu"
             else:
                 placement = "offload"
@@ -297,12 +353,19 @@ def _place(pipe):
             placement = None
 
         if placement == "all-gpu":
-            pipe.to("cuda")
+            try:
+                pipe.to("cuda")
+            except Exception:  # noqa: BLE001 - the move must degrade like the probe above
+                pipe.enable_model_cpu_offload()
+                placement = "offload"
         elif placement == "hot-gpu":
-            # Copy before append — see the docstring's point 2. Reading
-            # through `pipe.` falls back to the CLASS attribute when the
-            # instance has never set one of its own, exactly the case being
-            # guarded against here.
+            # Two levers, copied rather than mutated in place — see the
+            # docstring's point 2. Reading through `pipe.` falls back to the
+            # CLASS attribute when the instance has never set one of its
+            # own, exactly the case being guarded against here.
+            pipe.model_cpu_offload_seq = "->".join(
+                name for name in pipe.model_cpu_offload_seq.split("->")
+                if name not in hot_names)
             pipe._exclude_from_cpu_offload = list(pipe._exclude_from_cpu_offload) + hot_names
             pipe.enable_model_cpu_offload()
         else:
