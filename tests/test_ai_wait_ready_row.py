@@ -24,9 +24,17 @@ from fused_render.ai import registry, supervisor
 
 @pytest.fixture(autouse=True)
 def clean_registry():
+    """Both registries this file pokes directly: `jobs._jobs` (rows) and
+    `supervisor._workers` (residency) — each test seeds a fake `Worker`
+    straight into `_workers` to satisfy `_wait_ready`'s eviction check without
+    a real bring-up, and leaving that in place would leak a "resident" model
+    into every OTHER test in the suite that checks `supervisor.describe()` or
+    `ready_worker()`."""
     jobs.reset()
     yield
     jobs.reset()
+    with supervisor._lock:
+        supervisor._workers.clear()
 
 
 def test_the_merged_tick_mirrors_the_load_row_and_clears_on_exit(monkeypatch):
