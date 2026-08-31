@@ -539,20 +539,22 @@ export default function CurrentAppsSection() {
       const r = await renameCurrentApp(app.path, name);
       // Carry the row's SEQUENCE to the new path in memory, so the rename does
       // not reshuffle the list (assignSequences would put an unknown path on
-      // top). Deliberately NOT saved — the store is written by a drag and only
-      // by a drag (the cross-tab rule above).
+      // top). The OLD path's entry is left in place: the fetched table still
+      // names it until the refetch lands, and deleting it early hands the row
+      // a fresh top-of-list sequence in that window (Bugbot). The prune on the
+      // next assignment drops it. Deliberately NOT saved — the store is
+      // written by a drag and only by a drag (the cross-tab rule above).
       const seq = appOrder.get(app.path);
       if (seq !== undefined && !appOrder.has(r.path)) {
-        appOrder.delete(app.path);
         appOrder.set(r.path, seq);
       }
       setRenaming(null);
       pokeTasks();
-      // The renamed app's page, if we are on it, now lives at the new folder.
+      // Refetch UNCONDITIONALLY — the desk row changed either way. Then, if
+      // we are on the renamed app's page, follow it to the new folder.
+      refetch();
       if (app.path === onPath) {
         navigateUrl(appPageUrl(r.path, appPageTabFromSearch(location.search)));
-      } else {
-        refetch();
       }
     } catch (e) {
       pushToast({

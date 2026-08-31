@@ -158,19 +158,27 @@ def api_current_apps_rename(patch: RenamePatch):
     if os.path.normcase(new) != os.path.normcase(folder) and os.path.exists(new):
         raise HTTPException(status_code=409, detail="a folder with that name "
                             "already exists")
+    from fused_render import app_fused_dir, app_state_move, claude_session_move
+
+    # Witness the OLD path before the move: `ensure` writes `.fused/meta.json`
+    # recording it (a no-op when one exists), so after the rename the settle
+    # below runs through `_after_move`'s full machinery — including recording
+    # a live session as PENDING so the next open retries it. Settling by hand
+    # has no place to keep that list.
+    app_fused_dir.ensure(folder)
     try:
         os.rename(folder, new)
     except OSError as e:
         raise HTTPException(status_code=400, detail=f"rename failed: {e}")
-    from fused_render import app_fused_dir, app_state_move, claude_session_move
-
     recorded = app_fused_dir.recorded_app_dir(new)
     if recorded and canonical_fs_path(
             os.path.abspath(recorded)).rstrip("/") == folder:
         # The witness fired: ensure settles the move — stores, sessions, meta.
         app_fused_dir.ensure(new)
     else:
+        # No witness could be written (read-only folder, mount-backed): settle
+        # best-effort. No meta means nowhere to record a pending live session,
+        # the same standing an out-of-band move of such a folder has.
         app_state_move.rewrite_stores(folder, new)
         claude_session_move.relocate(folder, new)
-        app_fused_dir.ensure(new)
     return {"ok": True, "path": new}
