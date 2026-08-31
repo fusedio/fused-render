@@ -11142,7 +11142,8 @@ the rules around it.
 <app>/.fused/
     data/       state the app owns and cannot rebuild
     cache/      derived bytes the app can rebuild — deletable at any time
-    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>"}
+    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>",
+                 "migrations": [{"from", "to", "at", "sessions"}, ...]}  # after a move
 ```
 
 - **`data` vs `cache` is a promise, not a naming preference.** Everything under
@@ -11168,9 +11169,43 @@ the rules around it.
   against it: a mismatch means the folder was moved or copied since its state
   was created — the one fact an app cannot otherwise learn about itself, and
   exactly when a path-keyed cache entry or an absolute path stored in `data/`
-  has gone stale. `ensure` therefore NEVER rewrites the field (rewriting on
-  sight erases the evidence); it logs at INFO and leaves it. What a move MEANS
-  is the app's call — a photo index repoints, a scratchpad does not care.
+  has gone stale. A COPY — the recorded folder still exists — is left exactly
+  as found: `ensure` logs at INFO and rewrites nothing, and what it means is
+  the app's call (a photo index repoints, a scratchpad does not care). A MOVE
+  — the recorded folder is gone — is settled by the server
+  (`fused_render/claude_session_move.py`): every Claude transcript whose own
+  `cwd` line is the old path or a directory under it is carried from its
+  `~/.claude/projects/<munged cwd>/` bucket to the bucket for the matching path
+  under the new root, every spelling of the old path repointed — `cwd`
+  fields, the leading `<live-app-state>` block's plain `entry` and
+  percent-encoded `_file=` url (a file-scoped session's pane identity, which
+  is what lists it under its file and what "open" navigates to), tool
+  records — and the `<id>/` side dir along with it, so the Tasks list,
+  "continue in terminal" and `--resume` all find the conversations at the
+  new home. Membership is decided per transcript by
+  its recorded `cwd`, never by bucket name — the munge is lossy and
+  `-A-app-` also prefixes the sibling `/A/app-old`. A transcript whose session
+  is live (a pid-checked `~/.claude/sessions/` entry, or a turn in flight per
+  `session_liveness`) stays put and the relocate reports incomplete; one that
+  already exists at the destination (a copy-on-resume got there first) is left
+  to the destination. Only a complete relocate repoints `app_dir`, appending
+  `{"from", "to", "at", "sessions"}` to a `migrations` list so the evidence is
+  kept rather than erased; the server's own stores that name the old path —
+  bookmarks, shell recents, scheduled targets, the menu-bar pin (all via
+  `workspace_migration.rewrite_absolute_paths`, the D337 rewriters handed an
+  app's roots instead of the workspace's), plus `current_apps.json`,
+  `registered_apps.json` and the workspace-relative `app_recents.json`
+  (`fused_render/app_state_move.py`) — are re-rooted on the same open,
+  idempotently, an app moved out of the workspace dropping its
+  `app_recents` key (the registered store owns it from there); an
+  incomplete one leaves `app_dir` at the origin
+  but still appends the hop with its `pending` ids, so if the folder moves
+  AGAIN before the live session ends the next relocate searches that
+  intermediate path too, and the transcripts already carried there are not
+  lost. A rename the munge cannot see (`my_app` → `my-app`, same bucket)
+  rewrites the transcript's `cwd` lines in place. Not carried: `~/.claude.json`'s `projects` map (the CLI
+  owns it), `history.jsonl`, and the session-id-keyed `file-history/` and
+  `todos/`.
 - **A `.fused/meta.json` that exists but does not parse is left alone.** It is
   a user-writable file in the user's folder; overwriting it would destroy
   whatever they (or a future version) put there, and nothing here needs it.
