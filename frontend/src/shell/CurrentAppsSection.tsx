@@ -25,14 +25,20 @@ import React, {
   useState,
 } from "react";
 import {
+  archiveCurrentAppTasks,
   getCurrentApps,
+  readCurrentAppTasks,
   removeAppIcon,
   removeCurrentApp,
+  renameCurrentApp,
   setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
 import IconPicker from "@platform/ui/IconPicker";
-import { navigateUrl } from "@platform/lib/router";
+import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { pushToast } from "@platform/lib/toast";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
@@ -193,12 +199,14 @@ function CurrentAppRow({
   drag,
   onRemoved,
   onGlyphClick,
+  onMenu,
 }: {
   app: CurrentApp;
   active: boolean;
   drag: RowDragProps;
   onRemoved: () => void;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
+  onMenu: (e: React.MouseEvent, app: CurrentApp) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
@@ -252,6 +260,7 @@ function CurrentAppRow({
       }
       title={tip}
       draggable
+      onContextMenu={(e) => onMenu(e, app)}
       {...drag}
     >
       {/* The glyph is the icon picker's toggle — the Bookmarks pattern
@@ -326,8 +335,8 @@ function CurrentAppRow({
       <span className="bookmark-actions">
         <button
           className="icon-btn delete-btn current-app-archive"
-          title="Remove from current apps (archives its tasks)"
-          aria-label={`Remove ${app.name} from current apps and archive its tasks`}
+          title="Hide from projects (archives its tasks)"
+          aria-label={`Hide ${app.name} from projects and archive its tasks`}
           disabled={busy}
           onClick={onRemove}
         >
@@ -492,6 +501,123 @@ export default function CurrentAppsSection() {
     refetch();
   };
 
+  // ---- the row's right-click menu ---------------------------------------------
+  // "Open app" is the app page header's own button (AppPage.tsx) — the entry
+  // page in a new tab. The rest are the desk's own verbs — the dot, the
+  // tasks, the row itself.
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    app: CurrentApp;
+  } | null>(null);
+  const onRowMenu = useCallback((e: React.MouseEvent, app: CurrentApp) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, app });
+  }, []);
+
+  // The rename dialog: prefilled with the folder's current name; submit renames
+  // the FOLDER on disk and the server carries the app's sessions and stores
+  // along (the D548 move settlement).
+  const [renaming, setRenaming] = useState<CurrentApp | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const startRename = (app: CurrentApp) => {
+    setRenameDraft(app.name);
+    setRenaming(app);
+  };
+  const submitRename = async () => {
+    const app = renaming;
+    const name = renameDraft.trim();
+    if (!app || renameBusy) return;
+    if (!name || name === app.name) {
+      setRenaming(null);
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      const r = await renameCurrentApp(app.path, name);
+      // Carry the row's SEQUENCE to the new path in memory, so the rename does
+      // not reshuffle the list (assignSequences would put an unknown path on
+      // top). The OLD path's entry is left in place: the fetched table still
+      // names it until the refetch lands, and deleting it early hands the row
+      // a fresh top-of-list sequence in that window (Bugbot). The prune on the
+      // next assignment drops it. Deliberately NOT saved — the store is
+      // written by a drag and only by a drag (the cross-tab rule above).
+      const seq = appOrder.get(app.path);
+      if (seq !== undefined && !appOrder.has(r.path)) {
+        appOrder.set(r.path, seq);
+      }
+      setRenaming(null);
+      pokeTasks();
+      // Refetch UNCONDITIONALLY — the desk row changed either way. Then, if
+      // we are on the renamed app's page, follow it to the new folder.
+      refetch();
+      if (app.path === onPath) {
+        navigateUrl(appPageUrl(r.path, appPageTabFromSearch(location.search)));
+      }
+    } catch (e) {
+      pushToast({
+        msg: "Could not rename " + app.name + ": " + (e as Error).message,
+        tone: "error",
+      });
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const menuItems = (app: CurrentApp): MenuEntry[] => [
+    {
+      // The app page header's own "Open app": the entry page full-size in the
+      // explorer, in a new tab so the current page stays put.
+      label: "Open app",
+      icon: MenuIcons.open,
+      disabled: !app.exists || !app.entry,
+      onClick: () => {
+        if (app.entry) window.open(urlForFsPath(app.entry), "_blank", "noopener");
+      },
+    },
+    {
+      label: "Rename…",
+      icon: MenuIcons.rename,
+      disabled: !app.exists,
+      onClick: () => startRename(app),
+    },
+    "separator",
+    {
+      label: "Mark all tasks as read",
+      onClick: () => {
+        readCurrentAppTasks(app.path)
+          .catch(() => {})
+          .finally(() => pokeTasks());
+      },
+    },
+    {
+      label: "Archive all tasks",
+      icon: MenuIcons.compress,
+      onClick: () => {
+        archiveCurrentAppTasks(app.path)
+          .catch(() => {})
+          .finally(() => pokeTasks());
+      },
+    },
+    "separator",
+    // The ✕'s gesture, by name: off the desk, tasks archived with it.
+    {
+      label: "Hide from projects",
+      icon: MenuIcons.trash,
+      danger: true,
+      onClick: () => {
+        removeCurrentApp(app.path)
+          .catch(() => {})
+          .finally(() => {
+            pokeTasks();
+            refetch();
+          });
+      },
+    },
+  ];
+
   const render = useCallback(
     (app: CurrentApp) => (
       <CurrentAppRow
@@ -501,10 +627,11 @@ export default function CurrentAppsSection() {
         drag={dragProps(app.path)}
         onRemoved={refetch}
         onGlyphClick={onGlyphClick}
+        onMenu={onRowMenu}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onPath, apps, refetch, onGlyphClick],
+    [onPath, apps, refetch, onGlyphClick, onRowMenu],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
@@ -557,6 +684,61 @@ export default function CurrentAppsSection() {
           </span>
           <span className="bookmark-name">New app</span>
         </div>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.app)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {renaming && (
+        <Modal
+          title={"Rename " + renaming.name}
+          busy={renameBusy}
+          onClose={() => setRenaming(null)}
+          width={420}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={renameBusy}
+                onClick={() => setRenaming(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={renameBusy || !renameDraft.trim()}
+                onClick={submitRename}
+              >
+                {renameBusy ? "Renaming…" : "Rename"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            Renames the app&apos;s folder on disk. Its tasks and Claude
+            sessions move with it.
+          </p>
+          <input
+            type="text"
+            className="field-control"
+            value={renameDraft}
+            autoFocus
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitRename();
+              }
+            }}
+          />
+        </Modal>
       )}
       {iconPicker && (
         <IconPicker
