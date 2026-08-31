@@ -950,6 +950,36 @@ def test_a_joining_caller_starts_no_second_mirror_thread(
 
 
 @requires_fused
+def test_report_job_false_opts_out_of_the_generic_mirror(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`ai/supervisor.py`'s bring-up mirrors an AI model's env build into its
+    OWN jobs-dock row (`job_id_for(model)`, titled with the model) — without
+    an opt-out, `start()`'s unconditional `_mirror_into_jobs` would open a
+    SECOND, generic row (`sys:env-install:<key>`, titled with the project) for
+    the identical `uv sync`, and a user watching a model load for the first
+    time would see two progress rows for one thing happening.
+    `report_job=False` is that opt-out: the install itself proceeds exactly as
+    before, but no generic row ever appears.
+    """
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    proj = _project(tmp_path, deps=["pip"])
+
+    rec = envinstall.start(proj, report_job=False)
+    key = rec["key"]
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    # No mirror thread was ever started, so there is nothing to wait on — a
+    # short, real sleep is what proves absence here rather than `_wait_until`,
+    # which only proves presence eventually shows up.
+    time.sleep(0.1)
+    assert _job(f"sys:env-install:{key}") is None, (
+        "report_job=False must not open the generic jobs-dock row"
+    )
+
+
+@requires_fused
 def test_the_resolved_script_interpreter_reaches_the_worker(
     tmp_path, monkeypatch, _fresh_script_python
 ):

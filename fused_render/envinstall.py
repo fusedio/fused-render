@@ -1779,8 +1779,19 @@ def _mirror_into_jobs(key: str, project_dir: str) -> None:
     threading.Thread(target=run, name="env-install-jobs-mirror", daemon=True).start()
 
 
-def start(project_dir: str, allow_build: bool = False) -> dict:
+def start(project_dir: str, allow_build: bool = False, report_job: bool = True) -> dict:
     """Begin (or join) the install for `project_dir`; returns its progress.
+
+    `report_job=False` opts out of `_mirror_into_jobs`'s generic
+    `sys:env-install:<key>` jobs-dock row for a caller that already mirrors
+    this exact install into its OWN row. `ai/supervisor.py` is that caller: an
+    AI model's first load reports its bring-up under `job_id_for(model)` —
+    same `uv sync`, titled with the model and carrying its own richer
+    "Preparing X — installing…" detail — and without this flag the user saw
+    TWO jobs-dock rows for one thing happening the moment a model needed its
+    environment built. Default True: every other caller (the loader's own
+    `/api/env/install`) has no row of its own for this key, so the generic
+    mirror is the only one there ever is.
 
     `allow_build` reaches the worker only on the branch that actually spawns
     one — a caller that joins an install already running, or finds one already
@@ -1860,8 +1871,11 @@ def start(project_dir: str, allow_build: bool = False) -> dict:
     # or close). Started here, once, by the ONE call that actually claimed the
     # key: the four callers that would otherwise join a running install never
     # reach this line at all (see the `_claim` branch above), so there is
-    # never a second thread mirroring the same key.
-    _mirror_into_jobs(key, project_dir)
+    # never a second thread mirroring the same key. Skipped when the caller
+    # said `report_job=False` — it already mirrors this exact install into a
+    # row of its own (see the parameter's own docstring).
+    if report_job:
+        _mirror_into_jobs(key, project_dir)
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.
