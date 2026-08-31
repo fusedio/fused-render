@@ -875,7 +875,7 @@
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
 
-/* "Fix this" — the self-fix trigger on a FAILED row (SPEC §42, SF-1). Sits just
+/* "Fix this" — the self-fix trigger on a FAILED row (SPEC §48, SF-1). Sits just
    left of the ✕, so the two options a failure leaves you with — look at it, or
    close it — are side by side. Bordered rather than filled: it is an offer, not
    the row's primary action, and the row's primary action is reading the error

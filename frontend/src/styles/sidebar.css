@@ -251,7 +251,7 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
-/* -- Modified installation (platform/ui/VersionChip, SPEC §42) --------------
+/* -- Modified installation (platform/ui/VersionChip, SPEC §48) --------------
  *
  * The chip stops being a label and becomes a control once a self-fix session
  * has changed this copy: same size and position, amber instead of muted, and
