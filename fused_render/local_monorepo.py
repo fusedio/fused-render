@@ -89,6 +89,28 @@ def _merge_excludes(app_dir: str, local: str) -> None:
         logger.warning("exclude merge failed for %s", app_dir, exc_info=True)
 
 
+def _drop_boilerplate_gitignore(app_dir: str) -> None:
+    """Delete the app's own `.gitignore` when every rule in it is already
+    carried by the shared repo's root one — the per-app file was OUR
+    boilerplate (app_git's old per-app init wrote it), and under one repo it
+    is 25 copies of the root file. A `.gitignore` with any line of its own is
+    the USER's and stays: it carries real rules (e.g. `recordings/`) the root
+    file does not."""
+    path = os.path.join(app_dir, ".gitignore")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = {ln.strip() for ln in f
+                     if ln.strip() and not ln.strip().startswith("#")}
+    except OSError:
+        return
+    root_lines = {ln for ln in app_git._ROOT_GITIGNORE.splitlines() if ln}
+    if lines and lines <= root_lines:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def migrate(root: str) -> tuple[int, bool]:
     """Fold every per-app repo under `<root>/local` into the shared repo.
     Returns `(adopted, complete)` — `complete` False when any app failed and
@@ -115,6 +137,7 @@ def migrate(root: str) -> tuple[int, bool]:
                     continue
                 _merge_excludes(app_dir, local)
                 shutil.rmtree(git_dir, onerror=_force_rm)
+            _drop_boilerplate_gitignore(app_dir)
             # Adopt whatever the folder holds — a dirty tree as-is (its adopt
             # commit is the new baseline), a repo-less folder the same way.
             if app_git._git(local, "add", "-A", "--", name).returncode != 0:

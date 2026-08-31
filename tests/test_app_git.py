@@ -215,9 +215,13 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
     local = workspace / "local"
     a = local / "alpha"; a.mkdir(parents=True)
     (a / "index.html").write_text("<html></html>")
+    # A user-edited .gitignore (a rule of its own) survives the migration.
+    (a / ".gitignore").write_text(app_git._GITIGNORE + "recordings/\n")
     _own_repo(a, subjects=("old history",), dirty="new.txt")
     b = local / "beta"; b.mkdir()
     (b / "index.html").write_text("<html></html>")  # never had a repo
+    # Our old per-app boilerplate: fully covered by the root file → deleted.
+    (b / ".gitignore").write_text(app_git._GITIGNORE)
     c = local / "gamma"; c.mkdir()
     (c / "index.html").write_text("<html></html>")
     _own_repo(c)
@@ -232,6 +236,9 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
     assert (c / ".git").is_dir()              # remote ⇒ left its own repo
     assert _log(a, scoped=True) == ["Adopt alpha into the workspace repo"]
     assert _log(b, scoped=True) == ["Adopt beta into the workspace repo"]
+    # Boilerplate per-app .gitignore gone (root one covers it); user's kept.
+    assert not (b / ".gitignore").exists()
+    assert (a / ".gitignore").exists()
     # The dirty file was adopted as-is into alpha's baseline.
     tracked = subprocess.run(["git", "-C", str(local), "ls-files", "alpha"],
                              capture_output=True, text=True).stdout
