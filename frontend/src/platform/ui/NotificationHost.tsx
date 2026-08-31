@@ -32,7 +32,6 @@
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
 // not the window's. Only the top-level document shows the server card (an
 // embed would otherwise render one per pane, all saying the same thing).
-import { FdaDeniedNotifier } from "@platform/ui/FdaStrip";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import Toast from "@platform/ui/Toast";
 import { dismissToast, useToasts } from "@platform/lib/toast";
@@ -57,9 +56,6 @@ export default function NotificationHost() {
           />
         </div>
       ))}
-      {/* Renders nothing itself — raises the Full Disk Access denial toast
-          from whatever page the denial happens on (FdaStrip.tsx). */}
-      {!IS_EMBED && <FdaDeniedNotifier />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

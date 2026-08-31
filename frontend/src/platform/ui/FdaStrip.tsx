@@ -42,61 +42,18 @@ const WATCH_MS = 5000;
 // qualifies but no fs route has been refused yet.
 type Stage = "hidden" | "watching" | "showing";
 
-//: One toast per tab: the notifier can remount (it lives in NotificationHost,
-//: but panes re-mount hosts), and the strip re-explains on Home anyway — the
-//: toast's job is only to break the news wherever the user happens to be.
+//: One toast per tab, since the strip can re-detect `denied` on every
+//: remount. The toast just breaks the news through the app's normal toast
+//: queue; the strip itself is the explanation and the fix.
 let toastShown = false;
 
-/** Global companion to the strip, mounted in NotificationHost so it lives on
- *  every page: the strip renders only on Home and /apps, but the denial that
- *  makes it relevant usually happens elsewhere — in the explorer, opening the
- *  very file that was refused. This watches the same `fda` field and breaks
- *  the news as a toast the moment `denied` flips, with the Settings pane one
- *  click away; the strip on Home remains the full explanation. */
-export function FdaDeniedNotifier() {
-  useEffect(() => {
-    let disposed = false;
-    let timer = 0;
-    const check = () => {
-      getConfig()
-        .then((config) => {
-          if (disposed) return;
-          const fda = config.fda;
-          if (!fda || fda.granted || fda.dismissed) {
-            window.clearInterval(timer);
-            return;
-          }
-          if (fda.denied && !toastShown) {
-            toastShown = true;
-            window.clearInterval(timer);
-            // Persistent (ttlMs: 0): this explains an error the user just hit
-            // somewhere else in the UI, and a 6s window to read + act on a
-            // System Settings round-trip is not a real window.
-            pushToast({
-              msg:
-                "macOS denied FusedRender access to a file — grant Full Disk " +
-                "Access once to fix this permanently",
-              tone: "error",
-              ttlMs: 0,
-              action: {
-                label: "Open System Settings",
-                onClick: () => {
-                  openFdaSettings().catch(() => {});
-                },
-              },
-            });
-          }
-        })
-        .catch(() => {});
-    };
-    check();
-    timer = window.setInterval(check, WATCH_MS);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-  return null;
+function noteDenialToast() {
+  if (toastShown) return;
+  toastShown = true;
+  pushToast({
+    msg: "macOS denied FusedRender access to a file — grant Full Disk Access to fix this",
+    tone: "error",
+  });
 }
 
 // The last stage seen, so walking between Home and /apps — which both render
@@ -129,7 +86,10 @@ export function FdaStrip() {
         // say "showing" from a previous mount while a grant or another tab's
         // dismissal has since landed.
         if (!fda || fda.granted || fda.dismissed) setStage("hidden");
-        else setStage(fda.denied ? "showing" : "watching");
+        else if (fda.denied) {
+          noteDenialToast();
+          setStage("showing");
+        } else setStage("watching");
       })
       .catch(() => {}); // no config, no warning — the server card owns outages
     return () => {
@@ -146,7 +106,10 @@ export function FdaStrip() {
           if (stageRef.current !== "watching") return;
           const fda = config.fda;
           if (!fda || fda.granted || fda.dismissed) setStage("hidden");
-          else if (fda.denied) setStage("showing");
+          else if (fda.denied) {
+            noteDenialToast();
+            setStage("showing");
+          }
         })
         .catch(() => {});
     }, WATCH_MS);
