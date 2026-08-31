@@ -461,13 +461,34 @@ _KEY_A = "a" * 16   # what /api/run's needs_install carried
 _KEY_B = "b" * 16   # what /api/env/install re-derived off the .py on disk
 
 _JS_PRELUDE = """
+// `globalThis.__autoInstall` defaults to true: the consent question
+// `confirmInstall` (runtime.js) asks before every install is answered
+// Install automatically the moment its button gets a click listener, which is
+// how a page-shaped stub document can click a button it never renders. This
+// is what lets every install test written BEFORE the confirm step existed
+// keep asserting on the install itself rather than on a question none of them
+// know to answer. A test that wants to see Cancel win sets
+// `globalThis.__autoInstall = false` first and clicks the row's own Cancel
+// button, exactly as the mid-install cancel tests already do for the
+// running-install Cancel button.
+//
+// `__installPrompts` counts how many times that auto-click fired — the one
+// external signal this harness has for "the question was asked", since the
+// dialog itself is never rendered to anything a test can see.
+globalThis.__installPrompts = 0;
 function makeEl() {
   return {
     style: { cssText: "" }, textContent: "", children: [], _h: {}, dataset: {},
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { this.children.push(...c); },
     remove() { this.removed = true; },
-    addEventListener(t, f) { (this._h[t] = this._h[t] || []).push(f); },
+    addEventListener(t, f) {
+      (this._h[t] = this._h[t] || []).push(f);
+      if (t === "click" && this.textContent === "Install" && globalThis.__autoInstall !== false) {
+        globalThis.__installPrompts += 1;
+        queueMicrotask(f);
+      }
+    },
     removeEventListener(t, f) {
       const a = this._h[t] || []; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1);
     },
@@ -622,7 +643,7 @@ Promise.allSettled([
     states: settled.map((r) => r.status),
     values: settled.map((r) => r.value),
     reasons: settled.map((r) => r.reason && r.reason.message),
-    installs, runs, fsChanges,
+    installs, runs, fsChanges, prompts: globalThis.__installPrompts,
   }));
 });
 """) % {"a": _KEY_A})
@@ -630,6 +651,14 @@ Promise.allSettled([
     assert result["values"] == [42] * 5
     assert result["installs"] == 1, (
         f"one project must mean one install POST, saw {result['installs']}"
+    )
+    # The confirm question is asked once too, not once per script — the same
+    # per-key dedup in `installEnv` that already collapses the five POSTs into
+    # one collapses the five confirms into one for the identical reason: all
+    # five calls join the ONE `startInstall` promise, and `confirmInstall`
+    # only ever runs inside it.
+    assert result["prompts"] == 1, (
+        f"one project must mean one confirm, saw {result['prompts']}"
     )
     # Every run that came back told the shell the filesystem may have moved.
     #
@@ -643,6 +672,42 @@ Promise.allSettled([
     assert result["fsChanges"] == result["runs"], (
         "each /api/run that came back must report an fs change, "
         f"saw {result['fsChanges']} for {result['runs']} runs"
+    )
+
+
+def test_cancelling_the_confirm_makes_no_install_post_and_rejects():
+    """The gate this whole feature adds: a POST must never happen before the
+    question in front of it is answered Install.
+
+    `__autoInstall = false` turns off the harness's default (every other test
+    in this file answers the question Install so it can go on testing the
+    installer plumbing the confirm sits in front of) — this is the one test
+    that answers it Cancel instead, by finding the row `startInstall` built
+    and clicking its Cancel button directly, the same way the mid-install
+    cancel tests reach a running install's Cancel button.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+// The row does not exist until /api/run's mocked fetch resolves (a real
+// Promise tick, unlike `installEnv` reached directly), so — unlike the
+// mid-install cancel tests, which reach the row from inside a later poll —
+// this polls for it rather than assuming it is there the instant
+// `runPython` is called.
+(function clickCancelOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry) return setTimeout(clickCancelOnceAsked, 0);
+  entry.row.cancel._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result.get("type") == "EnvInstallCancelled", result
+    assert result["installs"] == 0, (
+        f"cancelling the confirm must never POST to /api/env/install, saw {result['installs']}"
     )
 
 
@@ -1460,14 +1525,21 @@ const waiters = [
   installEnv(need, "b.py", "p.html"),
   installEnv(need, "c.py", "p.html"),
 ];
-const row = installing.get("%(a)s").row;
-const listeners = (row.cancel._h.click || []).length;
-row.cancel._h.click.forEach((f) => f());
+// A macrotask, not read straight off `installEnv`'s synchronous return: the
+// harness's default auto-click of Install (see _JS_PRELUDE) fires on a
+// MICROTASK, and the real cancel listener this test wants to count is only
+// attached once that resolves and `runInstall` runs — both of which finish
+// before any `setTimeout` callback gets a turn.
 setTimeout(() => {
-  Promise.allSettled(waiters).then(() => {});
-  console.log(JSON.stringify({ cancels, listeners, posts }));
-  process.exit(0);
-}, 50);
+  const row = installing.get("%(a)s").row;
+  const listeners = (row.cancel._h.click || []).length;
+  row.cancel._h.click.forEach((f) => f());
+  setTimeout(() => {
+    Promise.allSettled(waiters).then(() => {});
+    console.log(JSON.stringify({ cancels, listeners, posts }));
+    process.exit(0);
+  }, 50);
+}, 0);
 """) % {"a": _KEY_A})
     assert result["listeners"] == 1, (
         f"{result['listeners']} cancel listeners on one row — a click fires that many"
