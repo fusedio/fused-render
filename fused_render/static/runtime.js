@@ -2147,9 +2147,32 @@
   // nonexistent package) must fall through to the ordinary error path
   // unchanged, not be swallowed into a retry prompt that names nothing.
   const NO_BUILD_HINT = /hint: Wheels are required for `([^`]+)` because building from source is disabled/;
+
+  // The SAME refusal, in a different shape, when a `uv.lock` already exists.
+  // `NO_BUILD_HINT` matches only the RESOLUTION-time `hint:` line, which uv
+  // prints while it is still resolving the dependency graph — but
+  // `_sync_root` deliberately preserves `uv.lock` across builds, and a folder
+  // gains one just by being run once. Once a lock exists, resolution
+  // succeeds against it and the refusal happens later, at INSTALL time,
+  // with no hint line at all:
+  //
+  //   error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+  //   can't be installed because it is marked as `--no-build` but has no
+  //   binary distribution
+  //
+  // Verified against real uv 0.12.5 (`uv lock && uv sync --no-default-groups
+  // --no-build --no-install-project`). The package name sits before the
+  // `==version @ source` — `[^`=]+` stops at the first `=` so a name is never
+  // captured with its pin attached.
+  const NO_BUILD_DISTRIBUTION =
+    /Distribution `([^`=]+)==[^`]*` can't be installed because it is marked as `--no-build`/;
+
   function noBuildPackage(message) {
-    const m = typeof message === "string" && message.match(NO_BUILD_HINT);
-    return m ? m[1] : null;
+    if (typeof message !== "string") return null;
+    const hint = message.match(NO_BUILD_HINT);
+    if (hint) return hint[1];
+    const dist = message.match(NO_BUILD_DISTRIBUTION);
+    return dist ? dist[1] : null;
   }
 
   // "`foolib` has no ready-to-use package for this computer." The one

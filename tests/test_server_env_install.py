@@ -1041,6 +1041,64 @@ p.then(
     ], "the retry must re-POST naming allow_build: true"
 
 
+def test_a_locked_project_no_wheel_failure_also_offers_install_anyway():
+    """`NO_BUILD_HINT` matches only uv's RESOLUTION-time `hint:` line. Once a
+    `uv.lock` exists (`_sync_root` preserves it across builds, and a folder
+    gains one just by being run once), resolution succeeds against the lock
+    and the refusal happens at INSTALL time instead, in a different shape
+    with no hint line at all:
+
+        error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+        can't be installed because it is marked as `--no-build` but has no
+        binary distribution
+
+    Verified against real uv 0.12.5. Without a second alternative in the
+    regex, a locked project's build-from-source refusal would never surface
+    the retry prompt at all.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true,
+          error: "error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple` " +
+                 "can't be installed because it is marked as `--no-build` but has no " +
+                 "binary distribution" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["uwsgi"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "a locked project's install-time refusal must also trigger the retry"
+
+
 def test_cancelling_cancels_the_install_that_is_actually_running():
     """Same key mix-up, in the direction that leaves a download running: the
     cancel POST has to name the installer's key, not the pre-flight one. The
