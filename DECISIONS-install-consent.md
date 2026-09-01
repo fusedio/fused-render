@@ -622,3 +622,110 @@ behaviour there is correct; only the doubles were behind.
 - Ran only the narrowed files (`test_env_install.py`, `test_server_env_install.py`,
   `test_projectenv.py`) — 224 + 78 passed. Did not run the full suite (left
   to the orchestrator; `/tmp` quota kills a full run on this machine anyway).
+
+## Round 3: four more review findings (credential leak, find-links, a stale
+## cancel, and two mirror threads on one job id)
+
+- Finding A (`projectenv.py`, index-host reporting): `urlparse(url).netloc`
+  includes userinfo, so a `https://user:token@host/simple` index rendered
+  the token into both the consent prompt and `/api/run`'s `needs_install`
+  payload. Confirmed by reading the line before touching it. Replaced with
+  a new `_index_host(url)` that reads `.hostname` (plus `.port` when one is
+  present — informative, no secret) and, for the no-netloc fallback
+  (`urlparse` finds nothing when the value has no scheme, which `or url`
+  used to echo raw), strips a leading `userinfo@` from the text with a
+  regex rather than trusting it verbatim — `user:token@host/path` with no
+  `//` still parses as scheme=`user`, empty netloc, so the fallback needed
+  the identical protection.
+- Finding B (`projectenv.py`, `_tool_uv_index_urls`): `find-links` was never
+  enumerated alongside `index-url`/`default-index`/`extra-index-url`/
+  `[[index]]`, in either `[tool.uv]` or `uv.toml`'s top level (shared
+  function, confirmed by reading the call site). uv prefers wheels from a
+  `find-links` host exactly like a custom index, so a folder naming one
+  disclosed nothing — `nonstandard_dependencies_of` returned empty and the
+  prompt rendered the no-op "a one-time download" detail while uv routed
+  every wheel-less package through that host. Handled identically to
+  `extra-index-url` (string or list).
+- Finding C (`envinstall.py`/`jobs.py`, a stale `cancel_requested` killing a
+  retry) and Finding D (two mirror threads on one job id after a fast
+  retry) are the same machinery — confirmed by reading `_mirror_into_jobs`,
+  `jobs.upsert`, and `jobs.request_cancel` together rather than fixed as
+  two separate patches, per the brief's instruction. The ownership story
+  that resolves both:
+
+  - **One thread per CLAIM, not per job id.** The job id
+    (`sys:env-install:<key>`) is deterministic per venv key and gets reused
+    across attempts, but the on-disk claim (`_claim_path`) changes identity
+    on every retry: `_claim`'s takeover of a stale claim unlinks it and
+    creates a new one, so its raw content (`f"{pid} {time}\n"`) is a cheap,
+    already-existing fingerprint for "which attempt is this". A new
+    `_claim_token(key)` helper reads it back.
+  - `_mirror_into_jobs` captures its own claim's token the moment it is
+    called (right after `start()`'s own `_claim()`), and the loop
+    reconfirms the current on-disk token still matches at the TOP of every
+    tick, before calling `progress(key)` at all. A retry's takeover changes
+    the token, so the superseded thread notices immediately and returns —
+    it never gets to read the fresh claim's synthetic `{"stage": "spawn",
+    "done": False}` and mistake it for "still running", which is exactly
+    what used to keep it looping forever alongside the new thread (Finding
+    D: the comment at old line ~1913 claiming "there is never a second
+    thread mirroring the same key" was true only because this case had
+    never been exercised — corrected to describe the actual overlap and
+    where it's resolved).
+  - `current_token is None` is deliberately NOT treated as "superseded" —
+    `_claim`'s own unlink-then-recreate takeover briefly passes through
+    no-claim-at-all, and reading that instant as supersession would race
+    the *other* new terminal case (below) into misdiagnosing a live retry
+    as a vanished install.
+  - The opening `jobs.upsert` is followed by a new `jobs.clear_cancel_requested(job_id)`
+    (added to `jobs.py`, since `upsert`'s body has no key for this — a
+    reporter's tick has nothing to say about a request it did not make).
+    This disowns a `cancel_requested` a PREVIOUS attempt's dead mirror left
+    set: `jobs.upsert` only clears the flag on a transition INTO a terminal
+    state, and a mirror whose own `jobs.upsert` calls are best-effort can
+    die without ever writing that transition, leaving the row `running`
+    with the flag still set for the next attempt's identical job id to
+    inherit silently (the state doesn't change, so `upsert`'s own clearing
+    branch never runs). Called once, right after the opening upsert, so a
+    ✕ pressed from then on still cancels normally through the unmodified
+    `jobs.request_cancel` path (Finding C).
+  - Fixed alongside: `prog = progress(key) or {}` made `finished =
+    bool({}.get("done"))` permanently False once the record AND the claim
+    were both gone (`progress_dir(key)` lives under
+    `home_dir()/cache/_env_install`, reachable by any cache-clearing path)
+    — a thread that would then spin forever, periodically resurrecting a
+    phantom "Preparing X" row. `prog = progress(key)` (no fallback) now
+    exits the loop with a `state="error"` record naming what happened the
+    moment `prog is None`.
+  - Corrected the `needs_build` branch's stale comment (old line ~1798):
+    it never itself assigns `"running"` — its own loop returns the same
+    tick it sets `"cancelled"` (`finished` is `True`). It is the RETRY's
+    *new* `_mirror_into_jobs` thread, with its own opening upsert, that
+    flips the row back on the next attempt.
+- Tests added: `tests/test_projectenv.py` —
+  `test_a_credentialed_index_url_discloses_host_not_the_token`,
+  `test_a_credentialed_uv_toml_index_url_discloses_host_not_the_token`,
+  `test_an_unparseable_index_value_falls_back_without_leaking_credentials`,
+  `test_find_links_string_form_is_disclosed`,
+  `test_find_links_list_form_is_disclosed`,
+  `test_find_links_in_uv_toml_is_disclosed`. `tests/test_jobs_api.py` —
+  `test_clear_cancel_requested_disowns_a_stale_flag_but_not_state`,
+  `test_clear_cancel_requested_on_a_gone_row_says_so`.
+  `tests/test_env_install.py` —
+  `test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt` (a
+  hand-simulated dead mirror's leftover flag, then a real `start()`,
+  proving the fresh attempt survives and a fresh ✕ still works),
+  `test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread`
+  (a real race: `_JOB_MIRROR_POLL_S` widened to 0.2s, a `needs_build`
+  write immediately followed by a real retry `start()` call, then
+  `threading.enumerate()` filtered by thread name to assert only one
+  `env-install-jobs-mirror` thread stays alive), and
+  `test_a_vanished_progress_record_and_claim_ends_the_mirror_thread`
+  (`shutil.rmtree(progress_dir(key))` after a real `start()`, asserting the
+  row reaches `state="error"` with a message naming what disappeared
+  rather than staying stuck `running` forever).
+- Ran narrowed: `test_projectenv.py` (84 passed), `test_jobs_api.py` +
+  `test_server_env_install.py` (124 passed), `test_env_install.py` (150
+  passed, the three new race/threading tests re-run three times each with
+  no flakes observed). Did not run the full suite — left to the
+  orchestrator, per the same `/tmp`-quota note as Round 2.
