@@ -1017,6 +1017,19 @@ def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monke
     monkeypatch.setattr(runner, "list_runs",
                         lambda cfg, limit=20: (calls.append(1), real(cfg, limit=limit))[1])
     index_routes._forget_runs()
+    # The shipped window has to be a real one, or the assertion below is a
+    # tautology — so it is checked rather than replaced…
+    assert index_routes.RUNS_CACHE_S >= 1.0
+    # …and then widened, because HOW MANY keystrokes fit inside it is a fact
+    # about the machine, not about the cache. `_live_runs` compares
+    # `time.monotonic()` against the window on every ranked request, so where
+    # five round trips take longer than RUNS_CACHE_S the entry expires
+    # mid-loop and this reads `assert 2 == 1`, `len([1, 1])`. That is what
+    # `test-python-windows` printed on two separate runs. What is under test
+    # is that a keystroke arriving INSIDE the window is served from the cache;
+    # `test_the_cached_run_listing_expires` below owns the other half, and
+    # forces the clock rather than waiting on it for the same reason.
+    monkeypatch.setattr(index_routes, "RUNS_CACHE_S", 3600.0)
     for q in ("a", "al", "alp", "alph", "alpha"):
         client.get("/api/index/rank", params={"root": root, "q": q})
     assert len(calls) == 1

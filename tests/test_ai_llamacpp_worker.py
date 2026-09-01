@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from _big_files import sparse_file
+
 WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
     / "fused_render" / "ai" / "runners" / "llama_text.py"
@@ -338,7 +340,9 @@ def test_a_local_cache_hit_is_preferred_over_a_remote_listing(
     snapshot = folder / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
     curated_file = snapshot / "gemma-4-E4B-it-Q4_K_M.gguf"
-    curated_file.write_bytes(b"x" * (5 * 1024 ** 3))
+    # Sparse: only its `st_size` is ever read (`os.path.getsize`, below),
+    # and 5GB of real bytes was 67s of the suite. See `_big_files`.
+    sparse_file(curated_file, 5 * 1024 ** 3)
     local_file = snapshot / "gemma-4-E4B-it-Q2_K.gguf"
     local_file.write_bytes(b"x" * 1024)
     worker.worker_base.repo_folder = lambda model_id, repo_type="model": (

@@ -89,6 +89,34 @@ _AI_SHORT_MODEL_IDS = {
 }
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
+# How often the remote-Claude activity row re-states itself while a call is in
+# flight — a DISPLAY heartbeat and nothing more, the same thing
+# `supervisor._QUEUE_TICK_S` is and for the same reason.
+#
+# The row is opened once and has nothing to report until the answer lands, but
+# `jobs.STALE_AFTER_S` (30s) turns any running row with no update in that long
+# into *"No longer reporting — the process running it stopped reporting"*:
+# dimmed, its ✕ withdrawn, a Dismiss offered instead. A Claude turn routinely
+# runs longer than 30s — `_AI_TIMEOUT_S` above allows ten minutes of it, and a
+# second call parked on `_AI_SESSION.lock` has not started at all — so without
+# this every slow call announced, truthfully as far as the registry could tell,
+# that nobody was reporting it, and then succeeded anyway. This is the rule
+# `runners/worker_base._heartbeat` states as a CONTRACT: progress whose natural
+# granularity is coarser than the stale window has to say "still here".
+#
+# Well under 30s so a busy loop or a slow machine still leaves margin, and no
+# faster than it needs to be: nothing reads these ticks but the clock.
+_REMOTE_TICK_S = 10.0
+# The row's detail line. Says only that this is remote — the model rides its
+# own field (`jobs.py` `Job.model`, a dimmed suffix JobRow draws after the
+# title), so the one thing this line is for is the fact a local row's detail
+# never states. Named rather than inlined because three sites now write it:
+# the opening report, and both sides of the queued swap in `run_once`.
+_REMOTE_ROW_DETAIL = "Claude — remote"
+# …and what it says while the call is parked behind `_AI_SESSION.lock` — work
+# that has not started, which "Claude — remote" alone would show as work in
+# progress. `supervisor._QUEUED_DETAIL`'s twin.
+_REMOTE_QUEUED_DETAIL = "Queued — another Claude call is in flight"
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
@@ -1212,7 +1240,18 @@ async def _ai_relay(body: dict):
 
     def _report_remote(**fields) -> None:
         """One tick on the remote-Claude row, best-effort (never breaks the
-        call — same discipline as supervisor._report)."""
+        call — same discipline as supervisor._report).
+
+        Catches EVERYTHING, like every other reporter here
+        (`supervisor._report`, `schedule._report`, `claude_install._report`):
+        reporting is decoration, and a registry that refuses a write must not
+        cost the call its answer. The narrow `(JobError, ValueError)` this used
+        to catch was survivable while every caller was a one-shot on an exit
+        path; `_start_remote_beat` made it a LOOP, and there anything else
+        escaping kills the heartbeat for the rest of the call — whose symptom
+        is precisely the stalled row the heartbeat exists to prevent, with
+        nothing else to show for it.
+        """
         nonlocal _remote_job_closed
         if fields.get("state") in jobs.TERMINAL_STATES:
             if _remote_job_closed:
@@ -1220,7 +1259,7 @@ async def _ai_relay(body: dict):
             _remote_job_closed = True
         try:
             jobs.upsert({"id": _remote_job, **fields}, server=True)
-        except (jobs.JobError, ValueError):
+        except Exception:  # noqa: BLE001 — reporting is never authoritative
             pass
 
     def _open_remote_job() -> None:
@@ -1235,7 +1274,7 @@ async def _ai_relay(body: dict):
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
         _report_remote(title=title[:80], model=model, state="running", kind="task",
-                       cancellable=False, detail="Claude — remote")
+                       cancellable=False, detail=_REMOTE_ROW_DETAIL)
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
@@ -1247,6 +1286,44 @@ async def _ai_relay(body: dict):
         the local rows' deterministic `job_id_for(model)`."""
         _report_remote(state="done")  # dismiss() refuses a still-running row
         jobs.dismiss(_remote_job)
+
+    def _start_remote_beat():
+        """Start the row's display heartbeat; returns the task that runs it.
+
+        `_REMOTE_TICK_S` says why a row with nothing new to report still has
+        to report. This carries NO FIELDS, which is the whole design of it:
+        `jobs.upsert` applies only the keys present, so an id and nothing else
+        is precisely "still here" and is incapable of saying anything more —
+        it cannot move a bar, cannot overwrite the detail `run_once` sets
+        while this call is parked in the queue, and is not an *opening* report
+        (jobs.py reopens a dismissed or forgotten id only for a report that
+        states `running` outright), so it can never blink a closed row back
+        onto the screen. `schedule._report` documents the same fieldless call
+        for the same registry.
+
+        A tick after the outcome is already reported is impossible rather than
+        merely unlikely: `_remote_job_closed` is set by the terminal report
+        itself, and is re-read here after every sleep."""
+        async def beat() -> None:
+            while True:
+                await asyncio.sleep(_REMOTE_TICK_S)
+                if _remote_job_closed:
+                    return
+                _report_remote()
+
+        return asyncio.ensure_future(beat())
+
+    async def _stop_remote_beat(beat) -> None:
+        """Stop the heartbeat and await it, so the task cannot outlive the
+        request that owns the row. Not load-bearing for correctness — the
+        `_remote_job_closed` re-read above is what stops a late tick — but a
+        cancelled generator whose beat kept sleeping would be a task leaked
+        per abandoned stream."""
+        beat.cancel()
+        try:
+            await beat
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
@@ -1268,7 +1345,19 @@ async def _ai_relay(body: dict):
                 delivered = True
                 on_delta(text)
 
+        # Contended: this call has not begun, and a row reading exactly like
+        # one that is generating is the row lying by omission — the same fix
+        # supervisor's `_QUEUED_DETAIL` is for the transcription queue, at the
+        # one other place in the app that parks work behind a lock. Probed
+        # rather than acquired-non-blockingly because `asyncio.Lock` has no
+        # such acquire; a stale read only mis-labels a row for one tick, which
+        # is the whole stake of a detail line.
+        queued = _AI_SESSION.lock.locked()
+        if queued:
+            _report_remote(detail=_REMOTE_QUEUED_DETAIL)
         async with _AI_SESSION.lock:
+            if queued:
+                _report_remote(detail=_REMOTE_ROW_DETAIL)
             try:
                 proc = await _AI_SESSION.configure(model, system_prompt,
                                                    effort)
@@ -1303,6 +1392,7 @@ async def _ai_relay(body: dict):
 
     if not stream:
         _open_remote_job()
+        beat = _start_remote_beat()
         try:
             try:
                 data = await run_once()
@@ -1346,6 +1436,9 @@ async def _ai_relay(body: dict):
             _report_remote(state="error", message="internal error")
             raise
         finally:
+            # The heartbeat first, so nothing is still ticking a row this
+            # block is about to close.
+            await _stop_remote_beat(beat)
             # Belt-and-suspenders: anything that reaches here without one of
             # the terminal reports above closes the row as cancelled rather
             # than leaving it running forever. A no-op once a real terminal
@@ -1366,6 +1459,7 @@ async def _ai_relay(body: dict):
         # sync: no code path can create a row without something guaranteed
         # to run also being on the hook to close it.
         _open_remote_job()
+        beat = _start_remote_beat()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))
@@ -1433,6 +1527,7 @@ async def _ai_relay(body: dict):
             _report_remote(state="error", message="internal error")
             raise
         finally:
+            await _stop_remote_beat(beat)
             if not task.done():
                 # Client went away mid-stream: cancel AND await, so
                 # run_once's cancel branch (discard the now-mid-turn

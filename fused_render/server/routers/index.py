@@ -786,16 +786,24 @@ def cancel_all_scans() -> list:
     The one caller is `shell/prefs.py`'s `PUT /api/prefs`, when the indexing
     toggle flips to off: the contract is that a scan running at the moment of
     toggle-off is cancelled outright, not merely refused going forward. Lives
-    here rather than in the index layer because it needs `_live_runs`'
-    request-scoped cache and the same live-run enumeration `_scan_in_flight`
-    uses, and the index package cannot import the server (this module
-    already owns that seam for scan/cancel/status).
+    here rather than in the index layer because the index package cannot import
+    the server (this module already owns that seam for scan/cancel/status).
+
+    Listed through `runner.list_runs` directly rather than through
+    `_live_runs`. That helper is NOT request-scoped, whatever an earlier
+    version of this docstring said -- it is a 1.0s process-wide cache, held so
+    that ranking a keystroke does not re-fold every run directory. Reading a
+    toggle-off through it meant any ranked request in the preceding second --
+    and `/api/index/rank` fires on every keystroke in two search boxes --
+    answered from a listing taken before the running scan existed, so the scan
+    this exists to stop was never seen and never cancelled. Toggling indexing
+    off is a rare deliberate act; it can afford the fold a keystroke cannot.
 
     Returns the run ids actually cancelled — a run already told to stop is
     skipped, same as `active_run`'s own liveness rule."""
     cfg = load_config()
     cancelled = []
-    for r in _live_runs(cfg):
+    for r in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
         if not r.get("running"):
             continue
         rid = r.get("run_id")
