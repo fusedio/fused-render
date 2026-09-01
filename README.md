@@ -2,20 +2,13 @@
 
 **[Download for macOS, Windows, and Linux →](https://render.fused.io)**
 
-A local file explorer for your whole computer. Browse any directory in the
-browser, preview files, and author your own interactive views: any `.html`
-file you open gets a tiny injected runtime that can call a Python `main()`
-function and sync its state to the URL.
+Your files, your AI, your apps — on your own machine. Browse any directory in
+the browser, run AI models locally, and describe an app for Claude Code to
+build. Any `.html` file you open gets a tiny injected runtime that can call a
+Python `main()` function and sync its state to the URL.
 
 Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
-machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
-for the full design.
-
-![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](docs/screenshots/open_with_right_click.gif)
-
-Right-click a file in Explorer → **Open with** → fused-render, and it opens in
-your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
-to enable it.
+machine, your own trusted code.
 
 ## Download
 
@@ -25,12 +18,8 @@ Download from **[render.fused.io](https://render.fused.io)**:
 - **Windows** — 64-bit `.exe` installer
 - **Linux** — AppImage
 
-macOS is the native build; Windows and Linux have limited support.
-
-If the first run goes wrong, the page's
-[troubleshooting section](https://render.fused.io/#troubleshooting) has the
-errors people actually hit — Claude Code missing, not signed in, limit
-reached — with the fix for each.
+macOS is the native build; Windows and Linux have limited support. Trouble on
+first run? See [troubleshooting](https://render.fused.io/#troubleshooting).
 
 ### Other ways in
 
@@ -56,26 +45,42 @@ pip install -e .
 Requires Python 3.11+. Building from source and the local dev loop live in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## What's in it
+
+Home opens on a file search, with everything on this machine below it:
+
+- **Apps** — describe one in a sentence; Claude Code names it, scaffolds it,
+  and opens a chat on it. Community apps from the showcase are yours to open
+  and edit in place.
+- **AI models** — image, video (Apple silicon), speech-to-text and embeddings
+  run locally, from the Playground or from your own pages. The AI Models page
+  shows what's on disk and what fits this machine.
+- **Claude Code, without the terminal** — every Claude session on this machine
+  in one place, and Tasks: prompts that run on a schedule.
+- **Files** — 140 preview templates: parquet, PDF, notebooks, spreadsheets,
+  point clouds, and the rest. Remote storage mounts as folders.
+
 ## Run
 
-The downloaded app does this for you — open it and the tab appears. From a pip
-install it's a command:
+The downloaded app opens Home in a browser tab. From a pip install it's a
+command:
 
 ```
 fused-render
 ```
 
-Either way you land on `http://127.0.0.1:1777/`, starting in your home
-directory. Useful flags:
+Either way you land on `http://127.0.0.1:1777/`. Useful flags:
 
 ```
 fused-render --start-dir ~/data --port 9000 --no-browser
 ```
 
-`--start-dir` only sets the initial location — the whole filesystem stays
-browsable from there.
+`--start-dir` is where the explorer starts (default `~/Fused`); the whole
+filesystem stays browsable from there.
 
 ### Windows: Explorer "Open with"
+
+![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](docs/screenshots/open_with_right_click.gif)
 
 ```
 fused-render-open --register
@@ -87,7 +92,7 @@ picking "fused-render" from Open With, reuses a running server or starts one
 detached, then opens the file. `fused-render-open --unregister`
 removes the associations.
 
-## Authoring model
+## Authoring
 
 Any `.py` file is a runnable target as long as it defines a `main()`
 function:
@@ -118,104 +123,38 @@ Any `.html` file can call it and bind the result to the URL:
 </script>
 ```
 
-- `fused.runPython(pyPath, params)` — runs `main(**params)` of a local `.py`
-  file in a fresh subprocess and returns its JSON result. `pyPath` may be
-  relative (to the HTML file) or absolute.
-- `fused.params` — a string-only key/value store synced into the browser
-  URL (`get`, `getAll`, `set`, `onChange`). Refreshing or bookmarking a view
-  reproduces its exact state.
-- `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
-  Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
-  Hugging Face repo id as `model` (`"Qwen/Qwen3.5-4B"`) and the same
-  call runs a model **locally** instead — the slash is what tells them apart.
-  Local chat works on every supported desktop platform: MLX is preferred on
-  Apple Silicon, and everywhere else the default is a small CPU-only PyTorch
-  build that runs on any machine — CUDA and ROCm builds exist and are one radio
-  away on the AI Models page's Engines tab, offered only where the app can see a
-  matching GPU. The AI Models page suggests models that suit whichever backend
-  is serving you.
-  Local calls also take `history` (prior `{role, content}` turns, for a
-  conversation rather than one question) and can be stopped mid-answer with
-  `fused.ai.cancel()`.
-- `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
-  PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is
-  chosen for you if you don't pass one, so a render is always repeatable). It
-  runs for minutes, so `onProgress` fires per denoising step — each tick with a
-  `previewUrl` for a thumbnail of the image so far, so there is a picture
-  emerging rather than a number going up — and the download manager's ✕ really
-  stops it.
-- `fused.ai.transcribe({path, ...})` — speech to text, locally: point it at an
-  audio or video file on this machine and it resolves with the words plus the
-  `{start, end, text}` segments that carry their timestamps. `task` picks
-  between transcribing in the original language and translating to English; the
-  language is auto-detected unless you name one. It runs for minutes, so
-  `onProgress` fires with seconds of audio and the download manager's ✕ really
-  stops it, and the transcript is written to a file so it outlives the tab.
-- `fused.ai.embed({texts|paths, kind, ...})` — text into a vector space
-  locally — and, on a model with a vision tower, images into the SAME space, so
-  a typed phrase can rank photographs. Resolves with `{vectors, dim, model}`,
-  unit-normalized so cosine similarity is a plain dot product. Pass `texts` or
-  `paths`, never both — a batch of up to 64 at a time. `kind: "query" |
-  "document"` picks which half of a retrieval model's prompt pair goes in front
-  of the texts: embed a corpus as documents once, then each search as a query.
-  Both `paths` and `kind` are refused with a 400 naming the model where that
-  model has no vision tower / no retrieval convention — `fused.ai.models
-  .catalog()` reports `acceptsPaths` and `promptScheme` per model.
-- `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
-  holding in memory and what it costs. See the **AI Models** page
-  ([docs](docs/usage.md#ai-models)).
-- `fused.trackJob(spec)` — report work **your page is doing** that runs longer
-  than the page itself (exporting a few thousand tiles, converting a folder) to
-  the **download manager** in the bottom-right corner, so it stays visible after
-  you browse away:
+That injected runtime is the whole API:
 
-  ```js
-  const job = fused.trackJob({ title: "Export tiles", kind: "export",
-                          unit: "items", cancellable: true });
-  job.update({ done: 1200, total: 4096, detail: "zoom 12" });
-  if (job.cancelRequested) stopTheWork();   // the manager's ✕ asked
-  job.finish("Exported");                   // or .fail(err) / .cancelled()
-  ```
+- `fused.runPython(pyPath, params)` and `fused.params` — call `main(**params)`
+  and keep a string key/value store in sync with the URL, so a refresh or a
+  bookmark reproduces the view. `fused.readFile` / `writeFile` / `stat` /
+  `rawUrl` read and write files directly, no Python needed.
+  → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
+- `fused.ai(prompt)` — ask Claude Code, or a local model when `model` is a
+  Hugging Face repo id. `fused.ai.image` / `.video` / `.transcribe` / `.embed`
+  run locally; `fused.ai.models` lists, loads and unloads them.
+  → [fused-render-ai](skills/fused-render-ai/SKILL.md)
+- `fused.trackJob` / `fused.watchJob` — long-running work in the download
+  manager, whether your page is doing it or the server is.
+  → [fused-render-jobs](skills/fused-render-jobs/SKILL.md)
 
-  Reporting never throws and never blocks: a failed report cannot break the work
-  it describes. Your page is the only thing that can stop its own work, so the
-  ✕ here is a *request* you honour by checking `cancelRequested`.
-- `fused.watchJob(id)` — the other half: watch work the **server** is doing
-  (`fused.ai.image()`, `fused.ai.transcribe()` and `fused.ai.models.load()` all
-  hand you an id) with
-  `.onUpdate(cb)`, `.get()` and a `.cancel()` that really stops it — the server
-  owns those processes, so its ✕ is an act rather than a request.
+Every built-in preview template is an HTML file on these same primitives —
+`fused_render/templates/` has 140 of them to copy from.
 
-Built-in preview templates (parquet tables, images, text/code files) are
-themselves just HTML files built on these same two primitives — open
-`fused_render/templates/` to see how.
+## Configuration
 
-## Configuration & advanced usage
-
-Runtime features and settings live in [docs/usage.md](docs/usage.md):
-
-- [Execution engine](docs/usage.md#execution-engine) — built-in subprocess
-  runner vs. the `fused` local compute backend (folder-level `pyproject.toml`
-  dependencies in cached venvs), and `FUSED_RENDER_ENGINE`.
-- [Remote storage (mounts)](docs/usage.md#remote-storage-mounts) — mount
-  S3-compatible stores, Google Drive, and anything else rclone speaks, as local
-  folders.
-- [AI Models](docs/usage.md#ai-models) — what the Hugging Face cache
-  holds on this machine, what it costs on disk, how to clear it, and a search of
-  the Hub that says which results you already have, beside a short list of
-  suggested models you can download.
-- [Preferences](docs/usage.md#preferences) — the in-app settings panel
-  (execution engine, logs, template registry).
-- [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
-  programmatic `POST /api/export` bundle format for publishing a page yourself.
+[docs/usage.md](docs/usage.md) covers the
+[execution engine](docs/usage.md#execution-engine),
+[remote storage mounts](docs/usage.md#remote-storage-mounts),
+the [AI Models page](docs/usage.md#ai-models),
+[preferences](docs/usage.md#preferences), and
+[export for hosted serving](docs/usage.md#export-for-hosted-serving).
 
 ## Claude Code plugin
 
 This repo doubles as a [Claude Code](https://code.claude.com/docs) plugin
-marketplace. Installing the plugin adds skills that teach Claude how to use a fused-render
-project (running the explorer, opening views by URL), author fused-render
-views (the `fused.runPython` bridge, URL-synced params, file IO helpers), and
-build custom preview templates.
+marketplace. Its skills teach Claude to run the app, author views, use local AI
+and jobs, and build preview templates — the same skills under `skills/`.
 
 From inside Claude Code:
 
@@ -231,11 +170,10 @@ claude plugin marketplace add fusedio/fused-render
 claude plugin install fused-render@fused-render
 ```
 
-The manifests live in `.claude-plugin/` (`marketplace.json` +
-`plugin.json`); the skills themselves are under `skills/`.
+The manifests live in `.claude-plugin/` (`marketplace.json` + `plugin.json`).
 
 Installing is optional and only affects *your own* Claude Code sessions. Chats
-started from inside fused-render (the Claude and split-view templates, and app
-scaffolding) already get these skills: the app assembles the same plugin under
-`~/.fused-render/skill-plugin/` and loads it per session with `--plugin-dir`,
-so they work on a plain wheel or DMG install with nothing cloned.
+started from inside fused-render already get these skills: the app assembles
+the same plugin under `~/.fused-render/skill-plugin/` and loads it per session
+with `--plugin-dir`, so they work on a plain DMG or wheel install with nothing
+cloned.
