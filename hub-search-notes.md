@@ -245,3 +245,45 @@ remaining fixes are appended below as they land.
   counted exactly one `<DownloadGlyph />` in `HubResultsTable.tsx`; there are
   now two (the family row's own, and the new `HubVariantRow`'s) — count
   bumped to 2 with a comment explaining why.
+
+## Fix builder: cache-key/fetch-size defect (review finding)
+
+- Bug: `fetch` (line ~808) depends on `include_unfit` (and `task_filter`),
+  but the cache `key` (line ~841, pre-fix) did not include either `fetch`
+  or `include_unfit`. Toggling `includeUnfit` off within the 90s TTL for
+  the same query/task/sort/count reused the smaller `includeUnfit=True`
+  payload (`fetch = count`), leaving no overfetch buffer for the
+  verdict:"no" drop to backfill from — the exact under-fetch the `fetch`
+  change was written to prevent, reintroduced through the cache.
+- Fix: added `fetch` itself to the cache key tuple (not `include_unfit`
+  separately — `fetch` is the actual payload-size determinant and already
+  folds in `task_filter` too), and extended the comment above `key` in the
+  same voice as the existing `extra_tags` justification.
+- TDD: added
+  `test_unchecking_include_unfit_inside_the_window_does_not_reuse_the_smaller_fetch`
+  to `tests/test_hub_models.py` — sends task filter + `includeUnfit=True`,
+  then the same request with `includeUnfit=False`, and asserts (a) a
+  second live Hub request actually happens (`len(fake.calls) == 2`, i.e.
+  not a stale cache hit) and (b) the two requests' `limit` query params are
+  24 and 96 respectively. Confirmed it fails against the pre-fix code
+  (`1 == 2`) and passes after the fix. Full `tests/test_hub_models.py`:
+  111 passed.
+- Checked for the same staleness elsewhere: `count`, `query`, `task_filter`,
+  `sort`, `_token()` presence, and `extra_tags` were already all in the key
+  and none of them changed meaning after the original `fetch` change — only
+  `include_unfit` was newly load-bearing for `fetch` and missing from the
+  key. No other field needed adding.
+- Checked the `sort == "fit"` vs `sort == "downloads"` question: both map
+  to the same `sort_field`/`direction` (`_SORTS["downloads"]`, since `"fit"`
+  is not a key in `_SORTS` and falls through to the `else` branch), so a
+  `sort="fit"` request and a `sort="downloads"` request with otherwise
+  identical params send the Hub an IDENTICAL query. But the cache key
+  stores the *requested* `sort` string, not `sort_field`, so `"fit"` and
+  `"downloads"` get separate cache entries holding equivalent raw rows —
+  this is redundant (one extra Hub-shaped cache slot, not a correctness
+  bug) but not a collision: `sort == _FIT_SORT` triggers an additional
+  post-join reorder-by-fit-score step (line ~885) that runs freshly on
+  every request from the live `sort` variable, never from anything cached,
+  so a `"fit"` request is never served the wrong ordering because it hit a
+  `"downloads"` cache entry or vice versa (they don't share entries at
+  all). No second bug here.

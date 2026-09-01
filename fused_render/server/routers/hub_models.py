@@ -837,8 +837,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # ANSWER: a preference switched live (CT-5, no restart needed) changes
     # which runner serves the capability and therefore what this narrows to,
     # so the SAME query/task/sort/count must not be served from a cache
-    # entry built under a different engine choice.
-    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()), extra_tags)
+    # entry built under a different engine choice. `fetch` is in the key for
+    # the same reason: it is exactly how many raw rows the cached payload
+    # holds, and `include_unfit` (the only other thing `fetch` depends on
+    # besides `task_filter`, already in the key) can flip within the TTL —
+    # toggling it off after an on request must not hand back the smaller
+    # `count`-sized payload the "on" request fetched, or the verdict:"no"
+    # drop below runs with no headroom left to backfill from.
+    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()), extra_tags, fetch)
     payload = _cached(key)
     if payload is None:
         rows, error = _fetch(params)

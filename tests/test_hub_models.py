@@ -16,6 +16,7 @@ abstraction of it.
 """
 import json
 import os
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -394,6 +395,24 @@ def test_identical_queries_inside_the_window_ask_once(client, hub_cache, monkeyp
     assert len(fake.calls) == 1
     _search(client, {"q": "llamas"})
     assert len(fake.calls) == 2  # …a different query is a different question
+
+
+def test_unchecking_include_unfit_inside_the_window_does_not_reuse_the_smaller_fetch(
+        client, hub_cache, monkeypatch):
+    # With a task filter AND includeUnfit=True, `fetch` collapses to `count`
+    # (the Hub already returns only rows kept). Unchecking includeUnfit for
+    # the SAME query/task/sort/count within the TTL must ask the Hub again
+    # with the larger overfetch `count * _OVERFETCH` — not reuse the
+    # includeUnfit=True response's smaller payload, which has no headroom
+    # left for the verdict:"no" drop to backfill from.
+    fake = _reply([_hit("org/m")])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation", "includeUnfit": True})
+    _search(client, {"task": "text-generation", "includeUnfit": False})
+    assert len(fake.calls) == 2  # a fresh Hub request, not a stale cache hit
+    limits = [parse_qs(urlsplit(url).query)["limit"][0] for url, _ in fake.calls]
+    assert limits[0] == "24"
+    assert limits[1] == str(24 * hub._OVERFETCH)
 
 
 def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
