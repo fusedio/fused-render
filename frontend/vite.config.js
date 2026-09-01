@@ -35,6 +35,14 @@ export default defineConfig({
     outDir: "../fused_render/static/shell-dist",
     emptyOutDir: true,
     rollupOptions: {
+      // Two pages from one build: the shell, and the phone grid the
+      // local-network listener serves at its `/` (fused_render/lan.py reads
+      // shell-dist/lan.html). Same Tailwind + tokens, its own tiny entry, so
+      // a phone never downloads the shell.
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        lan: fileURLToPath(new URL("./lan.html", import.meta.url)),
+      },
       output: {
         // Third-party deps change far less often than the app itself — their
         // own chunk means a shell code change doesn't bust the browser's

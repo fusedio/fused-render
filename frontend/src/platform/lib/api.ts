@@ -1004,6 +1004,27 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
+  // the stored switch plus the live listener — `url` once it is serving
+  // (http://render.fused.local/), `error` when the bind or mDNS failed.
+  lan: {
+    enabled: boolean;
+    running: boolean;
+    url: string | null;
+    host: string;
+    alias: string;
+    ip: string | null;
+    port: number | null;
+    error: string | null;
+    // The https listener beside the http one (for the native app); its
+    // failure leaves browsers working and is reported separately.
+    https_url: string | null;
+    https_port: number | null;
+    tls_error: string | null;
+    // Devices paired by scanning the QR code (lan.py): what the Preferences
+    // list shows and can revoke.
+    devices: LanDevice[];
+  };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -1194,6 +1215,54 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export interface LanDevice {
+  id: string;
+  name: string; // "iPhone · Safari", derived from the user agent at pairing
+  paired_at: number; // epoch seconds
+  last_seen: number;
+}
+
+// A one-time pairing URL for the QR code (five minutes, single use). `ip_url`
+// carries the same token behind the raw LAN address, for a phone whose
+// resolver does not do multi-label .local names.
+export function getLanPairToken(): Promise<{ url: string; ip_url: string | null; ttl_s: number }> {
+  return getJson("/api/lan/pair-token");
+}
+
+export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return getJson("/api/lan/devices");
+}
+
+// A device that paired since the shell last dismissed the news — one row in
+// the status bar's Notifications section (RepoUpdatesDock).
+export type LanPairingEvent = { id: string; name: string; at: number };
+
+export function getLanPairings(): Promise<{ pairings: LanPairingEvent[] }> {
+  return getJson("/api/lan/pairings");
+}
+
+export function dismissLanPairing(id: string): Promise<{ pairings: LanPairingEvent[] }> {
+  return postJson("/api/lan/pairings/dismiss", { id });
+}
+
+async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
+  const r = await fetch(path, { method: "DELETE", headers: { "X-Fused": "1" } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export function revokeLanDevice(id: string): Promise<{ devices: LanDevice[] }> {
+  return lanDelete(`/api/lan/devices/${encodeURIComponent(id)}`);
+}
+
+export function revokeAllLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return lanDelete("/api/lan/devices");
+}
+
+export function putLanEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { lan_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
@@ -3291,11 +3360,22 @@ export interface AiCatalogModel {
    *  Absent where no honest short name exists — the header omits the line
    *  rather than inventing one. */
   quantization?: string | null;
-  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
-   *  denoise count a distilled image model was benchmarked at. Absent on
-   *  cached entries and on models nobody has measured; the consumer keeps the
-   *  server's default then. */
-  defaults?: { steps?: number } | null;
+  /** Curated per-model generation hints (catalog.py): `steps` is the denoise
+   *  count the model was benchmarked at; `width`/`height` are its native
+   *  render size; `guidance` is the CFG scale that suits it — real
+   *  classifier-free guidance for an ordinary model, a distilled guidance
+   *  embedding for a guidance-distilled one, so the right number varies
+   *  wildly by model and cannot be guessed client-side. Each field is
+   *  independently optional — a curator may know a model's steps without
+   *  knowing its native resolution, say. Absent entirely on cached entries
+   *  and on models nobody has measured; the consumer keeps the server's
+   *  default then. */
+  defaults?: {
+    steps?: number;
+    width?: number;
+    height?: number;
+    guidance?: number;
+  } | null;
   /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
    *  Null when nothing is known at all (no size, no measurement, no curator
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`

@@ -88,7 +88,7 @@ DEFAULT_CALLS_RETENTION_DAYS = 14
 #: (SPEC AI-13). Minutes, not seconds — a sensible window is measured in
 #: minutes and a seconds control invites off-by-1000 mistakes. `0` disables
 #: the reaper entirely, same "0 = off" shape as `calls_retention_days`.
-DEFAULT_AI_IDLE_UNLOAD_MINUTES = 10
+DEFAULT_AI_IDLE_UNLOAD_MINUTES = 5
 #: The env var a *set, parsable* value of which overrides the stored pref —
 #: same precedence as `FUSED_RENDER_CALLS_RETENTION_DAYS`, so a machine-level
 #: policy (a shared workstation someone wants to keep more aggressive than
@@ -162,6 +162,16 @@ def canvases_enabled() -> bool:
     reads as off, so an existing install — signed in or not — has to opt in.
     """
     return read_prefs().get("canvases_enabled") is True
+
+
+def lan_enabled() -> bool:
+    """Whether the user's apps (everything under ~/Fused plus linked folders)
+    are shared with the local network (default off — opt-in). The switch
+    fused_render/lan.py reads: on, a second listener on every interface serves
+    those apps to phones on the same Wi-Fi as http://render.fused.local/. A
+    feature flag, not a route guard: the loopback server is untouched either
+    way."""
+    return read_prefs().get("lan_enabled") is True
 
 
 def default_model() -> str:
@@ -301,7 +311,7 @@ def calls_retention_days() -> int:
 
 def ai_idle_unload_minutes() -> int:
     """How long a resident model may sit idle before the reaper unloads it
-    (default 10). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
+    (default 5). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
     value = read_prefs().get("ai_idle_unload_minutes")
     if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 1_440:
         return value
@@ -395,6 +405,15 @@ def engine_state() -> dict:
     }
 
 
+def _lan_status() -> dict:
+    try:
+        from fused_render import lan
+
+        return lan.status()
+    except Exception as e:  # noqa: BLE001 — a status read must never fail prefs
+        return {"running": False, "url": None, "error": str(e)}
+
+
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
@@ -404,6 +423,10 @@ def _prefs_response() -> dict:
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
         "canvases": {"enabled": canvases_enabled()},
+        # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
+        # the live listener state (url once it is up, error when it is not), so
+        # the Preferences section can show the address a phone types.
+        "lan": {"enabled": lan_enabled(), **_lan_status()},
         # The default Claude model, as a short name; "" = unset (each consumer
         # keeps its own default). `choices` ships the value set with the value
         # so the Preferences page renders the options the server will accept
@@ -557,6 +580,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
         changed = True
+    if "lan_enabled" in body:
+        value = body.get("lan_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'lan_enabled' must be a boolean"}, status_code=400)
+        prefs["lan_enabled"] = value
+        changed = True
     if "default_model" in body:
         value = body.get("default_model")
         if value not in VALID_DEFAULT_MODELS:
@@ -645,13 +674,20 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'calls_enabled', "
                       "'calls_params', 'calls_retention_days' and/or "
                       "'ai_idle_unload_minutes')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    if "lan_enabled" in body:
+        # AFTER the write, like `engines` below: the listener follows the stored
+        # preference, and a failure to bind is reported in the response's
+        # `lan.error` rather than failing the PUT.
+        from fused_render import lan
+
+        lan.apply(prefs["lan_enabled"])
     unloaded: list[str] | None = None
     if "engines" in body:
         # AFTER the write, because the reconciliation reads the new preference

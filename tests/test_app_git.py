@@ -81,6 +81,12 @@ def test_init_repo_lands_in_the_shared_local_repo(workspace):
     # slash is load-bearing: it ignores the DIRECTORY without touching an
     # exported `<name>.fused` app file (SPEC §43) sitting in the same folder.
     assert ".fused/" in gi
+    # …and so does the env-install worker's write-probe
+    # (`_env_install_worker._writable_dir`'s `.fused-render-write-probe.<pid>`):
+    # best-effort-unlinked, so a process that dies between the `os.open` and the
+    # `os.unlink` leaves a stray zero-byte file behind, and a scoped `git add -A`
+    # must never sweep it into the app's history.
+    assert ".fused-render-write-probe.*" in gi
 
 
 def test_sibling_apps_never_ride_each_others_commits(workspace):

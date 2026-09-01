@@ -694,6 +694,146 @@ def _experts_on_cpu(llama_cpp, enabled):
         llama_cpp.llama_cpp.llama_model_default_params = original
 
 
+def _kv_cache_kwargs(llama_cpp):
+    """`{type_k, type_v, flash_attn}` for a q8_0-quantized KV cache, or `{}`.
+
+    **Why this exists at all.** No engine in this codebase quantizes its KV
+    cache today — `fit.py`'s `KV_BYTES_PER_ELEMENT` table already models the
+    axis (`fp16`/`bf16`/`fp8`/`q8_0`/`q4_0`) and its own docstring says so
+    outright ("fp16 ... the precision every runner in this codebase caches
+    at today"). This is where that stops being true for llama.cpp, and it
+    matters more HERE than for any other runner: `load()`'s retry ladder
+    (`_offload_schedule`) probes decreasing `n_gpu_layers` until one FITS in
+    VRAM, and the KV cache is allocated as part of that same fit. Shrinking
+    it does not just save memory in the abstract — every byte it gives back
+    is a byte the ladder can spend on one more GPU layer, at every rung, not
+    only the ones that were already tight.
+
+    **q8_0, not q4_0.** Both are in `fit.py`'s table; only one is shipped
+    here. q8_0 is llama.cpp's near-lossless KV option — an 8-bit block
+    quantization with a scale per block, close enough to fp16 that upstream
+    treats it as the safe default recommendation for a cache users did not
+    ask to be made lossy. q4_0 roughly halves the bytes again (`fit.py`'s
+    table: 0.5 vs 1.0 bytes/element) but visibly degrades long-context
+    recall in the model's own attention outputs — a probabilistic quality
+    cost this runner has no way to warn a caller about after the fact, for
+    a worse trade than "one more layer stays on the GPU" is worth. This
+    runner is a chat-turn server, not a long-document summarizer straining
+    for every extra megabyte (see `_N_CTX`'s own docstring), so q8_0's
+    smaller, guaranteed-safe win is the one worth taking unconditionally;
+    q4_0's larger, riskier one is not.
+
+    **Paired with `flash_attn=True`, not optional.** llama.cpp's own loader
+    enforces this, not a preference of this runner's: `llama-context.cpp`
+    (checked at `ggml-org/llama.cpp` HEAD) constructs the context with
+    `if (!cparams.flash_attn) { if (ggml_is_quantized(params.type_v)) {
+    throw std::runtime_error("quantized V cache was requested, but this
+    requires Flash Attention"); } }` — a quantized V cache without flash
+    attention is not slower, it is a load-time exception. This guard
+    predates the 0.3.29 pin by a long margin (quantized KV cache and this
+    exact check have existed since llama.cpp's KV-quantization feature
+    shipped), so pairing the two unconditionally is not a guess.
+
+    **Verified against the pin.** `llama-cpp-python==0.3.29`
+    (`llamacpp_text/pyproject.toml`) is installed, and every fact this
+    function leans on holds against it: `Llama.__init__` accepts
+    `type_k: Optional[int] = None` and `type_v: Optional[int] = None` ("KV
+    cache data type for K/V (default: f16)") and `flash_attn: bool = False`
+    ("Use flash attention"), setting `context_params.type_k`/`type_v` only
+    when given and mapping `flash_attn` to
+    `LLAMA_FLASH_ATTN_TYPE_ENABLED`/`_DISABLED` — confirmed against
+    https://github.com/abetlen/llama-cpp-python/blob/v0.3.29/llama_cpp/llama.py.
+    The enum value comes from the same pin's `llama_cpp.py`
+    (https://github.com/abetlen/llama-cpp-python/blob/v0.3.29/llama_cpp/llama_cpp.py):
+    `GGML_TYPE_Q8_0 = 8`, and the installed package re-exports the same
+    value at `llama_cpp.GGML_TYPE_Q8_0` — a plain read, not the write the
+    `_Override` context manager above patches on the submodule instead.
+    Read off the binding rather than hardcoded, both so a future
+    renumbering (it never has happened) fails loudly instead of picking
+    silently wrong, and so a binding that dropped the constant answers `{}`
+    here instead of raising — see the caller for what that `{}` falls back
+    to.
+
+    **Two builds, one pin, one fallback path.** `llamacpp_text/` and
+    `llamacpp_text_vulkan/` share this exact version pin but link different
+    llama.cpp backends, and Vulkan's flash-attention/quantized-cache support
+    is not guaranteed to match the CPU build's rung for rung. Rather than
+    gate this on which folder imported the module (the module docstring's
+    "decided by the linked build" rule applies here too), `load()` tries the
+    quantized cache first at EACH rung of the offload schedule and, only if
+    that rung's quantized attempt fails, retries that SAME rung with a plain
+    fp16 cache before moving down to a smaller rung (`_load_across_schedule`
+    does the retrying). Falling back per-rung rather than per-whole-ladder
+    matters because `_offload_schedule` always ends on plain CPU (`0`), which
+    typically accepts a quantized cache even on a build whose GPU backend
+    rejects `flash_attn` plus a quantized V cache — a per-ladder fallback
+    would walk every GPU rung with the (rejected) quantized cache, land on
+    CPU, and stop there, never trying fp16 at the GPU rungs that would have
+    fit it. Per-rung fallback keeps "a GPU rung at fp16" preferred over "CPU
+    at q8_0", which is the ordering that actually uses the hardware.
+    """
+    type_q8_0 = getattr(llama_cpp, "GGML_TYPE_Q8_0", None)
+    if type_q8_0 is None:
+        return {}
+    return {"type_k": type_q8_0, "type_v": type_q8_0, "flash_attn": True}
+
+
+def _load_across_schedule(llama_cpp, Llama, gguf_path, schedule, kv_variants):
+    """One full pass over `schedule`, retrying `kv_variants` AT EACH RUNG
+    before moving to the next one — factored out of `load()` so the per-rung
+    offload backoff and the per-rung KV-cache fallback share one loop nest.
+
+    `kv_variants` is an ordered tuple of extra `Llama()` kwargs dicts (see
+    `_kv_cache_kwargs`) — `(quantized, {})` when the binding supports a
+    quantized cache, or just `({},)` when it does not. At a given rung, every
+    variant is tried in order before that rung is declared a failure and the
+    schedule moves down to the next, smaller rung. This is what makes "GPU at
+    fp16" beat "CPU at q8_0": a rung's quantized attempt failing (e.g. a
+    Vulkan build that rejects `flash_attn` plus a quantized V cache) falls
+    back to fp16 at that SAME rung rather than abandoning the rung outright,
+    so a build like that lands on the largest GPU rung that fits at fp16
+    instead of falling all the way to the schedule's last, CPU-only rung
+    (which would have accepted the quantized cache and masked the problem).
+
+    Returns `(llm, n_gpu_layers, experts_parked)` on success; re-raises the
+    last rung's last variant's exception when every rung and every variant
+    failed.
+    """
+    for index, (candidate, park_experts) in enumerate(schedule):
+        is_last_rung = index == len(schedule) - 1
+        for variant_index, variant_kwargs in enumerate(kv_variants):
+            is_last_variant = variant_index == len(kv_variants) - 1
+            try:
+                with _experts_on_cpu(llama_cpp, park_experts) as parked:
+                    llm = Llama(
+                        model_path=gguf_path,
+                        n_ctx=_N_CTX,
+                        n_threads=os.cpu_count() or 4,
+                        n_gpu_layers=candidate,
+                        verbose=False,
+                        **variant_kwargs,
+                    )
+                return llm, candidate, parked
+            except Exception:  # noqa: BLE001 - this loop IS the VRAM-sizing probe
+                if is_last_rung and is_last_variant:
+                    # No smaller candidate and no plain-fp16 fallback left to
+                    # try at this rung either — including plain CPU (`0`),
+                    # which llama.cpp can always satisfy if the file and its
+                    # metadata are valid — so this is a REAL failure (a
+                    # corrupt download, an unreadable file) and must not be
+                    # swallowed the way a too-large GPU request is above.
+                    raise
+                if not is_last_variant:
+                    print("llamacpp-text: quantized KV cache did not fit at "
+                          f"{candidate} GPU layers, retrying this rung with "
+                          "the fp16 cache", file=sys.stderr)
+                else:
+                    attempted = "experts on CPU" if park_experts \
+                        else f"{candidate} GPU layers"
+                    print(f"llamacpp-text: {attempted} did not fit, retrying with less",
+                          file=sys.stderr)
+
+
 def load(model_id, gguf_path):
     """`gguf_path` is what `download` returned — the one `.gguf` file's path."""
     # The curation check comes first, before the heavy import: a model this
@@ -721,35 +861,18 @@ def load(model_id, gguf_path):
     schedule = _offload_schedule(total_layers, has_experts) if gpu_capable \
         else ((0, False),)
 
-    llm = None
-    n_layers = 0
-    experts_parked = False
-    for index, (candidate, park_experts) in enumerate(schedule):
-        is_last = index == len(schedule) - 1
-        try:
-            with _experts_on_cpu(llama_cpp, park_experts) as parked:
-                llm = Llama(
-                    model_path=gguf_path,
-                    n_ctx=_N_CTX,
-                    n_threads=os.cpu_count() or 4,
-                    n_gpu_layers=candidate,
-                    verbose=False,
-                )
-            n_layers = candidate
-            experts_parked = parked
-            break
-        except Exception:  # noqa: BLE001 - this loop IS the VRAM-sizing probe
-            if is_last:
-                # No smaller candidate is left to try — including plain CPU
-                # (`0`), which llama.cpp can always satisfy if the file and
-                # its metadata are valid — so this is a REAL failure (a
-                # corrupt download, an unreadable file) and must not be
-                # swallowed the way a too-large GPU request is above.
-                raise
-            attempted = "experts on CPU" if park_experts \
-                else f"{candidate} GPU layers"
-            print(f"llamacpp-text: {attempted} did not fit, retrying with less",
-                  file=sys.stderr)
+    # Quantized KV cache first, plain fp16 only as a fallback at the SAME
+    # rung if that is what the rung is failing on — `{}` alone when the
+    # binding never advertised the enum at all (`_kv_cache_kwargs` returned
+    # `{}`), so a build that cannot do this doesn't pay for a second attempt
+    # at any rung. See `_kv_cache_kwargs`'s docstring for why q8_0+flash_attn,
+    # and `_load_across_schedule`'s for why the fallback happens per-rung
+    # rather than as a second pass over the whole ladder.
+    kv_kwargs = _kv_cache_kwargs(llama_cpp)
+    kv_variants = (kv_kwargs, {}) if kv_kwargs else ({},)
+
+    llm, n_layers, experts_parked = _load_across_schedule(
+        llama_cpp, Llama, gguf_path, schedule, kv_variants)
     _loaded["llm"] = llm
 
     if n_layers == 0:

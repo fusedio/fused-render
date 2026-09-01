@@ -674,7 +674,11 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     assert resolution.runner.code == "diffusers-image" and resolution.honoured
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
+    # Smallest first: the tiny-sd row is 0.6GB, then the SDNQ repo at 5.5GB
+    # (which is still the recommended one), then the int8 split's 8.2GB.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "segmind/tiny-sd",
+        "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
         "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
@@ -3827,9 +3831,11 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
                              folder=str(folder), label="R")
     rounds = []
     installed = {"yes": False}
+    report_jobs = []
 
-    def fake_start(project_dir):
+    def fake_start(project_dir, report_job=True):
         rounds.append(project_dir)
+        report_jobs.append(report_job)
         # Round one is the interpreter, under a key that is NOT the venv key.
         return {"key": "bootstrap-key" if len(rounds) == 1 else "venv-key",
                 "done": False}
@@ -3853,6 +3859,9 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     # TWO rounds: the interpreter, then the packages. One would have installed a
     # python and then waited for packages nobody had asked for.
     assert len(rounds) == 2
+    # `_ensure_venv` mirrors this same install into its own job row — `start()`
+    # must not open a second, generic one alongside it.
+    assert report_jobs == [False, False]
 
 
 def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
@@ -3883,7 +3892,7 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -3939,7 +3948,7 @@ def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_pat
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -4029,7 +4038,7 @@ def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: False)
     monkeypatch.setattr(envinstall, "start",
-                        lambda d: {"key": "abc123", "done": False, "claimed": True})
+                        lambda d, report_job=True: {"key": "abc123", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: {"done": False, "stage": "sync"})
     monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
     # The real one — the fixture stubs it, and this test is about what it does.
@@ -4087,7 +4096,7 @@ def shared_install(fake_runner, monkeypatch):
 
     state = {"claims": 0, "done": False, "cancelled": [], "error": None}
 
-    def start(project_dir):
+    def start(project_dir, report_job=True):
         state["claims"] += 1
         return {"key": "shared-key", "done": False, "claimed": state["claims"] == 1}
 
@@ -4408,7 +4417,7 @@ def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: installed["yes"])
     monkeypatch.setattr(envinstall, "start",
-                        lambda d: {"key": "shared-key", "done": False, "claimed": True})
+                        lambda d, report_job=True: {"key": "shared-key", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: (
         installed.update(yes=True) or {"done": True, "error": None, "stage": "done"}))
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -4982,6 +4991,175 @@ def test_an_explicit_ZERO_steps_or_guidance_is_CLAMPED_not_REPLACED(
         headers={"X-Fused": "1"}).json()
     assert reply["steps"] == 1          # clamped to the floor, not 28
     assert reply["guidance"] == 0.0     # honoured, not replaced with 4.0
+
+
+def test_a_fresh_render_defaults_to_the_curated_models_own_size(
+        client, fake_image_runner, monkeypatch):
+    """`segmind/tiny-sd` is 512x512-native and, as position 0 of a
+    smallest-first list, is also `catalog.default_for()` — what a
+    model-less `fused.ai.image()` loads. Its curated `defaults` names that
+    size, and a fresh (non-edit) render with no `width`/`height` of its own
+    must land on it rather than the generic 1024² meant for a model the
+    catalog says nothing about."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (512, 512)
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_size_still_wins_over_the_curated_default(
+        client, fake_image_runner, monkeypatch):
+    """A caller's own `width`/`height` overrides the curated hint exactly as
+    it overrides the plain 1024² default — this only changes what a caller
+    who said nothing gets."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "width": 768, "height": 768},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (768, 768)
+    _wait_job(started["jobId"])
+
+
+def test_a_fresh_render_of_an_UNCURATED_model_still_gets_1024(
+        client, fake_image_runner):
+    """A cached repo the user downloaded themselves has no row in
+    `catalog.SUGGESTIONS` at all — `catalog.entry_for` returns None for it,
+    and the route must keep the plain 1024² default rather than erroring or
+    guessing a size."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "model": "some/uncurated-repo"},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 1024)
+    _wait_job(started["jobId"])
+
+
+def test_an_edit_still_derives_its_size_from_the_base_image_not_the_curated_one(
+        client, fake_image_runner, monkeypatch, tmp_path):
+    """Decision 1 keeps winning for an edit even when the resolved model
+    carries a curated size: `image_path is not None` short-circuits the
+    curated-default branch entirely, exactly as it already short-circuits
+    the plain 1024² one."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.png"
+    photo.write_bytes(_png_bytes(2000, 1000))
+
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "x", "image": "photo.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 512)
+    _wait_job(started["jobId"])
+
+
+def test_a_fresh_render_takes_the_curated_models_own_steps_and_guidance(
+        client, fake_image_runner, monkeypatch):
+    """`segmind/tiny-sd` declares `"steps": 16, "guidance": 7.5` because 16
+    steps is the first point on its measured convergence curve that looks
+    finished (MAD 3.2 against a converged 28-step render, vs. 12.3 at 8) and
+    7.5 is real classifier-free guidance for its non-distilled SD1.5 UNet —
+    a fresh render with no `steps`/`guidance` of its own must land on those
+    curated numbers rather than the generic 28/4.0 meant for a model the
+    catalog says nothing about."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 16
+    assert started["guidance"] == 7.5
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_steps_and_guidance_still_win_over_the_curated_defaults(
+        client, fake_image_runner, monkeypatch):
+    """A caller's own `steps`/`guidance` overrides the curated hint exactly
+    as it overrides the plain 28/4.0 default, and still goes through the
+    same clamp — this only changes what a caller who said nothing gets."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "steps": 20, "guidance": 3.0},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 20
+    assert started["guidance"] == 3.0
+    _wait_job(started["jobId"])
+
+
+def test_a_fresh_render_of_an_UNCURATED_model_still_gets_28_and_4(
+        client, fake_image_runner):
+    """A cached repo the user downloaded themselves has no row in
+    `catalog.SUGGESTIONS` at all — `catalog.entry_for` returns None for it,
+    and the route must keep the plain 28/4.0 default rather than erroring or
+    guessing a step count."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "model": "some/uncurated-repo"},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 28
+    assert started["guidance"] == 4.0
+    _wait_job(started["jobId"])
+
+
+def test_a_curated_entry_with_only_a_size_still_gets_28_and_4(
+        client, fake_image_runner, monkeypatch):
+    """A curated entry can name size without naming steps or guidance — the
+    two klein rows below tiny-sd in the real catalog do exactly this, since
+    they take the route's own 4-step distilled-guidance defaults rather than
+    a per-model override. Each field the entry leaves unnamed must fall back
+    to the generic default independently of the ones it does name."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 28
+    assert started["guidance"] == 4.0
+    _wait_job(started["jobId"])
+
+
+def test_an_edit_still_gets_4_steps_and_guidance_1_even_with_a_curated_model(
+        client, fake_image_runner, monkeypatch, tmp_path):
+    """The edit path's own defaults (4 steps, guidance 1.0 — the prototype's
+    numbers, not a generate default) must keep winning even when the
+    resolved model carries curated `steps`/`guidance`: `image_path is not
+    None` short-circuits the curated-default branch entirely, exactly as it
+    already short-circuits the curated-size lookup."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.png"
+    photo.write_bytes(_png_bytes(2000, 1000))
+
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "x", "image": "photo.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 4
+    assert started["guidance"] == 1.0
+    _wait_job(started["jobId"])
 
 
 def test_two_renders_are_two_rows_and_two_files(client, fake_image_runner):
@@ -5635,6 +5813,76 @@ def test_the_catalog_forwards_harvested_kv_geometry_into_the_fit_footprint(
     assert entry["fit"]["footprintBytes"] > flat_floor, (
         "KV-cache term is 0 despite cached geometry being available — "
         "hub_metadata.cached() geometry was not forwarded to fit.verdict")
+
+
+def test_kv_geometry_kwargs_supplies_a_q8_0_kv_dtype_for_the_llamacpp_runners(
+        monkeypatch):
+    """`_KV_DTYPE_RUNNERS` names both llama.cpp runner codes — the CPU build
+    and the Vulkan build share the exact same loader module and both try a
+    q8_0 cache first (`llama_text._kv_cache_kwargs`), so both must get
+    `kv_dtype="q8_0"` here, not just one of them."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: None)
+    for code in ("llamacpp-text", "llamacpp-text-vulkan"):
+        assert ai_runtime._kv_geometry_kwargs("org/m", code) == {"kv_dtype": "q8_0"}
+
+
+def test_kv_geometry_kwargs_leaves_kv_dtype_unset_for_every_other_runner(
+        monkeypatch):
+    """No other runner in `registry.py` quantizes its KV cache — MLX,
+    diffusers, CT2 and ONNX all still cache at fp16 or have no KV cache at
+    all — so `fit.py`'s own fp16 default must apply for any runner code that
+    is not one of the two llama.cpp ones, including `None` (no runner
+    resolved for this machine at all)."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: None)
+    for code in ("mlx-text", "diffusers-image", "faster-whisper", "onnx-embed", None):
+        assert "kv_dtype" not in ai_runtime._kv_geometry_kwargs("org/m", code)
+
+
+def test_the_catalog_uses_a_q8_0_kv_dtype_for_the_llamacpp_runner(
+        client, fixed_fit_machine, monkeypatch, tmp_path):
+    """End-to-end version of the two unit tests above: a catalog row served
+    by a runner whose CODE is `llamacpp-text` gets a strictly smaller
+    download-tier footprint than the identical geometry would get at fp16 —
+    proving `describe_catalog`'s own runner resolution (`row["runner"]`),
+    not a special case in the test, is what selects the q8_0 KV term.
+    Registers a runner under the real `llamacpp-text` code rather than the
+    suite's usual `fake-text`, since that code is the whole trigger for
+    `_KV_DTYPE_RUNNERS`."""
+    folder = tmp_path / "llamacpp_fake"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="llamacpp-text", capability=registry.TEXT_GENERATION,
+        folder=str(folder), label="Fake llama.cpp",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: {
+        "numHiddenLayers": 32,
+        "numKeyValueHeads": 8,
+        "numAttentionHeads": 32,
+        "headDim": 128,
+        "hiddenSize": 4096,
+        "layerTypes": None,
+    } if model_id == "org/geometry-known" else None)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "llamacpp-text", [
+        {"id": "org/geometry-known", "label": "Geometry known", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/geometry-known"
+
+    fp16_kv_bytes = fit._kv_cache_bytes(
+        num_hidden_layers=32, num_key_value_heads=8, head_dim=128, kv_dtype="fp16")
+    q8_0_kv_bytes = fit._kv_cache_bytes(
+        num_hidden_layers=32, num_key_value_heads=8, head_dim=128, kv_dtype="q8_0")
+    assert q8_0_kv_bytes == pytest.approx(fp16_kv_bytes / 2)
+    expected_footprint = 4.0 * 1e9 + q8_0_kv_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["footprintBytes"] == pytest.approx(expected_footprint)
+    supervisor.unload()
+    supervisor.reset()
 
 
 def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(

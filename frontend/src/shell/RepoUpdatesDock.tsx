@@ -44,7 +44,8 @@
 // only shell-side code reaches.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
-import { getJson, postJson } from "@platform/lib/api";
+import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
+import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
@@ -104,6 +105,11 @@ type MutationResult = { ok: boolean; reason?: string; message?: string };
 
 function useRepoUpdates() {
   const [repos, setRepos] = useState<RepoStatus[]>([]);
+  // LAN pairings ride the same poll (third row kind, after D586's failures):
+  // a device pairing is a notification, and this card is the notification
+  // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
+  // holds across shells and reloads for as long as the server runs.
+  const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
   // Has /api/git-upstream answered ONCE? `repos` starts `[]` and stays `[]`
   // for a repo-free machine, so the list alone cannot tell "not asked yet"
   // from "genuinely nothing" — and `useAutoExpandOnNew` needs exactly that
@@ -129,13 +135,19 @@ function useRepoUpdates() {
       const mine = ++generation;
       window.clearTimeout(timer);
       try {
-        const data = await getJson<{ repos?: RepoStatus[] }>("/api/git-upstream");
+        const [data, paired] = await Promise.all([
+          getJson<{ repos?: RepoStatus[] }>("/api/git-upstream"),
+          // Its failure must not take the repo rows down with it (and vice
+          // versa): each source degrades alone.
+          getLanPairings().catch(() => null),
+        ]);
         // Superseded responses are DROPPED, not painted: a fresher read is
         // already in flight, and letting an older one land after it would
         // flick stale rows back onto the screen (the same reason
         // `useJobs` carries its own epoch).
         if (!disposed && mine === generation) {
           setRepos(data.repos || []);
+          if (paired) setPairings(paired.pairings || []);
           setSettled(true);
         }
       } catch {
@@ -154,7 +166,34 @@ function useRepoUpdates() {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, settled, refresh };
+  return { repos, pairings, setPairings, settled, refresh };
+}
+
+// A device that just paired over the LAN (lan.py): title is the device's
+// UA-derived name, the sentence says what pairing means, the ✕ dismisses the
+// EVENT server-side (the device itself stays; revoking lives in Preferences).
+function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id: string) => void }) {
+  const dismiss = async () => {
+    // Optimistic: the row is news, and news the user swatted must go now.
+    onGone(event.id);
+    try {
+      await dismissLanPairing(event.id);
+    } catch {
+      /* the next poll restores it if the server never heard */
+    }
+  };
+  return (
+    <div className="dl-row">
+      <div className="dl-row-head">
+        <span className="dl-title">{event.name} paired</span>
+        <button type="button" className="dl-x" onClick={dismiss} title="Dismiss"
+                aria-label={`Dismiss ${event.name} paired`}>
+          ✕
+        </button>
+      </div>
+      <div className="dl-status">It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</div>
+    </div>
+  );
 }
 
 // Held at MODULE level, not component state, so a remount (switching panes
@@ -334,6 +373,8 @@ export function RepoUpdatesCardView({
   onDismissAll,
   onDone,
   failed = [],
+  pairings = [],
+  onPairingGone,
   onJobsChanged,
   onFailedPatch,
 }: {
@@ -341,6 +382,9 @@ export function RepoUpdatesCardView({
   dismissed: Record<string, string>;
   /** Failed jobs re-routed here from the Jobs section (D586). */
   failed?: Job[];
+  /** Devices that paired over the LAN — the third row kind. */
+  pairings?: LanPairingEvent[];
+  onPairingGone?: (id: string) => void;
   /** A failed row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
@@ -355,11 +399,12 @@ export function RepoUpdatesCardView({
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
-  // BOTH SOURCES DECIDE EVERY DERIVED NUMBER (D586). The count on the chip,
-  // the idle predicate and the empty state all read this one total, so none of
-  // them can disagree about what this section holds — a count that still
-  // counted only repo rows was the likeliest bug in this change.
-  const total = visible.length + failed.length;
+  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
+  // The count on the chip, the idle predicate and the empty state all read
+  // this one total, so none of them can disagree about what this section
+  // holds — a count that still counted only repo rows was the likeliest bug
+  // in this change.
+  const total = visible.length + failed.length + pairings.length;
   const idle = total === 0;
   // The failure tint MOVED HERE from the Jobs chip (D586): this is the section
   // that holds failures now, so it is the one worth colouring. Unconditional on
@@ -438,6 +483,11 @@ export function RepoUpdatesCardView({
                   rejected-request surfacing, which is the behaviour a dismiss
                   here most needs to keep. */}
               <div className="dl-rows">
+                {/* Pairings first: the newest kind of news, and the only one
+                    with nothing to act on beyond reading it. */}
+                {pairings.map((event) => (
+                  <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
+                ))}
                 {visible.map((row) => (
                   <RepoRowView
                     key={row.repo.root}
@@ -544,6 +594,8 @@ export function RepoUpdatesDockView({
   dismissed,
   ready,
   failed = [],
+  pairings = [],
+  onPairingGone,
   onDismiss,
   onDismissAll,
   onDone,
@@ -560,6 +612,10 @@ export function RepoUpdatesDockView({
    *  section, drawn beside the repo rows. Optional and defaulted so every
    *  existing caller and test keeps working unchanged. */
   failed?: Job[];
+  /** LAN pairings — announceable rows: a pairing while the chip is collapsed
+   *  auto-opens the panel, which is the whole point of announcing one. */
+  pairings?: LanPairingEvent[];
+  onPairingGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
@@ -603,7 +659,12 @@ export function RepoUpdatesDockView({
   // swallow its arrival). They are different namespaces today; the prefix means
   // nobody has to keep checking that.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    visible.map((row) => `repo:${row.repo.root}`),
+    [
+      ...visible.map((row) => `repo:${row.repo.root}`),
+      // Announceable, unlike the failures below: a pairing is the one event
+      // here the user is usually WAITING on (they just scanned the QR).
+      ...pairings.map((p) => `pair:${p.id}`),
+    ],
     collapsed,
     ready,
     { alsoDrawn: failed.map((job) => `job:${job.id}`) },
@@ -651,6 +712,8 @@ export function RepoUpdatesDockView({
       rows={rows}
       dismissed={dismissed}
       failed={failed}
+      pairings={pairings}
+      onPairingGone={onPairingGone}
       collapsed={!open}
       onToggle={toggle}
       onClose={close}
@@ -670,9 +733,13 @@ export default function RepoUpdatesDock({
   failed?: Job[];
   onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
-  const { repos, settled, refresh } = useRepoUpdates();
+  const { repos, pairings, setPairings, settled, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
+  const pairingGone = useCallback(
+    (id: string) => setPairings((list) => list.filter((p) => p.id !== id)),
+    [setPairings],
+  );
 
   return (
     <RepoUpdatesDockView
@@ -680,6 +747,8 @@ export default function RepoUpdatesDock({
       dismissed={dismissed}
       ready={settled}
       failed={failed}
+      pairings={pairings}
+      onPairingGone={pairingGone}
       onFailedPatch={onFailedPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}

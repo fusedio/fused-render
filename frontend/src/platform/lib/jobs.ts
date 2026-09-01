@@ -11,7 +11,15 @@
 // zero; a row that says "stalled" for work that finished).
 import { getJson, postJson } from "@platform/lib/api";
 
-export type JobState = "running" | "done" | "error" | "cancelled";
+// "waiting" — the two NON-terminal states are "running" and "waiting". Work
+// has stopped and is not coming back on its own: it is sitting on a QUESTION
+// only the user can answer (today, the sole producer is
+// `envinstall._mirror_into_jobs`'s `needs_build` branch: uv's "Install
+// anyway" compile prompt). Not "running" — nothing is actually in flight, so
+// a bar or a spinner would lie. Not terminal either: none of "done" / "error"
+// / "cancelled" means "stopped, waiting on you" (see `fused_render/jobs.py`'s
+// own state-machine comment for the fuller reasoning).
+export type JobState = "running" | "waiting" | "done" | "error" | "cancelled";
 export type JobKind = "download" | "task";
 // Who is running the work, which decides what ✕ can do (SPEC BG-4). "page" —
 // only the page knows what stopping means, so cancel is a request it honours.
@@ -44,7 +52,7 @@ export interface Job {
   // raise it (never-understate).
   total_scope: "download" | "phase";
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
-  message: string; // the error text, when state is "error"
+  message: string; // the error text when state is "error"; the question's caption when state is "waiting"
   page: string; // the .html that raised it (attribution)
   owner: JobOwner;
   cancellable: boolean;
@@ -346,6 +354,13 @@ export function jobStatusLine(job: Job): string {
   if (job.state === "error") return job.message || "Failed";
   if (job.state === "cancelled") return job.detail || "Cancelled";
   if (job.state === "done") return job.detail || "Done";
+  // A question on the page, not a failure and not progress — the caption
+  // names what it is waiting on (e.g. "waiting for your approval to compile
+  // <pkg>"). Checked ahead of `stalled`/`cancel_requested` below: both of
+  // those describe a REPORTER that has gone quiet or been asked to stop, and
+  // a "waiting" row's reporter already exited on purpose the moment it wrote
+  // this state (see `fused_render/jobs.py`'s own comment on `WAITING`).
+  if (job.state === "waiting") return job.message || "Waiting for you";
   // Stalled outranks a pending cancel, and says so explicitly when both hold.
   // "Cancelling…" claims something is working on the request; if the reporter
   // died before honoring it, that claim would stand for the whole ten-minute
@@ -392,10 +407,14 @@ export interface QueueCount {
 // computes it, and the queue rows still need it.
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
-// discover is a job STARTED by some other document (a page in another browser
-// tab, or a Python worker reporting straight to the API, which runs no JS and
-// so writes no ping). The ping cuts the usual latency of that discovery to
-// nothing; this floor is what covers the cases it can't reach.
+// discover is a job started with no ping behind it: one reported from another
+// same-origin document (a page in another browser tab), or one a server-side
+// process reports on its own with no browser ever POSTing anything (a
+// scheduled message's timer tick, `schedule.py`'s `_report` — runs no JS, so
+// writes no ping). A row a page's own JS causes — the env-install path
+// included, even though the row itself is created server-side inside
+// `envinstall.start()` — is pinged the moment the triggering POST resolves.
+// This floor is what covers the cases a ping can't reach.
 export const POLL_ACTIVE_MS = 1000;
 export const POLL_IDLE_MS = 5000;
 

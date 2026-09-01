@@ -582,10 +582,145 @@ SUGGESTIONS: dict[str, list[dict]] = {
     ],
     "diffusers-image": [
         {
+            "id": "segmind/tiny-sd",
+            "params": "0.5B",
+            # No `quantization` field: this is plain fp16 diffusers weights,
+            # not a quantized checkpoint — the same reason
+            # `mlx-community/whisper-large-v3-mlx` above carries none. Adding
+            # one here would also be a wrong one: `fit._weight_bytes` would
+            # read it as a bytes-per-param claim to check `size_gb` against,
+            # and this repo's small size next to its param count comes from
+            # being a genuinely distilled UNet, not from a quantization
+            # scheme the field could name honestly.
+            "label": "Tiny SD (Segmind, SD1.5-distilled)",
+            "nickname": "Tiny SD",
+            # The whole repo, which is what `download()` fetches — a distilled
+            # UNet (647MB), CLIP's text encoder (246MB) and the SD1.5 VAE
+            # (167MB), all fp16, with no component repo or skipped subfolder to
+            # net out.
+            #
+            # Those three are `pytorch_model.bin`/`diffusion_pytorch_model.bin`
+            # pickles: this repo publishes no safetensors at all. Loadable —
+            # `formats.TORCH_WEIGHTS` names `.bin` and the diffusers runner
+            # opens every extension in it — but the AI Models page counts
+            # parameters off safetensors headers only, so this card takes its
+            # figure from the `params` field above and from nowhere else.
+            "size_gb": 1.1,
+            "note": "The smallest and quickest model here by a wide margin — "
+                    "a distilled Stable Diffusion 1.5, 512x512 only, and "
+                    "well behind FLUX.2 klein on prompt following and detail.",
+            # **The one row here that is NOT step-distilled**, which is the
+            # whole reason it declares a count at all. `ImageStage`'s fallback
+            # for a model with no hint is 4 — right for the klein family that
+            # every other image row belongs to, and far too few for an ordinary
+            # SD1.5 schedule, which at 4 produces smeared shapes rather than a
+            # picture. Measured on this box (segmind/tiny-sd, 512x512, fixed
+            # seed/prompt, mean absolute pixel diff against the converged
+            # 28-step render): 1 step -> 44.6, 4 -> 22.4, 8 -> 12.3, 16 -> 3.2,
+            # 28 -> 0, at wall times 1.0s / 2.0s / 3.0s / 5.0s / 8.0s. 8 steps
+            # is still 12.3 away from converged — visibly short of what the
+            # schedule can do — while 16 gets to 3.2 for two more seconds
+            # (5s vs 3s), the better trade for a default. This is a 0.5B UNet
+            # at 512², so even 16 steps still lands faster than klein's four.
+            #
+            # `guidance` is real classifier-free guidance here, not the
+            # distilled guidance embedding the klein rows pass through the
+            # same `guidance_scale=` argument (`torch_image.py`): this repo
+            # is an ordinary, non-distilled SD1.5 UNet, so CFG's usual 7-8
+            # range applies and 4.0 (right for klein) would under-drive it.
+            # A guidance sweep at 8 steps, measured against this model's own
+            # guidance=4.0 render: 1.0 -> MAD 22.8, 7.5 -> 32.4, 12.0 -> 59.0
+            # (every render a distinct hash, so this is prompt adherence
+            # moving, not noise) — 7.5 sits at the standard SD1.5 midpoint.
+            #
+            # Declaring `steps` also turns the Playground's speed chips on
+            # (they are absent for a model with no hint), so the rail reads
+            # Quick 16 / Finer 22 / Max 28 — the whole ladder inside SD1.5's
+            # own comfortable range rather than climbing towards it.
+            #
+            # `width`/`height` name this checkpoint's native side, 512 —
+            # this is an ordinary SD1.5 UNet, not one of the klein rows
+            # trained for 1024², and rendering it at 1024² is the classic
+            # SD1.5-at-double-resolution failure: duplicated limbs and
+            # repeated composition rather than more detail. `/api/ai/image`
+            # (`ai_runtime.py`) reads this whole dict as the default RENDER
+            # size/steps/guidance for a fresh (non-edit) request that named
+            # none of its own — position 0 of this list is also
+            # `default_for()`, so a bare `fused.ai.image()` with no model
+            # named lands here and must not inherit the 1024²/28/4.0
+            # fallback meant for an uncurated repo.
+            "defaults": {"steps": 16, "width": 512, "height": 512, "guidance": 7.5},
+        },
+        {
+            "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
+            "params": "4B",
+            "quantization": "SDNQ 4-bit",
+            # **The recommended pick, not what a bare `fused.ai.image()`
+            # starts** — the `segmind/tiny-sd` row above is smaller and takes
+            # position 0, which is exactly the independence `SUGGESTIONS`'
+            # own note describes: `recommended` is a second axis, not a tie
+            # to the default. Against the int8 row below it still wins on
+            # every axis measured — smaller to fetch (5.5GB vs 8.2GB), half
+            # the resident set, ~28% quicker per image — which is why it is
+            # the one marked here.
+            #
+            # The cost of the flag sitting here rather than below is a
+            # dependency: this row cannot load without `sdnq`, whose whole
+            # integration is a mutation of a diffusers mapping that is not
+            # public API (see the runner manifests, and
+            # `torch_image._register_extra_quantizers`). If that breaks, it
+            # breaks the RECOMMENDED image model rather than an alternative
+            # one — which is what the manifests' `<0.3` ceiling and
+            # `test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_
+            # below_0_3` exist to make loud instead of silent.
+            "recommended": True,
+            "label": "FLUX.2 klein 4B (SDNQ 4-bit)",
+            "nickname": "FLUX.2 klein",
+            # The whole repo: text_encoder 2.63GiB + transformer 2.30GiB + vae
+            # 0.16GiB and change (Hub blob metadata, 2026-09-01), 5.10GiB =
+            # 5.5e9 decimal bytes, the unit this field uses per D295. One repo,
+            # 4-bit THROUGHOUT — which is what makes it the smaller download as
+            # well as the smaller resident set, and why it sorts first here.
+            "size_gb": 5.5,
+            # **Measured against the entry below and against the GGUF recipe,
+            # on the same hardware, prompt and seed** (15.9GiB RX 9060 XT,
+            # 512x512, 4 steps): `memory_allocated` 5.14GiB and a warm render
+            # of 4.09s, against 10.15GiB / 5.66s for
+            # `black-forest-labs/FLUX.2-klein-4B` through `_GGUF_RECIPES`. Half
+            # the memory AND ~28% faster.
+            #
+            # The speed is the part worth writing down, because it is not what
+            # a 4-bit format would predict on its own: the GGUF path it beats
+            # runs `GGUFLinear.forward_native`, which dequantizes each full
+            # weight matrix on EVERY forward — `diffusers`' fused CUDA path
+            # needs both `DIFFUSERS_GGUF_CUDA_KERNELS` (defaults to "false")
+            # and the `kernels` package, and this app sets neither. SDNQ ships
+            # its own triton matmuls and takes the rocm branch of them
+            # (`kernel_wrappers.py`). So this row is faster because the row it
+            # is compared against is paying a dequantization the app never
+            # opted out of, not because 4-bit is inherently quick.
+            #
+            # Hardware-neutral like every note here — the numbers above are
+            # from ONE card, and this list serves the CPU, CUDA and ROCm rows.
+            "note": "4-bit throughout in a single repo — the smallest FLUX.2 "
+                    "here to fetch and to hold, and quicker per image than the "
+                    "int8 split below.",
+            # The same step-distilled model as the other two klein rows.
+            "defaults": {"steps": 4},
+        },
+        {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "params": "4B",
+            # **Incomplete, and known to be.** The transformer is torchao int8,
+            # but this repo is MIXED: `text_encoder/config.json` carries
+            # `"quant_method": "bitsandbytes"` with `"load_in_4bit": true` and
+            # `"bnb_4bit_quant_type": "nf4"` (double quant, bf16 compute), and
+            # that encoder is the larger half at 3.4GB — bf16 in 16 skipped
+            # modules is why it is not ~2.1GB. Left as it is because this
+            # string is what the AI Models page prints, and a one-line label
+            # that tried to say "int8 transformer, NF4 text encoder" would be
+            # a product decision about that column rather than a fix.
             "quantization": "int8 (torchao)",
-            "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
             "nickname": "FLUX.2 klein",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
@@ -606,11 +741,33 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # encoder and VAE still come from their safetensors. Forcing
             # `use_safetensors=False` would break those two instead.
             #
-            # It is the only entry, so it is what a bare `fused.ai.image()`
-            # starts: the ordering rule
-            # (`test_every_suggestion_list_is_ordered_smallest_first`) holds
-            # trivially, and being the smaller thing to fetch is why this is the
-            # entry the list keeps.
+            # **The repo is MIXED quantization, not uniform torchao, and this
+            # comment used to describe only half of it.** `text_encoder/
+            # config.json` carries its own `"quant_method": "bitsandbytes"` —
+            # 4-bit NF4, double quant, bf16 compute dtype — a second backend
+            # `from_pretrained` needs to import BEFORE it ever reaches the
+            # transformer above. Omitting `bitsandbytes` from the three
+            # `diffusers_image*` runner manifests (it was omitted from all
+            # three) meant this row failed on every engine with
+            #
+            #     ImportError: Using `bitsandbytes` 4-bit quantization
+            #     requires bitsandbytes: `pip install -U
+            #     bitsandbytes>=0.46.1`
+            #
+            # raised while building the text encoder, before the torchao
+            # transformer this comment was already careful about was ever
+            # constructed — the same class of defect the `.bin`-vs-
+            # `.safetensors` reasoning above exists to keep out: a format this
+            # comment did not account for making the recommended model refuse
+            # to load. See the runner manifests' own `bitsandbytes` entries for
+            # the version reasoning and the ROCm-specific verification.
+            # **It was the only entry when that bug shipped, and is not any
+            # more** — the SDNQ row above is both smaller and recommended, so
+            # this is now the fallback rather than the default. That does not
+            # soften the bitsandbytes requirement one bit: a user who picks
+            # this row still loads that NF4 text encoder, and the ordering rule
+            # (`test_every_suggestion_list_is_ordered_smallest_first`) now has
+            # two entries to hold across rather than holding trivially.
             #
             # Hardware-neutral, per `SUGGESTIONS`' own rule: this one list
             # serves the CPU, CUDA and ROCm Diffusers rows, so a
@@ -664,13 +821,69 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # so (`describe`'s `runnerLabel`).
     #
     # Sizes use the same full-snapshot Hub metadata estimate as the lists above
-    # (2026-08-15). **One line each**, per `SUGGESTIONS`' own rule: a
-    # shortlist is read by sweeping it.
+    # (2026-08-15; small and turbo re-measured 2026-09-01, see below).
+    # **One line each**, per `SUGGESTIONS`' own rule: a shortlist is read by
+    # sweeping it.
     #
     # **No medium.** It weighs about what large-v3 turbo weighs and turbo is
     # better at every language, so a medium row would be an entry that is never
     # the right pick — a shortlist earns its length by every line being
     # somebody's answer.
+    #
+    # **2026-09-01: small and turbo now point at their `-q4` conversions**,
+    # closing a gap this list had carried since it was first written — tiny.en
+    # was the only quantized row, so the one entry small enough not to need it
+    # was the one that had it, and the two rows big enough to actually benefit
+    # did not. `mlx-community/whisper-small-mlx-q4` and
+    # `…/whisper-large-v3-turbo-q4` are ONE-FILE snapshots (`weights.npz` plus
+    # the usual config/readme) exactly like the fp16 repos they replace, so the
+    # size drop is real and not an artifact of counting fewer files: measured
+    # via the Hub API's per-file `blobs=true` byte sizes on 2026-09-01, small
+    # goes from 0.4813GB to 0.1965GB and turbo from 1.6140GB to 0.4637GB — both
+    # rounded the way this file rounds throughout. Both configs carry a plain
+    # `{"group_size": 64, "bits": 4}` block, the same shape `tiny.en-8bit` has
+    # always loaded on this runner, so nothing about `load()`'s format check or
+    # its `mx.float16` priming (which is `transcribe()`'s own `fp16` decode
+    # default, not a per-model choice) changes for these two.
+    #
+    # **REPLACED, not added beside — a deliberate trade and not a saving on
+    # curation effort.** Doubling this list to six rows so every model appears
+    # in both precisions would make the list itself the thing nobody reads
+    # (`SUGGESTIONS`' own "sweeping it" rule), and — the harder cost — 4-bit
+    # Whisper carries a real word-error-rate penalty the model cards do not
+    # quantify and this repo cannot measure (no Apple Silicon in this
+    # environment; the two sizes above are Hub metadata, not a benchmark). That
+    # cost is accepted here because it mirrors the trade every OTHER list in
+    # this file already makes: `mlx-text` ships OptiQ/4-bit rows exclusively,
+    # `faster-whisper` line below ships CTranslate2's int8 throughout, and nothing
+    # here keeps an fp16 CHAT model beside its quantized replacement either — a
+    # shortlist that quantizes some rows and not others is the inconsistency
+    # this change closes, not one it should introduce a second way. `large-v3`
+    # below is kept UNQUANTIZED on purpose, for a different and repo-specific
+    # reason — see its own note — so the accuracy ceiling of this list has not
+    # actually dropped, only its middle two rows have.
+    #
+    # **`mlx-community/whisper-large-v3-mlx-4bit` was checked and excluded.**
+    # Its config passes the same format and quantization checks as the two rows
+    # above (`n_mels`/`n_audio_ctx`/`n_vocab` present, `weights.npz` with a
+    # plain 4-bit `quantization` block), but its snapshot ALSO carries a
+    # `model.safetensors` the exact size of its `weights.npz` (0.9736GB each,
+    # per the same 2026-09-01 Hub query) — a second, unused copy of the same
+    # weights in a different container, the identical "half of it is dead
+    # weight" shape the `mlx-text` list documents for the Qwen/Gemma vision
+    # towers. `download()` fetches the whole snapshot with no
+    # `allow_patterns`, so `size_gb` for this repo is the sum, 1.9467GB — MORE
+    # than turbo-q4 (0.4637GB) for accuracy turbo already claims to match, and
+    # not meaningfully less than the unquantized `large-v3-mlx` row below
+    # (3.0835GB) once the wasted file is counted. A row that costs more to
+    # download than the answer already in this list, for the same claimed
+    # accuracy, is not a row worth adding regardless of the ordering rule —
+    # this is the `no medium` reasoning above applied to a repo instead of a
+    # size class.
+    #
+    # Ordering unaffected: every size below FELL, none crossed a neighbour, so
+    # `default_for()` returns `tiny.en-8bit` at position 0 — see the module
+    # docstring on why that is checked explicitly rather than assumed.
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
@@ -685,24 +898,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "everything else.",
         },
         {
-            "id": "mlx-community/whisper-small-mlx",
+            "id": "mlx-community/whisper-small-mlx-q4",
             "params": "244M",
-            "label": "Whisper small (MLX)",
+            "quantization": "MLX 4-bit",
+            "label": "Whisper small (MLX 4-bit)",
             "nickname": "Whisper Small",
-            "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "quick, but it drops names and punctuation turbo gets "
-                    "right.",
+            "size_gb": 0.2,
+            "note": "A quarter the fp16 small's download at the same 244M "
+                    "params — quick, and 4-bit's unmeasured accuracy cost on "
+                    "top of what small already drops next to turbo.",
         },
         {
-            "id": "mlx-community/whisper-large-v3-turbo",
+            "id": "mlx-community/whisper-large-v3-turbo-q4",
             "params": "809M",
-            "label": "Whisper large-v3 turbo (MLX)",
+            "quantization": "MLX 4-bit",
+            "label": "Whisper large-v3 turbo (MLX 4-bit)",
             "nickname": "Whisper Large-v3 turbo",
-            "size_gb": 1.6,
-            "note": "The best value here: large-v3 accuracy at a fraction of "
-                    "its decoding cost, and faster than real time by a wide "
-                    "margin on Metal.",
+            "size_gb": 0.5,
+            "note": "The best value here: large-v3 accuracy turbo already "
+                    "claims at a third of ITS OWN fp16 download, plus 4-bit's "
+                    "own unmeasured accuracy cost.",
         },
         {
             "id": "mlx-community/whisper-large-v3-mlx",
@@ -710,8 +925,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Whisper large-v3 (MLX)",
             "nickname": "Whisper Large-v3",
             "size_gb": 3.1,
-            "note": "The full model, for a recording turbo handles badly — "
-                    "twice turbo's disk and several times its decoding.",
+            "note": "The full-precision ceiling for a recording turbo handles "
+                    "badly — kept fp16 because its own -4bit re-upload wastes "
+                    "half its download on an unused duplicate file (see above).",
         },
     ],
     # A fourth speech list here, `parakeet-mlx` (NeMo Parakeet exports), lived
@@ -1284,6 +1500,25 @@ def default_for(capability: str) -> str | None:
     """
     entries = for_capability(capability)
     return entries[0]["id"] if entries else None
+
+
+def entry_for(capability: str, model_id: str) -> dict | None:
+    """The curated row for `model_id` under `capability`'s resolved runner, or
+    None for a model this list does not name — a cached repo the user
+    downloaded themselves, most often.
+
+    Narrower than `for_capability` on purpose: a caller that already knows
+    which single model it resolved to (`/api/ai/image`'s `model`, after
+    `_model_of`/`default_for`) wants that one row's curated hints —
+    `defaults`'s render size, step count, and guidance scale today — not
+    the whole list to scan itself. Returns None rather than a guessed row
+    for anything the curation does not cover, so a caller's own fallback
+    stays the one that fires for an uncurated model.
+    """
+    for entry in for_capability(capability):
+        if entry["id"] == model_id:
+            return entry
+    return None
 
 
 def all_suggested_ids() -> set[str]:

@@ -503,7 +503,7 @@ def create_app(start_dir: str) -> FastAPI:
         await shutdown_ai_session()
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
-    # nothing has used it for the configured window (default 10 min, 0 = off).
+    # nothing has used it for the configured window (default 5 min, 0 = off).
     # A startup event and deliberately not the create_app body, for the same
     # reason as `_startup_schedule` above: tests build apps with no lifespan,
     # and this starts a thread that lives for the process — building one per
@@ -649,6 +649,11 @@ def create_app(start_dir: str) -> FastAPI:
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
+    # Local-network sharing (lan.py): the desktop's pairing + device routes.
+    # Loopback only in effect — the LAN wrapper's allowlist never forwards them.
+    from fused_render.lan import router as lan_router
+
+    app.include_router(lan_router)
     app.include_router(recents_router)
     # The app call log (calls.py): GET /api/calls/config + the page-error
     # event POST. The records themselves are written by the middleware above.

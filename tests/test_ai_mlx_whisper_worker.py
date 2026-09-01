@@ -2009,7 +2009,7 @@ def test_the_other_two_whisper_formats_are_named_as_the_cause(monkeypatch, base,
     message = str(caught.value)
     assert "weights.npz" in message
     assert "model.bin" in message and "model.safetensors" in message
-    assert "mlx-community/whisper-large-v3-turbo" in message
+    assert "mlx-community/whisper-large-v3-turbo-q4" in message
 
 
 def test_memory_is_MLXs_accounting_and_not_RSS(monkeypatch, base, tmp_path):
