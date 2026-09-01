@@ -95,7 +95,16 @@ MAX_FIXES = 20
 # state dir excludes itself for a sharper version of the same reason: writing
 # the incident file that a fix session reads would otherwise be a modification
 # of the installation, recorded by the very run that made it.
-_SKIP_DIRS = {"__pycache__", STATE_DIR_NAME}
+# `.venv` for the same reason as `__pycache__`: derived, reproducible, and
+# never part of what we shipped. The app never puts one here — D630 sends any
+# folder inside the installed package to the home store precisely because that
+# tree is read-only in most shapes it ships — so on a real installation this
+# skip costs nothing. It earns its place on a SOURCE CHECKOUT, where a
+# developer may have hand-synced a template's venv under
+# `fused_render/templates/<name>/`; `core_templates`' staging `ignore` exists
+# for that same folder. Hashing it would walk thousands of files on every ~16s
+# re-hash of a live session to answer a question about bytes we do not own.
+_SKIP_DIRS = {"__pycache__", ".venv", STATE_DIR_NAME}
 _SKIP_SUFFIXES = (".pyc", ".pyo")
 _SKIP_NAMES = {".DS_Store"}
 

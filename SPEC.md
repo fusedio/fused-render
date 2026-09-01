@@ -11380,7 +11380,15 @@ the installation, and the mark that says so.
   on the session's `done` tick and every ~16s in between. Content, never
   mtimes: a reinstall rewrites every mtime without changing a byte.
   `__pycache__` and `.pyc` are excluded, or every installation would be
-  "modified" the first time it ran.
+  "modified" the first time it ran. **`.venv` on the same ground**: derived,
+  reproducible, and never part of what we shipped. The app never puts one in
+  this tree — D630 sends any folder inside the installed package to the home
+  store, because that tree is read-only in most shapes it ships — so on a real
+  installation the exclusion costs nothing. It earns its place on a source
+  checkout, where a developer may have hand-synced a template's venv under
+  `fused_render/templates/<name>/` (`core_templates`' staging `ignore` exists
+  for that same folder); hashing it would walk thousands of files on every
+  re-hash to answer a question about bytes we do not own.
 - **SF-7b** **The comparison is against the tree AS THIS SESSION FOUND IT**, not
   against the release (`begin_session` returns both digests; `settle` measures
   the former). They are the same on a clean install and differ the moment an

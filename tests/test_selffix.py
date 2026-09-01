@@ -129,6 +129,25 @@ def test_running_the_app_is_not_a_modification(install):
     assert selffix.tree_digest() == before
 
 
+def test_a_developers_in_tree_venv_is_not_part_of_the_installation(install):
+    """`.venv` is derived, never shipped, and never ours.
+
+    D630 (main's) made `<project>/.venv` the standard layout, and the one place
+    that can land inside the install tree is a source checkout where a developer
+    has hand-synced a template's own venv — `core_templates`' staging `ignore`
+    exists for exactly that folder. The app itself never creates one here
+    (`projectenv._use_home_store` forces the home store for anything inside the
+    package), so hashing it buys nothing and costs a walk over thousands of
+    files on every ~16s re-hash of a live session.
+    """
+    before = selffix.tree_digest()
+    venv = install / "templates" / "notebook" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "bin" / "python").write_bytes(b"\x7fELF")
+    assert selffix.tree_digest() == before
+
+
 def test_the_state_dir_does_not_modify_the_installation_it_describes(install):
     """The incident file a fix session reads lives inside the install tree —
     so writing it must not be a change the same run then reports."""
