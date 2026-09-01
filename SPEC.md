@@ -11622,7 +11622,19 @@ the installation, and the mark that says so.
   `mark_modified` can land mid-walk, and writing back the object read BEFORE it
   silently undid either — a dismissed badge reappearing, or a just-recorded fix
   losing its report. The slow walk stays outside the lock (it must); the
-  decision and the write are made against a fresh read inside it.
+  object written back is the one read fresh inside it.
+- **SF-16b** **A fresh marker does not rescue a stale MEASUREMENT.** Re-reading
+  under the lock (SF-16) fixes the object written back and does nothing for the
+  decision, which is made from the digest the walk produced — and that digest
+  describes the tree as the walk found it, not as it is now. A `mark_modified`
+  landing mid-walk separates the two exactly: the walk can read a tree that
+  still looks pristine, so "restored — clear the mark" would delete the marker
+  that fix session had just written, losing the record of it, which is the very
+  outcome SF-16's re-read exists to prevent. So the walk's answer is usable only
+  while nothing moved: if the marker changed at all between the pre-walk read
+  and the one under the lock, `reconcile` does nothing and leaves the next start
+  to walk again. A badge a few bytes out of date is what this function is
+  allowed to be wrong about; a lost fix record is not.
 - **SF-16a** **…and so does `settle`.** Same shape, one function over: it tests
   the dismissal before a walk long enough for the user to click Dismiss in the
   middle, and `mark_modified` would then delete a dismissal it never saw. The
@@ -11857,6 +11869,17 @@ the installation, and the mark that says so.
   second start OVERWROTE the first's pointer, costing the long-session half of
   the guard on an install still running. Neither reads as a bug from the
   outside: one is a 409 that looks like the guard working, the other is silent.
+- **SF-13c3** **The RECORDS follow the same rule as the pointer beside them.**
+  `reports/` and `incidents/` keep their plain names in the state dir and fold
+  the same install-root digest into the directory name in the shared
+  out-of-tree home. Namespacing the pointer and not the records left a listing
+  that mixed installations: a diagnostic session on an admin copy — the case
+  that MUST write out of tree, so the likeliest to collide — put its report in
+  the same `reports/` as the user's own copy, and each panel then listed both
+  machines' problems with nothing to tell them apart, including the file
+  `issueUrl` offers to open. Keyed on the install ROOT and not on the tree, so
+  it does not weaken SF-13b: a reinstall in place keeps the same root and finds
+  everything it wrote before.
 - **SF-13d** **The lookup fails OPEN**, reasoned rather than a coin toss:
   everything it can fail on (the agent not loading, an unreadable runs directory)
   fails the spawn moments later too, with a message naming what actually went

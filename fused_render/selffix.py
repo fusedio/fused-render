@@ -521,19 +521,50 @@ def dismissed_digest() -> str:
     return str(record.get("digest") or "")
 
 
-def _install_session_name() -> str:
-    """`SESSION_NAME` with this installation's identity folded into it.
+def _install_digest() -> str:
+    """This installation's identity, short enough to sit in a filename.
 
-    A short digest of the resolved install root, because the root is an
-    absolute path: too long for a filename, and on a case-insensitive
-    filesystem two spellings of it name the same directory. Normalised exactly
-    as `_dedup` normalises a home, so the two agree on what "the same place"
-    means.
+    A digest of the resolved install root, because the root is an absolute
+    path: too long for a filename, and on a case-insensitive filesystem two
+    spellings of it name the same directory. Normalised exactly as `_dedup`
+    normalises a home, so the two agree on what "the same place" means.
+
+    Keyed on the install ROOT and nothing else, which is what makes it survive
+    the thing records are promised to survive: a reinstall over the same
+    location keeps the same root, so it keeps the same records.
     """
     key = os.path.normcase(os.path.realpath(install_root()))
+    return hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+
+
+def _install_session_name() -> str:
+    """`SESSION_NAME` with this installation's identity folded into it."""
     stem, ext = os.path.splitext(SESSION_NAME)
-    digest = hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()
-    return f"{stem}-{digest[:12]}{ext}"
+    return f"{stem}-{_install_digest()}{ext}"
+
+
+def _records_subdir(home: str, kind: str) -> str:
+    """Where records of `kind` (`REPORTS_DIR`/`INCIDENTS_DIR`) live in one home.
+
+    THE SAME RULE AS `_session_file`, because it is the same question: the name
+    carries the install only where the DIRECTORY does not. The state dir belongs
+    to one installation, so `reports/` there can only mean that one. The
+    out-of-tree home is per-USER and shared by every copy that user has
+    installed, so there the directory name has to say which copy wrote them.
+
+    Without this the session pointer was namespaced and the records beside it
+    were not — one machine, two installs, and every report from either showed up
+    in BOTH panels, with no way for the reader to tell whose was whose. A
+    diagnostic session is the common case for the out-of-tree home (it is where
+    a read-only install has to write), so the copies most likely to collide here
+    are exactly the ones that cannot write anywhere else.
+
+    This does not weaken "a report outlives the installation" (SF-13b): what it
+    is keyed on is the install ROOT, not the tree a reinstall replaces, so a
+    reinstall in place still finds everything it wrote before.
+    """
+    return os.path.join(home, kind if in_state_dir(home)
+                        else f"{kind}-{_install_digest()}")
 
 
 def _session_file(home: str) -> str:
@@ -847,7 +878,11 @@ def reconcile() -> None:
     """
     try:
         # A cheap look before the expensive one: no marker, nothing to reconcile.
-        if not _read_json(marker_path()):
+        # Kept, not discarded: it is also the BEFORE half of the staleness check
+        # below, and re-reading it there would be a second answer to a question
+        # this one already asked.
+        before = _read_json(marker_path())
+        if not before:
             return
         current = tree_digest()  # SLOW — deliberately outside the lock
 
@@ -860,6 +895,22 @@ def reconcile() -> None:
             marker = _read_json(marker_path())
             if not marker:
                 return  # cleared while we walked; the user's call stands
+            # A FRESH MARKER DOES NOT RESCUE A STALE MEASUREMENT. Re-reading the
+            # marker protects the OBJECT we write back; it does nothing for the
+            # DECISION, which is made from `current` — and `current` describes
+            # the tree as the walk found it, not as it is now. A `mark_modified`
+            # landing mid-walk is exactly the case: the walk can read a tree that
+            # still looks pristine, and then this would delete the marker that
+            # fix session had just written, losing the record of it — the very
+            # thing the re-read above exists to prevent.
+            #
+            # So the walk's answer is only usable while nothing moved. If the
+            # marker changed at all, the measurement is stale and the honest
+            # move is to do nothing: the next start walks again, and until then
+            # a badge a few bytes out of date is what this whole function is
+            # allowed to be wrong about.
+            if marker != before:
+                return
             if marker.get("version") != __version__:
                 _discard(marker_path())
                 return
@@ -1037,8 +1088,8 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
         pass
 
     def write_into(home: str) -> tuple[str, str]:
-        incidents = os.path.join(home, INCIDENTS_DIR)
-        reports = os.path.join(home, REPORTS_DIR)
+        incidents = _records_subdir(home, INCIDENTS_DIR)
+        reports = _records_subdir(home, REPORTS_DIR)
         os.makedirs(incidents, exist_ok=True)
         os.makedirs(reports, exist_ok=True)
         # Second resolution, plus a suffix when that is not enough. A user with
@@ -1058,7 +1109,8 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
             "", "---", "",
             "This file was written by fused-render when the user asked for a "
             "local fix. It is the input to the session; the session's own "
-            f"account of what it did goes in `{REPORTS_DIR}/{stamp}.md`.", ""])
+            "account of what it did goes in "
+            f"`{os.path.basename(reports)}/{stamp}.md`.", ""])
         with open(incident, "w", encoding="utf-8") as f:
             f.write(text)
         with open(report, "w", encoding="utf-8") as f:
@@ -1115,7 +1167,7 @@ def list_reports() -> list[dict]:
     """
     out, seen = [], set()
     for home in reader_homes():
-        reports = os.path.join(home, REPORTS_DIR)
+        reports = _records_subdir(home, REPORTS_DIR)
         try:
             names = os.listdir(reports)
         except OSError:

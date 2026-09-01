@@ -400,6 +400,44 @@ def test_a_dismiss_during_settles_own_walk_still_wins(install, monkeypatch):
     assert selffix.status() is None
 
 
+def test_reconcile_does_not_clear_a_fix_that_landed_during_its_own_walk(
+        install, monkeypatch):
+    """The half re-reading the marker does not cover.
+
+    `reconcile` re-reads the marker under the lock so it never writes back a
+    stale OBJECT. But it still DECIDES from `current`, measured before that
+    read, and the two come apart exactly when a fix session lands mid-walk: the
+    walk sees a tree that still looks pristine, the marker it then reads is the
+    new one that session just wrote, and "restored — clear the mark" throws away
+    the record of a fix that had just been made. Losing that is the one thing
+    the feature must not do, since the report it points at is the whole
+    deliverable.
+    """
+    pristine = (install / "jobs.py").read_text()
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    (install / "jobs.py").write_text(pristine)  # the walk will see it restored
+
+    real_digest = selffix.tree_digest
+
+    def digest_then_a_fix_lands(*args, **kwargs):
+        out = real_digest(*args, **kwargs)  # pristine: "nothing to mark"
+        monkeypatch.setattr(selffix, "tree_digest", real_digest)
+        before = selffix.begin_session()[1]
+        (install / "jobs.py").write_text("patched again\n")
+        selffix.settle(before=before, run_id="r2")  # a second fix, mid-walk
+        return out
+
+    monkeypatch.setattr(selffix, "tree_digest", digest_then_a_fix_lands)
+    selffix.reconcile()
+
+    assert selffix.status() is not None, (
+        "reconcile cleared a marker written after the walk it decided from")
+    assert json.loads(open(selffix.marker_path()).read())["digest"] == real_digest(), (
+        "the marker survived but was overwritten with the stale walk's digest")
+
+
 def test_a_source_checkout_does_not_count_its_own_frontend_rebuild(install):
     """`scripts/dev.sh` runs `vite build --watch` beside the server, so on a
     checkout the build output is rewritten whenever the developer touches a
@@ -1516,6 +1554,35 @@ def test_two_installations_do_not_overwrite_each_other_s_pointer(install, tmp_pa
         "the second installation's session pointer overwrote the first's")
 
 
+def test_two_installations_do_not_mix_their_reports(install, tmp_path, monkeypatch):
+    """The pointer beside them was namespaced and the records were not.
+
+    The out-of-tree home is per-USER, so a diagnostic session on an admin copy
+    and one on the user's own copy write into the same `selffix` dir — and a
+    bare `reports/` there leaves the reader no way to tell whose is whose. Both
+    panels then list both installations' problems, and the file `issueUrl`
+    offers to open can belong to a copy the user was not even looking at. The
+    read-only case is the common one here, which makes it the installs least
+    able to write anywhere else that collide.
+    """
+    other = tmp_path / "elsewhere" / "fused_render"
+    other.mkdir(parents=True)
+    monkeypatch.setattr(selffix, "writable", lambda: False)  # both write out of tree
+
+    _, mine = selffix.record_incident({"title": "on my copy"}, now=1000.0)
+    assert not selffix.in_state_dir(mine)
+
+    monkeypatch.setattr(selffix, "install_root", lambda: str(other))
+    _, theirs = selffix.record_incident({"title": "on the admin copy"}, now=2000.0)
+    assert not selffix.in_state_dir(theirs)
+    assert [r["path"] for r in selffix.list_reports()] == [theirs], (
+        "an installation's panel listed another installation's report")
+
+    monkeypatch.setattr(selffix, "install_root", lambda: str(install))
+    assert [r["path"] for r in selffix.list_reports()] == [mine], (
+        "an installation's panel listed another installation's report")
+
+
 def test_an_in_tree_pointer_survives_the_installation_being_MOVED(install, tmp_path,
                                                                   monkeypatch):
     """Why the two homes name the pointer differently rather than both carrying
@@ -1538,6 +1605,33 @@ def test_an_in_tree_pointer_survives_the_installation_being_MOVED(install, tmp_p
 
     assert selffix.active_run() == "run-before-the-move", (
         "the pointer stopped being found once its installation moved")
+
+
+def test_in_tree_records_survive_the_installation_being_MOVED(install, tmp_path,
+                                                              monkeypatch):
+    """The same argument as the pointer above, for the records beside it — and
+    the reason `_records_subdir` is an ASYMMETRY rather than "always namespace".
+
+    Folding the install into the directory name everywhere would look tidier and
+    would break the one home that does not need it. The state dir travels WITH
+    the tree, so a name derived from the old absolute path stops matching the
+    moment the install is moved or renamed, and the panel would show nothing
+    while the files sat there — the same silent disappearance reading only one
+    home used to cause. Inside the tree the DIRECTORY is the identity; only the
+    shared out-of-tree home needs the name to carry it.
+    """
+    _, in_tree = selffix.record_incident({"title": "here"}, now=1000.0)
+    assert selffix.in_state_dir(in_tree)
+    assert [r["path"] for r in selffix.list_reports()] == [in_tree]
+
+    moved = tmp_path / "moved" / "fused_render"
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(install, moved)
+    monkeypatch.setattr(selffix, "install_root", lambda: str(moved))
+
+    listed = [r["path"] for r in selffix.list_reports()]
+    assert len(listed) == 1 and listed[0].startswith(str(moved)), (
+        "the in-tree report stopped being listed once its installation moved")
 
 
 def test_a_dismiss_that_could_not_remove_the_marker_says_so(client, install,
