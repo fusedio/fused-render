@@ -123,20 +123,33 @@ Any `.html` file can call it and bind the result to the URL:
 </script>
 ```
 
-Everything a page can do goes through `fused`:
+A page can do a lot through `fused`:
 
 - `fused.runPython(pyPath, params)` and `fused.params` — call `main(**params)`
   and keep a string key/value store in sync with the URL, so a refresh or a
-  bookmark reproduces the view. `fused.readFile` / `writeFile` / `stat` /
-  `rawUrl` read and write files directly, no Python needed.
+  bookmark reproduces the view. `fused.readFile` / `writeFile` / `uploadFile` /
+  `mkdir` / `stat` / `rawUrl` work on files directly, no Python needed.
   → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
-- `fused.ai(prompt)` — ask Claude Code, or a local model when `model` is a
-  Hugging Face repo id. `fused.ai.image` / `.video` / `.transcribe` / `.embed`
-  run locally; `fused.ai.models` lists, loads and unloads them.
+- `fused.ai(prompt, opts?)` — ask Claude Code, or a local model when
+  `opts.model` is a Hugging Face repo id. `fused.ai.image` / `.video` /
+  `.transcribe` / `.embed` run locally; `fused.ai.models` lists, downloads,
+  loads and unloads them.
   → [fused-render-ai](skills/fused-render-ai/SKILL.md)
+- `fused.capture` — record the screen or the microphone, or grab a screenshot.
+  → [fused-render-capture](skills/fused-render-capture/SKILL.md)
+- `fused.fileIndex` — search and query the machine-wide file index instead of
+  walking the filesystem.
+  → [fused-render-index](skills/fused-render-index/SKILL.md)
+- `fused.daemon` — start, stop and talk to a folder's background daemon, one
+  the server keeps running after the page closes.
+  → [fused-render-background-apps](skills/fused-render-background-apps/SKILL.md)
 - `fused.trackJob` / `fused.watchJob` — long-running work in the download
   manager, whether your page is doing it or the server is.
   → [fused-render-jobs](skills/fused-render-jobs/SKILL.md)
+
+`fused.env` says whether a page is running here (`"local"`) or exported and
+hosted (`"hosted"`). The complete list, with every option, is the header of
+[`fused_render/static/runtime.js`](fused_render/static/runtime.js).
 
 Every built-in preview template is an HTML file on these same primitives —
 `fused_render/templates/` has 140 of them to copy from.
