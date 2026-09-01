@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -620,16 +621,16 @@ def _home_relative(path: str) -> str:
 def _shell_quote_rc(rc: str) -> str:
     """`rc` quoted for the shell command shown next to the button.
 
-    A path with no spaces goes through bare. One WITH spaces is quoted with
-    the leading `~/` left OUTSIDE the quotes — a quoted tilde is a literal
-    tilde, so `>> "~/x y"` would create a directory named `~` instead of
-    hitting the file the one-click fix edits.
+    shlex.quote does the real work (spaces are not the only metacharacter a
+    ZDOTDIR can carry), with one exception it cannot know about: a leading
+    `~/` must stay OUTSIDE the quotes — a quoted tilde is a literal tilde, so
+    `'~/x y'` would name a directory called `~` instead of the file the
+    one-click fix edits. shlex.quote leaves a plain `.zshrc` untouched, so
+    `~/.zshrc` still renders bare.
     """
-    if " " not in rc:
-        return rc
     if rc.startswith("~/"):
-        return '~/"' + rc[2:] + '"'
-    return f'"{rc}"'
+        return "~/" + shlex.quote(rc[2:])
+    return shlex.quote(rc)
 
 
 def path_fix(path: str) -> Optional[dict]:
@@ -655,10 +656,21 @@ def path_fix(path: str) -> Optional[dict]:
         return None
     rel = "$HOME" + bindir[len(home):]
     line = f'export PATH="{rel}:$PATH"'
+    # THE SHOWN COMMAND AND THE BUTTON MUST DO THE SAME THING — every step of
+    # it. add_to_shell_path creates a missing rc directory before appending
+    # (a ZDOTDIR need not exist yet for zsh to read $ZDOTDIR/.zshrc there),
+    # so a user who copies the command instead of pressing the button needs
+    # the same mkdir, or their paste fails on the very machines the ZDOTDIR
+    # handling exists for. Elided when the directory is already there — for
+    # ~/.zshrc that would be `mkdir -p ~`, noise that teaches nothing.
+    command = f"echo {shlex.quote(line)} >> {_shell_quote_rc(rc)}"
+    rc_dir = os.path.dirname(rc)
+    if rc_dir and not os.path.isdir(os.path.dirname(os.path.expanduser(rc))):
+        command = f"mkdir -p {_shell_quote_rc(rc_dir)} && {command}"
     return {
         "rc_file": rc,
         "line": line,
-        "command": f"echo '{line}' >> {_shell_quote_rc(rc)}",
+        "command": command,
     }
 
 
