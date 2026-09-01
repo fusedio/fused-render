@@ -1513,6 +1513,8 @@
   background: none;
   border-color: transparent;
   color: var(--fg);
+}
+
 /* Share on local network: QR pairing + paired devices (Preferences ▸ Render). */
 .lan-pair {
   display: flex;
