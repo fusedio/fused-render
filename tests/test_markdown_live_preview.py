@@ -95,6 +95,45 @@ def note_file(tmp_path_factory):
     return str(path)
 
 
+# A second note, kept apart from NOTE: two tests above assert NOTE's table's
+# exact source text, so a table exercising more of `tableWidget` needs its
+# own fixture rather than growing NOTE's.
+TABLE_NOTE = r"""top
+
+| **Bold** | `code` | [lbl](https://x.com) | Plain |
+| :--- | ---: | :-: | --- |
+| a\|b | plain | text | |
+"""
+
+# The Table node's own range — header, delimiter and one data line, with
+# neither the leading `top` paragraph nor a trailing newline — which is what
+# `at(..., TABLE_SOURCE, "widget")` has to match exactly (see how
+# `tableWidget` is invoked in buildDecorations, off `node.from`/`node.to`).
+TABLE_SOURCE = (
+    "| **Bold** | `code` | [lbl](https://x.com) | Plain |\n"
+    "| :--- | ---: | :-: | --- |\n"
+    r"| a\|b | plain | text | |"
+)
+
+
+@pytest.fixture(scope="module")
+def table_note_file(tmp_path_factory):
+    path = tmp_path_factory.mktemp("mdtbl") / "table.md"
+    path.write_text(TABLE_NOTE, encoding="utf-8")
+    return str(path)
+
+
+def table_dom(table_note_file):
+    """The table widget's DOM, walked all the way down.
+
+    A cell's inline markup nests — `**bold**` becomes `td > span.lp-bold >
+    text` — so this needs more than the one level of children the other
+    widget tests read; see `serializeNode` in
+    scripts/vendor-codemirror/live-preview-probe.mjs.
+    """
+    return dom(decorate(table_note_file, caret=0), TABLE_SOURCE)
+
+
 def decorate(note_file, caret=0, scanned=False, params=None, writable=None):
     """The decoration set the template would render, with the caret at `caret`.
 
@@ -255,6 +294,85 @@ def test_a_table_and_a_rule_yield_to_the_caret(note_file):
     assert not at(inside, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     # A different line's rule is unaffected — reveal is per-line, not per-doc.
     assert at(inside, "---", "widget")
+
+
+# ----------------------------------------------- inline markup inside a cell
+
+
+def test_a_cell_s_inline_markup_renders_as_dom_not_literal_syntax(table_note_file):
+    """A cell cannot be reached by a tree decoration — a decoration cannot
+    address into a widget's DOM — so `tableWidget` renders a cell's markup
+    itself, through `renderInline`. `**Bold**` must come out as a real
+    `lp-bold` element wrapping a text node, not as the literal asterisks
+    a caret would see in the source.
+    """
+    bold_th, code_th, link_th, plain_th = table_dom(table_note_file)["children"][0]["children"]
+
+    bold = bold_th["children"][0]
+    assert bold["tag"] == "span" and bold["cls"] == "lp-bold"
+    assert bold["children"][0] == {"tag": "#text", "text": "Bold"}
+
+    code = code_th["children"][0]
+    assert code["tag"] == "code" and code["cls"] == "lp-code"
+    assert code["text"] == "code"
+
+    link = link_th["children"][0]
+    assert link["tag"] == "a" and link["cls"] == "lp-link"
+    assert link["text"] == "lbl"
+    assert link["href"] == "https://x.com"
+
+    # And a cell with no markup at all is still a text node, not a bare
+    # string sitting directly on the <th> — the same renderer runs for it.
+    assert plain_th["children"][0] == {"tag": "#text", "text": "Plain"}
+
+
+def test_the_delimiter_row_s_alignment_reaches_the_cells(table_note_file):
+    """`:---` / `---:` / `:-:` in the delimiter row (`rowAlignment`) becomes
+    each column's `text-align`.
+
+    A column is aligned whole, HEADER INCLUDED — a heading sitting left over a
+    right-aligned column of numbers is not what the delimiter row asked for,
+    and it is the reason the alignment row is read in a pass of its own rather
+    than as the row loop reaches it (the header line comes first in source
+    order, so a single pass would build it before the answer was known).
+    """
+    rows = table_dom(table_note_file)["children"]
+    for row in (rows[0], rows[1]):
+        left, right, center, unaligned = row["children"]
+        assert left["style"].get("textAlign") == "left"
+        assert right["style"].get("textAlign") == "right"
+        assert center["style"].get("textAlign") == "center"
+        # The fourth column's `---` delimiter cell carries no colon, so
+        # `rowAlignment` gives it no alignment at all.
+        assert not unaligned["style"].get("textAlign")
+
+
+def test_an_escaped_pipe_stays_inside_one_cell(table_note_file):
+    r"""`\|` is how a literal pipe survives inside a cell: `splitRow` steps
+    over a backslash-escaped bar rather than treating it as a column
+    boundary. Without that, "a\|b" would read as two columns and turn this
+    four-column row into five.
+    """
+    data_row = table_dom(table_note_file)["children"][1]["children"]
+    assert len(data_row) == 4
+    # And the escape itself does not survive into what is shown — `\|`
+    # renders as a plain `|`, the same unescaping every other inline escape
+    # in a cell gets.
+    assert data_row[0]["children"][0] == {"tag": "#text", "text": "a|b"}
+
+
+def test_the_delimiter_row_is_not_rendered_as_a_table_row(table_note_file):
+    """The delimiter line is structure — it sets alignment — not a row of
+    cells to display, so `tableWidget` must skip it entirely: a table with a
+    header and one data row has exactly two `<tr>`s, never a third full of
+    dashes in between.
+    """
+    table = table_dom(table_note_file)
+    assert len(table["children"]) == 2
+    for tr in table["children"]:
+        for cell in tr["children"]:
+            assert cell["data"]["raw"] != ":---" and not \
+                (cell["data"]["raw"].strip(":- ") == "" and cell["data"]["raw"] != "")
 
 
 # ------------------------------- unknown is not missing (MD-11) --------------

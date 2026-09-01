@@ -77,17 +77,18 @@ const set = buildDecorations(state);
 // never fired here.
 const fakeView = { state, posAtDOM: () => 0, dispatch() {} };
 
-function widgetDom(widget) {
-  const node = widget.toDOM(fakeView);
-  // A shallow child list — one level, not a full tree — so a test can see
-  // WHAT a widget actually built (a linked-image badge is an <a> wrapping an
-  // <img>, not text) without the fake DOM needing a real querySelector.
-  const children = Array.prototype.map.call(node.children || [], (child) => ({
-    tag: (child.tagName || "").toLowerCase(),
-    cls: child.className || "",
-    src: child.src || "",
-    alt: child.alt || "",
-  }));
+// A full tree, not one level: the table widget (template.html's
+// `tableWidget`) nests markup several levels deep — a cell's `**bold**`
+// becomes `td > span.lp-bold > text`, its `` `code` `` a `code` element with
+// its own text — so a test asserting a cell rendered as an ELEMENT rather
+// than literal `**`/backtick text needs to see past the cell's immediate
+// children. A text node (the fake `document.createTextNode` in
+// template-harness.mjs) is reported as `{tag: "#text", text}` rather than
+// recursed into further, since it has none.
+function serializeNode(node) {
+  if (node.nodeType === 3) {
+    return { tag: "#text", text: node.textContent || node.nodeValue || "" };
+  }
   return {
     tag: (node.tagName || "").toLowerCase(),
     cls: node.className || "",
@@ -96,8 +97,17 @@ function widgetDom(widget) {
     text: node.textContent || "",
     src: node.src || "",
     href: node.href || "",
-    children,
+    alt: node.alt || "",
+    // A td/th's alignment (template.html's `rowAlignment`) lands on
+    // `style.textAlign`, and the fake `style` is a plain object a test can
+    // read straight back.
+    style: Object.assign({}, node.style || {}),
+    children: Array.prototype.map.call(node.children || [], serializeNode),
   };
+}
+
+function widgetDom(widget) {
+  return serializeNode(widget.toDOM(fakeView));
 }
 
 const decorations = [];

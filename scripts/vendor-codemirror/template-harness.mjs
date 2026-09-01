@@ -157,6 +157,11 @@ export function loadTemplateScript(templatePath, options = {}) {
     getElementById: stub, createElement: fakeElement, addEventListener() {},
     querySelectorAll: () => [], documentElement: { getAttribute: () => "dark" },
     visibilityState: "visible",
+    // The table widget's inline renderer mixes text runs in with elements
+    // (a decoration cannot do that for it — see template.html's
+    // `renderInline`), so building it needs a real-enough text node, unlike
+    // the other widgets, which only ever set `textContent` wholesale.
+    createTextNode: (text) => ({ nodeType: 3, nodeValue: text, textContent: text }),
   };
   globalThis.window = {
     addEventListener() {}, top: { location: { pathname: "/view/x" } },

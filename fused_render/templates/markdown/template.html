@@ -378,6 +378,12 @@
   }
   .lp-table th, .lp-table td { border: 1px solid var(--border); padding: 5px 11px; }
   .lp-table th { background: var(--bg-alt); text-align: left; }
+  /* A text cursor only on a writable table — a read-only note's table is as
+     inert as everything else in it, so no cell invites a click. */
+  .lp-table-live th, .lp-table-live td { cursor: text; }
+  /* One cell open as raw source in a focus ring while every other cell in
+     the table stays rendered. */
+  .lp-cell-edit { outline: 1px solid var(--accent); outline-offset: -1px; white-space: pre-wrap; }
   .lp-link { color: var(--accent); text-decoration: none; }
   .lp-link:hover { text-decoration: underline; }
 
@@ -1642,32 +1648,351 @@
       }, false);
     }
 
-    // A pipe table rendered as a table. Cell text is shown verbatim — inline
-    // markup inside a cell is not decorated, because a decoration cannot span
-    // into a widget's DOM. Clicking the table puts the caret in the source,
-    // which is where a cell is edited.
-    function tableWidget(source) {
-      return new DomWidget("tb:" + source, () => {
-        const rows = source.split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-          // The alignment row (`|---|:--:|`) is structure, not content.
-          .filter((line) => !(/^[\s|:-]+$/.test(line) && line.includes("-")))
-          .map((line) => line.replace(/^\|/, "").replace(/\|$/, "")
-            .split("|").map((cell) => cell.trim()));
-        const table = document.createElement("table");
-        table.className = "lp-table";
-        rows.forEach((cells, index) => {
-          const tr = document.createElement("tr");
-          for (const cell of cells) {
-            const td = document.createElement(index === 0 ? "th" : "td");
-            td.textContent = cell;
-            tr.appendChild(td);
+    // Carries a Tab/Shift-Tab across the rebuild that a committed cell edit's
+    // own dispatch causes: the widget's DOM is torn down and rebuilt before
+    // the caret can move into the neighbour cell, so the move is recorded
+    // here and replayed once the new build lands (see the end of
+    // `tableWidget`, below). One entry is enough — only one cell is ever open
+    // for editing at a time.
+    let pendingCellEdit = null;
+
+    // A deliberately narrow inline-markup renderer for table cells: a tree
+    // decoration addresses document positions, so it cannot reach into a
+    // widget's DOM, and a cell renders its own markup instead of going
+    // through `buildDecorations`. This is not a second markdown parser —
+    // syntax it does not recognize is left as literal text.
+    const INLINE_SRC = [
+      "(`+)([\\s\\S]*?)\\1",                 // g1 fence, g2 code body
+      "!?\\[\\[[^\\]]*\\]\\]",               // [[wikilink]] / ![[embed]] — no group
+      "\\[([^\\]]*)\\]\\(([^()\\s]*)\\)",    // g3 label, g4 url
+      "~~(?=\\S)([\\s\\S]*?\\S)~~",          // g5
+      "(\\*\\*|__)(?=\\S)([\\s\\S]*?\\S)\\6",// g6 marker, g7 body
+      "(\\*|_)(?=\\S)([\\s\\S]*?\\S)\\8",    // g8 marker, g9 body
+      "<br\\s*/?>",                          // no group
+    ].join("|");
+
+    // `\|` is how a literal pipe survives inside a cell — `splitRow` (below)
+    // treats an escaped bar as text, not a column boundary — so the
+    // backslash is markup, not content, and is stripped here along with
+    // every other inline escape.
+    function unescapeInline(text) {
+      return text.replace(/\\([\\`*_~|[\]()<>#+.!-])/g, "$1");
+    }
+
+    // An emphasis body recurses back through `renderInline`, so
+    // `**bold `code`**` renders the code span inside the bold span.
+    function inlineSpan(cls, body) {
+      const span = document.createElement("span");
+      span.className = cls;
+      renderInline(body, span);
+      return span;
+    }
+
+    // A NEW RegExp per call: emphasis recurses into this function for its own
+    // body text, and a shared `lastIndex` on a module-level regex would
+    // corrupt whichever call is in progress higher up the recursion.
+    function renderInline(text, parent) {
+      const re = new RegExp(INLINE_SRC, "g");
+      let last = 0;
+      let m;
+      while ((m = re.exec(text))) {
+        if (m.index > last) {
+          parent.appendChild(document.createTextNode(unescapeInline(text.slice(last, m.index))));
+        }
+        last = re.lastIndex;
+        if (m[2] !== undefined) {
+          const code = document.createElement("code");
+          code.className = "lp-code";
+          // GFM strips one leading and one trailing space, but only as a
+          // matched pair, and only when the body is not all whitespace.
+          let body = m[2];
+          if (body.length > 1 && body[0] === " " && body[body.length - 1] === " " && body.trim() !== "") {
+            body = body.slice(1, -1);
           }
+          code.textContent = body;
+          parent.appendChild(code);
+        } else if (/^!?\[\[/.test(m[0])) {
+          parent.appendChild(wikilinkWidget(m[0]).build());
+        } else if (m[4] !== undefined) {
+          const a = document.createElement("a");
+          a.className = "lp-link";
+          a.textContent = unescapeInline(m[3]) || m[4];
+          applyLinkTarget(a, m[4]);
+          parent.appendChild(a);
+        } else if (m[5] !== undefined) {
+          parent.appendChild(inlineSpan("lp-strike", m[5]));
+        } else if (m[7] !== undefined) {
+          // Underscore emphasis does not fire intraword: `snake_case_word`
+          // must stay literal. Asterisk emphasis has no such restriction.
+          if (m[6][0] === "_" && /\w/.test(text[m.index - 1] || "")) {
+            parent.appendChild(document.createTextNode(m[0]));
+          } else {
+            parent.appendChild(inlineSpan("lp-bold", m[7]));
+          }
+        } else if (m[9] !== undefined) {
+          if (m[8][0] === "_" && /\w/.test(text[m.index - 1] || "")) {
+            parent.appendChild(document.createTextNode(m[0]));
+          } else {
+            parent.appendChild(inlineSpan("lp-italic", m[9]));
+          }
+        } else {
+          parent.appendChild(document.createElement("br"));
+        }
+      }
+      if (last < text.length) {
+        parent.appendChild(document.createTextNode(unescapeInline(text.slice(last))));
+      }
+      return parent;
+    }
+
+    // Column offsets into `line`, one per cell — what a committed cell edit
+    // writes through, so only one cell's range is replaced and the rest of
+    // the row's spacing is untouched. A `|` is a boundary except right after
+    // a `\`, which is how an escaped pipe survives as cell text. The leading
+    // bar is dropped when everything before it is blank, and the trailing
+    // bar when everything after it is blank — a row with no bars at all, or
+    // a lone `|`, falls out of the same logic without ever producing a
+    // `start > end` range.
+    function splitRow(line) {
+      const bars = [];
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === "\\") { i++; continue; }
+        if (line[i] === "|") bars.push(i);
+      }
+      const bounds = [-1, ...bars, line.length];
+      const cells = [];
+      for (let i = 0; i < bounds.length - 1; i++) {
+        cells.push({ start: bounds[i] + 1, end: bounds[i + 1] });
+      }
+      if (cells.length && line.slice(cells[0].start, cells[0].end).trim() === "") {
+        cells.shift();
+      }
+      if (cells.length && line.slice(cells[cells.length - 1].start, cells[cells.length - 1].end).trim() === "") {
+        cells.pop();
+      }
+      return cells;
+    }
+
+    // The delimiter row (`| --- | :-: |`) is structure, not content: it sets
+    // per-column alignment and is never itself rendered as a table row. Null
+    // unless every cell is a bare dash run with optional colons.
+    function rowAlignment(line) {
+      const cells = splitRow(line);
+      if (!cells.length) return null;
+      const aligns = [];
+      for (const { start, end } of cells) {
+        const cell = line.slice(start, end).trim();
+        if (!/^:?-+:?$/.test(cell)) return null;
+        const left = cell.startsWith(":");
+        const right = cell.endsWith(":");
+        aligns.push(left && right ? "center" : right ? "right" : left ? "left" : "");
+      }
+      return aligns;
+    }
+
+    // A pipe table rendered as a table, with its own inline renderer (above)
+    // so `` `code` ``, links and emphasis show inside cells. Opaque: CM
+    // handles no events from inside the widget, so a click on a cell does not
+    // put the caret in the source, which would reveal the whole table as pipe
+    // markup. Editing instead happens through a `contenteditable` island scoped
+    // to one cell at a time — a DOM mutation confined to a widget's own root
+    // is invisible to CM's observer, and focusing that cell does not move the
+    // document selection either, so the rest of the table stays rendered
+    // while one cell shows raw source.
+    function tableWidget(source) {
+      return new DomWidget("tb:" + source, (editorView) => {
+        const lines = source.split("\n");
+        // The alignment row sits BELOW the header it aligns, so it is read in
+        // a pass of its own: the header's cells are built before the row loop
+        // would reach it, and a column whose body is right-aligned under a
+        // left-aligned heading is not what the delimiter row asked for.
+        const align = lines.reduce(
+          (found, line) => found || (line.trim() ? rowAlignment(line) : null), null);
+        const table = document.createElement("table");
+        table.className = "lp-table" + (writable ? " lp-table-live" : "");
+        let rowIndex = 0;
+        const order = [];
+
+        function renderCell(td, raw) {
+          td.textContent = "";
+          if (raw) renderInline(raw, td);
+          // A no-break space, not a plain one: an empty cell whose only
+          // content collapses has no box to aim a click at.
+          else td.appendChild(document.createTextNode("\u00a0"));
+        }
+
+        // Never an offset captured at build time — an edit above the table
+        // moves it, so the table's own position is re-resolved on every use,
+        // the same way `taskWidget` addresses its checkbox.
+        function cellRange(td) {
+          const tableStart = editorView.posAtDOM(table);
+          const lineNo = editorView.state.doc.lineAt(tableStart).number + Number(td.dataset.line);
+          if (lineNo > editorView.state.doc.lines) return null;
+          const line = editorView.state.doc.line(lineNo);
+          const cells = splitRow(line.text);
+          const col = Number(td.dataset.col);
+          if (col >= cells.length) return null;
+          const cell = cells[col];
+          return { from: line.from + cell.start, to: line.from + cell.end };
+        }
+
+        function placeCaret(el, offset) {
+          const node = el.firstChild || el;
+          const range = document.createRange();
+          if (node.nodeType === Node.TEXT_NODE) {
+            const len = node.nodeValue.length;
+            range.setStart(node, offset === undefined ? len : Math.max(0, Math.min(offset, len)));
+          } else {
+            range.setStart(node, 0);
+          }
+          range.collapse(true);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+
+        function beginEdit(td, offset) {
+          if (!writable || td.isContentEditable) return;
+          const range = cellRange(td);
+          if (!range) return;
+          const raw = editorView.state.sliceDoc(range.from, range.to).trim();
+          if (raw !== td.dataset.raw) return; // the table moved out from under us
+          td.textContent = raw;
+          td.classList.add("lp-cell-edit");
+          td.contentEditable = "plaintext-only";
+          if (td.contentEditable !== "plaintext-only") td.contentEditable = "true";
+          td.spellcheck = false;
+          td.focus();
+          placeCaret(td, offset === undefined ? undefined : Math.min(offset, raw.length));
+        }
+
+        // `next` is the index in `order` of the cell to open once this one
+        // is done with — a Tab's neighbour, or the cell a click landed in
+        // while this one was still open — or null to just close.
+        function finishEdit(td, commit, next) {
+          if (!td.isContentEditable) return;
+          const typed = td.innerText.replace(/\s+/g, " ").trim();
+          // Turned off and un-classed FIRST: the `blur` a subsequent focus
+          // move fires must be a no-op, not a second commit.
+          td.contentEditable = "false";
+          td.classList.remove("lp-cell-edit");
+          const range = cellRange(td);
+          if (!commit || !range || typed === td.dataset.raw) {
+            renderCell(td, td.dataset.raw);
+            // Nothing was dispatched, so no rebuild is coming and the next
+            // cell is opened in the DOM that is already here.
+            if (next !== null && order[next]) beginEdit(order[next]);
+            return;
+          }
+          const { from, to } = range;
+          // A bare pipe in the typed text would split the row; an already
+          // escaped one is left alone.
+          const text = " " + typed.replace(/\\?\|/g, "\\|") + " ";
+          if (next !== null) {
+            const tableStart = editorView.posAtDOM(table);
+            pendingCellEdit = {
+              source: source.slice(0, from - tableStart) + text + source.slice(to - tableStart),
+              index: next,
+            };
+          }
+          editorView.dispatch({ changes: { from, to, insert: text } });
+          // Consumed synchronously by the rebuild this dispatch triggers —
+          // clearing it here stops a stale entry from stealing focus later.
+          pendingCellEdit = null;
+          void save();
+        }
+
+        function wireCell(td) {
+          // A link inside a cell keeps working through the document-level
+          // delegated click handler — it must not be swallowed here.
+          td.addEventListener("mousedown", (event) => {
+            if (event.target.closest("a")) return;
+            event.preventDefault();
+            event.stopPropagation();
+          });
+          td.addEventListener("click", (event) => {
+            if (event.target.closest("a")) return;
+            let offset = td.textContent.length;
+            try {
+              // Two spellings of the same question — Firefox answers only
+              // the second, every other engine only the first.
+              const hit = document.caretRangeFromPoint
+                ? document.caretRangeFromPoint(event.clientX, event.clientY)
+                : document.caretPositionFromPoint(event.clientX, event.clientY);
+              const node = hit && (hit.startContainer || hit.offsetNode);
+              if (node) {
+                const pre = document.createRange();
+                pre.setStart(td.firstChild || td, 0);
+                pre.setEnd(node, hit.startOffset !== undefined ? hit.startOffset : hit.offset);
+                offset = pre.toString().length;
+              }
+            } catch (e) {
+              // Fall back to end-of-text.
+            }
+            // A click straight from one open cell into another: the open
+            // cell commits first, and its dispatch rebuilds this whole table,
+            // so the clicked cell is opened by index on the OTHER side of that
+            // rebuild rather than in this now-doomed DOM.
+            const open = order.find((cell) => cell.isContentEditable);
+            if (open && open !== td) {
+              finishEdit(open, true, Number(td.dataset.index));
+              return;
+            }
+            beginEdit(td, offset);
+          });
+          td.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+              finishEdit(td, false, null);
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              finishEdit(td, true, null);
+            } else if (event.key === "Tab") {
+              event.preventDefault();
+              finishEdit(td, true, Number(td.dataset.index) + (event.shiftKey ? -1 : 1));
+            }
+          });
+          td.addEventListener("blur", () => finishEdit(td, true, null));
+          // For browsers without `plaintext-only`, where a raw paste could
+          // otherwise drop rich markup into the cell.
+          td.addEventListener("paste", (event) => {
+            event.preventDefault();
+            const text = (event.clipboardData || window.clipboardData)
+              .getData("text/plain").replace(/\s+/g, " ");
+            document.execCommand("insertText", false, text);
+          });
+        }
+
+        lines.forEach((line, lineIdx) => {
+          if (!line.trim()) return;
+          if (rowAlignment(line) !== null) return;
+          const tr = document.createElement("tr");
+          splitRow(line).forEach((cell, col) => {
+            const td = document.createElement(rowIndex === 0 ? "th" : "td");
+            const raw = line.slice(cell.start, cell.end).trim();
+            td.dataset.line = String(lineIdx);
+            td.dataset.col = String(col);
+            td.dataset.raw = raw;
+            td.dataset.index = String(order.length);
+            if (align && align[col]) td.style.textAlign = align[col];
+            renderCell(td, raw);
+            wireCell(td);
+            order.push(td);
+            tr.appendChild(td);
+          });
           table.appendChild(tr);
+          rowIndex++;
         });
+
+        // The build runs inside the dispatch a Tab-triggered commit caused,
+        // so the focus move onto the neighbour cell has to wait a frame.
+        if (pendingCellEdit && pendingCellEdit.source === source) {
+          const target = order[pendingCellEdit.index];
+          pendingCellEdit = null;
+          if (target) requestAnimationFrame(() => beginEdit(target));
+        }
+
         return table;
-      }, false);
+      }, true);
     }
 
     // A fence's language chip + copy button (6b.3/6b.4), anchored to the

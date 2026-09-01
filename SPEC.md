@@ -3787,6 +3787,46 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   character for the trailing `\)$` recovers the whole destination correctly
   either way, without needing to balance parens by hand. Also pre-existing,
   also unrelated to D620.
+- **MD-32** **A table renders its cells' markup, and a click edits ONE cell.**
+  A table is the one construct MD-18a's per-line bargain cannot express: the
+  widget replaces the whole `Table` node, several lines at once, so "reveal the
+  line the caret is on" reveals the entire table as pipe markup — a lot of note
+  to re-read in order to change one word — and a decoration cannot reach into a
+  widget's DOM to style what is inside a cell.
+  - **A cell renders its own inline markup** (`renderInline`), because a
+    decoration addresses *document positions* and a widget's DOM is not the
+    document. Deliberately not a second markdown parser: it knows the shapes a
+    cell actually carries — code spans, `[label](url)`, `[[wikilinks]]`,
+    emphasis, `<br>`, the inline escapes — and leaves anything else as literal
+    text. Links go through the same `applyLinkTarget` the prose link widget
+    uses, so one delegated handler still opens every link on the page (MD-31).
+    Underscore emphasis does not fire intraword, or every `snake_case_name` in
+    a table would come out half italic.
+  - **The widget is OPAQUE, so a click never lands the caret in the source.**
+    Editing happens in a `contenteditable` island scoped to the clicked cell,
+    which shows *that one cell* as raw text while every other cell stays
+    rendered — MD-18a's bargain struck per cell instead of per line. Three
+    facts about CM make this safe rather than clever: a DOM mutation inside a
+    widget is ignored by its observer, `onSelectionChange` returns early unless
+    the content DOM itself holds focus, and an opaque widget receives no CM
+    event handling at all. So the document's selection does not move, and the
+    table does not un-render while a cell is open.
+  - **A commit rewrites exactly one cell's range**, addressed by the offsets
+    `splitRow` records per cell (an escaped `\|` is cell text, not a column
+    boundary) and resolved through `posAtDOM` at commit time, never an offset
+    captured at build time — the same rule `taskWidget` follows, and for the
+    same reason: an edit above the table moves it. `Enter`/blur commit,
+    `Escape` cancels, `Tab` commits and opens the neighbour — which can only
+    exist after the commit's own dispatch has rebuilt the widget, so the move
+    is replayed on the far side of that rebuild.
+  - **The alignment row is read in a pass of its own.** It sits *below* the
+    header it aligns, so a single pass would build the header's cells before
+    the answer was known and leave a heading sitting left over a right-aligned
+    column.
+  - **Arrowing in still reveals the whole source**, which is how a row is added
+    or removed: in-place editing covers a cell's *text*, not the table's shape.
+    A read-only note stays inert, cursor included — `writable` is the only gate
+    here as everywhere else (MD-1a/MD-15).
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 
