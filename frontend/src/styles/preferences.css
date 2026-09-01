@@ -1475,7 +1475,7 @@
   width: 168px;
   height: 168px;
   padding: 10px;
-  background: #fff; /* a QR is read by a camera: always dark-on-white */
+  background: var(--qr-paper); /* a QR is read by a camera: always dark-on-white */
   border-radius: 10px;
   transition: opacity 160ms ease;
 }
