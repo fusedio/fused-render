@@ -84,13 +84,14 @@ function circleFilled(tree: ReactTestRendererJSON | null): boolean {
 // the PANEL contains and how the fold behaves — not about that default. Saying
 // so explicitly is what keeps them from silently inverting the next time the
 // default is revisited; the default itself has its own test.
-function renderCard(reported: Job[]): ReactTestRendererJSON | null {
+function renderCard(reported: Job[], nowMs?: number): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView
       reported={reported}
       initialCollapsed={false}
       refresh={() => {}}
       patch={() => {}}
+      nowMs={nowMs}
     />,
   ).toJSON() as ReactTestRendererJSON | null;
 }
@@ -704,9 +705,12 @@ test("a task row reads its phase and step count as one sentence", () => {
     total: 4,
     unit: "",
   };
-  const tree = renderCard([denoising]);
+  // nowMs pinned to `started_at` (BASE's own 0): a bare "0:00" elapsed clock,
+  // deterministic rather than however long the real Date.now() happens to be
+  // when the suite runs (this follow-up's own live-clock feature).
+  const tree = renderCard([denoising], 0);
   const row = findAll(tree, "dl-row")[0];
-  expect(text(findAll(row, "dl-status")[0])).toBe("Denoising · 0 / 4");
+  expect(text(findAll(row, "dl-status")[0])).toBe("Denoising · 0 / 4 · 0:00");
   // The amount is no longer its own element on the head line...
   expect(findAll(findAll(row, "dl-row-head")[0], "dl-amount")).toHaveLength(0);
   // ...but the percentage STAYS there, glanceable and aligned down the list.
@@ -728,12 +732,12 @@ test("a download row with NO phase text still shows its byte counts", () => {
     total: 10e9,
     unit: "bytes",
   };
-  const tree = renderCard([download]);
+  const tree = renderCard([download], 0); // pinned nowMs — see the test above
   const status = findAll(findAll(tree, "dl-row")[0], "dl-status");
   expect(status).toHaveLength(1);
-  // Bare amount, no leading separator — `filter(Boolean)` drops the empty part
-  // rather than joining onto nothing.
-  expect(text(status[0])).toBe(jobAmount(download));
+  // Bare amount plus the elapsed clock, no leading separator — `filter(Boolean)`
+  // drops the empty phase-text part rather than joining onto nothing.
+  expect(text(status[0])).toBe(`${jobAmount(download)} · 0:00`);
   expect(text(status[0]).startsWith(" · ")).toBe(false);
 });
 
