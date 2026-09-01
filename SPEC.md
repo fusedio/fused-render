@@ -3819,6 +3819,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     `Escape` cancels, `Tab` commits and opens the neighbour — which can only
     exist after the commit's own dispatch has rebuilt the widget, so the move
     is replayed on the far side of that rebuild.
+  - **A click opens the cell at the character it landed on**, resolved through
+    the source map `renderInline` records beside the DOM (`_cellSpans`): the
+    hit is measured in *rendered* text but the caret is placed in *raw*
+    source, so counting rendered characters would skew by every marker the
+    cell renders away. The cell's own bookkeeping is namespaced
+    (`data-cell-row` and friends): a bare `data-line` is the outline rail's
+    selector, and the delegated handler would claim the click as a jump to a
+    heading before the cell — or a link inside it — ever saw it.
   - **The alignment row is read in a pass of its own.** It sits *below* the
     header it aligns, so a single pass would build the header's cells before
     the answer was known and leave a heading sitting left over a right-aligned

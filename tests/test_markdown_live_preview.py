@@ -371,8 +371,53 @@ def test_the_delimiter_row_is_not_rendered_as_a_table_row(table_note_file):
     assert len(table["children"]) == 2
     for tr in table["children"]:
         for cell in tr["children"]:
-            assert cell["data"]["raw"] != ":---" and not \
-                (cell["data"]["raw"].strip(":- ") == "" and cell["data"]["raw"] != "")
+            assert cell["data"]["cellRaw"] != ":---" and not \
+                (cell["data"]["cellRaw"].strip(":- ") == "" and cell["data"]["cellRaw"] != "")
+
+
+def test_a_cell_carries_no_bare_data_line_only_the_namespaced_keys(table_note_file):
+    """`td.dataset.line/.col/.raw/.index` would collide with the document-level
+    delegated click handler's `closest("[data-line]")`, which treats ANY
+    element carrying that attribute as an outline row and scrolls the note
+    instead of letting the cell (or a link inside it) handle the click. The
+    widget's own bookkeeping is namespaced as `data-cell-row` /
+    `data-cell-col` / `data-cell-raw` / `data-cell-index` so it cannot be
+    mistaken for that selector.
+    """
+    for tr in table_dom(table_note_file)["children"]:
+        for cell in tr["children"]:
+            for bare in ("line", "col", "raw", "index"):
+                assert bare not in cell["data"], (bare, cell["data"])
+            for namespaced in ("cellRow", "cellCol", "cellRaw", "cellIndex"):
+                assert namespaced in cell["data"], (namespaced, cell["data"])
+
+
+# A destination containing a balanced paren (SPEC.md MD-31b), in a table cell:
+# its own fixture rather than growing TABLE_NOTE, since TABLE_SOURCE pins that
+# fixture's exact source text against two tests above and both index into a
+# fixed four-column row.
+PAREN_LINK_NOTE = "top\n\n| [wiki](https://en.wikipedia.org/wiki/Foo_(bar)) |\n| --- |\n| x |\n"
+
+PAREN_LINK_TABLE_SOURCE = (
+    "| [wiki](https://en.wikipedia.org/wiki/Foo_(bar)) |\n"
+    "| --- |\n"
+    "| x |"
+)
+
+
+def test_a_link_with_a_balanced_paren_in_its_url_still_renders_as_a_link(tmp_path):
+    """`INLINE_SRC`'s url group must allow one level of balanced parens, or a
+    Wikipedia-shaped destination like `Foo_(bar)` stops matching at the inner
+    `(` and the whole `[label](url)` is left as literal, unrendered source.
+    """
+    path = tmp_path / "paren.md"
+    path.write_text(PAREN_LINK_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), PAREN_LINK_TABLE_SOURCE)
+    th = table["children"][0]["children"][0]
+    link = th["children"][0]
+    assert link["tag"] == "a" and link["cls"] == "lp-link"
+    assert link["text"] == "wiki"
+    assert link["href"] == "https://en.wikipedia.org/wiki/Foo_(bar)"
 
 
 # ------------------------------- unknown is not missing (MD-11) --------------
