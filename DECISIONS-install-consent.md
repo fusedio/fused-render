@@ -1409,3 +1409,81 @@ Bug A touches only `fused_render/static/runtime.js` and
 `tests/test_server_env_install.py`; Bug B touches
 `fused_render/envinstall.py`, `fused_render/_env_install_worker.py`, and
 `tests/test_env_install.py`.
+
+## Round 10: the jobs dock waited up to 5s to notice an install that had already started
+
+Reported as "the activity statusbar item notices/shows the card after many
+seconds of the job actually starting." The row itself lands essentially
+instantly — `envinstall.start()` calls `_mirror_into_jobs` synchronously, and
+that thread's first statement, before any sleep, is `jobs.upsert({...
+"state": jobs.RUNNING ...}, server=True)`. The dominant delay was purely the
+dock's idle poll cadence (`POLL_IDLE_MS = 5000`, `frontend/src/platform/lib/
+jobs.ts`): with nothing running before the install, the dock sits on the 5s
+floor and can take up to a full cadence to discover the new row.
+
+An eager-wake mechanism already existed and was simply never wired into this
+path. `pingJobs()` writes `JOB_PING_KEY` to `localStorage`; every other
+same-origin document (the shell) gets a `storage` event and polls
+immediately. It was called only from `trackJob`'s `send()` — client-reported
+jobs — never from the env-install path, even though that path's trigger (the
+POST to `/api/env/install`) is same-origin page JS same as any other caller.
+
+**Fix.** One call, in `tryInstall` (`runtime.js`), right after `envPost`'s
+response resolves and `res.ok` is confirmed — not before the POST. The row
+is created inside `start()` before the response returns, so by the time this
+line runs the row is guaranteed to already exist; a ping fired earlier would
+have the dock poll, find nothing yet, and go back to sleep for a full idle
+interval, which is strictly worse than no ping at all. `tryInstall` is the
+one POST call site every real start routes through — the plain first
+attempt, the `allow_build` "install anyway" retry (`tryInstall(true)`), and
+each round of D214's two-round Python bootstrap (each round is its own
+`installEnv` → `startInstall` → `tryInstall` cycle against its own key) — so
+one call site covers all three without special-casing any of them. Nothing
+starts an install without also routing through this line, and nothing that
+starts no install (a declined confirm, a preview) reaches it.
+
+`POLL_IDLE_MS` itself is untouched — it remains the deliberate floor for the
+cases a ping genuinely cannot reach, not something this round tried to
+tighten.
+
+**Preview sanity check.** Confirmed the Round 9 preview gate means a preview
+iframe never reaches this ping either: `handle()`'s `shouldInstall` branch is
+gated on `!IS_THUMBNAIL`, so a previewed page's `needs_install` falls
+straight to the `!data.ok` rejection branch and `installEnv`/`tryInstall` is
+never called — no POST, no ping. Added
+`test_a_previewed_page_never_pings_the_jobs_dock` alongside the existing
+Bug A test as the regression control.
+
+**Comments corrected.** Both halves of the declared must-stay-in-sync pair
+described this path as unreachable by the ping ("a Python worker reporting
+straight to the API, which runs no JS at all" in `runtime.js`; the mirrored
+line in `jobs.ts`). Both now describe the env-install path as a case the
+ping DOES reach, even though its row is server-created, and name the actual
+remaining no-JS case by the code that produces it: `schedule.py`'s `_report`,
+which calls `jobs.upsert(..., server=True)` on a scheduled message's own
+timer tick with no browser ever POSTing anything.
+
+**Tests.** `tests/test_server_env_install.py` gained a `localStorage` +
+`pingJobs`/`JOB_PING_KEY` stub in `_JS_PRELUDE` (shared by both the narrow
+loader-only harness and the loader+`runPython` harness, since `tryInstall`
+itself lives in the narrower slice) that records every key written, plus
+three tests: `test_a_successful_install_start_pings_the_jobs_dock` (one ping
+per real start), `test_cancelling_the_confirm_never_pings_the_jobs_dock`
+(declining consent posts nothing and pings nothing), and
+`test_a_previewed_page_never_pings_the_jobs_dock` (the Bug A negative,
+mirrored for the ping). All three were written and watched fail (`pingJobs
+is not defined` — a `ReferenceError`, since a dependency defined at
+runtime.js:3344, well past both slices' end points, was newly closed over)
+before the stub and the `pingJobs()` call were added, the same "recreate the
+dependency the slice cannot see" pattern Round 9 used for `IS_THUMBNAIL`.
+
+**Verification.** `.venv/bin/python -m pytest tests/test_server_env_install.py
+tests/test_env_install.py tests/test_jobs_api.py -n 0 -p no:randomly -q` →
+308 passed, 1 skipped (the `fused` extra skip, unrelated). `bun test` in
+`frontend/` → 2908 pass, 1 pre-existing failure in `appCardMenu.test.ts`
+(`window.addEventListener is not a function` in `appShot.ts`), confirmed
+unrelated by reproducing it identically on a clean stash of this round's
+changes.
+
+**Commit.** One: `fused_render/static/runtime.js`,
+`frontend/src/platform/lib/jobs.ts`, and `tests/test_server_env_install.py`.
