@@ -19,8 +19,7 @@ to enable it.
 
 ## Download
 
-**[render.fused.io](https://render.fused.io)** — the download page detects the
-machine you're on and hands you the right build:
+Download from **[render.fused.io](https://render.fused.io)**:
 
 - **macOS** — `.dmg`, Apple silicon
 - **Windows** — 64-bit `.exe` installer
@@ -54,9 +53,8 @@ checkout:
 pip install -e .
 ```
 
-Requires Python 3.11+. Pulls in FastAPI, uvicorn, duckdb and pyarrow — what the
-built-in table and parquet previews run on. Building from source and the local
-dev loop live in [CONTRIBUTING.md](CONTRIBUTING.md).
+Requires Python 3.11+. Building from source and the local dev loop live in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Run
 
