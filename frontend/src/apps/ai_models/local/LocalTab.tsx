@@ -433,7 +433,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         key={r.path}
         repo={r}
         label={labelByRepoId.get(r.id)}
-        recommended={curated.has(r.id)}
+        curated={curated.has(r.id)}
         loaded={loadedById.get(r.id)}
         job={jobByModel.get(r.id)}
         busy={busy}

@@ -450,9 +450,9 @@ export function diskCards(repos: AiModelRepo[]): Map<string, DiskCard> {
   );
 }
 
-/** Which REPO IDS the curation names — the verified seal beside a card's name
- *  (`RecommendedMark`, RepoCard.tsx), on a disk card and on a Hub search result
- *  alike.
+/** Which REPO IDS the curation names — the seal beside a card's name marking
+ *  membership of the curated shortlist (`CuratedMark`, RepoCard.tsx), on a disk
+ *  card and on a Hub search result alike.
  *
  *  **Keyed by `m.repo ?? m.id`, the repo id that ADDRESSES a curated entry's
  *  bytes, because both callers hold a repo id and neither can hold anything
