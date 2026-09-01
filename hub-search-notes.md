@@ -187,3 +187,61 @@ entry in the real `DECISIONS.md` are appended there directly, not here.
 Context: code review + full suite run on PR #953 produced a fix list. Item 0
 was restoring `DECISIONS.md` (see note at top of this file). Notes on the
 remaining fixes are appended below as they land.
+
+- **D-numbered entries added: D631, D632, D633** (in the restored
+  `DECISIONS.md`, appended at the end, dated 2026-09-02). These cover the
+  three real product decisions this feature made that the repo's own
+  convention treats as decision-log material — a server-side `sort=fit`
+  reorder rather than a client-side one, hiding `verdict:"no"` by default
+  with the on-disk bypass this fix session added, and the base_model family
+  grouping including the position/naming fixes from findings E and F. I
+  judged these warranted entries because they match the granularity of
+  existing entries (a feature-level design choice with genuine rejected
+  alternatives), not just an implementation detail — the repo's own
+  `DECISIONS.md` intro says the file is meant to let "a fresh session ...
+  continue the project from these three files alone", and none of these three
+  choices are otherwise written down anywhere a fresh session would find them
+  (the plan HTML predates the review fixes, and this notes file is explicitly
+  NOT the decision log per the note restoring `DECISIONS.md`).
+- Flake investigation (item 1): both suspected flakes verified as
+  PRE-EXISTING and NOT caused by this diff — neither file is touched by
+  `origin/main..HEAD`.
+  - `test_ai_worker_base.py::test_a_refused_body_this_cannot_frame_ends_the_connection`:
+    passed 5/5 in isolation, but running the whole file under `-n auto` (and
+    even serially) reliably fails ONE of the three parametrized cases each
+    run — a different one each time (`chunked`, `empty-transfer-encoding`,
+    `transfer-encoding-and-content-length`) — with a bare `ConnectionResetError`
+    at line 167. This is a genuine socket-level race in the test's own harness
+    (client/server timing), not a parametrized-ordering artifact as
+    hypothesized — left alone.
+  - `test_fs_raw_bearer_proxy.py::test_bearer_read_proxies_bytes_with_auth_header`:
+    passed 5/5 in isolation and 5/5 more under `-n auto` (both the single test
+    and the whole file). Could not reproduce a failure at all in this
+    session — left alone as an unreproduced flake, likely resource
+    contention from running alongside the rest of a loaded full-suite pass.
+- Server fixes (A, B, C, F) landed in one commit on `hub_models.py` +
+  `test_hub_models.py`; frontend fixes (D, E, G) in one commit across
+  `hubFamilies.ts`, `hubTableView.ts`, `HubResults.tsx`, `HubResultsTable.tsx`
+  and `ai-models.css`. See those commits' own messages for the substance;
+  the one below is what took real judgment.
+- **Finding E (the "one root cause" family-row conflation) — scoped
+  decision.** Rather than three point-fixes, this touches the shared root:
+  `groupIntoFamilies` now positions a family at its PRIMARY's index in the
+  input (not first-appearance) so a size/downloads sort survives grouping
+  with no special-casing per sort; `familyDisplay` now names the row by the
+  primary's own id (matching href/download) with the base model demoted to
+  a muted "from …" line; and "N variants" is now a real toggle disclosing
+  each sibling's own id/size/disk-state with its own Download/Cancel, via a
+  new `HubVariantRow`. The variant row deliberately does NOT do the lazy
+  IntersectionObserver total-size lookup the primary row does — that lookup
+  is scoped to a row always on screen, and a closed disclosure paying Hub
+  round trips for siblings nobody has opened yet would be the same
+  over-eagerness the viewport gate exists to prevent. This is UNVERIFIED
+  visually (no browser access from this session, same limitation the
+  previous builder flagged for the table overall) — worth a look at a real
+  fit-tie case (e.g. a 4bit/8bit pair) before merge.
+- One frontend text-hazard test needed updating for finding E:
+  `repoCardControls.test.ts`'s "leads every Download with the same glyph"
+  counted exactly one `<DownloadGlyph />` in `HubResultsTable.tsx`; there are
+  now two (the family row's own, and the new `HubVariantRow`'s) — count
+  bumped to 2 with a comment explaining why.
