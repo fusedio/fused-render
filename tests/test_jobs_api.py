@@ -111,6 +111,38 @@ def test_total_scope_rejects_anything_outside_the_closed_set(client):
     assert res.status_code == 400
 
 
+def test_waiting_for_round_trips_on_a_server_upsert():
+    """`waiting_for` is how `_wait_ready` merges a caller's row onto the model
+    load it is blocked on (SPEC §36) — a server report naming another row's id
+    must reach the listing verbatim, and clearing it (an empty value on the
+    report that ends the wait) must reach the listing as "", not linger."""
+    jobs.upsert({"id": "a", "title": "a cat", "waiting_for": "sys:ai-model:x"},
+                server=True)
+    row = jobs.list_jobs()[0]
+    assert row["waiting_for"] == "sys:ai-model:x"
+
+    jobs.upsert({"id": "a", "waiting_for": ""}, server=True)
+    row = jobs.list_jobs()[0]
+    assert row["waiting_for"] == ""
+
+
+def test_a_page_owned_report_cannot_set_waiting_for(client):
+    """A page could otherwise blank a live download's only row by falsely
+    claiming to be waiting on it — see `Job.waiting_for`'s own comment. The
+    field is silently dropped rather than rejected, same as `owner`."""
+    report(client, id="a", title="a cat", waiting_for="sys:ai-model:x")
+    assert listing(client)[0]["waiting_for"] == ""
+
+
+def test_waiting_for_rejects_an_illegal_id():
+    """The value still has to be a legal id — see `clean_id` — so a page (or a
+    bug in the server-side reporter) cannot smuggle something the manager's
+    lookup would choke on."""
+    with pytest.raises(jobs.JobError):
+        jobs.upsert({"id": "a", "title": "a cat", "waiting_for": "not a legal id"},
+                    server=True)
+
+
 def test_model_is_its_own_field_separate_from_title_and_detail(client):
     """The model must reach the client as its OWN value, not folded into
     `title` or `detail` — the UI dims it as a distinct element on the title

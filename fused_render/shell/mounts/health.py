@@ -11,7 +11,7 @@ import threading
 import time
 
 from .access import serves_path
-from .automount import BUILTIN_MOUNTS, ensure_builtin_mounts, set_builtin_ready
+from .automount import prune_builtin_mounts
 from .lifecycle import attach_mount, sync_serves
 from .rcd import _copytruncate_rcd_log, _rcd_lock
 from .store import _ismount, mountpoint
@@ -210,14 +210,10 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
-    # Upsert the builtin mounts (sessions) BEFORE the snapshot below: a
-    # fresh install has zero user mounts, and skipping the attach loop below
-    # would otherwise skip the builtins' very first mount too.
+    # Drop retired builtin-mount records BEFORE the snapshot below, so a
+    # stale record from an older version never reaches the attach loop.
     from fused_render.shell.mounts import list_mounts, mounted_paths
-    # Clear builtin readiness before the force-detach+remount; each is re-set True only once its own attach_mount succeeds this run.
-    for name in BUILTIN_MOUNTS:
-        set_builtin_ready(name, False)
-    ensure_builtin_mounts()
+    prune_builtin_mounts()
     mounts = list_mounts()
     if mounts:
         live = mounted_paths()
@@ -236,8 +232,6 @@ def run_automount() -> None:
             err = attach_mount(m)
             if err:
                 logger.warning("automount of %r failed: %s", m["name"], err)
-            elif m.get("builtin"):
-                set_builtin_ready(m["builtin"], True)
         # Mounts that survived a server restart skip attach_mount above, so
         # their HTTP serves (lost with any rcd restart) get re-ensured here.
         sync_serves()
@@ -246,8 +240,8 @@ def run_automount() -> None:
         # mount-less install (nothing to sync, and serves_path() was never
         # written — skipping here keeps a fresh install from gaining a
         # home_dir()/serves.json write it never needed). But it can ALSO
-        # mean ensure_builtin_mounts above just removed a builtin record
-        # (zip gone) and stopped its rc serve directly via
+        # mean prune_builtin_mounts above just removed a retired builtin
+        # record and stopped its rc serve directly via
         # _force_detach_builtin_mount — and serves.json on disk is ONLY ever
         # rewritten by sync_serves, so skipping unconditionally (the old
         # behavior) would leave a stale {mountpoint: dead_url} entry that

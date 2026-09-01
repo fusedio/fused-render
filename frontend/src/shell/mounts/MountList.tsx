@@ -173,17 +173,15 @@ export function MountRow({
           {/* A LABELLED remove, not a bare "✕". Same behaviour as before
               (removing a mount only unmounts it; nothing on the remote is
               touched), but the glyph gave no clue which of those two it was. */}
-          {!conn.builtin && (
-            <button
-              type="button"
-              className="btn mount-remove"
-              disabled={busy}
-              title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
-              onClick={() => act(() => deleteMount(conn.id))}
-            >
-              Remove
-            </button>
-          )}
+          <button
+            type="button"
+            className="btn mount-remove"
+            disabled={busy}
+            title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
+            onClick={() => act(() => deleteMount(conn.id))}
+          >
+            Remove
+          </button>
         </div>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}

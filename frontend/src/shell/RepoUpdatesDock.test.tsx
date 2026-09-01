@@ -100,6 +100,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   updated_at: 0,
   finished_at: 0,
   stalled: false,
+  waiting_for: "",
   ...over,
 });
 
@@ -258,14 +259,14 @@ test("collapsed hides every row — not a class flag, the rows are actually gone
   // was actually hidden. This asserts the OBSERVABLE content instead.
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows, collapsed: true });
-  expect(findAll(tree, "q-row")).toHaveLength(0);
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
   expect(findAll(tree, "dl-rows")).toHaveLength(0); // no empty box left behind either
 });
 
 test("expanded shows every row", () => {
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows, collapsed: false });
-  expect(findAll(tree, "q-row")).toHaveLength(2);
+  expect(findAll(tree, "dl-row")).toHaveLength(2);
 });
 
 test("pressing a row's action shows Working… on that row's own button, mid-flight", async () => {
@@ -431,14 +432,14 @@ test("a genuinely new repo row arriving OPENS the collapsed panel, and shows no 
   clickDockToggle(renderer); // collapse
 
   const collapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(collapsed, "q-row")).toHaveLength(0);
+  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
   expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0); // deleted app-wide (D588)
 
   const two = repoRows([status({ root: "/a/two" })])[0];
   updateDockInstance(renderer, [one, two]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(2);
+  expect(findAll(after, "dl-row")).toHaveLength(2);
 });
 
 test("the chip's own click dismisses an auto-opened panel, leaving no dot behind", () => {
@@ -447,12 +448,12 @@ test("the chip's own click dismisses an auto-opened panel, leaving no dot behind
   clickDockToggle(renderer); // collapse
   const two = repoRows([status({ root: "/a/two" })])[0];
   updateDockInstance(renderer, [one, two]);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(2);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(2);
 
   clickDockToggle(renderer); // dismiss the auto-opened panel
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-row")).toHaveLength(0);
 });
 
 test("collapsing, then an EXISTING row merely changing (behind count ticking), sets no dot", () => {
@@ -464,7 +465,7 @@ test("collapsing, then an EXISTING row merely changing (behind count ticking), s
   updateDockInstance(renderer, [changed]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-row")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0); // deleted app-wide (D588)
 });
 
@@ -478,7 +479,7 @@ test("a dismissed row that goes FURTHER behind counts as new again", () => {
   // only that it stays idle.
   updateDockInstance(renderer, [first], { "/a/one": "main@3" });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(dismissed, "q-row")).toHaveLength(0);
+  expect(findAll(dismissed, "dl-row")).toHaveLength(0);
 
   // Upstream actually MOVED (behind 3 -> 9), so the dismissal's signature no
   // longer covers this row. Since it had fallen out of the seen set on
@@ -488,7 +489,7 @@ test("a dismissed row that goes FURTHER behind counts as new again", () => {
   updateDockInstance(renderer, [again], { "/a/one": "main@3" });
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(1);
 });
 
 // D584 finding 3 at the dock level: the throttled re-check that moved nothing
@@ -501,7 +502,7 @@ test("a re-check that moved NOTHING leaves a dismissed row dismissed and the pan
   const renderer = renderDockInstance([row]);
   clickDockToggle(renderer); // collapse
   updateDockInstance(renderer, [row], { "/a/one": "main@3" });
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(0);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(0);
 
   // Same position, new timestamp — exactly what `check_repo` produces every
   // CHECK_TTL_S whether or not anything happened.
@@ -511,7 +512,7 @@ test("a re-check that moved NOTHING leaves a dismissed row dismissed and the pan
   updateDockInstance(renderer, [rechecked], { "/a/one": "main@3" });
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-row")).toHaveLength(0);
   expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
@@ -616,13 +617,16 @@ test("the footer is absent at one repo row and present at two", () => {
 });
 
 test("repo rows come before failures — the actionable rows first", () => {
+  // Both row kinds share `.dl-row` now (status-bar merge, brief item 4), so
+  // ordering is asserted by what each kind carries rather than by class name:
+  // a repo row's own action button is `.q-all` (kept — see this row's own
+  // header comment for why it did not migrate to `.dl-row-cancel`), which a
+  // failed-job row (`JobRow`) never renders.
   const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), failed: [failedJob()] });
-  const panel = findAll(tree, "dl-rows")[0];
-  const kinds = (panel.children ?? []).map((c) =>
-    ((c as ReactTestRendererJSON).props?.className as string) ?? "",
-  );
-  expect(kinds[0]).toContain("q-row");
-  expect(kinds[1]).toContain("dl-row");
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(2);
+  expect(findAll(rows[0], "q-all")).toHaveLength(1);
+  expect(findAll(rows[1], "q-all")).toHaveLength(0);
 });
 
 // THE ONE PLACE D574 IS WRONG (D586): a background build failing must set the

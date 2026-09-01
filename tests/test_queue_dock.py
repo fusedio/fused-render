@@ -35,8 +35,10 @@ WRITE = {"X-Fused": "1"}
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FRONT = os.path.join(_ROOT, "frontend", "src")
 # The queue half (rows, polling, Cancel queued) and the card it fills (plate, header,
-# count, one list, collapse, Clear).
-_DOCK = os.path.join(_FRONT, "shell", "QueueDock.tsx")
+# count, one list, collapse, Clear). `QueueDock.tsx` was folded into
+# `shell/ActivityDock.tsx` by the status-bar Activity-chip merge (it also absorbed
+# the former `EnginesDock.tsx`) — `dock` below now reads that file.
+_DOCK = os.path.join(_FRONT, "shell", "ActivityDock.tsx")
 _CARD = os.path.join(_FRONT, "platform", "ui", "DownloadManager.tsx")
 _HOST = os.path.join(_FRONT, "platform", "ui", "NotificationHost.tsx")
 _BAR = os.path.join(_FRONT, "platform", "ui", "StatusBar.tsx")
@@ -282,12 +284,16 @@ def test_an_empty_card_draws_the_idle_state_not_no_card(card):
     instead of vanishing; the gate still only ever reasons about jobs and
     queue, since repo updates are their own sibling section (SPEC §36,
     RepoUpdatesDock.tsx)."""
-    assert "const idle = jobs.length === 0 && queued === 0;" in card
+    # Status-bar Activity merge: this chip also shows running engines now, so
+    # the idle predicate gained a third term — a running engine alone is no
+    # longer "nothing to show" (see DownloadManager.tsx's own `idle` comment).
+    assert "const idle = jobs.length === 0 && queued === 0 && engineCount === 0;" in card
     assert "if (jobs.length === 0 && queued === 0) return null;" not in card
     # D573: the idle SENTENCE moved from a chip-level `.dl-idle` span into
     # the panel a real, always-clickable chip opens (VS Code/Cursor status
-    # bar idiom — no separate idle markup any more).
-    assert '<div className="dl-panel-empty">No jobs</div>' in card
+    # bar idiom — no separate idle markup any more). The chip is "Activity"
+    # now (status-bar merge), so its idle sentence names that, not "No jobs".
+    assert '<div className="dl-panel-empty">No activity</div>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -349,7 +355,7 @@ def test_the_job_half_is_told_which_runs_the_queue_draws(dock, card):
     So the ids travel through the same slot the rows do, and they come off the same
     array the rows are rendered from."""
     assert "drawn: string[]" in card, "the slot has to carry the ids, not just the rows"
-    assert "jobRows(reported, queue?.drawn)" in card
+    assert "jobRows(mergedRows(reported), queue?.drawn)" in card
     assert "drawn: drawnIds(rows)" in dock
     # and the guess is gone from the rule itself
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
@@ -444,8 +450,11 @@ def test_the_fold_is_never_persisted_at_all(card, dock):
 
     # And every section, not just this card's: four separate keys existed
     # (`models-`, `jobs-`, `repo-updates-`, `engines-collapsed`) and all four go.
+    # `EnginesDock.tsx` (and `QueueDock.tsx`, covered above as `dock`) no longer
+    # exist as separate files — both were folded into `ActivityDock.tsx` by the
+    # status-bar merge, so it stands in for their old checks here.
     for rel in (("shell", "ModelsDock.tsx"), ("shell", "RepoUpdatesDock.tsx"),
-                ("shell", "EnginesDock.tsx")):
+                ("shell", "ActivityDock.tsx")):
         stripped = code_only(_read(os.path.join(_FRONT, *rel)))
         assert "localStorage" not in stripped, f"{rel[-1]} must not persist the fold"
         assert "-collapsed" not in stripped, f"{rel[-1]} must not keep a fold key"
@@ -510,8 +519,9 @@ def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
     css = _read(_CSS)
     bar_tsx = _read(_BAR)
     assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
-    # D573: idle text moved from the chip into the panel it opens.
-    assert '<div className="dl-panel-empty">No jobs</div>' in card, "the activity section's own idle text"
+    # D573: idle text moved from the chip into the panel it opens. The chip is
+    # "Activity" now (status-bar merge), so its idle sentence names that.
+    assert '<div className="dl-panel-empty">No activity</div>' in card, "the activity section's own idle text"
 
 
 def test_the_shell_composes_the_card_and_the_bar_places_it(dock):

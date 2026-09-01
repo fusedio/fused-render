@@ -7,6 +7,13 @@
 // `RepoUpdatesCardView` for the identical reason: no polling, no network, no
 // `window`/`document`, so this file can render it directly with a fixed
 // model list.
+//
+// RESURRECTED (post status-bar-merge revision): the merge (commit 33fc407d)
+// deleted this file along with the standalone Models chip, folding its rows
+// into the combined Activity panel. This is that file again, restored from
+// `git show 33fc407d^:frontend/src/shell/ModelsDock.test.tsx` with no
+// behavioural changes — every assertion below still describes
+// `shell/ModelsDock.tsx`'s real chip.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import { join } from "node:path";
