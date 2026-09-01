@@ -569,6 +569,12 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
                       kind="background", folder=folder,
                       idle_timeout_s=idle_timeout_s)
         _spawn(child)
+        # `last_used` defaults to the moment `Child` was constructed, BEFORE
+        # `_spawn` runs; `_spawn` can block up to BOOTSTRAP_TIMEOUT_S (120s)
+        # waiting for the child's first ping, so a short idle_timeout_s could
+        # already be mostly exhausted before this child has ever served a
+        # call. Re-stamp it now that bring-up is actually done.
+        child.last_used = time.monotonic()
         with _lock:
             _children[engine_id] = child
         return child

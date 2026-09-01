@@ -492,6 +492,38 @@ def test_ensure_background_rejects_daemon_not_matching_its_own_folders_manifest(
             str(tmp_path / "cache"), "v1")
 
 
+def test_ensure_background_stamps_last_used_after_spawn_not_before(
+    tmp_path, monkeypatch
+):
+    # _spawn can block up to BOOTSTRAP_TIMEOUT_S (120s) waiting for the child
+    # to answer its first ping. Child.last_used defaults to time.monotonic()
+    # at CONSTRUCTION, before _spawn runs — if ensure_background never
+    # re-stamps it afterward, a short idle_timeout_s can already be mostly
+    # (or entirely) exhausted before the child has ever served a real call,
+    # making it eligible for immediate idle reap the moment it comes up.
+    real_spawn = engine_host._spawn
+
+    def slow_spawn(child):
+        # Simulate a slow bring-up: time passes DURING _spawn, before it
+        # returns and (with the fix) last_used gets re-stamped.
+        child.last_used = time.monotonic() - 1000.0
+        real_spawn(child)
+
+    monkeypatch.setattr(engine_host, "_spawn", slow_spawn)
+
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version,
+        FIXTURE_APP, idle_timeout_s=900.0)
+    try:
+        assert (time.monotonic() - child.last_used) < 5.0
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_ensure_background_rejects_a_main_app_whose_module_is_not_the_manifests(
     tmp_path
 ):
