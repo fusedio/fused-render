@@ -1102,6 +1102,15 @@ def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
     proj = _project(tmp_path, deps=["pip"])
     monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
 
+    # `env-install-jobs-mirror` is a process-global thread name: other tests
+    # in this file leave their own mirror threads alive well past their own
+    # test function returning (they only stop once their job reaches a
+    # terminal state on their own poll schedule). Filtering by name alone
+    # counts those too, so this snapshots the threads that exist BEFORE this
+    # test starts its own and only ever counts the difference — this test's
+    # own threads, not whichever unrelated ones happen to still be running.
+    baseline_idents = {t.ident for t in threading.enumerate()}
+
     rec = envinstall.start(proj, allow_build=False)
     key = rec["key"]
     job_id = f"sys:env-install:{key}"
@@ -1109,7 +1118,8 @@ def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
 
     def alive_mirrors():
         return [t for t in threading.enumerate()
-                if t.name == "env-install-jobs-mirror" and t.is_alive()]
+                if t.name == "env-install-jobs-mirror" and t.is_alive()
+                and t.ident not in baseline_idents]
 
     assert len(alive_mirrors()) == 1
 
