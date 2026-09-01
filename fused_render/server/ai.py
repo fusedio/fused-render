@@ -127,6 +127,20 @@ _REMOTE_ROW_DETAIL = "Claude — remote"
 # that has not started, which "Claude — remote" alone would show as work in
 # progress. `supervisor._QUEUED_DETAIL`'s twin.
 _REMOTE_QUEUED_DETAIL = "Queued — another Claude call is in flight"
+# …and while the model is in an extended-thinking block rather than writing
+# the answer (AI-5h follow-up #1). Probed against the real CLI (2.1.252,
+# sonnet, effort xhigh vs. low): thinking blocks arrive, but their text is
+# always empty — `display` defaults to "omitted" on every effort-capable
+# model — so a word count is not an available signal, only the fact that
+# thinking is happening at all. Paired with the client's own elapsed clock
+# (jobs.ts `jobElapsedLabel`, which reads every running row's `started_at`
+# already) this alone renders as "Thinking — 1m 20s" with no new server-side
+# timer needed — the row's whole-call elapsed time is close enough to the
+# thinking phase's own, since thinking begins almost immediately after a
+# turn starts. A low-effort or non-effort-capable (haiku) call never sees
+# this at all: `on_phase` is simply never called with "thinking", and the
+# row reads `_REMOTE_ROW_DETAIL` for its whole life, same as before this.
+_REMOTE_THINKING_DETAIL = "Thinking — remote"
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
@@ -670,15 +684,22 @@ class _AiSession:
 _AI_SESSION = _AiSession()
 
 
-async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
+async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None,
+                    on_phase=None) -> dict:
     """Write the user message to a stream-json process and read events until
     the terminal `result` line; return it parsed.
 
-    `on_delta(text)` is called per text_delta when streaming (thinking_delta
-    and every other event type are skipped). The timeout covers message-write
-    to result. Raises asyncio.TimeoutError or _AiProcFailure (died/EOF/
-    garbage before a result — the process is reaped on EOF; the session
-    notices its death via returncode on the next request)."""
+    `on_delta(text)` is called per text_delta when streaming (every other
+    delta type, including thinking_delta, is skipped — its own text is
+    always empty; see `_REMOTE_THINKING_DETAIL`'s comment). `on_phase(phase)`
+    is called once per `content_block_start`, `phase` being `"thinking"` or
+    `"writing"` — the two block types this app's calls ever produce, since
+    `--tools=` rules out a tool_use block. Called regardless of streaming:
+    it is the row's OWN phase readout, not something only a page reading
+    deltas gets to see. The timeout covers message-write to result. Raises
+    asyncio.TimeoutError or _AiProcFailure (died/EOF/garbage before a
+    result — the process is reaped on EOF; the session notices its death
+    via returncode on the next request)."""
     message = json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": prompt}]}})
     deadline = asyncio.get_running_loop().time() + timeout
@@ -716,15 +737,24 @@ async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
             continue
         if event.get("type") == "result":
             return event
-        if on_delta is not None and event.get("type") == "stream_event":
+        if event.get("type") == "stream_event":
             inner = event.get("event")
-            if isinstance(inner, dict) \
-                    and inner.get("type") == "content_block_delta":
+            if not isinstance(inner, dict):
+                continue
+            itype = inner.get("type")
+            if on_delta is not None and itype == "content_block_delta":
                 delta = inner.get("delta")
                 if isinstance(delta, dict) \
                         and delta.get("type") == "text_delta" \
                         and isinstance(delta.get("text"), str):
                     on_delta(delta["text"])
+            elif on_phase is not None and itype == "content_block_start":
+                block = inner.get("content_block")
+                block_type = block.get("type") if isinstance(block, dict) else None
+                if block_type == "thinking":
+                    on_phase("thinking")
+                elif block_type == "text":
+                    on_phase("writing")
 
 
 def _ai_result_payload(data: dict, requested_model: str):
@@ -1409,6 +1439,16 @@ async def _ai_relay(body: dict):
                 delivered = True
                 on_delta(text)
 
+        def on_phase(phase):
+            # The row's OWN readout of thinking vs. writing (AI-5h follow-up
+            # #1) — wired here, not threaded through `_ai_relay`'s two
+            # branches, because both would do exactly this and nothing else.
+            # Never touches `delivered`: a thinking phase with no text yet
+            # is not a delta reaching the client, so it must not forfeit the
+            # one-retry-on-fresh-spawn guarantee below.
+            _report_remote(detail=_REMOTE_THINKING_DETAIL if phase == "thinking"
+                                  else _REMOTE_ROW_DETAIL)
+
         # Contended: this call has not begun, and a row reading exactly like
         # one that is generating is the row lying by omission — the same fix
         # supervisor's `_QUEUED_DETAIL` is for the transcription queue, at the
@@ -1426,7 +1466,7 @@ async def _ai_relay(body: dict):
                 proc = await _AI_SESSION.configure(model, system_prompt,
                                                    effort)
                 return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                       on_delta=deliver)
+                                       on_delta=deliver, on_phase=on_phase)
             except asyncio.CancelledError:
                 # Client went away mid-turn: the process is still emitting
                 # this turn's events, and a later request's /clear loop would

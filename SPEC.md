@@ -289,7 +289,13 @@ const { text, model, usage } = await fused.ai(prompt, {
   behind another call's turn, `asyncio.Lock.acquire()` abandons the cancelled
   wait cleanly, so the ✕ frees the lock for whoever is next rather than making
   them wait out a turn nobody wants any more. It says when it is waiting its
-  turn behind another call rather than looking busy, and it heartbeats for as
+  turn behind another call rather than looking busy, it says "Thinking —
+  remote" for as long as the model is in an extended-thinking block rather
+  than writing the answer (probed against the real CLI: the block's own text
+  is always empty — `display` defaults to "omitted" on every effort-capable
+  model — so this is the fact of thinking, not a word count; a low-effort or
+  non-effort-capable call never sees the phase at all and reads "Claude —
+  remote" throughout, same as before), and it heartbeats for as
   long as the call runs (AI-5h) — without which any call slower than
   `STALE_AFTER_S` reported itself as no longer being reported.
 

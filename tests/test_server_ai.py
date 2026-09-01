@@ -79,6 +79,15 @@ def _delta_line(text):
         "delta": {"type": "text_delta", "text": text}}})
 
 
+def _block_start_line(block_type, text=""):
+    """A content_block_start for `block_type` ("thinking" or "text") — what
+    on_phase (_ai_drive/ai.py) reads. `text` matches the real CLI's own shape
+    (probed on 2.1.252): a thinking block's own text is always empty."""
+    return json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start",
+        "content_block": {"type": block_type, block_type: text}}})
+
+
 def _result_lines(payload=None, deltas=()):
     """Scripted stdout for one turn: stream_event deltas, then the result."""
     lines = [_delta_line(t) for t in deltas]
@@ -495,6 +504,85 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
     assert jobs.list_jobs() == []  # this path never touches jobs.py itself
+
+
+# -- the row's thinking-phase readout ---------------------------------------
+#
+# AI-5h follow-up #1, resolved by probing the real CLI (2.1.252, sonnet,
+# effort xhigh vs. low): thinking blocks arrive, but a block's own text is
+# always empty — `display` defaults to "omitted" on every effort-capable
+# model — so the row can say THAT the model is thinking, never how much it
+# has said. Detected the same way a real page tells the two apart:
+# `content_block_start`'s `content_block.type`, "thinking" or "text".
+
+
+def test_relay_row_says_thinking_during_a_thinking_block_then_reverts(monkeypatch):
+    _cli_ok(monkeypatch, lines=[
+        _block_start_line("thinking"),
+        _block_start_line("text"),
+        _delta_line("hi"),
+        json.dumps(_CLI_RESULT),
+    ])
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp = _relay({"prompt": "hello", "effort": "xhigh"})
+    assert _data(resp)["ok"] is True
+    assert details == [
+        _server_ai._REMOTE_ROW_DETAIL,       # _open_remote_job's opening report
+        _server_ai._REMOTE_THINKING_DETAIL,  # the thinking block starts
+        _server_ai._REMOTE_ROW_DETAIL,       # the text block starts — writing
+    ]
+
+
+def test_relay_stream_row_says_thinking_too(monkeypatch):
+    # The row's phase readout is wired once, inside run_once — shared by both
+    # branches — but checked on the streaming path too since it has its own
+    # copy of everything else about this row's lifecycle.
+    _cli_ok(monkeypatch, lines=[
+        _block_start_line("thinking"),
+        _block_start_line("text"),
+        _delta_line("hi"),
+        json.dumps(_CLI_RESULT),
+    ])
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp, frames = _stream({"prompt": "hello", "stream": True})
+    assert frames[-1]["ok"] is True
+    assert _server_ai._REMOTE_THINKING_DETAIL in details
+    assert details[-1] == _server_ai._REMOTE_ROW_DETAIL
+
+
+def test_relay_row_never_says_thinking_when_there_is_no_thinking_block(monkeypatch):
+    # The control: a call with no thinking block at all (a low-effort or
+    # non-effort-capable model) must never claim to be thinking — the row
+    # reads "Claude — remote" for its whole life, same as before this.
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi"]))
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    _relay({"prompt": "hello"})
+    assert _server_ai._REMOTE_THINKING_DETAIL not in details
+    assert all(d == _server_ai._REMOTE_ROW_DETAIL for d in details)
 
 
 # -- the row's heartbeat ----------------------------------------------------
