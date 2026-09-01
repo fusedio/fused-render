@@ -596,6 +596,12 @@ def _run_runpython(scenario):
 
 # The scenario every concurrency test below shares: /api/run answers
 # `needs_install` for one project until the install lands, then succeeds.
+#
+# Carries a `nonstandard` entry (rather than an all-PyPI manifest) on purpose:
+# several tests below reach the confirm question itself — clicking its Cancel
+# button, clicking its Install button after a real delay, reading its detail
+# line's font — and a manifest with nothing to disclose is never asked about
+# at all, so it would never build the row those tests need.
 _CONCURRENT_RUNS = """
 let installs = 0, runs = 0, installed = false;
 globalThis.fetch = (url, opts) => {
@@ -609,7 +615,8 @@ globalThis.fetch = (url, opts) => {
       snapshot
         ? { ok: true, result: 42 }
         : { ok: false,
-            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay", "foolib"],
+                             nonstandard: [{ name: "foolib", reason: "from a git repository" }] },
             error: { type: "EnvNotInstalled",
                      message: "my-app declares dependencies that are not installed yet" },
             stdout: "" })});
@@ -721,10 +728,11 @@ runPython("a.py", {}, { key: "a" }).then(
 
 
 def test_the_confirm_questions_detail_line_is_proportional_not_monospace():
-    """Defect 4 (manual browser testing): the question's detail line ("A
-    one-time download.") rendered in the same monospace face `detail` uses for
-    uv's own verbatim resolver error — a code font under a proportional bold
-    title, on a sentence a non-technical user is meant to just read. `askRow`
+    """Defect 4 (manual browser testing): the question's detail line (the
+    disclosed non-standard dependency and why) rendered in the same monospace
+    face `detail` uses for uv's own verbatim resolver error — a code font
+    under a proportional bold title, on a sentence a non-technical user is
+    meant to just read. `askRow`
     now switches `detail` to a proportional face while the question is up and
     restores the monospace default the moment it settles, since whatever
     paints next (`paintPreparing`, a real resolver error) is that line's
@@ -896,8 +904,9 @@ def test_the_projects_manifest_is_watched_so_a_fix_triggers_a_reload():
     "I fixed my dependencies" is a stale error overlay.
     """
     result = _run_runpython((_CONCURRENT_RUNS.replace(
-        'requirements: ["cowsay"] }',
-        'requirements: ["cowsay"], pyproject: "/proj/pyproject.toml" }',
+        'nonstandard: [{ name: "foolib", reason: "from a git repository" }] },',
+        'nonstandard: [{ name: "foolib", reason: "from a git repository" }], '
+        'pyproject: "/proj/pyproject.toml" },',
     ) + """
 runPython("a.py", {}, { key: "a" }).then(() => {
   console.log(JSON.stringify({ watched }));
@@ -906,19 +915,15 @@ runPython("a.py", {}, { key: "a" }).then(() => {
     assert "/proj/pyproject.toml" in result["watched"], result["watched"]
 
 
-def test_a_changed_disclosure_re_asks_even_for_an_already_approved_project():
-    """`approvedInstalls` used to be keyed on `need.project` ALONE. Approve an
-    all-PyPI install for project X; the user then adds
-    `foolib @ git+https://…` to its pyproject.toml; live-reload re-runs
-    (editing a manifest and letting live-reload pick it up is this app's own
-    core workflow) — `needs_install` fires again, this time carrying a
-    `nonstandard` entry naming the git dependency, but the SAME project key
-    already read as approved, so `confirmInstall` was skipped and the git
-    source fetched with the user never having seen it. That is precisely the
-    disclosure this feature exists to make.
-
-    Folding a fingerprint of `nonstandard` into the approval key fixes it: the
-    same project, with a NEW disclosure, must ask again.
+def test_a_manifest_gaining_a_nonstandard_dependency_prompts_where_the_silent_install_did_not():
+    """An all-PyPI manifest installs with no prompt at all — nothing about it
+    is disclosed, so there is nothing to have approved, and `approvedInstalls`
+    gains no entry for it. The user then adds `foolib @ git+https://…` to
+    pyproject.toml; live-reload re-runs (editing a manifest and letting
+    live-reload pick it up is this app's own core workflow) — `needs_install`
+    fires again, this time carrying a `nonstandard` entry naming the git
+    dependency. That must bring up `confirmInstall`: nothing here may read a
+    project that was never asked about as "already approved".
     """
     result = _run_loader("""
 let posts = 0;
@@ -944,6 +949,45 @@ installEnv(allPyPI, "a.py", "a.html")
   .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
 """ % {"a": _KEY_A})
     assert result["posts"] == 2
+    assert result["prompts"] == 1, (
+        "the silent all-PyPI install must not prompt, and the manifest gaining "
+        f"a nonstandard dependency must, saw {result['prompts']} prompts"
+    )
+
+
+def test_a_changed_nonstandard_disclosure_re_asks_even_for_an_already_approved_project():
+    """`approvedInstalls` is keyed on the project PLUS a fingerprint of what
+    was disclosed, not on the project alone: approve a project's git
+    dependency, then have the SAME project disclose a DIFFERENT reason (the
+    dependency moved from a git URL to a local path, say) — the project key
+    alone would still read as approved, so `confirmInstall` would be skipped
+    and the new source fetched with the user never having seen it.
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const withGitDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+const withLocalPathDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a local path" }] };
+installEnv(withGitDep, "a.py", "a.html")
+  .then(() => installEnv(withLocalPathDep, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2
     assert result["prompts"] == 2, (
         "a new nonstandard disclosure on an already-approved project must re-ask, "
         f"saw {result['prompts']} prompts"
@@ -955,7 +999,10 @@ def test_an_unrelated_version_bump_does_not_re_ask():
     `nonstandard` (ordinary PyPI requirements are never named there), so the
     SAME project with the SAME disclosure must still reuse the earlier
     approval — re-asking on every unrelated manifest edit is exactly the
-    nagging this feature exists to avoid.
+    nagging this feature exists to avoid. Both manifests here carry a
+    nonstandard entry (not an all-PyPI one) so this actually exercises
+    `approvedInstalls`/the fingerprint dedup rather than the separate,
+    unconditional silence of an all-PyPI install.
     """
     result = _run_loader("""
 let posts = 0;
@@ -972,9 +1019,11 @@ globalThis.fetch = (url, opts) => {
   return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
 };
 const before = { key: "%(a)s", project: "/proj", name: "my-app",
-  requirements: ["cowsay==5.0"], nonstandard: [] };
+  requirements: ["cowsay==5.0", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
 const afterBump = { key: "%(a)s", project: "/proj", name: "my-app",
-  requirements: ["cowsay==6.0"], nonstandard: [] };
+  requirements: ["cowsay==6.0", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
 installEnv(before, "a.py", "a.html")
   .then(() => installEnv(afterBump, "a.py", "a.html"))
   .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
@@ -982,6 +1031,98 @@ installEnv(before, "a.py", "a.html")
     assert result["posts"] == 2, "a re-run still installs the bumped version"
     assert result["prompts"] == 1, (
         f"an unrelated version bump must not re-ask, saw {result['prompts']} prompts"
+    )
+
+
+def test_an_all_pypi_install_never_prompts():
+    """Invariant: a manifest with nothing to disclose must never bring up
+    `confirmInstall` — a confirmation screen with no decision content in it
+    only trains reflexive clicking. `nonstandard` is absent here, matching
+    what the server actually sends for the ordinary all-PyPI case (engine.py
+    only includes the key when it is non-empty).
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const allPyPI = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay"] };
+installEnv(allPyPI, "a.py", "a.html")
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 1
+    assert result["prompts"] == 0, (
+        f"an all-PyPI install must never prompt, saw {result['prompts']} prompts"
+    )
+
+
+def test_the_no_build_retry_prompt_still_fires_even_though_the_initial_install_was_silent():
+    """Invariant 2: `confirmBuildRetry` — the `--no-build` "has to be
+    compiled on this computer" question — is a risk-bearing screen (it gates
+    a source build, which can run arbitrary `setup.py` code) and must never be
+    skipped, even for a manifest whose initial install ran silently because it
+    had nothing to disclose. The initial `installEnv` here carries no
+    `nonstandard` at all, so the first POST (`allow_build: false`) fires with
+    no confirm prompt in front of it — and the retry prompt still has to come
+    up once the worker reports `needs_build`.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts, prompts: globalThis.__installPrompts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts,
+                                      prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "the retry must re-POST naming allow_build: true"
+    # The harness's auto-click stub only counts a click on a button whose
+    # `textContent === "Install"` — the retry's own "Install anyway" button is
+    # clicked by hand above, so this is purely the INITIAL confirm's count,
+    # which must be zero: nothing was disclosed for it to ask about.
+    assert result["prompts"] == 0, (
+        f"the initial silent install must not have prompted, saw {result['prompts']}"
     )
 
 
