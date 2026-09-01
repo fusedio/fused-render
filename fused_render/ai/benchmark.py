@@ -50,11 +50,15 @@ cumulative. Steps buy time, not memory.
 What WAS right is that 4 steps is meaningless for a model that is not
 step-distilled. That calls for a SECOND WORKLOAD, not a per-model parameter
 inside this one — `name` and `revision` exist precisely to keep incomparable
-measurements apart. Every model this capability offers today is
-`is_distilled: true` (each repo's own `model_index.json`; the klein pipeline
-then IGNORES `guidance_scale` entirely, `pipeline_flux2_klein.py`), so 4 is
-the honest number for all of them, and a non-distilled arrival gets its own
-named workload instead of quietly changing what this one measures.
+measurements apart. Every klein row is `is_distilled: true` (each repo's own
+`model_index.json`; the klein pipeline then IGNORES `guidance_scale` entirely,
+`pipeline_flux2_klein.py`), so 4 is the honest number for them.
+
+`segmind/tiny-sd` is the exception, and it is the case that rule was written
+for: an ordinary SD1.5 schedule at 4 steps measures a render nobody would
+keep. It needs a workload of its own at an SD-class step count rather than a
+number smuggled into this one, and until it has one, a benchmark of it says
+only how fast this engine produces garbage.
 
 **Speech to text synthesizes its own audio.** Realtime factor is a decode
 throughput measure and does not need intelligible speech, and generating a tone

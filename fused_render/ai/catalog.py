@@ -609,9 +609,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The smallest and quickest model here by a wide margin — "
                     "a distilled Stable Diffusion 1.5, 512x512 only, and "
                     "well behind FLUX.2 klein on prompt following and detail.",
-            # Not a step-distilled model: it wants ordinary SD1.5-class step
-            # counts, so it carries no `defaults` override and the server's
-            # generic default steps apply.
+            # **The one row here that is NOT step-distilled**, which is the
+            # whole reason it declares a count at all. `ImageStage`'s fallback
+            # for a model with no hint is 4 — right for the klein family that
+            # every other image row belongs to, and far too few for an ordinary
+            # SD1.5 schedule, which at 4 produces smeared shapes rather than a
+            # picture. 8 is the floor worth showing somebody, and it is cheap
+            # here: this is a 0.5B UNet at 512², so eight steps still land
+            # faster than klein's four.
+            #
+            # Declaring the field also turns the Playground's speed chips on
+            # (they are absent for a model with no hint), so the rail reads
+            # Quick 8 / Finer 24 / Max 28 — and SD1.5's own comfortable range
+            # is up at that top end, one chip away.
+            "defaults": {"steps": 8},
         },
         {
             "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
