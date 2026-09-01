@@ -892,41 +892,6 @@ fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 # ---------------------------------------------------------------------------
-# 4e. Bundle sessions.zip (D123/D227): the repo's core_apps/sessions/ content
-#     ships as a single zip at Contents/Resources/sessions.zip, and
-#     shell/mounts/automount.py's ensure_builtin_mounts() mounts it read-only
-#     at startup via rclone's archive backend (:archive:<path>, new in v1.74) —
-#     the bundled default content is presented through the exact same mounts
-#     surface as remote data. Built fresh every run (a stale zip from a
-#     previous build must never ship). MUST run before signing (step 5):
-#     Resources content has to exist before the bundle seal.
-# ---------------------------------------------------------------------------
-
-echo "==> bundling sessions.zip"
-SESSIONS_SRC="$REPO_ROOT/core_apps/sessions"
-if [[ ! -d "$SESSIONS_SRC" ]]; then
-  echo "FATAL: $SESSIONS_SRC does not exist — the sessions/ content is part of the app." >&2
-  exit 1
-fi
-SESSIONS_DEST="$APP_DIR/Contents/Resources/sessions.zip"
-rm -f "$SESSIONS_DEST"
-# -X drops resource-fork/extended-attr entries; .DS_Store excluded so a
-# Finder-visited checkout builds the same zip as CI.
-(cd "$SESSIONS_SRC" && zip -qr -X "$SESSIONS_DEST" . -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*')
-
-# Smoke test with the just-bundled rclone: the exact binary the app ships
-# must be able to list the exact zip the app ships — catches an rclone
-# version bump that drops/renames the archive backend before it reaches a
-# user's first launch.
-if ! SESSIONS_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${SESSIONS_DEST}" 2>&1)"; then
-  echo "FATAL: bundled rclone cannot read the bundled sessions.zip via :archive: :" >&2
-  echo "$SESSIONS_SMOKE_OUT" >&2
-  exit 1
-fi
-echo "    sessions.zip OK ($(echo "$SESSIONS_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
-
-
-# ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:
 #
 #    - Developer ID (recommended for distribution): signs the whole bundle

@@ -126,6 +126,7 @@ import {
   jobFraction,
   jobRows,
   inFlightJobs,
+  mergedRows,
   jobsAfterClear,
   jobStatusLine,
   pollInterval,
@@ -901,8 +902,16 @@ export function DownloadManagerView({
   // the fold — so none of them can disagree about what this section holds
   // (the likeliest bug in this change was a count that still included
   // failures).
+  //
+  // `mergedRows` runs FIRST, on the full `reported` snapshot rather than on
+  // its filtered output — it needs the REFERENCING row (the waiter,
+  // `waiting_for`-tagged) still present to decide whether the row it names is
+  // hidden, and `jobRows`/`isVanishedOnSuccess` never remove that row on
+  // their own. This is what collapses a render waiting on a shared model
+  // load and the load's own row into the one row the manager actually draws
+  // (SPEC §36; jobs.ts `mergedRows` has the full reasoning).
   const jobs = inFlightJobs(
-    jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j)),
+    jobRows(mergedRows(reported), queue?.drawn).filter((j) => !isVanishedOnSuccess(j)),
   );
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;

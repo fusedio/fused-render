@@ -55,13 +55,6 @@ def api_config(
         # fs/events incident. Templates stay mount-agnostic; the skip lives
         # in runtime internals, keyed off this server-provided prefix.
         "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
-        # Whether the builtin sessions mount record exists (D123/D227) — a
-        # surface that links into it only renders when this is true, so it's
-        # never a dead link (BUGBOT: an unpackaged run with no
-        # FUSED_RENDER_SESSIONS_ZIP, or the brief window before the
-        # background automount thread upserts the record on a packaged
-        # run, would otherwise show a link to a path that doesn't exist).
-        "sessions_mount_ready": shell_mounts.sessions_mount_ready(),
         # The call-log store (calls.py). Same job as `mounts_root` above and
         # for a sharper reason: a call-log file is APPENDED TO by the act of
         # viewing it, so a page watching one reloads, re-reads, appends, and

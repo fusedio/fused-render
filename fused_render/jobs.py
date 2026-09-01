@@ -255,6 +255,20 @@ class Job:
     # is exempt from the sweep that reads it — a per-state exception here
     # would buy nothing and cost a second code path to reason about.
     first_read_at: float | None = None
+    # The id of another row this row is currently blocked on, or "" for the
+    # ordinary case. Set by `ai/supervisor._wait_ready` while an image/video
+    # render's row is waiting on a shared model load: the manager hides
+    # whichever row this field names for as long as THAT row is running, so a
+    # single wait for one model shows as ONE row instead of two saying the
+    # same thing (SPEC §36 — one row per unit of work; D586's sibling case in
+    # jobs.ts `jobRows` is the scheduled-run precedent for the same rule).
+    # SERVER-ONLY (see `upsert`'s `server` gate below): this field HIDES a
+    # row, so a page allowed to set it could blank a live download's only row
+    # by falsely claiming to be waiting on it. Cleared the instant the wait
+    # ends (ready, error, evicted, cancelled, or timed out) so a load that
+    # THEN fails is not left invisible — D266's guarantee that both rows can
+    # show a real failure only holds if the merge does not outlive the wait.
+    waiting_for: str = ""
 
 
 _lock = threading.Lock()
@@ -407,6 +421,15 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
                                      "total_scope", job.total_scope)
         if "cancellable" in body:
             job.cancellable = bool(body.get("cancellable"))
+        if "waiting_for" in body and server:
+            # Silently dropped for a page report (no `server=True`) rather
+            # than rejected — see the field's own comment on `Job` for why a
+            # page is not allowed to set it at all. A falsy value (the normal
+            # tick, and the wait-ended report) clears it; a real value is run
+            # through `clean_id` so it stays a legal id and not a string that
+            # would break the manager's lookup silently.
+            value = body.get("waiting_for")
+            job.waiting_for = clean_id(value) if value else ""
         if page:
             job.page = _text(page, PAGE_MAX)
 

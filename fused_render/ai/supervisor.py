@@ -124,6 +124,11 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+#: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
+#: completions from the same resident model are two pieces of work with two
+#: answers, and a shared id would have the second overwrite the first's row
+#: mid-stream.
+TEXT_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-text:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -940,7 +945,25 @@ def _failure_text(e: BaseException) -> str:
     return f"{e.__class__.__name__}: {e}".strip().rstrip(":")
 
 
-def _cancel_state(job: str) -> bool | None:
+def _job_record(job_id: str, records: list[dict] | None = None) -> dict | None:
+    """One row from the registry, by id, or None.
+
+    Pass an already-fetched `records` list when the caller needs MORE than one
+    id out of the same instant — `_wait_ready`'s merged tick looks up both the
+    caller's own row (for `_cancel_state`, below) and the load's row (for the
+    progress it mirrors) once per 0.5s tick, and a second `jobs.list_jobs()`
+    call would mean a second `_sweep` and a second lock acquisition for
+    information the first call already produced. Omit it (the common case,
+    every OTHER caller of `_cancel_state`) and this fetches its own — see that
+    function's own docstring for why the fetch is `mark_read=False`.
+    """
+    for record in (jobs.list_jobs() if records is None else records):
+        if record["id"] == job_id:
+            return record
+    return None
+
+
+def _cancel_state(job: str, records: list[dict] | None = None) -> bool | None:
     """Was the ✕ pressed — or is there no row to ask?
 
     Three answers, not two, because "no row" is not "no". A row can be EVICTED
@@ -953,17 +976,16 @@ def _cancel_state(job: str) -> bool | None:
     Callers that can act on the distinction take the tri-state; the rest keep
     the boolean below, whose behaviour is unchanged.
 
-    Deliberately calls `jobs.list_jobs()` with its default `mark_read=False`:
-    this is a poll of our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole
-    duration of every model load), not a person looking at the corner, and
-    marking a terminal row read here would start its retention clock from a
-    poll nobody ever saw — see `list_jobs`'s own docstring, which names this
-    exact function as the reason `mark_read` defaults to False.
+    Deliberately calls `jobs.list_jobs()` (via `_job_record`, unless `records`
+    is already given) with its default `mark_read=False`: this is a poll of
+    our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole duration of every
+    model load), not a person looking at the corner, and marking a terminal
+    row read here would start its retention clock from a poll nobody ever saw
+    — see `list_jobs`'s own docstring, which names this exact function as the
+    reason `mark_read` defaults to False.
     """
-    for record in jobs.list_jobs():
-        if record["id"] == job:
-            return bool(record.get("cancel_requested"))
-    return None
+    record = _job_record(job, records)
+    return None if record is None else bool(record.get("cancel_requested"))
 
 
 def _cancel_requested(job: str) -> bool:
@@ -1560,6 +1582,35 @@ def _transcribe_title(request: dict, model: str) -> str:
 def transcribe_job_id(uid: str) -> str:
     """The download-manager row for one transcription. See `image_job_id`."""
     return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_job_id(uid: str) -> str:
+    """The download-manager row for one text completion. See `image_job_id`."""
+    return TEXT_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_row_fields(title: str, model: str = "") -> dict:
+    """Everything a report must carry for a text-generation row to survive
+    being REBUILT — see `transcribe_row_fields`'s docstring for the full
+    argument (a row can be recreated from scratch on any tick, so every
+    reporter restates its identity rather than a mutable field somewhere
+    holding it).
+
+    Driven from `server/ai.py`'s `_local_relay`, not from this module: that
+    is the caller that already turns a done-frame/error/cancellation into a
+    verdict for both the streaming and non-streaming shapes, and it is the
+    one that mints ids for the other kinds too (`image_job_id`,
+    `transcribe_job_id`). `generate_text` itself stays fail-fast with no job
+    of its own — see its own docstring — so there is nothing here shaped
+    like `_transcribe_row`'s in-progress variant; the caller builds its own
+    opening/tick/terminal payloads directly off this one.
+
+    `unit="tokens"`: the row counts chunks emitted, not bytes or seconds —
+    unlike a transcription's `"s"` or a download's `"bytes"`, the useful
+    number here is how much has been said so far.
+    """
+    return {"title": title, "model": model, "kind": "task", "cancellable": True,
+            "unit": "tokens"}
 
 
 def start_transcribe(model: str, request: dict, job: str) -> None:
@@ -2295,54 +2346,125 @@ def _wait_ready(model: str, capability: str, job: str,
     memory. So the wait is part of the job rather than a second failure the
     caller has to orchestrate around.
 
-    The load reports to its OWN row (`sys:ai-model:<repo>`, with the download's
-    byte counts); this row says only that the image is waiting on it. Two rows,
-    two truths, and the manager shows both — but BOTH rows have to be able to
-    say the same failure, which is what `_start_resident` returning the record
-    is for (D266).
+    **The rows are MERGED while the wait lasts, not doubled.** The load still
+    reports to its OWN row (`sys:ai-model:<repo>`, with the download's byte
+    counts) — the AI Models page joins repo cards onto exactly that id, so it
+    still has to exist and still has to be truthful even when nobody is
+    waiting on it. But two rows both saying "waiting for FLUX to load" is the
+    same fact told twice under different titles (SPEC §36 — one row per unit
+    of work), so for as long as this wait holds, the CALLER's row mirrors the
+    load row's own `detail`/`done`/`total`/`unit`/`total_scope` verbatim and
+    sets `waiting_for` to the load's job id — a client-side filter
+    (`jobs.ts` `mergedRows`) then hides the load row while `waiting_for`
+    names it and it is still running, so the manager draws one row instead of
+    two. The load row is never deleted or hidden on the SERVER: hiding it here
+    instead would break that join.
+
+    Deliberate non-goal: cancelling the MERGED row does not cancel the shared
+    load. A render's ✕ stopping THIS wait must not stop a load another
+    waiter (or the AI Models page's own download) may depend on — cancelling
+    the merged row only ends this waiter, and the load's row simply
+    reappears, with its own ✕, once nothing else is `waiting_for` it.
+
+    The merge is cleared on EVERY exit from the wait — ready, error, evicted,
+    cancelled, or timed out (the `finally` below) — because if the LOAD then
+    fails, the load row must not still be hidden: D266's promise that both
+    rows can show a real failure only holds for as long as the merge does not
+    outlive the wait it describes. Two rows for two failures is right; two
+    rows for one wait is not. The clearing tick restores the caller's own
+    `unit` (`(row or {}).get("unit", "")` — the image/video opening report
+    uses `unit=""`, a queued transcription's `transcribe_row_fields` pins
+    `"s"`) and clears `done`/`total`, but deliberately leaves `detail` alone:
+    a flash of blank detail between this tick and the caller's next one is
+    worse than one stale line for a moment.
+
+    Both rows have to be able to say the same failure regardless of the merge,
+    which is what `_start_resident` returning the record is for (D266).
     """
     started, pending = _start_resident(model, capability)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
     unreadable = False
-    while time.monotonic() < deadline:
-        worker = ready_worker(capability, model)
-        if worker is not None:
-            return worker
-        # Every read in ONE critical section, because `_bring_up`'s failure path
-        # writes them in one: it stamps the error on the record AND drops the
-        # record from the table without releasing the lock between. Read apart,
-        # a waiter could catch the table already emptied and the error not yet
-        # written, and report a phantom eviction for a load that failed with a
-        # real message — the bug this ordering exists to make impossible.
-        with _lock:
-            state, error, detail = pending.state, pending.error, pending.detail
-            evicted = _workers.get(capability) is not pending
-        if state == "error":
-            raise SupervisorError(error or "the model failed to load")
-        if evicted:
-            # Genuinely taken away rather than broken: another model claimed the
-            # capability, or an unload landed. The record we hold never errored,
-            # so there is no better answer than what happened to it.
-            raise SupervisorError(f"{model} was unloaded before it could be used")
-        cancel = _cancel_state(job)
-        if cancel:
-            raise SupervisorError("cancelled")
-        if cancel is None and not unreadable:
-            # No row to ask. Said once rather than every half-second, and NOT
-            # treated as a cancel: a cold load is minutes of legitimate work
-            # and aborting it on capacity pressure would be a worse failure
-            # than the one this guards. The tick below rebuilds the row when
-            # the caller gave us its identity, so the blind window is one
-            # iteration rather than the whole download.
-            unreadable = True
-            logger.warning(
-                "job row %s is gone while waiting for %s; a cancel requested "
-                "now cannot be read until the row is rebuilt", job, model)
-        _report(job, **(row or {}), **({"state": "running"} if row else {}),
-                detail=f"Waiting for {model} — {detail or state}…")
-        time.sleep(0.5)
-    raise SupervisorError(
-        f"{model} did not finish loading in time (watch {started['jobId']})")
+    try:
+        while time.monotonic() < deadline:
+            worker = ready_worker(capability, model)
+            if worker is not None:
+                return worker
+            # Every read in ONE critical section, because `_bring_up`'s failure
+            # path writes them in one: it stamps the error on the record AND
+            # drops the record from the table without releasing the lock
+            # between. Read apart, a waiter could catch the table already
+            # emptied and the error not yet written, and report a phantom
+            # eviction for a load that failed with a real message — the bug
+            # this ordering exists to make impossible.
+            with _lock:
+                state, error, detail = pending.state, pending.error, pending.detail
+                evicted = _workers.get(capability) is not pending
+            if state == "error":
+                raise SupervisorError(error or "the model failed to load")
+            if evicted:
+                # Genuinely taken away rather than broken: another model claimed
+                # the capability, or an unload landed. The record we hold never
+                # errored, so there is no better answer than what happened to it.
+                raise SupervisorError(f"{model} was unloaded before it could be used")
+            # ONE `jobs.list_jobs()` scan answers both lookups this tick needs
+            # (see `_job_record`'s own doc) — the caller's row, for the cancel
+            # check, and the load's row, for the progress this tick mirrors
+            # onto it.
+            records = jobs.list_jobs()
+            cancel = _cancel_state(job, records)
+            if cancel:
+                raise SupervisorError("cancelled")
+            if cancel is None and not unreadable:
+                # No row to ask. Said once rather than every half-second, and NOT
+                # treated as a cancel: a cold load is minutes of legitimate work
+                # and aborting it on capacity pressure would be a worse failure
+                # than the one this guards. The tick below rebuilds the row when
+                # the caller gave us its identity, so the blind window is one
+                # iteration rather than the whole download.
+                unreadable = True
+                logger.warning(
+                    "job row %s is gone while waiting for %s; a cancel requested "
+                    "now cannot be read until the row is rebuilt", job, model)
+            load_row = _job_record(started["jobId"], records)
+            # Built as a dict, not chained `**` unpacks, because the mirrored
+            # keys (`unit` in particular) can already be present in `row`
+            # (`transcribe_row_fields` pins `unit: "s"`) — a literal keyword
+            # after `**row` for the same name is a `TypeError`, not an
+            # override. Assignment order here IS the override: `row`'s
+            # identity first, the mirrored progress after, so a caller row
+            # that pins its own `unit` still shows the load's bytes while
+            # this wait holds.
+            tick = {**(row or {})}
+            if row:
+                tick["state"] = "running"
+            if load_row is not None:
+                # Verbatim — no "Waiting for <model> — " prefix and no extra
+                # "…" appended. The model already renders as a dimmed suffix
+                # via the `model` field, and the load's own detail already
+                # ends in its own ellipsis; concatenating either doubled it.
+                tick["detail"] = load_row["detail"] if load_row.get("detail") else (detail or state)
+                tick["done"] = load_row.get("done")
+                tick["total"] = load_row.get("total")
+                tick["unit"] = load_row.get("unit")
+                tick["total_scope"] = load_row.get("total_scope")
+            else:
+                # Best-effort: a missing load row (evicted between the check
+                # above and here, or simply never read back yet) just means no
+                # mirrored progress THIS tick, never an exception.
+                tick["detail"] = detail or state
+            tick["waiting_for"] = started["jobId"]
+            _report(job, **tick)
+            time.sleep(0.5)
+        raise SupervisorError(
+            f"{model} did not finish loading in time (watch {started['jobId']})")
+    finally:
+        # Every exit path — the `return` above, every `raise` above, and the
+        # timeout `raise` at the end of the loop — passes through here, which
+        # is the whole point: the merge must not outlive the wait it
+        # describes (see the docstring's D266 paragraph).
+        final = {**(row or {}), "waiting_for": "", "done": None, "total": None,
+                 "unit": (row or {}).get("unit", "")}
+        _report(job, **final)
 
 
 def video_job_id(uid: str) -> str:

@@ -10,6 +10,7 @@ import {
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
+  mergedRows,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
@@ -38,6 +39,7 @@ function job(over: Partial<Job> = {}): Job {
     updated_at: 1000,
     finished_at: null,
     stalled: false,
+    waiting_for: "",
     ...over,
   };
 }
@@ -214,4 +216,42 @@ test("jobsAfterClear keeps every running row, stalled included", () => {
     job({ id: "done", state: "done" }),
   ];
   expect(jobsAfterClear(jobs).map((j) => j.id)).toEqual(["run", "stalled"]);
+});
+
+// -------------------------------------------------------------- mergedRows
+//
+// SPEC §36: a waiter and the model load it is blocked on used to open two
+// rows saying the same thing (`fused_render/ai/supervisor.py` `_wait_ready`'s
+// old "Two rows, two truths" behaviour). The merge mirrors the load's
+// progress onto the waiter's row and marks it `waiting_for`; `mergedRows` is
+// what makes the manager actually draw one row instead of two.
+
+test("mergedRows hides the row another RUNNING row is waiting on", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", title: "black-forest-labs/FLUX.2-klein-4B", state: "running" }),
+  ];
+  expect(mergedRows(jobs).map((j) => j.id)).toEqual(["waiter"]);
+});
+
+test("mergedRows keeps the referenced row once the waiter has gone terminal", () => {
+  // A wait that ends in a real failure has to show up as two rows again —
+  // one for the waiter's own failure, one for the load's, if it also failed
+  // (D266). A stale `waiting_for` from a wait that already ended must not
+  // keep hiding the load's row.
+  const jobs = [
+    job({ id: "waiter", state: "error", waiting_for: "load" }),
+    job({ id: "load", state: "error" }),
+  ];
+  expect(mergedRows(jobs).map((j) => j.id).sort()).toEqual(["load", "waiter"]);
+});
+
+test("mergedRows leaves unrelated rows alone", () => {
+  const jobs = [job({ id: "a" }), job({ id: "b" })];
+  expect(mergedRows(jobs).map((j) => j.id).sort()).toEqual(["a", "b"]);
+});
+
+test("mergedRows is a no-op when nothing has waiting_for set", () => {
+  const jobs = [job({ id: "a" }), job({ id: "b", waiting_for: "" })];
+  expect(mergedRows(jobs)).toEqual(jobs);
 });

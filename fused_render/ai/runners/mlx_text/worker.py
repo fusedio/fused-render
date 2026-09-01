@@ -611,6 +611,19 @@ def generate(body, write):
     # wrong.
     prompt_tokens = None if images else _prompt_tokens(processor, text)
 
+    # One frame BEFORE the first token, naming the phase that is otherwise
+    # silent: `stream_generate` below does not yield at all until prefill —
+    # one forward pass over the WHOLE prompt — has finished, which for a long
+    # context is itself seconds of real work with nothing to show for it.
+    # `input_tokens` rides along so the caller can say how much it is
+    # chewing on; `None` on the image path (see the comment above) is
+    # forwarded as-is rather than guessed at. A type no existing NDJSON
+    # reader recognises (`server/ai.py`'s `_local_relay`, `fused_ai.py`'s
+    # `_parse_ndjson` loop, `benchmark.py`'s own `event.get("type")` switch)
+    # so every one of them falls through it harmlessly — this is additive to
+    # the wire format, not a new branch every reader has to grow.
+    write({"type": "prefill", "input_tokens": prompt_tokens})
+
     count = 0
     started = time.time()
     for response in stream_generate(model, processor, text, image=images or None,

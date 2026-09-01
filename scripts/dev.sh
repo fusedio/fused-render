@@ -105,8 +105,7 @@ fi
 #   1. `(cd "$FRONTEND" && npm run watch) &` makes $! the SUBSHELL, not vite.
 #      The observed chain was dev.sh -> subshell -> npm -> node vite; the trap
 #      killed the subshell, and npm + vite reparented to init and kept
-#      rebuilding into shell-dist/ forever. Same shape for the core_apps poll
-#      loop (which has a `sleep` child) and the browser opener.
+#      rebuilding into shell-dist/ forever. Same shape for the browser opener.
 #   2. The watchfiles-supervised server ran in the FOREGROUND and appeared in no
 #      trap at all — and bash defers a trap handler until the current foreground
 #      command returns, so `kill <dev.sh>` was merely queued. Those trees only
@@ -181,11 +180,10 @@ reap_trees() {
   done
   [[ -n "${pids// /}" ]] || return 0
   for i in $(seq 1 10); do
-    # Re-walk from the roots on every pass: a tree can GROW mid-teardown. The
-    # core_apps poll loop touches a *.py trigger, which is exactly what makes
-    # watchfiles spawn a REPLACEMENT server — so a restart can land between the
-    # walk above and the TERM, and that new server would inherit the port with
-    # nothing supervising it. Anything that appears is TERMed and joins the
+    # Re-walk from the roots on every pass: a tree can GROW mid-teardown — a
+    # watchfiles restart can land between the walk above and the TERM, and
+    # that new server would inherit the port with nothing supervising it.
+    # Anything that appears is TERMed and joins the
     # escalation list. (A root that is already gone contributes nothing, which is
     # why this cannot chase a pid we never owned.)
     for p in $roots; do
@@ -319,7 +317,6 @@ dev_pidfile_is_ours() {
 # Every background pid this run owns. Set before the traps so the handler can
 # read them lazily under `set -u` no matter how early we die.
 WATCH_PID=""
-CORE_WATCH_PID=""
 OPENER_PID=""
 SERVER_PID=""
 DEV_PIDFILE=""
@@ -330,7 +327,7 @@ DEV_PIDFILE=""
 dev_shutdown() {
   # Disarm first: the INT/TERM handlers exit, which re-enters via EXIT.
   trap - EXIT INT TERM
-  local roots="$WATCH_PID $CORE_WATCH_PID $OPENER_PID $SERVER_PID"
+  local roots="$WATCH_PID $OPENER_PID $SERVER_PID"
   if [[ -n "${roots// /}" ]]; then
     reap_trees "$roots"
     # Reap our own children rather than leaving zombies parked on this shell.
@@ -547,30 +544,6 @@ trap 'dev_shutdown; exit 143' TERM
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
-# Stage the builtin-mount zips (sessions.zip) so a dev server gets the
-# Sessions sub-app just like the packaged
-# app. The packaged builds create these at DMG/installer time (build_dmg.sh
-# step 4e and its Windows mirror); a dev checkout only has the loose content
-# dirs, so without this the builtin mounts never resolve a zip and the
-# surfaces that link into them hide. The staging itself lives in
-# scripts/stage_builtin_zips.sh
-# (gitignored .dev-zips/ output, same exclusions as the packaged zips) because
-# TWO callers need it: this startup pass, and dev_server_run.sh before every
-# watchfiles server restart — which is what makes a core_apps/ edit land in a
-# fresh zip that the restarting server force-remounts (the mount serves a zip
-# SNAPSHOT, never the live dir; the core_apps poll loop below turns any edit
-# into such a restart). Respect an already-set env var so a caller can point a
-# mount at their own zip (stage_builtin_zips.sh skips those too).
-DEV_ZIPS="$REPO_ROOT/.dev-zips"
-bash "$REPO_ROOT/scripts/stage_builtin_zips.sh"
-for pair in sessions:FUSED_RENDER_SESSIONS_ZIP; do
-  name="${pair%%:*}" var="${pair#*:}"
-  if [[ -z "${!var:-}" && -f "$DEV_ZIPS/$name.zip" ]]; then
-    export "$var=$DEV_ZIPS/$name.zip"
-    echo "==> staged builtin zip: $name.zip"
-  fi
-done
-
 # Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
 # watchfiles server restarts that fire on every .py edit — without this the
 # daemon dies with the server (production teardown) and each restart pays the
@@ -724,11 +697,11 @@ command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 2
   exit 1
 }
 
-# Header-less scripts (no pyproject.toml — every core_apps/ helper) run on
-# "the app's own interpreter" under the fused engine, and
+# Header-less scripts (no pyproject.toml) run on "the app's own interpreter"
+# under the fused engine, and
 # engine.py resolves that by probing candidates. In a dev checkout the probe
 # can reject everything (sys.executable nuances, PATH pythons without the
-# bundled set) and every builtin sub-app's runPython dies with "could not
+# bundled set) and every such runPython dies with "could not
 # resolve a usable Python interpreter". The dev venv IS the app interpreter
 # here — it carries [bundled] — so point the escape hatch at it. Respect an
 # already-set value.
@@ -867,41 +840,7 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # default `serve` only when argv[0] isn't already a subcommand, so a leading
   # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
   # --no-browser would shift it and trigger a duplicate-`serve` parse error.
-  # core_apps content watcher: watchfiles' python filter only reacts to *.py,
-  # but builtin sub-app edits are mostly .html/.md/.svg. Poll for ANY newer
-  # file under core_apps/ and poke a gitignored .py trigger inside the watched
-  # tree — watchfiles sees a .py change, restarts the server through
-  # dev_server_run.sh, which re-stages the zips first. Net effect: save a file
-  # under core_apps/, the server restarts on fresh zips, a browser refresh
-  # shows the edit. ~2s poll; core_apps is tiny.
-  CORE_TRIGGER="$REPO_ROOT/core_apps/.dev-reload-trigger.py"
-  touch "$CORE_TRIGGER"
-  (
-    # *.py excluded: watchfiles' python filter already restarts on those (and
-    # the restart re-stages zips via dev_server_run.sh) — poking the trigger
-    # too would queue a SECOND restart for the same edit. Also skip junk that
-    # staging never packages anyway (.DS_Store, editor swaps, *.html.json
-    # sidecars) so it can't force pointless restarts.
-    while sleep 2; do
-      if [[ -n "$(find "$REPO_ROOT/core_apps" -type f \
-                    ! -name "*.py" ! -name ".DS_Store" ! -name "*~" \
-                    ! -name "*.swp" ! -name "*.swx" ! -name "*.json.tmp" \
-                    ! -name "*.html.json" ! -name "*.md.json" ! -name "*.py.json" \
-                    ! -name "*.txt.json" ! -name "*.markdown.json" \
-                    ! -path "*/__pycache__/*" \
-                    -newer "$CORE_TRIGGER" -print -quit 2>/dev/null)" ]]; then
-        touch "$CORE_TRIGGER"
-      fi
-    done
-  ) &
-  # Another subshell pid, and this one has a `sleep` child of its own — same
-  # kill_tree treatment as the vite watch above.
-  CORE_WATCH_PID=$!
-
-  # The restart target is dev_server_run.sh (re-stage builtin zips, then exec
-  # the server) so every restart mounts current core_apps content — not the
-  # snapshot from dev.sh launch time.
-  CMD="bash $(printf '%q' "$REPO_ROOT/scripts/dev_server_run.sh") $(printf '%q' "$PY")"
+  CMD="$(printf '%q' "$PY") -m fused_render.cli"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
   # BACKGROUNDED, then waited on — not run in the foreground, which is how this
@@ -909,7 +848,7 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # the current foreground command returns, so the signal only queued a handler
   # that never got to run, and watchfiles + the server it supervises were in no
   # trap anyway. `wait` is interruptible, so the handler fires immediately.
-  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" "$REPO_ROOT/core_apps" &
+  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" &
   SERVER_PID=$!
   # `wait` returns the child's status and a signalled child returns non-zero, so
   # `set -e` would abort here on an ordinary Ctrl-C; the status is captured
