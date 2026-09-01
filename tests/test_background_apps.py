@@ -35,16 +35,16 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
-def _make_app(tmp_path, name="app", *, kind="background", daemon="daemon.py",
+def _make_app(tmp_path, name="app", *, daemon="daemon.py", main=None,
               daemon_outside=False, table=True):
     folder = tmp_path / name
     folder.mkdir()
     if table:
         lines = ["[tool.fused-render.app]"]
-        if kind is not None:
-            lines.append(f'kind = "{kind}"')
         if daemon is not None:
             lines.append(f'daemon = "{daemon}"')
+        if main is not None:
+            lines.append(f'main = "{main}"')
         (folder / "pyproject.toml").write_text("\n".join(lines) + "\n")
     else:
         (folder / "pyproject.toml").write_text("[tool.other]\nx = 1\n")
@@ -53,6 +53,8 @@ def _make_app(tmp_path, name="app", *, kind="background", daemon="daemon.py",
         outside.write_text("# daemon\n")
     else:
         (folder / (daemon or "daemon.py")).write_text("# daemon\n")
+    if main is not None:
+        (folder / main).write_text("def main(**params):\n    return {}\n")
     return folder
 
 
@@ -65,6 +67,29 @@ def test_load_manifest_accepts_valid_background_app(tmp_path):
     assert manifest is not None
     assert manifest.folder == os.path.abspath(str(folder))
     assert manifest.daemon == os.path.abspath(str(folder / "daemon.py"))
+    assert manifest.main == ""
+    assert manifest.idle_timeout_s == background_apps.DEFAULT_DAEMON_IDLE_TIMEOUT_S
+
+
+def test_load_manifest_accepts_valid_main_app(tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.folder == os.path.abspath(str(folder))
+    assert manifest.daemon == ""
+    assert manifest.main == os.path.abspath(str(folder / "compute.py"))
+    assert manifest.idle_timeout_s == background_apps.DEFAULT_MAIN_IDLE_TIMEOUT_S
+
+
+def test_load_manifest_main_app_honors_explicit_idle_timeout_s(tmp_path):
+    folder = tmp_path / "custom_idle"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nmain = "compute.py"\nidle_timeout_s = 30\n')
+    (folder / "compute.py").write_text("def main(**p):\n    return {}\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.idle_timeout_s == 30
 
 
 def test_load_manifest_rejects_missing_table(tmp_path):
@@ -78,8 +103,13 @@ def test_load_manifest_rejects_missing_pyproject(tmp_path):
     assert background_apps.load_manifest(str(folder)) is None
 
 
-def test_load_manifest_rejects_wrong_kind(tmp_path):
-    folder = _make_app(tmp_path, kind="template")
+def test_load_manifest_rejects_neither_daemon_nor_main(tmp_path):
+    folder = _make_app(tmp_path, daemon=None)
+    assert background_apps.load_manifest(str(folder)) is None
+
+
+def test_load_manifest_rejects_both_daemon_and_main(tmp_path):
+    folder = _make_app(tmp_path, daemon="daemon.py", main="compute.py")
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -102,7 +132,7 @@ def test_load_manifest_rejects_daemon_naming_a_directory(tmp_path):
     folder = tmp_path / "dir_daemon"
     folder.mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "."\n')
+        '[tool.fused-render.app]\ndaemon = "."\n')
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -111,7 +141,7 @@ def test_load_manifest_rejects_daemon_naming_a_subdirectory(tmp_path):
     folder.mkdir()
     (folder / "notadaemon").mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "notadaemon"\n')
+        '[tool.fused-render.app]\ndaemon = "notadaemon"\n')
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -261,7 +291,7 @@ def test_interpreter_for_manifest_only_app_nested_in_a_dependency_declaring_pare
     app = parent / "app"
     app.mkdir()
     (app / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (app / "daemon.py").write_text("# daemon\n")
 
     monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
@@ -279,7 +309,7 @@ def test_interpreter_for_app_declaring_its_own_deps_uses_its_own_venv(
     (folder / "pyproject.toml").write_text(
         '[project]\nname = "app_with_deps"\nversion = "0"\n'
         'dependencies = ["requests"]\n\n'
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (folder / "daemon.py").write_text("# daemon\n")
 
     monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
@@ -664,7 +694,7 @@ def _bg_folder(tmp_path, name="app"):
     folder = tmp_path / name
     folder.mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (folder / "daemon.py").write_text("# daemon\n")
     (folder / "index.html").write_text("<html></html>")
     return folder
@@ -1012,7 +1042,8 @@ def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path,
 
     started = []
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
         if "bad" in daemon:
             raise engine_host.EngineError("boom")
         started.append(engine_id)
@@ -1075,7 +1106,8 @@ def test_resurrect_autostart_stops_a_child_that_finished_spawning_during_shutdow
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background")
 
-    def fake_ensure(eid, python, daemon, cache, version, folder=""):
+    def fake_ensure(eid, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
         # Simulate shutdown landing WHILE this spawn was still running — by
         # the time it returns (registering the child), the server has
         # already started tearing down.

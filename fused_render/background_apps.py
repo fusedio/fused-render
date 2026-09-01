@@ -1,17 +1,22 @@
 """Background apps: a folder can declare a long-running daemon that this
-server supervises — single instance, the folder's own venv, exempt from
-idle-retire, killed with the server (see engine_host.py's "background" child
-kind and server/routers/background_apps.py).
+server supervises — single instance, the folder's own venv, killed with the
+server (see engine_host.py's "background" child kind and
+server/routers/background_apps.py).
 
-A folder opts in with a manifest table in its own `pyproject.toml`:
+A folder opts in with a manifest table in its own `pyproject.toml`, declaring
+exactly one of two protocols:
 
     [tool.fused-render.app]
-    kind = "background"
-    daemon = "daemon.py"   # filename, resolved inside the folder
+    daemon = "daemon.py"   # your own HTTP surface; resident by default
 
-Nothing reads this table today — greenfield, following registered_apps.py's
-containment-guard style: a `daemon` value that resolves outside the folder
-(e.g. via `../`) is refused rather than trusted.
+    [tool.fused-render.app]
+    main = "compute.py"    # the shipped worker calls main(**params); reaped
+                           # after DEFAULT_MAIN_IDLE_TIMEOUT_S idle seconds
+
+`idle_timeout_s` overrides that per-protocol default; `0` means resident
+(never reaped). Either filename is resolved inside the folder, following
+registered_apps.py's containment-guard style: a value that resolves outside
+the folder (e.g. via `../`) is refused rather than trusted.
 
 Run state and autostart are two independent, orthogonal things (D511, code
 review that produced this module's current shape): whether the daemon is
@@ -46,23 +51,41 @@ logger = logging.getLogger(__name__)
 #: realpath (engine_host.py's `_ENGINE_ID` requires a bare identifier).
 _ENGINE_ID_PREFIX = "bg_"
 
+#: Default `idle_timeout_s` for a `daemon =` manifest: resident, never reaped
+#: — it holds connections and its own state, which a periodic restart would
+#: silently drop.
+DEFAULT_DAEMON_IDLE_TIMEOUT_S = 0.0
+#: Default `idle_timeout_s` for a `main =` manifest: the shipped worker is a
+#: warm-cache optimization over a fresh subprocess per call, so its restart is
+#: invisible to the caller — reap it after 15 idle minutes, same as the
+#: warm-worker default this replaces.
+DEFAULT_MAIN_IDLE_TIMEOUT_S = 15 * 60.0
+
 
 @dataclass(frozen=True)
 class Manifest:
     #: Absolute path to the app folder (the `pyproject.toml`'s directory).
     folder: str
-    #: Absolute path to the daemon file, guaranteed to resolve inside `folder`.
+    #: Absolute path to the daemon file, or "" when the folder declares `main`
+    #: instead. Exactly one of `daemon`/`main` is ever set.
     daemon: str
+    #: Absolute path to the `main()`-exposing file the shipped worker serves,
+    #: or "" when the folder declares `daemon` instead.
+    main: str
+    #: How long the child may sit idle before the reaper retires it; `0`
+    #: means resident. Defaults per protocol (see the two constants above),
+    #: overridable with an explicit `idle_timeout_s` key in the manifest.
+    idle_timeout_s: float
 
 
 def load_manifest(folder: str) -> Manifest | None:
     """The folder's background-app manifest, or None when the folder does not
-    declare one, declares a different kind, or its `daemon` does not resolve
-    to a FILE inside the folder. Never raises — a missing or corrupt
-    `pyproject.toml`, an unreadable folder, or a `daemon` naming a directory
-    (`daemon = "."` passes the containment check below on its own) all simply
-    read as "no manifest" rather than reaching engine_host as a `python
-    <folder>` bring-up that fails opaquely."""
+    declare one, declares neither or both of `daemon`/`main`, or the
+    declared file does not resolve to a FILE inside the folder. Never raises
+    — a missing or corrupt `pyproject.toml`, an unreadable folder, or a value
+    naming a directory (`daemon = "."` passes the containment check below on
+    its own) all simply read as "no manifest" rather than reaching
+    engine_host as a `python <folder>` bring-up that fails opaquely."""
     # tomllib is 3.11+ stdlib and `requires-python` is >=3.10, so on 3.10 the
     # `tomli` dependency supplies it (same fallback as projectenv._load_manifest
     # — both names expose TOMLDecodeError, so aliasing keeps the except below
@@ -89,28 +112,55 @@ def load_manifest(folder: str) -> Manifest | None:
     tool = data.get("tool")
     table = tool.get("fused-render") if isinstance(tool, dict) else None
     app = table.get("app") if isinstance(table, dict) else None
-    if not isinstance(app, dict) or app.get("kind") != "background":
+    if not isinstance(app, dict):
         return None
     daemon_name = app.get("daemon")
-    if not isinstance(daemon_name, str) or not daemon_name:
+    main_name = app.get("main")
+    has_daemon = isinstance(daemon_name, str) and bool(daemon_name)
+    has_main = isinstance(main_name, str) and bool(main_name)
+    # Exactly one of the two protocols — a manifest declaring both or
+    # neither is ambiguous rather than defaulted (Key decision: explicit
+    # beats inferred for a subprocess-spawn path).
+    if has_daemon == has_main:
         return None
-    daemon = os.path.normpath(os.path.join(folder, daemon_name))
-    # Containment, realpath-resolved (registered_apps.py's guard shape): a
-    # `daemon` value that climbs out of the folder via `../` or a symlink must
-    # not be trusted just because the string join looked contained.
-    real_folder = os.path.realpath(folder)
-    real_daemon = os.path.realpath(daemon)
-    if real_daemon != real_folder and not real_daemon.startswith(real_folder + os.sep):
+
+    def _resolve(name: str) -> str | None:
+        target = os.path.normpath(os.path.join(folder, name))
+        # Containment, realpath-resolved (registered_apps.py's guard shape):
+        # a value that climbs out of the folder via `../` or a symlink must
+        # not be trusted just because the string join looked contained.
+        real_folder = os.path.realpath(folder)
+        real_target = os.path.realpath(target)
+        if real_target != real_folder and not real_target.startswith(real_folder + os.sep):
+            return None
+        # A FILE, not merely a path inside the folder — `daemon = "."` (or
+        # any other directory) passes containment trivially (a folder is
+        # "inside" itself), and os.stat succeeds on a directory just as it
+        # does on a file, so version_for would not catch this either;
+        # bring-up would then run `python <folder>` and fail with an opaque
+        # bootstrap error instead of a clean manifest rejection here.
+        if not os.path.isfile(real_target):
+            return None
+        return target
+
+    idle_timeout_s = app.get("idle_timeout_s")
+    if not isinstance(idle_timeout_s, (int, float)) or isinstance(idle_timeout_s, bool):
+        idle_timeout_s = None
+
+    if has_daemon:
+        daemon = _resolve(daemon_name)
+        if daemon is None:
+            return None
+        default_idle = DEFAULT_DAEMON_IDLE_TIMEOUT_S
+        return Manifest(folder=folder, daemon=daemon, main="",
+                        idle_timeout_s=(idle_timeout_s if idle_timeout_s is not None
+                                        else default_idle))
+    main = _resolve(main_name)
+    if main is None:
         return None
-    # A FILE, not merely a path inside the folder — `daemon = "."` (or any
-    # other directory) passes containment trivially (a folder is "inside"
-    # itself), and os.stat succeeds on a directory just as it does on a file,
-    # so version_for would not catch this either; bring-up would then run
-    # `python <folder>` and fail with an opaque bootstrap error instead of a
-    # clean manifest rejection here.
-    if not os.path.isfile(real_daemon):
-        return None
-    return Manifest(folder=folder, daemon=daemon)
+    return Manifest(folder=folder, daemon="", main=main,
+                    idle_timeout_s=(idle_timeout_s if idle_timeout_s is not None
+                                    else DEFAULT_MAIN_IDLE_TIMEOUT_S))
 
 
 def engine_id_for(folder: str) -> str:
@@ -162,7 +212,7 @@ def version_for(folder: str, interpreter: str) -> str:
         raise OSError(f"{folder!r} has no valid background-app manifest")
     with open(os.path.join(manifest.folder, "pyproject.toml"), "rb") as f:
         pyproject_bytes = f.read()
-    daemon_st = os.stat(manifest.daemon)
+    daemon_st = os.stat(manifest.daemon or manifest.main)
     interp_st = os.stat(interpreter)
     h = hashlib.sha256()
     h.update(pyproject_bytes)
@@ -266,6 +316,20 @@ def interpreter_for(folder: str) -> str:
     return sys.executable
 
 
+def bring_up_args(manifest: Manifest) -> tuple[str, str]:
+    """The `(daemon, module)` pair `engine_host.ensure_background` needs for
+    *manifest*: a `daemon =` manifest passes its own file with no module; a
+    `main =` manifest passes the shipped worker (`engine_host.DEFAULT_DAEMON`)
+    with `module` set to the file it serves. One place for every caller
+    (the startup resurrection hook, the start/restart endpoints) to turn a
+    manifest into a bring-up rather than re-deriving the branch each time."""
+    from fused_render.server import engine_host
+
+    if manifest.daemon:
+        return manifest.daemon, ""
+    return engine_host.DEFAULT_DAEMON, manifest.main
+
+
 def cache_dir_for(engine_id: str) -> str:
     """Where a background app's status/log files live — mirrors
     engine_host._app_cache_dir's "under the home dir, never beside the user's
@@ -316,9 +380,11 @@ def resurrect_autostart(shutdown_event=None) -> None:
                 continue
             version = version_for(folder, interpreter)
             engine_id = engine_id_for(folder)
+            daemon, module = bring_up_args(manifest)
             engine_host.ensure_background(
-                engine_id, interpreter, manifest.daemon,
-                cache_dir_for(engine_id), version, folder)
+                engine_id, interpreter, daemon,
+                cache_dir_for(engine_id), version, folder,
+                idle_timeout_s=manifest.idle_timeout_s, module=module)
             if shutdown_event is not None and shutdown_event.is_set():
                 # Shutdown began WHILE this one was spawning — stop_all() may
                 # already have run (and missed it, per the docstring above),
