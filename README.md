@@ -57,8 +57,8 @@ Home opens on a file search, with everything on this machine below it:
   shows what's on disk and what fits this machine.
 - **Claude Code, without the terminal** — every Claude session on this machine
   in one place, and Tasks: prompts that run on a schedule.
-- **Files** — 140 preview templates: parquet, PDF, notebooks, spreadsheets,
-  point clouds, and the rest. Remote storage mounts as folders.
+- **Files** — comes with apps for opening Parquet, PDF, notebook, spreadsheet,
+  point clouds, and more. Remote storage mounts as folders.
 
 ## Run
 
