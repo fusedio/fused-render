@@ -1509,13 +1509,33 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # explicit `width`/`height` still wins — this only changes the DEFAULT.
     #
     # A FRESH render (no `image`) instead defaults to the resolved model's own
-    # curated size where the catalog names one (`catalog.entry_for`'s
-    # `defaults`) — `segmind/tiny-sd` is 512x512-native and is also
+    # curated hints where the catalog names them (`catalog.entry_for`'s
+    # `defaults`) — size, step count, and guidance scale, each named
+    # independently so a curated entry can supply only the ones it has
+    # evidence for. `segmind/tiny-sd` is 512x512-native and is also
     # `default_for()`'s position-0 pick, so a model-less `fused.ai.image()`
-    # must not fall through to the generic 1024² meant for a model the
-    # catalog says nothing about. A model with no curated entry (a cached
-    # repo the user downloaded themselves) keeps the generic 1024.
+    # must not fall through to the generic 1024²/28/4.0 meant for a model the
+    # catalog says nothing about — and a FLUX.2 klein row, distilled for 4
+    # steps and declaring `"steps": 4`, must not be handed the generic 28
+    # either. A model with no curated entry (a cached repo the user
+    # downloaded themselves), or a curated entry that names size but not
+    # steps/guidance, keeps the generic default for whichever field it left
+    # unnamed.
+    #
+    # An edit's defaults are the PROTOTYPE's own instead (4 steps, guidance
+    # 1.0), not the 28/4.0 shared between the generate paths of both image
+    # engines (`mflux_image/worker.py:generate`'s own comment) — applying the
+    # generate defaults to an edit silently would be a real quality
+    # regression (mflux's own denoising mechanism for editing wants far
+    # fewer steps and far less guidance than a from-scratch render), and
+    # changing them for this one mode is a documented choice rather than an
+    # unnoticed one. An edit also never consults the curated entry — its
+    # defaults are fixed by the prototype, not by whichever model the edit
+    # happens to resolve to, exactly as it already short-circuits the size
+    # lookup above.
     default_width = default_height = 1024
+    default_steps = 4 if image_path is not None else 28
+    default_guidance = 1.0 if image_path is not None else 4.0
     if image_path is not None:
         edit_size = _edit_default_size(image_path)
         if edit_size is not None:
@@ -1523,20 +1543,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     else:
         entry = catalog.entry_for(registry.IMAGE_GENERATION, model)
         entry_defaults = entry.get("defaults") if entry else None
-        if entry_defaults and "width" in entry_defaults and "height" in entry_defaults:
-            default_width = entry_defaults["width"]
-            default_height = entry_defaults["height"]
-
-    # An edit's defaults are the PROTOTYPE's own (4 steps, guidance 1.0), not
-    # the 28/4.0 shared between the generate paths of both image engines
-    # (`mflux_image/worker.py:generate`'s own comment) — applying the
-    # generate defaults to an edit silently would be a real quality
-    # regression (mflux's own denoising mechanism for editing wants far
-    # fewer steps and far less guidance than a from-scratch render), and
-    # changing them for this one mode is a documented choice rather than an
-    # unnoticed one.
-    default_steps = 4 if image_path is not None else 28
-    default_guidance = 1.0 if image_path is not None else 4.0
+        if entry_defaults:
+            if "width" in entry_defaults and "height" in entry_defaults:
+                default_width = entry_defaults["width"]
+                default_height = entry_defaults["height"]
+            if "steps" in entry_defaults:
+                default_steps = entry_defaults["steps"]
+            if "guidance" in entry_defaults:
+                default_guidance = entry_defaults["guidance"]
     # `is None or == ""`, NOT `body.get(...) or default` — the falsy-`or`
     # form silently replaced an explicit `steps: 0` or `guidance: 0` with
     # the default, clamping never got a chance to run on the caller's own

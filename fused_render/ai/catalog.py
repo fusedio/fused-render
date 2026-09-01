@@ -614,26 +614,42 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # for a model with no hint is 4 — right for the klein family that
             # every other image row belongs to, and far too few for an ordinary
             # SD1.5 schedule, which at 4 produces smeared shapes rather than a
-            # picture. 8 is the floor worth showing somebody, and it is cheap
-            # here: this is a 0.5B UNet at 512², so eight steps still land
-            # faster than klein's four.
+            # picture. Measured on this box (segmind/tiny-sd, 512x512, fixed
+            # seed/prompt, mean absolute pixel diff against the converged
+            # 28-step render): 1 step -> 44.6, 4 -> 22.4, 8 -> 12.3, 16 -> 3.2,
+            # 28 -> 0, at wall times 1.0s / 2.0s / 3.0s / 5.0s / 8.0s. 8 steps
+            # is still 12.3 away from converged — visibly short of what the
+            # schedule can do — while 16 gets to 3.2 for two more seconds
+            # (5s vs 3s), the better trade for a default. This is a 0.5B UNet
+            # at 512², so even 16 steps still lands faster than klein's four.
             #
-            # Declaring the field also turns the Playground's speed chips on
+            # `guidance` is real classifier-free guidance here, not the
+            # distilled guidance embedding the klein rows pass through the
+            # same `guidance_scale=` argument (`torch_image.py`): this repo
+            # is an ordinary, non-distilled SD1.5 UNet, so CFG's usual 7-8
+            # range applies and 4.0 (right for klein) would under-drive it.
+            # A guidance sweep at 8 steps, measured against this model's own
+            # guidance=4.0 render: 1.0 -> MAD 22.8, 7.5 -> 32.4, 12.0 -> 59.0
+            # (every render a distinct hash, so this is prompt adherence
+            # moving, not noise) — 7.5 sits at the standard SD1.5 midpoint.
+            #
+            # Declaring `steps` also turns the Playground's speed chips on
             # (they are absent for a model with no hint), so the rail reads
-            # Quick 8 / Finer 24 / Max 28 — and SD1.5's own comfortable range
-            # is up at that top end, one chip away.
+            # Quick 16 / Finer 22 / Max 28 — the whole ladder inside SD1.5's
+            # own comfortable range rather than climbing towards it.
             #
             # `width`/`height` name this checkpoint's native side, 512 —
             # this is an ordinary SD1.5 UNet, not one of the klein rows
             # trained for 1024², and rendering it at 1024² is the classic
             # SD1.5-at-double-resolution failure: duplicated limbs and
             # repeated composition rather than more detail. `/api/ai/image`
-            # (`ai_runtime.py`) reads this pair as the default RENDER size
-            # for a fresh (non-edit) request that named no size of its own
-            # — position 0 of this list is also `default_for()`, so a bare
-            # `fused.ai.image()` with no model named lands here and must
-            # not inherit the 1024² fallback meant for an uncurated repo.
-            "defaults": {"steps": 8, "width": 512, "height": 512},
+            # (`ai_runtime.py`) reads this whole dict as the default RENDER
+            # size/steps/guidance for a fresh (non-edit) request that named
+            # none of its own — position 0 of this list is also
+            # `default_for()`, so a bare `fused.ai.image()` with no model
+            # named lands here and must not inherit the 1024²/28/4.0
+            # fallback meant for an uncurated repo.
+            "defaults": {"steps": 16, "width": 512, "height": 512, "guidance": 7.5},
         },
         {
             "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
@@ -1494,10 +1510,10 @@ def entry_for(capability: str, model_id: str) -> dict | None:
     Narrower than `for_capability` on purpose: a caller that already knows
     which single model it resolved to (`/api/ai/image`'s `model`, after
     `_model_of`/`default_for`) wants that one row's curated hints —
-    `defaults`'s render size and step count today — not the whole list to
-    scan itself. Returns None rather than a guessed row for anything the
-    curation does not cover, so a caller's own fallback stays the one that
-    fires for an uncurated model.
+    `defaults`'s render size, step count, and guidance scale today — not
+    the whole list to scan itself. Returns None rather than a guessed row
+    for anything the curation does not cover, so a caller's own fallback
+    stays the one that fires for an uncurated model.
     """
     for entry in for_capability(capability):
         if entry["id"] == model_id:

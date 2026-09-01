@@ -66,7 +66,7 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
       ["width", readParam("w")],
       ["height", readParam("h")],
       ["steps", readParam("steps") ?? (model.defaults?.steps != null ? String(model.defaults.steps) : null)],
-      ["guidance", readParam("guidance")],
+      ["guidance", readParam("guidance") ?? (model.defaults?.guidance != null ? String(model.defaults.guidance) : null)],
       ["seed", readParam("seed")],
     ]);
     lines.push(

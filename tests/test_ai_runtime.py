@@ -5059,6 +5059,104 @@ def test_an_edit_still_derives_its_size_from_the_base_image_not_the_curated_one(
     _wait_job(started["jobId"])
 
 
+def test_a_fresh_render_takes_the_curated_models_own_steps_and_guidance(
+        client, fake_image_runner, monkeypatch):
+    """`segmind/tiny-sd` declares `"steps": 16, "guidance": 7.5` because 16
+    steps is the first point on its measured convergence curve that looks
+    finished (MAD 3.2 against a converged 28-step render, vs. 12.3 at 8) and
+    7.5 is real classifier-free guidance for its non-distilled SD1.5 UNet —
+    a fresh render with no `steps`/`guidance` of its own must land on those
+    curated numbers rather than the generic 28/4.0 meant for a model the
+    catalog says nothing about."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 16
+    assert started["guidance"] == 7.5
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_steps_and_guidance_still_win_over_the_curated_defaults(
+        client, fake_image_runner, monkeypatch):
+    """A caller's own `steps`/`guidance` overrides the curated hint exactly
+    as it overrides the plain 28/4.0 default, and still goes through the
+    same clamp — this only changes what a caller who said nothing gets."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "steps": 20, "guidance": 3.0},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 20
+    assert started["guidance"] == 3.0
+    _wait_job(started["jobId"])
+
+
+def test_a_fresh_render_of_an_UNCURATED_model_still_gets_28_and_4(
+        client, fake_image_runner):
+    """A cached repo the user downloaded themselves has no row in
+    `catalog.SUGGESTIONS` at all — `catalog.entry_for` returns None for it,
+    and the route must keep the plain 28/4.0 default rather than erroring or
+    guessing a step count."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "model": "some/uncurated-repo"},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 28
+    assert started["guidance"] == 4.0
+    _wait_job(started["jobId"])
+
+
+def test_a_curated_entry_with_only_a_size_still_gets_28_and_4(
+        client, fake_image_runner, monkeypatch):
+    """A curated entry can name size without naming steps or guidance — the
+    two klein rows below tiny-sd in the real catalog do exactly this, since
+    they take the route's own 4-step distilled-guidance defaults rather than
+    a per-model override. Each field the entry leaves unnamed must fall back
+    to the generic default independently of the ones it does name."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 28
+    assert started["guidance"] == 4.0
+    _wait_job(started["jobId"])
+
+
+def test_an_edit_still_gets_4_steps_and_guidance_1_even_with_a_curated_model(
+        client, fake_image_runner, monkeypatch, tmp_path):
+    """The edit path's own defaults (4 steps, guidance 1.0 — the prototype's
+    numbers, not a generate default) must keep winning even when the
+    resolved model carries curated `steps`/`guidance`: `image_path is not
+    None` short-circuits the curated-default branch entirely, exactly as it
+    already short-circuits the curated-size lookup."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "",
+         "defaults": {"width": 512, "height": 512, "steps": 16, "guidance": 7.5}},
+    ])
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.png"
+    photo.write_bytes(_png_bytes(2000, 1000))
+
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "x", "image": "photo.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 4
+    assert started["guidance"] == 1.0
+    _wait_job(started["jobId"])
+
+
 def test_two_renders_are_two_rows_and_two_files(client, fake_image_runner):
     """One row per RENDER, not per model: a shared id would have the second
     overwrite the first's progress mid-flight."""
