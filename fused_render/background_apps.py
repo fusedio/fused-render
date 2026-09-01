@@ -173,13 +173,14 @@ def engine_id_for(folder: str) -> str:
 
 
 def version_for(folder: str, interpreter: str) -> str:
-    """Digest of the manifest's declaring bytes, the daemon file's mtime/size,
+    """Digest of the manifest's declaring bytes, the daemon file's mtime/size
+    (for a `main =` manifest, `engine_host.DEFAULT_DAEMON`'s mtime/size too),
     and the INTERPRETER's own path-plus-identity (mtime/size at that path, not
-    a realpath). Changing any of the three must retire a running child rather
-    than reuse it: a `pyproject.toml` edit, a daemon.py edit, or a
-    bundled-CPython swap across an app upgrade (this is what fixes the
-    OpenWhisper upgrade-rot class — a stale venv reused against a new
-    interpreter).
+    a realpath). Changing any of these must retire a running child rather
+    than reuse it: a `pyproject.toml` edit, a daemon.py/compute.py edit, an
+    `engine_worker.py` upgrade, or a bundled-CPython swap across an app
+    upgrade (this is what fixes the OpenWhisper upgrade-rot class — a stale
+    venv reused against a new interpreter).
 
     D514 revised (2026-08-26 code review): the interpreter component used to
     be `os.path.realpath(interpreter)` alone, which broke two ways. First, a
@@ -217,6 +218,19 @@ def version_for(folder: str, interpreter: str) -> str:
     h = hashlib.sha256()
     h.update(pyproject_bytes)
     h.update(f"{daemon_st.st_mtime_ns}:{daemon_st.st_size}".encode("utf-8"))
+    if manifest.main:
+        # A `main =` manifest is served by the shipped worker
+        # (engine_host.DEFAULT_DAEMON), not by anything inside the app's own
+        # folder — daemon_st above only ever sees the user's own module
+        # (manifest.main). Without also stating DEFAULT_DAEMON itself, a
+        # changed engine_worker.py would not change this digest at all,
+        # silently losing the guard the deleted APP_WORKER_VERSION constant
+        # used to provide: a running child built against an older worker
+        # would be reused across an upgrade instead of retired.
+        from fused_render.server import engine_host
+
+        worker_st = os.stat(engine_host.DEFAULT_DAEMON)
+        h.update(f"{worker_st.st_mtime_ns}:{worker_st.st_size}".encode("utf-8"))
     h.update(interpreter.encode("utf-8"))
     h.update(f"{interp_st.st_mtime_ns}:{interp_st.st_size}".encode("utf-8"))
     return h.hexdigest()

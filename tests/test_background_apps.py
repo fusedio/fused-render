@@ -244,6 +244,30 @@ def test_version_for_does_not_collapse_symlinked_venv_pythons_via_realpath(tmp_p
     assert v1 != v2
 
 
+def test_version_for_changes_with_default_daemon_mtime_for_a_main_app(
+    tmp_path, monkeypatch
+):
+    # A `main =` manifest is served by engine_host.DEFAULT_DAEMON
+    # (engine_worker.py), not by anything inside the app's own folder — the
+    # digest stats manifest.main (the user's compute.py) but nothing
+    # identifies the shipped worker itself, so a changed engine_worker.py
+    # doesn't change the version digest, silently losing the guard the old
+    # (deleted) APP_WORKER_VERSION constant used to provide.
+    from fused_render.server import engine_host
+
+    folder = _make_app(tmp_path, "app", daemon=None, main="compute.py")
+    interpreter = sys.executable
+    fake_worker = tmp_path / "engine_worker.py"
+    fake_worker.write_bytes(b"# worker v1\n")
+    monkeypatch.setattr(engine_host, "DEFAULT_DAEMON", str(fake_worker))
+
+    v1 = background_apps.version_for(str(folder), interpreter)
+    new_time = time.time() + 5
+    os.utime(fake_worker, (new_time, new_time))
+    v2 = background_apps.version_for(str(folder), interpreter)
+    assert v1 != v2
+
+
 def test_version_for_raises_on_missing_interpreter(tmp_path):
     folder = _make_app(tmp_path)
     with pytest.raises(OSError):
