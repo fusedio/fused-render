@@ -729,3 +729,142 @@ behaviour there is correct; only the doubles were behind.
   passed, the three new race/threading tests re-run three times each with
   no flakes observed). Did not run the full suite — left to the
   orchestrator, per the same `/tmp`-quota note as Round 2.
+
+## Round 4: delete the disclosure-free confirm, run an all-PyPI install silently
+
+- The screenshot that triggered this round: "Install dependencies for
+  OpenWhisper? A one-time download. [Cancel] [Install]" — a confirm with no
+  decision content in it. A screen like that does not inform a choice, it
+  trains a reflexive click on whichever button reads affirmative, which
+  makes the NEXT screen — the one that actually carries risk — more likely
+  to get the same reflexive click. The fix is not to word the empty screen
+  better; it is to not show it. The two screens that remain are exactly the
+  ones with something to disclose: `confirmInstall` when `nonstandard` is
+  non-empty (a git/URL/local-path/named-index source, a workspace member, a
+  project-wide custom index, or a `find-links` host), and
+  `confirmBuildRetry` for a `--no-build` refusal, which gates an actual
+  source build (`setup.py` can run arbitrary code; a wheel install runs
+  none).
+- `confirmInstall` (runtime.js) had a fallback branch rendering the detail
+  "A one-time download." when `need.nonstandard` was empty — the exact copy
+  in the screenshot. Deleted rather than left inert: with the call site
+  below never reaching it on an empty `nonstandard`, the branch had no
+  caller left, and stranded code gets deleted, not commented out.
+- `startInstall`'s consent gate now short-circuits before the
+  `approvedInstalls` check: `if ((need.nonstandard || []).length === 0)
+  return runInstall();`. Placed above the existing `approvedInstalls`/
+  `nonstandardFingerprint` check and the `confirmInstall`/cancel branches,
+  which are otherwise untouched — a non-empty `nonstandard` still goes
+  through exactly the approval-dedup and cancel-rejection path Round 1 built.
+  The empty case never touches `approvedInstalls` at all: there was no
+  question to have approved, so no entry is added, which is what keeps
+  invariant 3 (below) true for free rather than by a separate check.
+- While reading the two lines this change touches (`nonstandardFingerprint`'s
+  join and the gate's `approvalKey` concatenation), found both had a literal
+  NUL byte (`\x00`) standing in for the ` ` separator, and the `.join()`
+  call in `nonstandardFingerprint` had a literal `\x01` where `""` belongs —
+  three stray control bytes, already committed on this branch, invisible in
+  every editor view because they render as whitespace. `grep` (silently,
+  with no "binary file" notice under `-c`) and `Read` both hid them; only
+  `rg -a` and a raw byte scan (`od -c` / a small Python script counting
+  bytes `< 0x20`) surfaced them. Harmless to `Set`/string-equality semantics
+  — a NUL or SOH is still a valid, deterministic character in a JS string —
+  so the approval-key and fingerprint logic never actually misbehaved, but
+  shipping literal control bytes in a security-relevant comparison is not
+  something to leave in place once seen. Restored to the evident intent (`"
+  "` and `""`) with a byte-level rewrite (`old_string`-based Edit would not
+  match the corrupted bytes) and verified with `node --check` plus a full
+  scan confirming no control bytes below 0x20 remain in the file.
+- Invariants verified:
+  1. **A non-standard dependency still prompts.** The gate only fires the
+     silent path when `nonstandard` is empty; every source Round 1–3 taught
+     `nonstandard_dependencies_of` to name (git/URL/local-path/named-index,
+     workspace members, `uv.toml`'s project-wide index, `find-links`) still
+     produces a non-empty array, and the untouched `confirmInstall` branch
+     below the new check still runs for all of them — confirmed by reading
+     the code path (this task didn't touch `projectenv.py`) and by
+     `test_projectenv.py` staying green (84 passed) with `runtime.js`'s gate
+     reading whatever that module emits.
+  2. **`confirmBuildRetry` is untouched.** The diff touches only
+     `nonstandardFingerprint`'s separator, `confirmInstall`, and the gate in
+     `startInstall`; `confirmBuildRetry` and the `needs_build` branch that
+     calls it are unmodified. Added
+     `test_the_no_build_retry_prompt_still_fires_even_though_the_initial_install_was_silent`:
+     an `installEnv` call with no `nonstandard` posts silently
+     (`allow_build: false`, zero prompts), then the worker reports
+     `needs_build` and the "Install anyway" question still comes up — the
+     retry path does not care how `runInstall` was reached.
+  3. **The re-prompt semantics of `nonstandardFingerprint` survive.** Since
+     the silent path never adds an `approvalKey` entry, a later manifest
+     edit that adds a `nonstandard` entry finds nothing "already approved"
+     and prompts for real. Renamed and rewrote the existing
+     `test_a_changed_disclosure_re_asks_even_for_an_already_approved_project`
+     to `test_a_manifest_gaining_a_nonstandard_dependency_prompts_where_the_silent_install_did_not`
+     — an all-PyPI `installEnv` call (0 prompts) followed by the same
+     project gaining a git dependency (1 prompt) — this is exactly what the
+     brief calls invariant 3. Its old assertion (`prompts == 2`, from a
+     version where the first, all-PyPI call still prompted once) no longer
+     holds now that the first call is silent; the new assertion is
+     `prompts == 1`. The original "already-approved NONSTANDARD project
+     re-asks on a changed but still-nonstandard disclosure" case that test
+     used to also stand in for is now its own test,
+     `test_a_changed_nonstandard_disclosure_re_asks_even_for_an_already_approved_project`
+     (git-reason → local-path-reason on the same project, `prompts == 2`),
+     so that coverage isn't lost. Also added
+     `test_an_all_pypi_install_never_prompts` as the direct, isolated
+     invariant check.
+  4. **The jobs-dock row still appears, with a working Cancel, while a
+     silent install runs.** `runInstall` (the function the new short-circuit
+     calls) is unchanged: it still calls `mountInstallSoon(ui)` and still
+     registers the real `onCancel` handler before `tryInstall` starts. The
+     row was never mounted synchronously for the trivial all-PyPI case
+     either, before or after this change — `askRow`'s immediate mount only
+     ever applied to the confirm dialog itself, which no longer exists for
+     this case; the debounced jobs-dock mount an install actually runs under
+     is untouched. Verified by reading `runInstall` (unedited by this diff)
+     and by the existing `test_a_fast_install_never_mounts_the_overlay`,
+     `test_two_distinct_installs_get_their_own_rows`, and the mid-install
+     cancel tests (`test_cancelling_cancels_the_install_that_is_actually_running`
+     et al.) staying green with no changes needed.
+- Test updates in `tests/test_server_env_install.py`, and why each
+  expectation moved:
+  - `_CONCURRENT_RUNS` (the shared fixture for the five-concurrent-scripts,
+    cancel-the-confirm, delayed-real-click, and detail-font tests) gained a
+    `nonstandard` entry. Left as an all-PyPI manifest, every one of those
+    tests would now build no confirm row at all, and several of them exist
+    specifically to click that row's Install or Cancel button — they'd have
+    nothing to click. Giving the fixture something to disclose keeps them
+    exercising exactly the flow (invariant 1) they were written to cover;
+    none of their own assertions changed.
+  - `test_the_confirm_questions_detail_line_is_proportional_not_monospace`'s
+    docstring dropped its "A one-time download." quote (the deleted copy)
+    for a description of the real disclosure text now rendered under
+    `_CONCURRENT_RUNS`'s nonstandard entry; the test's own assertions (font
+    family only, never the text) were already independent of which copy
+    renders.
+  - `test_the_projects_manifest_is_watched_so_a_fix_triggers_a_reload`'s
+    `.replace(...)` target string was the literal old `requirements:
+    ["cowsay"] }` substring of `_CONCURRENT_RUNS`; updated to match the
+    fixture's new text so the `pyproject` field still gets spliced in.
+  - `test_an_unrelated_version_bump_does_not_re_ask` used two all-PyPI
+    manifests (`nonstandard: []` both times) — under the new gate neither
+    call ever reaches `approvedInstalls` or `confirmInstall`, so it was
+    asserting `prompts == 1` for a mechanism (the fingerprint dedup) it no
+    longer exercised at all. Rewritten to carry the same non-empty
+    `nonstandard` entry on both manifests (a version bump alongside an
+    unrelated dependency that stays nonstandard) so the dedup path is the
+    one actually under test; the assertion (`prompts == 1`) is unchanged
+    because that is still the correct answer for an unchanged disclosure.
+  - Added `test_an_all_pypi_install_never_prompts` and
+    `test_the_no_build_retry_prompt_still_fires_even_though_the_initial_install_was_silent`
+    (invariants 1's negative case and invariant 2, respectively — see above).
+- Ran narrowed: `tests/test_server_env_install.py` (80 passed),
+  `tests/test_server_env_install.py tests/test_env_install.py` together (230
+  passed). One `test_env_install.py` thread-count race
+  (`test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread`,
+  added in Round 3) failed once under `pytest-xdist` parallelism and passed
+  twice in isolation immediately after — a pre-existing flake unrelated to
+  this round's changes (it asserts on `threading.enumerate()`, which is
+  process-global and can see another worker's leftover threads under
+  xdist), not a regression from this diff. Did not run the full suite —
+  left to the orchestrator, per the same `/tmp`-quota note as prior rounds.
