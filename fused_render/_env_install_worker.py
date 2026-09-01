@@ -210,7 +210,7 @@ def _uv_env(**overrides):
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None,
            activity=None, bytes_done=None, bytes_total=None, needs_build=None,
-           platform_incompatible=None):
+           platform_incompatible=None, manifest_digest=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
     # same file (envinstall._write) and two writers racing on one temp means the
     # first os.replace consumes the second's file, whose replace then fails.
@@ -245,6 +245,15 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
     # `runtime.js` each render their own plain-language sentence instead of
     # uv's jargon, and skip the "Install anyway" retry entirely for a
     # platform nothing will ever satisfy.
+    #
+    # `manifest_digest`: set only alongside `platform_incompatible` — the
+    # `pyproject.toml` digest (`_state_digest`, below) this verdict was reached
+    # against. `envinstall.start()` reads it back to decide whether a NEW call
+    # for this key is a legitimate retry (the manifest changed — the user
+    # dropped the offending dependency) or the same permanently-doomed request
+    # arriving again (a preview remount, `preview-start.ts` cycling its 2 live
+    # iframes across many cards, an idle re-poll). None on every other stage
+    # and on an ordinary resolver failure, both of which are retried freely.
     path = os.path.join(progress_dir, "progress.json")
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
@@ -252,7 +261,8 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
                    "error": error, "pid": os.getpid(), "ts": time.time(),
                    "activity": activity, "bytes_done": bytes_done,
                    "bytes_total": bytes_total, "needs_build": needs_build,
-                   "platform_incompatible": platform_incompatible}, f)
+                   "platform_incompatible": platform_incompatible,
+                   "manifest_digest": manifest_digest}, f)
     os.replace(tmp, path)
 
 
@@ -1979,13 +1989,14 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
 
     def write(stage, pct, detail="", done=False, error=None,
               activity=None, bytes_done=None, bytes_total=None, needs_build=None,
-              platform_incompatible=None):
+              platform_incompatible=None, manifest_digest=None):
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
             _write(progress_dir, stage, pct, detail, done, error,
                    activity=activity, bytes_done=bytes_done, bytes_total=bytes_total,
-                   needs_build=needs_build, platform_incompatible=platform_incompatible)
+                   needs_build=needs_build, platform_incompatible=platform_incompatible,
+                   manifest_digest=manifest_digest)
             # Latched only once the record is actually ON DISK. Latching before the
             # write would make a FAILED terminal write shut the file anyway, and the
             # `except` path's error record — the one carrying the reason — would
@@ -2133,8 +2144,13 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
                 # `confirmBuildRetry`: both key off `needs_build` alone, so a
                 # refusal this platform can never satisfy must not carry it.
                 needs_build = None
+        # The digest travels only with a permanent verdict — `envinstall.start()`
+        # is the sole reader, and it only ever looks at this field once
+        # `platform_incompatible` is already set (see its own comment).
+        manifest_digest = _state_digest(project_dir) if platform_incompatible else None
         write("error", 100, "", done=True, error=message, needs_build=needs_build,
-              platform_incompatible=platform_incompatible)
+              platform_incompatible=platform_incompatible,
+              manifest_digest=manifest_digest)
         raise
 
 

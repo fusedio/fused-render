@@ -856,6 +856,111 @@ def test_start_says_whether_THIS_CALL_claimed_the_install(
     assert "claimed" not in (envinstall.progress(first["key"]) or {})
 
 
+# --- Bug B: a permanently-failed install must not be retried on a loop --------
+#
+# Each remount is a fresh JS context with no memory of the last attempt — a
+# preview card cycling through `preview-start.ts`'s 2 live iframes, or just the
+# user navigating — so a client-side "already tried this" set dies with the
+# page. The memory has to be server-side: `start()`'s own progress record,
+# keyed by whether the manifest that produced it has since changed
+# (`projectenv.state_digest`).
+
+
+@requires_fused
+def test_a_permanently_incompatible_install_is_not_retried_on_the_same_manifest(
+    tmp_path, monkeypatch
+):
+    """A prior attempt's `platform_incompatible` verdict (OpenWhisper's
+    `pyobjc-framework-applicationservices` on Linux, in the wild) must make the
+    NEXT `start()` call for the same key, against the same manifest, report the
+    existing terminal record rather than spawn attempt N+1 — this is what stops
+    the toast-every-few-seconds loop a torn-down-and-remounted preview card
+    (or any other repeated `/api/run`) would otherwise drive forever."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `pyobjc-framework-applicationservices` "
+                 "can't be installed because it is marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    def never(*a, **kw):
+        raise AssertionError("a poisoned key must not spawn attempt N+1")
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    rec = envinstall.start(proj)
+    assert rec["key"] == key
+    assert rec["platform_incompatible"] == poisoned["platform_incompatible"]
+    assert rec["done"] is True and rec["error"], (
+        "the caller must see the REAL reason, not a synthetic in-flight state"
+    )
+
+
+@requires_fused
+def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
+    """The poison record's whole point is to be invalidated by the one thing
+    that makes a retry legitimate: the user fixed `pyproject.toml`. A digest
+    that does not match the CURRENT manifest must not gate anything — recorded
+    here as a digest that simply disagrees with `state_digest(proj)` now,
+    standing in for "the poisoned record predates an edit"."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": "stale-digest-from-before-the-edit",
+    }
+    envinstall._write(key, poisoned)
+
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
+    rec = envinstall.start(proj)
+    assert spawned, "an edited manifest must let the next attempt actually run"
+    assert rec["claimed"] is True
+
+
+@requires_fused
+def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`)
+    must always reach a real worker — a user who chose to compile from source
+    must not be told "no" by a record left over from a `--no-build` run that
+    never even tried that."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
+    rec = envinstall.start(proj, allow_build=True)
+    assert spawned, "allow_build=True must bypass the poison record"
+    assert rec["claimed"] is True
+    assert spawned[0][2].get("allow_build") is True
+
+
 # --- a jobs-dock row for every venv install -----------------------------------
 #
 # `start()`'s claiming call spawns a short daemon thread mirroring
@@ -4511,6 +4616,11 @@ def test_needs_build_stays_set_when_the_platform_check_cannot_complete(tmp_path,
     rec = _record(d)
     assert rec["needs_build"] == "foolib", rec
     assert rec.get("platform_incompatible") is None, rec
+    assert rec.get("manifest_digest") is None, (
+        "an ordinary --no-build refusal (this run's own retry, a flaky "
+        "network) must not be tagged with a digest — only a proven-permanent "
+        "platform_incompatible verdict is"
+    )
 
 
 def test_install_sets_platform_incompatible_and_clears_needs_build(tmp_path, monkeypatch):
@@ -4558,6 +4668,40 @@ def test_install_sets_platform_incompatible_and_clears_needs_build(tmp_path, mon
     # the PyPI lookup, not dropped in favour of a name-only (latest-release)
     # query that could answer for the WRONG version.
     assert seen == [("pyobjc-framework-applicationservices", "10.3.1")]
+
+
+def test_platform_incompatible_record_carries_the_manifest_digest(tmp_path, monkeypatch):
+    """Bug B's poison key: a `platform_incompatible` terminal record must carry
+    the `pyproject.toml` digest it was reached against, so `envinstall.start()`
+    can tell "the same doomed manifest, asked again" from "the user edited it,
+    let this retry run" without re-invoking uv. Set only on THIS branch —
+    `test_needs_build_stays_set_when_the_platform_check_cannot_complete` (above)
+    is the control: an ordinary `--no-build` refusal must carry no digest at all,
+    since that one is meant to retry freely (an "Install anyway" click, a
+    flaky-network resolve)."""
+    worker = _worker_module("_env_install_worker_manifest_digest")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    worker._CURRENT_PLATFORM_NAME = "Linux"
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `pyobjc-framework-applicationservices==10.3.1 "
+            "@ registry+https://pypi.org/simple` can't be installed because it "
+            "is marked as `--no-build` but has no binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    monkeypatch.setattr(worker, "_fetch_pypi_json", lambda name, version: {"urls": [_wheel_url(
+        "pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl")]})
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, proj, str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["platform_incompatible"], rec
+    assert rec["manifest_digest"] == worker._state_digest(proj)
+    assert rec["manifest_digest"], "must not be the empty-string 'no pyproject.toml' digest"
 
 
 def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):

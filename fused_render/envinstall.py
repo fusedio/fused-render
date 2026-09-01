@@ -1414,6 +1414,39 @@ def progress(key: str) -> dict | None:
                      + progress_dir(key)}
 
 
+def _permanent_failure(key: str, project_dir: str) -> dict | None:
+    """The last recorded attempt for `key`, if it is a verdict retrying can
+    never change — right now, only `platform_incompatible` (the worker sets it,
+    with the `pyproject.toml` digest it was reached against, only when a
+    `--no-build` refusal names a package published solely for a platform this
+    machine is not — see `_env_install_worker.install`'s except block).
+
+    Returns None for every case a retry might legitimately fix: no record yet,
+    a record that is not `done`, an ordinary resolver failure or `needs_build`
+    (compiling from source is a real if slow option; a click away), a
+    cancelled run or a crash-diagnosed record (`_recorded_progress` covers
+    both — neither carries `platform_incompatible`), and — the invalidation —
+    a record whose `manifest_digest` no longer matches the project's CURRENT
+    `pyproject.toml`. That last one is deliberate and load-bearing: editing the
+    manifest to drop the un-installable dependency must make the next `start()`
+    call run for real, not repeat a verdict about a manifest that no longer
+    exists.
+
+    Deliberately narrow rather than "any terminal error, twice in a row": a
+    network failure, a timeout, or a cancelled run are all transient, and
+    poisoning one of those would strand an offline user, or one whose first
+    attempt was simply too slow, on a permanent-looking error for good.
+    """
+    from fused_render import projectenv
+
+    record = _recorded_progress(key)
+    if not record or not record.get("done") or not record.get("platform_incompatible"):
+        return None
+    if record.get("manifest_digest") != projectenv.state_digest(project_dir):
+        return None
+    return record
+
+
 def _in_flight(key: str) -> bool:
     prog = progress(key)
     return bool(prog) and not prog.get("done")
@@ -1992,6 +2025,22 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True) 
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
         _write(key, record)
         return _reported(key, record)
+    # A key whose last recorded attempt failed for a reason THIS MACHINE can
+    # never fix by retrying — a macOS-only wheel on Linux, the shape this
+    # exists for — must not launch attempt N+1 just because something asked
+    # again. Anything that remounts a page restarts the cycle with no memory
+    # of the last try (a fresh JS context, a preview card cycling through
+    # `preview-start.ts`'s 2 live iframes across many cards, a plain reload),
+    # so the memory has to live here, keyed off the manifest rather than off
+    # a count: `poisoned` is None the instant `pyproject.toml` changes, which
+    # is what lets a user who drops the offending dependency retry for real.
+    # `allow_build` is excluded on purpose — an explicit "install anyway"
+    # click must always reach a real worker, never be answered out of a
+    # record from a run that never even tried building from source.
+    if not allow_build:
+        poisoned = _permanent_failure(key, project_dir)
+        if poisoned is not None:
+            return _reported(key, poisoned)
     if not _claim(key):
         # Someone else owns this install — join it, and report exactly what a poll
         # would see. No synthetic record here any more: `progress()` covers the
