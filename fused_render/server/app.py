@@ -399,7 +399,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @on_startup
     async def _startup_prewarm_ai():
-        prewarm_ai()
+        prewarm_ai(app)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
     @on_startup
@@ -488,7 +488,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @on_shutdown
     async def _startup_shutdown_ai():
-        await shutdown_ai_session()
+        await shutdown_ai_session(app)
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).

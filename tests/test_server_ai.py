@@ -1727,3 +1727,44 @@ def test_prewarm_ai_gives_each_app_build_its_own_session(monkeypatch):
     second = _server_ai._AI_SESSION
     assert second is not first
     assert isinstance(second, _server_ai._AiSession)
+
+
+def test_shutdown_closes_the_shutting_down_apps_own_session(monkeypatch):
+    """Two overlapping app builds each get their own `_AiSession` (the test
+    above), but a shared module global still leaves shutdown reading
+    whichever session happens to be current rather than the one its own app
+    built. Simulate the interleaving directly: app A prewarms, app B
+    prewarms (the global now points at B's session), then A shuts down.
+    A's shutdown must close A's own session, and must leave B's session
+    alone — not close it, and not close it twice when B later shuts down
+    its own."""
+    import types
+
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    closed = []
+
+    async def _recording_shutdown(self):
+        closed.append(self)
+
+    monkeypatch.setattr(_server_ai._AiSession, "shutdown", _recording_shutdown)
+
+    app_a = types.SimpleNamespace(state=types.SimpleNamespace())
+    app_b = types.SimpleNamespace(state=types.SimpleNamespace())
+
+    _server_ai.prewarm_ai(app_a)
+    session_a = getattr(app_a.state, "ai_session", None)
+    assert session_a is not None, (
+        "prewarm_ai(app) must stash the session it built on app.state, "
+        "not only on the module global")
+
+    _server_ai.prewarm_ai(app_b)
+    session_b = app_b.state.ai_session
+    assert session_b is not session_a
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_a))
+    assert closed == [session_a], (
+        "shutting down app A must close A's own session, not whatever the "
+        "module global currently points at")
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_b))
+    assert closed == [session_a, session_b]

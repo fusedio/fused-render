@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -1183,7 +1183,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
-async def _ai_relay(body: dict):
+async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     """Validate an /api/ai body and run one claude CLI completion.
 
     Module-level (not a closure) so tests can drive it directly and mock the
@@ -1192,7 +1192,17 @@ async def _ai_relay(body: dict):
     {"type":"chunk","text"} lines closed by a {"type":"done"} line. All
     validation happens BEFORE any streaming starts, so 400s and the
     binary-missing 502 are always proper JSON; only an error after the first
-    byte is demoted to an ok:false done frame on a 200."""
+    byte is demoted to an ok:false done frame on a 200.
+
+    `session` is the calling app's own `_AiSession` (its `app.state.ai_session`,
+    set by `prewarm_ai(app)`) — read ONCE here, at the top, and threaded
+    through the whole request. That single read (rather than several reads
+    of the `_AI_SESSION` module global spread across the queued check, the
+    lock acquire and every configure/_discard call below) is what keeps one
+    request pinned to one session even if another app build reassigns the
+    global while this request is in flight. Callers with no app handle
+    (direct module-level calls, tests) fall back to `_AI_SESSION`."""
+    session = session if session is not None else _AI_SESSION
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _ai_error(
@@ -1529,31 +1539,31 @@ async def _ai_relay(body: dict):
         # rather than acquired-non-blockingly because `asyncio.Lock` has no
         # such acquire; a stale read only mis-labels a row for one tick, which
         # is the whole stake of a detail line.
-        queued = _AI_SESSION.lock.locked()
+        queued = session.lock.locked()
         if queued:
             _report_remote(detail=_REMOTE_QUEUED_DETAIL)
-        async with _AI_SESSION.lock:
+        async with session.lock:
             if queued:
                 _report_remote(detail=_REMOTE_ROW_DETAIL)
             try:
-                proc = await _AI_SESSION.configure(model, system_prompt,
-                                                   effort)
+                proc = await session.configure(model, system_prompt,
+                                               effort)
                 return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
                                        on_delta=deliver)
             except asyncio.CancelledError:
                 # Client went away mid-turn: the process is still emitting
                 # this turn's events, and a later request's /clear loop would
                 # misread them. Discard — the next call spawns fresh.
-                await _AI_SESSION._discard()
+                await session._discard()
                 raise
             except (_AiProcFailure, OSError, asyncio.TimeoutError) as exc:
-                await _AI_SESSION._discard()
+                await session._discard()
                 if delivered or isinstance(exc, asyncio.TimeoutError):
                     raise
                 # one fresh-spawn retry: covers an instance that died idle
                 # or wedged in ways the returncode check can't see
                 try:
-                    proc = await _AI_SESSION.configure(
+                    proc = await session.configure(
                         model, system_prompt, effort)
                     return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
                                            on_delta=deliver)
@@ -1561,10 +1571,10 @@ async def _ai_relay(body: dict):
                     # Cancelled mid-retry: the respawned instance is left
                     # mid-reconfig/mid-turn. Discard it too, or the next
                     # call's /clear would misread its leftover events.
-                    await _AI_SESSION._discard()
+                    await session._discard()
                     raise
                 except (_AiProcFailure, OSError, asyncio.TimeoutError):
-                    await _AI_SESSION._discard()
+                    await session._discard()
                     raise
 
     if not stream:
@@ -1755,23 +1765,47 @@ def _ai_usage(raw) -> dict | None:
 # risks a `RuntimeError: ... is bound to a different event loop` the moment
 # that lock is ever contended in one of those builds. A fresh session per
 # app keeps a build's lock scoped to only its own lifespan's loop.
-def prewarm_ai():
+#
+# `app`, when given, is the app this session belongs to: the session is
+# stashed on `app.state.ai_session` (mirrors `open_pooled_client`'s
+# `app.state.pooled_client` in common.py) so that app's OWN shutdown hook —
+# and its request handlers, via `request.app.state.ai_session` — reach this
+# exact session rather than whatever the module global happens to hold by
+# the time they run. Two app builds overlapping in one process each prewarm
+# in turn, so the global is reassigned twice; without the app.state copy, a
+# first app's shutdown would close whatever the SECOND app's prewarm most
+# recently pointed the global at, orphaning its own session's subprocess and
+# leaving the second app's shutdown to close an already-closed session.
+# `_AI_SESSION` itself is still updated, as the default for callers with no
+# app handle (a bare module-level call, or a test driving `_ai_relay`
+# directly).
+def prewarm_ai(app=None):
     global _AI_SESSION
     _AI_SESSION = _AiSession()
     _AI_SESSION.prewarm_default()
+    if app is not None:
+        app.state.ai_session = _AI_SESSION
 
-async def shutdown_ai_session():
-    await _AI_SESSION.shutdown()
+async def shutdown_ai_session(app=None):
+    session = getattr(app.state, "ai_session", None) if app is not None else None
+    if session is None:
+        session = _AI_SESSION
+    await session.shutdown()
 
 
 @router.post("/api/ai")
-async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+async def api_ai(request: Request, body: dict = Body(...),
+                 x_fused: str | None = Header(default=None)):
     # fused.ai() — validation and the claude CLI hop live in _ai_relay
     # (module-level so tests can drive it with the subprocess mocked).
+    # `request.app.state.ai_session` is THIS app's own session, stashed by
+    # `prewarm_ai(app)` at startup — not the module global, which a second,
+    # overlapping app build may have already reassigned.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    return await _ai_relay(body)
+    session = getattr(request.app.state, "ai_session", None)
+    return await _ai_relay(body, session=session)
 
 
 @router.get("/api/ai/metrics")
