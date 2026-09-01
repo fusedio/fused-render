@@ -120,8 +120,9 @@ import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai import fit, footprints, hw_detect, speed
 from fused_render.ai import tasks as ai_tasks
-from fused_render.ai.registry import for_capability
+from fused_render.ai.registry import TEXT_GENERATION, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
@@ -413,7 +414,8 @@ def _gate(raw) -> str | None:
     return "auto" if raw == "auto" else "manual"
 
 
-def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
+def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
+               footprint_store: dict | None, hardware) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
@@ -509,8 +511,36 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         if file is None:
             return None
     safetensors = raw.get("safetensors")
+    params = _params(safetensors)
+    estimated_size = _estimated_bytes(safetensors)
+    # A real, safetensors-derived byte total is strictly better evidence than
+    # `fit`'s own `params x bytes-per-param` guess — that guess is what
+    # `fit._weight_bytes` falls back to only when `quantization` is a
+    # recognized display string, which a Hub search row never carries (that
+    # field is catalog-only). So `quantization` stays None here always, and
+    # `size_gb` carries the computed total whenever one exists.
+    size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
+    fit_verdict = fit.verdict(capability, model_id, size_gb, params=params,
+                              footprint_store=footprint_store, hardware=hardware)
+    speed_estimate = (
+        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        if capability == TEXT_GENERATION else None)
+    created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     return {
         "id": model_id,
+        # {verdict, basis, footprintBytes, score, runMode} or None — the same
+        # judgement `ai_runtime.describe_catalog` computes for a downloaded
+        # model, over the SAME `fit.verdict` this app already trusts, so a
+        # Hub row and a local card cannot disagree about what "fits" means.
+        "fit": fit_verdict,
+        # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
+        # calibrated, calibrationFactor} or None — text-generation only, the
+        # same restriction `ai_runtime.describe_catalog` applies, because the
+        # unit means nothing for the other three capabilities.
+        "speedEstimate": speed_estimate,
+        # ISO8601 or None. Already in `_EXPAND` and thrown away before this —
+        # the field the "New" sort orders by but the page never drew.
+        "created": created,
         "task": task,
         # The same sentence the local cards show on hover, so a task means the
         # same thing on both tabs or it means nothing.
@@ -536,8 +566,8 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
-        "params": _params(safetensors),
-        "estimatedSize": _estimated_bytes(safetensors),
+        "params": params,
+        "estimatedSize": estimated_size,
         "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
     }
@@ -739,12 +769,20 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # only the handful of repos that turned out to be present.
     cache_dir = hub_cache_dir()
     dirs = _cached_dirs()
+    # Read ONCE per request, exactly like `ai_runtime.py:906-923` — both are a
+    # `storage.read_json` open plus a parse (`hw_detect.cached_hardware()` also
+    # re-checks machine identity), and this join answers as many rows as the
+    # Hub sent back before truncation. `_model_row` threads both straight
+    # through to `fit.verdict`/`speed.estimate_tok_s` rather than letting
+    # either call resolve its own reading per row.
+    footprint_store = footprints.load_store()
+    hardware = hw_detect.cached_hardware()
     # `_model_row` is also the supported-tag filter (see its docstring): a row
     # this app could not download and run comes back None and never reaches the
     # page. Truncation is AFTER that pass, so `limit` means "rows you will be
     # shown" rather than "rows the Hub was asked for".
     models = [row
-              for row in (_model_row(r, cache_dir, dirs)
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None][:count]
     return {

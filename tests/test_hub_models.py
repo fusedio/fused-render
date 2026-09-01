@@ -507,6 +507,60 @@ def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypa
     assert len(fake.calls) == 2  # a different engine choice is a different question
 
 
+# -- fit, speed and age (task 1) --------------------------------------------
+
+
+def test_a_row_with_params_carries_fit_speed_and_created(client, hub_cache, monkeypatch):
+    # 8B params at BF16 is a real footprint fit.verdict can judge, and a
+    # text-generation row is exactly the capability speed.estimate_tok_s covers.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/big",
+        createdAt="2026-08-01T00:00:00.000Z",
+        safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["created"] == "2026-08-01T00:00:00.000Z"
+    assert row["fit"] is not None
+    assert set(row["fit"]) == {"verdict", "basis", "footprintBytes", "score", "runMode"}
+    assert row["speedEstimate"] is not None
+    assert "tokensPerSecond" in row["speedEstimate"]
+
+
+def test_a_row_with_no_params_and_no_size_carries_nulls_not_a_guess(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/gguf", safetensors=None)]))
+    row = _search(client).json()["models"][0]
+    assert row["fit"] is None
+    assert row["speedEstimate"] is None
+    assert row["created"] is None
+
+
+def test_speed_estimate_is_absent_for_a_non_text_capability(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "org/pic", "pipeline_tag": "text-to-image",
+         "safetensors": {"parameters": {"BF16": 4_000_000_000}, "total": 4_000_000_000}},
+    ]))
+    row = _search(client).json()["models"][0]
+    assert row["speedEstimate"] is None
+    # fit still applies — it is not text-generation-only.
+    assert row["fit"] is not None
+
+
+def test_the_hardware_and_footprint_store_are_read_once_per_request_not_per_row(
+        client, hub_cache, monkeypatch):
+    from fused_render.ai import footprints, hw_detect
+
+    load_store_calls = []
+    cached_hardware_calls = []
+    monkeypatch.setattr(hub.footprints, "load_store",
+                        lambda: (load_store_calls.append(1), None)[1])
+    monkeypatch.setattr(hub.hw_detect, "cached_hardware",
+                        lambda: (cached_hardware_calls.append(1), None)[1])
+    monkeypatch.setattr(httpx, "get", _reply([_hit(f"org/m{i}") for i in range(5)]))
+    _search(client)
+    assert load_store_calls == [1]
+    assert cached_hardware_calls == [1]
+
+
 # -- when the far side is unhappy -------------------------------------------
 
 

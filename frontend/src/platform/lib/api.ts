@@ -3058,6 +3058,15 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** Will this fit on THIS machine — the same judgement a downloaded model's
+   *  card carries, over the same `fit.verdict` ladder server-side. Null when
+   *  there is nothing to judge (no safetensors size, no params). */
+  fit: AiFitVerdict | null;
+  /** Text-generation rows only — see `AiSpeedEstimate`'s own contract. */
+  speedEstimate: AiSpeedEstimate | null;
+  /** ISO8601, or null when the Hub did not say. The field the "New" sort
+   *  orders by, now actually drawn rather than fetched and discarded. */
+  created: string | null;
   local: HubModelLocal;
   url: string;
 }
