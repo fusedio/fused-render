@@ -2883,13 +2883,24 @@ def _write_ref(folder, ref, commit):
 
 
 def _clear_parts(folder):
-    """Drop our partial files before handing the repo back to huggingface_hub.
+    """Drop OUR partial files, unconditionally, before handing the repo back to
+    huggingface_hub.
 
     Not because hf would misread them — the suffix exists precisely so it never
     sees them — but because hf is about to fetch those same files ITSELF. Kept,
     they would count towards the progress bar for a download nothing is writing,
     and then sit in the hub cache forever beside the blob hf finished: nothing
     ever resumes into a part file whose blob already exists.
+
+    **Ours only, and immediate — the opposite of `_sweep_orphan_parts` on both
+    counts, deliberately.** hf's own `.incomplete` is left alone, because it may
+    be genuine resume state from an EARLIER call into this same fallback (hf
+    resumes one of those by seeking to its length); clearing it here would turn
+    a resumable hf download into a fresh multi-gigabyte one. And there is no
+    grace window: the segmented fetch that just failed is definitely not
+    writing into its own part file any more, so age tells us nothing a
+    conditional check would add, only a reason to leave freshly-abandoned bytes
+    behind for one grace period.
 
     So the resume story is honest about its scope. It covers the app being
     killed, quit or crashed — the case that motivated it (AI-5e) — and not a
@@ -3490,6 +3501,92 @@ _NOT_CACHED = (OSError, ImportError)
 #: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
 _HF_PART_SUFFIX = ".incomplete"
 
+#: Every part-file SHAPE a fetch can leave beside a blob: ours (`.fusedpart`
+#: and its offsets sidecar) and hf's own — the bare `<etag>.incomplete` older hf
+#: writes, and the `<etag>.<8 hex chars>.incomplete` newer hf writes so two
+#: concurrent attempts at one blob cannot collide on a single name.
+_PART_MARKER = re.compile(
+    r"(?:" + re.escape(PART_SUFFIX) + r"(?:\.json)?"
+    r"|\.[0-9a-f]{8}" + re.escape(_HF_PART_SUFFIX) +
+    r"|" + re.escape(_HF_PART_SUFFIX) + r")$")
+
+#: How long `_sweep_orphan_parts` leaves a part file alone before it will treat
+#: it as dead weight. A LIVE download keeps its part file's mtime current —
+#: ours flushes its sidecar every `FLUSH_EVERY_S` (one second), and hf rewrites
+#: `.incomplete` on every chunk it appends — so anything genuinely in flight is
+#: seconds old. An orphan, the resume state for a file some scope no longer
+#: covers, is minutes to months old. Five minutes is enormous headroom over the
+#: flush cadence and nothing at all against how long a card has been stuck
+#: reading "partial".
+_PART_GRACE_SECONDS = 300
+
+
+def _sweep_orphan_parts(folder):
+    """Remove every part file in `<folder>/blobs/` old enough to be provably
+    dead, and return how many were removed.
+
+    **The invariant this leans on.** Call this only after a download for some
+    SCOPE has succeeded — a full snapshot, one recipe's `allow_patterns`, one
+    named file, whether that success came off the network or off
+    `_cached_path`/`_cached_file` confirming the scope was already on disk. At
+    that moment every file the scope covers is a complete blob, by definition:
+    the fetch that just returned wrote it, or the cache check would not have
+    answered a hit. So a part file still sitting in `blobs/` cannot belong to
+    anything this download cared about — it is resume state for a file some
+    OTHER fetch, wider or narrower, earlier or concurrent-but-abandoned, was
+    writing. No etag-to-filename mapping is needed to tell the two apart, and
+    none is possible offline: the sidecar records only version/etag/size/
+    segments, and hf's `.incomplete` carries no sidecar at all.
+
+    This is the fix for the recipe-scoped GGUF case: an earlier, unscoped fetch
+    of a repo that later gains a `keep`-limited recipe leaves part files for
+    the files the recipe now permanently excludes, and nothing scoped to the
+    recipe ever looks at those names again to clean them up. Calling this after
+    that scope's own success — the `_cached_path` fast path included, since a
+    resume-button retry that changes nothing on the wire is exactly a repeat of
+    that same success — removes them, and `hub_cache._unfinished_fetch` stops
+    reading the repo as partial.
+
+    **Only `blobs/`, never a full walk.** Every part file this module writes
+    sits beside the blob it is filling (`_FileFetch.part`/`.sidecar`), and hf's
+    `.incomplete` markers live in the same directory — nothing in this cache
+    layout ever puts one anywhere else.
+
+    **The grace window is the only guard against sweeping a file that is still
+    being written.** There is no per-repo lock or in-flight registry here to
+    consult instead: two fetches over the same repo — different recipe scopes,
+    say — are two independent processes sharing nothing but the filesystem, so
+    freshness is the only signal available. See `_PART_GRACE_SECONDS`.
+
+    Never raises. A failed unlink is logged and skipped rather than swallowed —
+    a cosmetic cleanup step must not be the thing that turns a successful
+    download into a failed one, but it must not go silent either.
+    """
+    removed = 0
+    try:
+        entries = list(os.scandir(os.path.join(folder or "", "blobs")))
+    except OSError:
+        return removed
+    now = time.time()
+    for entry in entries:
+        if not _PART_MARKER.search(entry.name):
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < _PART_GRACE_SECONDS:
+            continue
+        try:
+            os.remove(entry.path)
+        except OSError as error:
+            sys.stderr.write(
+                f"[fused] could not remove orphan part file {entry.path}: "
+                f"{error.__class__.__name__}: {error}\n")
+            continue
+        removed += 1
+    return removed
+
 
 def _settled(path):
     """Whether the file at `path` is finished rather than mid-download.
@@ -3872,6 +3969,12 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         cached = _cached_path(model_id, local, allow=allow_patterns,
                               ignore=ignore_patterns)
         if cached:
+            # The most important call site of all: pressing "Continue
+            # downloading" on a repo whose recipe scope is already fully on
+            # disk lands exactly here, with zero connections opened. Without
+            # this the card stays "partial" forever no matter how many times
+            # the button is pressed — see `_sweep_orphan_parts`.
+            _sweep_orphan_parts(repo_folder(model_id))
             return cached
 
         # Our own mirror, for a suggested model, BEFORE the Hub is consulted at
@@ -3882,6 +3985,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # manifest describes the whole repo at one commit and nothing else.
         mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
         if mirrored:
+            _sweep_orphan_parts(repo_folder(model_id))
             return mirrored
 
     # ONE listing, serving the bar's total, the list to fetch AND the revision
@@ -3955,6 +4059,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # will not look up.
         _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
                       allow=allow_patterns, ignore=ignore_patterns)
+        _sweep_orphan_parts(repo_folder(model_id))
         return fetched
     fell_back = hub(revision=sha)
     # Same rule as above, and the same reason it is checked rather than assumed:
@@ -3966,6 +4071,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     # what keeps a repo that ever fell back from being cold forever.
     _record_fetch(repo_folder(model_id), _commit_of(fell_back), names, fell_back,
                   allow=allow_patterns, ignore=ignore_patterns)
+    _sweep_orphan_parts(repo_folder(model_id))
     return fell_back
 
 
@@ -4158,6 +4264,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     # download — see `_cached_file`.
     cached = _cached_file(repo_id, filename)
     if cached:
+        # Same rule as `download_snapshot`'s fast path — see
+        # `_sweep_orphan_parts` — one file wide: a "Continue downloading" retry
+        # on a GGUF quantization already on disk lands here with no connection
+        # opened, and has to be the moment any of this repo's other, out-of-
+        # scope leftovers get cleared too.
+        _sweep_orphan_parts(repo_folder(repo_id))
         return cached
 
     detail = detail or f"Fetching {filename}…"
@@ -4170,6 +4282,7 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     # so `_mirror_snapshot` never sees a suggested text model on those platforms.
     mirrored = _mirror_file(repo_id, filename, detail=detail, job=job, row=row)
     if mirrored:
+        _sweep_orphan_parts(repo_folder(repo_id))
         return mirrored
 
     # One listing here too, for the revision as much as for the total: a GGUF
@@ -4197,9 +4310,11 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
             total=total, detail=detail, job=job, row=row, counter=ticker)
 
     if not sha:
-        return hub()
+        result = hub()
+        _sweep_orphan_parts(repo_folder(repo_id))
+        return result
     try:
-        return fetch_with_progress(
+        fetched = fetch_with_progress(
             repo_id,
             lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
                                  filename),
@@ -4208,7 +4323,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
         _fallback(repo_id, error)
-    return hub()
+    else:
+        _sweep_orphan_parts(repo_folder(repo_id))
+        return fetched
+    result = hub()
+    _sweep_orphan_parts(repo_folder(repo_id))
+    return result
 
 
 # -------------------------------------------------------------------- bring-up
