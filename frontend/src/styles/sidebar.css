@@ -297,7 +297,14 @@ a.sidebar-rail-btn {
    away with the nav: the same trap the schedule modal's dropdowns hit (D304),
    and the same fix the sidebar's own Settings menu uses. The width is likewise
    fixed rather than inherited — the sidebar drags down to 180px and this holds
-   a shell command. Keep it in step with PANEL_WIDTH in VersionChip.tsx. */
+   a shell command. Keep it in step with PANEL_WIDTH in VersionChip.tsx.
+
+   No `top` here, deliberately: the inline style pins the panel by its BOTTOM
+   edge just above the chip so it grows UPWARD (panelAnchor in VersionChip.tsx),
+   the same shape as .sidebar-prefs-menu below and for the same reason — the
+   chip is the trailing slot of the sidebar's last row, so `max-height: 70vh`
+   hanging DOWN from it is 70vh below the floor of the window. Adding a `top`
+   to this rule would stretch the panel between both edges and undo that. */
 .version-panel {
   position: fixed;
   z-index: 60;

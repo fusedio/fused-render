@@ -11462,6 +11462,15 @@ the installation, and the mark that says so.
   else: the badge is a claim about this machine and the person at it may have
   settled it by hand, but the report files are not theirs to lose by dismissing a
   badge.
+- **SF-10a** **The panel GROWS UPWARD from the chip**, pinned by its bottom edge
+  (`panelAnchor`), because the chip is the trailing slot of the sidebar's LAST
+  row and therefore sits at the floor of the window by construction. Hung
+  downward from the chip instead, a `max-height: 70vh` panel opens 70vh below
+  the bottom of the screen, and every one of SF-10's three answers is in the
+  part you cannot reach — the failure is total, and it is invisible to the
+  clamp that was there, which was horizontal only. This is the same shape and
+  the same bug as the sidebar's own Settings menu and its Tours flyout, both of
+  which already grow upward out of that row for exactly this reason.
 - **SF-11** **Cheap on the poll, expensive on the click.** The chip's PRESENCE
   rides `/api/config`'s `modified_install` (one small JSON read; present only
   when modified, so there is no `modified: false` shape to truthiness-check). The

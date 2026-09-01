@@ -44,6 +44,32 @@ import {
 // panel measured after paint would place itself twice.
 const PANEL_WIDTH = 300;
 
+/** Where the panel sits, from the chip's rect and the viewport. Exported and
+    pure so the placement can be tested without a DOM — the component around it
+    only reads a rect and hands the result to `style`.
+
+    IT GROWS UPWARD, pinned by its bottom edge just above the chip, which is the
+    same shape the Settings menu beside it uses (`GlobalSidebar`'s
+    `togglePrefsMenu`). This chip is the trailing slot of the sidebar's LAST
+    row, so it sits at the bottom of the viewport by construction; anchoring the
+    panel's TOP to `r.bottom` put a `max-height: 70vh` dialog below the fold,
+    where the report, issue and reinstall actions could not be reached at all.
+
+    The horizontal clamp is unchanged and still needed: the sidebar is draggable
+    and the window can be narrow, so the chip's own left edge is not
+    automatically a place the panel fits. Only that axis was ever clamped, which
+    is what made the old comment here ("clamped to the viewport") true of one
+    direction and silent about the one that actually hid the thing. */
+export function panelAnchor(
+  r: { left: number; top: number },
+  view: { innerWidth: number; innerHeight: number },
+): { left: number; bottom: number } {
+  return {
+    left: Math.max(8, Math.min(r.left, view.innerWidth - PANEL_WIDTH - 8)),
+    bottom: view.innerHeight - r.top + 6,
+  };
+}
+
 function basename(path: string): string {
   const parts = path.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] || path;
@@ -100,7 +126,7 @@ function ModifiedPanel({
 }: {
   marker: ModifiedInstall;
   /** Viewport coordinates for the fixed-position panel — see `openAt`. */
-  at: { left: number; top: number };
+  at: { left: number; bottom: number };
   onClose: () => void;
   /** Drop the badge NOW rather than at the next poll — see the Dismiss row. */
   onCleared: () => void;
@@ -143,7 +169,7 @@ function ModifiedPanel({
       className="version-panel"
       role="dialog"
       aria-label="Modified installation"
-      style={{ left: at.left, top: at.top }}
+      style={{ left: at.left, bottom: at.bottom }}
     >
       <div className="version-panel-head">Modified installation</div>
       <div className="update-badge-text">{modifiedSummary(marker)}</div>
@@ -383,7 +409,7 @@ export default function VersionChip({
   // that scrolled away with the nav. The same trap the schedule modal's
   // dropdowns hit (D304); the same fix, and the same one the sidebar's own
   // Settings menu already uses.
-  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+  const [at, setAt] = useState<{ left: number; bottom: number } | null>(null);
   const rootRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
@@ -434,12 +460,7 @@ export default function VersionChip({
       return;
     }
     const r = e.currentTarget.getBoundingClientRect();
-    // Clamped to the viewport: the sidebar is draggable and the window can be
-    // narrow, so "just below the chip" is not automatically on screen.
-    setAt({
-      left: Math.max(8, Math.min(r.left, window.innerWidth - PANEL_WIDTH - 8)),
-      top: r.bottom + 6,
-    });
+    setAt(panelAnchor(r, window));
   };
 
   return (
