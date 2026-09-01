@@ -1183,11 +1183,11 @@ def test_start_through_the_api_reaches_the_fixture_daemon_via_proxy(
 
 
 def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatch):
-    # Code-review fix: a background app's proxied POST can run side-effecting
-    # daemon code (fused.daemon.call), the same shape as the warm /api/engine
-    # worker's own /call — which already guards a heal-restart from silently
-    # re-sending it via at_most_once=True. Pin the routing decision directly
-    # rather than relying on flaky real-network-failure simulation.
+    # A background app's proxied POST can run side-effecting daemon code
+    # (fused.daemon.call), so a heal-restart must not silently re-send it —
+    # the proxy guards that with at_most_once=True for any non-template
+    # child. Pin the routing decision directly rather than relying on flaky
+    # real-network-failure simulation.
     from fused_render.server.routers import engines as engines_router_mod
 
     captured = {}
