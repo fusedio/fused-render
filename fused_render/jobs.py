@@ -470,6 +470,33 @@ def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
         return _public(job, now)
 
 
+def clear_cancel_requested(job_id: str, *, now: float | None = None) -> dict | None:
+    """Disown a flag a NEW attempt did not ask for. Returns the record, or
+    None if there isn't one.
+
+    `upsert`'s own body has no key for this — a reporter's tick legitimately
+    has nothing to say about a request it did not make, so there is no
+    "clear it" shape to put in a POST. This exists for the one caller that
+    genuinely needs to say it: a mirror thread opening a NEW attempt under an
+    id `upsert` reused from a previous one. `upsert` clears the flag itself
+    on a transition INTO a terminal state, but a mirror that dies mid-attempt
+    (its own `jobs.upsert` calls are best-effort) can leave the row `running`
+    with the flag still set — and because job ids are deterministic per venv
+    key, the next attempt's opening `upsert` inherits that row, sees no state
+    change (it was already `running`), and never runs the clearing branch.
+    Called once, right after that opening `upsert`, so a ✕ pressed from then
+    on (`request_cancel`, above) still sets the flag normally — this only
+    disowns what an attempt did not itself request.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return None
+        job.cancel_requested = False
+        return _public(job, now)
+
+
 def _forget(job_id: str, now: float) -> None:
     """Drop a record and remember the dismissal. Caller holds the lock."""
     del _jobs[job_id]

@@ -269,6 +269,28 @@ def test_reaching_a_terminal_state_spends_the_cancel_request(client):
     assert row["cancel_requested"] is False
 
 
+def test_clear_cancel_requested_disowns_a_stale_flag_but_not_state(client):
+    """A caller opening a NEW attempt under a reused job id (envinstall's
+    mirror thread is the one that does this) must be able to disown a flag a
+    previous attempt's dead reporter never got to clear, without touching
+    anything else `upsert`'s body has no key for."""
+    report(client, id="a", title="t", cancellable=True)
+    client.post("/api/jobs/a/cancel", headers={"X-Fused": "1"})
+    assert jobs.list_jobs()[0]["cancel_requested"] is True
+
+    row = jobs.clear_cancel_requested("a")
+    assert row["cancel_requested"] is False
+    assert row["state"] == "running"  # unrelated to the flag it disowned
+
+    # A fresh ✕ after that still cancels normally.
+    res = client.post("/api/jobs/a/cancel", headers={"X-Fused": "1"})
+    assert res.json()["cancel_requested"] is True
+
+
+def test_clear_cancel_requested_on_a_gone_row_says_so():
+    assert jobs.clear_cancel_requested("nope") is None
+
+
 # ------------------------------------------------------------------ dismissal
 
 
