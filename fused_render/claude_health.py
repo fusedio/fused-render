@@ -526,6 +526,10 @@ def _shell_rc() -> Optional[str]:
         # never sources, and the button would report a success that fixed
         # nothing.
         zdotdir = os.environ.get("ZDOTDIR") or _zsh_zdotdir()
+        if zdotdir == _ZDOTDIR_UNSAFE or (zdotdir and not os.path.isabs(zdotdir)):
+            # Set, but not to a path we can safely write. ~/.zshrc is NOT a
+            # fallback here — zsh will not read it — so no rc is offered.
+            return None
         if zdotdir:
             return _home_relative(os.path.join(zdotdir, ".zshrc"))
         return "~/.zshrc"
@@ -545,8 +549,19 @@ def _shell_rc() -> Optional[str]:
     return None
 
 
+#: `_zsh_zdotdir` answer for "ZDOTDIR is set but not to a path we can safely
+#: write" — distinct from None (unset / probe could not run), because the two
+#: demand opposite reactions: unset falls back to ~/.zshrc, unsafe must NOT,
+#: or the fix would append to a file zsh never reads and report success.
+_ZDOTDIR_UNSAFE = "\0unsafe"
+
+
 def _zsh_zdotdir() -> Optional[str]:
-    """ZDOTDIR as zsh itself resolves it, or None when unset.
+    """ZDOTDIR as zsh itself resolves it.
+
+    None when unset or the probe could not run; `_ZDOTDIR_UNSAFE` when zsh
+    reported a value that is not an absolute path — set-but-weird means no rc
+    file is safe to offer, not that ~/.zshrc is.
 
     The app's own environment is not enough to ask: users set ZDOTDIR in
     ~/.zshenv, and a Finder/Dock launch never sources that file — so the
@@ -565,8 +580,7 @@ def _zsh_zdotdir() -> Optional[str]:
            if k not in ("PYTHONHOME", "PYTHONPATH")}
     # ~/.zshenv runs before our print and may write to stdout itself, so raw
     # stdout is not the answer: a marker separates whatever the profile said
-    # from the value we asked for, and only a value naming a real directory is
-    # trusted — anything else means the probe failed, not that ZDOTDIR is odd.
+    # from the value we asked for.
     marker = "__FUSED_ZDOTDIR__:"
     try:
         out = subprocess.run(
@@ -579,9 +593,14 @@ def _zsh_zdotdir() -> Optional[str]:
     for line in reversed((out or "").splitlines()):
         if line.startswith(marker):
             value = line[len(marker):].strip()
-            if value and os.path.isabs(value) and os.path.isdir(value):
-                return value
-            return None
+            if not value:
+                return None  # genuinely unset
+            # An absolute value is trusted even when the directory does not
+            # exist yet: zsh will still read $ZDOTDIR/.zshrc there, so that is
+            # where the line belongs — writing ~/.zshrc instead would be the
+            # exact bug this probe exists to prevent. A relative or otherwise
+            # odd value is set-but-unwritable: refuse rather than guess.
+            return value if os.path.isabs(value) else _ZDOTDIR_UNSAFE
     return None
 
 
@@ -666,6 +685,9 @@ def add_to_shell_path() -> dict:
     bindir = os.path.dirname(os.path.abspath(path))
     rel = "$HOME" + bindir[len(os.path.expanduser("~")):]
     try:
+        # A ZDOTDIR that zsh reads from may not exist yet as a directory; zsh
+        # does not need it to for $ZDOTDIR/.zshrc to be the file it will read.
+        os.makedirs(os.path.dirname(rc_path) or ".", exist_ok=True)
         existing = ""
         if os.path.exists(rc_path):
             with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
