@@ -71,6 +71,13 @@ DEFAULT_DAEMON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
                               "engine_worker.py")
 #: How often the idle sweeper wakes.
 _REAP_INTERVAL_S = 60.0
+#: A proxied call to a child with a bounded lifetime (`idle_timeout_s > 0`,
+#: e.g. a `main =` daemon running someone's `main(**params)`) gets this budget
+#: instead of riding a request indefinitely — the same 60s `/api/run` bounds a
+#: cold call to. A resident child (`idle_timeout_s == 0`: `daemon =`, or any
+#: `kind="template"`) is unaffected; its proxied calls have no host-imposed
+#: budget beyond the connection-level timeout.
+CALL_TIMEOUT_S = 60.0
 
 
 class EngineError(RuntimeError):

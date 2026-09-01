@@ -153,6 +153,43 @@ def test_the_ping_liveness_path_is_not_proxied(client, stub_python, stub_daemon,
     assert client.get(f"{PROXY}/ping").status_code == 404
 
 
+def test_a_proxied_post_marks_a_bounded_child_busy_for_the_duration(
+    client, stub_python, stub_daemon, tmp_path, engine_host, monkeypatch,
+):
+    # A child with idle_timeout_s > 0 (a main = daemon, here faked onto the
+    # stub) must not be reap-eligible mid-call: the proxy brackets the
+    # forwarded request with mark_busy/mark_idle.
+    _ensure(client, stub_python, stub_daemon, tmp_path)
+    child = engine_host.current(ENGINE)
+    child.kind = "background"
+    child.idle_timeout_s = 900.0
+
+    events = []
+    real_busy, real_idle = engine_host.mark_busy, engine_host.mark_idle
+    monkeypatch.setattr(engine_host, "mark_busy",
+                        lambda eid: (events.append(("busy", eid)), real_busy(eid))[-1])
+    monkeypatch.setattr(engine_host, "mark_idle",
+                        lambda eid: (events.append(("idle", eid)), real_idle(eid))[-1])
+
+    _describe(client, register=False)
+    assert events == [("busy", ENGINE), ("idle", ENGINE)]
+
+
+def test_a_proxied_post_to_a_template_child_is_untouched_by_busy_marking(
+    client, stub_python, stub_daemon, tmp_path, engine_host, monkeypatch,
+):
+    # The default child from `ensure` is kind="template", idle_timeout_s=0 —
+    # never reap-eligible, so the new branch must be a complete no-op for it.
+    _ensure(client, stub_python, stub_daemon, tmp_path)
+
+    events = []
+    monkeypatch.setattr(engine_host, "mark_busy", lambda eid: events.append(("busy", eid)))
+    monkeypatch.setattr(engine_host, "mark_idle", lambda eid: events.append(("idle", eid)))
+
+    _describe(client, register=False)
+    assert events == []
+
+
 def test_a_traversal_path_is_rejected(client, stub_python, stub_daemon, tmp_path):
     # The proxied path is opaque and forwarded verbatim; a backslash (a Windows
     # separator) must not reach the child. %5C survives URL normalization to hit
