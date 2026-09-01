@@ -1152,6 +1152,16 @@ def test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt(
     proj = _project(tmp_path, deps=["pip"])
     monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
     monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+    # This test is about a stale `cancel_requested` surviving into a fresh
+    # attempt on the SAME key — not about D214's bootstrap. `venv_key_for`
+    # has to be precomputed here (the stale row is seeded under it before
+    # `start()` runs at all), so the interpreter state is pinned rather than
+    # left to the machine: without this, a machine with no script Python
+    # pinned yet has `start()` claim `PYTHON_BOOTSTRAP_KEY` for its first
+    # round instead, and the precomputed key would name a row `start()`
+    # never touches — two different, both-legitimate keys, not a bug in
+    # either one.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
 
     key = envinstall.venv_key_for(proj)
     job_id = f"sys:env-install:{key}"
@@ -2173,6 +2183,12 @@ def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatc
 @requires_fused
 def test_a_declared_project_with_no_venv_asks_for_an_install(tmp_path, monkeypatch):
     """The pre-flight answers instead of blocking on a download."""
+    # `_needs_install_dict` (engine.py) keys its answer on `venv_key_for`
+    # only once a script Python is pinned — on a machine without one yet
+    # (D214) it answers `PYTHON_BOOTSTRAP_KEY` instead, by design. Pinned
+    # here because this test is about the ordinary packages case, not the
+    # bootstrap round.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     proj = _project(tmp_path, "needy", deps=["imagecodecs", "pyproj"])
     target = Path(proj) / "needs.py"
     target.write_text("def main():\n    return 1\n")
@@ -2285,8 +2301,11 @@ def test_the_worker_builds_the_venv_and_reports_done(tmp_path, monkeypatch):
     uv resolves it from cache — this test is about the loader, not the network.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
-    envinstall.start(proj)
+    # Not precomputed: a machine with no script Python pinned yet (D214) has
+    # `start()` claim `PYTHON_BOOTSTRAP_KEY` for this call instead of the
+    # venv key, and polling the precomputed key would wait on a progress
+    # file the worker never writes.
+    key = envinstall.start(proj)["key"]
     prog = _wait_done(key, timeout=300)
     assert prog["error"] is None, prog
     assert prog["done"] is True
@@ -2306,8 +2325,9 @@ def test_a_resolver_failure_reaches_the_user_verbatim(tmp_path, monkeypatch):
     # A name PyPI cannot have: no index lookup can succeed, and the failure is
     # the resolver's, which is exactly the class of error being surfaced.
     proj = _project(tmp_path, deps=["fused-render-no-such-distribution-9e3f1c"])
-    key = envinstall.venv_key_for(proj)
-    envinstall.start(proj)
+    # Not precomputed — see test_the_worker_builds_the_venv_and_reports_done
+    # just above.
+    key = envinstall.start(proj)["key"]
     prog = _wait_done(key, timeout=300)
     assert prog["done"] is True
     assert prog["error"], prog
@@ -4672,11 +4692,12 @@ def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
 
     monkeypatch.setattr(envinstall, "_spawn", fake_spawn)
     errors = []
+    results = []
 
     def go(py):
         try:
             barrier.wait(timeout=30)
-            envinstall.start(projectenv.project_env_for(py))
+            results.append(envinstall.start(projectenv.project_env_for(py)))
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
@@ -4693,7 +4714,12 @@ def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
     assert len(spawned) == 1, (
         f"{len(spawned)} workers spawned for one project — the loser must JOIN"
     )
-    assert spawned == [envinstall.venv_key_for(proj)]
+    # Compared against whichever key `start()` itself reports (D214's bootstrap
+    # round claims `PYTHON_BOOTSTRAP_KEY` instead on a machine with no script
+    # Python pinned yet) — not a fresh, independent `venv_key_for(proj)` call,
+    # which would name a different, equally legitimate key on such a machine.
+    assert results, "neither call reported a result"
+    assert spawned == [results[0]["key"]]
 
 
 @requires_fused
@@ -4705,12 +4731,13 @@ def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch
     un-installable with no way back short of deleting a cache directory by hand.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     spawned = []
     monkeypatch.setattr(
         envinstall, "_spawn", lambda k, r, **kw: spawned.append(k) or (2 ** 31 - 1)
     )
-    envinstall.start(proj)
+    # Read off `start()`'s own return, not recomputed independently — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    key = envinstall.start(proj)["key"]
     assert len(spawned) == 1
     assert os.path.exists(os.path.join(envinstall.progress_dir(key), "claim"))
 
@@ -4801,6 +4828,12 @@ def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeyp
     here the key is right and the record simply had not been written yet.
     """
     proj = _project(tmp_path, deps=["pip"])
+    # The claim below has to be taken under the exact key `start()` will try
+    # next, so the interpreter state is pinned rather than left to the
+    # machine — on one with no script Python pinned yet (D214), `start()`
+    # would claim `PYTHON_BOOTSTRAP_KEY` instead, and this test's join
+    # scenario would never trigger at all.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     key = envinstall.venv_key_for(proj)
     monkeypatch.setattr(
         envinstall, "_spawn", lambda *a: pytest.fail("the loser must not spawn")
@@ -4835,7 +4868,6 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     the interleaving a fast worker produces.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     worker_record = {
         "stage": "error", "pct": 100, "detail": "", "done": True,
         "error": "RuntimeError: Failed to install: no such distribution",
@@ -4851,7 +4883,10 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     monkeypatch.setattr(envinstall, "_spawn", _spawn_then_report)
     record = envinstall.start(proj)
     assert record["error"] == worker_record["error"], record
-    prog = envinstall.progress(key)
+    # Polled under the key `start()` actually reports, not a freshly
+    # recomputed `venv_key_for(proj)` — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    prog = envinstall.progress(record["key"])
     assert prog["error"] == worker_record["error"], (
         "the worker's own outcome must survive the parent's spawn record"
     )
@@ -4869,9 +4904,10 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     perfectly well behind it.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     monkeypatch.setattr(envinstall, "_spawn", lambda k, r, **kw: 2 ** 31 - 1)
-    envinstall.start(proj)
+    # Read off `start()`'s own return, not recomputed independently — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    key = envinstall.start(proj)["key"]
     assert envinstall.progress(key)["error"], "the first attempt reads as crashed"
 
     # Age the claim so the retry may take it over, exactly as a real retry does.

@@ -1143,3 +1143,118 @@ this machine, per the task brief, are not in scope).
 **Commits**: `5a2895f5` (worker-side platform-incompatible detection),
 `ff2bccb8` (`WAITING` state, `_mirror_into_jobs` rewrite, client wiring,
 tests for both).
+
+## Round 7: CI's precomputed-key test fragility (D214's bootstrap key vs the venv key)
+
+CI failed on all Python jobs (3.11, 3.12, 3.13, Windows), one test, passing
+on this local machine:
+
+```
+FAILED tests/test_env_install.py::test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt
+AssertionError: assert '400beb22b400bedd' == '030d988afe3257c2'
+```
+
+**The mechanism, confirmed rather than assumed.** `'400beb22b400bedd'` is
+exactly `PYTHON_BOOTSTRAP_KEY` — `hashlib.sha256(b"fused-render:script-
+python-bootstrap").hexdigest()[:16]`, a FIXED constant, identical on every
+machine, unrelated to the project. `venv_key_for` (`projectenv.py`) does
+NOT fold the interpreter in at all — it hashes only the venv identity (an
+absolute or package-relative path), so the earlier hypothesis that
+`venv_key_for` itself computes differently under different interpreter
+states is wrong. The real mechanism is `start()`'s own branch
+(`envinstall.py`):
+
+```python
+acquire_python = None if script_python_ready() else SCRIPT_PYTHON_VERSION
+key = PYTHON_BOOTSTRAP_KEY if acquire_python else venv_key_for(project_dir)
+```
+
+On this local machine `script_python_ready()` is True (a pinned 3.12
+already exists from `setting-up-dev-env`), so `start()`'s key IS
+`venv_key_for(proj)` and a test that precomputes that value before calling
+`start()` happens to agree. On a fresh CI runner with no script Python
+pinned yet, `script_python_ready()` is False, so `start()` claims
+`PYTHON_BOOTSTRAP_KEY` for its FIRST round instead — a different, equally
+legitimate key, per D214's design (see the "identical jobs-dock titles"
+entry above). The failing test precomputed `venv_key_for(proj)` and
+asserted `start()`'s return used it, which is only true on a machine that
+already has a pinned interpreter. Nothing about the venv key itself is
+unstable; the bug is comparing the WRONG round's key.
+
+**Reproduced locally**: temporarily added
+`monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)` to
+the top of the failing test (nothing else changed) and reproduced the exact
+CI assertion shape — `'400beb22b400bedd' == '<some venv key>'` — then
+reverted that line before writing the real fix.
+
+**The fix**: this test is about a stale `cancel_requested` surviving into a
+fresh attempt on the same job id, not about D214 at all — so the correct
+fix pins `script_python_ready` to `True` before precomputing the key
+(the row has to be seeded under a known id *before* `start()` runs, so
+"read `start()`'s own return" isn't available here). Regression-checked by
+temporarily replacing the `jobs.clear_cancel_requested(job_id)` call inside
+`_mirror_into_jobs` with `pass` — the test went red with a plausible
+failure (`prog["error"] == "the install was cancelled"`) — then reverted.
+
+**Audit of the same fragility across `tests/test_env_install.py`.** Searched
+every `venv_key_for(` call for one made before a `start()` call it's then
+compared against. Two were already immune (one only compares
+`PYTHON_BOOTSTRAP_KEY != venv_key_for(proj)`, which holds regardless of
+environment since the two hash sources never coincide; one forces
+`script_python_ready` True immediately before its own `venv_key_for` call).
+`test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread` — named
+in the task brief as a "prime suspect" — turned out already safe: it reads
+`key = rec["key"]` off `start()`'s own return rather than precomputing.
+Six more had the identical latent bug and are fixed here, each verified
+red-then-green under a global `script_python_ready` forced to `False`
+(the CI condition), and were shown to fail without the fix under that same
+condition:
+
+- `test_the_worker_builds_the_venv_and_reports_done` — precomputed key,
+  polled with it. Fixed: `key = envinstall.start(proj)["key"]`.
+- `test_a_resolver_failure_reaches_the_user_verbatim` — same shape, same fix.
+- `test_two_scripts_in_one_project_still_spawn_exactly_one_worker` — asserted
+  `spawned == [venv_key_for(proj)]` computed AFTER two concurrent `start()`
+  calls (timing wasn't the issue; the venv key just isn't necessarily what
+  either call used). Fixed: both threads now record their `start()` return
+  into a shared list, and the assertion compares `spawned` against
+  `results[0]["key"]`.
+- `test_a_stale_claim_from_a_dead_installer_is_taken_over` — precomputed key
+  used for `progress_dir`/`progress` after the first `start()`. Fixed: reads
+  `key = envinstall.start(proj)["key"]`.
+- `test_joining_an_install_mid_spawn_yields_a_pollable_record` — needs the
+  key BEFORE `start()` (to pre-claim it and force the join branch), so
+  `start()`'s own return isn't available yet. Fixed by pinning
+  `script_python_ready` to `True`, same as the target test.
+- `test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote`
+  — precomputed key polled after `start()`; the mocked `_spawn` itself
+  already used whichever key `start()` passed it, so only the final
+  `progress()` call was wrong. Fixed: polls `progress(record["key"])`.
+- `test_a_retry_does_not_inherit_the_previous_attempt_s_record` — same shape
+  as the dead-claim test above; same fix.
+
+One more outside this exact pattern, same underlying mechanism:
+`test_a_declared_project_with_no_venv_asks_for_an_install` (does not call
+`start()` at all — asserts on `engine._needs_install_dict`'s `key`, which
+carries the identical `script_python_ready()` branch). Fixed by pinning
+`script_python_ready` to `True`, since the test is about the ordinary
+packages case, not the bootstrap round.
+
+Two categories of `venv_key_for(proj)` call were confirmed NOT to need a
+fix: calls that pass `key` straight into `envinstall._spawn(key, proj)`
+directly (never go through `start()`'s branch at all — `_spawn` takes
+whatever key it's handed, correctly, as an argument-shape test), and calls
+inside tests that already read the actual key off `jobs`/`start()` returns.
+
+**Verification.**
+`.venv/bin/python -m pytest tests/test_env_install.py
+tests/test_server_env_install.py tests/test_jobs_api.py -q` → 292 passed.
+`.venv/bin/python -m pytest tests/test_env_install.py -n 0 -q` → 160
+passed, 1 skipped (pre-existing, unrelated to this branch). Additionally
+ran all seven fixed tests under a session-wide `script_python_ready`
+forced to `False` (a `conftest`-style autouse fixture, simulating the CI
+condition directly rather than hoping): all seven passed with the fix in
+place and all seven failed (with the exact `PYTHON_BOOTSTRAP_KEY`-vs-venv-
+key mismatch shape) with the fix reverted.
+
+**Commit**: test-only fix, `tests/test_env_install.py`.
