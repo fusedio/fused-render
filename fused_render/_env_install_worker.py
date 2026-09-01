@@ -55,11 +55,16 @@ cannot be written to, in a manifest-only mirror of it beside the venv — see
 packaged builds). The declaration is the
 folder's `pyproject.toml`; `uv sync` is the command that turns one into an
 environment, resolves it, and writes the `uv.lock` the user commits. It is
-pointed at a venv OUTSIDE the folder through `UV_PROJECT_ENVIRONMENT` (see
-`projectenv` for why derived state never lands in the user's tree) and at a
-cache on the same filesystem through `UV_CACHE_DIR`, which is what lets uv
-hardlink wheels instead of silently copying them. `UV_LINK_MODE` is deliberately
-left UNSET — uv's default already prefers hardlinks and falls back on its own.
+pointed at `<venv_dir>` through `UV_PROJECT_ENVIRONMENT` rather than trusting
+uv's own default resolution of that path — `<venv_dir>` arrived in argv already
+computed by `projectenv.venv_dir_for`, which puts it INSIDE the folder for one
+this app can write to (`<project_dir>/.venv`, the common case now) and under
+our own home dir for one it cannot (a read-only in-package runner folder, an
+unwritable mount, `FUSED_RENDER_VENV_IN_TREE=0`) — and at a cache on the same
+filesystem through `UV_CACHE_DIR` whenever the caller asked for one, which is
+what lets uv hardlink wheels instead of silently copying them. `UV_LINK_MODE`
+is deliberately left UNSET — uv's default already prefers hardlinks and falls
+back on its own.
 
 **The ready marker and the source sidecar are written HERE, in that order.**
 The sidecar records what the venv was built from and is what makes a later
@@ -1400,11 +1405,19 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     Environment, not flags, for the two directories, because uv reads both itself
     and a flag would only cover the invocation we remember to put it on:
 
-      UV_PROJECT_ENVIRONMENT  the venv lives in the home dir, never in the user's
-                              folder (MD-7). Without it uv writes `<project>/.venv`,
-                              which for a core template would be destroyed by the
-                              release-time re-stage and cost a full re-download of
-                              numpy/pyproj/imagecodecs on every upgrade.
+      UV_PROJECT_ENVIRONMENT  `venv_dir` is always stated explicitly rather than
+                              left to uv's own default resolution, even though for
+                              the common in-tree case (`projectenv.venv_dir_for`
+                              already answered `<project_dir>/.venv`) that happens
+                              to be the same path uv would have picked on its own —
+                              worth setting anyway, because the two cases this
+                              worker cannot tell apart from here still need it: a
+                              core template's folder resolves to the home store
+                              (a release-time re-stage would destroy an in-tree
+                              `.venv` there and cost a full re-download of
+                              numpy/pyproj/imagecodecs on every upgrade), and a
+                              read-only in-package runner folder cannot hold one
+                              at all.
       UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
                               only when the caller asked for isolation
                               (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).

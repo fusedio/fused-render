@@ -103,12 +103,13 @@ LOCAL_TAG = "local"
 # file-scoped chat template used to write beside the entry html — still
 # ignored, because an existing repo may already have one.
 #
-# `.venv/` is here for a different reason: the app NEVER creates one (project
-# venvs live under ~/.fused-render/venvs — SPEC PY-16, MD-7), but a user who runs
-# `uv run` or `uv sync` in their own terminal will, and a scoped `git add -A`
-# would sweep tens of thousands of files into the app's history. `pyproject.toml`
-# and `uv.lock` are deliberately NOT ignored: those are source and belong in the
-# repo — they are what makes the folder reproduce on another machine.
+# `.venv/` is here for a different reason: the app builds one directly inside
+# a writable app folder now (`projectenv.venv_dir_for`, SPEC PY-16), so it is
+# the COMMON case, not only something a user's own `uv run`/`uv sync` might
+# leave behind — either way a scoped `git add -A` would sweep tens of thousands
+# of files into the app's history. `pyproject.toml` and `uv.lock` are
+# deliberately NOT ignored: those are source and belong in the repo — they are
+# what makes the folder reproduce on another machine.
 # `.fused/` is the app's own state folder (D548): machine-local by
 # definition — a cache that can be deleted at any time, and data keyed to
 # THIS machine's absolute paths — so it is never app history. The trailing

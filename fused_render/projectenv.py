@@ -889,13 +889,17 @@ def state_digest(project_dir: str) -> str:
 
     That the manifest is hashed at all — rather than the lock, on the reasoning
     that the lock is the resolved truth — is the requirement this exists for: a
-    user adding a dependency must have it picked up without ever running
-    `uv sync` by hand, because doing that would create an in-folder `.venv` and
-    diverge from the home-dir store. Hashing the lock instead meant such an edit
-    changed nothing, `sidecar_matches` said fresh, no install was offered, and
-    the run failed later on an ImportError with no loader and no explanation. The
-    cost in the other direction is a resync for a comment edit, which is a fast
-    no-op through uv's cache — a silently ignored dependency edit is a broken app.
+    user adding a dependency must have it picked up by OUR OWN install flow, not
+    only by a `uv sync` they happen to have run by hand. An in-tree venv sits
+    exactly where a hand `uv sync` would build it, but a hand build writes no
+    marker and no sidecar (`envinstall.READY_MARKER`, `write_sidecar`) — those
+    are what `is_installed` actually trusts — so hashing the lock would let a
+    hand-built `uv.lock` read as "already resolved for this manifest" and skip
+    the marker step forever. Hashing the lock instead meant such an edit changed
+    nothing, `sidecar_matches` said fresh, no install was offered, and the run
+    failed later on an ImportError with no loader and no explanation. The cost in
+    the other direction is a resync for a comment edit, which is a fast no-op
+    through uv's cache — a silently ignored dependency edit is a broken app.
 
     The intended consequence: a hand-edit to `uv.lock` ALONE does not trigger a
     resync. The lock is generated; the manifest is the declaration. (The sync it
