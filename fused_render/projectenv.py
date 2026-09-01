@@ -18,10 +18,19 @@ stray `readers/pyproject.toml` inside an app must not quietly give `readers/`
 its own environment while the rest of the app uses another. Inside a container
 the container always wins; outside one, the outermost declaration wins.
 
-Storage follows MD-7: the declaration (`pyproject.toml`, `uv.lock`) is source
-and lives with the user's code; the venv is derived and lives in the home dir at
-`<home_dir()>/venvs/<sha256(abs path)[:16]>`, never as a sidecar in the user's
-tree. The uv cache sits beside it under the same home dir ONLY when
+Storage follows MD-7 for the declaration (`pyproject.toml`, `uv.lock`): it is
+source and lives with the user's code. The venv, unlike the declaration, is
+derived state, and for a folder the app can write to it now lives INSIDE that
+folder, at `<project_dir>/.venv` — the layout `uv run`, VS Code and this app's
+own notebook kernel picker (`templates/notebook/kernel.py`'s `.venv` walk)
+already expect, for free. "Derived state never lands in the user's tree" was
+MD-7's original reading of this and is now the fallback rather than the rule:
+a folder that cannot hold a `.venv` — a read-only in-package runner folder
+(D376), an unwritable mount, or `FUSED_RENDER_VENV_IN_TREE=0` — still gets one
+at `<home_dir()>/venvs/<sha256 of the folder's identity>[:16]>`, never as a
+sidecar dropped into a tree that cannot take it. See `venv_dir_for` for the
+exact predicate and its order. The uv cache sits beside the home store under
+the same home dir ONLY when
 `FUSED_RENDER_HOME` is explicitly set (see `uv_cache_dir()`) — that used to
 be unconditional and fragmented the cache per branch/worktree as a result;
 ordinarily uv is left to pick its own default cache instead, trading the
@@ -32,12 +41,21 @@ The path is hashed AS GIVEN (abspath, not realpath), with ONE exception: a proje
 folder that ships inside the app (the AI runner folders) is keyed on its path
 relative to the `fused_render` package, because the app's own path is not stable —
 the AppImage's mount directory is fresh on every launch. See `_venv_identity`.
+That hash — `venv_key_for` — is no longer the storage path for the common,
+in-tree case, but it is still the ONE per-folder identifier everything else
+names a venv by: the install-progress directory, the `/api/env/progress?key=`
+and `/api/env/cancel` parameters, and the install-dedup lock key all still want
+a stable string that survives a request across a folder they cannot always
+re-derive from scratch, and only the home-store fallback still uses it as a
+literal directory name.
 
 Hashing the path as given is a deliberate
-divergence from MD-7's canonicalisation: moving or renaming a folder yields a
-fresh environment, which is a requested feature, and the orphaned venv is
-reclaimed by `gc()`. The dangerous direction — two different folders colliding
-on one key — remains impossible.
+divergence from MD-7's canonicalisation: renaming a folder in the home store
+yields a fresh environment there, which is a requested feature for that case,
+and the orphaned venv is reclaimed by `gc()`. An in-tree venv needs no such
+rule — it lives inside the folder it belongs to, so a rename carries it along
+for free; see `venv_dir_for`. The dangerous direction — two different folders
+colliding on one key — remains impossible either way.
 
 Staleness is a DIGEST comparison, never an mtime chain: `.fused-source.json`
 inside the venv records the path and the sha256 of the `pyproject.toml` it was
@@ -242,7 +260,16 @@ def _venv_identity(project_dir: str) -> str:
 
 
 def venv_key_for(project_dir: str) -> str:
-    """The directory name of *project_dir*'s venv: sha256 of its identity.
+    """*project_dir*'s stable per-folder identifier: sha256 of its identity.
+
+    Not the storage path any more — see `venv_dir_for`, which now answers
+    `<project_dir>/.venv` for the common, writable case, and only falls back to
+    naming a directory with this key in the home store. What this key remains
+    the one answer for is everything ELSE that has to name a project without
+    ambiguity across a request boundary: the install-progress directory, the
+    `/api/env/progress?key=` and `/api/env/cancel` parameters, and the
+    install-dedup lock. A second derivation of any of those is how a progress
+    row and its cancel button end up naming two different projects.
 
     The identity is the absolute path for every folder of the user's, and the
     PACKAGE-RELATIVE path for a folder that ships inside the app — see
@@ -251,9 +278,105 @@ def venv_key_for(project_dir: str) -> str:
     return hashlib.sha256(_venv_identity(project_dir).encode("utf-8")).hexdigest()[:_KEY_LEN]
 
 
+# Set to exactly "0" to force every project onto the home store, bypassing the
+# in-tree default below. The hazard this whole change creates is real and this
+# is the way out of it: a project folder under cloud sync or on a network mount
+# would otherwise sync a multi-gigabyte venv along with the user's files, on
+# every dependency change.
+_IN_TREE_ESCAPE_HATCH = "FUSED_RENDER_VENV_IN_TREE"
+
+# project dir (absolute) -> "can a file actually be created in it". A
+# process-local memo, same shape as `_digest_cache` above: `venv_dir_for` runs
+# on the `/api/run` pre-flight path via `envinstall.is_installed`, and an
+# unmemoised create-exclusive probe per request is filesystem churn nothing
+# needs — the answer does not change without a remount or a permissions edit,
+# neither of which happens mid-process.
+_writable_cache: dict[str, bool] = {}
+_writable_lock = threading.Lock()
+
+
+def _probe_writable(path: str) -> bool:
+    """Can a file actually be CREATED in *path*? Answered by doing it, not by
+    `os.access(path, os.W_OK)` — that call is wrong for the exact case this
+    predicate exists to catch: on Windows it reports the read-only ATTRIBUTE,
+    which says nothing about an ACL-protected `Program Files` install, and on
+    POSIX it consults mode bits and misses a directory denied by an ACL entry
+    or SELinux. Same probe `_env_install_worker._writable_dir` already uses for
+    the same reason, restated rather than shared because that module must not
+    import `fused_render` (D152) — two copies of the technique is correct here.
+
+    `O_CREAT|O_EXCL` so it can never truncate something of the user's; the pid
+    in the name so two processes probing one folder at once cannot collide.
+    """
+    probe = os.path.join(path, ".fused-render-write-probe.%d" % os.getpid())
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+    return True
+
+
+def _is_writable_dir(project_dir: str) -> bool:
+    """Memoised per absolute project dir for the life of the process. See
+    `_writable_cache` for why memoising matters here and `_probe_writable` for
+    why a probe rather than `os.access`."""
+    ap = os.path.abspath(project_dir)
+    with _writable_lock:
+        cached = _writable_cache.get(ap)
+    if cached is not None:
+        return cached
+    result = os.path.isdir(ap) and _probe_writable(ap)
+    with _writable_lock:
+        _writable_cache[ap] = result
+    return result
+
+
+def reset_writable_cache() -> None:
+    """Forget every memoised writability verdict. A test seam, mirroring
+    `reset_state_digest_cache`."""
+    with _writable_lock:
+        _writable_cache.clear()
+
+
+def _use_home_store(project_dir: str) -> bool:
+    """Does *project_dir*'s venv belong in the home store rather than in the
+    folder itself? Three reasons, checked in this order because the first two
+    are free (an env var, a string comparison already computed for the sidecar)
+    and the third is a filesystem probe:
+
+    1. The escape hatch (`FUSED_RENDER_VENV_IN_TREE=0`) — see its docstring.
+    2. The folder ships inside the installed `fused_render` package (an AI
+       runner folder) — its own tree is read-only on the AppImage's squashfs
+       mount and under a Windows `Program Files` install (D376), so nothing
+       can be written there at all. Reuses `_venv_identity` rather than a
+       second derivation of "is this in the package": that duplication is
+       exactly the mistake this function's sibling, `venv_key_for`, already
+       warns against.
+    3. The folder fails the writability probe for any other reason — a
+       read-only mount, a permissions-denied directory. Same failure mode as
+       (2), generalised past the one case that always has it.
+    """
+    if os.environ.get(_IN_TREE_ESCAPE_HATCH) == "0":
+        return True
+    if _venv_identity(project_dir).startswith(_PACKAGE_IDENTITY):
+        return True
+    return not _is_writable_dir(project_dir)
+
+
 def venv_dir_for(project_dir: str) -> str:
-    """Absolute path of *project_dir*'s venv, under the home dir."""
-    return os.path.join(venvs_root(), venv_key_for(project_dir))
+    """Absolute path of *project_dir*'s venv: `<project_dir>/.venv` for a
+    folder the app can write to, else a home-store path keyed on the folder's
+    identity (`<home_dir()>/venvs/<key>`) — see `_use_home_store` for exactly
+    which folders take the second path, and the module docstring for why the
+    in-tree layout is the default rather than the exception now."""
+    if _use_home_store(project_dir):
+        return os.path.join(venvs_root(), venv_key_for(project_dir))
+    return os.path.join(os.path.abspath(project_dir), ".venv")
 
 
 # --------------------------------------------------------------------------
