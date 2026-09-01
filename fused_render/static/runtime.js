@@ -2605,128 +2605,13 @@
       );
   }
 
-  // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
-  // fused.engine(py) is the warm variant of runPython: the server keeps the
-  // script's worker alive between calls. Same wire body and result/error shape,
-  // and it shares runPython's latest-wins stale-cancel channel (keyed by the .py
-  // path), headers, and never-settle-on-supersede semantics. The hosted runtime
-  // aliases fused.engine to runPython; this local one falls back on a network
-  // error (see below), since a warm worker is only an optimization.
-  function engineCall(pyPath, params, opts) {
-    opts = opts || {};
-    const key = opts.key === undefined ? pyPath : opts.key;
-    const keyed = key !== null;
-    const controller = new AbortController();
-    controller._callId = newCallId();
-    if (keyed) {
-      const prev = inflightByKey.get(key);
-      if (prev) {
-        prev._supersededByKey = true;
-        reportSuperseded(prev._callId);
-        prev.abort();
-      }
-      inflightByKey.set(key, controller);
-    }
-    let detachSignal = null;
-    if (opts.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else {
-        const onAbort = () => controller.abort();
-        opts.signal.addEventListener("abort", onAbort);
-        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
-      }
-    }
-    const cleanup = () => {
-      if (detachSignal) detachSignal();
-      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
-    };
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-
-    const attempt = () =>
-      fetch("/api/engine", {
-        method: "POST",
-        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                             controller._callId),
-        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
-        signal: controller.signal,
-      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
-
-    const run = attempt().then(({ data, httpOk }) => {
-      // The script may have written anything; tell the shell even on failure.
-      noteFsChanged();
-      if (data && data.stdout) console.log("[python]", data.stdout);
-      // Watch the executed file for auto-reload, even on failure (LR-2).
-      if (data && data.resolved_py) watchPath(data.resolved_py);
-      if (!httpOk) {
-        // A server-level error ({"error": "..."}), not a script error envelope.
-        const err = new Error(
-          (data && typeof data.error === "string" && data.error) ||
-          "engine request failed");
-        err.type = "engine_error";
-        throw err;
-      }
-      if (!data.ok) {
-        const err = new Error(data.error && data.error.message);
-        err.type = data.error && data.error.type;
-        err.traceback = data.error && data.error.traceback;
-        err.stdout = data.stdout;
-        throw err;
-      }
-      return data.result;
-    });
-
-    return run.then(
-      (result) => {
-        cleanup();
-        if (controller._supersededByKey) return new Promise(() => {});
-        return result;
-      },
-      (err) => {
-        cleanup();
-        if (opts.signal && opts.signal.aborted) throw err;
-        if (controller._supersededByKey) return new Promise(() => {});
-        // Degrade to per-call runPython ONLY when the local server is
-        // unreachable — a fetch TypeError, never an HTTP status (a warm worker
-        // is pure optimization; the page must keep working). An HTTP-status
-        // failure means the server answered: the proxy may already have run
-        // main() (a post-heal 502) or the venv needs building (409), so
-        // re-running here could double-execute a side-effecting main(). Surface
-        // it instead. A script error carries the Python exception type and
-        // propagates the same way.
-        if (err && err.name === "TypeError")
-          return runPython(pyPath, params, opts);
-        throw err;
-      }
-    );
-  }
-
-  function engineForget(pyPath) {
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-    return fetch("/api/engine/forget", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify({ py: pyPath, html: ownPath }),
-    })
-      .then((res) => res.json())
-      .catch(() => ({ ok: true })); // best-effort teardown; never reject the page
-  }
-
-  function engine(pyPath, opts) {
-    opts = opts || {};
-    return {
-      call: (params, callOpts) =>
-        engineCall(pyPath, params, Object.assign({}, opts, callOpts || {})),
-      forget: () => engineForget(pyPath),
-    };
-  }
-
   // ---- background apps (fused.daemon, server/routers/background_apps.py) ---
   // fused.daemon is the browser control surface for a FOLDER's declared
   // long-running daemon, not this page's own script — every method sends the
-  // page's own path as `html` (same derivation as fused.engine above), and the
-  // server resolves which app folder that page belongs to, exactly like
-  // resolve_py does for runPython/fused.engine. `call` is the one that reaches
-  // the daemon itself: it proxies through the SAME stable-origin
+  // page's own path as `html`, and the server resolves which app folder that
+  // page belongs to, exactly like resolve_py does for runPython. `call` is
+  // the one that reaches the daemon itself: it proxies through the SAME
+  // stable-origin
   // /api/engines/<id>/proxy path a template daemon's traffic already rides
   // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
   // call cached — a page never computes that id itself.
@@ -2984,6 +2869,28 @@
     };
   }
 
+  // `run(params)` is the shipped-worker convenience over `call`: a `main =`
+  // daemon speaks exactly one route, POST /call with the raw params object as
+  // the body, answering the same {ok, result, error, stdout, resolved_py}
+  // envelope runPython does — so `run` unwraps that envelope the way
+  // runPython does, instead of handing back the raw proxy response `call`
+  // gives a `daemon =` author talking to their own routes.
+  function daemonRun(params) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("run");
+    return daemonCall("/call", params || {}).then((data) => {
+      if (data && data.stdout) console.log("[python]", data.stdout);
+      if (data && data.resolved_py) watchPath(data.resolved_py);
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    });
+  }
+
   const daemon = {
     status: daemonStatus,
     start: daemonStart,
@@ -2991,6 +2898,7 @@
     restart: daemonRestart,
     setAutostart: daemonSetAutostart,
     call: daemonCall,
+    run: daemonRun,
     watch: daemonWatch,
   };
 
@@ -5268,7 +5176,6 @@
     // on this, never on user-agent sniffing.
     device: "desktop",
     runPython,
-    engine,
     daemon,
     rawUrl,
     stat,
