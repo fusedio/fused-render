@@ -3278,11 +3278,22 @@ export interface AiCatalogModel {
    *  Absent where no honest short name exists — the header omits the line
    *  rather than inventing one. */
   quantization?: string | null;
-  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
-   *  denoise count a distilled image model was benchmarked at. Absent on
-   *  cached entries and on models nobody has measured; the consumer keeps the
-   *  server's default then. */
-  defaults?: { steps?: number } | null;
+  /** Curated per-model generation hints (catalog.py): `steps` is the denoise
+   *  count the model was benchmarked at; `width`/`height` are its native
+   *  render size; `guidance` is the CFG scale that suits it — real
+   *  classifier-free guidance for an ordinary model, a distilled guidance
+   *  embedding for a guidance-distilled one, so the right number varies
+   *  wildly by model and cannot be guessed client-side. Each field is
+   *  independently optional — a curator may know a model's steps without
+   *  knowing its native resolution, say. Absent entirely on cached entries
+   *  and on models nobody has measured; the consumer keeps the server's
+   *  default then. */
+  defaults?: {
+    steps?: number;
+    width?: number;
+    height?: number;
+    guidance?: number;
+  } | null;
   /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
    *  Null when nothing is known at all (no size, no measurement, no curator
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`

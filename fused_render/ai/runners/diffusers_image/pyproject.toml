@@ -89,10 +89,39 @@
 #                  and it is also the first release whose
 #                  `Int8WeightOnlyConfig` carries the `granularity` field the
 #                  repo's config was serialized with, so the floor is the
-#                  library's requirement rather than a guess. `<1` rather than a
-#                  pre-1.0 minor ceiling, unlike `diffusers` above, because
-#                  nothing in `torch_image.py` calls torchao: diffusers does,
-#                  and it version-gates the calls it makes.
+#                  library's requirement rather than a guess. `<0.18` because
+#                  the diffusers-image model
+#                  `tonera/FLUX.2-klein-4B-int8-diffusers` fails to load on
+#                  0.18.0 with `ValueError: Failed to create instance of
+#                  Int8WeightOnlyConfig: version 1 of Int8WeightOnlyConfig has
+#                  been removed, please use version 2`: that repo's
+#                  `transformer/config.json` serializes its
+#                  `Int8WeightOnlyConfig` at `_version: 1`, which 0.15.0
+#                  through 0.17.0 merely warn about as deprecated (the
+#                  dataclass still defaults to `version: int = 1`) and 0.18.0
+#                  refuses outright (the default moved to `version: int = 2`
+#                  and the version-1 path was deleted). This is NOT something
+#                  diffusers can version-gate the way it gates the pipeline
+#                  calls `diffusers` above is ceilinged for: the
+#                  deserialization happens inside torchao itself, driven by
+#                  bytes serialized into a third-party Hub repo this app does
+#                  not control. There is accordingly nothing here to
+#                  upgrade — 0.18.0 is already torchao's newest release, and
+#                  the repo (755 downloads, 1 like, last modified 2026-01-18)
+#                  is not going to be re-serialized to fix this. A ceiling is
+#                  the only fix, and a cheap one: torchao's PyPI metadata
+#                  declares no runtime `requires_dist` outside
+#                  `extra == "dev"`, so it cannot conflict with the pinned
+#                  torch in any of the three folders. No CI test loads a real
+#                  model over the network, so THIS CEILING IS THE ONLY THING
+#                  standing between a future bump and a broken suggestion —
+#                  no longer the RECOMMENDED one (the SDNQ row took that), but
+#                  an entry a user can still pick and still expect to load, and
+#                  the only route to this pipeline for anyone who cannot take
+#                  the `sdnq` dependency. Do not widen it back to `<1` without
+#                  confirming a torchao release has restored a working
+#                  version-1 path (or the Hub repo has been re-serialized to
+#                  version 2).
 #                  **It installs on every platform this app ships to** — PyPI
 #                  carries a manylinux x86_64 wheel and a `py3-none-any` wheel
 #                  beside it, which is what macOS and Windows resolve to — so
@@ -105,6 +134,67 @@
 #                  an int8 weight-only transformer costs per step on CUDA, ROCm,
 #                  MPS or CPU. So the `catalog.py` note promises a smaller
 #                  download and nothing about the clock.
+#   bitsandbytes   reads the OTHER quantized component in the same repo
+#                  torchao is named for above — `tonera/FLUX.2-klein-4B-
+#                  int8-diffusers` is MIXED quantization, not uniform int8 as
+#                  the catalog's `quantization` label alone suggests: its
+#                  `transformer/config.json` carries `"quant_method":
+#                  "torchao"` but `text_encoder/config.json` carries
+#                  `"quant_method": "bitsandbytes"` (4-bit NF4, double quant,
+#                  bf16 compute dtype). `from_pretrained` builds the text
+#                  encoder BEFORE the transformer, so without this line the
+#                  only `diffusers-image` suggestion — what a bare
+#                  `fused.ai.image()` starts — failed with `ImportError: Using
+#                  `bitsandbytes` 4-bit quantization requires bitsandbytes`
+#                  raised on the text encoder, before the torchao transformer
+#                  this file already declared for was ever reached. See
+#                  `catalog.py`'s entry for the fuller account. `>=0.46.1` is
+#                  what that ImportError itself demands (bitsandbytes'
+#                  `import_utils` version-gates 4-bit loading below that
+#                  release); `<1` rather than a pre-1.0 minor ceiling because
+#                  nothing in `torch_image.py` calls bitsandbytes directly:
+#                  diffusers does, and it version-gates the calls it makes —
+#                  unlike `torchao` above, whose ceiling is narrower because
+#                  what breaks there is a config format serialized into a
+#                  third-party model repo, not a diffusers call diffusers
+#                  itself can gate.
+#   sdnq           reads the THIRD quantized repo in `catalog.py` —
+#                  `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic`, whose every
+#                  component config carries `"quant_method": "sdnq"`. Unlike
+#                  `torchao` and `bitsandbytes` above, diffusers 0.39 has NO
+#                  built-in quantizer for this: its
+#                  `quantizers/auto.py` mapping knows autoround, bitsandbytes,
+#                  gguf, modelopt, quanto and torchao, and nothing else. **The
+#                  package registers itself by MUTATING that mapping at import**
+#                  — `diffusers.quantizers.auto.AUTO_QUANTIZER_MAPPING["sdnq"]
+#                  = SDNQQuantizer` plus the matching config entry, and the
+#                  same pair on `transformers.quantizers.auto` — which is why
+#                  `torch_image._register_extra_quantizers()` imports it for
+#                  its side effect and not for a name.
+#                  **That import is the risk this ceiling is for.** Those
+#                  mappings are not diffusers' public API; a rename inside
+#                  `quantizers/auto.py` would break the registration silently,
+#                  which is exactly the shape of the `torchao` breakage
+#                  documented above — hence `<0.3` rather than `<1`, tighter
+#                  than the `bitsandbytes` line beside it, on a project moving
+#                  fast: the 0.2 line shipped six releases in the eight weeks
+#                  from 0.2.1 (2026-07-04) to 0.2.6 (2026-08-30). The risk is
+#                  freshness, not staleness — 0.2.6 is the NEWEST release, so
+#                  the version this floors on is one a pre-1.0 project cut days
+#                  ago and nobody has run for long.
+#                  `>=0.2.6` is the version the numbers in
+#                  `catalog.py`'s entry were measured on; there is no older
+#                  release this was verified against, so the floor is what was
+#                  actually run rather than the earliest that might work.
+#                  It is a pure-Python `py3-none-any` wheel (141 KiB) whose
+#                  runtime dependencies are torch, diffusers, transformers and
+#                  accelerate — all four already here — so the wheels-only rule
+#                  holds on every platform and it adds nothing transitive.
+#                  Its ROCm support is explicit rather than incidental
+#                  (`kernel_wrappers.py` branches on `torch_backend == "rocm"`
+#                  and enables its triton matmuls there), which is what makes
+#                  the speed number in `catalog.py` a fact about this app's
+#                  hardware rather than about CUDA.
 #   pillow         writes the PNG
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
@@ -120,7 +210,9 @@ dependencies = [
     "sentencepiece",
     "protobuf",
     "gguf",
-    "torchao>=0.15,<1",
+    "torchao>=0.15,<0.18",
+    "bitsandbytes>=0.46.1,<1",
+    "sdnq>=0.2.6,<0.3",
     "pillow",
     "huggingface_hub",
     "psutil",

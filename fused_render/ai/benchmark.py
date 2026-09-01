@@ -20,13 +20,45 @@ stores the revision it was measured under, which lets the page refuse to draw a
 delta across the seam instead of quietly reporting a fake regression. Change a
 `params` value and you MUST bump the `revision` beside it.
 
-**Image generation deliberately does not fix the step count.** A shared step
-count is either unfair to a step-distilled model or an out-of-memory on the
-others — `catalog.py`'s per-model `defaults: {"steps": 4}` exists precisely
-because FLUX.2 klein runs at 4. So the workload fixes the prompt and the
-canvas, each model contributes its own catalog default step count, and
-comparability is recovered by making SECONDS PER STEP the primary metric with
-the step count recorded on the run.
+**Image generation fixes the step count, like every other parameter.** It did
+not, once: each model contributed `catalog.py`'s own `defaults: {"steps": 4}`,
+and comparability was meant to be recovered by making SECONDS PER STEP the
+primary metric. Neither half survived contact with a real comparison.
+
+The page plots models on SHARED AXES, so it is a comparison whatever the
+metric says — and steps was the single parameter left free. `prompt`, `width`,
+`height`, `seed` and `guidance` are all pinned below, the last of them with
+the argument that settles this one too: two models compared at different
+guidance are not compared at all. Steps swings a render harder than guidance
+ever could. Measured, on the machine this was found on:
+`black-forest-labs/FLUX.2-klein-4B` has no catalog row, so it took the generic
+28 while `tonera/FLUX.2-klein-4B-int8-diffusers` took its hinted 4 — the SAME
+distilled model, 36.9s against 8.2s, a 4.5x "difference between quantizations"
+that was nothing but step count.
+
+Nor does seconds-per-step recover comparability, which is the subtler half:
+`total` includes the fixed cost of text encoding and VAE decode, and that does
+not scale with steps. Dividing it by 28 for one run and by 4 for another
+amortizes a constant over different denominators and flatters whichever ran
+longer — the same trap in the other direction.
+
+The old reasoning's remaining half, that a shared count risks "an
+out-of-memory on the others", does not hold either: a diffusion loop's peak
+memory is its latents and activations, which are per-step rather than
+cumulative. Steps buy time, not memory.
+
+What WAS right is that 4 steps is meaningless for a model that is not
+step-distilled. That calls for a SECOND WORKLOAD, not a per-model parameter
+inside this one — `name` and `revision` exist precisely to keep incomparable
+measurements apart. Every klein row is `is_distilled: true` (each repo's own
+`model_index.json`; the klein pipeline then IGNORES `guidance_scale` entirely,
+`pipeline_flux2_klein.py`), so 4 is the honest number for them.
+
+`segmind/tiny-sd` is the exception, and it is the case that rule was written
+for: an ordinary SD1.5 schedule at 4 steps measures a render nobody would
+keep. It needs a workload of its own at an SD-class step count rather than a
+number smuggled into this one, and until it has one, a benchmark of it says
+only how fast this engine produces garbage.
 
 **Speech to text synthesizes its own audio.** Realtime factor is a decode
 throughput measure and does not need intelligible speech, and generating a tone
@@ -171,16 +203,22 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
         }),
     ),
     registry.IMAGE_GENERATION: Workload(
-        name="image-512-catalog-steps",
-        revision=1,
+        name="image-512-4-steps",
+        # 2, not 1: revision 1 let each model pick its own step count, so its
+        # runs are not comparable with these or with each other. Bumping is
+        # what stops the page drawing a delta across that seam.
+        revision=2,
         params=MappingProxyType({
             "prompt": "a lighthouse on a rocky coast at dawn, photograph",
-            # Small on purpose: the metric is seconds per step, and 512² keeps
-            # a benchmark to a minute or two on hardware where 1024² is ten.
+            # Small on purpose: 512² keeps a benchmark to a minute or two on
+            # hardware where 1024² is ten.
             "width": 512,
             "height": 512,
-            # `steps` is absent BY DESIGN — see the module docstring. Each
-            # model contributes its catalog default and the run records it.
+            # Fixed here like everything else — see the module docstring for
+            # why it stopped being per-model. 4 because this capability's
+            # models are all step-distilled; one that is not gets its own
+            # workload rather than its own number inside this one.
+            "steps": 4,
             "seed": 0,
             # Fixed here rather than left to the router's default, because it
             # changes how much work a step is on a classifier-free-guidance
@@ -279,11 +317,6 @@ def machine() -> dict:
 
 # -- the run ---------------------------------------------------------------------
 
-#: Steps for an image model the catalog has no per-model hint for — the same 28
-#: `POST /api/ai/image` defaults to, so a benchmark measures the pipeline a page
-#: actually gets rather than a number invented here.
-DEFAULT_IMAGE_STEPS = 28
-
 #: How long (WALL CLOCK, not a poll count) to allow a pending record that says
 #: `error` with no `error` message yet. `_bring_up` writes `state` from its
 #: health poll OUTSIDE `supervisor._lock` and only then raises into the handler
@@ -325,25 +358,6 @@ _LOAD_POLL_S = 0.1
 #: report a negative throughput. `startedAt` on the record is wall clock, which
 #: is a different question (when was this taken) with a different right answer.
 _now = time.monotonic
-
-
-def _image_steps(model: str) -> int:
-    """The step count this image model runs at: its catalog hint, else the
-    server default.
-
-    Asked of the catalog rather than decided here, because that is where the
-    per-model hint already lives (`catalog.py`'s `defaults: {"steps": 4}` for
-    step-distilled FLUX.2 klein) and the Playground reads the same one. A second
-    copy of the rule is how a benchmark comes to run a model at a step count
-    nothing else uses.
-    """
-    for entry in catalog.for_capability(registry.IMAGE_GENERATION):
-        if entry.get("id") == model:
-            steps = (entry.get("defaults") or {}).get("steps")
-            if isinstance(steps, int) and steps > 0:
-                return steps
-            return DEFAULT_IMAGE_STEPS
-    return DEFAULT_IMAGE_STEPS
 
 
 def _write_tone_wav(path: str, seconds: float, sample_rate: int, hz: float) -> None:
@@ -746,7 +760,7 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool,
 
 def _measure_image(model: str, workload: Workload, *, timed: bool,
                    row: "_MeasurementRow | None" = None) -> dict:
-    """Render one image at the fixed canvas and this model's own step count.
+    """Render one image at the workload's fixed canvas and step count.
 
     The PNG goes to a temp file that is deleted on the way out: a benchmark is a
     measurement, not a picture somebody asked for, and putting it in the user's
@@ -762,7 +776,7 @@ def _measure_image(model: str, workload: Workload, *, timed: bool,
     a disposable job instead (see `run`), same as before this row existed.
     """
     params = workload.params
-    steps = _image_steps(model)
+    steps = int(params["steps"])
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
         request = {
             "prompt": params["prompt"],

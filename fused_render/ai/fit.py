@@ -366,7 +366,12 @@ KV_CACHE_CONTEXT_TOKENS = 8192
 #: runtime may cache K/V at a lower precision than the weights (llama.cpp's
 #: `--cache-type-k`), so this is deliberately a separate axis from
 #: `QUANT_BYTES_PER_PARAM`. `None`/absent defaults to fp16, the precision
-#: every runner in this codebase caches at today.
+#: every runner in this codebase caches at EXCEPT `llamacpp-text`/
+#: `llamacpp-text-vulkan`, whose loader (`llama_text.load()`, by way of
+#: `_kv_cache_kwargs`) tries a q8_0 cache before fp16 at every rung of its
+#: offload schedule — `ai_runtime._kv_geometry_kwargs` is what tells this
+#: module's `kv_dtype` kwarg to say `"q8_0"` for those two runners and leave
+#: every other one on this default.
 KV_BYTES_PER_ELEMENT: dict[str, float] = {
     "fp16": 2.0,
     "bf16": 2.0,
@@ -690,12 +695,13 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
     two qualifier forms that need a deliberate decision, not a lucky
     regex). `num_hidden_layers` through `kv_dtype` feed the KV-cache term
     (SPEC item 5) — see `_kv_cache_bytes` for what each one means and what
-    it falls back to; nothing populates these yet (no catalog field, no
-    caller wiring — a later phase's job once `hub_metadata` is threaded
-    into a route). These are the same field NAMES `hub_metadata.get()`
-    returns (minus its `numHiddenLayers`-style camelCase), so a future
-    caller can pass that dict through with a straight `**`-unpack once one
-    is wired up to fetch it.
+    it falls back to. `num_hidden_layers` through `layer_types` are the same
+    field NAMES `hub_metadata.get()` returns (minus its `numHiddenLayers`-
+    style camelCase), so `ai_runtime._kv_geometry_kwargs` passes that dict
+    through with a straight `**`-unpack; `kv_dtype` has no `hub_metadata`
+    counterpart, so that same caller supplies it itself, from the runner the
+    catalog row will actually load through rather than from anything
+    harvested (`_KV_DTYPE_RUNNERS`).
     """
     if footprint_store is _NOT_GIVEN:
         measured = footprints.read(capability, model_id)

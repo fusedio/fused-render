@@ -1745,11 +1745,12 @@ def evict_stale_engines() -> list[str]:
 
 
 #: How often the reaper thread wakes up to evaluate `reap_idle` (AI-13). The
-#: promise is "about ten minutes", not a deadline, so a coarse tick is the
-#: right trade: worst case is one tick of overshoot, and the job row's
-#: "Unloaded after N min idle" detail is worded so an overshoot never reads as
-#: a crash. Kept well under any plausible idle window so a `1`-minute window
-#: does not wait half its own length to fire.
+#: promise is "about five minutes" (`DEFAULT_AI_IDLE_UNLOAD_MINUTES`, 10 ->
+#: 5), not a deadline, so a coarse tick is the right trade: worst case is one
+#: tick of overshoot, and the job row's "Unloaded after N min idle" detail is
+#: worded so an overshoot never reads as a crash. Kept well under any
+#: plausible idle window so a `1`-minute window does not wait half its own
+#: length to fire.
 _REAPER_TICK_S = 30.0
 
 _reaper_thread: threading.Thread | None = None
