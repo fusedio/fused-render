@@ -750,13 +750,70 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # so (`describe`'s `runnerLabel`).
     #
     # Sizes use the same full-snapshot Hub metadata estimate as the lists above
-    # (2026-08-15). **One line each**, per `SUGGESTIONS`' own rule: a
-    # shortlist is read by sweeping it.
+    # (2026-08-15; small and turbo re-measured 2026-09-01, see below).
+    # **One line each**, per `SUGGESTIONS`' own rule: a shortlist is read by
+    # sweeping it.
     #
     # **No medium.** It weighs about what large-v3 turbo weighs and turbo is
     # better at every language, so a medium row would be an entry that is never
     # the right pick — a shortlist earns its length by every line being
     # somebody's answer.
+    #
+    # **2026-09-01: small and turbo now point at their `-q4` conversions**,
+    # closing a gap this list had carried since it was first written — tiny.en
+    # was the only quantized row, so the one entry small enough not to need it
+    # was the one that had it, and the two rows big enough to actually benefit
+    # did not. `mlx-community/whisper-small-mlx-q4` and
+    # `…/whisper-large-v3-turbo-q4` are ONE-FILE snapshots (`weights.npz` plus
+    # the usual config/readme) exactly like the fp16 repos they replace, so the
+    # size drop is real and not an artifact of counting fewer files: measured
+    # via the Hub API's per-file `blobs=true` byte sizes on 2026-09-01, small
+    # goes from 0.4813GB to 0.1965GB and turbo from 1.6140GB to 0.4637GB — both
+    # rounded the way this file rounds throughout. Both configs carry a plain
+    # `{"group_size": 64, "bits": 4}` block, the same shape `tiny.en-8bit` has
+    # always loaded on this runner, so nothing about `load()`'s format check or
+    # its `mx.float16` priming (which is `transcribe()`'s own `fp16` decode
+    # default, not a per-model choice) changes for these two.
+    #
+    # **REPLACED, not added beside — a deliberate trade and not a saving on
+    # curation effort.** Doubling this list to six rows so every model appears
+    # in both precisions would make the list itself the thing nobody reads
+    # (`SUGGESTIONS`' own "sweeping it" rule), and — the harder cost — 4-bit
+    # Whisper carries a real word-error-rate penalty the model cards do not
+    # quantify and this repo cannot measure (no Apple Silicon in this
+    # environment; the two sizes above are Hub metadata, not a benchmark). That
+    # cost is accepted here because it mirrors the trade every OTHER list in
+    # this file already makes: `mlx-text` ships OptiQ/4-bit rows exclusively,
+    # `faster-whisper` line below ships CTranslate2's int8 throughout, and nothing
+    # here keeps an fp16 CHAT model beside its quantized replacement either — a
+    # shortlist that quantizes some rows and not others is the inconsistency
+    # this change closes, not one it should introduce a second way. `large-v3`
+    # below is kept UNQUANTIZED on purpose, for a different and repo-specific
+    # reason — see its own note — so the accuracy ceiling of this list has not
+    # actually dropped, only its middle two rows have.
+    #
+    # **`mlx-community/whisper-large-v3-mlx-4bit` was checked and excluded.**
+    # Its config passes the same format and quantization checks as the two rows
+    # above (`n_mels`/`n_audio_ctx`/`n_vocab` present, `weights.npz` with a
+    # plain 4-bit `quantization` block), but its snapshot ALSO carries a
+    # `model.safetensors` the exact size of its `weights.npz` (0.9736GB each,
+    # per the same 2026-09-01 Hub query) — a second, unused copy of the same
+    # weights in a different container, the identical "half of it is dead
+    # weight" shape the `mlx-text` list documents for the Qwen/Gemma vision
+    # towers. `download()` fetches the whole snapshot with no
+    # `allow_patterns`, so `size_gb` for this repo is the sum, 1.9467GB — MORE
+    # than turbo-q4 (0.4637GB) for accuracy turbo already claims to match, and
+    # not meaningfully less than the unquantized `large-v3-mlx` row below
+    # (3.0835GB) once the wasted file is counted. A row that costs more to
+    # download than the answer already in this list, for the same claimed
+    # accuracy, is not a row worth adding regardless of the ordering rule —
+    # this is the `no medium` reasoning above applied to a repo instead of a
+    # size class.
+    #
+    # Ordering unaffected: every size below FELL, none crossed a neighbour, so
+    # `default_for()` still returns `tiny.en-8bit` at position 0 exactly as
+    # before this change — see the module docstring on why that is checked
+    # explicitly rather than assumed.
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
@@ -771,24 +828,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "everything else.",
         },
         {
-            "id": "mlx-community/whisper-small-mlx",
+            "id": "mlx-community/whisper-small-mlx-q4",
             "params": "244M",
-            "label": "Whisper small (MLX)",
+            "quantization": "MLX 4-bit",
+            "label": "Whisper small (MLX 4-bit)",
             "nickname": "Whisper Small",
-            "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "quick, but it drops names and punctuation turbo gets "
-                    "right.",
+            "size_gb": 0.2,
+            "note": "A quarter the fp16 small's download at the same 244M "
+                    "params — quick, and 4-bit's unmeasured accuracy cost on "
+                    "top of what small already drops next to turbo.",
         },
         {
-            "id": "mlx-community/whisper-large-v3-turbo",
+            "id": "mlx-community/whisper-large-v3-turbo-q4",
             "params": "809M",
-            "label": "Whisper large-v3 turbo (MLX)",
+            "quantization": "MLX 4-bit",
+            "label": "Whisper large-v3 turbo (MLX 4-bit)",
             "nickname": "Whisper Large-v3 turbo",
-            "size_gb": 1.6,
-            "note": "The best value here: large-v3 accuracy at a fraction of "
-                    "its decoding cost, and faster than real time by a wide "
-                    "margin on Metal.",
+            "size_gb": 0.5,
+            "note": "The best value here: large-v3 accuracy turbo already "
+                    "claims at a third of ITS OWN fp16 download, plus 4-bit's "
+                    "own unmeasured accuracy cost.",
         },
         {
             "id": "mlx-community/whisper-large-v3-mlx",
@@ -796,8 +855,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Whisper large-v3 (MLX)",
             "nickname": "Whisper Large-v3",
             "size_gb": 3.1,
-            "note": "The full model, for a recording turbo handles badly — "
-                    "twice turbo's disk and several times its decoding.",
+            "note": "The full-precision ceiling for a recording turbo handles "
+                    "badly — kept fp16 because its own -4bit re-upload wastes "
+                    "half its download on an unused duplicate file (see above).",
         },
     ],
     # A fourth speech list here, `parakeet-mlx` (NeMo Parakeet exports), lived
