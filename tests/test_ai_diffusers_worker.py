@@ -410,6 +410,70 @@ def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch
     assert worker._loaded["vae"] == "AutoencoderKLFlux2"
 
 
+# -- VAE tiling at load (closes the "VAE decode buffers" gap `_VRAM_HEADROOM_
+# BYTES` admits it cannot measure) -----------------------------------------------
+#
+# `Flux2KleinPipeline` has no `enable_vae_tiling`/`enable_vae_slicing`, so `load`
+# calls `enable_tiling()` on the VAE object itself, off the same `vae = getattr
+# (pipe, "vae", None)` the projection-table key above is captured from.
+
+
+def _load_with_pipe(monkeypatch, base, pipe):
+    """`load_worker` plus a `diffusers.AutoPipelineForText2Image.from_pretrained`
+    that hands back `pipe` — the no-recipe path, same as the projection-table
+    test above."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+    diffusers = types.ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = types.SimpleNamespace(
+        from_pretrained=lambda *a, **k: pipe)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    worker.load("some/other-model", None)
+    return worker
+
+
+def test_load_enables_tiling_on_the_pipelines_vae_when_it_has_the_method(monkeypatch, base):
+    """The whole point: a VAE that can tile gets asked to, at load time, so the
+    no-op-below-threshold gate inside `_decode` is what protects small renders
+    rather than this file trying to guess a resolution cutoff itself."""
+    calls = []
+    fake_vae = types.SimpleNamespace(enable_tiling=lambda: calls.append(1))
+    pipe = types.SimpleNamespace(to=lambda device: None, vae=fake_vae)
+
+    _load_with_pipe(monkeypatch, base, pipe)
+
+    assert calls == [1]
+
+
+def test_load_tolerates_a_pipeline_with_no_vae(monkeypatch, base):
+    """A pipeline shape with no `vae` attribute at all must still load —
+    the same "an optional capability's absence must not break loading"
+    convention `_register_extra_quantizers` follows for a missing backend."""
+    pipe = types.SimpleNamespace(to=lambda device: None)
+
+    worker = _load_with_pipe(monkeypatch, base, pipe)
+
+    assert worker._loaded["vae"] is None
+
+
+def test_load_tolerates_a_vae_without_enable_tiling(monkeypatch, base):
+    """A VAE class lacking `enable_tiling` (a fake in a test, some future
+    pipeline's autoencoder) must not stop the load either — unlike
+    `_load_quantization`'s quantization config, this was never something the
+    caller explicitly asked for and needs to be told failed."""
+    fake_vae = types.SimpleNamespace()  # no enable_tiling attribute
+    pipe = types.SimpleNamespace(to=lambda device: None, vae=fake_vae)
+
+    worker = _load_with_pipe(monkeypatch, base, pipe)
+
+    assert worker._loaded["vae"] == "SimpleNamespace"
+
+
 # -- the headroom env var's own edge cases (`_vram_headroom_bytes`) --------------
 #
 # No torch involved: the function reads only `os.environ`, so these exercise

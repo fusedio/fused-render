@@ -536,6 +536,33 @@ def load(model_id, fetched):
     # which is what keeps this additive for every other pipeline.
     vae = getattr(pipe, "vae", None)
     _loaded["vae"] = None if vae is None else type(vae).__name__
+    # Tile the VAE's own decode rather than the pipeline's: `Flux2KleinPipeline`
+    # has neither `enable_vae_tiling` nor `enable_vae_slicing` (`hasattr` is
+    # False for both, diffusers 0.39), so the usual one-line pipeline wrapper
+    # is not there to call — but `AutoencoderKLFlux2.enable_tiling()` is, and
+    # going straight to the VAE object captured above is what this recipe has
+    # instead. It is a no-op until a render is actually big enough to need it:
+    # `AutoencoderKLFlux2._decode` only takes the tiled path when `self.use_
+    # tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] >
+    # self.tile_latent_min_size)`, so calling this unconditionally at load
+    # time costs nothing on a small render — the VAE itself gates on the
+    # latent's own shape, a number this function does not have and should not
+    # try to guess at. That gate is also why this closes the gap `_VRAM_
+    # HEADROOM_BYTES`'s own docstring admits it cannot measure: "the VAE's
+    # decode buffers" is the one of its three unmeasured terms that scales
+    # quadratically with resolution, and tiling removes that term from the
+    # decode rather than asking the 3 GiB guess to keep covering for it.
+    # Absence is tolerated the same way `_register_extra_quantizers` tolerates
+    # a missing optional backend just above: a pipeline with no VAE, or a VAE
+    # class without `enable_tiling` (a fake in a test, some future pipeline
+    # shape), must not stop an otherwise-working load over an optimization
+    # nobody asked for by name — unlike `_load_quantization`'s quantization
+    # config, which IS an explicit request and is deliberately not swallowed.
+    if vae is not None:
+        try:
+            vae.enable_tiling()
+        except Exception:  # noqa: BLE001 - an optional optimization must never break loading
+            pass
     # See `worker_base.STATE["device"]`: "this machine has a GPU" and "this
     # pipeline is using one" are different facts, and only this process knows the
     # second. Since D381 that gap is the ORDINARY case rather than a Windows
