@@ -2,9 +2,9 @@
 // steps. The pairing QR carries the CA's SHA-256 fingerprint; the app fetches
 // /lan/ca.pem over http, checks it against that fingerprint, and from then on
 // evaluates the https listener's chain against THAT certificate only — no
-// profile install, no Settings trip. A computer found over Bonjour (no QR) is
-// trusted on first use: its /api/lan/tls names the fingerprint, and the first
-// contact is when the pairing code — the real credential — is exchanged anyway.
+// profile install, no Settings trip. The QR is the ONLY channel that pins a
+// CA — no trust-on-first-use from Bonjour, so nothing on the Wi-Fi can slip
+// its own certificate in ahead of a pairing.
 import CryptoKit
 import Foundation
 import Security
