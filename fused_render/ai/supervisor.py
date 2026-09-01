@@ -1021,7 +1021,13 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # own: in bootstrap mode the two disagree BY DESIGN, and polling a key
         # nobody is writing is a record that never arrives. `envinstall._reported`
         # exists to hand the caller the right one — this is that caller.
-        started = envinstall.start(runner.folder)
+        #
+        # `report_job=False`: this loop already mirrors the SAME install into
+        # `job` (`_report` below, titled with the model) — without this,
+        # `start()`'s own generic `sys:env-install:<key>` row would open
+        # alongside it, and a model's first load would show two jobs-dock
+        # entries for the one `uv sync` actually running.
+        started = envinstall.start(runner.folder, report_job=False)
         key = started.get("key") or envinstall.venv_key_for(runner.folder)
         # Published on the worker — and counted — so that stopping this bring-up
         # can stop the install when it is the only thing left waiting on it, and

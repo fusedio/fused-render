@@ -24,13 +24,17 @@ pattern in this repo, not two):
 Two things this module must never get wrong:
 
 **The key is the project folder's, and it is OURS.** `venv_key_for` delegates to
-`projectenv`, which hashes the folder's absolute path; the venv lives under
-`<home_dir()>/venvs/<key>`, not in the backend's store. That is why nothing here
-reaches for upstream's `_venvs_path` any more: we build the environment with
-`uv sync` and hand the resulting interpreter to the backend as `interpreter=`,
-so upstream never has to agree with us about a directory. What it DOES still
-have to agree with us about is the base interpreter (`_python_executable`), and
-that one attribute is still read off the live backend rather than restated.
+`projectenv`, which hashes the folder's absolute path; where the venv itself
+lives is `projectenv.venv_dir_for`'s call, not this module's or the backend's —
+`<project_dir>/.venv` for a folder this app can write to, `<home_dir()>/venvs/
+<key>` for one it cannot (a read-only in-package runner folder, an unwritable
+mount, `FUSED_RENDER_VENV_IN_TREE=0`). That is why nothing here reaches for
+upstream's `_venvs_path` any more, and why the split does not matter to it: we
+build the environment with `uv sync` and hand the resulting interpreter to the
+backend as `interpreter=`, so upstream never has to agree with us about a
+directory, in either case. What it DOES still have to agree with us about is
+the base interpreter (`_python_executable`), and that one attribute is still
+read off the live backend rather than restated.
 
 **Errors are verbatim.** uv's own stderr is written into `progress.json`
 unchanged. "No solution found ... imagecodecs has no wheels with a matching
@@ -192,11 +196,13 @@ _ENDINGS_LOCK = threading.Lock()
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 #
-# `_venvs_path` used to be here too and is deliberately gone: project venvs now
-# live under our own home dir (`projectenv.venvs_root()`), built by `uv sync` and
-# handed to the backend as `interpreter=`, so there is no longer a directory the
-# two sides have to agree on. `_python_executable` remains, because the base
-# interpreter still has to be the one the backend was constructed with.
+# `_venvs_path` used to be here too and is deliberately gone: project venvs are
+# built by `uv sync` and handed to the backend as `interpreter=`, wherever
+# `projectenv.venv_dir_for` puts them (in the project itself, or under our own
+# home dir for the folders that cannot hold one), so there is no longer a
+# directory the two sides have to agree on. `_python_executable` remains,
+# because the base interpreter still has to be the one the backend was
+# constructed with.
 BACKEND_ATTRS = ("_python_executable",)
 
 # venv directory -> "does its own python actually run" (D212). Populated by
@@ -478,7 +484,13 @@ def venv_key_for(project_dir: str) -> str:
 
 
 def venv_dir_for(project_dir: str) -> str:
-    """Where `project_dir`'s environment lives — under OUR home dir (MD-7)."""
+    """Where `project_dir`'s environment lives — `projectenv`'s call, not ours.
+
+    `<project_dir>/.venv` for a folder this app can write to; OUR home dir for
+    one it cannot (a read-only in-package runner folder, an unwritable mount,
+    `FUSED_RENDER_VENV_IN_TREE=0`). See `projectenv.venv_dir_for` for the exact
+    predicate.
+    """
     from fused_render import projectenv
 
     return projectenv.venv_dir_for(project_dir)
@@ -488,9 +500,10 @@ def venv_python_for(project_dir: str) -> str:
     """The interpreter inside `project_dir`'s environment.
 
     What `run_python` passes to the backend as `interpreter=` once
-    `is_installed` says yes. This is the whole reason the venv can live in our
-    home dir rather than in the backend's store: the backend is told which
-    interpreter to run on, so it never has to find the directory itself.
+    `is_installed` says yes. This is the whole reason the venv's location is
+    ours to decide rather than the backend's store: the backend is told which
+    interpreter to run on, so it never has to find the directory itself,
+    whether that directory sits in the project or under our own home dir.
     """
     return _venv_python(venv_dir_for(project_dir))
 
@@ -1401,6 +1414,39 @@ def progress(key: str) -> dict | None:
                      + progress_dir(key)}
 
 
+def _permanent_failure(key: str, project_dir: str) -> dict | None:
+    """The last recorded attempt for `key`, if it is a verdict retrying can
+    never change — right now, only `platform_incompatible` (the worker sets it,
+    with the `pyproject.toml` digest it was reached against, only when a
+    `--no-build` refusal names a package published solely for a platform this
+    machine is not — see `_env_install_worker.install`'s except block).
+
+    Returns None for every case a retry might legitimately fix: no record yet,
+    a record that is not `done`, an ordinary resolver failure or `needs_build`
+    (compiling from source is a real if slow option; a click away), a
+    cancelled run or a crash-diagnosed record (`_recorded_progress` covers
+    both — neither carries `platform_incompatible`), and — the invalidation —
+    a record whose `manifest_digest` no longer matches the project's CURRENT
+    `pyproject.toml`. That last one is deliberate and load-bearing: editing the
+    manifest to drop the un-installable dependency must make the next `start()`
+    call run for real, not repeat a verdict about a manifest that no longer
+    exists.
+
+    Deliberately narrow rather than "any terminal error, twice in a row": a
+    network failure, a timeout, or a cancelled run are all transient, and
+    poisoning one of those would strand an offline user, or one whose first
+    attempt was simply too slow, on a permanent-looking error for good.
+    """
+    from fused_render import projectenv
+
+    record = _recorded_progress(key)
+    if not record or not record.get("done") or not record.get("platform_incompatible"):
+        return None
+    if record.get("manifest_digest") != projectenv.state_digest(project_dir):
+        return None
+    return record
+
+
 def _in_flight(key: str) -> bool:
     prog = progress(key)
     return bool(prog) and not prog.get("done")
@@ -1539,7 +1585,8 @@ def _worker_env() -> dict:
     return env
 
 
-def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int:
+def _spawn(key: str, project_dir: str, acquire_python: str | None = None,
+           allow_build: bool = False) -> int:
     """Launch the detached worker; returns its pid.
 
     Detached so the build outlives the request that started it and any page
@@ -1604,6 +1651,15 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     cannot do both in one run: the interpreter is reported under
     `PYTHON_BOOTSTRAP_KEY` and the packages under the project's own key, and one
     worker reports under one key.
+
+    Slot 7 is `allow_build`, `"1"` or `""` — whether a dependency with no
+    matching wheel may fall back to building from source (see `_build`'s
+    `--no-build`). Off by default: a source build runs code the manifest never
+    named as a dependency (the package's own build backend), and the whole
+    point of the install-consent prompt this feeds is that nothing runs
+    without being asked first. The one caller allowed to set it True is
+    `/api/env/install`'s retry after the resolver's own no-wheel error —
+    `runtime.js` re-prompts naming the specific package before making it.
     """
     from fused_render import projectenv
 
@@ -1630,7 +1686,8 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
              # for why: an explicit sibling cache used to be unconditional,
              # and fragmented per branch as a result.
              projectenv.uv_cache_dir() or "",
-             _python_executable() or "", acquire_python or ""],
+             _python_executable() or "", acquire_python or "",
+             "1" if allow_build else ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
@@ -1668,8 +1725,276 @@ def _reported(key: str, record: dict, claimed: bool = False) -> dict:
     return {**record, "key": key, "claimed": claimed}
 
 
-def start(project_dir: str) -> dict:
+# How often the mirror thread below re-reads `progress(key)`. Matches
+# `ai/supervisor.py`'s own bring-up loop (`time.sleep(0.5)`), which polls the
+# identical file for the identical reason — a shorter interval buys nothing a
+# human can perceive on a multi-second-to-multi-minute download, and a longer
+# one delays the dock noticing a cancel request.
+_JOB_MIRROR_POLL_S = 0.5
+
+# `jobs.py`'s own message for a record `cancel()` (above) wrote: the ONE error
+# string that means "the user asked to stop", as opposed to a genuine resolver
+# failure. Matched verbatim rather than inferred from context, because the
+# mirror thread and `cancel()` do not otherwise share any state — the string
+# IS the signal.
+_CANCELLED_ERROR = "the install was cancelled"
+
+
+def _claim_token(key: str) -> bytes | None:
+    """The on-disk claim's own content — `f"{pid} {time}\\n"`, from `_claim`
+    — or None if there is currently no claim at all.
+
+    This is the one thing that changes identity between two attempts on the
+    SAME key: `_claim` never rewrites a live claim in place, only creates one
+    (first attempt) or unlinks-then-recreates one it is taking over from a
+    finished or dead installer (a retry). Reading it back is how a mirror
+    thread tells "still my attempt" from "a later attempt already took this
+    key over" without any state of its own to compare against.
+    """
+    try:
+        with open(_claim_path(key), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = False) -> None:
+    """Give this install a row in the shell's jobs dock, for as long as it can
+    run — which can outlive the request that started it. `_spawn` detaches the
+    worker on purpose (see its own docstring), and the page that clicked
+    Install may navigate away, close its tab, or simply be a page whose script called
+    `envinstall.start` through some path with no loader UI of its own at all
+    (`ai/supervisor.py` is exactly that). A report driven by the PAGE cannot
+    cover any of those: the moment its document goes away, the row the jobs
+    dock already understands as "stalled" (`jobs.py`'s `STALE_AFTER_S`) is
+    what a page-driven report would produce — which is precisely the case
+    this dock exists to make visible instead of hiding.
+
+    So the SERVER mirrors it, in a short daemon thread reading `progress(key)`
+    on a plain poll loop and writing what it sees into `jobs.upsert(...,
+    server=True)` under a deterministic id (`sys:env-install:<key>`) — a
+    `sys:` id because the row belongs to a build THIS PROCESS is running, not
+    to whichever page happened to trigger it (jobs.py's OWNER_SERVER: the
+    dock's ✕ becomes a real cancel, not a request the reporter might ignore).
+
+    The thread is the STOP condition's owner too: it exits the moment
+    `progress(key)` reports `done`, and on the way there, it is what turns a
+    press of the dock's own ✕ (`jobs.request_cancel`, read back as
+    `cancel_requested` on the record `upsert` returns) into the SAME
+    `envinstall.cancel(key)` the loader's own Cancel button calls — one
+    cancellation path for both surfaces, rather than the dock's ✕ silently
+    doing nothing because nothing downstream ever reads it.
+
+    ONE THREAD PER CLAIM, not per job id: because the job id is deterministic
+    per key, a retry landing inside this thread's own poll window reuses it
+    while THIS thread is still running — `start()` unlinks `progress.json`
+    and takes over the claim before spawning the new worker and starting a
+    second `_mirror_into_jobs`. This thread captures the claim's own content
+    (`_claim_token`, above) the moment it starts, and every tick reconfirms
+    the claim on disk still matches before touching the row at all. The
+    retry's takeover unlinks-and-recreates the claim, so the instant that
+    happens this thread's token check fails and it steps aside quietly —
+    no upsert, no cancel — leaving the row to the NEW thread the retry
+    started, which opens with its own fresh upsert. Two threads never both
+    drive the row: the loser of the token check ends before it would have
+    read the stale synthetic "spawn" record `progress()` hands out for the
+    new claim, which is what used to keep it looping alongside the new
+    thread believing nothing had finished yet.
+
+    The SAME reuse is why a stale `cancel_requested` cannot survive to the
+    new attempt on its own: `jobs.upsert`'s state-transition rule only clears
+    it on a transition INTO a terminal state, so a mirror thread that never
+    got there (this thread's own `jobs.upsert` calls are best-effort) can
+    leave the row `running` with the flag still set for the next attempt to
+    inherit. The opening `jobs.clear_cancel_requested` call below disowns
+    that inherited flag right after the opening upsert, on every attempt —
+    a ✕ pressed after that point still sets it normally, through the same
+    `jobs.request_cancel` the dock always used.
+
+    Best-effort throughout: a `jobs.upsert` failure must never take the
+    install down with it, only leave its dock row missing or stale for one
+    tick — which the dock already renders honestly.
+
+    `downloading_python` is `start()`'s own `acquire_python` flag, one call
+    earlier: D214's bootstrap round reports under `PYTHON_BOOTSTRAP_KEY`
+    rather than the project's venv key, and `_mirror_into_jobs` runs once
+    for THAT round and again, separately, for the packages round that
+    follows once the interpreter is pinned — two real rows for two real
+    downloads, under two different job ids (the key differs), so this is not
+    the duplicate-row problem `report_job=False` exists to fix. But both
+    rounds used to share the SAME title, `f"Preparing {display_name}"` —
+    which reads as a bug (a row that finishes and appears to instantly start
+    over) rather than as two distinct pieces of work, and round 1's title
+    was also wrong on its own terms: it is downloading a Python interpreter,
+    not preparing the project. `downloading_python=True` gives it a title
+    that says so.
+    """
+    from fused_render import jobs, projectenv
+
+    job_id = f"sys:env-install:{key}"
+    # Named `app_name`, not `name`: the loop a few lines into `run()` below
+    # (`for name in ("done", "total")`) shadows a bare `name` on every tick,
+    # and the `platform_incompatible` branch further down needs THIS value
+    # (the project's display name, not "done" or "total") to compose its own
+    # message.
+    app_name = projectenv.display_name(project_dir)
+    title = f"Downloading Python for {app_name}" if downloading_python else f"Preparing {app_name}"
+    # Captured NOW, before the thread even starts: this is the claim THIS
+    # call's `start()` just (re)created, one line above in every caller. A
+    # later retry's takeover replaces it, which is exactly the change this
+    # thread must notice.
+    claim_token = _claim_token(key)
+
+    def run() -> None:
+        try:
+            jobs.upsert(
+                {"id": job_id, "title": title, "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
+                server=True,
+            )
+            # A flag a PREVIOUS attempt's dead mirror left set (see the
+            # docstring above) belongs to that attempt, not this one — clear
+            # it once, right after opening the row, so a fresh ✕ from here
+            # on is the only way this attempt gets cancelled.
+            jobs.clear_cancel_requested(job_id)
+        except (jobs.JobError, ValueError):
+            pass
+        while True:
+            current_token = _claim_token(key)
+            if (
+                claim_token is not None
+                and current_token is not None
+                and current_token != claim_token
+            ):
+                # Superseded: a retry re-claimed this key before this thread
+                # observed a terminal record. The retry's own thread owns
+                # the row now — leave it alone. (`current_token is None` is
+                # NOT this case — `_claim`'s own unlink-then-recreate takeover
+                # briefly passes through no-claim-at-all, and treating that
+                # instant as supersession would race the `prog is None`
+                # branch below into wrongly diagnosing a live retry as a
+                # vanished install.)
+                return
+            prog = progress(key)
+            if prog is None:
+                # The record AND the claim are both gone (an external
+                # cache-clear under `progress_dir(key)`, say) — there is
+                # nothing left to poll. Ending the row honestly beats
+                # spinning on it forever, which a bare `or {}` here used to
+                # do: `{}.get("done")` is always falsy, so `finished` could
+                # never become True again.
+                try:
+                    jobs.upsert(
+                        {"id": job_id, "state": "error",
+                         "message": "the install's progress record disappeared"},
+                        server=True,
+                    )
+                except (jobs.JobError, ValueError):
+                    pass
+                return
+            fields: dict[str, Any] = {}
+            detail = prog.get("detail")
+            if isinstance(detail, str):
+                fields["detail"] = detail
+            for name in ("done", "total"):
+                # `_UvProgress`'s byte counters (`_env_install_worker.py`),
+                # when uv has printed enough to have any — None otherwise,
+                # which `jobs.upsert` reads as "leave it indeterminate", the
+                # same fallback `ai/supervisor.py`'s own mirror already relies
+                # on for the identical fields.
+                value = prog.get(f"bytes_{name}")
+                if value is not None:
+                    fields[name] = value
+            if prog.get("bytes_total"):
+                fields["unit"] = "bytes"
+            error = prog.get("error")
+            needs_build = prog.get("needs_build")
+            platform_incompatible = prog.get("platform_incompatible")
+            finished = bool(prog.get("done"))
+            if finished:
+                if error == _CANCELLED_ERROR:
+                    fields["state"] = "cancelled"
+                elif needs_build:
+                    # Not a failure — a QUESTION on the page, awaiting the
+                    # user's "Install anyway" (runtime.js's
+                    # `confirmBuildRetry`). `error` still carries uv's raw
+                    # refusal text (`_env_install_worker.py`'s `install`,
+                    # SPEC PY-18), which is exactly the wrong thing to show
+                    # in a notification: a stack of jargon a non-expert
+                    # cannot act on. `jobs.py`'s `WAITING` state exists for
+                    # exactly this row: non-terminal (nothing has actually
+                    # finished — the question is still open), kept on the
+                    # dock until dismissed the same as `error` (`jobs.py`'s
+                    # `_sweep`), and rendered as a question rather than as
+                    # "stopped" or "broken". If the user clicks "Install
+                    # anyway", the retry POSTs to the same key, so
+                    # `_claim`/`_spawn` reuse this same job id — this
+                    # thread's own loop never assigns "running" again after
+                    # this tick (`finished` is now True, so it returns
+                    # below), so it is the RETRY's new `_mirror_into_jobs`
+                    # thread and its own opening upsert that flips the row
+                    # back — this branch is not the row's last word, only
+                    # its word while the question is open.
+                    fields["state"] = jobs.WAITING
+                    fields["message"] = f"waiting for your approval to compile {needs_build}"
+                elif platform_incompatible:
+                    # A DIFFERENT `--no-build` refusal from the one above —
+                    # `_env_install_worker.py`'s `_incompatible_platform_name`
+                    # already determined this platform can never satisfy it
+                    # (a macOS-only wheel set on Linux, say), so there is no
+                    # question left to ask: this is a genuine, terminal
+                    # failure, not a QUESTION the way `needs_build` is. Kept
+                    # as an ordinary `error` row (sticky until dismissed, same
+                    # as any other), but with a plain-language `message`
+                    # instead of uv's raw stderr — `error` (below the `if`)
+                    # still carries that verbatim, per SPEC PY-18.
+                    fields["state"] = "error"
+                    fields["message"] = (
+                        f"{app_name} needs {platform_incompatible.get('package')}, which "
+                        f"only runs on {platform_incompatible.get('platform')}. This app "
+                        f"can't run on {platform_incompatible.get('current_platform')}."
+                    )
+                elif error:
+                    fields["state"] = "error"
+                    fields["message"] = str(error)
+                else:
+                    fields["state"] = "done"
+            try:
+                record = jobs.upsert({"id": job_id, **fields}, server=True)
+            except (jobs.JobError, ValueError):
+                record = None
+            if finished:
+                return
+            if record is not None and record.get("cancel_requested"):
+                cancel(key)
+            time.sleep(_JOB_MIRROR_POLL_S)
+
+    threading.Thread(target=run, name="env-install-jobs-mirror", daemon=True).start()
+
+
+def start(project_dir: str, allow_build: bool = False, report_job: bool = True) -> dict:
     """Begin (or join) the install for `project_dir`; returns its progress.
+
+    `report_job=False` opts out of `_mirror_into_jobs`'s generic
+    `sys:env-install:<key>` jobs-dock row for a caller that already mirrors
+    this exact install into its OWN row. `ai/supervisor.py` is that caller: an
+    AI model's first load reports its bring-up under `job_id_for(model)` —
+    same `uv sync`, titled with the model and carrying its own richer
+    "Preparing X — installing…" detail — and without this flag the user saw
+    TWO jobs-dock rows for one thing happening the moment a model needed its
+    environment built. Default True: every other caller (the loader's own
+    `/api/env/install`) has no row of its own for this key, so the generic
+    mirror is the only one there ever is.
+
+    `allow_build` reaches the worker only on the branch that actually spawns
+    one — a caller that joins an install already running, or finds one already
+    done, has no say over a `uv sync` invocation that either already happened
+    or is somebody else's; the flag only ever governed on the FIRST call for a
+    key. Default False, matching `_build`'s: every existing caller (the
+    bundled AI runners, through `ai/supervisor.py`) keeps its `--no-build`
+    behaviour unchanged, and the one caller that means to allow a source build
+    (`/api/env/install`'s explicit retry, after the resolver's own no-wheel
+    error) says so.
 
     Idempotent in the two ways that matter: already installed is a no-op, and an
     install already running is joined rather than duplicated. Two workers running
@@ -1700,6 +2025,22 @@ def start(project_dir: str) -> dict:
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
         _write(key, record)
         return _reported(key, record)
+    # A key whose last recorded attempt failed for a reason THIS MACHINE can
+    # never fix by retrying — a macOS-only wheel on Linux, the shape this
+    # exists for — must not launch attempt N+1 just because something asked
+    # again. Anything that remounts a page restarts the cycle with no memory
+    # of the last try (a fresh JS context, a preview card cycling through
+    # `preview-start.ts`'s 2 live iframes across many cards, a plain reload),
+    # so the memory has to live here, keyed off the manifest rather than off
+    # a count: `poisoned` is None the instant `pyproject.toml` changes, which
+    # is what lets a user who drops the offending dependency retry for real.
+    # `allow_build` is excluded on purpose — an explicit "install anyway"
+    # click must always reach a real worker, never be answered out of a
+    # record from a run that never even tried building from source.
+    if not allow_build:
+        poisoned = _permanent_failure(key, project_dir)
+        if poisoned is not None:
+            return _reported(key, poisoned)
     if not _claim(key):
         # Someone else owns this install — join it, and report exactly what a poll
         # would see. No synthetic record here any more: `progress()` covers the
@@ -1732,7 +2073,23 @@ def start(project_dir: str) -> dict:
         os.unlink(_progress_path(key))
     except OSError:
         pass
-    pid = _spawn(key, project_dir, acquire_python=acquire_python)
+    pid = _spawn(key, project_dir, acquire_python=acquire_python, allow_build=allow_build)
+    # A row in the shell's jobs dock, for as long as this install can run —
+    # which can outlive the request that started it (`_spawn` detaches the
+    # worker on purpose, and the page that clicked Install may navigate away
+    # or close). Started here, once per call, by the ONE call that actually
+    # claimed the key: the four callers that would otherwise join a running
+    # install never reach this line at all (see the `_claim` branch above).
+    # A RETRY of a finished attempt does reach it again for the identical
+    # key — a second call, not a second claimant — which can start a second
+    # thread briefly alongside a first one still finishing its own poll
+    # loop; `_mirror_into_jobs`'s own docstring is where that overlap is
+    # actually resolved (the older thread notices its claim was superseded
+    # and steps aside). Skipped when the caller said `report_job=False` — it
+    # already mirrors this exact install into a row of its own (see the
+    # parameter's own docstring).
+    if report_job:
+        _mirror_into_jobs(key, project_dir, downloading_python=bool(acquire_python))
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.

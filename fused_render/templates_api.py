@@ -38,6 +38,7 @@ from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from fused_render import zip_import
+from fused_render.index.ignore import SHARED_IGNORE_DIRS
 from fused_render.server import templates as _server_templates
 from fused_render.shell import storage
 
@@ -592,7 +593,20 @@ def api_export_templates(names: list[str] = Query(default=[])):
             folder = folders[name]
             for root, dirs, files in os.walk(folder, followlinks=False):
                 # Don't follow symlinked subdirs; skip symlinked files too.
-                dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+                # Prune SHARED_IGNORE_DIRS (`.venv`, `node_modules`,
+                # `__pycache__`, `site-packages`, …) — the same floor the
+                # filesystem index and the file-system walk already share.
+                # A template folder holds an in-tree `.venv` once it has been
+                # installed (D630): the zip lands in an `io.BytesIO()` buffer,
+                # so an uninverted walk would deflate hundreds of MB of
+                # site-packages into memory, and a restored `.venv` on the
+                # import side would carry absolute shebangs baked for the
+                # exporting machine.
+                dirs[:] = [
+                    d for d in dirs
+                    if not os.path.islink(os.path.join(root, d))
+                    and d not in SHARED_IGNORE_DIRS
+                ]
                 for fname in files:
                     full = os.path.join(root, fname)
                     if os.path.islink(full):

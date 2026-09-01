@@ -582,6 +582,30 @@ def test_export_zip_contains_folders_only(ctx):
     assert not any("registry.json" in n for n in names)
 
 
+def test_export_excludes_the_templates_own_venv(ctx):
+    """A template folder now holds an in-tree `.venv` once it has been
+    installed (D630). Exporting it must not zip the venv into an in-memory
+    `io.BytesIO()` buffer — hundreds of MB of site-packages deflated into a
+    single template export, and a `.venv` restored on the import side would
+    carry absolute shebangs baked for THIS machine onto whatever machine
+    imports the zip.
+    """
+    folder = ctx.make_template("alpha")
+    venv = folder / ".venv"
+    (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)
+    (venv / "bin").mkdir()
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    (venv / "lib" / "python3.12" / "site-packages" / "numpy.py").write_text(
+        "x = 1", encoding="utf-8"
+    )
+    resp = ctx.client.get("/api/templates/export", params={"names": ["alpha"]})
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        names = set(zf.namelist())
+    assert names == {"alpha/template.html", "recommendation.json"}
+    assert not any(".venv" in n for n in names)
+
+
 def test_export_handles_comma_in_template_name(ctx):
     # A folder name containing a comma round-trips because names travel as
     # repeated params, not a comma-joined string.
