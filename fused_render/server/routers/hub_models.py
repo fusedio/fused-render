@@ -164,13 +164,23 @@ _EXPAND = (
 )
 
 # Sorts the page offers. Keyed so a client cannot pass an arbitrary sort field
-# through to the Hub.
+# through to the Hub. `trending` -> `trendingScore` is verified live against the
+# API. `fit` is deliberately NOT a key here — it is not a field the Hub has, so
+# there is no wire value to map it to; `api_hub_search` special-cases it below,
+# the same honesty `hubSearchView.ts` documents for its own page-only "size".
 _SORTS = {
     "downloads": ("downloads", -1),
     "likes": ("likes", -1),
     "updated": ("lastModified", -1),
     "created": ("createdAt", -1),
+    "trending": ("trendingScore", -1),
 }
+
+# The one sort value this endpoint accepts that is not in `_SORTS`: "fit" asks
+# for a candidate set the Hub CAN rank (downloads — the same honest default
+# `size` uses on the frontend) and reorders it here, over `fit.verdict`'s own
+# `score`, after the per-request join. See `api_hub_search`.
+_FIT_SORT = "fit"
 
 _MAX_LIMIT = 60
 
@@ -697,7 +707,8 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     limit = body.get("limit")
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
-    if sort not in _SORTS:
+    include_unfit = bool(body.get("includeUnfit"))
+    if sort not in _SORTS and sort != _FIT_SORT:
         return _error(f"unknown sort {sort!r}", status=400)
     # A task nothing here can run is refused rather than searched for. The menu
     # only offers supported tags, so reaching this is either a stale page or a
@@ -711,7 +722,11 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
 
-    sort_field, direction = _SORTS[sort]
+    # "fit" is not a Hub field: the candidate set the Hub is asked for is the
+    # same honest default `size` uses on the frontend — most-downloaded — and
+    # this route reorders it below, over `fit.verdict`'s own score, once every
+    # row's fit is known.
+    sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
     # With a task filter the Hub already returns only rows we keep, so asking
     # for `count` is asking for what will be shown. WITHOUT one, the
     # supported-tag pass runs here and throws most of a page away — a search for
@@ -779,17 +794,46 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     hardware = hw_detect.cached_hardware()
     # `_model_row` is also the supported-tag filter (see its docstring): a row
     # this app could not download and run comes back None and never reaches the
-    # page. Truncation is AFTER that pass, so `limit` means "rows you will be
-    # shown" rather than "rows the Hub was asked for".
+    # page. Both the "cannot run here" drop below and the fit reorder run
+    # BEFORE truncation, so `limit` keeps meaning "rows you will be shown"
+    # rather than "rows the Hub was asked for".
     models = [row
               for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
                           for r in payload["raw"] if isinstance(r, dict))
-              if row is not None][:count]
+              if row is not None]
+
+    # A `verdict: "no"` row is a fact about THIS MACHINE's memory, not about
+    # how popular or well-classified the model is — dropped by default so a
+    # search does not fill a page with models nothing here could hold, but
+    # never silently: `hiddenUnfit` says how many, and `includeUnfit` asks for
+    # them back.
+    if include_unfit:
+        hidden_unfit = 0
+    else:
+        kept, hidden = [], 0
+        for row in models:
+            if (row.get("fit") or {}).get("verdict") == "no":
+                hidden += 1
+            else:
+                kept.append(row)
+        models, hidden_unfit = kept, hidden
+
+    if sort == _FIT_SORT:
+        # Descending score, nulls (nothing to judge) sorted last — `sort` is
+        # Python's own stable sort, so ties (including every null-fit row
+        # among themselves) keep the Hub's own most-downloaded ordering as
+        # the tie-break, the same guarantee `bySizeAscending` documents for
+        # the frontend's own page-side sort.
+        models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
+                    reverse=True)
+
+    models = models[:count]
     return {
         "models": models,
         "query": {"q": query, "task": task_filter, "sort": sort, "limit": count},
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
+        "hiddenUnfit": hidden_unfit,
     }
 
 

@@ -561,6 +561,66 @@ def test_the_hardware_and_footprint_store_are_read_once_per_request_not_per_row(
     assert cached_hardware_calls == [1]
 
 
+# -- ranking by fit, trending, and hiding what cannot run (task 2) ----------
+
+
+def _fitted(model_id, score, safetensors_gb, **extra):
+    """A Hub row whose safetensors size makes `fit.verdict` produce a
+    deterministic score — big enough for a clearly-"no" row, small enough for
+    a clearly-"easy" one. `params`/dtype don't matter here, only the resulting
+    byte total, so this fabricates a BF16 map sized to reach roughly
+    `safetensors_gb` GB."""
+    count = int(safetensors_gb * 1e9 / 2)  # BF16: 2 bytes/param
+    return _hit(model_id, safetensors={"parameters": {"BF16": count}, "total": count},
+                **extra)
+
+
+def test_sort_fit_orders_by_descending_score_and_still_asks_the_hub_for_downloads(
+        client, hub_cache, monkeypatch):
+    fake = _reply([
+        _fitted("org/tiny", score=100, safetensors_gb=1),
+        _fitted("org/huge", score=0, safetensors_gb=4000),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client, {"sort": "fit", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/tiny", "org/huge"]
+    url = fake.calls[0][0]
+    assert "sort=downloads" in url
+
+
+def test_sort_trending_reaches_the_wire_as_trendingscore(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"sort": "trending"})
+    url = fake.calls[0][0]
+    assert "sort=trendingScore" in url
+
+
+def test_a_verdict_no_row_is_absent_by_default_and_present_with_the_opt_in_flag(
+        client, hub_cache, monkeypatch):
+    fake = _reply([
+        _fitted("org/fits", score=100, safetensors_gb=1),
+        _fitted("org/toobig", score=0, safetensors_gb=4000),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+    default = _search(client).json()
+    assert [m["id"] for m in default["models"]] == ["org/fits"]
+    assert default["hiddenUnfit"] == 1
+
+    opted_in = _search(client, {"includeUnfit": True}).json()
+    assert {m["id"] for m in opted_in["models"]} == {"org/fits", "org/toobig"}
+    assert opted_in["hiddenUnfit"] == 0
+
+
+def test_limit_still_counts_rows_actually_returned_after_the_fit_filter(
+        client, hub_cache, monkeypatch):
+    rows = [_fitted(f"org/fits{i}", score=100, safetensors_gb=1) for i in range(3)]
+    rows += [_fitted("org/toobig", score=0, safetensors_gb=4000)]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"limit": 2}).json()
+    assert len(body["models"]) == 2
+
+
 # -- when the far side is unhappy -------------------------------------------
 
 

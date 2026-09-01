@@ -134,10 +134,19 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   // because the Hub's list endpoint cannot rank by it (`ResultSort`). What
   // reaches the wire is `wireSort` of this, in `HubResults`.
   const [sort, setSort] = useState<ResultSort>("downloads");
+  // Whether to ask for models this machine likely cannot run too — off by
+  // default (D316's own "never a silent drop", applied here the way it was to
+  // gated repos): the results summary states how many were hidden either way.
+  const [includeUnfit, setIncludeUnfit] = useState(false);
   // …and settled, which is what the results section is keyed on: a burst of
   // typing is one request, and the LAYOUT must not swap on the first letter and
   // back on a backspace.
-  const [settled, setSettled] = useState<SettledQuery>({ q: "", task: "", sort: "downloads" });
+  const [settled, setSettled] = useState<SettledQuery>({
+    q: "",
+    task: "",
+    sort: "downloads",
+    includeUnfit: false,
+  });
   const debounce = useRef<number | null>(null);
   const searchBox = useRef<HTMLInputElement>(null);
 
@@ -145,11 +154,14 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     if (debounce.current) window.clearTimeout(debounce.current);
     // Long enough that a typed word is one request rather than five, short
     // enough that the results feel like they are following the query.
-    debounce.current = window.setTimeout(() => setSettled({ q: query, task, sort }), 350);
+    debounce.current = window.setTimeout(
+      () => setSettled({ q: query, task, sort, includeUnfit }),
+      350,
+    );
     return () => {
       if (debounce.current) window.clearTimeout(debounce.current);
     };
-  }, [query, task, sort]);
+  }, [query, task, sort, includeUnfit]);
 
   /** Back to this machine's own models, in one act.
    *
@@ -167,6 +179,11 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const clearSearch = () => {
     setQuery("");
     setTask("");
+    // Unlike the sort, this IS reset: it is a filter over one search's
+    // answer, not a standing preference, and a reader who opted into "show
+    // everything" on one query should not have it silently follow them into
+    // the next unrelated one.
+    setIncludeUnfit(false);
     searchBox.current?.focus();
   };
 
@@ -458,11 +475,13 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         query={query}
         task={task}
         sort={sort}
+        includeUnfit={includeUnfit}
         showsReset={live.showsReset}
         searchBox={searchBox}
         onQuery={setQuery}
         onTask={setTask}
         onSort={setSort}
+        onIncludeUnfit={setIncludeUnfit}
         onClear={clearSearch}
       />
       {load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}

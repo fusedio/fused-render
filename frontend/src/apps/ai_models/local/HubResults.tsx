@@ -57,6 +57,8 @@ export interface SettledQuery {
   /** The PAGE's sort, which may be one the Hub cannot perform. What goes on the
    *  wire is `wireSort(sort)`; see `ResultSort`. */
   sort: ResultSort;
+  /** Ask for models this machine likely cannot run too — off by default. */
+  includeUnfit: boolean;
 }
 
 /** How many rows one question is worth. `limit` means "rows you will be shown":
@@ -256,6 +258,10 @@ export function HubResults({
   // and in both cases the grid is drawn in the server's order.
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
+  // How many `verdict: "no"` rows the server dropped before `limit` — 0 when
+  // `includeUnfit` asked for them back, or when nothing needed hiding. Stated
+  // beside the results so the default filter is never a silent drop (D316).
+  const [hiddenUnfit, setHiddenUnfit] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -269,6 +275,7 @@ export function HubResults({
       task: settled.task,
       sort: wireSort(settled.sort),
       limit: LIMIT,
+      includeUnfit: settled.includeUnfit,
     }).then(
       (data) => {
         if (!alive) return;
@@ -281,6 +288,7 @@ export function HubResults({
         setError(data.error ?? null);
         setModels(data.models);
         setEndpoint(data.endpoint ?? null);
+        setHiddenUnfit(data.hiddenUnfit ?? 0);
         // Whether this machine holds a Hub token — never the token, only the
         // fact. It decides what a gated card offers (`gateChrome`), and it
         // comes from the same reply as the rows so the two cannot describe
@@ -384,6 +392,14 @@ export function HubResults({
               it is about to reorder — and only while it is true, which is at
               most the few seconds a size sort spends measuring. */}
           {measuring && <span className="am-discover-summary">measuring sizes…</span>}
+          {/* Never a silent drop (D316): the toggle beside the search box
+              turns this filter off, and this is what tells the reader it is
+              on in the first place. */}
+          {hiddenUnfit > 0 && (
+            <span className="am-discover-summary">
+              {hiddenUnfit} hidden — will not fit here
+            </span>
+          )}
           {/* The second way back, in the row somebody looking at results they
               did not want is already reading. The ✕ in the box is the one you
               find when you go looking for it; this is the one you cannot miss,

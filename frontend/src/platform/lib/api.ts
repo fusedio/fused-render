@@ -3078,6 +3078,10 @@ export interface HubSearchResult {
   error?: string;
   endpoint?: string;
   authenticated?: boolean;
+  /** How many `verdict: "no"` rows this search dropped before `limit` was
+   *  applied — 0 when `includeUnfit` asked for them back. Optional so an
+   *  error reply (which never got this far) does not have to fake a count. */
+  hiddenUnfit?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -3087,14 +3091,24 @@ export interface HubSearchResult {
  *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
  *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
  *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
- *  it reaches this function only through `wireSort`. */
-export type HubSort = "downloads" | "likes" | "updated" | "created";
+ *  it reaches this function only through `wireSort`.
+ *
+ *  "fit" is a real value the SERVER accepts even though it is not a field the
+ *  HUB has: the server asks the Hub for `downloads` (the same honest default
+ *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
+ *  "trending" IS a Hub field (`trendingScore`), sent straight through. */
+export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit";
 
 export function searchHubModels(opts: {
   q?: string;
   task?: string;
   sort?: HubSort;
   limit?: number;
+  /** Ask for models that will NOT fit this machine too — off by default, so a
+   *  search does not fill the grid with rows nothing here could hold. The
+   *  server states how many it hid either way (`HubSearchResult.hiddenUnfit`),
+   *  so the default is never a silent drop. */
+  includeUnfit?: boolean;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
@@ -3105,6 +3119,7 @@ export function searchHubModels(opts: {
     task: opts.task,
     sort: opts.sort,
     limit: opts.limit,
+    includeUnfit: opts.includeUnfit,
   });
 }
 

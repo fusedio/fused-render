@@ -30,3 +30,50 @@ builder picking this up should read this before touching code.
 - Both `footprints.load_store()` and `hw_detect.cached_hardware()` are read exactly
   once per `api_hub_search` call, before the row comprehension — never inside
   `_model_row` itself, and never per-row.
+
+## Task 2 — rank by fit, trending, hide what cannot run
+
+- `sort="fit"` is accepted by `api_hub_search` but deliberately NOT a key in
+  `_SORTS` — there is no Hub wire field for it. It resolves to the same
+  `("downloads", -1)` tuple `_SORTS["downloads"]` uses for the actual Hub
+  request, then the route re-sorts `models` by `fit.score` (descending, `None`
+  treated as -1.0 so nulls sort last, Python's stable sort keeping the Hub's
+  own ranking as the tie-break) AFTER the per-row join and BEFORE `[:count]`.
+- The client-facing `HubSort`/`ResultSort` types needed NO special-casing for
+  "fit"/"trending" beyond adding them to the union: both are values the page's
+  OWN server accepts directly (unlike the frontend-only "size"), so `wireSort`
+  passes them straight through as identity, exactly like "downloads"/"likes"/
+  etc. Only "size" ever gets rewritten by `wireSort`.
+- **Deviation from the plan's literal cache-key instruction.** The plan's task
+  2 file list says the verdict-filter and the fit-sort "join the cache key
+  alongside `extra_tags`, for the reason given there." I did NOT add
+  `include_unfit` (nor a `sort=="fit"` distinction beyond the existing `sort`
+  key, which was already part of the tuple) to `_cache`'s key. Reasoning:
+  `extra_tags` earns its place in the key because it changes the WIRE request
+  sent to the Hub (`params["filter"]`), so two different values are genuinely
+  two different Hub answers that must not share a cache slot. The unfit filter
+  and the fit-score reorder both run in the ALREADY-uncached per-request join
+  section (same section as `_local_state`/`fit.verdict`/`speed.estimate_tok_s`),
+  which re-executes on every request regardless of the cache — so two searches
+  differing only in `includeUnfit` correctly (and harmlessly) reuse the same
+  cached raw Hub rows, and adding the flag to the key would only cost an extra,
+  needless Hub round trip. `sort` was already part of the key before this task
+  (unchanged).
+- The "show models that will not fit" toggle's wire name is `includeUnfit`
+  (camelCase, matching the JS/JSON convention used everywhere else on this
+  reply's own fields — `estimatedSize`, `speedEstimate` — even though the
+  Python body previously only had single lowercase words like `q`/`task`/
+  `sort`/`limit`). The response echoes it back as `hiddenUnfit: number` — the
+  count of `verdict: "no"` rows dropped (0 whenever `includeUnfit` is true, or
+  whenever nothing needed hiding) so the default filter is never silent
+  (mirrors D316's "never a silent drop" rule already applied to gated repos).
+- `SORT_ICONS`: "Fit" reuses `MenuIcons.info`, "Trending" reuses
+  `MenuIcons.share` — no glyph in the shared set reads literally as either
+  concept, so these are the closest defensible reuses (info = "a judgement
+  about this machine worth a second look"; share = "being passed around right
+  now"). Flagged here in case a reviewer wants a better pairing.
+- The toggle resets to `false` in `clearSearch` (LocalTab) — unlike `sort`,
+  which the same function's own comment says is deliberately left alone. This
+  is a plan-text-driven choice ("the toggle's state... joins the one-act
+  clearSearch") rather than something I inferred independently; worth a second
+  look if the intent was actually "leave it alone like sort".

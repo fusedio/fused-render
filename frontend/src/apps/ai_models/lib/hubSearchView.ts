@@ -160,6 +160,18 @@ export const SORTS: readonly SortOption[] = [
   { value: "updated", label: "Updated", title: "Changed most recently" },
   { value: "created", label: "New", title: "Published most recently" },
   {
+    value: "trending",
+    label: "Trending",
+    title: "Rising fastest on the Hub right now — the Hub's own trending score",
+  },
+  {
+    value: "fit",
+    label: "Fit",
+    title:
+      "Best-fitting on THIS machine first. Ranked here, not by the Hub: it asks for the " +
+      "most-downloaded results and reorders them by how comfortably each one would run.",
+  },
+  {
     value: "size",
     label: "Size",
     title:

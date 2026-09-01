@@ -252,22 +252,31 @@ describe("wireSort", () => {
     expect(wireSort("likes")).toBe("likes");
     expect(wireSort("updated")).toBe("updated");
     expect(wireSort("created")).toBe("created");
+    // "trending" and "fit" are both real `HubSort` values the SERVER accepts —
+    // "trending" is a genuine Hub field, and "fit" is the one the server
+    // resolves itself over `downloads` — so neither is this mapper's business
+    // to rewrite, unlike "size", which is page-only and never reaches the wire.
+    expect(wireSort("trending")).toBe("trending");
+    expect(wireSort("fit")).toBe("fit");
   });
 
   it("only ever produces a sort the server's allowlist holds", () => {
     // Stated over the whole menu rather than value by value, because the failure
     // this prevents is a sort ADDED to the menu and not to the mapper: a new
     // page-level ordering would reach the API as itself and be rejected there.
-    const allowed = ["downloads", "likes", "updated", "created"];
+    const allowed = ["downloads", "likes", "updated", "created", "trending", "fit"];
     for (const s of SORTS) expect(allowed).toContain(wireSort(s.value));
   });
 
   it("knows which orderings the page has to do itself", () => {
     // What decides whether the results have to be MEASURED before they can be
-    // shown in order (HubResults' size pass).
+    // shown in order (HubResults' size pass). Fit is server-side and needs no
+    // measuring pass, unlike size.
     expect(sortsOnPage("size")).toBe(true);
     expect(sortsOnPage("downloads")).toBe(false);
     expect(sortsOnPage("created")).toBe(false);
+    expect(sortsOnPage("fit")).toBe(false);
+    expect(sortsOnPage("trending")).toBe(false);
   });
 
   it("offers size, and offers it last", () => {
@@ -279,6 +288,8 @@ describe("wireSort", () => {
       "likes",
       "updated",
       "created",
+      "trending",
+      "fit",
       "size",
     ]);
     // Every row says what its ordering MEANS: "Downloads" does not say over what

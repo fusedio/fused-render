@@ -57,6 +57,13 @@ const SORT_ICONS: Record<ResultSort, ReactNode> = {
   likes: MenuIcons.heart,
   updated: MenuIcons.clock,
   created: MenuIcons.sparkle,
+  // Trending — the share glyph: a repo trending is one being passed around
+  // right now, the same fact `share` already names elsewhere in the app.
+  trending: MenuIcons.share,
+  // Fit — the info glyph: what this ordering adds over every other one is a
+  // judgement ABOUT this machine, and info is this app's existing shorthand
+  // for "here is a fact worth a second look" rather than a raw count.
+  fit: MenuIcons.info,
   size: MenuIcons.drive,
 };
 
@@ -156,16 +163,23 @@ export function SearchControls({
   query,
   task,
   sort,
+  includeUnfit,
   showsReset,
   searchBox,
   onQuery,
   onTask,
   onSort,
+  onIncludeUnfit,
   onClear,
 }: {
   query: string;
   task: string;
   sort: ResultSort;
+  /** "Show models that will not fit here" — off by default (see
+   *  `HubSearchResult.hiddenUnfit`), and stated as a checkbox rather than
+   *  buried in a menu: it is a filter over a fact the page itself computed
+   *  (D316's own "never a silent drop"), not one more ordering. */
+  includeUnfit: boolean;
   /** Whether the ✕ is offered — asked of the LIVE controls rather than of the
    *  settled query, because it belongs to the box: appearing 350ms after the
    *  first keystroke, or lingering that long after a clear, is the control
@@ -178,6 +192,7 @@ export function SearchControls({
   onQuery: (q: string) => void;
   onTask: (task: string) => void;
   onSort: (sort: ResultSort) => void;
+  onIncludeUnfit: (v: boolean) => void;
   /** Query AND task filter, in one act. See `clearSearch` in LocalTab. */
   onClear: () => void;
 }) {
@@ -294,6 +309,14 @@ export function SearchControls({
         ariaLabel={"Sort results: " + activeS.label}
         items={sortItems}
       />
+      <label className="am-hub-unfit-toggle" title="Include models this machine likely cannot run">
+        <input
+          type="checkbox"
+          checked={includeUnfit}
+          onChange={(e) => onIncludeUnfit(e.target.checked)}
+        />
+        Show models that will not fit
+      </label>
     </div>
   );
 }
