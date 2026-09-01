@@ -598,6 +598,39 @@ def test_the_heartbeat_stops_when_the_call_does(monkeypatch):
     assert later == settled, "something was still ticking a closed row"
 
 
+def test_a_beat_that_raises_keeps_beating_and_never_breaks_the_call(monkeypatch):
+    """Reporting is decoration — and the heartbeat is a LOOP of it.
+
+    `_report_remote` used to catch only `(JobError, ValueError)`, which was
+    survivable while every caller was a one-shot on an exit path. As a loop it
+    is not: anything else escaping would end the beat for the rest of the call,
+    and the symptom would be the stalled row this whole feature exists to
+    prevent — with nothing else to show for it. Every other reporter in the app
+    (`supervisor._report`, `schedule._report`, `claude_install._report`)
+    catches broadly for exactly this reason.
+
+    Driven with the registry throwing on the FIELDLESS ticks only, so the row
+    still opens and still closes: what is under test is the beat surviving, not
+    a registry that is down altogether.
+    """
+    _cli_ok(monkeypatch, turn_delay=0.5)
+    _tight_timers(monkeypatch)
+    real = jobs.upsert
+    beats = []
+
+    def upsert(body, **kwargs):
+        if set(body) == {"id"}:      # a heartbeat and nothing else
+            beats.append(1)
+            raise RuntimeError("the registry threw something unexpected")
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True, "a failed report cost the call its answer"
+    assert len(beats) > 1, "the beat stopped at the first exception"
+
+
 def test_a_call_waiting_its_turn_says_so_rather_than_looking_busy(monkeypatch):
     """Calls serialize on `_AI_SESSION.lock` (one instance, reconfigured per
     request), and a queued one used to show the identical "Claude — remote"

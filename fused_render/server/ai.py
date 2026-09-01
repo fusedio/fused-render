@@ -1240,7 +1240,18 @@ async def _ai_relay(body: dict):
 
     def _report_remote(**fields) -> None:
         """One tick on the remote-Claude row, best-effort (never breaks the
-        call — same discipline as supervisor._report)."""
+        call — same discipline as supervisor._report).
+
+        Catches EVERYTHING, like every other reporter here
+        (`supervisor._report`, `schedule._report`, `claude_install._report`):
+        reporting is decoration, and a registry that refuses a write must not
+        cost the call its answer. The narrow `(JobError, ValueError)` this used
+        to catch was survivable while every caller was a one-shot on an exit
+        path; `_start_remote_beat` made it a LOOP, and there anything else
+        escaping kills the heartbeat for the rest of the call — whose symptom
+        is precisely the stalled row the heartbeat exists to prevent, with
+        nothing else to show for it.
+        """
         nonlocal _remote_job_closed
         if fields.get("state") in jobs.TERMINAL_STATES:
             if _remote_job_closed:
@@ -1248,7 +1259,7 @@ async def _ai_relay(body: dict):
             _remote_job_closed = True
         try:
             jobs.upsert({"id": _remote_job, **fields}, server=True)
-        except (jobs.JobError, ValueError):
+        except Exception:  # noqa: BLE001 — reporting is never authoritative
             pass
 
     def _open_remote_job() -> None:
