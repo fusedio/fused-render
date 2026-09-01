@@ -347,12 +347,25 @@ const readinessListeners = new Set<(value: SelfFixReadiness) => void>();
 // rewrite.
 let readinessGen = 0;
 
-/** Resolve the current probe and hand the value to `apply` — unless a `recheck`
-    has since superseded it. */
-function deliverReadiness(apply: (value: SelfFixReadiness) => void): void {
+/** Resolve the current probe and paint it — unless a `recheck` has since
+    superseded it.
+
+    EVERY listener, not just the mount that asked. A failed probe is not
+    remembered (see `probeReadiness`), so the next row to mount opens a FRESH
+    one — and what that probe learns is about the MACHINE, not about that row.
+    Delivering it to the caller alone left the rows that mounted earlier holding
+    a `.then` on the probe that failed, painting the fallback next to a new row
+    painting the truth: the disagreement between siblings this shared cache
+    exists to prevent, reached through the mount path rather than `recheck`'s.
+
+    Cheap despite the fan-out, because every `.then` on one probe resolves the
+    SAME object: a listener that already has this value is handed the identical
+    reference and re-renders nothing. */
+function deliverReadiness(): void {
   const gen = readinessGen;
   probeReadiness().then((value) => {
-    if (gen === readinessGen) apply(value);
+    if (gen !== readinessGen) return;
+    for (const notify of [...readinessListeners]) notify(value);
   });
 }
 
@@ -386,7 +399,7 @@ export function useSelfFixReadiness(): SelfFixReadinessState {
       if (!cancelled) setReady(value);
     };
     readinessListeners.add(apply);
-    deliverReadiness(apply);
+    deliverReadiness();
     return () => {
       cancelled = true;
       readinessListeners.delete(apply);

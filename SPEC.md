@@ -11464,6 +11464,21 @@ the installation, and the mark that says so.
   `fused_render/templates/<name>/` (`core_templates`' staging `ignore` exists
   for that same folder); hashing it would walk thousands of files on every
   re-hash to answer a question about bytes we do not own.
+  **A read that fails gets ONE retry, budgeted.** An unreadable file folds a
+  distinct token in rather than raising, so a tree we cannot fully read never
+  hashes equal to one we can — but that token is only safe because a file
+  unreadable in EVERY walk folds it every time and cancels out of the
+  comparison. The digest moves when readability CHANGES between two walks, and
+  on Windows that is routine rather than exotic: an antivirus or the indexer
+  takes a sharing lock for a few milliseconds and lets go. `settle` reads any
+  difference as "this session changed the install", so a lock that cleared on
+  its own would stamp a marker and point the badge at a session that edited
+  nothing — SF-7b's failure, arriving through the filesystem instead of through
+  the comparison. The retry is capped per walk so a genuinely unreadable
+  subtree cannot stretch a walk that runs every ~16s during a live session;
+  past the cap the token is folded straight in, which is right for a failure
+  that is not transient. Both halves need pinning: the transient case passes
+  with or without a budget.
 - **SF-7b** **The comparison is against the tree AS THIS SESSION FOUND IT**, not
   against the release (`begin_session` returns both digests; `settle` measures
   the former). They are the same on a clean install and differ the moment an
@@ -11930,6 +11945,14 @@ the installation, and the mark that says so.
   safe for a LABEL is not safe for a decision that DISCARDS information**, and
   the two need separate names the moment one of them is used to throw something
   away.
+  **And a fresh answer goes to every mounted row, not only the one that asked
+  for it.** A failed probe is deliberately not remembered, so the next row to
+  mount opens a new one — and what it learns is a fact about the MACHINE.
+  Delivered to its own caller alone, it left the rows that mounted earlier
+  holding the probe that failed: one row saying *Set up Claude Code* beside
+  another still offering *Fix this*, about one machine. That is the same
+  disagreement the SHARED cache exists to prevent, reached through the mount
+  path rather than `recheck`'s, so the mount path broadcasts too.
 - **SF-13e** **WRITERS take the first records home that will have them; READERS
   look in all of them** (`record_homes`). `writable()` is `os.access` on the
   install root — a PREDICTION, and one that answers only for the real uid's

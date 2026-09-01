@@ -106,6 +106,12 @@ MAX_FIXES = 20
 # re-hash of a live session to answer a question about bytes we do not own.
 _SKIP_DIRS = {"__pycache__", ".venv", STATE_DIR_NAME}
 _SKIP_SUFFIXES = (".pyc", ".pyo")
+
+# Retry budget for a read that fails mid-walk — see `tree_digest`. Small on
+# both axes on purpose: a transient sharing lock clears in a few milliseconds,
+# and the cap keeps a genuinely unreadable subtree from stretching the walk.
+_UNREADABLE_RETRIES = 50
+_UNREADABLE_RETRY_S = 0.01
 _SKIP_NAMES = {".DS_Store"}
 
 # The Vite build output, relative to the install root. Hashed on a SHIPPED
@@ -313,6 +319,7 @@ def tree_digest(root: str | None = None) -> str:
     root = install_root() if root is None else root
     skip_build = is_source_checkout(root)
     h = hashlib.sha256()
+    retries = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         if skip_build:
@@ -330,7 +337,32 @@ def tree_digest(root: str | None = None) -> str:
             try:
                 h.update(_file_digest(full).encode("ascii"))
             except OSError:
-                h.update(b"<unreadable>")
+                # ONE RETRY, and the asymmetry it exists for is the whole
+                # point. A file that is unreadable in EVERY walk folds the same
+                # token every time and cancels out of the comparison; the
+                # digest only moves when readability CHANGES between two walks.
+                # On Windows that is routine rather than exotic — an antivirus
+                # or the indexer takes a sharing lock for a few milliseconds
+                # and lets go — and `settle` reads any difference as "this
+                # session changed the install", so a lock that cleared on its
+                # own would stamp a marker and point the badge at a session
+                # that edited nothing (SF-7b).
+                #
+                # Budgeted, because the retry must not turn a genuinely
+                # unreadable SUBTREE into a walk that takes minutes: past the
+                # budget the token is folded straight in, which is the old
+                # behaviour and is correct for a failure that is not transient.
+                # The budget is per walk and only ever spent where a read has
+                # already failed, so a healthy tree pays nothing at all.
+                if retries < _UNREADABLE_RETRIES:
+                    retries += 1
+                    time.sleep(_UNREADABLE_RETRY_S)
+                    try:
+                        h.update(_file_digest(full).encode("ascii"))
+                    except OSError:
+                        h.update(b"<unreadable>")
+                else:
+                    h.update(b"<unreadable>")
             h.update(b"\0")
     return h.hexdigest()
 

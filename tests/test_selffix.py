@@ -129,6 +129,90 @@ def test_running_the_app_is_not_a_modification(install):
     assert selffix.tree_digest() == before
 
 
+def test_a_file_that_is_briefly_unlocked_does_not_look_like_an_edit(install):
+    """A read that fails ONCE must not move the digest.
+
+    `settle` reads any difference between two walks as "this session changed
+    the install", so a file that is unreadable in one walk and readable in the
+    next stamps a marker and points the badge at a session that edited nothing
+    — the exact outcome SF-7b exists to prevent. On Windows that is routine
+    rather than exotic: an antivirus or the indexer holds a sharing lock for a
+    few milliseconds and lets go.
+    """
+    before = selffix.tree_digest()
+
+    real = selffix._file_digest
+    target = str(install / "jobs.py")
+    failed: list[str] = []
+
+    def flaky(path: str) -> str:
+        if path == target and not failed:
+            failed.append(path)
+            raise OSError(32, "The process cannot access the file")
+        return real(path)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(selffix, "_file_digest", flaky)
+        assert selffix.tree_digest() == before
+    assert failed, "the test never exercised the failing read"
+
+
+def test_a_file_that_stays_unreadable_still_reads_as_a_different_TREE(install):
+    """The property the retry must not cost: a tree we cannot fully read must
+    not hash equal to one we can — otherwise an unreadable file that really did
+    change would hide behind the read failure. It must also be STABLE, since a
+    permanent failure that folded a different token each walk would be the same
+    false stamp by another route."""
+    before = selffix.tree_digest()
+
+    real = selffix._file_digest
+    target = str(install / "jobs.py")
+
+    def always_locked(path: str) -> str:
+        if path == target:
+            raise OSError(13, "Permission denied")
+        return real(path)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(selffix, "_file_digest", always_locked)
+        locked = selffix.tree_digest()
+        assert locked != before
+        assert locked == selffix.tree_digest()
+
+
+def test_the_retry_is_BUDGETED_so_an_unreadable_subtree_stays_cheap(install):
+    """The other half of the retry, and it needs its own test because the
+    transient case passes with or without a cap.
+
+    A retry per failed read is right for a lock that clears; it is wrong for a
+    directory that is genuinely unreadable, where it doubles the reads and adds
+    a sleep to each one — on a tree of thousands of files, minutes added to a
+    walk that runs every ~16s during a live session. Past the budget the token
+    is folded straight in, which is the old behaviour and correct for a failure
+    that is not transient.
+    """
+    for i in range(8):
+        (install / f"mod{i}.py").write_text(f"X = {i}\n")
+
+    calls: list[str] = []
+
+    def always_locked(path: str) -> str:
+        calls.append(path)
+        raise OSError(13, "Permission denied")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(selffix, "_file_digest", always_locked)
+        mp.setattr(selffix, "_UNREADABLE_RETRIES", 2)
+        mp.setattr(selffix, "_UNREADABLE_RETRY_S", 0)
+        selffix.tree_digest()
+
+    files = len(set(calls))
+    assert files >= 9, f"expected the tree to hold the 8 new files, saw {files}"
+    # One read each, plus AT MOST the budget in retries — never one retry per
+    # file, which is what an uncapped retry would spend (it would be 2 * files).
+    assert len(calls) == files + 2
+
+
 def test_a_developers_in_tree_venv_is_not_part_of_the_installation(install):
     """`.venv` is derived, never shipped, and never ours.
 

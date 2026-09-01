@@ -228,6 +228,32 @@ describe("useSelfFixReadiness", () => {
     probe.unmount();
   });
 
+  test("a row mounting after a FAILED probe tells the rows that already gave up", async () => {
+    // The shared cache is invalidated by a failure, so the next mount opens a
+    // fresh probe — and its answer is about the MACHINE, not about that row.
+    // Rows that mounted earlier hold a `.then` on the probe that failed and
+    // would otherwise go on painting the fallback while the new row paints the
+    // truth: the exact disagreement between siblings the shared cache exists to
+    // prevent, arriving through the mount path instead of the recheck path.
+    healthReply = () => Promise.reject(new Error("offline"));
+    const early = mount();
+    await settle();
+    expect(early.current().claudeChecked).toBe(false);
+    expect(early.current().claudeMissing).toBe(false);   // the safe fallback
+
+    healthReply = () => Promise.resolve(health({ found: false }));
+    const late = mount();
+    await settle();
+
+    expect(late.current().claudeMissing).toBe(true);
+    // ...and the row that was already on screen agrees, rather than sitting on
+    // a shrug it has no way to revisit.
+    expect(early.current().claudeMissing).toBe(true);
+    expect(early.current().claudeChecked).toBe(true);
+    early.unmount();
+    late.unmount();
+  });
+
   test("recheck drops the SHARED cache, so every row agrees about one machine", async () => {
     healthReply = () => Promise.resolve(health({ found: false }));
     const first = mount();
