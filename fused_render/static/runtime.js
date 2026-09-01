@@ -2072,9 +2072,9 @@
   function nonstandardFingerprint(need) {
     const nonstandard = need.nonstandard || [];
     return nonstandard
-      .map((d) => (d && d.name) + " " + (d && d.reason))
+      .map((d) => (d && d.name) + " " + (d && d.reason))
       .sort()
-      .join("");
+      .join("");
   }
 
   // The shared shape behind every yes/no this loader ever asks on a row:
@@ -2139,15 +2139,14 @@
 
   // "Install dependencies for X?" Resolves on Install, rejects on Cancel.
   //
-  // No package list: the whole point of `nonstandard` (projectenv.py) is that
-  // naming every ordinary PyPI dependency trains a reflexive click, so only
-  // what did NOT classify as an ordinary released version is named. An
-  // all-PyPI manifest — the common case — names nothing at all.
+  // Only ever called with a non-empty `need.nonstandard` — `startInstall`
+  // runs an all-PyPI install straight through with no prompt, since naming
+  // every ordinary PyPI dependency trains a reflexive click and there is
+  // nothing to disclose. The detail here is that disclosure: each entry
+  // names what did NOT classify as an ordinary released version and why.
   function confirmInstall(need, row, ui) {
     const nonstandard = need.nonstandard || [];
-    const detail = nonstandard.length
-      ? nonstandard.map((d) => d.name + " — " + d.reason).join("\n")
-      : "A one-time download.";
+    const detail = nonstandard.map((d) => d.name + " — " + d.reason).join("\n");
     return askRow(
       row, ui,
       "Install dependencies for " + (need.name || "the environment") + "?",
@@ -2371,7 +2370,16 @@
       );
     };
 
-    const approvalKey = (need.project || need.key) + " " + nonstandardFingerprint(need);
+    // Nothing to disclose (an all-PyPI manifest) means no prompt at all: a
+    // confirmation screen carrying no decision content only trains reflexive
+    // clicking. This never records an approval — there was no question to
+    // have approved — so if the manifest is later edited to add a
+    // non-standard dependency, `nonstandard` is no longer empty and the
+    // checks below run for real, with an `approvalKey` this silent install
+    // never added.
+    if ((need.nonstandard || []).length === 0) return runInstall();
+
+    const approvalKey = (need.project || need.key) + " " + nonstandardFingerprint(need);
     if (approvedInstalls.has(approvalKey)) return runInstall();
 
     return confirmInstall(need, row, ui).then(
