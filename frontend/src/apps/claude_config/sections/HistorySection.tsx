@@ -17,6 +17,7 @@
 // every pending edit into ONE commit, so what it is about to sweep up has to be
 // visible before it happens — hence the same drift preview.
 import { useCallback } from "react";
+import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
@@ -161,9 +162,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
               believe it. */}
           {status?.dirty && (
             <CardActions>
-              <button type="button" className="btn btn-primary" onClick={commit}>
-                Review &amp; commit
-              </button>
+              <Button onClick={commit}>Review &amp; commit</Button>
             </CardActions>
           )}
         </Card>
@@ -197,9 +196,9 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
                   i === 0 ? (
                     <Pill tone="on">current</Pill>
                   ) : (
-                    <button type="button" className="btn" onClick={() => restore(e.sha)}>
+                    <Button variant="outline" size="sm" onClick={() => restore(e.sha)}>
                       Restore
-                    </button>
+                    </Button>
                   )
                 }
               />

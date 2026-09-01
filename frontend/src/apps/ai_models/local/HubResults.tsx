@@ -48,6 +48,8 @@ import {
 } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 
 /** A settled query — what the debounce hands over, and the only thing this
  *  section is keyed on. */
@@ -165,14 +167,15 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
           {/* The page's own button-shaped link — the same one a gated card
               offers for "Accept terms", because it is the same kind of act:
               one step, on the Hub, in a new tab. */}
-          <a
-            className="am-card-power am-card-gate-link"
-            href={auth.pending.url}
-            target="_blank"
-            rel="noopener noreferrer"
+          <Button
+            variant="outline"
+            size="xs"
+            render={
+              <a href={auth.pending.url} target="_blank" rel="noopener noreferrer" />
+            }
           >
             Authorize on huggingface.co
-          </a>
+          </Button>
           {/* The code is shown as well as carried by that link: the link has
               it, but the Hub asks for confirmation, and somebody who opened
               the page in a different browser needs to type it. */}
@@ -181,26 +184,28 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
             <code>{auth.pending.userCode}</code> — it expires in{" "}
             {Math.max(1, Math.round(auth.pending.secondsLeft / 60))} min.
           </span>
-          <button
+          <Button
             type="button"
-            className="am-hub-back"
+            variant="ghost"
+            size="xs"
             disabled={busy}
             onClick={() => void act(cancelHfLogin)}
           >
             Cancel
-          </button>
+          </Button>
         </>
       ) : (
         <>
-          <button
+          <Button
             type="button"
-            className="am-card-power"
+            variant="outline"
+            size="xs"
             disabled={busy}
             title="Start the Hugging Face device-code login. The token is stored by huggingface_hub, never by this app."
             onClick={() => void act(() => startHfLogin())}
           >
             Log in to Hugging Face
-          </button>
+          </Button>
           <span className="cc-caption">
             Some results below are gated. Downloading one needs a token on this machine.
           </span>
@@ -390,14 +395,15 @@ export function HubResults({
               and it says where it GOES rather than what it erases — "clear"
               describes the mechanism, and the reader's question is "how do I
               get my models back". */}
-          <button
+          <Button
             type="button"
-            className="am-hub-back"
+            variant="ghost"
+            size="xs"
             onClick={onBack}
             title="Clear the search and the task filter (Esc)"
           >
             ← Back to models
-          </button>
+          </Button>
         </span>
       </div>
 
@@ -426,9 +432,13 @@ export function HubResults({
         <HubLogin onSignedIn={() => setAuthEpoch((n) => n + 1)} />
       )}
 
-      {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
+      {loading && models === null && (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner /> Asking {host}…
+        </p>
+      )}
       {models !== null && models.length === 0 && !error && (
-        <p className="cc-empty">
+        <p className="text-sm text-muted-foreground">
           Nothing on {host} matches that — among the models this app can run.
         </p>
       )}

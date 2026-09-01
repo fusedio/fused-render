@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
 import type { RegistryResult, TemplateInventory } from "@platform/lib/api";
+import { Button } from "@platform/shadcn/ui/button";
 import { sourceLabel } from "@shell/templates/helpers";
 
 export function TemplatePicker({
@@ -68,13 +70,13 @@ export function TemplatePicker({
       aria-label="Add template"
     >
       <div className="templates-picker-head">
-        <span className="deploy-muted">Add template</span>
-        <button type="button" className="modal-close deploy-close" onClick={onClose} aria-label="Close">
-          ✕
-        </button>
+        <span className="text-xs text-muted-foreground">Add template</span>
+        <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
+          <X />
+        </Button>
       </div>
       <div className="templates-picker-body">
-        {empty && <div className="deploy-muted">No more templates to add.</div>}
+        {empty && <div className="text-xs text-muted-foreground">No more templates to add.</div>}
         {groups.map((g) => (
           <div key={g.source.id} className="templates-picker-group">
             <div className="templates-picker-cat">{sourceLabel(registry, g.source.id)}</div>

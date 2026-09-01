@@ -14,6 +14,9 @@
 //     already read the config that just got swapped underneath it, and a
 //     targeted refresh of ten sections is a worse contract than one reload.
 import { useCallback, useId, useState } from "react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "../api";
@@ -24,6 +27,7 @@ import {
   CardSub,
   CardTitle,
   DisclosureButton,
+  Empty,
   List,
   ListRow,
   ListSkeleton,
@@ -132,26 +136,23 @@ function ImportPicker({
       onClose={onCancel}
       footer={
         <>
-          <button type="button" className="btn" onClick={onCancel}>
+          <Button variant="outline" onClick={onCancel}>
             Cancel
-          </button>
-          <button type="button" className="btn btn-primary" onClick={submit}>
-            Import
-          </button>
+          </Button>
+          <Button onClick={submit}>Import</Button>
         </>
       }
     >
-      <label className="field">
-        <span className="field-label">New profile name</span>
-        <input
-          className="field-control"
+      <Field>
+        <FieldLabel>New profile name</FieldLabel>
+        <Input
           placeholder="e.g. imported"
           value={branch}
           onChange={(e) => setBranch(e.target.value)}
         />
-      </label>
+      </Field>
       {all.length === 0 ? (
-        <div className="cc-empty">Empty archive.</div>
+        <Empty>Empty archive.</Empty>
       ) : (
         <>
           <label className="cc-pick cc-pick-all">
@@ -410,17 +411,16 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
               and switches into it.
             </CardSub>
             <CardActions>
-              <input
-                className="field-control"
+              <Input
                 aria-label="New profile name"
                 placeholder="e.g. work, experiment"
                 value={newName}
                 disabled={busy}
                 onChange={(e) => setNewName(e.target.value)}
               />
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
+              <Button disabled={busy} onClick={create}>
                 Create &amp; switch
-              </button>
+              </Button>
             </CardActions>
           </Card>
         </div>
@@ -434,8 +434,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
               onto a new profile. Your current profile is untouched.
             </CardSub>
             <CardActions>
-              <input
-                className="field-control"
+              <Input
                 type="file"
                 accept=".zip"
                 aria-label="Profile archive"
@@ -470,21 +469,17 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
               actions={
                 <>
                   {!p.current && (
-                    <button type="button" className="btn" onClick={() => switchInto(p.name)}>
+                    <Button variant="outline" size="sm" onClick={() => switchInto(p.name)}>
                       Switch
-                    </button>
+                    </Button>
                   )}
-                  <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
+                  <Button variant="outline" size="sm" onClick={() => exportProfile(p.name)}>
                     Export .zip
-                  </button>
+                  </Button>
                   {!p.current && !p.isDefault && (
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      onClick={() => remove(p.name)}
-                    >
+                    <Button variant="destructive" size="sm" onClick={() => remove(p.name)}>
                       Delete
-                    </button>
+                    </Button>
                   )}
                 </>
               }

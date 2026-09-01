@@ -3,6 +3,11 @@
 // Pure presentation — the caller owns positioning (anchor rect) and persists
 // the chosen icon.
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@platform/shadcn/ui/input-group";
+import { SearchIcon } from "lucide-react";
 
 interface Category {
   name: string;
@@ -187,7 +192,6 @@ export default function IconPicker({
   const [active, setActive] = useState(0);
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
   const restoreRef = useRef<Element | null>(null);
 
   // Capture the opener on mount and restore focus to it on unmount (Esc or a
@@ -200,7 +204,9 @@ export default function IconPicker({
   }, []);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    // Found by query rather than a ref: shadcn's Input is a plain function
+    // component and React 18 does not forward `ref` through it.
+    rootRef.current?.querySelector("input")?.focus();
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (rootRef.current && rootRef.current.contains(target)) return;
@@ -300,50 +306,72 @@ export default function IconPicker({
   let flatIdx = 0;
 
   return (
+    // `.icon-picker` stays on the root: sidebar.css owns its `position: fixed`
+    // plate and z-order (the useLayoutEffect above writes top/left against
+    // it), and the picker floats over a host Modal that also positions itself.
     <div className="icon-picker" ref={rootRef} role="dialog" aria-label="Choose icon">
-      <div className="icon-picker-head">
-        <input
-          ref={inputRef}
-          type="text"
-          className="icon-picker-search"
-          placeholder="Filter…"
-          aria-label="Filter icons"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={`${baseId}-grid`}
-          aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
-          value={query}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            setQuery(e.target.value);
-            setActive(0);
-          }}
-          onKeyDown={onSearchKeyDown}
-        />
-        <button className="icon-picker-remove" title="Reset to default star" onClick={onRemove}>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <InputGroup className="h-7">
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            type="text"
+            className="h-7 text-xs"
+            placeholder="Filter…"
+            aria-label="Filter icons"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={`${baseId}-grid`}
+            aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
+            value={query}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setQuery(e.target.value);
+              setActive(0);
+            }}
+            onKeyDown={onSearchKeyDown}
+          />
+        </InputGroup>
+        <Button variant="ghost" size="sm" title="Reset to default star" onClick={onRemove}>
           Remove
-        </button>
+        </Button>
       </div>
-      <div className="icon-picker-body" id={`${baseId}-grid`} role="listbox" aria-label="Icons">
-        {sections.length === 0 && <div className="icon-picker-empty">No match</div>}
+      <div
+        className="max-h-[260px] overflow-y-auto"
+        id={`${baseId}-grid`}
+        role="listbox"
+        aria-label="Icons"
+      >
+        {sections.length === 0 && (
+          <Empty className="p-3">
+            <EmptyHeader>
+              <EmptyDescription>No match</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
         {sections.map((cat) => (
           <React.Fragment key={cat.name}>
-            <div className="icon-picker-cat">{cat.name}</div>
-            <div className="icon-picker-grid">
+            <div className="px-1 pt-1.5 pb-1 text-xs tracking-wide uppercase text-muted-foreground">
+              {cat.name}
+            </div>
+            <div className="grid grid-cols-8">
               {cat.emoji.map(([emoji, kw]) => {
                 const i = flatIdx++;
                 return (
-                  <button
+                  <Button
                     key={emoji}
                     id={cellId(i)}
                     role="option"
                     aria-selected={i === activeIdx}
                     tabIndex={-1}
-                    className={"icon-picker-cell" + (i === activeIdx ? " active" : "")}
+                    variant="ghost"
+                    size="icon-sm"
+                    className={cn("text-base", i === activeIdx && "bg-muted ring-2 ring-ring ring-inset")}
                     title={kw}
                     onClick={() => onPick(emoji)}
                   >
                     {emoji}
-                  </button>
+                  </Button>
                 );
               })}
             </div>

@@ -27,6 +27,14 @@ import {
   type ReactNode,
 } from "react";
 import { pushToast } from "@platform/lib/toast";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Empty as EmptyRoot,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+} from "@platform/shadcn/ui/empty";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
@@ -197,10 +205,12 @@ export function Row({
 // each section remembers to add.
 export function Empty({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
-    <div className="cc-empty">
-      <div>{children}</div>
-      {action ? <div className="cc-empty-action">{action}</div> : null}
-    </div>
+    <EmptyRoot className="border border-dashed border-border">
+      <EmptyHeader>
+        <EmptyDescription>{children}</EmptyDescription>
+      </EmptyHeader>
+      {action ? <EmptyContent>{action}</EmptyContent> : null}
+    </EmptyRoot>
   );
 }
 
@@ -256,9 +266,9 @@ export function SectionToolbar({
         <div className={"cc-toolbar-controls" + (children ? "" : " cc-toolbar-controls-solo")}>
           {children}
           {onRefresh && (
-            <button
-              type="button"
-              className="cc-iconbtn"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
               aria-label={refreshLabel}
               aria-busy={refreshBusy || undefined}
@@ -266,7 +276,7 @@ export function SectionToolbar({
               onClick={onRefresh}
             >
               <Icon name="refresh" />
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -293,15 +303,14 @@ export function DisclosureButton({
   onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className={"btn" + (open ? " cc-btn-on" : "")}
+    <Button
+      variant="outline"
       aria-expanded={open}
       aria-controls={controls}
       onClick={onToggle}
     >
       {open ? "Cancel" : <><Icon name="plus" />{label}</>}
-    </button>
+    </Button>
   );
 }
 
@@ -402,9 +411,10 @@ export function ListRow({
         <div className="cc-lrow-actions">
           {actions}
           {details && (
-            <button
-              type="button"
-              className="cc-iconbtn cc-lrow-chev"
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="cc-lrow-chev"
               aria-expanded={open}
               aria-controls={panelId}
               aria-label={open ? "Hide details" : "Show details"}
@@ -412,7 +422,7 @@ export function ListRow({
               onClick={toggle}
             >
               <Icon name="chevron" />
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -432,8 +442,17 @@ export const SKELETON_ROWS = 4;
 
 export type PillTone = "neutral" | "on" | "ro" | "err";
 
+// Tone → Badge variant. "on" is a positive status (enabled/current/connected);
+// the default Badge (lime) carries it. "ro" is a quiet qualifier, "err" a fault.
+const PILL_VARIANT: Record<PillTone, "secondary" | "default" | "outline" | "destructive"> = {
+  neutral: "secondary",
+  on: "default",
+  ro: "outline",
+  err: "destructive",
+};
+
 export function Pill({ tone = "neutral", children }: { tone?: PillTone; children: ReactNode }) {
-  return <span className={"cc-pill cc-pill-" + tone}>{children}</span>;
+  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>;
 }
 
 // -- three-state toggle -------------------------------------------------------
@@ -546,16 +565,13 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
       width={620}
       onClose={() => settle(false)}
       footer={buttons.map((b) => (
-        <button
+        <Button
           key={b.label}
-          type="button"
-          className={
-            "btn" + (b.primary ? (b.danger ? " btn-danger" : " btn-primary") : "")
-          }
+          variant={b.primary ? (b.danger ? "destructive" : "default") : "outline"}
           onClick={() => settle(b.value)}
         >
           {b.label}
-        </button>
+        </Button>
       ))}
     >
       {note ? <p className="cc-note">{note}</p> : null}

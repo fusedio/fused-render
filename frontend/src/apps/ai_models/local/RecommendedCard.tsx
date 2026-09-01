@@ -52,6 +52,7 @@ import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
 import { timeAgo } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { Button } from "@platform/shadcn/ui/button";
 
 /** The card every model on this page that is not a cache repo is drawn as.
  *
@@ -329,9 +330,10 @@ export function RecommendedCard({
         ) : (
           <>
             {!runner?.available && <SwitchEngines runner={runner} />}
-            <button
+            <Button
             type="button"
-            className="am-card-power"
+            variant="outline"
+            size="xs"
             /* Offered only where it can end in a model that runs. The tag
                above already says which backend and why not; a Download that
                filled the disk with weights nothing here reads would be the
@@ -353,7 +355,7 @@ export function RecommendedCard({
             >
               <DownloadGlyph />
               Download
-            </button>
+            </Button>
           </>
         )
       }
@@ -600,8 +602,10 @@ export function HubResultCard({
                 describe and linking there would hand someone a view that
                 cannot load. */}
             {disk.path && (
-              <a
-                className="am-card-explore-link"
+              <Button
+                variant="ghost"
+                size="xs"
+                render={<a
                 // The same URL the Local view's Explore builds — a raw "#" +
                 // path drops the mode, so a middle-click would land on the
                 // folder listing rather than the model card.
@@ -620,24 +624,30 @@ export function HubResultCard({
                   e.preventDefault();
                   navigate(disk.path!, { isDir: true, mode: "model_card" });
                 }}
+                />}
               >
                 Explore
-              </a>
+              </Button>
             )}
             {/* A gate this machine cannot open gets the way to open it instead
                 of a button that cannot start. The link goes to the model's own
                 Hub page, which is where both the licence and the access
                 request live. */}
             {gate?.action && (
-              <a
-                className="am-card-power am-card-gate-link"
-                href={model.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                data-hint={gate.title}
+              <Button
+                variant="outline"
+                size="xs"
+                render={
+                  <a
+                    href={model.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-hint={gate.title}
+                  />
+                }
               >
                 {gate.action}
-              </a>
+              </Button>
             )}
             {/* The reason that Download is dead, where it is — same amber verb
                 the other two cards use. */}
@@ -648,9 +658,10 @@ export function HubResultCard({
                 Explore beside it are what that state offers. */}
             {(disk.state === "absent" || disk.state === "partial") &&
               (!gate || gate.canDownload) && (
-                <button
+                <Button
                   type="button"
-                  className="am-card-power"
+                  variant="outline"
+                  size="xs"
                   disabled={!loadable}
                   data-hint={
                     !loadable
@@ -668,7 +679,7 @@ export function HubResultCard({
                 >
                   <DownloadGlyph />
                   Download
-                </button>
+                </Button>
               )}
           </>
         )

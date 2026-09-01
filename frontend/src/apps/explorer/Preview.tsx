@@ -44,6 +44,8 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -205,9 +207,10 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
     // Success navigates away and unmounts this button; no busy reset needed.
   };
   return (
-    <button
+    <Button
       type="button"
-      className="bar-ctl bar-ctl-bordered"
+      variant="outline"
+      size="sm"
       title={
         target.cloned
           ? "Open your editable copy at " + target.path
@@ -216,9 +219,9 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
       onClick={go}
       disabled={busy}
     >
-      {busy && <span className="mode-icon-spinner" />}
+      {busy && <Spinner data-icon="inline-start" />}
       {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
-    </button>
+    </Button>
   );
 }
 
@@ -285,16 +288,17 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     }
   };
   return (
-    <button
+    <Button
       type="button"
-      className="bar-ctl bar-ctl-bordered"
+      variant="outline"
+      size="sm"
       title={"Export " + name + " as a single .fused app file"}
       onClick={doExport}
       disabled={busy}
     >
-      {busy && <span className="mode-icon-spinner" />}
+      {busy && <Spinner data-icon="inline-start" />}
       {busy ? "Exporting…" : "Export App"}
-    </button>
+    </Button>
   );
 }
 
@@ -1735,8 +1739,8 @@ function TemplatePreview({
           /* URL-requested a gated mode whose verdict is still in flight: hold
              the body until it lands (the iframe must not render a template on
              a file its gate may deny). */
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
             Checking if this view applies…
           </div>
         ) : isListing ? (
@@ -2020,14 +2024,13 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
           <p className="registry-fix-hint">
             Any custom preview bindings in it are being ignored until this is fixed.
           </p>
-          <button
+          <Button
             type="button"
-            className="btn btn-primary"
             disabled={busy}
             onClick={() => run(repairTemplateRegistry, (r) => r.repaired)}
           >
             Repair Template Registry
-          </button>
+          </Button>
         </>
       )}
       {coreRegistryError && (
@@ -2050,14 +2053,13 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
               Restoring the default will bring back: {resetTarget.coreTemplates.join(", ")}.
             </p>
           )}
-          <button
+          <Button
             type="button"
-            className="btn btn-primary"
             disabled={busy}
             onClick={() => run(() => resetRegistryBinding(resetTarget.key))}
           >
             Restore default previews for {resetTarget.key}
-          </button>
+          </Button>
         </>
       )}
       {actionError && <p className="registry-fix-error">{actionError}</p>}
@@ -2199,8 +2201,8 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
       <>
         {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} />}
         <div className="preview-body">
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
             Checking which views apply…
           </div>
         </div>

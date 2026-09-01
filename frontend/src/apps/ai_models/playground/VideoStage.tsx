@@ -18,8 +18,12 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -396,33 +400,33 @@ export function VideoStage({
             nothing moves when Clear comes and goes. */}
         <div className="pg-composer-side">
           {!busy && run && (
-            <button
-              type="button"
-              className="pg-ghost-btn pg-clear"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mr-2 mb-auto flex-none"
               title="Clear the prompt and the clip"
               onClick={clear}
             >
               Clear
-            </button>
+            </Button>
           )}
           {busy ? (
-            <button
-              type="button"
-              className="btn btn-secondary pg-send"
+            <Button
+              variant="outline"
+              className="flex-none"
               onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
             >
               Stop
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
+            <Button
+              className="flex-none"
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              Generate <Kbd>⏎</Kbd>
+            </Button>
           )}
         </div>
       </div>
@@ -456,17 +460,25 @@ export function VideoStage({
           )}
           {editable && (
             <div className="pg-attach-row">
-              <button
-                type="button"
-                className="pg-attach-btn"
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
-                {StarterIcons.landscape}
-                <span>{base ? "Replace" : "Add a reference image"}</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
+                <span data-icon="inline-start" aria-hidden="true">
+                  {StarterIcons.landscape}
+                </span>
+                {base ? "Replace" : "Add a reference image"}
+              </Button>
+              {attaching && (
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Spinner className="size-3" />
+                  Working…
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -576,7 +588,11 @@ export function VideoStage({
           Generate. The four sliders in the order a render is thought about:
           how big, how long, how carefully — then the seed. */}
 
-      {error && <p className="pg-error">{error}</p>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {!run ? (
         <ResultSlot

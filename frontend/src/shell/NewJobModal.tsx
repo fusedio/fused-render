@@ -12,6 +12,12 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Input } from "@platform/shadcn/ui/input";
+import { Label } from "@platform/shadcn/ui/label";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -245,13 +251,6 @@ const ICON_X = (
   </svg>
 );
 
-const ICON_CHECK = (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
-
 // lucide "chevron-right", at the size the task list's disclosure uses — the
 // same mark, so the two read as one pattern. Points right when closed and is
 // rotated a quarter turn by CSS when the block opens.
@@ -285,10 +284,9 @@ const ICON_TRASH = (
   </svg>
 );
 
-// A quiet checkbox: a real <input> (focusable, space-toggled, announced as a
-// checkbox) wrapped in the <label> that names it, with the box itself drawn in
-// CSS so it resolves in both themes. Used twice — Repeat, and the flag behind
-// it.
+// A quiet checkbox: the shadcn Checkbox (a real, focusable, space-toggled,
+// checkbox-announced control) wrapped in the Label that names it. Used twice —
+// Repeat, and the flag behind it.
 function CheckField({
   checked,
   onChange,
@@ -307,17 +305,14 @@ function CheckField({
   describedBy?: string;
 }) {
   return (
-    <label className={"new-task-check" + (className ? " " + className : "")}>
-      <input
-        type="checkbox"
-        className="new-task-check-input"
+    <Label className={cn("gap-1.5 font-normal", className)}>
+      <Checkbox
         checked={checked}
         aria-describedby={describedBy}
-        onChange={(e) => onChange(e.target.checked)}
+        onCheckedChange={(next) => onChange(next === true)}
       />
-      <span className="new-task-check-box" aria-hidden="true">{ICON_CHECK}</span>
-      <span className="new-task-check-text">{label}</span>
-    </label>
+      {label}
+    </Label>
   );
 }
 
@@ -522,9 +517,9 @@ function ExplorerPanel({
           ),
         )}
       </div>
-      <input
+      <Input
         type="text"
-        className="field-control schedule-picker-filter"
+        className="schedule-picker-filter"
         placeholder="Filter this folder"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -535,10 +530,10 @@ function ExplorerPanel({
         {naming && (
           <div className="schedule-picker-new">
             {ICON_FOLDER}
-            <input
+            <Input
               ref={nameRef}
               type="text"
-              className="field-control schedule-picker-new-name"
+              className="schedule-picker-new-name"
               placeholder="New folder name"
               aria-label="New folder name"
               value={newName}
@@ -550,10 +545,10 @@ function ExplorerPanel({
                 }
               }}
             />
-            <button type="button" className="btn btn-primary schedule-picker-new-ok"
+            <Button type="button" variant="outline" className="schedule-picker-new-ok"
                     disabled={!canCreate} onClick={confirmName}>
               Use
-            </button>
+            </Button>
           </div>
         )}
         {naming && typedName !== "" && !canCreate && (
@@ -594,18 +589,18 @@ function ExplorerPanel({
             than on the errand — same side as the crumbs it reads off. Hidden
             while a name is being typed: the row above is the control then. */}
         {!error && !naming && (
-          <button type="button" className="btn btn-secondary schedule-picker-newbtn"
+          <Button type="button" variant="outline" className="schedule-picker-newbtn"
                   onClick={() => setNaming(true)}>
             + New folder
-          </button>
+          </Button>
         )}
-        <button type="button" className="btn btn-secondary" onClick={onClose}>
+        <Button type="button" variant="outline" onClick={onClose}>
           Cancel
-        </button>
-        <button type="button" className="btn btn-primary"
+        </Button>
+        <Button type="button"
                 onClick={() => { onPick(path); onClose(); }}>
           Use this folder
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1105,16 +1100,22 @@ function CustomRecurrence({
           rendered — a greyed-out control is a question you cannot answer. */}
       <div className="schedule-recur-ends">
         <span className="schedule-recur-ends-label">Ends</span>
-        <div className="schedule-form-seg" role="radiogroup" aria-label="Ends">
+        <ToggleGroup
+          variant="outline"
+          className="schedule-form-seg"
+          aria-label="Ends"
+          value={[ends]}
+          onValueChange={(groupValue) => {
+            const next = (groupValue as (typeof ENDS_CHOICES)[number]["key"][])[0];
+            if (next) setEnds(next);
+          }}
+        >
           {ENDS_CHOICES.map(({ key, label }) => (
-            <button key={key} type="button"
-                    className={"btn btn-secondary" + (ends === key ? " is-active" : "")}
-                    aria-pressed={ends === key}
-                    onClick={() => setEnds(key)}>
+            <ToggleGroupItem key={key} value={key}>
               {label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
 
         {ends === "on" && (
           <div className="schedule-recur-detail">
@@ -1166,14 +1167,14 @@ function CustomRecurrence({
       </div>
 
       <div className="schedule-picker-foot">
-        <button type="button" className="btn btn-secondary" onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
-        </button>
-        <button type="button" className="btn btn-primary"
+        </Button>
+        <Button type="button"
                 disabled={ends === "on" && !until}
                 onClick={done}>
           Done
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -3152,15 +3153,15 @@ export default function NewJobModal({
       footer={
         <>
           {/* Destructive, so it sits at the far left of the footer, away from
-              Save — `.btn-danger-text` carries the margin-right:auto that
-              anchors it there. Present only on an Edit, and only when the
+              Save — `mr-auto` anchors it there. Present only on an Edit, and only when the
               entry is actually withdrawable. `type="button"`, like every
               control in this footer: the form has no submit, so Enter never
               reaches it. */}
           {del && (
-            <button
+            <Button
               type="button"
-              className={"btn btn-danger-text new-task-delete"
+              variant="ghost"
+              className={"mr-auto text-destructive new-task-delete"
                 + (delConfirm ? " is-armed" : "")}
               title={del.title}
               disabled={busy}
@@ -3168,17 +3169,17 @@ export default function NewJobModal({
             >
               {ICON_TRASH}
               {delConfirm ? del.confirm : del.label}
-            </button>
+            </Button>
           )}
           {/* The way back completes the chat's round trip: chat → schedule →
               adjust the draft → schedule again. Only shown when a chat sent
               us here — from anywhere else there is no "back". */}
           {chatBack && (
-            <button type="button" className="btn btn-secondary schedule-back-chat"
+            <Button type="button" variant="outline" className="schedule-back-chat"
                     disabled={busy}
                     onClick={backToChat}>
               {backConfirm ? "Discard changes?" : "Back to chat"}
-            </button>
+            </Button>
           )}
           {/* NOT disabled on `!ready`. A dead button is not a hint: the
               commonest way to reach it is the commonest thing to forget (type a
@@ -3192,7 +3193,7 @@ export default function NewJobModal({
               announced, while the button stays focusable and pressable — which
               is the whole point. Only `busy` truly disables it: a second press
               mid-save would schedule the message twice. */}
-          <button type="button" className="btn btn-primary schedule-save"
+          <Button type="button" className="schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
             {/* THE HOTKEY, ON THE BUTTON (Akshil, 2026-08-27: "show that hotkey
@@ -3207,7 +3208,7 @@ export default function NewJobModal({
                 <span>{ENTER_LABEL}</span>
               </kbd>
             )}
-          </button>
+          </Button>
         </>
       }
     >
@@ -3503,10 +3504,9 @@ export default function NewJobModal({
               }
             }}
           >
-            <input
+            <Input
               ref={pathRef}
               type="text"
-              className={"field-control" + (pathError ? " is-invalid" : "")}
               aria-invalid={pathError !== null}
               // The new-folder row only exists while the list is open, so it is
               // only pointed at while it is there — a describedby aimed at a
@@ -3807,7 +3807,7 @@ export default function NewJobModal({
                 use was the loudest thing under the time. Unticking clears the
                 rule outright — see toggleRepeat. */}
             <CheckField
-              className="new-task-check--repeat"
+              className="ml-0.5"
               label="Repeat"
               checked={repeatOn}
               onChange={toggleRepeat}
@@ -3888,6 +3888,7 @@ export default function NewJobModal({
                 the wire (`new_task_each_run`) and the behaviour are untouched —
                 this is the word the user reads. */}
             <CheckField
+              className="ml-1"
               label="Fresh task each run"
               checked={newTaskEachRun}
               onChange={setNewTaskEachRun}

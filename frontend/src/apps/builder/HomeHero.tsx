@@ -668,7 +668,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
           facts={{ page: location.pathname + location.search }}
           onRetry={() => setSessionError(null)}
         >
-          <span className="deploy-muted">
+          <span className="text-xs text-muted-foreground">
             The app folder was created — only the task failed.
           </span>
         </TroubleCard>

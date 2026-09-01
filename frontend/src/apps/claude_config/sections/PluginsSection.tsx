@@ -26,6 +26,17 @@
 // optimistic value.
 import { useCallback, useEffect, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { urlForFsPath } from "@platform/lib/router";
 import ContextMenu from "@platform/ui/ContextMenu";
 import Modal from "@platform/ui/modal/Modal";
@@ -109,22 +120,22 @@ function Pager({
       <span className="cc-summary" aria-current="page">
         {first}–{last} of {total}
       </span>
-      <button
-        type="button"
-        className="btn"
+      <Button
+        variant="outline"
+        size="sm"
         disabled={page === 0}
         onClick={() => onPage(page - 1)}
       >
         Previous
-      </button>
-      <button
-        type="button"
-        className="btn"
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
         disabled={page >= pages - 1}
         onClick={() => onPage(page + 1)}
       >
         Next
-      </button>
+      </Button>
     </nav>
   );
 }
@@ -487,36 +498,35 @@ export default function PluginsSection({ onChanged }: SectionProps) {
         // trigger the catalog read that the Discover switch deliberately defers.
         onRefresh={tab === "installed" ? reload : loadAvail}
       >
-        <input
-          className="field-control cc-scalar"
+        <Input
+          className="cc-scalar"
           type="search"
           aria-label="Filter plugins"
           placeholder="Filter by name, id or description…"
           value={query}
           onChange={(e) => search(e.target.value)}
         />
-        <div className="cc-seg" role="tablist" aria-label="Plugin source">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "installed"}
-            className={"cc-seg-btn" + (tab === "installed" ? " active" : "")}
-            onClick={() => pick("installed")}
-            title="Plugins on this machine"
-          >
+        {/* Exclusive pair; ignore the empty toggle-off so one side is always on. */}
+        <ToggleGroup
+          value={[tab]}
+          onValueChange={(v: unknown[]) => {
+            const next = v[0];
+            if (next === "installed" || next === "discover") pick(next);
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Plugin source"
+        >
+          <ToggleGroupItem value="installed" title="Plugins on this machine">
             Installed
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "discover"}
-            className={"cc-seg-btn" + (tab === "discover" ? " active" : "")}
-            onClick={() => pick("discover")}
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="discover"
             title="Plugins your marketplaces publish that you don't have yet"
           >
             Discover
-          </button>
-        </div>
+          </ToggleGroupItem>
+        </ToggleGroup>
       </SectionToolbar>
       <div className="cc-split">
         <nav className="cc-index" aria-label="Marketplaces">
@@ -583,9 +593,9 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     filter button beside it is `flex: 1`, so an equal trail
                     means an equal button and one x for every count. */}
                 <div className="cc-index-trail">
-                  <button
-                    type="button"
-                    className={"cc-iconbtn" + (mktMenu?.name === m.name ? " cc-iconbtn-on" : "")}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
                     aria-haspopup="menu"
                     aria-expanded={mktMenu?.name === m.name}
                     aria-label={`Actions for ${m.name}`}
@@ -600,7 +610,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     }}
                   >
                     <Icon name="kebab" />
-                  </button>
+                  </Button>
                 </div>
               </div>
             );
@@ -625,9 +635,11 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               swallowed: the list below is short for a reason the user can act
               on (a hand-edited or half-cloned marketplace.json). */}
           {tab === "discover" && avail && avail.skipped.length > 0 && (
-            <div className="cc-change">
-              Could not read the catalog for {avail.skipped.join(", ")}.
-            </div>
+            <Alert>
+              <AlertDescription>
+                Could not read the catalog for {avail.skipped.join(", ")}.
+              </AlertDescription>
+            </Alert>
           )}
           {tab === "discover" && !avail && !availError && (
             <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
@@ -671,26 +683,26 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                       <>
                         <span className="cc-lrow-inline-actions">
                           {p.installed && (
-                            <button
-                              type="button"
-                              className="cc-iconbtn"
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
                               disabled={busy === p.id}
                               title={busy === p.id ? "Updating…" : "Update this plugin"}
                               aria-label={`Update ${p.name}`}
                               onClick={() => update(p)}
                             >
                               <Icon name="refresh" />
-                            </button>
+                            </Button>
                           )}
-                          <button
-                            type="button"
-                            className="cc-iconbtn"
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
                             title={`Copy install command — ${p.shareCommand}`}
                             aria-label={`Copy the install command for ${p.name}`}
                             onClick={() => share(p.shareCommand)}
                           >
                             <Icon name="copy" />
-                          </button>
+                          </Button>
                         </span>
                         <span className="cc-lrow-meta cc-lrow-ver">
                           {p.version ? `v${p.version}` : ""}
@@ -749,15 +761,15 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     </>
                   }
                   actions={
-                    <button
-                      type="button"
-                      className="btn"
+                    <Button
+                      variant="outline"
+                      size="sm"
                       disabled={busy === p.id}
                       title={`claude plugin install ${p.id}`}
                       onClick={() => install(p)}
                     >
                       {busy === p.id ? "Installing…" : "Install"}
-                    </button>
+                    </Button>
                   }
                 />
               ))}
@@ -777,24 +789,17 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             <Empty
               action={
                 tab === "installed" && data.plugins.length === 0 ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => pick("discover")}
-                  >
-                    Browse Discover
-                  </button>
+                  <Button onClick={() => pick("discover")}>Browse Discover</Button>
                 ) : query || marketplace !== ALL ? (
-                  <button
-                    type="button"
-                    className="btn"
+                  <Button
+                    variant="outline"
                     onClick={() => {
                       search("");
                       filterTo(ALL);
                     }}
                   >
                     Clear the filter
-                  </button>
+                  </Button>
                 ) : null
               }
             >
@@ -833,30 +838,22 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           width={360}
           footer={
             <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={mktBusy}
-                onClick={() => setAddingMkt(false)}
-              >
+              <Button variant="ghost" disabled={mktBusy} onClick={() => setAddingMkt(false)}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
+              </Button>
+              <Button
                 disabled={mktBusy || !mktName.trim() || !mktValue.trim()}
                 onClick={addMarketplace}
               >
                 {mktBusy ? "Adding…" : "Add marketplace"}
-              </button>
+              </Button>
             </>
           }
         >
           <div className="cc-modal-field">
             <label htmlFor="cc-mkt-name">Name</label>
-            <input
+            <Input
               id="cc-mkt-name"
-              className="field-control"
               placeholder="my-marketplace"
               value={mktName}
               autoFocus
@@ -866,24 +863,26 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           </div>
           <div className="cc-modal-field">
             <label htmlFor="cc-mkt-kind">Source kind</label>
-            <select
-              id="cc-mkt-kind"
-              className="field-control"
+            <Select
               value={mktKind}
               disabled={mktBusy}
-              onChange={(e) => setMktKind(e.target.value as MarketplaceKind)}
+              onValueChange={(v) => setMktKind(v as MarketplaceKind)}
             >
-              <option value="github">GitHub repository</option>
-              <option value="git">Git URL</option>
-            </select>
+              <SelectTrigger id="cc-mkt-kind">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="github">GitHub repository</SelectItem>
+                <SelectItem value="git">Git URL</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="cc-modal-field">
             <label htmlFor="cc-mkt-value">
               {mktKind === "github" ? "Repository" : "URL"}
             </label>
-            <input
+            <Input
               id="cc-mkt-value"
-              className="field-control"
               placeholder={mktKind === "github" ? "owner/repo" : "https://example.com/repo.git"}
               value={mktValue}
               disabled={mktBusy}

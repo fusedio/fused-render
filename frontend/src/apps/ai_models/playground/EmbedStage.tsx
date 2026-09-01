@@ -39,6 +39,9 @@ import { useEffect, useRef, useState } from "react";
 import { embedPaths, embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import { Kbd } from "@platform/shadcn/ui/kbd";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { useConfigOpen, ConfigPanel, RailChips, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
@@ -480,18 +483,18 @@ export function EmbedStage({
               never appears BESIDE the input, stealing its width. */}
           <div className="pg-composer-side">
             {(pictureMode ? rankedPictures : ranked) && !busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mr-2 mb-auto flex-none"
                 title="Clear the results"
                 onClick={() => (pictureMode ? setRankedPictures(null) : setRanked(null))}
               >
                 Clear
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
+            <Button
+              className="flex-none"
               disabled={
                 busy
                 || !query.trim()
@@ -500,8 +503,8 @@ export function EmbedStage({
               title="Enter to run"
               onClick={() => void (pictureMode ? runPictures() : run())}
             >
-              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              {busy ? "Searching…" : "Search"} <Kbd>⏎</Kbd>
+            </Button>
           </div>
         </div>
 
@@ -517,9 +520,9 @@ export function EmbedStage({
                   <span className="pg-embed-picture-name" title={path}>
                     {basename(path)}
                   </span>
-                  <button
-                    type="button"
-                    className="pg-ghost-btn"
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     title="Remove this picture"
                     onClick={() => {
                       setPictures((current) => current.filter((p) => p !== path));
@@ -527,17 +530,18 @@ export function EmbedStage({
                     }}
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               ))}
-              <button
-                type="button"
-                className="pg-ghost-btn"
+              <Button
+                variant="outline"
+                size="sm"
+                className="self-start"
                 disabled={attaching || pictures.length >= MAX_PICTURES}
                 onClick={() => void addPicture()}
               >
                 {attaching ? "Choosing…" : "Add a picture…"}
-              </button>
+              </Button>
             </div>
           </RailField>
         ) : (
@@ -568,8 +572,12 @@ export function EmbedStage({
           />
         )}
 
-        {status && <p className="pg-status">{status}</p>}
-        {error && <p className="pg-error">{error}</p>}
+        {status && <p className="m-0 text-xs text-muted-foreground">{status}</p>}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
         {pictureMode ? (
           rankedPictures && !busy ? (
             <div className="pg-answer-block">

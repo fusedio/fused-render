@@ -16,6 +16,18 @@
 //
 // Styling lives in shell.css (.context-menu*), matching the pane-mode-dropdown.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { cn } from "@platform/lib/utils";
+
+/* Since the shadcn migration the rows and panel wear the same Tailwind
+   vocabulary as @platform/shadcn/ui/dropdown-menu.tsx, so the two menu
+   families are visually one system. The behavior engine (cursor anchoring,
+   viewport clamp, hover-intent, lazy submenus) stays this file's own — the
+   declarative base-ui menu tree has no home for an imperative
+   (x, y, items, onClose) API. */
+const PANEL_CLASS =
+  "z-50 min-w-40 rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10";
+const ITEM_CLASS =
+  "group/ctx relative flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 select-none";
 
 export interface MenuItem {
   label: string;
@@ -74,15 +86,18 @@ function Row({
 }) {
   return (
     <div
-      className={
-        "context-menu-item" +
-        (item.disabled ? " disabled" : "") +
-        (item.dimmed ? " dimmed" : "") +
-        (item.danger ? " danger" : "") +
-        (item.active ? " active" : "") +
-        (item.submenu ? " has-submenu" : "") +
-        (open ? " open" : "")
-      }
+      className={cn(
+        ITEM_CLASS,
+        item.disabled && "pointer-events-none opacity-50",
+        item.dimmed && "opacity-60",
+        item.danger
+          ? "text-destructive hover:bg-destructive/10"
+          : "hover:bg-accent hover:text-accent-foreground",
+        // Radio semantics: the choice in force wears the lime wash — the
+        // app's selection grammar, distinct from the neutral hover wash.
+        item.active && "bg-primary/15",
+        open && "bg-accent text-accent-foreground",
+      )}
       /* Radio semantics are announced as well as drawn, and only where the
          caller asked for them — an ordinary action row is not an unchecked
          anything, so a role it never opted into would mis-describe it. */
@@ -95,12 +110,12 @@ function Row({
       }}
     >
       {showIcon && (
-        <span className="context-menu-icon" aria-hidden="true">
+        <span className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-4" aria-hidden="true">
           {item.icon}
         </span>
       )}
-      <span className="context-menu-label">{item.label}</span>
-      {item.submenu && <span className="context-menu-arrow">›</span>}
+      <span className="flex-1 truncate">{item.label}</span>
+      {item.submenu && <span className="ml-auto text-muted-foreground">›</span>}
     </div>
   );
 }
@@ -253,14 +268,18 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   return (
     <div
       ref={rootRef}
-      className={"context-menu" + (pos ? " placed" : " measuring")}
+      className={cn(
+        PANEL_CLASS,
+        "fixed",
+        pos ? "animate-in fade-in-0 zoom-in-95 duration-100" : "invisible",
+      )}
       style={{ left, top, transformOrigin: origin }}
     >
       {items.map((it, i) =>
         it === "separator" ? (
-          <div key={i} className="context-menu-sep" />
+          <div key={i} className="-mx-1 my-1 h-px bg-border" />
         ) : (
-          <div key={i} className="context-menu-row">
+          <div key={i} className="relative">
             <Row
               item={it}
               open={openSub === i}
@@ -270,17 +289,21 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
             />
             {it.submenu && openSub === i && (
               <div
-                className={"context-menu context-submenu placed" + (subLeft ? " left" : "")}
+                className={cn(
+                  PANEL_CLASS,
+                  "absolute top-0",
+                  subLeft ? "right-full mr-1" : "left-full ml-1",
+                )}
                 /* Moving into the submenu must cancel a close that a sibling
                    row queued on the way here. */
                 onMouseEnter={cancelHover}
               >
                 {subItems === null ? (
-                  <div className="context-menu-item disabled">Loading…</div>
+                  <div className={cn(ITEM_CLASS, "pointer-events-none opacity-50")}>Loading…</div>
                 ) : (
                   subItems.map((s, j) =>
                     s === "separator" ? (
-                      <div key={j} className="context-menu-sep" />
+                      <div key={j} className="-mx-1 my-1 h-px bg-border" />
                     ) : (
                       <Row
                         key={j}

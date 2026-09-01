@@ -33,6 +33,9 @@ import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
 import { exportBookmarkFile } from "@platform/lib/api";
 import { isRowDragActive } from "@apps/explorer/listing/row-drag";
 import IconPicker from "@platform/ui/IconPicker";
+import { Button } from "@platform/shadcn/ui/button";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Input } from "@platform/shadcn/ui/input";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
 import {
   useUrlVersion,
@@ -147,10 +150,10 @@ function RenameInput({ initialName, onCommit, onCancel }: RenameInputProps) {
   };
 
   return (
-    <input
+    <Input
       ref={inputRef}
       type="text"
-      className="bookmark-rename-input"
+      className="bookmark-rename-input h-6 px-1 text-xs"
       value={value}
       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
       onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -241,9 +244,9 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
         </a>
       )}
       {missing && (
-        <span className="bookmark-missing-badge" title={`File not found: ${bookmarkFsPath(b.url)}`}>
+        <Badge variant="destructive" title={`File not found: ${bookmarkFsPath(b.url)}`}>
           ⚠
-        </span>
+        </Badge>
       )}
       {/* While the inline rename input is open the whole action cluster is
           gone: the input wants the row's full width, and every one of the
@@ -252,20 +255,27 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
           the row being named. Commit or Escape first. */}
       {!isRenaming && (
         <span className="bookmark-actions">
-          <button
-            className="icon-btn save-btn"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
             disabled={!savePath}
             onClick={onSave}
           >
             {justSaved ? "✓" : "💾︎"}
-          </button>
-          <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
+          </Button>
+          <Button variant="ghost" size="icon-xs" title="Rename" onClick={onRename}>
             ✎
-          </button>
-          <button className="icon-btn delete-btn" title="Delete" onClick={onDelete}>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="hover:text-destructive"
+            title="Delete"
+            onClick={onDelete}
+          >
             ✕
-          </button>
+          </Button>
         </span>
       )}
     </div>
@@ -318,12 +328,18 @@ function FolderRow({ folder, child, parentId, collapsed, activeHint, isRenaming,
       {/* Hidden mid-rename for the same reason as a bookmark row's cluster. */}
       {!isRenaming && (
         <span className="bookmark-actions">
-          <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
+          <Button variant="ghost" size="icon-xs" title="Rename" onClick={onRename}>
             ✎
-          </button>
-          <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="hover:text-destructive"
+            title="Delete folder and contents"
+            onClick={onDelete}
+          >
             ✕
-          </button>
+          </Button>
         </span>
       )}
     </div>

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { KeyKind } from "@platform/lib/api";
 import { buildKey, KEY_KINDS } from "@shell/templates/helpers";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
+import { Input } from "@platform/shadcn/ui/input";
 
 export function KeyBuilder({
   onChange,
@@ -23,22 +25,23 @@ export function KeyBuilder({
   const suffix = kind === "directory" ? "/" : "";
   return (
     <div className="templates-keybuilder">
-      <div className="templates-seg">
+      <ToggleGroup
+        variant="outline"
+        value={[kind]}
+        onValueChange={(groupValue) => {
+          const next = (groupValue as KeyKind[])[0];
+          if (next) setKind(next);
+        }}
+      >
         {KEY_KINDS.map((k) => (
-          <button
-            key={k.kind}
-            type="button"
-            className={"templates-seg-btn" + (kind === k.kind ? " active" : "")}
-            onClick={() => setKind(k.kind)}
-            title={k.hint}
-          >
+          <ToggleGroupItem key={k.kind} value={k.kind} title={k.hint}>
             {k.label}
-          </button>
+          </ToggleGroupItem>
         ))}
-      </div>
+      </ToggleGroup>
       <div className="templates-key-input">
         <span className="templates-key-fix">{prefix}</span>
-        <input
+        <Input
           id={inputId}
           type="text"
           value={raw}

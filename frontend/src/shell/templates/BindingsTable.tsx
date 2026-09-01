@@ -1,5 +1,23 @@
 import { useState } from "react";
 import type { RegistryEntry, RegistryResult } from "@platform/lib/api";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@platform/shadcn/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { sourceLabel, type BindFilter } from "@shell/templates/helpers";
 
 export function BindingsTable({
@@ -35,60 +53,66 @@ export function BindingsTable({
   return (
     <section className="templates-tabpanel">
       <div className="templates-toolbar">
-        <input
+        <Input
           type="text"
-          className="templates-search"
+          className="max-w-xs"
           placeholder="Search by key or template…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <div className="templates-seg">
-          <button
-            type="button"
-            className={"templates-seg-btn" + (filter === "all" ? " active" : "")}
-            onClick={() => setFilter("all")}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={"templates-seg-btn" + (filter === "modified" ? " active" : "")}
-            onClick={() => setFilter("modified")}
-          >
-            Modified
-          </button>
-        </div>
-        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
-          <option value="all">All sources</option>
-          {registry.sources.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="btn btn-primary templates-toolbar-push" onClick={onAdd}>
+        <ToggleGroup
+          variant="outline"
+          value={[filter]}
+          onValueChange={(groupValue) => {
+            const next = (groupValue as BindFilter[])[0];
+            if (next) setFilter(next);
+          }}
+        >
+          <ToggleGroupItem value="all">All</ToggleGroupItem>
+          <ToggleGroupItem value="modified">Modified</ToggleGroupItem>
+        </ToggleGroup>
+        <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as string)}>
+          <SelectTrigger>
+            <SelectValue>
+              {(v: string) =>
+                v === "all"
+                  ? "All sources"
+                  : registry.sources.find((s) => s.id === v)?.label ?? v
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All sources</SelectItem>
+            {registry.sources.map((s) => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button type="button" className="templates-toolbar-push" onClick={onAdd}>
           + Add extension
-        </button>
+        </Button>
       </div>
       {rows.length === 0 ? (
-        <div className="deploy-muted">No bindings match.</div>
+        <div className="text-xs text-muted-foreground">No bindings match.</div>
       ) : (
-        <table className="templates-table">
-          <thead>
-            <tr>
-              <th>Pattern</th>
-              <th>Templates</th>
-              <th>Source</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="templates-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Pattern</TableHead>
+              <TableHead>Templates</TableHead>
+              <TableHead>Source</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((e) => (
-              <tr key={e.key} onClick={() => onEdit(e)} className="templates-row">
-                <td className="templates-col-pattern">
+              <TableRow key={e.key} onClick={() => onEdit(e)} className="templates-row">
+                <TableCell className="templates-col-pattern">
                   {e.overridesCore && <span className="templates-dot" title="User override" />}
                   <code className="templates-key-pill">{e.key}</code>
-                </td>
-                <td className="templates-col-templates">
+                </TableCell>
+                <TableCell className="templates-col-templates">
                   {e.disabled ? (
                     <span className="templates-pill">Disabled</span>
                   ) : (
@@ -118,16 +142,16 @@ export function BindingsTable({
                       ⚠ {e.error}
                     </div>
                   )}
-                </td>
-                <td>
+                </TableCell>
+                <TableCell>
                   <span className={"registry-source " + (e.overridesCore ? "user" : "")}>
                     {sourceLabel(registry, e.resolvedSource)}
                   </span>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </section>
   );

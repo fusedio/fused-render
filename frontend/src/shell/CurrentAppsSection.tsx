@@ -40,6 +40,8 @@ import { pushToast } from "@platform/lib/toast";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
@@ -701,22 +703,21 @@ export default function CurrentAppsSection() {
           width={420}
           footer={
             <>
-              <button
+              <Button
                 type="button"
-                className="btn btn-secondary"
+                variant="outline"
                 disabled={renameBusy}
                 onClick={() => setRenaming(null)}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="btn btn-primary"
                 disabled={renameBusy || !renameDraft.trim()}
                 onClick={submitRename}
               >
                 {renameBusy ? "Renaming…" : "Rename"}
-              </button>
+              </Button>
             </>
           }
         >
@@ -724,9 +725,8 @@ export default function CurrentAppsSection() {
             Renames the app&apos;s folder on disk. Its tasks and Claude
             sessions move with it.
           </p>
-          <input
+          <Input
             type="text"
-            className="field-control"
             value={renameDraft}
             autoFocus
             onFocus={(e) => e.currentTarget.select()}

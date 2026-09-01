@@ -8,6 +8,8 @@
 //     non-empty directory is spelled out in the message the caller passes).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 
@@ -139,9 +141,9 @@ export function PromptDialog({
         </button>
       </div>
       <div className="modal-body deploy-body">
-        <input
+        <Input
           ref={inputRef}
-          className="fs-dialog-input"
+          aria-invalid={!!error && trimmed !== ""}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
@@ -156,13 +158,13 @@ export function PromptDialog({
           }}
         />
         {error && trimmed !== "" && <ErrorBanner>{error}</ErrorBanner>}
-        <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={cancel}>
+        <div className="flex justify-end gap-2 pt-4">
+          <Button type="button" variant="outline" onClick={cancel}>
             Cancel
-          </button>
-          <button type="button" className="btn btn-primary" disabled={!!error} onClick={submit}>
+          </Button>
+          <Button type="button" disabled={!!error} onClick={submit}>
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </Overlay>
@@ -221,18 +223,18 @@ export function ConfirmDialog({
         }}
       >
         <p>{message}</p>
-        <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={cancel}>
+        <div className="flex justify-end gap-2 pt-4">
+          <Button type="button" variant="outline" onClick={cancel}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             ref={confirmRef}
             type="button"
-            className={"btn " + (danger ? "btn-danger" : "btn-primary")}
+            variant={danger ? "destructive" : "default"}
             onClick={confirm}
           >
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </Overlay>

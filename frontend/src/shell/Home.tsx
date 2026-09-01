@@ -22,6 +22,7 @@ import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
@@ -173,10 +174,10 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
     return (
       <span className="app-pcard home-skel-card" aria-hidden="true">
         <span className="app-pcard-body">
-          <span className="skel-bar" style={{ width: "58%" }} />
+          <Skeleton className="h-3.5" style={{ width: "58%" }} />
           <span className="app-pcard-meta">
-            <span className="skel-bar" style={{ width: "46px" }} />
-            <span className="skel-bar" style={{ width: "64px" }} />
+            <Skeleton className="h-3" style={{ width: "46px" }} />
+            <Skeleton className="h-3" style={{ width: "64px" }} />
           </span>
         </span>
         <span className="app-pcard-thumb home-skel-body" />
@@ -189,7 +190,7 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
         {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
             real content — the name/path text — decides its width, and here
             it's the head row's ONLY child, since the icon is deliberately
-            gone); a percentage-width `.skel-bar` inside it has nothing to
+            gone); a percentage-width Skeleton bar inside it has nothing to
             shrink-to-fit against, so `home-skel-text` grows it to fill the
             head row like the real text effectively does once it's long
             enough to need the ellipsis. */}
@@ -197,8 +198,8 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
           {/* Wider bar on top: a name reads longer than the path underneath it
               on every real card head, and matching that keeps the skeleton
               from looking like a title-less placeholder. */}
-          <span className="skel-bar" style={{ width: "72%" }} />
-          <span className="skel-bar" style={{ width: "48%" }} />
+          <Skeleton className="h-3.5" style={{ width: "72%" }} />
+          <Skeleton className="h-3" style={{ width: "48%" }} />
         </span>
       </span>
       <span className="fhb-thumb home-skel-body" />

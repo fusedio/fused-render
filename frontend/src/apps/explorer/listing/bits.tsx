@@ -1,6 +1,8 @@
 // Small presentational pieces of the listing: skeleton rows, the clipboard
 // pill, and search-match highlighting.
 import { highlightSegments } from "@platform/lib/fuzzy";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { FLIP_KEY_ATTR } from "@platform/lib/flip";
 
 // Shimmering placeholder rows shown while the listing fetch is in flight —
@@ -13,14 +15,14 @@ export function skeletonRows(n: number): React.ReactNode {
   return Array.from({ length: n }, (_, i) => (
     <tr key={i} className="skel-row">
       <td className="name">
-        <span className="skel-bar icon-skel" />
-        <span className="skel-bar" style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }} />
+        <Skeleton className="size-4 shrink-0 rounded" />
+        <Skeleton className="h-3" style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }} />
       </td>
       <td className="size">
-        <span className="skel-bar" style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }} />
+        <Skeleton className="h-3" style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }} />
       </td>
       <td className="mtime">
-        <span className="skel-bar" style={{ width: 84 }} />
+        <Skeleton className="h-3" style={{ width: 84 }} />
       </td>
     </tr>
   ));
@@ -34,9 +36,9 @@ export function skeletonRows(n: number): React.ReactNode {
 export function ClipMark({ cut, copied }: { cut: boolean; copied: boolean }) {
   if (!cut && !copied) return null;
   return (
-    <span className={"clip-mark" + (cut ? " cut" : " copied")} title="Press Esc to cancel">
+    <Badge variant={cut ? "outline" : "secondary"} title="Press Esc to cancel">
       {cut ? "Cut" : "Copied"}
-    </span>
+    </Badge>
   );
 }
 

@@ -57,6 +57,16 @@ import {
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight } from "@apps/explorer/listing/bits";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@platform/shadcn/ui/input-group";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import { ArrowRightIcon, ChevronDownIcon } from "lucide-react";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
 // multiple, so it's the same rule for every tab regardless of how many columns
@@ -211,7 +221,7 @@ function OpenRow({
         <span className="fh-result-name">Open</span>
         <span className="fh-result-path">{path}</span>
         <span className="fh-result-meta">
-          <kbd>↵</kbd>
+          <Kbd>↵</Kbd>
         </span>
       </button>
     </li>
@@ -276,7 +286,7 @@ function AiActionRow({
             empty, so the row's columns do not reflow as the highlight moves
             onto or off it. */}
         <span className="fh-ai-hint">
-          {running ? "Asking…" : active ? <kbd>↵</kbd> : null}
+          {running ? "Asking…" : active ? <Kbd>↵</Kbd> : null}
         </span>
       </button>
     </li>
@@ -816,14 +826,13 @@ export function FilesSearch({
 
   return (
     <div className="files-search-wrap">
-      <div className="files-search">
-        <span className="files-search-icon" aria-hidden="true">
+      <InputGroup className="files-search h-12">
+        <InputGroupAddon aria-hidden="true">
           <MagnifierIcon />
-        </span>
-        <input
+        </InputGroupAddon>
+        <InputGroupInput
           ref={inputEl}
           type="search"
-          className="files-search-input"
           placeholder="Search your files — or paste a path like ~/Downloads"
           aria-label="Search your files"
           role="combobox"
@@ -858,11 +867,13 @@ export function FilesSearch({
           }}
         />
         {active && (
-          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
-            Clear
-          </button>
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton title="Clear search (esc)" onClick={clear}>
+              Clear
+            </InputGroupButton>
+          </InputGroupAddon>
         )}
-      </div>
+      </InputGroup>
 
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
@@ -908,7 +919,7 @@ export function FilesSearch({
                 (see `hits`, above) have likely narrowed to nothing. */}
             {showOpenRow ? (
               <>
-                <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
+                <Kbd>↵</Kbd> to open · <Kbd>esc</Kbd> to clear
               </>
             ) : !searchable ? (
               "Keep typing…"
@@ -925,13 +936,14 @@ export function FilesSearch({
               // resolve by waiting.
               <>
                 File indexing is off —{" "}
-                <button
+                <Button
                   type="button"
-                  className="fh-link-button"
+                  variant="link"
+                  className="h-auto p-0 text-sm"
                   onClick={() => navigateUrl("/preferences?tab=indexing")}
                 >
                   enable it in Preferences
-                </button>
+                </Button>
                 .
               </>
             ) : !answer.covered ? (
@@ -972,8 +984,8 @@ export function FilesSearch({
                     never had a chance to include. */}
                 {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
                 {" · "}
-                <kbd>↑</kbd>
-                <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd> to pick · <Kbd>esc</Kbd> to clear
               </>
             )}
             {/* Only once the wait is long enough to be worth mentioning: under
@@ -1049,23 +1061,13 @@ export function FilesSearch({
 // The fold's "Show more" — a quiet pill under the grid, shared by both tabs.
 function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
   return (
-    <button type="button" className="fhb-more" onClick={onClick}>
+    <Button type="button" variant="ghost" size="sm" className="mx-auto mt-3 flex" onClick={onClick}>
       {expanded ? "Show less" : "Show more"}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
+      <ChevronDownIcon
+        data-icon="inline-end"
         style={expanded ? { transform: "rotate(180deg)" } : undefined}
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
-    </button>
+      />
+    </Button>
   );
 }
 
@@ -1246,48 +1248,24 @@ export default function FilesHome({ config }: { config: Config }) {
           <>
           <section className="fh-section">
             <div className="fh-tabs">
-              <div className="fh-tablist" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "sessions"}
-                className={"fh-tab" + (tab === "sessions" ? " active" : "")}
-                onClick={() => setTab("sessions")}
-              >
-                Claude Sessions
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "recents"}
-                className={"fh-tab" + (tab === "recents" ? " active" : "")}
-                onClick={() => setTab("recents")}
-              >
-                Recents
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "repos"}
-                className={"fh-tab" + (tab === "repos" ? " active" : "")}
-                onClick={() => setTab("repos")}
-              >
-                Repos
-              </button>
-              </div>
+              <Tabs value={tab} onValueChange={(v) => setTab(v as LaunchTab)}>
+                <TabsList>
+                  <TabsTrigger value="sessions">Claude Sessions</TabsTrigger>
+                  <TabsTrigger value="recents">Recents</TabsTrigger>
+                  <TabsTrigger value="repos">Repos</TabsTrigger>
+                </TabsList>
+              </Tabs>
               {/* Browse rides the tab strip's right edge — the one action in a
                   row of filters, so it sits opposite them rather than above
                   them. Like the grids, it yields to search results. */}
-              <button
+              <Button
                 type="button"
-                className="files-hero-cta"
+                variant="outline"
                 onClick={() => navigate(home, { isDir: true })}
               >
                 Browse files
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              </button>
+                <ArrowRightIcon data-icon="inline-end" />
+              </Button>
             </div>
 
             {tab === "recents" ? (

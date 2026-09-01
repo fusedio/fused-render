@@ -8,10 +8,13 @@
 // this component owns the polling, the timers and the cards. The backend is a
 // native app the user launches, so the "down" fix is always "reopen the app",
 // not a CLI command. Fully self-contained: mounted once in App's #app root so
-// it survives the epoch-keyed view remounts. Styling is .server-status* in
-// styles/notifications.css.
+// it survives the epoch-keyed view remounts. Drawn as a shadcn Alert since the
+// migration (destructive while the server is down, default otherwise); the
+// column it sits in is NotificationHost's.
 import { useEffect, useRef, useState } from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
 import {
   initialStatus,
   reduceProbe,
@@ -140,68 +143,72 @@ export default function ServerStatusBanner() {
   const { banner, version, installedVersion, checkNow } = useServerStatus();
   if (banner === "hidden") return null;
 
+  // `role="status"` + `aria-live="polite"` override Alert's own `role="alert"`
+  // on every card: none of these interrupts — the down card in particular
+  // stays for minutes, and an assertive announcement every 5s poll would be
+  // the wrong volume for it.
   if (banner === "reconnected") {
     return (
-      <div className="server-status server-status-reconnected" role="status" aria-live="polite">
-        Reconnected — fused-render is back.
-      </div>
+      <Alert role="status" aria-live="polite" className="w-80 shadow-md">
+        <AlertTitle>Reconnected — fused-render is back.</AlertTitle>
+      </Alert>
     );
   }
 
   if (banner === "update-refresh") {
     return (
-      <div className="server-status server-status-update" role="status" aria-live="polite">
-        <div className="server-status-title">fused-render updated to v{version}</div>
-        <div className="server-status-body">
+      <Alert role="status" aria-live="polite" className="w-80 shadow-md">
+        <AlertTitle>fused-render updated to v{version}</AlertTitle>
+        <AlertDescription>
           This page is still on v{BUILD_VERSION}. Refresh to load the new version.
+        </AlertDescription>
+        <div className="mt-2 flex gap-2">
+          <Button size="sm" onClick={() => window.location.reload()}>
+            Refresh page
+          </Button>
         </div>
-        <button
-          type="button"
-          className="server-status-retry"
-          onClick={() => window.location.reload()}
-        >
-          Refresh page
-        </button>
-      </div>
+      </Alert>
     );
   }
 
   if (banner === "update-restart") {
     return (
-      <div className="server-status server-status-update" role="status" aria-live="polite">
-        <div className="server-status-title">
-          fused-render v{installedVersion} is installed
-        </div>
-        <div className="server-status-body">
+      <Alert role="status" aria-live="polite" className="w-80 shadow-md">
+        <AlertTitle>fused-render v{installedVersion} is installed</AlertTitle>
+        <AlertDescription>
           The app is still running v{version}. Restart fused-render to finish the update.
-        </div>
+        </AlertDescription>
         {/* fused-render://relaunch: the OS hands the link to the running app,
             which quits through the normal teardown and respawns from the
             bundle on disk. The down-card shows while it's gone, and the
             reconnect probe auto-reloads this page onto the new version. */}
-        <a className="server-status-launch" href="fused-render://relaunch">
-          Restart fused-render
-        </a>
-      </div>
+        <div className="mt-2 flex gap-2">
+          <Button size="sm" nativeButton={false} render={<a href="fused-render://relaunch" />}>
+            Restart fused-render
+          </Button>
+        </div>
+      </Alert>
     );
   }
 
   return (
-    <div className="server-status server-status-down" role="status" aria-live="polite">
-      <div className="server-status-title">fused-render isn't running</div>
-      <div className="server-status-body">
+    <Alert variant="destructive" role="status" aria-live="polite" className="w-80 shadow-md">
+      <AlertTitle>fused-render isn't running</AlertTitle>
+      <AlertDescription>
         The app that powers this page has stopped or was closed. Reopen the fused-render app, and
         this page will reconnect on its own.
-      </div>
+      </AlertDescription>
       {/* fused-render://launch (D128): the OS starts the app, the server-boot
           makes the next probe succeed, and this page reconnects on its own —
           the link opens no tab and navigates nowhere. */}
-      <a className="server-status-launch" href="fused-render://launch">
-        Start fused-render
-      </a>
-      <button type="button" className="server-status-retry" onClick={checkNow}>
-        Check again
-      </button>
-    </div>
+      <div className="mt-2 flex gap-2">
+        <Button size="sm" nativeButton={false} render={<a href="fused-render://launch" />}>
+          Start fused-render
+        </Button>
+        <Button variant="outline" size="sm" onClick={checkNow}>
+          Check again
+        </Button>
+      </div>
+    </Alert>
   );
 }

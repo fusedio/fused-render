@@ -21,6 +21,9 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Textarea } from "@platform/shadcn/ui/textarea";
 
 // The editor is a textarea, one pattern per line, because that IS the format:
 // the server's own parser takes newline-separated text, comments and all
@@ -65,7 +68,7 @@ function IndexingToggle({
   return (
     <section className="prefs-section">
       <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <Checkbox checked={enabled} disabled={busy} onCheckedChange={toggle} />
         <span>
           <b>Enable file indexing.</b> Turning this off stops all background scans — search
           falls back to slower live walks of the folder you're in, and the existing index
@@ -152,7 +155,7 @@ export function IndexingPanel({
       <IndexingToggle prefs={prefs} onChange={onChange} />
       <section className="prefs-section">
         <h2>File index</h2>
-        <p className="deploy-muted">
+        <p className="text-xs text-muted-foreground">
           A local index of your files' names, sizes and dates — no file contents. It is what
           makes searching inside a folder instant instead of re-walking the tree, and it
           survives restarts. It is rebuilt in the background when the app starts;
@@ -160,7 +163,7 @@ export function IndexingPanel({
         </p>
         {!status && <SkeletonLines rows={2} label="Loading index status" />}
         {status && (
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             {status.has_index ? (
               <>
                 <b>{status.files_indexed.toLocaleString()} files</b> indexed
@@ -185,8 +188,9 @@ export function IndexingPanel({
           </p>
         )}
         <div className="prefs-actions">
-          <button
+          <Button
             type="button"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -201,9 +205,10 @@ export function IndexingPanel({
             }
           >
             {scanning ? "Scanning…" : "Re-index"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -218,10 +223,10 @@ export function IndexingPanel({
             }
           >
             Full scan
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn-danger"
+            variant="destructive"
             disabled={busy}
             title="Delete the index. Search keeps working — it falls back to walking the folder — until the next scan."
             onClick={() =>
@@ -232,36 +237,36 @@ export function IndexingPanel({
             }
           >
             Delete index
-          </button>
+          </Button>
         </div>
         {indexingOff && (
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             Indexing is off, so Re-index and Full scan have nothing to do — turn it back on
             above first.
           </p>
         )}
-        {note && <p className="deploy-muted">{note}</p>}
+        {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {error && <ErrorBanner>{error}</ErrorBanner>}
       </section>
 
       <section className="prefs-section">
         <h2>Skipped folders</h2>
-        <p className="deploy-muted">
+        <p className="text-xs text-muted-foreground">
           Folders the index never looks inside — dependency and build caches, which are huge
           and machine-generated. One rule per line. A bare name (<code>node_modules</code>)
           matches at any depth, <code>*.egg-info</code> matches a name pattern, and anything
           containing a slash (<code>~/Library/Caches</code>) matches that path and everything
           under it. Lines starting with <code>#</code> are comments.
         </p>
-        <p className="deploy-muted">
+        <p className="text-xs text-muted-foreground">
           Remote mounts are never indexed and cannot be added here: reading them means network
           round-trips per folder, and a background crawl of one can break the mount.
         </p>
         {!config && !error && <SkeletonLines rows={4} label="Loading skip rules" />}
         {config && (
           <>
-            <textarea
-              className="prefs-textarea"
+            <Textarea
+              className="font-mono text-xs"
               rows={10}
               spellCheck={false}
               value={text}
@@ -269,22 +274,23 @@ export function IndexingPanel({
               aria-label="Skipped folders, one rule per line"
             />
             <div className="prefs-actions">
-              <button type="button" disabled={busy || !dirty} onClick={save}>
+              <Button type="button" variant="outline" disabled={busy || !dirty} onClick={save}>
                 Save
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="outline"
                 disabled={busy || text === patternsToText(config.defaults)}
                 onClick={restoreDefaults}
               >
                 Restore defaults
-              </button>
+              </Button>
             </div>
-            <p className="deploy-muted">
+            <p className="text-xs text-muted-foreground">
               Changing these rules rebuilds the index, so folders you just excluded stop
               appearing in search and ones you re-included start appearing.
             </p>
-            <p className="deploy-muted">
+            <p className="text-xs text-muted-foreground">
               Stored at <code>{config.location}</code>.
             </p>
           </>
@@ -339,22 +345,22 @@ function QuerySection() {
   return (
     <section className="prefs-section">
       <h2>Query</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Read-only SQL over the index. Two tables: <code>files</code>(path, dir, name, ext,
         size, mtime, depth) and <code>dirs</code>(dir, n_files, total_size, mtime_ns,
         n_subdirs, depth). <code>size</code> is bytes and <code>mtime</code> is epoch
         seconds. Nothing here can write, and nothing can read a file outside the index.
       </p>
       <label className="prefs-radio">
-        <input type="checkbox" checked={ask} onChange={(e) => setAsk(e.target.checked)} />
+        <Checkbox checked={ask} onCheckedChange={(checked) => setAsk(checked === true)} />
         <span>
           <b>Ask in plain English.</b> The question goes to Claude, which writes the SQL;
           the statement it produced is shown with the results and runs under the same
           guard as one you typed.
         </span>
       </label>
-      <textarea
-        className="prefs-textarea index-query-input"
+      <Textarea
+        className="font-mono text-xs"
         rows={ask ? 3 : 6}
         spellCheck={false}
         value={text}
@@ -371,10 +377,10 @@ function QuerySection() {
         aria-label={ask ? "Question about the index" : "SQL to run against the index"}
       />
       <div className="prefs-actions">
-        <button type="button" disabled={busy || !text.trim()} onClick={() => void run()}>
+        <Button type="button" variant="outline" disabled={busy || !text.trim()} onClick={() => void run()}>
           {busy ? "Running…" : ask ? "Ask" : "Run"}
-        </button>
-        <span className="deploy-muted">⌘↵</span>
+        </Button>
+        <span className="text-xs text-muted-foreground">⌘↵</span>
       </div>
       {outcome?.sql && (
         <pre className="index-query-sql">
@@ -390,7 +396,7 @@ function QuerySection() {
 function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) {
   const { columns, rows, truncated } = outcome.table;
   if (rows.length === 0) {
-    return <p className="deploy-muted">No rows.</p>;
+    return <p className="text-xs text-muted-foreground">No rows.</p>;
   }
   return (
     <>
@@ -414,7 +420,7 @@ function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) 
           </tbody>
         </table>
       </div>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         {rows.length.toLocaleString()} {rows.length === 1 ? "row" : "rows"}
         {truncated ? ` — stopped at ${QUERY_LIMIT}; add a LIMIT or an aggregate.` : "."}
       </p>

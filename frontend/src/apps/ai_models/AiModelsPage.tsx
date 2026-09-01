@@ -40,6 +40,7 @@ import { useCacheScan } from "./lib/useCacheScan";
 import { refreshAiRuntime } from "./lib/aiRuntime";
 import { AI_MODELS_TABS, tabFromPath, tabHref, tabLabel, type AiModelsTab } from "./routes";
 import { useNavEpoch } from "@platform/lib/hooks";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { formatSize } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
@@ -201,43 +202,47 @@ export default function AiModelsPage() {
             )}
           </div>
           <div className="am-head-actions">
-            <div className="am-tabs" role="tablist" aria-label="AI models">
-              {AI_MODELS_TABS.map((name) => (
-                // A real <a href>, unlike the <button>s these replaced: a tab
-                // is an address now, so middle-click and copy-link should reach
-                // it the way they reach every other link in this app. The
-                // left-click is still intercepted for client-side navigation —
-                // the same shape the cache-path link above uses, and every
-                // in-app link beside it.
-                <a
-                  key={name}
-                  role="tab"
-                  // The tour's per-tab anchor (platform/lib/tours/ai.ts). An
-                  // attribute rather than nth-child, so reordering
-                  // AI_MODELS_TABS cannot silently repoint a step.
-                  data-tab={name}
-                  aria-selected={tab === name}
-                  className={"am-tab" + (tab === name ? " active" : "")}
-                  href={tabHref(name)}
-                  title={TAB_CHROME[name].title}
-                  onClick={(e) => {
-                    if (
-                      e.defaultPrevented ||
-                      e.button !== 0 ||
-                      e.metaKey ||
-                      e.ctrlKey ||
-                      e.shiftKey ||
-                      e.altKey
-                    )
-                      return;
-                    e.preventDefault();
-                    if (name !== tab) navigateUrl(tabHref(name));
-                  }}
-                >
-                  {TAB_CHROME[name].label}
-                </a>
-              ))}
-            </div>
+            {/* Controlled by the URL — the value only moves when a click's
+                navigateUrl bumps the nav epoch, so tab state never lives in
+                the component. Each trigger renders a real <a href>: a tab is
+                an address, so middle-click and copy-link must keep working,
+                and the left-click is intercepted for client-side navigation
+                like every other in-app link. */}
+            <Tabs value={tab}>
+              <TabsList aria-label="AI models">
+                {AI_MODELS_TABS.map((name) => (
+                  <TabsTrigger
+                    key={name}
+                    value={name}
+                    render={
+                      <a
+                        // The tour's per-tab anchor (platform/lib/tours/ai.ts). An
+                        // attribute rather than nth-child, so reordering
+                        // AI_MODELS_TABS cannot silently repoint a step.
+                        data-tab={name}
+                        href={tabHref(name)}
+                        title={TAB_CHROME[name].title}
+                        onClick={(e) => {
+                          if (
+                            e.defaultPrevented ||
+                            e.button !== 0 ||
+                            e.metaKey ||
+                            e.ctrlKey ||
+                            e.shiftKey ||
+                            e.altKey
+                          )
+                            return;
+                          e.preventDefault();
+                          if (name !== tab) navigateUrl(tabHref(name));
+                        }}
+                      />
+                    }
+                  >
+                    {TAB_CHROME[name].label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
         </div>
         {/* Mounted only while selected, every one of them. Each tab holds a

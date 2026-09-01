@@ -9,6 +9,18 @@ import type { InventoryTemplate, TemplateInventory } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 
 type UseFilter = "all" | "used" | "unused";
 
@@ -88,54 +100,53 @@ export function InventoryPanel({
   return (
     <section className="templates-tabpanel">
       <div className="templates-toolbar">
-        <input
+        <Input
           type="text"
-          className="templates-search"
+          className="max-w-xs"
           placeholder="Search by name or used-by key…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <div className="templates-seg">
-          <button
-            type="button"
-            className={"templates-seg-btn" + (useFilter === "all" ? " active" : "")}
-            onClick={() => setUseFilter("all")}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={"templates-seg-btn" + (useFilter === "used" ? " active" : "")}
-            onClick={() => setUseFilter("used")}
-          >
-            Used
-          </button>
-          <button
-            type="button"
-            className={"templates-seg-btn" + (useFilter === "unused" ? " active" : "")}
-            onClick={() => setUseFilter("unused")}
-          >
-            Unused
-          </button>
-        </div>
-        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
-          <option value="all">All sources</option>
-          {inventory.sources.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.label}
-            </option>
-          ))}
-        </select>
+        <ToggleGroup
+          variant="outline"
+          value={[useFilter]}
+          onValueChange={(groupValue) => {
+            const next = (groupValue as UseFilter[])[0];
+            if (next) setUseFilter(next);
+          }}
+        >
+          <ToggleGroupItem value="all">All</ToggleGroupItem>
+          <ToggleGroupItem value="used">Used</ToggleGroupItem>
+          <ToggleGroupItem value="unused">Unused</ToggleGroupItem>
+        </ToggleGroup>
+        <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as string)}>
+          <SelectTrigger>
+            <SelectValue>
+              {(v: string) =>
+                v === "all"
+                  ? "All sources"
+                  : inventory.sources.find((s) => s.id === v)?.label ?? v
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All sources</SelectItem>
+            {inventory.sources.map((s) => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <div className="templates-toolbar-actions">
-          <button type="button" className="btn btn-secondary" onClick={onNewTemplate}>
+          <Button type="button" variant="outline" onClick={onNewTemplate}>
             New template
-          </button>
-          <button type="button" className="btn btn-secondary" onClick={onImport}>
+          </Button>
+          <Button type="button" variant="outline" onClick={onImport}>
             Import zip
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn-primary"
             disabled={selectedNames.length === 0}
             onClick={() => runExport(selectedNames)}
             title={
@@ -145,12 +156,12 @@ export function InventoryPanel({
             }
           >
             Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
-          </button>
+          </Button>
         </div>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {groups.length === 0 ? (
-        <div className="deploy-muted">No templates match.</div>
+        <div className="text-xs text-muted-foreground">No templates match.</div>
       ) : (
         groups.map((g) => (
           <div key={g.source.id} className="templates-inv-group">
@@ -265,46 +276,46 @@ function DeleteConfirm({
       dialogClassName="templates-delete"
       footer={
         <>
-          <button
+          <Button
             type="button"
-            className="btn btn-danger-text"
+            variant="ghost"
+            className="mr-auto text-destructive"
             onClick={() => void run(false)}
             disabled={busy !== null}
             title="Delete the folder without saving a recovery zip first"
           >
             Delete without export
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn-secondary"
+            variant="outline"
             onClick={onClose}
             disabled={busy !== null}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn-danger"
+            variant="destructive"
             onClick={() => void run(true)}
             disabled={busy !== null}
           >
             {busy === "export" ? "Exporting…" : busy === "delete" ? "Deleting…" : "Export & delete"}
-          </button>
+          </Button>
         </>
       }
     >
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         This removes the user template folder for <code>{t.name}</code>. Without a bindings
         cleanup, bindings that use it keep the name and show as broken until you rebind or remove
         them.
       </p>
       <div className="templates-delete-opts">
         <label className="templates-delete-opt">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={cleanBindings}
             disabled={busy !== null}
-            onChange={(e) => setCleanBindings(e.target.checked)}
+            onCheckedChange={(checked) => setCleanBindings(checked === true)}
           />
           <span>Remove registry bindings for this template</span>
         </label>
@@ -350,28 +361,28 @@ function InventoryRow({
   return (
     <tr className="templates-row">
       <td className="templates-inv-check">
-        <input type="checkbox" checked={checked} onChange={onToggle} aria-label={"Select " + t.name} />
+        <Checkbox checked={checked} onCheckedChange={onToggle} aria-label={"Select " + t.name} />
       </td>
       <td className="templates-inv-name">
         <TemplateIcon t={t} />
         <span>{t.name}</span>
         {t.shadowsCore && (
-          <span className="templates-pill" title="A user folder shadows a core folder of the same name">
+          <Badge variant="secondary" title="A user folder shadows a core folder of the same name">
             shadows core
-          </span>
+          </Badge>
         )}
         {t.hasCondition && (
-          <span
-            className="templates-pill"
+          <Badge
+            variant="secondary"
             title="Has a condition.py — this template only shows for files its condition accepts"
           >
             conditional
-          </span>
+          </Badge>
         )}
       </td>
       <td className="templates-inv-usedby">
         {t.usedBy.length === 0 ? (
-          <span className="deploy-muted">unused</span>
+          <span className="text-xs text-muted-foreground">unused</span>
         ) : (
           t.usedBy.map((k) => (
             <code key={k} className="templates-usedby-chip">
@@ -381,31 +392,34 @@ function InventoryRow({
         )}
       </td>
       <td className="templates-inv-actions">
-        <button type="button" className="templates-ghost-btn" onClick={onExport} title="Export this template as a zip">
+        <Button type="button" variant="ghost" size="sm" onClick={onExport} title="Export this template as a zip">
           Export
-        </button>
-        <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onOpen} title="Open the folder in the file explorer">
           Open
-        </button>
+        </Button>
         {onOpenInClaude && (
-          <button
+          <Button
             type="button"
-            className="templates-ghost-btn"
+            variant="ghost"
+            size="sm"
             onClick={onOpenInClaude}
             title="Open Claude Code in this template's folder"
           >
             Open in Claude
-          </button>
+          </Button>
         )}
         {onDelete && (
-          <button
+          <Button
             type="button"
-            className="templates-ghost-btn danger"
+            variant="ghost"
+            size="sm"
+            className="text-destructive"
             onClick={onDelete}
             title="Delete this user template"
           >
             Delete
-          </button>
+          </Button>
         )}
       </td>
     </tr>

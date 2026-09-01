@@ -38,6 +38,7 @@
 // edge, no matter how many rows end up carrying it.
 import { useCallback } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
@@ -91,25 +92,25 @@ export default function SkillsSection() {
                 }
                 actions={
                   <>
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
                       title="Reveal in Finder"
                       aria-label={`Reveal ${s.name} in Finder`}
                       onClick={() => guard(cc.skills.open(s.slug))}
                     >
                       <Icon name="folder" />
-                    </button>
+                    </Button>
                     {s.shareCommand && (
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
                         title={`Copy install command — ${s.shareCommand}`}
                         aria-label={`Copy the install command for ${s.name}`}
                         onClick={() => share(s.shareCommand as string)}
                       >
                         <Icon name="copy" />
-                      </button>
+                      </Button>
                     )}
                   </>
                 }

@@ -47,6 +47,7 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
+import { Button } from "@platform/shadcn/ui/button";
 import { EllipsisIcon } from "@apps/explorer/BarMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
@@ -1369,8 +1370,10 @@ export default function Listing({
   // snapshot's or a panel pane's listing never had that menu — and its "Split
   // right" would rewrite the SHELL's URL from inside a nested surface.
   const headerMenuBtn = !ownsBarChrome ? null : (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-xs"
       className="listing-head-menu"
       aria-haspopup="menu"
       aria-label="Folder actions"
@@ -1379,7 +1382,7 @@ export default function Listing({
       onClick={openHeaderMenu}
     >
       <EllipsisIcon />
-    </button>
+    </Button>
   );
 
   // --- table body -----------------------------------------------------------
@@ -1603,14 +1606,16 @@ export default function Listing({
           Showing first {sortedEntries.length} entries — directory listing is
           partial.
           {state.cursor && (
-            <button
+            <Button
               type="button"
-              className="listing-load-more"
+              variant="outline"
+              size="xs"
+              className="ml-2"
               disabled={loadingMore}
               onClick={loadMore}
             >
               {loadingMore ? "Loading…" : "Load more"}
-            </button>
+            </Button>
           )}
         </td>
       </tr>
@@ -1742,9 +1747,10 @@ export default function Listing({
                   Clicking pins the box open and focuses it; blurring it still
                   empty hands the strip back to the path. */}
               {tightBar && !searching && !pinnedOpen && (
-                <button
+                <Button
                   type="button"
-                  className="bar-ctl listing-search-open"
+                  variant="ghost"
+                  size="icon-sm"
                   aria-label="Search this folder"
                   title="Search"
                   onClick={() => setPinnedOpen(true)}
@@ -1753,7 +1759,7 @@ export default function Listing({
                     <circle cx="11" cy="11" r="7" />
                     <line x1="16.5" y1="16.5" x2="21" y2="21" />
                   </svg>
-                </button>
+                </Button>
               )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
@@ -1886,14 +1892,15 @@ export default function Listing({
                   open-on-click (onRowPointerUp), reused rather than reinvented: no
                   new view and no `_mode`, just the file. */}
               {!paneOpen && appEntryPath && (
-                <button
+                <Button
                   type="button"
-                  className="bar-ctl bar-ctl-strong"
+                  variant="outline"
+                  size="sm"
                   title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
                   onClick={openAppEntry}
                 >
                   Open app
-                </button>
+                </Button>
               )}
               {pane.on && !sideState.open && (
                 <SideToggleButton

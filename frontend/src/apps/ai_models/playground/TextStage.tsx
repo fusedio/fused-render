@@ -36,6 +36,11 @@ import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Spinner } from "@platform/shadcn/ui/spinner";
+import { Toggle } from "@platform/shadcn/ui/toggle";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -394,19 +399,18 @@ export function TextStage({
   // one thing both put in the same place — the bottom-right corner. Written
   // twice it would be two buttons to keep in step.
   const runButton = streaming ? (
-    <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+    <Button variant="outline" className="flex-none" onClick={stop}>
       Stop
-    </button>
+    </Button>
   ) : (
-    <button
-      type="button"
-      className="btn btn-primary pg-send"
+    <Button
+      className="flex-none"
       disabled={!prompt.trim()}
       title="Enter to run · Shift+Enter for a new line"
       onClick={() => void send()}
     >
-      Run <kbd className="pg-kbd">⏎</kbd>
-    </button>
+      Run <Kbd>⏎</Kbd>
+    </Button>
   );
 
   return (
@@ -452,14 +456,15 @@ export function TextStage({
             40px of height for a button that only exists once there is a reply.
             The row shape keeps the stack — see the column below. */}
         {attachable && !streaming && reply && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="absolute top-2 right-2"
             title="Clear the prompt and reply"
             onClick={clear}
           >
             Clear
-          </button>
+          </Button>
         )}
         {attachable ? (
           /* The composer's floor: the way to attach a picture, the picture
@@ -489,27 +494,39 @@ export function TextStage({
               </span>
             )}
             <div className="pg-attach-row">
-              <button
-                type="button"
-                className="pg-attach-btn"
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
-                {StarterIcons.landscape}
-                <span>{attachedImage ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
-                type="button"
-                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+                <span data-icon="inline-start" aria-hidden="true">
+                  {StarterIcons.landscape}
+                </span>
+                {attachedImage ? "Replace" : "Add an image"}
+              </Button>
+              <Toggle
+                variant="outline"
+                size="sm"
+                className="rounded-full"
                 title="Take one with the webcam"
                 disabled={attaching}
-                onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
+                pressed={webcam.open}
+                onPressedChange={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
-                {StarterIcons.camera}
-                <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
+                <span data-icon="inline-start" aria-hidden="true">
+                  {StarterIcons.camera}
+                </span>
+                Webcam
+              </Toggle>
+              {attaching && (
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Spinner className="size-3" />
+                  Working…
+                </span>
+              )}
             </div>
             <div className="pg-composer-side">{runButton}</div>
           </div>
@@ -522,14 +539,15 @@ export function TextStage({
              goes. */
           <div className="pg-composer-side">
             {!streaming && reply && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mr-2 mb-auto flex-none"
                 title="Clear the prompt and reply"
                 onClick={clear}
               >
                 Clear
-              </button>
+              </Button>
             )}
             {runButton}
           </div>
@@ -621,8 +639,12 @@ export function TextStage({
         <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
       )}
 
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
+      {status && <p className="m-0 text-xs text-muted-foreground">{status}</p>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {!(reply && shown) ? (
         <ResultSlot

@@ -32,6 +32,7 @@
 // (`clearSearch`). What IS this component's is the task glossary, which nothing
 // else on the page reads, and which menu is open.
 import { useEffect, useState, type ReactNode, type RefObject } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import {
   activeSort,
   activeTask,
@@ -39,7 +40,15 @@ import {
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
 import { getHubTasks, type HubTask } from "@platform/lib/api";
-import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
 /** Which glyph each ordering wears. Beside the table rather than in it because
@@ -60,95 +69,66 @@ const SORT_ICONS: Record<ResultSort, ReactNode> = {
   size: MenuIcons.drive,
 };
 
-/** The caret, drawn here rather than taken from `@platform/ui/Chevron` (which
- *  only points left/right — it is a pager's control). Same geometry, weight and
- *  muted colour as the one `select.field-control` paints as a background image,
- *  so a menu trigger and a select in the same row wear the same affordance. */
-function Caret({ open }: { open: boolean }) {
-  return (
-    <svg
-      className="am-hub-menu-caret"
-      viewBox="0 0 12 12"
-      width="12"
-      height="12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d={open ? "M3 7.5l3-3 3 3" : "M3 4.5l3 3 3-3"} />
-    </svg>
-  );
-}
-
 /** One of the row's two menus: a bordered trigger showing what is in force, and
- *  the app's menu hanging off its bottom-left corner.
- *
- *  The open/close dance is the one thing worth reading twice. `ContextMenu`
- *  dismisses itself on any outside pointerdown, and the trigger is outside it —
- *  so a click on an open menu's own trigger would close it and then re-open it,
- *  leaving a control that cannot be dismissed by the obvious act. The toggle
- *  therefore lives on `pointerdown`, where the menu's own document-capture
- *  listener has already run: `at` read in this handler is the state from BEFORE
- *  that close, so a non-null value means this pointerdown was the dismissal and
- *  there is nothing to do. Keyboard opens it too, since a control reachable by
- *  Tab that only answers a pointer is a control with no keyboard at all.
- */
+ *  the app's dropdown hanging off it. Radio semantics — each menu is one
+ *  exclusive choice — so the items are a `DropdownMenuRadioGroup`. */
 function ControlMenu({
   icon,
   label,
   title,
   ariaLabel,
+  value,
+  onValue,
   items,
+  leading,
 }: {
   icon: ReactNode;
   label: string;
   title: string;
   ariaLabel: string;
-  items: MenuEntry[];
+  value: string;
+  onValue: (v: string) => void;
+  items: { value: string; label: string; icon: ReactNode }[];
+  /** Rendered above a separator, part of the same radio group ("Any task"). */
+  leading?: { value: string; label: string; icon: ReactNode };
 }) {
-  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
-  // Anchored to the trigger's rect, not to the pointer: this is a menu ABOUT
-  // this button, and ContextMenu clamps it into the viewport from there.
-  const openUnder = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    setAt({ x: r.left, y: r.bottom + 4 });
-  };
   return (
-    <>
-      <button
-        type="button"
-        className={"am-hub-menu" + (at ? " open" : "")}
-        aria-haspopup="menu"
-        aria-expanded={at !== null}
-        aria-label={ariaLabel}
-        title={title}
-        onPointerDown={(e) => {
-          if (at) return; // this pointerdown already closed it — see above
-          openUnder(e.currentTarget);
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          // Otherwise the browser turns the key into a click, which lands as a
-          // second toggle on the button we just opened from.
-          e.preventDefault();
-          if (at) {
-            setAt(null);
-            return;
-          }
-          openUnder(e.currentTarget);
-        }}
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label={ariaLabel}
+            title={title}
+          />
+        }
       >
-        <span className="am-hub-menu-icon" aria-hidden="true">
-          {icon}
-        </span>
-        <span className="am-hub-menu-label">{label}</span>
-        <Caret open={at !== null} />
-      </button>
-      {at && <ContextMenu x={at.x} y={at.y} items={items} onClose={() => setAt(null)} />}
-    </>
+        <span aria-hidden="true">{icon}</span>
+        {label}
+        <ChevronDownIcon />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        <DropdownMenuRadioGroup value={value} onValueChange={(v) => onValue(v as string)}>
+          {leading && (
+            <>
+              <DropdownMenuRadioItem value={leading.value}>
+                {leading.icon}
+                {leading.label}
+              </DropdownMenuRadioItem>
+              {items.length > 0 && <DropdownMenuSeparator />}
+            </>
+          )}
+          {items.map((it) => (
+            <DropdownMenuRadioItem key={it.value} value={it.value}>
+              {it.icon}
+              {it.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -211,31 +191,16 @@ export function SearchControls({
   // next runner someone registers would arrive iconless or, worse, get an
   // arbitrary glyph that reads as a claim about what it does. The funnel says
   // the true thing about every row in this menu: it narrows the results.
-  const taskItems: MenuEntry[] = [
-    {
-      label: "Any task",
-      icon: MenuIcons.filter,
-      active: !task.trim(),
-      // "Any task" means any task THIS APP RUNS — the menu below holds only
-      // those (D313), and so does an unfiltered search.
-      onClick: () => onTask(""),
-    },
-    ...(tasks.length ? (["separator"] as MenuEntry[]) : []),
-    ...tasks.map(
-      (t): MenuEntry => ({
-        label: t.label,
-        icon: MenuIcons.filter,
-        active: t.tag === task,
-        onClick: () => onTask(t.tag),
-      }),
-    ),
-  ];
+  const taskItems = tasks.map((t) => ({
+    value: t.tag,
+    label: t.label,
+    icon: MenuIcons.filter,
+  }));
 
-  const sortItems: MenuEntry[] = SORTS.map((s) => ({
+  const sortItems = SORTS.map((s) => ({
+    value: s.value,
     label: s.label,
     icon: SORT_ICONS[s.value],
-    active: s.value === sort,
-    onClick: () => onSort(s.value),
   }));
 
   return (
@@ -285,6 +250,11 @@ export function SearchControls({
         label={activeT.label}
         title={activeT.title}
         ariaLabel={"Filter by task: " + activeT.label}
+        value={task.trim()}
+        onValue={onTask}
+        // "Any task" means any task THIS APP RUNS — the menu holds only
+        // those (D313), and so does an unfiltered search.
+        leading={{ value: "", label: "Any task", icon: MenuIcons.filter }}
         items={taskItems}
       />
       <ControlMenu
@@ -292,6 +262,8 @@ export function SearchControls({
         label={activeS.label}
         title={activeS.title}
         ariaLabel={"Sort results: " + activeS.label}
+        value={sort}
+        onValue={(v) => onSort(v as ResultSort)}
         items={sortItems}
       />
     </div>

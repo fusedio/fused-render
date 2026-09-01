@@ -15,7 +15,18 @@ import { useEffect, useRef, useState } from "react";
 import { createDetectedRemote, createMount } from "@platform/lib/api";
 import type { RcloneRemote, RemoteKind, RemoteSuggestion } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { Field, Select, TextInput } from "@platform/ui/field/fields";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
 import { ProviderPicker } from "./setup";
 import type { SetupKey } from "./setup";
 import {
@@ -221,8 +232,10 @@ export function AddMount({
         }}
       >
         <div className="mount-hero">
-          <Field label="Paste a storage link">
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="mount-link">Paste a storage link</FieldLabel>
+            <Input
+              id="mount-link"
               placeholder="s3://bucket/prefix, gs://bucket/prefix, or an S3/GCS console URL"
               value={link}
               onChange={(e) => applyLink(e.target.value)}
@@ -252,8 +265,10 @@ export function AddMount({
         </div>
 
         <div className={"mount-grid" + (flash ? " mount-grid--flash" : "")}>
-          <Field label="Name" required>
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="mount-name">Name</FieldLabel>
+            <Input
+              id="mount-name"
               placeholder="e.g. sensor-data"
               value={name}
               onChange={(e) => {
@@ -262,28 +277,45 @@ export function AddMount({
               }}
             />
           </Field>
-          <Field label="Remote" required>
-            <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
-              <option value="">— remote —</option>
-              {REMOTE_GROUPS.map((g) => {
-                const items = choices.filter((c) => c.kind === g.kind);
-                if (items.length === 0) return null;
-                return (
-                  <optgroup key={g.kind} label={g.label}>
-                    {items.map((c) => (
-                      // value is the raw rclone spec — or "suggest:<id>", which
-                      // add() materializes first; only the shown text differs.
-                      <option key={c.value} value={c.value}>
-                        {c.creates ? `+ ${c.label}` : c.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
+          <Field>
+            <FieldLabel>Remote</FieldLabel>
+            <Select
+              value={remote || null}
+              onValueChange={(v) => setRemote((v as string | null) ?? "")}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue>
+                  {(v: string | null) => {
+                    if (!v) return "— remote —";
+                    const c = choices.find((x) => x.value === v);
+                    return c ? (c.creates ? `+ ${c.label}` : c.label) : v;
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {REMOTE_GROUPS.map((g) => {
+                  const items = choices.filter((c) => c.kind === g.kind);
+                  if (items.length === 0) return null;
+                  return (
+                    <SelectGroup key={g.kind}>
+                      <SelectLabel>{g.label}</SelectLabel>
+                      {items.map((c) => (
+                        // value is the raw rclone spec — or "suggest:<id>", which
+                        // add() materializes first; only the shown text differs.
+                        <SelectItem key={c.value} value={c.value}>
+                          {c.creates ? `+ ${c.label}` : c.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  );
+                })}
+              </SelectContent>
             </Select>
           </Field>
-          <Field label="Path">
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="mount-path">Path</FieldLabel>
+            <Input
+              id="mount-path"
               ref={pathRef}
               placeholder="bucket/prefix"
               value={subpath}
@@ -293,13 +325,13 @@ export function AddMount({
           {/* Bottom-aligned by the grid, not by a blank <Field label=" ">. That
               hack rendered a whitespace-only <label for> on the button, which
               overrode its text and left it with an EMPTY accessible name. */}
-          <button
+          <Button
             type="submit"
-            className="btn btn-primary mount-grid-submit"
+            className="mount-grid-submit"
             disabled={busy || !nameValid || !remote}
           >
             {busy ? "Mounting…" : "Add & mount"}
-          </button>
+          </Button>
         </div>
       </form>
 

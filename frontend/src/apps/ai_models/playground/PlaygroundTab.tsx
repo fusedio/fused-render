@@ -58,8 +58,11 @@ import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@platform/shadcn/ui/card";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@platform/shadcn/ui/empty";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import { Binary, Check, Copy, Cpu, HardDriveDownload, Sparkles } from "lucide-react";
 
 // What the groups are called HERE: the capability vocabulary is exact
@@ -389,7 +392,16 @@ export default function PlaygroundTab() {
   };
 
   if (catalog.status === "loading") {
-    return <p className="cc-empty">Reading the model catalog…</p>;
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <Spinner />
+          </EmptyMedia>
+          <EmptyTitle>Reading the model catalog…</EmptyTitle>
+        </EmptyHeader>
+      </Empty>
+    );
   }
   if (catalog.status === "error") {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
@@ -648,17 +660,23 @@ export default function PlaygroundTab() {
           // Not an ErrorBanner: nothing failed and nothing the user did is
           // wrong — the link simply named a task this machine cannot run, and
           // the stage below is the substitute, said out loud.
-          <p className="pg-blocked-ask">
-            {groupLabel(blockedAsk.row.capability)} is not available here — {blockedAsk.reason}{" "}
-            Showing {groupLabel(selected.row.capability)} instead.
-          </p>
+          <Alert>
+            <AlertDescription>
+              {groupLabel(blockedAsk.row.capability)} is not available here — {blockedAsk.reason}{" "}
+              Showing {groupLabel(selected.row.capability)} instead.
+            </AlertDescription>
+          </Alert>
         )}
         {!selected ? (
-          <p className="cc-empty">
-            {blockedAsk
-              ? `${groupLabel(blockedAsk.row.capability)} is not available here — ${blockedAsk.reason}`
-              : "No models to try yet — the Local tab is where a first one comes from."}
-          </p>
+          <Empty>
+            <EmptyHeader>
+              <EmptyDescription>
+                {blockedAsk
+                  ? `${groupLabel(blockedAsk.row.capability)} is not available here — ${blockedAsk.reason}`
+                  : "No models to try yet — the Local tab is where a first one comes from."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <>
             <Card className="pg-hero flex-none [--card-spacing:--spacing(6)]">
@@ -895,10 +913,14 @@ export default function PlaygroundTab() {
             ) : (
               // A capability a future runner adds before this tab learns it:
               // named, never blank — the same posture the group labels take.
-              <p className="cc-empty">
-                No playground for {groupLabel(selected.row.capability)} yet — the Local tab can
-                still load and manage this model.
-              </p>
+              <Empty>
+                <EmptyHeader>
+                  <EmptyDescription>
+                    No playground for {groupLabel(selected.row.capability)} yet — the Local tab
+                    can still load and manage this model.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             )}
           </>
         )}

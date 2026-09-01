@@ -52,6 +52,16 @@ import {
 } from "@platform/lib/hooks";
 import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Breadcrumb as BreadcrumbRoot,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@platform/shadcn/ui/breadcrumb";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -339,26 +349,28 @@ function CrumbNav() {
   const reach = useNavReach();
   return (
     <div className="crumb-nav">
-      <button
+      <Button
         type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
+        variant="ghost"
+        size="icon-sm"
         title="Back"
         aria-label="Back"
         disabled={!reach.back}
         onClick={goBack}
       >
         <Chevron dir="left" />
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
+        variant="ghost"
+        size="icon-sm"
         title="Forward"
         aria-label="Forward"
         disabled={!reach.forward}
         onClick={goForward}
       >
         <Chevron dir="right" />
-      </button>
+      </Button>
     </div>
   );
 }
@@ -402,14 +414,20 @@ export function BookmarkStar({ name, id }: { name: string; id?: string }) {
   };
 
   return (
-    <button
+    <Button
       id={id}
+      variant="ghost"
+      size="icon-sm"
+      /* .bookmark-star-btn is the bar's layout claimant (explorer.css :has()
+         rules pack the actions cluster off it) and carries the star glyph's
+         optical nudge — the class is layout, not skin. */
       className={"bookmark-star-btn" + (starred ? " active" : "")}
+      aria-pressed={starred}
       title={starred ? "Remove bookmark" : "Bookmark this view"}
       onClick={onBookmark}
     >
       <StarIcon filled={starred} />
-    </button>
+    </Button>
   );
 }
 
@@ -434,14 +452,15 @@ export function UpdateBookmarkButton() {
   };
 
   return (
-    <button
+    <Button
       id="update-bookmark-btn"
-      className="star-btn starred"
+      variant="outline"
+      size="sm"
       title="Update bookmark to current params"
       onClick={onUpdate}
     >
       Update bookmark
-    </button>
+    </Button>
   );
 }
 
@@ -591,7 +610,7 @@ export function Breadcrumb({
   // Recents, for its sidebar row) so "My DB app" beats "index.html".
   renderedTitle?: string | null;
 }) {
-  const crumbsRef = useRef<HTMLDivElement | null>(null);
+  const crumbsRef = useRef<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
   // Read by the always-on click-away listener, which must not rebind on every toggle.
   const editingRef = useRef(false);
@@ -776,14 +795,14 @@ export function Breadcrumb({
   };
   const rootTarget = underHome ? (home as string) : "/";
   const pieces: React.ReactNode[] = [
-    <a
-      key="root"
-      href="#"
-      className={
-        "path-crumb" +
-        (parts.length === 0 ? " last" : "") +
-        (armedTarget === rootTarget ? " spring-armed" : "")
-      }
+    <BreadcrumbItem key="root" className="shrink-0">
+      <BreadcrumbLink
+        href="#"
+        className={
+          "path-crumb" +
+          (parts.length === 0 ? " last" : "") +
+          (armedTarget === rootTarget ? " spring-armed" : "")
+        }
       // Drop-only when the listing is already AT the root: this crumb is then the
       // current folder, and springing into the folder you are looking at would be
       // a pointless remount. An ancestor gets both roles.
@@ -802,9 +821,10 @@ export function Breadcrumb({
         const target = underHome ? (home as string) : "/";
         navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
       }}
-    >
-      {underHome ? "~" : "/"}
-    </a>,
+      >
+        {underHome ? "~" : "/"}
+      </BreadcrumbLink>
+    </BreadcrumbItem>,
   ];
   // A Windows path's first segment is the drive ("C:"); its crumb must target
   // "C:/" (bare "C:" is cwd-relative to os.stat) and later segments append
@@ -827,34 +847,38 @@ export function Breadcrumb({
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
+    if (i > 0 || underHome)
+      pieces.push(<BreadcrumbSeparator key={"sep" + i} className="path-crumb-sep">/</BreadcrumbSeparator>);
     if (isLast) {
       pieces.push(
         // Not a link (you are already here) and not a spring target, but a DROP
         // target like every other crumb — after a spring-load this is the crumb
         // the pointer is sitting on, so it is the one that has to accept the
         // release (see dropProps).
-        <span key={target} className={cls} title={part} {...dropProps(target)}>
-          {part}
-        </span>
+        <BreadcrumbItem key={target} className={shrink ? "min-w-0" : "shrink-0"}>
+          <BreadcrumbPage className={cls} title={part} {...dropProps(target)}>
+            {part}
+          </BreadcrumbPage>
+        </BreadcrumbItem>
       );
     } else {
       pieces.push(
-        <a
-          key={target}
-          href="#"
-          className={cls + (armedTarget === target ? " spring-armed" : "")}
-          title={part}
-          {...springProps(target)}
-          onClick={(e) => {
-            e.preventDefault();
-            // Plain listing, no `_mode`; `sel` highlights the child we came
-            // out of (see the root crumb above).
-            navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
-          }}
-        >
-          {part}
-        </a>
+        <BreadcrumbItem key={target} className={shrink ? "min-w-0" : "shrink-0"}>
+          <BreadcrumbLink
+            href="#"
+            className={cls + (armedTarget === target ? " spring-armed" : "")}
+            title={part}
+            {...springProps(target)}
+            onClick={(e) => {
+              e.preventDefault();
+              // Plain listing, no `_mode`; `sel` highlights the child we came
+              // out of (see the root crumb above).
+              navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
+            }}
+          >
+            {part}
+          </BreadcrumbLink>
+        </BreadcrumbItem>
       );
     }
   });
@@ -863,7 +887,7 @@ export function Breadcrumb({
     <>
       <CrumbNav />
       {editing ? (
-        <input
+        <Input
           className="crumb-edit"
           defaultValue={displayPath}
           spellCheck={false}
@@ -891,9 +915,9 @@ export function Breadcrumb({
         // the document-level listener above, not an onClick here: the bar's own
         // background is rendered a level up (BreadcrumbBar) and a handler on this
         // div could never see it. One rule for the whole bar, one exclusion list.
-        <div className="crumbs" ref={crumbsRef} onWheel={onWheel}>
-          {pieces}
-        </div>
+        <BreadcrumbRoot className="crumbs" ref={crumbsRef} onWheel={onWheel}>
+          <BreadcrumbList className="contents text-xs text-inherit">{pieces}</BreadcrumbList>
+        </BreadcrumbRoot>
       )}
       {/* After the path, not before it: the star's subject is the path, and the
           bar's opening slot belongs to the history arrows (see the header). It
@@ -927,9 +951,13 @@ export function StaticBreadcrumb({ label }: { label: string }) {
           routes are navigated to like any other, so their history arrows are
           neither special-cased nor omitted. */}
       <CrumbNav />
-      <div className="crumbs">
-        <span className="current">{label}</span>
-      </div>
+      <BreadcrumbRoot className="crumbs">
+        <BreadcrumbList className="contents text-xs text-inherit">
+          <BreadcrumbItem>
+            <BreadcrumbPage className="current">{label}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </BreadcrumbRoot>
       <BookmarkStar id="bookmark-btn" name={label} />
       <UpdateBookmarkButton />
       <TopbarActionsSlot />

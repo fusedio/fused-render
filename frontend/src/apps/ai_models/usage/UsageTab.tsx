@@ -59,6 +59,20 @@ import {
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Card } from "@platform/shadcn/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@platform/shadcn/ui/empty";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@platform/shadcn/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 
 // The windows the graph offers. Three, because they are three different
 // questions — "what is happening right now", "what has this session been
@@ -267,51 +281,51 @@ function UsageModels({
   const total = priced.length ? priced.reduce((a, b) => a + b, 0) : null;
 
   return (
-    <table className="am-usage-table">
-      <thead>
-        <tr>
-          <th>Model</th>
-          <th>Completions</th>
-          <th>Input</th>
-          <th>Output</th>
-          <th>Speed</th>
+    <Table className="am-usage-table">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Model</TableHead>
+          <TableHead>Completions</TableHead>
+          <TableHead>Input</TableHead>
+          <TableHead>Output</TableHead>
+          <TableHead>Speed</TableHead>
           {/* The unit is in the header, not in the box: a placeholder inside an
               input disappears the moment somebody types, and this is the one
               thing a reader has to know to trust the column beside it. It also
               names what the number is FOR — the estimate in the next column —
               so the two headers read as one pair rather than as a rate the
               page might be charging. */}
-          <th>$/M output for est. cost</th>
-          <th>Est. cost</th>
-        </tr>
-      </thead>
-      <tbody>
+          <TableHead>$/M output for est. cost</TableHead>
+          <TableHead>Est. cost</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {usage.models.map((row) => {
           const estimate = cost(row.output_tokens, rateFor(row.model));
           return (
-            <tr key={row.model}>
-              <td className="am-usage-model" title={row.model}>
+            <TableRow key={row.model}>
+              <TableCell className="am-usage-model" title={row.model}>
                 {/* The tier as a chip rather than as a column of its own: it is
                     readable off the id (a slash means a Hub repo, AI-1) and this
                     spares four characters of table width for saying so. The
                     overflow row gets no chip: it holds whatever mixture arrived
                     past the cap, and either label on it would be a guess. */}
                 {row.tier !== null && (
-                  <span className={"am-usage-tier am-usage-tier-" + row.tier}>
+                  <Badge variant="outline" className={"am-usage-tier-" + row.tier}>
                     {TIER_LABEL[row.tier]}
-                  </span>
+                  </Badge>
                 )}
                 {row.model}
-              </td>
-              <td>{fmt(row.completions)}</td>
+              </TableCell>
+              <TableCell>{fmt(row.completions)}</TableCell>
               {/* An em dash, never a 0: this model's tier never reported what it
                   read, and printing zero would be an answer instead of an
                   absence. Same rule for a speed nothing timed. */}
-              <td>{row.input_tokens === null ? "—" : fmt(row.input_tokens)}</td>
-              <td>{fmt(row.output_tokens)}</td>
-              <td>{row.tokens_per_second === null ? "—" : `${row.tokens_per_second}/s`}</td>
-              <td>
-                <input
+              <TableCell>{row.input_tokens === null ? "—" : fmt(row.input_tokens)}</TableCell>
+              <TableCell>{fmt(row.output_tokens)}</TableCell>
+              <TableCell>{row.tokens_per_second === null ? "—" : `${row.tokens_per_second}/s`}</TableCell>
+              <TableCell>
+                <Input
                   className="am-usage-rate"
                   type="number"
                   min="0"
@@ -321,21 +335,21 @@ function UsageModels({
                   value={rateFor(row.model)}
                   onChange={(e) => onRate(row.model, e.target.value)}
                 />
-              </td>
-              <td>{estimate === null ? "—" : money(estimate)}</td>
-            </tr>
+              </TableCell>
+              <TableCell>{estimate === null ? "—" : money(estimate)}</TableCell>
+            </TableRow>
           );
         })}
-      </tbody>
+      </TableBody>
       {usage.models.length > 1 && (
-        <tfoot>
-          <tr>
-            <td colSpan={6}>Estimated total</td>
-            <td>{total === null ? "—" : money(total)}</td>
-          </tr>
-        </tfoot>
+        <TableFooter>
+          <TableRow>
+            <TableCell colSpan={6}>Estimated total</TableCell>
+            <TableCell>{total === null ? "—" : money(total)}</TableCell>
+          </TableRow>
+        </TableFooter>
       )}
-    </table>
+    </Table>
   );
 }
 
@@ -420,7 +434,7 @@ export default function UsageTab() {
       {!usage && !error && <SkeletonLines rows={3} label="Loading usage" />}
       {usage && (
         <>
-          <div className="cc-mdcard am-usage-card">
+          <Card size="sm" className="am-usage-card">
             <div className="am-usage-head">
               <div className="am-usage-headline">
                 <b>{fmt(usage.window.output_tokens)}</b> output tokens
@@ -438,22 +452,24 @@ export default function UsageTab() {
                   one chosen. Not in the page head with the tabs: it belongs to
                   the graph, and a second strip up there would read as four more
                   tabs. */}
-              <div className="am-tabs am-usage-ranges" role="group" aria-label="Time range">
+              <ToggleGroup
+                variant="outline"
+                size="sm"
+                aria-label="Time range"
+                value={[String(minutes)]}
+                onValueChange={(value: string[]) => {
+                  if (value.length) setMinutes(Number(value[0]));
+                }}
+              >
                 {RANGES.map((r) => (
-                  <button
-                    key={r}
-                    type="button"
-                    className={"am-tab" + (minutes === r ? " active" : "")}
-                    aria-pressed={minutes === r}
-                    onClick={() => setMinutes(r)}
-                  >
+                  <ToggleGroupItem key={r} value={String(r)}>
                     {r}m
-                  </button>
+                  </ToggleGroupItem>
                 ))}
-              </div>
+              </ToggleGroup>
             </div>
             <UsageChart usage={usage} />
-          </div>
+          </Card>
 
           {/* Failures count as "something happened": a process whose every call
               timed out has an empty graph and a great deal to explain, and the
@@ -462,45 +478,47 @@ export default function UsageTab() {
             // Not "no results": nothing has been asked of a model yet, and the
             // sentence has to say what would make a bar appear — otherwise an
             // empty graph reads as a broken one.
-            <div className="cc-empty am-usage-empty">
-              <p>No output tokens yet.</p>
-              <p>
-                Every <code>fused.ai()</code> call a page makes — and the app&apos;s own AI
-                features — is counted here while the server runs.
-              </p>
-            </div>
+            <Empty className="am-usage-empty">
+              <EmptyHeader>
+                <EmptyTitle>No output tokens yet</EmptyTitle>
+                <EmptyDescription>
+                  Every <code>fused.ai()</code> call a page makes — and the app&apos;s own AI
+                  features — is counted here while the server runs.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             <>
               <h2 className="cc-heading am-usage-heading">Since the server started</h2>
               <div className="am-usage-tiles">
-                <div className="cc-mdcard am-usage-tile">
+                <Card size="sm" className="am-usage-tile">
                   <div className="am-usage-tile-value">{fmt(usage.totals.output_tokens)}</div>
                   <div className="am-usage-tile-label">output tokens</div>
-                </div>
-                <div className="cc-mdcard am-usage-tile">
+                </Card>
+                <Card size="sm" className="am-usage-tile">
                   <div className="am-usage-tile-value">
                     {usage.totals.input_tokens === null ? "—" : fmt(usage.totals.input_tokens)}
                   </div>
                   <div className="am-usage-tile-label">input tokens</div>
-                </div>
-                <div className="cc-mdcard am-usage-tile">
+                </Card>
+                <Card size="sm" className="am-usage-tile">
                   <div className="am-usage-tile-value">{fmt(usage.totals.completions)}</div>
                   <div className="am-usage-tile-label">completions</div>
-                </div>
-                <div className="cc-mdcard am-usage-tile">
+                </Card>
+                <Card size="sm" className="am-usage-tile">
                   <div className="am-usage-tile-value">
                     {usage.totals.tokens_per_second === null
                       ? "—"
                       : fmt(usage.totals.tokens_per_second)}
                   </div>
                   <div className="am-usage-tile-label">tokens/sec, averaged</div>
-                </div>
-                <div className="cc-mdcard am-usage-tile">
+                </Card>
+                <Card size="sm" className="am-usage-tile">
                   <div className="am-usage-tile-value">
                     {usage.totals.seconds === null ? "—" : duration(usage.totals.seconds)}
                   </div>
                   <div className="am-usage-tile-label">spent generating</div>
-                </div>
+                </Card>
               </div>
               {/* WHICH failure, not just how many: a timeout, a missing claude
                   binary and a model still downloading send a user to three

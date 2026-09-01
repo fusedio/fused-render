@@ -10,8 +10,10 @@
 // The byte counts are the JOB's, never the runtime's. The runtime knows what is
 // happening; only the worker doing the fetching knows how far it has got, and it
 // reports that to the download manager (SPEC §36) under a deterministic id.
+import { XIcon } from "lucide-react";
 import { formatSize } from "@platform/lib/format";
 import type { Job } from "@platform/lib/jobs";
+import { Button } from "@platform/shadcn/ui/button";
 
 /** The arrow-into-a-tray every Download on this page now leads with.
  *
@@ -108,15 +110,17 @@ export function ModelProgress({
         </span>
       )}
       {stop && (
-        <button
+        <Button
           type="button"
-          className="cc-iconbtn am-runtime-stop"
+          variant="ghost"
+          size="icon-xs"
+          className="am-runtime-stop"
           title={stop.label}
           aria-label={stop.label}
           onClick={stop.onStop}
         >
-          ✕
-        </button>
+          <XIcon />
+        </Button>
       )}
     </div>
   );

@@ -28,6 +28,16 @@ import { useEffect, useRef, useState } from "react";
 
 import { dismissFdaNudge, getConfig, openFdaSettings } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@platform/shadcn/ui/card";
+import { WARNING_WASH } from "@platform/ui/TroubleCard";
+import { XIcon } from "lucide-react";
 
 //: While showing, watch for the grant landing. Most grants only apply to a
 //: relaunched process, but when macOS relaunches the app for us the fresh
@@ -167,60 +177,68 @@ export function FdaStrip() {
   };
 
   return (
-    <section className="claude-health" role="status" aria-label="Full Disk Access setup">
-      <div className="claude-health-head">
+    // Card, not Alert: this is a setup strip with a heading, a step list and
+    // an action, not a one-line notice. The warning wash is the same
+    // `--warning-rgb` tint TroubleCard wears (SPEC §42: "Nothing red").
+    // `role="status"` keeps the old <section>'s semantics.
+    <Card
+      role="status"
+      aria-label="Full Disk Access setup"
+      size="sm"
+      // `border ring-0`: Card draws its edge as a ring, and the wash needs a
+      // real border for `--warning-rgb` to tint.
+      className="mb-5 border ring-0"
+      style={WARNING_WASH}
+    >
+      <CardHeader>
         {/* Says what is still needed, not that something is broken — same
             posture as ClaudeHealthStrip (SPEC §42: "Nothing red"). */}
-        <h2 className="claude-health-title">Give FusedRender Full Disk Access</h2>
-        <div className="claude-health-head-actions">
-          <button
-            type="button"
-            className="claude-health-close"
-            onClick={close}
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="claude-health-issues">
-        <li className="claude-health-issue">
-          <p className="claude-health-issue-detail">
-            macOS just refused FusedRender access to a file or folder —
-            sometimes it does this with no permission prompt at all, just
-            "permission denied". Granting Full Disk Access once fixes Desktop,
-            Documents, Downloads and external volumes permanently. FusedRender
-            is completely local: your files are read on this Mac and no data
-            ever leaves your computer.
-          </p>
-          {waiting ? (
-            <p className="claude-health-issue-detail">
-              In System Settings: turn on FusedRender under Full Disk Access,
-              then relaunch when asked.
+        <CardTitle>Give FusedRender Full Disk Access</CardTitle>
+        <CardAction>
+          <Button variant="ghost" size="icon-sm" onClick={close} aria-label="Dismiss" title="Dismiss">
+            <XIcon />
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col gap-2 text-sm">
+          <li className="flex flex-col gap-2">
+            <p className="text-muted-foreground">
+              macOS just refused FusedRender access to a file or folder —
+              sometimes it does this with no permission prompt at all, just
+              "permission denied". Granting Full Disk Access once fixes Desktop,
+              Documents, Downloads and external volumes permanently. FusedRender
+              is completely local: your files are read on this Mac and no data
+              ever leaves your computer.
             </p>
-          ) : (
-            <ol className="claude-health-issue-detail fda-steps">
-              <li>Open System Settings</li>
-              <li>Privacy &amp; Security → Full Disk Access</li>
-              <li>Turn on FusedRender, relaunch when asked</li>
-            </ol>
-          )}
-          <div className="claude-health-actions">
-            <button
-              type="button"
-              className="claude-health-action"
-              onClick={() => {
-                setWaiting(true);
-                openFdaSettings().catch(() => {});
-              }}
-            >
-              {waiting ? "Reopen System Settings" : "Open System Settings"}
-            </button>
-          </div>
-        </li>
-      </ul>
-    </section>
+            {waiting ? (
+              <p className="text-muted-foreground">
+                In System Settings: turn on FusedRender under Full Disk Access,
+                then relaunch when asked.
+              </p>
+            ) : (
+              <ol className="list-decimal pl-5 text-muted-foreground">
+                <li>Open System Settings</li>
+                <li>Privacy &amp; Security → Full Disk Access</li>
+                <li>Turn on FusedRender, relaunch when asked</li>
+              </ol>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setWaiting(true);
+                  openFdaSettings().catch(() => {});
+                }}
+              >
+                {waiting ? "Reopen System Settings" : "Open System Settings"}
+              </Button>
+            </div>
+          </li>
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 

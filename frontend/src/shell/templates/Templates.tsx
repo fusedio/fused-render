@@ -20,6 +20,7 @@ import { RowEditorModal } from "@shell/templates/RowEditorModal";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 
 type PageTab = "bindings" | "library";
 
@@ -82,22 +83,14 @@ export default function Templates() {
           export user templates.
         </p>
       </div>
-      <div className="templates-tabs">
-        <button
-          type="button"
-          className={"templates-tab" + (tab === "bindings" ? " active" : "")}
-          onClick={() => setTab("bindings")}
-        >
-          File bindings
-        </button>
-        <button
-          type="button"
-          className={"templates-tab" + (tab === "library" ? " active" : "")}
-          onClick={() => setTab("library")}
-        >
-          Library
-        </button>
-      </div>
+      {/* Tab state lives in the URL (`?tab=`) — controlled Tabs; setTab
+          navigates and App remounts this view. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as PageTab)} className="templates-tabs">
+        <TabsList>
+          <TabsTrigger value="bindings">File bindings</TabsTrigger>
+          <TabsTrigger value="library">Library</TabsTrigger>
+        </TabsList>
+      </Tabs>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!error && (!inventory || !registry) && <SkeletonLines rows={5} label="Loading templates" />}
       {inventory && registry && tab === "bindings" && (

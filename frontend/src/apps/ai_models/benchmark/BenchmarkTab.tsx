@@ -146,6 +146,7 @@ import {
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Button } from "@platform/shadcn/ui/button";
 
 export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   const { data, repos, scanEpoch } = scan;
@@ -867,14 +868,15 @@ function CapabilitySection({
               (`note` — a capability with none, video generation today,
               gets no dead glyph pointing at nothing). */}
           {note && (
-            <button
+            <Button
               type="button"
-              className="am-bench-workload-info"
+              variant="ghost"
+              size="icon-xs"
               data-hint={note}
               aria-label="What this benchmark measures"
             >
               {MenuIcons.info}
-            </button>
+            </Button>
           )}
         </div>
         {/* The head's controls, as one group: the Metric select and — only
@@ -1014,21 +1016,23 @@ function CapabilitySection({
                     Running {queue.started} of {queue.models.length} —{" "}
                     {shortModelName(queue.current!)}
                   </span>
-                  <button
+                  <Button
                     type="button"
-                    className="cc-iconbtn"
+                    variant="ghost"
+                    size="icon-xs"
                     onClick={() => onStopAll(capability)}
                     title="Stop"
                     aria-label="Stop"
                   >
                     {MenuIcons.stop}
-                  </button>
+                  </Button>
                 </>
               ) : (
                 <>
-                  <button
+                  <Button
                     type="button"
-                    className="am-bench-runall-btn"
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
                     title={
                       busy
@@ -1039,7 +1043,7 @@ function CapabilitySection({
                   >
                     {MenuIcons.play}
                     Run all {runnable.length} models
-                  </button>
+                  </Button>
                   {/* The one category Run All silently leaves out — say so,
                       rather than a count that quietly excludes it with no
                       explanation. Each `gone` row already states its own
@@ -1442,9 +1446,10 @@ function BenchmarkRow({
         // (wired in `CapabilitySection`) opens this row via `onOpenModel`
         // before starting the run, so the row still opens on a first press;
         // it simply never gets a chance to close on a second one.
-        <button
+        <Button
           type="button"
-          className="cc-iconbtn"
+          variant="ghost"
+          size="icon-xs"
           disabled={button.blocked}
           onClick={(e) => {
             e.stopPropagation();
@@ -1462,7 +1467,7 @@ function BenchmarkRow({
           <span className={button.busy ? "am-icon-spin" : undefined}>
             {button.busy ? MenuIcons.spinner : MenuIcons.play}
           </span>
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -1605,15 +1610,17 @@ function RunTable({
                   )}
                 </td>
                 <td>
-                  <button
+                  <Button
                     type="button"
-                    className="am-bench-forget"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-destructive"
                     title="Forget this run"
                     aria-label={`Forget the run from ${new Date(run.startedAt * 1000).toLocaleString()}`}
                     onClick={() => onForget(run.id)}
                   >
                     ✕
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}

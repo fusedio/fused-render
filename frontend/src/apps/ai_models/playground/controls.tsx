@@ -6,12 +6,16 @@
 // slider+number pair with a one-line hint, defaults baked in and a
 // per-control reset once a value moves.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
-import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Check, Copy, RefreshCw, Settings } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@platform/shadcn/ui/card";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia } from "@platform/shadcn/ui/empty";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
+import { Toggle } from "@platform/shadcn/ui/toggle";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { capabilityIcon } from "./capabilityIcons";
 
 /** The stage's one-line title, with the config cog right-aligned on the same
@@ -32,29 +36,17 @@ export function StageHeader({
   return (
     <div className="pg-work-head">
       <h2 className="pg-work-title">{title}</h2>
-      <button
-        type="button"
-        className={"pg-cog" + (configOpen ? " active" : "")}
+      <Toggle
+        size="sm"
+        className="min-w-0 flex-none px-1.5"
+        pressed={configOpen}
+        onPressedChange={onToggleConfig}
         aria-expanded={configOpen}
         aria-label={configOpen ? "Hide the settings" : "Show the settings"}
         title={configOpen ? "Hide the settings" : "Show the settings"}
-        onClick={onToggleConfig}
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .33-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.11a1.6 1.6 0 0 0 1.47-1.05 1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.33H9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.33 1.77V9a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97Z" />
-        </svg>
-      </button>
+        <Settings aria-hidden="true" />
+      </Toggle>
     </div>
   );
 }
@@ -150,9 +142,10 @@ export function ConfigPanel({
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
-      className="pg-copy-btn"
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      className="absolute top-2 right-2"
       title={copied ? "Copied" : label}
       aria-label={label}
       onClick={() => {
@@ -161,21 +154,8 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
         window.setTimeout(() => setCopied(false), 1200);
       }}
     >
-      {copied ? (
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M20 6L9 17l-5-5" />
-        </svg>
-      ) : (
-        MenuIcons.copy
-      )}
-    </button>
+      {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+    </Button>
   );
 }
 
@@ -388,20 +368,27 @@ export function RailChips<T extends string>({
   onPick: (value: T) => void;
 }) {
   return (
-    <div className="pg-chips" role="group">
+    <ToggleGroup
+      className="pg-chips w-full"
+      value={active === null ? [] : [active]}
+      onValueChange={(picked: unknown[]) => {
+        const next = picked[0];
+        if (typeof next === "string") onPick(next as T);
+      }}
+    >
       {options.map((option) => (
-        <button
+        <ToggleGroupItem
           key={option.value}
-          type="button"
-          className={"pg-chip" + (option.value === active ? " active" : "")}
-          aria-pressed={option.value === active}
+          value={option.value}
+          variant="outline"
+          size="sm"
+          className="flex-none rounded-full tabular-nums"
           title={option.title}
-          onClick={() => onPick(option.value)}
         >
           {option.label}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -495,32 +482,34 @@ export function StarterCards<S extends Starter>({
     <div className="pg-starters">
       <div className="pg-starter-grid" ref={rowRef}>
         {shown.map((sample) => (
-          <button
+          <Button
             key={sample.name}
-            type="button"
-            className="pg-starter-card"
+            variant="outline"
+            size="sm"
+            className="flex-none rounded-full"
             // The pill shows a name; the prompt it stands for is only legible
             // on hover, so the title is load-bearing here, not decoration.
             title={sample.detail ?? sample.prompt}
             onClick={() => onPick(sample)}
           >
-            <span className="pg-starter-icon" aria-hidden="true">
+            <span data-icon="inline-start" aria-hidden="true">
               {sample.icon}
             </span>
-            <span className="pg-starter-name">{sample.name}</span>
-          </button>
+            {sample.name}
+          </Button>
         ))}
       </div>
       {samples.length > page && (
-        <button
-          type="button"
-          className="pg-starter-rotate"
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="flex-none rounded-full"
           title="Show other examples"
           aria-label="Show other examples"
           onClick={() => setOffset((at) => (at + page) % samples.length)}
         >
-          {MenuIcons.refresh}
-        </button>
+          <RefreshCw aria-hidden="true" />
+        </Button>
       )}
     </div>
   );
@@ -557,12 +546,14 @@ export function ResultSlot({
   return (
     <div className="pg-answer-block">
       <p className="pg-answer-label">{label}</p>
-      <div className="pg-slot">
-        <span className="pg-slot-icon" aria-hidden="true">
-          {capabilityIcon(capability)}
-        </span>
-        <p className="pg-slot-note">{note}</p>
-      </div>
+      <Empty className="min-h-[200px] border border-dashed">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" aria-hidden="true">
+            {capabilityIcon(capability)}
+          </EmptyMedia>
+          <EmptyDescription>{note}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     </div>
   );
 }

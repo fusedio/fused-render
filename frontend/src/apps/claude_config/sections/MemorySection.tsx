@@ -38,11 +38,13 @@
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
 import { useCallback } from "react";
+import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
   Empty,
   Icon,
+  Pill,
   List,
   ListRow,
   ListSkeleton,
@@ -114,7 +116,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
                   {p.path ?? p.project}
                 </span>
                 <span className="cc-memgroup-count">{count}</span>
-                {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
+                {dirty > 0 && <Pill tone="ro">{dirty} uncommitted</Pill>}
               </div>
               {/* Reveal is informational and stays visible outright. Commit
                   and Clear are acts on the repo — Commit only exists to look
@@ -125,35 +127,36 @@ export default function MemorySection({ onChanged }: SectionProps) {
                   keyboard and visible outright where hover doesn't apply.
                   Reveal being first is what the CSS rule keys off of. */}
               <div className="cc-memgroup-actions">
-                <button
-                  type="button"
-                  className="cc-iconbtn"
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
                   title="Reveal in Finder"
                   aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
                   onClick={() => guard(cc.memory.open(p.project))}
                 >
                   <Icon name="folder" />
-                </button>
+                </Button>
                 {dirty > 0 && (
-                  <button
-                    type="button"
-                    className="cc-iconbtn"
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
                     title="Commit this project's memory folder"
                     aria-label={`Commit memory for ${p.path ?? p.project}`}
                     onClick={() => commit(p.project)}
                   >
                     <Icon name="check" />
-                  </button>
+                  </Button>
                 )}
-                <button
-                  type="button"
-                  className="cc-iconbtn cc-iconbtn-danger"
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-destructive hover:text-destructive"
                   title="Clear this project's memory"
                   aria-label={`Clear memory for ${p.path ?? p.project}`}
                   onClick={() => clear(p.project)}
                 >
                   <Icon name="trash" />
-                </button>
+                </Button>
               </div>
             </div>
             <List>

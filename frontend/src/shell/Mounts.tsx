@@ -13,6 +13,9 @@ import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { hasDrainingUploads } from "@platform/lib/uploads";
 import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { RotateCw } from "lucide-react";
 import { AddMount } from "./mounts/AddMount";
 import type { RemoteHandoff } from "./mounts/links";
 import { MountRow } from "./mounts/MountList";
@@ -131,18 +134,16 @@ export default function Mounts() {
         </div>
         {state?.rclone.available && (
           <div className="mounts-actions">
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary mounts-restart"
+              variant="outline"
               disabled={restartBusy}
               onClick={() => setConfirmRestart(true)}
               title="Reconnect all mounts — recovers stuck mounts and picks up refreshed credentials"
             >
-              <span className="mounts-restart-icon" aria-hidden="true">
-                ↻
-              </span>
+              <RotateCw data-icon="inline-start" />
               {restartBusy ? "Restarting…" : "Restart all mounts"}
-            </button>
+            </Button>
           </div>
         )}
       </header>
@@ -151,8 +152,8 @@ export default function Mounts() {
 
       {!state && !loadError && (
         <div className="mount-list" aria-busy="true" aria-label="Loading mounts">
-          <div className="mount-card mount-card--skeleton" />
-          <div className="mount-card mount-card--skeleton" />
+          <Skeleton className="h-[72px] w-full" />
+          <Skeleton className="h-[72px] w-full" />
         </div>
       )}
 
@@ -184,14 +185,13 @@ export default function Mounts() {
               </p>
             )}
           </div>
-          <button
+          <Button
             type="button"
-            className="btn btn-primary"
             disabled={restartBusy}
             onClick={() => setConfirmRestart(true)}
           >
             {restartBusy ? "Restarting…" : "Restart all mounts"}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -267,22 +267,17 @@ export default function Mounts() {
           onClose={() => setConfirmRestart(false)}
           footer={
             <>
-              <button
+              <Button
                 type="button"
-                className="btn btn-secondary"
+                variant="outline"
                 disabled={restartBusy}
                 onClick={() => setConfirmRestart(false)}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={restartBusy}
-                onClick={doRestart}
-              >
+              </Button>
+              <Button type="button" disabled={restartBusy} onClick={doRestart}>
                 {restartBusy ? "Restarting…" : "Restart all mounts"}
-              </button>
+              </Button>
             </>
           }
         >

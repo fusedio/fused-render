@@ -55,7 +55,14 @@ import StatusDot from "@platform/ui/StatusDot";
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
 import type { Job } from "@platform/lib/jobs";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@platform/shadcn/ui/popover";
+import { XIcon } from "lucide-react";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -261,25 +268,26 @@ function RepoRowView({
             action group it would otherwise read as part of — so it belongs on
             the row's boundary. The ORDER here is unchanged; only where the
             leftover width goes is. */}
-        <button
-          type="button"
-          className="q-all"
+        <Button
+          variant="outline"
+          size="xs"
           onClick={() => run(row.primaryAction)}
           disabled={busyAction !== null}
         >
           {busyAction === row.primaryAction
             ? "Working…"
             : repoActionLabel(row.primaryAction, row.repo.default_branch)}
-        </button>
-        <button
-          type="button"
-          className="dl-x"
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="ml-auto"
           onClick={onDismiss}
           title="Dismiss"
           aria-label={`Dismiss ${row.name}`}
         >
-          ✕
-        </button>
+          <XIcon />
+        </Button>
       </div>
       <div className="dl-status">{failure ? failure.message : repoStatusText(row)}</div>
       {/* Refusal, not error text alone — the same failure-toast rule the git
@@ -290,9 +298,9 @@ function RepoRowView({
           there (pending-claude-ask.ts) rather than calling
           `window._fusedClaudeAsk` directly. */}
       {failure && (
-        <button type="button" className="q-all" onClick={fixWithClaude}>
+        <Button variant="outline" size="xs" onClick={fixWithClaude}>
           Fix with Claude
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -367,13 +375,22 @@ export function RepoUpdatesCardView({
   // and something failed" — an `error` row in here is always terminal, so the
   // extra clause had nothing left to say.
   const hasFailure = failed.length > 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host" ref={hostRef}>
+    // The `.dl-host` div is the chip's STATUS-BAR SEGMENT (height, flex) and
+    // nothing else now: the panel is a shadcn Popover (base-ui). Outside
+    // pointer-down and Escape arrive as non-trigger reasons and spend the
+    // transient `onClose` (forceClose); a trigger press spends the
+    // preference-aware `onToggle` — the same split the old
+    // useDismissOnOutside/click pair made.
+    <div className="dl-host">
+    <Popover
+      open={!collapsed}
+      onOpenChange={(next, details) => {
+        if (details.reason === "trigger-press") onToggle();
+        else if (!next) (onClose ?? NOOP)();
+      }}
+    >
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
           inspiration" — the bar shows the category NAME and one circle, and
@@ -384,13 +401,15 @@ export function RepoUpdatesCardView({
           nothing rendered it after D573 and its docstring had gone stale
           claiming this card does not draw with zero rows (finding 8, code
           review 2026-08-27). */}
-      <button
-        className={
-          "dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")
+      <PopoverTrigger
+        render={
+          <button
+            className={
+              "dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")
+            }
+            title={collapsed ? "Show notifications" : "Hide notifications"}
+          />
         }
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show notifications" : "Hide notifications"}
       >
         {/* `Notifications`, NOT `Updates` (D579, user: "git updates does not
             make sense out of an app. it belongs to 'notifications'") — a repo
@@ -415,7 +434,7 @@ export function RepoUpdatesCardView({
           on={total > 0}
           label={total > 0 ? "notifications waiting" : "no notifications"}
         />
-      </button>
+      </PopoverTrigger>
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
           exists only while expanded. Collapsed shows no panel at all — see
           this component's own doc comment on why the fold takes every row,
@@ -423,10 +442,13 @@ export function RepoUpdatesCardView({
           in a header that used to survive the fold. An idle section now
           opens a panel too (D573) — the idle sentence ("No notifications") lives
           there instead of in the chip, which no longer has room for it. */}
-      {!collapsed && (
-        <div className="dl-panel">
+      <PopoverContent side="top" align="end" className="w-80 p-2">
           {idle ? (
-            <div className="dl-panel-empty">No notifications</div>
+            <Empty className="p-4">
+              <EmptyHeader>
+                <EmptyDescription>No notifications</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             <>
               {/* ONE list, TWO row kinds (D586). Repo updates first, then
@@ -492,20 +514,21 @@ export function RepoUpdatesCardView({
                   with a better name on it"); this brings the sibling controls
                   into line with a rule the codebase had already settled. */}
               {visible.length > 1 && (
-                <div className="dl-head">
-                  <button
-                    className="dl-clear"
+                <div className="flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     onClick={() => onDismissAll(visible)}
                     title="Dismiss every visible update"
                   >
                     Clear
-                  </button>
+                  </Button>
                 </div>
               )}
             </>
           )}
-        </div>
-      )}
+      </PopoverContent>
+    </Popover>
     </div>
   );
 }

@@ -14,6 +14,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@platform/shadcn/ui/collapsible";
 
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
@@ -88,86 +94,74 @@ export default function UpdateBadge() {
       : status.state === "installed"
         ? "Ready to restart"
         : `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`;
-  const dot = <span className="update-badge-dot" aria-hidden="true" />;
+  const dot = <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />;
+
+  // One command box for both the brew and the failed-install branches: the
+  // command verbatim in monospace, and a Copy beside it.
+  const commandBox = status.manual_command ? (
+    <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1">
+      <code className="min-w-0 flex-1 truncate font-mono text-xs">{status.manual_command}</code>
+      <Button variant="outline" size="xs" onClick={copyCommand}>
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  ) : null;
 
   // The installed state has no panel of its own — ServerStatusBanner's restart
   // card says the rest — so the row is a status line, not a dead toggle.
   if (status.state === "installed") {
     return (
-      <div className="update-badge">
-        <div className="update-badge-row update-badge-row-static">
-          {dot}
-          {label}
-        </div>
+      <div className="mx-2 my-0.5 flex h-7 items-center gap-1.5 px-2.5 text-sm text-muted-foreground">
+        {dot}
+        {label}
       </div>
     );
   }
 
   return (
-    <div className="update-badge">
-      <button
-        type="button"
-        className="update-badge-row"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+    <Collapsible open={open} onOpenChange={setOpen} className="mx-2 my-0.5">
+      <CollapsibleTrigger
+        render={<Button variant="ghost" size="sm" className="w-full justify-start" />}
       >
         {dot}
         {label}
-      </button>
-      {open && (
-        <div className="update-badge-panel">
-          {status.state === "available" && status.method === "brew" && (
-            <>
-              <div className="update-badge-text">
-                Installed with Homebrew — run this in your terminal:
-              </div>
-              {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {status.state === "available" && status.method !== "brew" && (
-            <>
-              <div className="update-badge-text">
-                Downloads the new version and installs it in place.
-              </div>
-              <button type="button" className="update-badge-action" onClick={install}>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+        {status.state === "available" && status.method === "brew" && (
+          <>
+            <div>Installed with Homebrew — run this in your terminal:</div>
+            {commandBox}
+          </>
+        )}
+        {status.state === "available" && status.method !== "brew" && (
+          <>
+            <div>Downloads the new version and installs it in place.</div>
+            <div>
+              <Button variant="outline" size="xs" onClick={install}>
                 Update to v{status.latest_version}
-              </button>
-            </>
-          )}
-          {status.state === "installing" && (
-            <div className="update-badge-text">
-              Downloading… {formatProgress(status.progress, status.progress_total)}
+              </Button>
             </div>
-          )}
-          {status.state === "error" && (
-            <>
-              <div className="update-badge-text update-badge-error">
-                {status.manual_command
-                  ? "Automatic update failed. Run this in your terminal:"
-                  : `Update failed: ${status.error ?? "unknown error"}`}
-              </div>
-              {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              )}
-              <button type="button" className="update-badge-action" onClick={install}>
+          </>
+        )}
+        {status.state === "installing" && (
+          <div>Downloading… {formatProgress(status.progress, status.progress_total)}</div>
+        )}
+        {status.state === "error" && (
+          <>
+            <div className="text-destructive">
+              {status.manual_command
+                ? "Automatic update failed. Run this in your terminal:"
+                : `Update failed: ${status.error ?? "unknown error"}`}
+            </div>
+            {commandBox}
+            <div>
+              <Button variant="outline" size="xs" onClick={install}>
                 Try again
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
+              </Button>
+            </div>
+          </>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

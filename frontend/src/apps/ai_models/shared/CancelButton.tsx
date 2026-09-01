@@ -8,7 +8,9 @@
 // with a disabled "Downloading…" button and no way to stop the pull at all
 // (D440) — which on a 40GB fetch is the difference between a mistake and a
 // mistake you have to wait out.
+import { XIcon } from "lucide-react";
 import { isRunning, type Job } from "@platform/lib/jobs";
+import { Button } from "@platform/shadcn/ui/button";
 
 export function CancelButton({
   id,
@@ -26,14 +28,15 @@ export function CancelButton({
     job && isRunning(job) && job.cancellable && !job.cancel_requested && !job.stalled ? job : null;
   if (!cancellable) return null;
   return (
-    <button
+    <Button
       type="button"
-      className="cc-iconbtn"
+      variant="ghost"
+      size="icon-xs"
       title={`Stop downloading ${id}`}
       aria-label={`Stop downloading ${id}`}
       onClick={() => onCancel(cancellable)}
     >
-      ✕
-    </button>
+      <XIcon />
+    </Button>
   );
 }

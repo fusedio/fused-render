@@ -21,7 +21,10 @@ import {
 } from "@platform/lib/google-client";
 import type { GoogleOAuthClient } from "@platform/lib/google-client";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { Field, TextInput } from "@platform/ui/field/fields";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Field, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
 import { ProviderIcon } from "@platform/ui/ProviderIcons";
 
 export function AddRemote({
@@ -80,8 +83,10 @@ export function AddRemote({
         }}
       >
         <div className="mount-panel-wide">
-          <Field label="Remote name" required>
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="s3-remote-name">Remote name</FieldLabel>
+            <Input
+              id="s3-remote-name"
               placeholder="e.g. r2"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -92,34 +97,45 @@ export function AddRemote({
             storage lives), and the endpoint is what makes a remote
             "S3-compatible" at all. The old order put Region beside the remote's
             NAME — two unrelated answers on one line. */}
-        <Field label="Endpoint">
-          <TextInput
+        <Field>
+          <FieldLabel htmlFor="s3-endpoint">Endpoint</FieldLabel>
+          <Input
+            id="s3-endpoint"
             placeholder="blank for AWS S3"
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
           />
         </Field>
-        <Field label="Region">
-          <TextInput
+        <Field>
+          <FieldLabel htmlFor="s3-region">Region</FieldLabel>
+          <Input
+            id="s3-region"
             placeholder="optional"
             value={region}
             onChange={(e) => setRegion(e.target.value)}
           />
         </Field>
-        <Field label="Access key ID" required>
-          <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+        <Field>
+          <FieldLabel htmlFor="s3-access-key">Access key ID</FieldLabel>
+          <Input
+            id="s3-access-key"
+            value={accessKey}
+            onChange={(e) => setAccessKey(e.target.value)}
+          />
         </Field>
-        <Field label="Secret access key" required>
-          <TextInput
+        <Field>
+          <FieldLabel htmlFor="s3-secret-key">Secret access key</FieldLabel>
+          <Input
+            id="s3-secret-key"
             type="password"
             value={secretKey}
             onChange={(e) => setSecretKey(e.target.value)}
           />
         </Field>
         <div className="mount-panel-wide mount-panel-actions">
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
+          <Button type="submit" disabled={!canSubmit}>
             {busy ? "Creating…" : "Create remote"}
-          </button>
+          </Button>
         </div>
       </form>
       <p className="mount-note">
@@ -235,7 +251,7 @@ function GoogleClientSetup({
             </button>
           </div>
           <p className="mount-note">Any project works; a free one is fine.</p>
-          <TextInput
+          <Input
             className="mount-step-project"
             placeholder="Project ID (optional — the links below jump straight to it)"
             aria-label="Project ID (optional — the links below jump straight to it)"
@@ -335,15 +351,19 @@ function GoogleClientSetup({
       <details className="mount-manual">
         <summary>Or paste the client ID and secret</summary>
         <div className="mount-panel-grid">
-          <Field label="Client ID" required>
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="google-client-id">Client ID</FieldLabel>
+            <Input
+              id="google-client-id"
               placeholder="….apps.googleusercontent.com"
               value={client.clientId}
               onChange={(e) => onChange({ ...client, clientId: e.target.value.trim() })}
             />
           </Field>
-          <Field label="Client secret" required>
-            <TextInput
+          <Field>
+            <FieldLabel htmlFor="google-client-secret">Client secret</FieldLabel>
+            <Input
+              id="google-client-secret"
               type="password"
               value={client.clientSecret}
               onChange={(e) =>
@@ -653,8 +673,10 @@ export function OAuthSignIn({
           if (!connecting && !nameError && clientReady) void begin();
         }}
       >
-        <Field label="Remote name" required>
-          <TextInput
+        <Field>
+          <FieldLabel htmlFor="oauth-remote-name">Remote name</FieldLabel>
+          <Input
+            id="oauth-remote-name"
             value={name}
             disabled={connecting}
             onChange={(e) => setName(e.target.value)}
@@ -663,26 +685,22 @@ export function OAuthSignIn({
         {connecting ? (
           // Disabled while standing down: the click has been accepted and the
           // port is not free yet, so a second one has nothing to do.
-          <button
+          <Button
             type="button"
-            className="btn btn-secondary"
+            variant="outline"
             onClick={cancel}
             disabled={standingDown}
           >
             {standingDown ? "Canceling…" : "Cancel"}
-          </button>
+          </Button>
         ) : blockedByOther ? (
-          <button type="button" className="btn btn-secondary" onClick={cancelOther}>
+          <Button type="button" variant="outline" onClick={cancelOther}>
             Cancel that sign-in
-          </button>
+          </Button>
         ) : (
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={!!nameError || !clientReady}
-          >
+          <Button type="submit" disabled={!!nameError || !clientReady}>
             Sign in to {provider.label}
-          </button>
+          </Button>
         )}
       </form>
       {!connecting && !clientReady && (
@@ -701,10 +719,9 @@ export function OAuthSignIn({
         // has to be possible — just never by accident. config/create
         // overwrites, and the server refuses without this flag.
         <label className="mount-note mount-note-check">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={replace}
-            onChange={(e) => setReplace(e.target.checked)}
+            onCheckedChange={(checked) => setReplace(checked === true)}
           />{" "}
           Replace the existing “{trimmed}” remote — use this to sign in again after a
           token expired or was revoked.
@@ -803,14 +820,14 @@ export function DetectedRemoteSetup({
                   </div>
                 </div>
                 <div className="mount-card-actions">
-                  <button
+                  <Button
                     type="button"
-                    className={"btn " + (s.exists ? "btn-secondary" : "btn-primary")}
+                    variant="outline"
                     disabled={busy !== null}
                     onClick={() => void use(s)}
                   >
                     {busy === s.id ? "Setting up…" : "Use"}
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>

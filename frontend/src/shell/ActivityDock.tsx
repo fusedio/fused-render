@@ -40,6 +40,9 @@ import {
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
 import DownloadManager from "@platform/ui/DownloadManager";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
+import { ExternalLinkIcon, XIcon } from "lucide-react";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
   drawnIds,
@@ -163,34 +166,13 @@ function useRunningEngines(): { engines: RunningEngine[]; refresh: () => void } 
   return { engines, refresh };
 }
 
-// lucide `external-link`, drawn here rather than pulled in as a package — the
-// house pattern for every icon in this shell.
-const ICON_OPEN = (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path
-      d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
-
-// lucide `loader-circle`, same house rule as ICON_OPEN. It stands where a ✕
-// cannot: a claimed entry is a brief state the server will not withdraw, and the
-// slot has to look occupied on purpose rather than empty by accident. Decorative
-// — the sentence under the title is what carries the meaning.
+// The spinner stands where a ✕ cannot: a claimed entry is a brief state the
+// server will not withdraw, and the slot has to look occupied on purpose rather
+// than empty by accident. Decorative — the sentence under the title is what
+// carries the meaning.
 const ICON_STARTING = (
-  <span className="q-spin" aria-hidden="true">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M21 12a9 9 0 1 1-6.219-8.56"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
+  <span className="text-muted-foreground" aria-hidden="true">
+    <Spinner className="size-3" />
   </span>
 );
 
@@ -237,28 +219,28 @@ function QueueRowView({
         <span className="q-title" title={entry.message || undefined}>
           {title}
         </span>
-        <button
-          type="button"
-          className="q-open"
+        <Button
+          variant="ghost"
+          size="icon-xs"
           title="Open in Explorer"
           aria-label={`Open ${title} in Explorer`}
           onClick={() => navigateUrl(href)}
         >
-          {ICON_OPEN}
-        </button>
+          <ExternalLinkIcon />
+        </Button>
         {kind === "none" ? (
           ICON_STARTING
         ) : (
-          <button
-            type="button"
-            className="q-x"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={cancel}
             disabled={busy}
             title={kind === "job" ? "Stop this run" : "Cancel this message"}
             aria-label={kind === "job" ? `Stop ${title}` : `Cancel ${title}`}
           >
-            ✕
-          </button>
+            <XIcon />
+          </Button>
         )}
       </div>
       <div className={"q-status" + (row.role === "live" ? " is-running" : "")}>
@@ -351,15 +333,15 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
           />
         )),
         cancelAll: showCancelAll(rows) ? (
-          <button
-            type="button"
-            className="q-all"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={cancelAll}
             disabled={busy}
             title="Cancel every queued message"
           >
             Cancel queued
-          </button>
+          </Button>
         ) : null,
         note: note ? <div className="q-note">{note}</div> : null,
       }}

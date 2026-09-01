@@ -32,8 +32,13 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Spinner } from "@platform/shadcn/ui/spinner";
+import { Toggle } from "@platform/shadcn/ui/toggle";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -693,14 +698,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             buttons share ONE row — here they do not). Absolute, so it adds
             none. */}
         {!busy && run && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="absolute top-2 right-2"
             title="Clear the prompt and the picture"
             onClick={clear}
           >
             Clear
-          </button>
+          </Button>
         )}
         {/* The composer's floor: the two ways to attach a picture, then the
             Clear/Generate column — one cluster in the bottom-right corner,
@@ -740,27 +746,39 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           )}
           {editable && (
             <div className="pg-attach-row">
-              <button
-                type="button"
-                className="pg-attach-btn"
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
-                {StarterIcons.landscape}
-                <span>{base ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
-                type="button"
-                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+                <span data-icon="inline-start" aria-hidden="true">
+                  {StarterIcons.landscape}
+                </span>
+                {base ? "Replace" : "Add an image"}
+              </Button>
+              <Toggle
+                variant="outline"
+                size="sm"
+                className="rounded-full"
                 title="Take one with the webcam"
                 disabled={attaching}
-                onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
+                pressed={webcam.open}
+                onPressedChange={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
-                {StarterIcons.camera}
-                <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
+                <span data-icon="inline-start" aria-hidden="true">
+                  {StarterIcons.camera}
+                </span>
+                Webcam
+              </Toggle>
+              {attaching && (
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Spinner className="size-3" />
+                  Working…
+                </span>
+              )}
             </div>
           )}
           {/* Generate alone in this column here: Clear floats in the box's
@@ -770,23 +788,22 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               is something to clear. */}
           <div className="pg-composer-side">
             {busy ? (
-              <button
-                type="button"
-                className="btn btn-secondary pg-send"
+              <Button
+                variant="outline"
+                className="flex-none"
                 onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
               >
                 Stop
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
-                className="btn btn-primary pg-send"
+              <Button
+                className="flex-none"
                 disabled={!prompt.trim()}
                 title="Enter to run · Shift+Enter for a new line"
                 onClick={() => void generate()}
               >
-                Generate <kbd className="pg-kbd">⏎</kbd>
-              </button>
+                Generate <Kbd>⏎</Kbd>
+              </Button>
             )}
           </div>
         </div>
@@ -953,7 +970,11 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {/* Chips lead the panel; sliders and the seed follow. */}
 
-      {error && <p className="pg-error">{error}</p>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
         {!run ? (
           <ResultSlot

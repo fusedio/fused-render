@@ -25,6 +25,7 @@
 // rendering fault rather than as a choice. Exactly one of them is on screen at
 // any moment, and each sits where its own action makes sense.
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Button } from "@platform/shadcn/ui/button";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { reopenWidth } from "@platform/lib/panel-drag";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
@@ -41,9 +42,10 @@ import {
 export function SideCloseButton({ what, onClick }: { what: string; onClick: () => void }) {
   const label = "Hide the " + what + " panel";
   return (
-    <button
+    <Button
       type="button"
-      className="bar-ctl bar-ctl-icon side-close"
+      variant="ghost"
+      size="icon-sm"
       title={label}
       aria-label={label}
       onClick={onClick}
@@ -54,7 +56,7 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
           window read as one idea rather than as two chevrons pointing
           opposite ways for unrelated reasons. */}
       <PanelIcon side="right" />
-    </button>
+    </Button>
   );
 }
 
@@ -74,16 +76,17 @@ export function SideToggleButton({
 }) {
   const label = "Show the " + what + " panel";
   return (
-    <button
+    <Button
       type="button"
-      className="bar-ctl bar-ctl-icon side-toggle"
+      variant="ghost"
+      size="icon-sm"
       title={label}
       aria-label={label}
       aria-expanded={false}
       onClick={onClick}
     >
-      <span className="mode-menu-icon">{icon}</span>
-    </button>
+      <span className="flex size-4 items-center justify-center">{icon}</span>
+    </Button>
   );
 }
 

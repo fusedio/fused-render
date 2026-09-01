@@ -28,6 +28,9 @@
 // shows.
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
+import { Button } from "@platform/shadcn/ui/button";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Empty, EmptyDescription } from "@platform/shadcn/ui/empty";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -127,14 +130,15 @@ export default function ListingPreviewPane({
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
       <div className="side-header-tail">
         {appEntry && (
-          <button
+          <Button
             type="button"
-            className="bar-ctl bar-ctl-strong"
+            variant="outline"
+            size="sm"
             title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
             onClick={onOpenApp}
           >
             Open app
-          </button>
+          </Button>
         )}
         {sideMenu}
       </div>
@@ -146,7 +150,7 @@ export default function ListingPreviewPane({
     return (
       <div className="listing-pane">
         {strip()}
-        <div className="pane-skel" />
+        <Skeleton className="m-3 flex-1" />
       </div>
     );
   }
@@ -202,9 +206,9 @@ export default function ListingPreviewPane({
   return (
     <div className="listing-pane">
       {strip()}
-      <div className="pane-center">
-        <div className="pane-hint">No companion is available for this folder.</div>
-      </div>
+      <Empty className="flex-1">
+        <EmptyDescription>No companion is available for this folder.</EmptyDescription>
+      </Empty>
     </div>
   );
 }

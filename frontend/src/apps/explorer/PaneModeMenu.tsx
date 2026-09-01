@@ -12,8 +12,16 @@
 //   "tab" (Tabs' active tab) keeps the icon-only span trigger: that trigger
 //         lives INSIDE the tab's <button>, where a nested <button> would be
 //         invalid HTML and a labelled control would not fit anyway.
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useState } from "react";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
+import { Spinner } from "@platform/shadcn/ui/spinner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
 import {
   isModePending,
   visibleModes,
@@ -50,8 +58,7 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // unresolved. The resolveConditions call is shared with Preview's (one
   // in-flight request per path), so this costs no extra gate evaluation.
   const [conditions, setConditions] = useState<Record<string, boolean> | null>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null); // non-null = open
-  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const [open, setOpen] = useState(false);
 
   // Re-stat on every path change (pane navigation) so the menu tracks the
   // live location's modes. Sentinel paths (/_panel, /_tab) and stat errors
@@ -60,7 +67,7 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
     let stale = false;
     setTemplates([]);
     setConditions(null);
-    setPos(null);
+    setOpen(false);
     statPath(path)
       .then((s) => {
         // Same defensive sentinel filter as Preview's dispatch (PT-12): keep
@@ -90,21 +97,15 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
     };
   }, [path]);
 
-  // Close on outside pointerdown, or on window blur — a click landing in any
-  // iframe never reaches this document, but it does blur the shell window.
+  // Close on window blur — a click landing in any iframe never reaches this
+  // document (so base-ui's outside-press detection can't see it), but it does
+  // blur the shell window.
   useEffect(() => {
-    if (!pos) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
-    };
-    const onBlur = () => setPos(null);
-    document.addEventListener("pointerdown", onDown);
+    if (!open) return;
+    const onBlur = () => setOpen(false);
     window.addEventListener("blur", onBlur);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [pos]);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [open]);
 
   // Visibility/pending policy lives in lib/mode-visibility, shared with
   // Preview, ListingPreviewPane and Open With so every surface offers the
@@ -122,18 +123,6 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   const requested = effectiveActive(visible, activeMode);
   const active = requested && !isPending(requested) ? requested : defaultEntry;
 
-  const toggle = (e: MouseEvent) => {
-    e.stopPropagation();
-    if (pos) {
-      setPos(null);
-      return;
-    }
-    // position:fixed — .panel-pane clips overflow, so the dropdown can't be
-    // absolutely positioned inside the bar. Clamped to the viewport's right edge.
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(0, Math.min(r.left, window.innerWidth - 150)) });
-  };
-
   const applyMode = (mode: string) => {
     if (mode === active.mode) return;
     const [head, tail] = splitAtLayout(query);
@@ -146,14 +135,8 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
     onNavigate(q ? "?" + q : "");
   };
 
-  const select = (e: MouseEvent, mode: string) => {
-    e.stopPropagation(); // the tab trigger sits inside the tab's own click
-    setPos(null);
-    applyMode(mode);
-  };
-
-  // Pane bar: the shared control. Its own anchoring/close handling lives in
-  // BarMenu, so the local `pos` state stays unused on this branch.
+  // Pane bar: the shared control. Its own open/close handling lives in
+  // BarMenu, so the local `open` state stays unused on this branch.
   if (variant === "bar") {
     return (
       <ModeMenu
@@ -168,31 +151,45 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
     );
   }
 
+  // Tab variant: the trigger is a SPAN, not a button — it lives INSIDE the
+  // tab's own <button>, where a nested <button> would be invalid HTML. The
+  // stopPropagation keeps the open click from also activating the tab.
   return (
-    <span className="pane-mode-menu" ref={rootRef}>
-      <span className="pane-mode-btn" title={"Mode: " + modeTitle(active.mode)} onClick={toggle}>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger
+        render={
+          <span
+            role="button"
+            tabIndex={-1}
+            className="inline-flex size-5 cursor-default items-center justify-center rounded-sm hover:bg-muted"
+            title={"Mode: " + modeTitle(active.mode)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        }
+      >
         {templateModeIcon(active)}
-      </span>
-      {pos && (
-        <span className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent aria-label="View mode" className="w-auto min-w-32">
+        <DropdownMenuRadioGroup
+          value={active.mode}
+          onValueChange={(value) => applyMode(String(value))}
+        >
           {visible.map((t) => (
-            <span
+            <DropdownMenuRadioItem
               key={t.mode}
-              className={
-                "pane-mode-item" + (t.mode === active.mode ? " active" : "") + (isPending(t) ? " pending" : "")
-              }
+              value={t.mode}
+              closeOnClick
+              disabled={isPending(t)}
               title={isPending(t) ? "Checking if this view applies…" : undefined}
-              onClick={(e) => {
-                if (!isPending(t)) select(e, t.mode);
-                else e.stopPropagation();
-              }}
             >
-              {isPending(t) ? <span className="mode-icon-spinner" /> : templateModeIcon(t)}
-              <span>{modeTitle(t.mode)}</span>
-            </span>
+              <span className="flex size-4 items-center justify-center">
+                {isPending(t) ? <Spinner /> : templateModeIcon(t)}
+              </span>
+              {modeTitle(t.mode)}
+            </DropdownMenuRadioItem>
           ))}
-        </span>
-      )}
-    </span>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

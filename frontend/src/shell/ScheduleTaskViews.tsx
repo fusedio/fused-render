@@ -44,6 +44,21 @@ import {
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@platform/shadcn/ui/input-group";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import { SearchIcon, XIcon } from "lucide-react";
 import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
@@ -184,13 +199,11 @@ const icon = (paths: React.ReactNode, size = 14) => (
   </svg>
 );
 
-const ICON_SEARCH = icon(<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>, 13);
 const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
 // There is no ICON_CHEVRON_DOWN any more (2026-08-18). It was the down-chevron on
 // the thread's dashed "Show N more" button, and that button is gone — expanding a
 // task fetches the whole thread by itself. ICON_CHEVRON, the row's own disclosure,
 // is a different glyph and is untouched.
-const ICON_CHECK = icon(<polyline points="20 6 9 17 4 12" />, 13);
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
 const ICON_FOLDER = icon(
@@ -232,8 +245,8 @@ const ICON_RERUN = icon(
     <path d="M3 3v5h5" /></>, 13);
 // Mark the whole task read. lucide `check-check` — the double tick every
 // messaging app on the machine already uses for "seen", which is exactly the
-// fact this button asserts. Deliberately NOT the single `ICON_CHECK` above: that
-// one means "this filter is on" in the popovers, and a row action wearing the
+// fact this button asserts. Deliberately NOT a single check: that mark means
+// "this filter is on" in the filter menus, and a row action wearing the
 // same glyph would read as a toggle that is currently checked.
 /** A speech bubble, for the thread count on a List row (D448).
  *
@@ -525,66 +538,17 @@ function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
 
 // ---- toolbar: search + status + project --------------------------------------
 
-// ---- the filter popover's geometry -------------------------------------------
-// The menus are `position: fixed`, measured off their trigger, exactly as every
-// dropdown in NewJobModal is and for the same reason: an absolutely-positioned
-// panel is clipped by the nearest scrolling/hidden ancestor, and this one has
-// two of them — `.prefs-page { overflow-y: auto }` and `.schedule-page {
-// overflow: hidden }`. The Project menu shipped cut off at the bottom with a
-// handful of its 28 folders showing (Akshil, screenshot). Fixed escapes the
-// clip; when the viewport below the trigger is shorter than the panel, it opens
-// upward instead.
-//
-// This is safe here because nothing in the chain is TRANSFORMED — a transformed
-// ancestor becomes the containing block for its fixed descendants and would
-// re-anchor the panel to it, clip and all (which is why schedule.css slides its
-// cards with `left` rather than `transform`). Checked: `.prefs-page`,
-// `.schedule-page`, `.schedule-main` and `.schedule-toolbar` set none.
-
-/** The panel's width, and schedule.css's own `.schedule-tv-pop { width }` — kept
- * in step here only so a menu near the right edge can be pushed back inside the
- * window. */
-const POP_WIDTH = 190;
-/** The tallest a menu grows before it scrolls inside itself. 28 projects is a
- * real number on this machine and a 28-item column is not a menu, it is a page. */
-const POP_MAX_HEIGHT = 320;
-/** Below the trigger, and off the window's own edges. */
-const POP_GAP = 6;
-const POP_EDGE = 8;
-
-/**
- * Where the panel goes and how tall it may get. Height is never SET — the menu
- * sizes to its content, so two statuses draw a two-row menu — only capped, and
- * the cap is the smaller of POP_MAX_HEIGHT and the room actually there.
- */
-function popStyle(el: HTMLElement | null): React.CSSProperties {
-  const r = el?.getBoundingClientRect();
-  if (!r) return { position: "fixed" };
-  const below = window.innerHeight - r.bottom - POP_GAP - POP_EDGE;
-  const above = r.top - POP_GAP - POP_EDGE;
-  // Flip only when up is genuinely roomier: a menu that jumps above its trigger
-  // to gain twenty pixels is a menu that moved for nothing.
-  const up = above > below && below < POP_MAX_HEIGHT;
-  const room = Math.max(120, Math.min(POP_MAX_HEIGHT, up ? above : below));
-  const left = Math.max(
-    POP_EDGE,
-    Math.min(r.left, window.innerWidth - POP_WIDTH - POP_EDGE),
-  );
-  const s: React.CSSProperties = {
-    position: "fixed",
-    left,
-    right: "auto",
-    maxHeight: room,
-  };
-  if (up) s.bottom = window.innerHeight - r.top + POP_GAP;
-  else s.top = r.bottom + POP_GAP;
-  return s;
-}
-
-/** A dismissable popover trigger, shared by the two filter menus: click away or
- * Escape closes it. Dismissal is the whole contract — the panel is fixed and
- * therefore outside every clip on the page, so one left open hangs over the
- * board. */
+/** A filter menu: a shadcn DropdownMenu (base-ui) whose portal escapes the
+ * page's overflow clips and flips/caps itself — the hand-rolled fixed-position
+ * geometry this component used to carry (`popStyle` and friends) is the
+ * library's job now. Items stay open on toggle (multi-select), so the menu
+ * closes on click-away or Escape, which the primitive owns too.
+ *
+ * The `icon` prop survives from the old popover: which glyph belongs to a
+ * filter is the caller's fact (Akshil, 2026-08-24 — a status ring beside the
+ * word Project claimed a status filter). So does the split-clear ✕: it drops
+ * THIS menu's selections only, and is drawn only while there is something to
+ * drop. */
 function FilterMenu({
   label,
   count,
@@ -594,103 +558,39 @@ function FilterMenu({
 }: {
   label: string;
   count: number;
-  /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
-   *  mark — that is the vocabulary this page states a status in, so on that menu
-   *  the ring is the label said twice and it belongs there.
-   *
-   *  It was the default for BOTH menus, and hardcoded (Akshil, 2026-08-24: "this
-   *  icon next to project in filters is not accurate, change the icon to
-   *  something related to projects"). A ring beside the word Project claims a
-   *  status is being filtered — the one thing the ring means everywhere else on
-   *  this page — so the two menus read as two status filters, one of them
-   *  mislabelled. A prop rather than a `label === "Project"` branch inside:
-   *  which glyph belongs to a filter is the caller's fact, not this popover's. */
   icon?: React.ReactNode;
-  /** Drop THIS menu's selections. Given one, the trigger becomes a split
-   *  control — `[ ⊙ Project 1 | ✕ ]` — whenever the count is non-zero.
-   *
-   *  Attached to the menu rather than standing off to one side, because that is
-   *  what it acts on: a lone "Clear" on the bar had to mean all three controls
-   *  at once (there is no room for one per menu), so undoing a project filter
-   *  also threw away a status filter and a search the user had not finished
-   *  with. It also sat as a fourth box in a row of three that were menus, which
-   *  is how it came to look misaligned — it was not the same kind of thing. */
   onClear?: () => void;
-  children: (close: () => void) => React.ReactNode;
+  children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement | null>(null);
-  const btn = useRef<HTMLButtonElement | null>(null);
-  const [style, setStyle] = useState<React.CSSProperties>({ position: "fixed" });
-
-  useEffect(() => {
-    if (!open) return;
-    const place = () => setStyle(popStyle(btn.current));
-    place();
-    const away = (e: MouseEvent) => {
-      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
-    };
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    // A fixed panel does not travel with its trigger, so anything that MOVES the
-    // trigger has to re-measure it. `capture` because the movement that happens
-    // on this page is a scroll inside the list or the board, and a scroll does
-    // not bubble.
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open]);
-
   // The ✕ is only ever drawn with something to drop, so the control is one box
   // at rest and two only while it is doing something.
   const splittable = !!onClear && count > 0;
   return (
-    <div className="schedule-tv-pop-wrap" ref={wrap}>
-      <span className="schedule-tv-filter-group">
-        <button
-          type="button"
-          ref={btn}
-          className={"schedule-tv-filter-btn" + (splittable ? " is-split" : "")}
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
+    <span className="flex items-center gap-1">
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
           {glyph ?? ICON_CIRCLE_DOT} {label}
-          {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
-        </button>
-        {splittable && (
-          <button
-            type="button"
-            className="schedule-tv-filter-x"
-            /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
-               this replaces, and a bare ✕ beside a label is read as belonging
-               to it only if the accessible name agrees. */
-            title={`Clear the ${label.toLowerCase()} filter`}
-            aria-label={`Clear the ${label.toLowerCase()} filter`}
-            onClick={onClear}
-          >
-            ✕
-          </button>
-        )}
-      </span>
-      {open && (
-        <div
-          className="schedule-tv-pop tasks-pop"
-          role="group"
-          aria-label={`Filter by ${label}`}
-          style={style}
+          {count > 0 && <Badge variant="secondary">{count}</Badge>}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" aria-label={`Filter by ${label}`}>
+          {children}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {splittable && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
+             this replaces, and a bare ✕ beside a label is read as belonging
+             to it only if the accessible name agrees. */
+          title={`Clear the ${label.toLowerCase()} filter`}
+          aria-label={`Clear the ${label.toLowerCase()} filter`}
+          onClick={onClear}
         >
-          {children(() => setOpen(false))}
-        </div>
+          <XIcon />
+        </Button>
       )}
-    </div>
+    </span>
   );
 }
 
@@ -749,11 +649,12 @@ export function TaskFilterControls({
 
   return (
     <div className="schedule-tv-filters">
-      <div className="schedule-tv-search">
-        <span className="schedule-tv-search-icon" aria-hidden>{ICON_SEARCH}</span>
-        <input
+      <InputGroup className="w-[260px] max-w-full min-w-0">
+        <InputGroupAddon>
+          <SearchIcon />
+        </InputGroupAddon>
+        <InputGroupInput
           type="search"
-          className="field-control schedule-tv-search-input"
           value={filters.search}
           placeholder="Search tasks…"
           aria-label="Search tasks"
@@ -762,33 +663,25 @@ export function TaskFilterControls({
             if (e.key === "Escape") e.currentTarget.blur();
           }}
         />
-      </div>
+      </InputGroup>
 
       <FilterMenu
         label="Status"
         count={statusCount}
         onClear={() => onChange({ ...filters, statuses: [] })}
       >
-        {() =>
-          statusColumns.map((col) => {
-            const on = filters.statuses.includes(col.key);
-            return (
-              <button
-                type="button"
-                key={col.key}
-                className="schedule-tv-pop-item"
-                aria-pressed={on}
-                onClick={() => toggleStatus(col.key)}
-              >
-                <span className="schedule-tv-pop-check" aria-hidden>
-                  {on ? ICON_CHECK : null}
-                </span>
-                <StatusIcon status={col.key} />
-                <span>{col.label}</span>
-              </button>
-            );
-          })
-        }
+        {statusColumns.map((col) => (
+          <DropdownMenuCheckboxItem
+            key={col.key}
+            checked={filters.statuses.includes(col.key)}
+            // Multi-select: a toggle must not take the menu with it.
+            closeOnClick={false}
+            onCheckedChange={() => toggleStatus(col.key)}
+          >
+            <StatusIcon status={col.key} />
+            {col.label}
+          </DropdownMenuCheckboxItem>
+        ))}
       </FilterMenu>
 
       {/* Project is auto-detected from the tasks themselves (§10), so the menu
@@ -805,27 +698,18 @@ export function TaskFilterControls({
           icon={ICON_FOLDER}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
-          {() =>
-            projects.map((path) => {
-              const on = filters.projects.includes(path);
-              return (
-                <button
-                  type="button"
-                  key={path}
-                  className="schedule-tv-pop-item"
-                  aria-pressed={on}
-                  title={tildePath(path, home)}
-                  onClick={() => toggleProject(path)}
-                >
-                  <span className="schedule-tv-pop-check" aria-hidden>
-                    {on ? ICON_CHECK : null}
-                  </span>
-                  <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-                  <span className="tasks-pop-label">{basename(path)}</span>
-                </button>
-              );
-            })
-          }
+          {projects.map((path) => (
+            <DropdownMenuCheckboxItem
+              key={path}
+              checked={filters.projects.includes(path)}
+              closeOnClick={false}
+              title={tildePath(path, home)}
+              onCheckedChange={() => toggleProject(path)}
+            >
+              <span aria-hidden>{ICON_FOLDER}</span>
+              <span className="truncate">{basename(path)}</span>
+            </DropdownMenuCheckboxItem>
+          ))}
         </FilterMenu>
       )}
 
@@ -1452,7 +1336,13 @@ export function TaskList({
   }, [hasRows, stale]);
 
   if (!hasRows) {
-    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyDescription>{emptyLabel}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
   }
 
   return (

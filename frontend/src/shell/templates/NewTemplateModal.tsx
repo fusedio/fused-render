@@ -3,7 +3,9 @@ import { createTemplate, openTemplateInClaude } from "@platform/lib/api";
 import type { NewTemplateResult } from "@platform/lib/api";
 import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { TextInput } from "@platform/ui/field/fields";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldError, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
 import { isMod } from "@platform/lib/platform";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
@@ -159,26 +161,25 @@ export function NewTemplateModal({
       footer={
         result ? (
           <>
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose}>
               Done
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="btn btn-primary"
               onClick={() => openInClaude(result.name)}
               disabled={opening}
             >
               {opening ? "Opening…" : "Open in Claude"}
-            </button>
+            </Button>
           </>
         ) : (
           <>
-            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
               Cancel
-            </button>
-            <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
+            </Button>
+            <Button type="button" onClick={create} disabled={!canCreate}>
               {busy ? "Creating…" : "Create"}
-            </button>
+            </Button>
           </>
         )
       }
@@ -191,7 +192,7 @@ export function NewTemplateModal({
                 </div>
                 {result.bindings.length > 0 && (
                   <div className="templates-result-line">
-                    <span className="deploy-muted">Added as a mode for:</span>{" "}
+                    <span className="text-xs text-muted-foreground">Added as a mode for:</span>{" "}
                     {result.bindings.map((b) => (
                       <code key={b} className="templates-usedby-chip">
                         {b}
@@ -200,7 +201,7 @@ export function NewTemplateModal({
                   </div>
                 )}
               </div>
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             Edit the template's files from the file explorer, or open Claude Code in its folder to
             build it out.
           </p>
@@ -208,25 +209,26 @@ export function NewTemplateModal({
         </>
       ) : (
         <>
-              <p className="deploy-muted templates-field-hint">
+              <p className="text-xs text-muted-foreground templates-field-hint">
                 Scaffold a new user template. Add it as a mode for file extensions now — it's
                 appended to any existing bindings, never replacing them — or leave that empty and
                 add bindings later from the File bindings tab.
               </p>
-              <div className="templates-field">
-                <label htmlFor="new-template-name">Name</label>
-                <TextInput
+              <Field data-invalid={nameError ? true : undefined}>
+                <FieldLabel htmlFor="new-template-name">Name</FieldLabel>
+                <Input
                   id="new-template-name"
                   type="text"
                   placeholder="my-template"
                   value={name}
                   autoFocus
                   disabled={busy}
+                  aria-invalid={nameError ? true : undefined}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={onNameKey}
                 />
-                {nameError && <div className="templates-key-error">{nameError}</div>}
-              </div>
+                {nameError && <FieldError>{nameError}</FieldError>}
+              </Field>
               <div className="templates-field">
                 <label htmlFor="new-template-ext">Extensions</label>
                 <div className="templates-chip-input">
@@ -259,7 +261,7 @@ export function NewTemplateModal({
                 </div>
                 {suggestions.length > 0 && (
                   <div className="templates-ext-suggest-wrap">
-                    <span className="deploy-muted templates-field-hint">From your bindings:</span>
+                    <span className="text-xs text-muted-foreground templates-field-hint">From your bindings:</span>
                     {/* Truncated to ~3 rows; typing narrows the list to surface the rest. */}
                     <div className="templates-ext-suggestions">
                       {suggestions.map((ext) => (
@@ -283,7 +285,7 @@ export function NewTemplateModal({
                     </div>
                   </div>
                 )}
-                <span className="deploy-muted templates-field-hint">
+                <span className="text-xs text-muted-foreground templates-field-hint">
                   Pick a known extension above, or type your own and press Enter (the leading dot is
                   added for you).
                 </span>

@@ -35,6 +35,7 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton } from "@apps/explorer/SideChrome";
 import {
@@ -319,8 +320,8 @@ export default function PreviewSidebar({
         {src === null ? (
           /* The chosen sidebar mode is gate-pending (CT-12): hold the column
              rather than frame a template whose condition may deny this file. */
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
             Checking if this view applies…
           </div>
         ) : (

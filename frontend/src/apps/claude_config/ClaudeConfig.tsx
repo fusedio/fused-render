@@ -48,6 +48,7 @@
 // app re-rendered.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { Icon, Pill, useGitStatus } from "./bits";
 import HistorySection from "./sections/HistorySection";
 import McpSection from "./sections/McpSection";
@@ -260,25 +261,26 @@ export default function ClaudeConfig() {
             edge-pinned History button was what clipped the last tab's label
             under it at a narrow width. The strip now scrolls sideways under a
             fade mask with nothing else sharing its row to collide with. */}
-        <div
-          ref={tablistRef}
-          className={"cc-tablist" + (tabsAtEnd ? " at-end" : "")}
-          role="tablist"
-          aria-label="Claude config sections"
-        >
-          {TABS.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              role="tab"
-              aria-selected={s.id === active}
-              className={"cc-tab" + (s.id === active ? " active" : "")}
-              onClick={() => setActive(s.id)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
+        {/* Controlled Tabs: the section choice lives in the URL (`?cctab=`),
+            never in component-local state — value is derived from it and
+            onValueChange writes back through setActive/navigateUrl. History is
+            not in this Tabs at all (it mis-announces the set), it stays the
+            header chip. The cc-tablist class survives for the sideways scroll
+            + trailing fade mask, which shadcn's TabsList has no answer for. */}
+        <Tabs value={active} onValueChange={(v) => setActive(v as SectionId)}>
+          <TabsList
+            ref={tablistRef}
+            variant="line"
+            className={"cc-tablist" + (tabsAtEnd ? " at-end" : "")}
+            aria-label="Claude config sections"
+          >
+            {TABS.map((s) => (
+              <TabsTrigger key={s.id} value={s.id}>
+                {s.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
       <div className="cc-body">
         <main className="cc-main">

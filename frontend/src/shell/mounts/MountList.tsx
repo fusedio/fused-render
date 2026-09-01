@@ -7,6 +7,7 @@ import type { RcloneRemote } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { uploadNotice } from "@platform/lib/uploads";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { ProviderIcon } from "@platform/ui/ProviderIcons";
 import type { ProviderIconKey } from "@platform/ui/ProviderIcons";
 
@@ -140,48 +141,48 @@ export function MountRow({
               </span>
             )}
           </div>
-          <div className="deploy-muted mount-remote" title={conn.mountpoint}>
+          <div className="text-xs text-muted-foreground mount-remote" title={conn.mountpoint}>
             {conn.remote}
           </div>
           <UploadQueue uploads={conn.uploads} />
         </div>
         <div className="mount-card-actions">
           {conn.state === "mounted" ? (
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="outline"
               disabled={busy}
               onClick={() => navigate(conn.mountpoint, { isDir: true })}
             >
               Open
-            </button>
+            </Button>
           ) : (
             // "disconnected", "stale" and "unmounted" all recover the same way: there is
             // no unmount action (mounts automount and stay up), so Reconnect is
             // the single "something's wrong" repair — it force-clears any dead
             // mountpoint and mounts fresh (reconnect_mount also handles the
             // never-mounted case, where it just attaches).
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="outline"
               disabled={busy}
               onClick={() => act(() => reconnectMount(conn.id))}
             >
               {busy ? "Reconnecting…" : "Reconnect"}
-            </button>
+            </Button>
           )}
           {/* A LABELLED remove, not a bare "✕". Same behaviour as before
               (removing a mount only unmounts it; nothing on the remote is
               touched), but the glyph gave no clue which of those two it was. */}
-          <button
+          <Button
             type="button"
-            className="btn mount-remove"
+            variant="outline"
             disabled={busy}
             title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
             onClick={() => act(() => deleteMount(conn.id))}
           >
             Remove
-          </button>
+          </Button>
         </div>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}

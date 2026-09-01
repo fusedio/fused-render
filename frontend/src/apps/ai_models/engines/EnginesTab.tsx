@@ -35,6 +35,8 @@ import { useEffect, useState } from "react";
 import { getPrefs, putAiIdleUnloadMinutes, putEngineForCapability } from "@platform/lib/api";
 import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Card, CardContent } from "@platform/shadcn/ui/card";
+import { Input } from "@platform/shadcn/ui/input";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import EngineSelect from "@apps/ai_models/engines/EngineSelect";
 import {
@@ -122,7 +124,8 @@ function CapabilityEngineRow({
   };
 
   return (
-    <div className="cc-mdcard am-engine-card">
+    <Card size="sm">
+      <CardContent>
       {/* Capability, control, reality — one row, in that order. The three used
           to be three stacked blocks, which is what made "Engine" a visible
           label at all: a select on its own line has to say what it is for.
@@ -201,7 +204,8 @@ function CapabilityEngineRow({
         </div>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -257,17 +261,18 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
   };
 
   return (
-    <div className="cc-mdcard am-engine-card">
+    <Card size="sm">
+      <CardContent>
       <div className="am-engine-row">
         <label className="am-engine-cap" htmlFor="ai-idle-minutes">
           Idle unload
         </label>
-        <input
+        <Input
           id="ai-idle-minutes"
           type="number"
           min={0}
           max={1440}
-          className="field-control am-engine-select"
+          className="am-engine-select"
           value={value}
           disabled={busy || locked}
           onChange={(e) => setValue(e.target.value)}
@@ -290,7 +295,8 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
         </p>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 

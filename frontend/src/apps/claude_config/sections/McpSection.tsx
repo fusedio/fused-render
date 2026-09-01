@@ -7,6 +7,8 @@
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
 import { useCallback, useId, useState } from "react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import type { CliResult, McpKind, McpServer, McpStatus } from "../api";
@@ -170,16 +172,16 @@ export default function McpSection() {
               <span className="cc-mono">claude mcp add-json</span>.
             </CardSub>
             <CardActions>
-          <input
-            className="field-control"
+          <Input
+            className="w-40"
             aria-label="Server name"
             placeholder="name"
             value={name}
             disabled={busy}
             onChange={(e) => setName(e.target.value)}
           />
-          <input
-            className="field-control cc-grow"
+          <Input
+            className="cc-grow"
             aria-label="Server definition (JSON)"
             placeholder='{"type":"stdio","command":"my-mcp","args":[]}'
             value={json}
@@ -189,9 +191,9 @@ export default function McpSection() {
           {/* The `Refresh` button that used to sit here is gone: re-listing the
               servers has nothing to do with adding one, and it now lives in the
               toolbar's refresh slot like every other tab's. */}
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
+          <Button disabled={busy} onClick={add}>
             Add
-          </button>
+          </Button>
             </CardActions>
           </Card>
         </div>
@@ -205,10 +207,10 @@ export default function McpSection() {
       {data?.ok && servers.length === 0 && (
         <Empty
           action={
-            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+            <Button onClick={() => setAdding(true)}>
               <Icon name="plus" />
               Add a server
-            </button>
+            </Button>
           }
         >
           No MCP servers configured. Add one to connect Claude to an external tool.
@@ -267,23 +269,19 @@ export default function McpSection() {
                       actions={
                         <>
                           {showLogin && (
-                            <button type="button" className="btn" onClick={() => login(s)}>
+                            <Button variant="outline" size="sm" onClick={() => login(s)}>
                               Authenticate
-                            </button>
+                            </Button>
                           )}
                           {showLogout && (
-                            <button type="button" className="btn" onClick={() => logout(s)}>
+                            <Button variant="outline" size="sm" onClick={() => logout(s)}>
                               Log out
-                            </button>
+                            </Button>
                           )}
                           {s.removable && (
-                            <button
-                              type="button"
-                              className="btn btn-danger"
-                              onClick={() => remove(s)}
-                            >
+                            <Button variant="destructive" size="sm" onClick={() => remove(s)}>
                               Remove
-                            </button>
+                            </Button>
                           )}
                         </>
                       }

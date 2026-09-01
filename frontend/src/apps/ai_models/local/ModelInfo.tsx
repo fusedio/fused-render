@@ -20,6 +20,8 @@
 // This is a fact sheet, and a fact sheet in five colours reads as five kinds of
 // urgency.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { InfoIcon } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
 import { type AiModelRepo } from "@platform/lib/api";
 import { formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
@@ -178,35 +180,24 @@ export function InfoButton({
   rows: InfoRow[];
   more?: InfoMore;
 }) {
-  const button = useRef<HTMLButtonElement>(null);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   return (
     <>
-      <button
+      <Button
         type="button"
-        ref={button}
-        className={"cc-iconbtn am-card-info" + (anchor ? " cc-btn-on" : "")}
+        variant="ghost"
+        size="icon-xs"
+        className="am-card-info"
         data-hint={`About ${name}`}
         aria-label={`About ${name}`}
         aria-haspopup="dialog"
         aria-expanded={!!anchor}
-        onClick={() => setAnchor(anchor ? null : (button.current?.getBoundingClientRect() ?? null))}
+        onClick={(e) =>
+          setAnchor(anchor ? null : (e.currentTarget as HTMLElement).getBoundingClientRect())
+        }
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="10" />
-          <path d="M12 16v-4M12 8h.01" />
-        </svg>
-      </button>
+        <InfoIcon />
+      </Button>
       {anchor && (
         <Panel name={name} rows={rows} more={more} anchor={anchor} onClose={() => setAnchor(null)} />
       )}

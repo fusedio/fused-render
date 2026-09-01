@@ -31,6 +31,8 @@ import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 
 // The iframe renders at desktop width and is scaled into the preview box —
 // same pure-CSS trick as AppPreviewCard.
@@ -291,8 +293,8 @@ function FolderStack({ path }: { path: string }) {
         [2, 1, 0].map((depth) => (
           <span key={depth} className={`fhb-sheet fhb-sheet-d${depth}`}>
             <span className="fhb-sheet-row">
-              <span className="skel-bar icon-skel" />
-              <span className="skel-bar" style={{ width: depth === 0 ? "55%" : "70%" }} />
+              <Skeleton className="size-4 shrink-0 rounded" />
+              <Skeleton className="h-3" style={{ width: depth === 0 ? "55%" : "70%" }} />
             </span>
             {depth === 0 ? (
               <span className="fhb-sheet-skel-body" />
@@ -384,9 +386,9 @@ function CardShell({
           <span className="fh-card-path">{fsPath}</span>
         </span>
         {isBookmarkMissing(b.id) && (
-          <span className="bookmark-missing-badge" title={`File not found: ${fsPath}`}>
+          <Badge variant="destructive" title={`File not found: ${fsPath}`}>
             ⚠
-          </span>
+          </Badge>
         )}
       </span>
       {children}

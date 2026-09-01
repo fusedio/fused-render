@@ -25,6 +25,7 @@
 // timer to keep in step with it here.
 import { useEffect, useRef, useState } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Button } from "@platform/shadcn/ui/button";
 import { pushToast } from "@platform/lib/toast";
 import {
   deliverShareCard,
@@ -97,9 +98,10 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
     // whole control, so it sits directly in `.am-bench-headtools`'s flex row
     // like the Metric select beside it, instead of inside a now-empty
     // single-child flex box that existed only to hold the note.
-    <button
+    <Button
       type="button"
-      className="cc-iconbtn"
+      variant="ghost"
+      size="icon-xs"
       disabled={busy}
       title={busy ? "Preparing…" : "Save this chart, with your hardware, as a PNG you can share"}
       aria-label={busy ? "Preparing…" : "Share chart"}
@@ -108,6 +110,6 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
       <span className={busy ? "am-icon-spin" : undefined}>
         {busy ? MenuIcons.spinner : MenuIcons.share}
       </span>
-    </button>
+    </Button>
   );
 }

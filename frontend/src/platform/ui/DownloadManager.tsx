@@ -114,7 +114,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import StatusDot from "@platform/ui/StatusDot";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
+import { Progress } from "@platform/shadcn/ui/progress";
+import { Separator } from "@platform/shadcn/ui/separator";
+import { XIcon } from "lucide-react";
 import {
   cancelJob,
   clearableCount,
@@ -300,14 +306,15 @@ function useJobs(): {
 
 function Bar({ job }: { job: Job }) {
   const fraction = jobFraction(job);
+  // Tone reaches the shadcn Progress indicator through a descendant selector:
+  // Progress has no variant axis, and the fill's colour is the one thing a
+  // failed or stalled row has to say differently. Semantic tokens only.
   const tone =
     job.state === "error"
-      ? " is-error"
-      : job.state === "done"
-        ? " is-done"
-        : job.stalled
-          ? " is-stalled"
-          : "";
+      ? "[&_[data-slot=progress-indicator]]:bg-destructive"
+      : job.stalled
+        ? "[&_[data-slot=progress-indicator]]:bg-muted-foreground"
+        : undefined;
   // No fraction to draw and still running = indeterminate: a narrow fill that
   // travels, rather than a width that grows. The alternative — parking a real
   // bar at some invented percentage — is what makes a live download read as
@@ -316,19 +323,23 @@ function Bar({ job }: { job: Job }) {
   // Nothing to say: a job that ended (or stalled) without ever reporting a
   // total has no progress to draw, and an empty track under an error message is
   // decoration that reads as "0% done" — which is not what happened.
-  if (fraction === null && !indeterminate) return null;
-  return (
-    <div className={"dl-bar" + tone}>
-      <div
-        className={"dl-bar-fill" + (indeterminate ? " is-indeterminate" : "")}
-        // `data-indeterminate` is the DOM-observable contract (the install
-        // loader's convention): no headless test can see whether an animation
-        // LOOKS right, but it can see which mode the bar is in.
-        data-indeterminate={indeterminate ? "1" : undefined}
-        style={indeterminate ? undefined : { width: `${(fraction as number) * 100}%` }}
-      />
-    </div>
-  );
+  if (indeterminate) {
+    // shadcn Progress has no indeterminate mode, so the travelling sweep stays
+    // the small custom bar notifications.css already draws (`.dl-bar`).
+    return (
+      <div className="dl-bar">
+        <div
+          className="dl-bar-fill is-indeterminate"
+          // `data-indeterminate` is the DOM-observable contract (the install
+          // loader's convention): no headless test can see whether an animation
+          // LOOKS right, but it can see which mode the bar is in.
+          data-indeterminate="1"
+        />
+      </div>
+    );
+  }
+  if (fraction === null) return null;
+  return <Progress value={fraction * 100} className={cn("gap-0", tone)} />;
 }
 
 // ---- Engine rows (status-bar merge) ----------------------------------------
@@ -386,9 +397,9 @@ function EngineRow({
           {engineLabel(engine)}
         </span>
         <span className="dl-amount">{engine.kind}</span>
-        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
+        <Button variant="outline" size="xs" onClick={stop} disabled={busy}>
           {busy ? "Stopping…" : "Stop"}
-        </button>
+        </Button>
       </div>
       {failure && <div className="dl-status">{failure}</div>}
     </div>
@@ -542,26 +553,28 @@ export function JobRow({
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
         {canCancel && (
-          <button
-            className="dl-row-cancel"
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={cancel}
             disabled={busy}
             title="Cancel"
             aria-label={`Cancel ${job.title}`}
           >
             Cancel
-          </button>
+          </Button>
         )}
         {canDismiss && (
-          <button
-            className="dl-x"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={dismiss}
             disabled={busy}
             title="Dismiss"
             aria-label={`Dismiss ${job.title}`}
           >
-            ✕
-          </button>
+            <XIcon />
+          </Button>
         )}
       </div>
       {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
@@ -717,9 +730,6 @@ export function DownloadManagerView({
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
   const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
-  // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
   // Hand this poll's snapshot back to the queue half, so the run it is drawing is
   // retired against the same evidence this half is acting on rather than against a
   // read six seconds behind it (`QueueSlot.onJobs`, queue-dock-lib `openRows`). In an
@@ -884,7 +894,6 @@ export function DownloadManagerView({
   // path instead of through `forceClose`. So this now IS `forceClose`: the
   // panel goes away, and what the user last chose is left alone.
   const close = forceClose;
-  useDismissOnOutside(hostRef, open, close);
 
   const clear = async () => {
     try {
@@ -908,129 +917,142 @@ export function DownloadManagerView({
   const runningCount = jobs.length + queued;
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — a status-bar item there is a label you click, not a
-          disclosure triangle; hover is the only affordance, at rest and
-          idle alike). `.is-idle` is the ONE remaining signal that this
-          section has nothing in it — muted text, same clickable chip,
-          same hover wash — now that the idle SENTENCE ("No jobs", D579) has
-          moved into the panel below rather than living in the chip. */}
-      <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
-        onClick={toggle}
-        aria-expanded={open}
-        title={open ? "Hide activity" : "Show activity"}
+    // The `.dl-host` div is the chip's STATUS-BAR SEGMENT (height, flex) and
+    // nothing else now: the panel is a shadcn Popover (base-ui), which portals,
+    // positions above the chip, and reports every close intent through
+    // onOpenChange — outside pointer-down and Escape land as non-trigger
+    // reasons and spend the same transient `close` (forceClose) the old
+    // useDismissOnOutside spent, while a trigger press keeps meaning the
+    // preference-aware `toggle`. Same wiring as shell/ModelsDock.tsx.
+    <div className="dl-host">
+      <Popover
+        open={open}
+        onOpenChange={(next, details) => {
+          if (details.reason === "trigger-press") toggle();
+          else if (!next) close();
+        }}
       >
-        {/* `Activity` (status-bar merge): this chip is no longer only jobs —
-            it now also carries the running engines that used to be their own
-            chip beside it, so `Jobs` (D579's own word for the narrower set)
-            no longer names everything it shows. `Activity` was rejected back
-            then for being the vaguest of three labels over a chip that was
-            ONLY jobs; it is the right word again now that the chip covers
-            both. (Models made this same trip during the merge and then split
-            back out into its own chip — `shell/ModelsDock.tsx` — so it is not
-            one of the things "Activity" has to cover any more.) */}
-        {/* The label, and the bar's one shared indicator beside it (D588,
-            D590). `StatusDot` must stay a DIRECT child of this button — that
-            is what centres it (its own header has the argument). It answers
-            "is there work right now" — see `runningCount`, above — not "is
-            there anything to show", which is `idle`'s question. */}
-        <span className="dl-summary">Activity</span>
-        <StatusDot
-          on={runningCount > 0}
-          label={runningCount > 0 ? "jobs running" : "no jobs running"}
-        />
-      </button>
-      {/* The panel — floats ABOVE the status bar (notifications.css), anchored
-          to this chip, and exists only while expanded: opening it IS collapsed
-          turning false, there is no separate "peek" state. Collapsed shows NO
-          panel at all (D562's "no exemption" carried forward into D563) — not
-          a shorter one, an absent one, so `queue?.cancelAll` and `queue?.note`
-          do NOT survive a collapse any more. UNLIKE round 3, the panel now
-          opens on an IDLE section too (D573) — that is the one thing that
-          changed here: an idle section used to skip the panel outright
-          ("no panel behind it worth opening"); now the idle SENTENCE lives
-          inside it, because the chip itself no longer has room to say it. */}
-      {open && (
-        <div className="dl-panel">
+        {/* ALWAYS a real, clickable button now (D573, user: "the chevron
+            doesn't belong to the status bar. lets follow vscode/cursor for
+            inspiration" — a status-bar item there is a label you click, not a
+            disclosure triangle; hover is the only affordance, at rest and
+            idle alike). `.is-idle` is the ONE remaining signal that this
+            section has nothing in it — muted text, same clickable chip,
+            same hover wash — now that the idle SENTENCE ("No jobs", D579) has
+            moved into the panel below rather than living in the chip. */}
+        <PopoverTrigger
+          render={
+            <button
+              className={"dl-toggle" + (idle ? " is-idle" : "")}
+              title={open ? "Hide activity" : "Show activity"}
+            />
+          }
+        >
+          {/* `Activity` (status-bar merge): this chip is no longer only jobs —
+              it now also carries the running engines that used to be their own
+              chip beside it, so `Jobs` (D579's own word for the narrower set)
+              no longer names everything it shows. (Models made this same trip
+              during the merge and then split back out into its own chip —
+              `shell/ModelsDock.tsx`.) */}
+          {/* The label, and the bar's one shared indicator beside it (D588,
+              D590). `StatusDot` must stay a DIRECT child of this button — that
+              is what centres it (its own header has the argument). It answers
+              "is there work right now" — see `runningCount`, above — not "is
+              there anything to show", which is `idle`'s question. */}
+          <span className="dl-summary">Activity</span>
+          <StatusDot
+            on={runningCount > 0}
+            label={runningCount > 0 ? "jobs running" : "no jobs running"}
+          />
+        </PopoverTrigger>
+        {/* The panel — floats ABOVE the status bar, anchored to this chip, and
+            exists only while expanded: opening it IS collapsed turning false,
+            there is no separate "peek" state. Collapsed shows NO panel at all
+            (D562's "no exemption" carried forward into D563), so
+            `queue?.cancelAll` and `queue?.note` do NOT survive a collapse.
+            The panel opens on an IDLE section too (D573): the idle SENTENCE
+            lives inside it, because the chip itself no longer has room. */}
+        <PopoverContent side="top" align="end" className="w-80 p-2">
           {idle ? (
-            <div className="dl-panel-empty">No activity</div>
+            <Empty className="p-4">
+              <EmptyHeader>
+                <EmptyDescription>No activity</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
-            <>
-              {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
-                  Running (the old Jobs chip's own content, unchanged) and
-                  Background tasks (the old Engines chip). A section renders
-                  only when it has rows, and the heading itself only when 2+
-                  sections are present at once — a single section carrying a
-                  header nobody needed to disambiguate is the redundant-label
-                  problem the brief calls out; see `.dl-section-head` in
-                  notifications.css. (A third section, Models, lived here
-                  during the status-bar merge and moved back out into its own
-                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
-              {(() => {
-                const runningVisible = jobs.length > 0 || queued > 0;
-                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
-                const showHeadings = sectionCount > 1;
-                return (
-                  <>
-                    {runningVisible && (
-                      <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Running</div>}
-                        {/* ONE list, in lifecycle order: the queue's rows first
-                            (running, then starting, then waiting) and the job
-                            rows under them, which is where the same run lands
-                            once its turn has ended. A scheduled message
-                            therefore moves down this list rather than jumping
-                            between two cards. */}
-                        <div className="dl-rows">
-                          {queue?.rows}
-                          {jobs.map((job) => (
-                            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-                          ))}
-                        </div>
-                        {queue?.note}
-                        {/* A FOOTER, NOT A HEADER (D602, user: "notification UI
-                            is messed up"). Still omitted outright when neither
-                            child has anything to offer (code review finding
-                            #3), and plurality-gated on Clear (D604): a lone
-                            terminal row's own ✕ already does what Clear would.
-                            `queue-dock-lib.ts`'s `showCancelAll` requires the
-                            same two-row threshold for the identical reason. */}
-                        {(queue?.cancelAll || clearable > 1) && (
-                          <div className="dl-head">
-                            {/* Two actions, and they are not the same one
-                                twice: Cancel queued withdraws messages that
-                                have not gone yet, Clear dismisses rows for
-                                work that has ENDED. */}
-                            {queue?.cancelAll}
-                            {clearable > 1 && (
-                              <button className="dl-clear" onClick={clear} title="Dismiss finished">
-                                Clear
-                              </button>
-                            )}
-                          </div>
-                        )}
+            (() => {
+              // TWO POSSIBLE SECTIONS, in this order (status-bar merge):
+              // Running (the old Jobs chip's own content, unchanged) and
+              // Background tasks (the old Engines chip). A section renders
+              // only when it has rows, and the heading itself only when 2+
+              // sections are present at once — a single section carrying a
+              // header nobody needed to disambiguate is the redundant-label
+              // problem the brief calls out.
+              const runningVisible = jobs.length > 0 || queued > 0;
+              const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
+              const showHeadings = sectionCount > 1;
+              return (
+                <>
+                  {runningVisible && (
+                    <div className="flex flex-col gap-2">
+                      {showHeadings && (
+                        <div className="px-1 text-xs text-muted-foreground">Running</div>
+                      )}
+                      {/* ONE list, in lifecycle order: the queue's rows first
+                          (running, then starting, then waiting) and the job
+                          rows under them, which is where the same run lands
+                          once its turn has ended. A scheduled message
+                          therefore moves down this list rather than jumping
+                          between two cards. */}
+                      <div className="dl-rows">
+                        {queue?.rows}
+                        {jobs.map((job) => (
+                          <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                        ))}
                       </div>
-                    )}
-                    {engineCount > 0 && (
-                      <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Background tasks</div>}
-                        <div className="dl-rows">
-                          {engines!.engines.map((e) => (
-                            <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />
-                          ))}
+                      {queue?.note}
+                      {/* A FOOTER, NOT A HEADER (D602, user: "notification UI
+                          is messed up"). Still omitted outright when neither
+                          child has anything to offer (code review finding
+                          #3), and plurality-gated on Clear (D604): a lone
+                          terminal row's own ✕ already does what Clear would.
+                          `queue-dock-lib.ts`'s `showCancelAll` requires the
+                          same two-row threshold for the identical reason. */}
+                      {(queue?.cancelAll || clearable > 1) && (
+                        <div className="flex items-center justify-end gap-1">
+                          {/* Two actions, and they are not the same one
+                              twice: Cancel queued withdraws messages that
+                              have not gone yet, Clear dismisses rows for
+                              work that has ENDED. */}
+                          {queue?.cancelAll}
+                          {clearable > 1 && (
+                            <Button variant="ghost" size="xs" onClick={clear} title="Dismiss finished">
+                              Clear
+                            </Button>
+                          )}
                         </div>
+                      )}
+                    </div>
+                  )}
+                  {runningVisible && engineCount > 0 && <Separator />}
+                  {engineCount > 0 && (
+                    <div className="flex flex-col gap-2">
+                      {showHeadings && (
+                        <div className="px-1 text-xs text-muted-foreground">Background tasks</div>
+                      )}
+                      <div className="dl-rows">
+                        {engines!.engines.map((e) => (
+                          <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />
+                        ))}
                       </div>
-                    )}
-                  </>
-                );
-              })()}
-            </>
+                    </div>
+                  )}
+                </>
+              );
+            })()
           )}
-        </div>
-      )}
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }

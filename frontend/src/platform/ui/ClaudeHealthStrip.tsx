@@ -40,6 +40,16 @@ import {
   issueHelpUrl,
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@platform/shadcn/ui/card";
+import { VERBATIM_BLOCK, WARNING_WASH } from "@platform/ui/TroubleCard";
+import { XIcon } from "lucide-react";
 
 // The last snapshot seen, so walking between Home and /apps — which both render
 // this — starts from what we already know instead of flashing an empty frame.
@@ -61,11 +71,11 @@ const FOCUS_RECHECK_MS = 3000;
 function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="update-badge-command">
-      <code>{command}</code>
-      <button
-        type="button"
-        className="update-badge-copy"
+    <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1">
+      <code className="min-w-0 flex-1 truncate font-mono text-xs">{command}</code>
+      <Button
+        variant="outline"
+        size="xs"
         onClick={async () => {
           try {
             await navigator.clipboard.writeText(command);
@@ -79,7 +89,7 @@ function CopyCommand({ command }: { command: string }) {
         }}
       >
         {copied ? "Copied" : "Copy"}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -102,9 +112,9 @@ const LOGIN_POLL_MS = 2000;
 function OutputBlock({ label, text }: { label: string; text: string }) {
   if (!text.trim()) return null;
   return (
-    <div className="claude-health-output">
-      <div className="claude-health-output-label">{label}</div>
-      <pre>{text}</pre>
+    <div className="flex flex-col gap-1">
+      <div className="text-xs font-medium">{label}</div>
+      <pre className={VERBATIM_BLOCK}>{text}</pre>
     </div>
   );
 }
@@ -114,20 +124,20 @@ function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
     return <OutputBlock label="claude doctor" text={doctor.text} />;
   }
   return (
-    <div className="claude-health-doctor">
-      <div className="claude-health-output-label">
+    <div className="flex flex-col gap-1">
+      <div className="text-xs font-medium">
         claude doctor found {doctor.warnings.length}{" "}
         {doctor.warnings.length === 1 ? "problem" : "problems"}
       </div>
-      <ul className="claude-health-doctor-list">
+      <ul className="flex flex-col gap-1.5 text-xs">
         {doctor.warnings.map((w, i) => (
-          <li key={i}>
-            <span className="claude-health-doctor-problem">{w.problem}</span>
+          <li key={i} className="flex flex-col gap-0.5">
+            <span>{w.problem}</span>
             {/* The CLI's own suggested fix. Shown as a command to copy when it
                 reads like one, because "Run claude install to repair the
                 installation." is exactly the sentence a user then has to
                 retype by hand. */}
-            {w.fix && <span className="claude-health-doctor-fix">{w.fix}</span>}
+            {w.fix && <span className="font-mono text-muted-foreground">{w.fix}</span>}
           </li>
         ))}
       </ul>
@@ -179,15 +189,17 @@ function IssueRow({
   const loginError = issue.action?.kind === "login" ? login?.error ?? null : null;
 
   return (
-    <li className="claude-health-issue">
-      <div className="claude-health-issue-title">{issue.title}</div>
-      <p className="claude-health-issue-detail">{issue.detail}</p>
+    <li className="flex flex-col gap-2">
+      <div className="font-medium">{issue.title}</div>
+      <p className="text-muted-foreground">{issue.detail}</p>
 
       {issue.action && (
-        <div className="claude-health-actions">
-          <button
-            type="button"
-            className="claude-health-action"
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Outline, not the lime default: several issue rows can stand at
+              once, and the strip is a nudge, not the page's primary action. */}
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => onAct(issue)}
             disabled={busy || running || signingIn}
           >
@@ -196,32 +208,28 @@ function IssueRow({
               : finished
                 ? "Done"
                 : issue.action.label}
-          </button>
+          </Button>
           {signingIn && (
-            <button
-              type="button"
-              className="claude-health-action claude-health-action-quiet"
-              onClick={onCancelLogin}
-            >
+            <Button variant="ghost" size="sm" onClick={onCancelLogin}>
               Cancel
-            </button>
+            </Button>
           )}
           {/* What will actually run, before it runs. Piping a remote script
               into a shell on someone's behalf is a thing to disclose, not to
               do quietly behind a friendly label. */}
           {issue.command && (
-            <code className="claude-health-action-cmd">{issue.command}</code>
+            <code className="font-mono text-xs text-muted-foreground">{issue.command}</code>
           )}
         </div>
       )}
 
       {running && (
-        <p className="claude-health-progress" role="status">
+        <p className="text-xs text-muted-foreground" role="status">
           {install!.detail || "Working…"}
         </p>
       )}
       {signingIn && (
-        <p className="claude-health-progress" role="status">
+        <p className="text-xs text-muted-foreground" role="status">
           Finish signing in with the browser window that just opened.
         </p>
       )}
@@ -230,7 +238,7 @@ function IssueRow({
           only diagnosis on offer — the server derives this one line and keeps
           the rest of the output in memory. */}
       {loginError && !signingIn && (
-        <p className="claude-health-error">{loginError}</p>
+        <p className="text-xs text-destructive">{loginError}</p>
       )}
       {failed && (
         <OutputBlock
@@ -238,9 +246,9 @@ function IssueRow({
           text={install!.output}
         />
       )}
-      {actionError && <p className="claude-health-error">{actionError}</p>}
+      {actionError && <p className="text-xs text-destructive">{actionError}</p>}
       {doneNote && (
-        <p className="claude-health-progress" role="status">
+        <p className="text-xs text-muted-foreground" role="status">
           {doneNote}
         </p>
       )}
@@ -250,14 +258,17 @@ function IssueRow({
           locked-down machine, or one who would simply rather run it themselves,
           should not have to press our button to find out what it was. */}
       {issue.command && !issue.action && <CopyCommand command={issue.command} />}
-      <a
-        className="version-panel-link"
-        href={issueHelpUrl(issue)}
-        target="_blank"
-        rel="noreferrer"
-      >
-        How to fix this ↗
-      </a>
+      <div>
+        <Button
+          variant="link"
+          size="xs"
+          className="px-0"
+          nativeButton={false}
+          render={<a href={issueHelpUrl(issue)} target="_blank" rel="noreferrer" />}
+        >
+          How to fix this ↗
+        </Button>
+      </div>
     </li>
   );
 }
@@ -544,53 +555,50 @@ export function ClaudeHealthStrip() {
   };
 
   return (
-    <section className="claude-health" role="status" aria-label="Claude Code setup">
-      <div className="claude-health-head">
-        <h2 className="claude-health-title">
-          {/* Says what is still needed, not that something is broken: nothing IS
-              broken — the app is running and the explorer works. Same posture as
-              the TroubleCard's warning tint (SPEC §42: "Nothing red"). */}
-          Finish setting up Claude Code
-        </h2>
-        <div className="claude-health-head-actions">
-          <button
-            type="button"
-            className="version-panel-link"
-            onClick={check}
-            disabled={busy}
-          >
+    // Card with the `--warning-rgb` wash TroubleCard wears (SPEC §42: "Nothing
+    // red" — the app runs, the explorer works; this says what is still
+    // needed). `border ring-0` so the wash has a real border to tint.
+    // `role="status"` keeps the old <section>'s semantics; the <h2> heading
+    // level is traded for CardTitle.
+    <Card
+      role="status"
+      aria-label="Claude Code setup"
+      size="sm"
+      className="mb-5 border ring-0"
+      style={WARNING_WASH}
+    >
+      <CardHeader>
+        <CardTitle>Finish setting up Claude Code</CardTitle>
+        <CardAction className="flex items-center gap-1">
+          <Button variant="outline" size="sm" onClick={check} disabled={busy}>
             {busy ? "Checking…" : "Check again"}
-          </button>
-          <button
-            type="button"
-            className="claude-health-close"
-            onClick={close}
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="claude-health-issues">
-        {issues.map((issue) => (
-          <IssueRow
-            key={issue.id}
-            issue={issue}
-            install={install}
-            login={login}
-            // The report belongs to the row that can act on it, and only the
-            // broken-install row can.
-            doctor={issue.id === "broken" ? doctor : null}
-            onAct={act}
-            onCancelLogin={cancelLogin}
-            busy={acting}
-            actionError={issue.action ? actionError : null}
-            doneNote={issue.id === "not-on-path" ? linkedNote : null}
-          />
-        ))}
-      </ul>
-    </section>
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={close} aria-label="Dismiss" title="Dismiss">
+            <XIcon />
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col gap-4 text-sm">
+          {issues.map((issue) => (
+            <IssueRow
+              key={issue.id}
+              issue={issue}
+              install={install}
+              login={login}
+              // The report belongs to the row that can act on it, and only the
+              // broken-install row can.
+              doctor={issue.id === "broken" ? doctor : null}
+              onAct={act}
+              onCancelLogin={cancelLogin}
+              busy={acting}
+              actionError={issue.action ? actionError : null}
+              doneNote={issue.id === "not-on-path" ? linkedNote : null}
+            />
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -38,6 +38,8 @@ import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Button } from "@platform/shadcn/ui/button";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import {
@@ -262,7 +264,7 @@ export function AppPreviewCard({
         {((shotSrc && !shotFailed && !shotLoaded) ||
           (wantsLive &&
             (!liveStarted || !(shotSrc && !shotFailed ? liveReady : bodyPainted)))) && (
-          <span className="app-pcard-skel" />
+          <Skeleton className="pointer-events-none absolute inset-0 rounded-none" />
         )}
         {shotSrc && !shotFailed ? (
           <>
@@ -387,9 +389,14 @@ export function AppPreviewCard({
           (or the click ALSO bubbles to onAppCardClick). Not rendered on an
           exported .fused card (kind "appfile", D396): its path is the file
           itself and the export route only takes app folders. */}
+      {/* `.app-pcard-export` STAYS alongside the shadcn Button: apps.css owns
+          the hover-reveal (opacity on `.app-pcard:hover`), the absolute
+          placement over the thumb, and the `body[data-capture-shooting]` hide
+          rule that keeps the chip out of every exported preview.png. */}
       {app.kind !== "appfile" && (
-      <button
-        type="button"
+      <Button
+        variant="outline"
+        size="icon-sm"
         className="app-pcard-export"
         title={"Export " + (app.title || app.name) + " as a .fused app file"}
         aria-label="Export app file"
@@ -414,7 +421,7 @@ export function AppPreviewCard({
         }}
       >
         {MenuIcons.download}
-      </button>
+      </Button>
       )}
     </a>
   );

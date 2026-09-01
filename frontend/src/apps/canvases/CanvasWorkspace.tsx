@@ -19,6 +19,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { statPath } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import {
   fixWithClaude,
   getAccessToken,
@@ -440,18 +442,18 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <strong>{sync.error}</strong>
-            <button
-              className="btn btn-primary"
+            <Button
               disabled={fixBusy || !!sync.fix_active}
               onClick={() => void onFix()}
               title="Start a Claude session on the local clone, primed with these errors"
             >
+              {fixBusy && !sync.fix_active && <Spinner data-icon="inline-start" />}
               {sync.fix_active
                 ? "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
-            </button>
+            </Button>
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
           </div>
           {sync.error_detail?.length > 0 && (

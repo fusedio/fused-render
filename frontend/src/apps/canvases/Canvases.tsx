@@ -11,6 +11,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import { Input } from "@platform/shadcn/ui/input";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 import {
   cloneCanvas,
   createCanvas,
@@ -289,14 +293,14 @@ export default function Canvases() {
   }, [canvases, query]);
 
   return (
-    <div className="canvases-page">
-      <div className="canvases-inner">
-        <div className="canvases-head">
-          <h1 className="canvases-title">Workbench Canvases</h1>
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-[1180px] px-7 pt-8 pb-16">
+        <div className="mb-2 flex items-center gap-3">
+          <h1 className="m-0 text-[22px] font-semibold tracking-tight">Workbench Canvases</h1>
           {status?.logged_in && (
-            <div className="canvases-head-actions">
-              <input
-                className="field-control canvases-search"
+            <div className="ml-auto flex items-center gap-2">
+              <Input
+                className="w-55"
                 type="search"
                 placeholder="Search canvases"
                 value={query}
@@ -304,14 +308,13 @@ export default function Canvases() {
               />
               {creating ? (
                 <form
-                  className="canvases-new-form"
+                  className="flex items-center gap-2"
                   onSubmit={(e) => {
                     e.preventDefault();
                     void onCreate();
                   }}
                 >
-                  <input
-                    className="field-control"
+                  <Input
                     autoFocus
                     placeholder="new_canvas_name"
                     value={newName}
@@ -320,15 +323,15 @@ export default function Canvases() {
                     onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
                     disabled={createBusy}
                   />
-                  <button
-                    className="btn btn-primary"
+                  <Button
                     type="submit"
                     disabled={createBusy || !NAME_RE.test(newName.trim())}
                   >
+                    {createBusy && <Spinner data-icon="inline-start" />}
                     {createBusy ? "Creating…" : "Create"}
-                  </button>
-                  <button
-                    className="btn"
+                  </Button>
+                  <Button
+                    variant="outline"
                     type="button"
                     onClick={() => {
                       setCreating(false);
@@ -337,22 +340,18 @@ export default function Canvases() {
                     disabled={createBusy}
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </form>
               ) : (
-                <button className="btn btn-primary" onClick={() => setCreating(true)}>
-                  + New canvas
-                </button>
+                <Button onClick={() => setCreating(true)}>+ New canvas</Button>
               )}
-              <span className="canvases-account">
-                <button className="btn" onClick={() => void onLogout()}>
-                  Sign out
-                </button>
-              </span>
+              <Button variant="outline" onClick={() => void onLogout()}>
+                Sign out
+              </Button>
             </div>
           )}
         </div>
-        <p className="canvases-sub">
+        <p className="mt-0 mb-5 text-[13px] text-muted-foreground">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
         </p>
@@ -365,12 +364,13 @@ export default function Canvases() {
           </p>
         )}
         {status && status.cli_found && !status.logged_in && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button className="btn btn-primary" onClick={onLogin} disabled={loggingIn}>
+          <div className="flex items-center gap-3">
+            <Button onClick={onLogin} disabled={loggingIn}>
+              {loggingIn && <Spinner data-icon="inline-start" />}
               {loggingIn ? "Waiting for browser sign-in…" : "Sign in to Fused"}
-            </button>
+            </Button>
             {loggingIn && (
-              <span className="canvases-sub">
+              <span className="text-[13px] text-muted-foreground">
                 Complete the sign-in in the browser window that just opened.
               </span>
             )}
@@ -378,14 +378,18 @@ export default function Canvases() {
         )}
         {status?.logged_in && filtered === null && !error && <p>Loading canvases…</p>}
         {status?.logged_in && filtered !== null && filtered.length === 0 && (
-          <p className="canvases-empty">
-            {query
-              ? "No canvases match your search."
-              : "No canvases in this account yet — create one to get started."}
-          </p>
+          <Empty className="py-8">
+            <EmptyHeader>
+              <EmptyDescription>
+                {query
+                  ? "No canvases match your search."
+                  : "No canvases in this account yet — create one to get started."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
         {status?.logged_in && filtered !== null && filtered.length > 0 && (
-          <div className="canvases-grid">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-x-6 gap-y-8.5">
             {filtered.map((canvas) => {
               // Either the free public URL from the listing, or the signed one
               // the previews batch filled in afterwards (D364).
@@ -403,16 +407,21 @@ export default function Canvases() {
               // empty box — one tile, standing for "a canvas", not for a count.
               const tiles = nUdfs === null ? 1 : Math.min(nUdfs, TILE_CAP);
               return (
+              // Deliberately NOT a shadcn <Card>: the design is the hosted
+              // gallery's chrome-less card — the thumbnail IS the card, name
+              // and stats sit on the page ground, no plate/ring. The hairline
+              // + accent-tint hover border on the thumb is the design system's
+              // own hover and is kept verbatim via the canon tokens.
               <button
                 key={canvas.name}
-                className="canvas-card"
+                className="group flex cursor-pointer flex-col gap-2.5 rounded-lg p-0 text-left disabled:cursor-default disabled:opacity-60"
                 onClick={() => void onOpen(canvas)}
                 disabled={busy !== null || createBusy}
               >
-                <span className="canvas-card-thumb">
+                <span className="relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border border-border bg-muted transition-colors group-enabled:group-hover:border-[color-mix(in_srgb,var(--accent)_55%,var(--border))]">
                   {thumb && !brokenPreviews.has(thumb) ? (
                     <img
-                      className="canvas-card-img"
+                      className="absolute inset-0 size-full object-cover"
                       src={thumb}
                       alt=""
                       loading="lazy"
@@ -425,27 +434,33 @@ export default function Canvases() {
                       }
                     />
                   ) : tiles > 0 ? (
-                    <span className="canvas-card-tiles" style={tileLayout(tiles)}>
+                    <span
+                      className="absolute inset-0 grid items-stretch justify-items-stretch gap-1"
+                      style={tileLayout(tiles)}
+                    >
                       {Array.from({ length: tiles }, (_, i) => (
                         <img
                           key={i}
-                          className="canvas-card-tile"
+                          className="size-full min-h-0 min-w-0 rounded object-cover"
                           src={previewTile}
                           alt=""
                         />
                       ))}
                     </span>
                   ) : (
-                    <span className="canvas-card-noshot">
+                    <span className="text-[13px] text-muted-foreground">
                       No UDFs present in the canvas
                     </span>
                   )}
                 </span>
-                <span className="canvas-card-body">
-                  <span className="canvas-card-name" title={canvas.name}>
+                <span className="flex flex-col gap-[7px]">
+                  <span
+                    className="truncate text-xl font-normal tracking-[-0.01em] transition-colors group-enabled:group-hover:text-(--accent-soft)"
+                    title={canvas.name}
+                  >
                     {canvas.name}
                   </span>
-                  <span className="canvas-card-stat">
+                  <span className="text-[13px]">
                     {busy === canvas.name
                       ? "Cloning…"
                       : nUdfs === null
@@ -458,7 +473,7 @@ export default function Canvases() {
                           }`}
                   </span>
                   {modified !== null && (
-                    <span className="canvas-card-meta">
+                    <span className="text-[13px] text-muted-foreground">
                       Last modified: {formatModified(modified)}
                     </span>
                   )}

@@ -3,6 +3,10 @@ import { commitImport, importTemplates } from "@platform/lib/api";
 import type { ImportItem, ImportResolution, ImportStageResult } from "@platform/lib/api";
 import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 
 type WizardStep = "choose" | "manifest" | "done";
 
@@ -162,20 +166,19 @@ export function ImportWizard({
   let footer: ReactNode = null;
   if (step === "choose") {
     footer = (
-      <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+      <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
         Cancel
-      </button>
+      </Button>
     );
   } else if (step === "manifest" && staged) {
     footer = (
       <>
-        <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+        <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
           type="submit"
           form={formId}
-          className="btn btn-primary"
           disabled={busy || validCount === 0}
         >
           {busy
@@ -184,14 +187,14 @@ export function ImportWizard({
               ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
                 (bindingCount > 0 ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}` : "")
               : "Import"}
-        </button>
+        </Button>
       </>
     );
   } else if (step === "done" && result) {
     footer = (
-      <button type="button" className="btn btn-primary" onClick={onClose}>
+      <Button type="button" onClick={onClose}>
         Done
-      </button>
+      </Button>
     );
   }
 
@@ -205,7 +208,7 @@ export function ImportWizard({
     >
       {step === "choose" && (
         <>
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             Choose a <code>.zip</code> of template folders. Each top-level folder with a{" "}
             <code>template.html</code> is a template. The registry is never imported (folders
             only).
@@ -222,7 +225,7 @@ export function ImportWizard({
               onChange={(e) => onFile(e.target.files?.[0])}
             />
           </div>
-          {busy && <div className="deploy-muted">Staging…</div>}
+          {busy && <div className="text-xs text-muted-foreground">Staging…</div>}
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </>
       )}
@@ -238,7 +241,7 @@ export function ImportWizard({
           {staged.warnings.length > 0 && (
                 <div className="templates-warnings">
                   {staged.warnings.map((w, i) => (
-                    <div key={i} className="deploy-muted">
+                    <div key={i} className="text-xs text-muted-foreground">
                       ⚠ {w}
                     </div>
                   ))}
@@ -247,14 +250,13 @@ export function ImportWizard({
               {hasRecs && validCount > 0 && (
                 <div className="templates-recs-toggle">
                   <label className="templates-recs-toggle-row">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={applyRecs}
-                      onChange={(e) => setApplyRecs(e.target.checked)}
+                      onCheckedChange={(checked) => setApplyRecs(checked === true)}
                     />
                     <span>Apply author's recommended bindings</span>
                   </label>
-                  <div className="templates-recs-subline deploy-muted">
+                  <div className="templates-recs-subline text-xs text-muted-foreground">
                     {applyRecs
                       ? "Author of this bundle suggests file extensions for each template. Toggle chips to accept or reject."
                       : "Bindings skipped — templates import as unbound. Bind later in File bindings tab."}
@@ -262,7 +264,7 @@ export function ImportWizard({
                 </div>
               )}
               {validCount === 0 ? (
-                <div className="deploy-muted">
+                <div className="text-xs text-muted-foreground">
                   No valid template folders found in this zip (each needs a{" "}
                   <code>template.html</code>).
                 </div>
@@ -308,7 +310,7 @@ export function ImportWizard({
           {(result.bindingsApplied?.length ?? 0) > 0 && (
             <>
               <div className="templates-result-line">
-                <span className="deploy-muted">Bindings applied:</span>{" "}
+                <span className="text-xs text-muted-foreground">Bindings applied:</span>{" "}
                 {result.bindingsApplied!.length}
               </div>
               <div className="templates-result-line templates-result-bindings">
@@ -340,7 +342,7 @@ function ResultLine({ label, names }: { label: string; names: string[] }) {
   if (names.length === 0) return null;
   return (
     <div className="templates-result-line">
-      <span className="deploy-muted">{label}:</span> {names.join(", ")}
+      <span className="text-xs text-muted-foreground">{label}:</span> {names.join(", ")}
     </div>
   );
 }
@@ -493,7 +495,7 @@ function ImportRow({
     return (
       <tr className="templates-import-invalid">
         <td className="templates-import-name">{item.name}</td>
-        <td colSpan={2} className="deploy-muted">
+        <td colSpan={2} className="text-xs text-muted-foreground">
           skipped — no <code>template.html</code>
         </td>
       </tr>
@@ -503,28 +505,31 @@ function ImportRow({
     <tr>
       <td className="templates-import-name">
         {item.name}
-        <span className="deploy-muted"> · {item.fileCount} files</span>
+        <span className="text-xs text-muted-foreground"> · {item.fileCount} files</span>
       </td>
       <td>
         {item.conflictsExisting ? (
-          <span className="templates-pill warn">conflicts existing</span>
+          <Badge variant="destructive">conflicts existing</Badge>
         ) : (
-          <span className="deploy-muted">new</span>
+          <span className="text-xs text-muted-foreground">new</span>
         )}
       </td>
       <td>
         {item.conflictsExisting ? (
-          <div className="templates-seg">
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            value={[resolution]}
+            onValueChange={(groupValue) => {
+              const next = (groupValue as ImportResolution[])[0];
+              if (next) onResolution(next);
+            }}
+          >
             {(["overwrite", "skip", "keep-both"] as ImportResolution[]).map((r) => (
-              <button
+              <ToggleGroupItem
                 key={r}
-                type="button"
-                className={
-                  "templates-seg-btn" +
-                  (resolution === r ? " active" : "") +
-                  (r === "overwrite" ? " danger" : "")
-                }
-                onClick={() => onResolution(r)}
+                value={r}
+                className={r === "overwrite" ? "text-destructive" : undefined}
                 title={
                   r === "overwrite"
                     ? "Replace the existing folder (destructive)"
@@ -534,11 +539,11 @@ function ImportRow({
                 }
               >
                 {r === "keep-both" ? "Keep both" : r === "overwrite" ? "Overwrite" : "Skip"}
-              </button>
+              </ToggleGroupItem>
             ))}
-          </div>
+          </ToggleGroup>
         ) : (
-          <span className="deploy-muted">will import</span>
+          <span className="text-xs text-muted-foreground">will import</span>
         )}
       </td>
     </tr>

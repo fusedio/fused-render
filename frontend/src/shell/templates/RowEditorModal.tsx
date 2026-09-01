@@ -5,6 +5,7 @@ import { KeyBuilder } from "@shell/templates/KeyBuilder";
 import { TemplatePicker } from "@shell/templates/TemplatePicker";
 import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 
 export function RowEditorModal({
   mode,
@@ -147,9 +148,10 @@ export function RowEditorModal({
       dialogClassName="templates-editor"
       footer={
         <>
-          <button
+          <Button
             type="button"
-            className="btn btn-danger-text"
+            variant="ghost"
+            className="mr-auto text-destructive"
             onClick={doDisable}
             disabled={busy !== null || (mode === "create" && !keyValid)}
             title="Write a null binding — previews are disabled for this type"
@@ -159,11 +161,11 @@ export function RowEditorModal({
               : confirmDisable
                 ? "Click again to disable"
                 : "Disable for this type"}
-          </button>
+          </Button>
           {mode === "edit" && entry?.overridesCore && (
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="outline"
               onClick={doReset}
               disabled={busy !== null}
               title={
@@ -173,22 +175,21 @@ export function RowEditorModal({
               }
             >
               {busy === "reset" ? "Resetting…" : "Reset to core"}
-            </button>
+            </Button>
           )}
           {/* Intentionally bypasses the dirty guard: an explicit Cancel click
               is explicit intent, unlike Esc/backdrop/✕. */}
-          <button
+          <Button
             type="button"
-            className="btn btn-secondary"
+            variant="outline"
             onClick={onClose}
             disabled={busy !== null}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
             form={formId}
-            className="btn btn-primary"
             disabled={!canSave}
             title={
               chosen.length === 0
@@ -199,7 +200,7 @@ export function RowEditorModal({
             }
           >
             {busy === "save" ? "Saving…" : "Save"}
-          </button>
+          </Button>
         </>
       }
     >
@@ -226,7 +227,7 @@ export function RowEditorModal({
             <span className="templates-field-label">Key</span>
             <div>
               <code className="templates-key-fixed">{key}</code>
-              {entry && <span className="deploy-muted"> · {entry.keyKind}</span>}
+              {entry && <span className="text-xs text-muted-foreground"> · {entry.keyKind}</span>}
             </div>
           </div>
         )}
@@ -235,7 +236,7 @@ export function RowEditorModal({
           <span className="templates-field-label">Templates (first is the default)</span>
           <div className="templates-chiplist">
             {chosen.length === 0 && (
-              <span className="deploy-muted">
+              <span className="text-xs text-muted-foreground">
                 No templates — add at least one, or disable previews for this type.
               </span>
             )}
@@ -275,13 +276,14 @@ export function RowEditorModal({
             })}
           </div>
           <div className="templates-add-wrap">
-            <button
+            <Button
               type="button"
-              className="templates-add-btn"
+              variant="outline"
+              size="sm"
               onClick={() => setPickerOpen((v) => !v)}
             >
               + Add template
-            </button>
+            </Button>
             {pickerOpen && (
               <TemplatePicker
                 inventory={inventory}
@@ -295,7 +297,7 @@ export function RowEditorModal({
               />
             )}
           </div>
-          <div className="deploy-muted templates-reorder-hint">
+          <div className="text-xs text-muted-foreground templates-reorder-hint">
             Drag chips to reorder — the first is the default mode.
           </div>
           {brokenNames.length > 0 && (
@@ -311,7 +313,7 @@ export function RowEditorModal({
         {error && <ErrorBanner>{error}</ErrorBanner>}
 
         {mode === "edit" && entry?.overridesCore && coreDefault && (
-          <div className="deploy-muted">
+          <div className="text-xs text-muted-foreground">
             Core default: {coreDefault.length > 0 ? coreDefault.join(" → ") : "(none)"}
           </div>
         )}

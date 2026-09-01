@@ -14,6 +14,8 @@
 // needs and the one nobody can look up for themselves.
 import { useState } from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
 import {
   CLAUDE_INSTALL_COMMAND,
   isClaudeTrouble,
@@ -54,12 +56,26 @@ const SAID: Record<string, { title: string; explain: string }> = {
   raw: { title: "Something went wrong", explain: "" },
 };
 
+// The warning wash (SPEC §42: "Nothing red" — something AROUND the app is
+// broken, not the app). Alert has no warning variant, so the tint rides in as
+// inline style over the canon `--warning-rgb` token — the same rgba pair
+// dialogs.css used for `.trouble-card`/`.claude-health`; never a raw colour.
+export const WARNING_WASH = {
+  borderColor: "rgba(var(--warning-rgb), 0.5)",
+  background: "rgba(var(--warning-rgb), 0.06)",
+} as const;
+
+/** Verbatim output in a box, scrollable — shared shape for every `<pre>` in
+ *  the trouble/health family. */
+export const VERBATIM_BLOCK =
+  "max-h-40 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap";
+
 function CopyLine({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
-      className="update-badge-copy"
+    <Button
+      variant="outline"
+      size="xs"
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -73,7 +89,7 @@ function CopyLine({ text, label }: { text: string; label: string }) {
       }}
     >
       {copied ? "Copied" : label}
-    </button>
+    </Button>
   );
 }
 
@@ -117,51 +133,56 @@ export function TroubleCard({
   const report = troubleReport(ctx);
   const instructions = troubleInstructions(ctx);
 
+  const helpLink = (
+    <Button
+      variant="link"
+      size="xs"
+      nativeButton={false}
+      render={<a href={troubleHelpUrl(kind)} target="_blank" rel="noreferrer" />}
+    >
+      {compact || isClaudeTrouble(kind) ? "How to fix this" : "Troubleshooting"} ↗
+    </Button>
+  );
+
   if (compact) {
+    // The notification-stack variant: the same warning wash, no explanation.
     return (
-      <div className="trouble-compact" role="alert">
-        <div className="trouble-title">{said.title}</div>
-        <div className="trouble-compact-error">{String(error || "").trim()}</div>
-        <div className="trouble-actions">
+      <Alert role="alert" style={WARNING_WASH}>
+        <AlertTitle>{said.title}</AlertTitle>
+        <AlertDescription className="text-xs">{String(error || "").trim()}</AlertDescription>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <CopyLine text={report} label="Copy the details" />
           <CopyLine text={instructions} label="Copy Claude Code instructions" />
-          <a
-            className="version-panel-link"
-            href={troubleHelpUrl(kind)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            How to fix this ↗
-          </a>
+          {helpLink}
           {children}
         </div>
-      </div>
+      </Alert>
     );
   }
 
   return (
-    <div className="trouble-card" role="alert">
-      <div className="trouble-title">{said.title}</div>
-      {said.explain && <p className="trouble-explain">{said.explain}</p>}
+    <Alert role="alert" className="my-3 max-w-2xl gap-2" style={WARNING_WASH}>
+      <AlertTitle>{said.title}</AlertTitle>
+      {said.explain && <AlertDescription>{said.explain}</AlertDescription>}
 
       {/* Verbatim, in a box, scrollable. Rewording it would make it
           unsearchable, and searching it is the first thing anyone does. */}
-      <pre className="trouble-error">{String(error || "(no message)").trim()}</pre>
+      <pre className={VERBATIM_BLOCK}>{String(error || "(no message)").trim()}</pre>
 
       {kind === "notfound" && (
-        <div className="trouble-install">
-          <div className="trouble-label">Install Claude Code</div>
-          <div className="update-badge-command">
-            <code>{CLAUDE_INSTALL_COMMAND}</code>
+        <div className="flex flex-col gap-1.5">
+          <div className="text-xs font-medium">Install Claude Code</div>
+          <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1">
+            <code className="min-w-0 flex-1 truncate font-mono text-xs">{CLAUDE_INSTALL_COMMAND}</code>
             <CopyLine text={CLAUDE_INSTALL_COMMAND} label="Copy" />
           </div>
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             Run it in a terminal, then quit Fused Render and open it again.
           </p>
         </div>
       )}
 
-      <div className="trouble-actions">
+      <div className="flex flex-wrap items-center gap-1.5">
         {/* FIRST, and labelled for what it is FOR rather than what it does:
             this is the one action that helps whether the user fixes it
             themselves or asks someone else. */}
@@ -171,22 +192,15 @@ export function TroubleCard({
             worth running first, and what "fixed" looks like. Pasting an error
             alone gets a guess back. */}
         <CopyLine text={instructions} label="Copy Claude Code instructions" />
-        <a
-          className="version-panel-link"
-          href={troubleHelpUrl(kind)}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {isClaudeTrouble(kind) ? "How to fix this" : "Troubleshooting"} ↗
-        </a>
+        {helpLink}
         {onRetry && (
-          <button type="button" className="version-panel-link" onClick={onRetry}>
+          <Button variant="outline" size="xs" onClick={onRetry}>
             Try again
-          </button>
+          </Button>
         )}
         {children}
       </div>
-    </div>
+    </Alert>
   );
 }
 

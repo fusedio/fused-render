@@ -44,88 +44,58 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+    /* The app's documented radius scale (DESIGN.md: 4/8/12), pinned as
+       literals — a single --radius multiplier cannot produce that ladder. */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-2xl: 20px;
+    --radius-3xl: 24px;
+    --radius-4xl: 28px;
 }
 
-:root[data-theme="light"] {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --sh-accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --sh-border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
-}
-
+/* ---- The one bridge between the two vocabularies ---------------------------
+   Every shadcn semantic variable is an ALIAS onto the app's canon token
+   (tokens.css). No theme branches here on purpose: the canon tokens already
+   flip with `data-theme`, so a second light block would only drift. Mapping
+   is by ROLE, not by name — shadcn's "accent" is a hover wash, not the brand
+   accent, so it points at --row-bg-hover; the brand accent (Fused Lime) is
+   "primary" and "ring". Chart hues ride the app's categorical series set. */
 :root {
-    /* Radius is not a theme concern — on the bare :root so BOTH themes (dark
-       is the no-attribute default) resolve the radius-* scale; parked in the
-       light block only, every rounded-* was calc() over nothing in dark. */
-    --radius: 0.625rem;
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    /* One shade BELOW the app's own page background (tokens.css --bg,
-       #131417) and in ITS cool blue-grey hue — a neutral grey here read
-       warmer than the page it sits on. */
-    --card: #0f1013;
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --sh-accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --sh-border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: var(--bg);
+    --foreground: var(--fg);
+    --card: var(--bg-alt);
+    --card-foreground: var(--fg);
+    --popover: var(--bg-popover);
+    --popover-foreground: var(--fg);
+    --primary: var(--accent);
+    --primary-foreground: var(--on-accent);
+    --secondary: var(--bg-alt);
+    --secondary-foreground: var(--fg);
+    --muted: var(--bg-alt);
+    --muted-foreground: var(--fg-muted);
+    --sh-accent: var(--row-bg-hover);
+    --accent-foreground: var(--fg);
+    --destructive: var(--error);
+    --sh-border: var(--border);
+    --input: var(--border);
+    --ring: var(--accent);
+    --chart-1: var(--series-1);
+    --chart-2: var(--series-2);
+    --chart-3: var(--series-3);
+    --chart-4: var(--series-4);
+    --chart-5: var(--series-5);
+    --sidebar: var(--bg-rail);
+    --sidebar-foreground: var(--fg);
+    --sidebar-primary: var(--accent);
+    --sidebar-primary-foreground: var(--on-accent);
+    --sidebar-accent: var(--row-bg-hover);
+    --sidebar-accent-foreground: var(--fg);
+    --sidebar-border: var(--border);
+    --sidebar-ring: var(--accent);
+    /* Kept for any component reading the base multiplier directly. */
+    --radius: 12px;
 }
 
 /* ---- Four names Tailwind and this app both claim --------------------------

@@ -64,6 +64,7 @@ import type {
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
   ICON_VIEW_BOARD,
@@ -559,10 +560,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
             />
-            <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => openForm("blank", null)}>
+            {/* The page's ONE lime press (shadcn Button default = primary). */}
+            <Button size="sm" onClick={() => openForm("blank", null)}>
               + New task
-            </button>
+            </Button>
           </div>
 
           {/* No chip row under the toolbar: each filter menu already carries its

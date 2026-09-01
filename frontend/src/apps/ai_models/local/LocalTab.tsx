@@ -72,6 +72,8 @@ import { formatSize } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pushToast } from "@platform/lib/toast";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@platform/shadcn/ui/empty";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 
 /** What a confirmation is about. Every destructive action becomes one of these
  *  first — there is no path from a click straight to a delete. */
@@ -494,7 +496,9 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       ) : (
         <>
           {load.status === "loading" && (
-            <p className="cc-empty">Reading the Hugging Face cache…</p>
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner /> Reading the Hugging Face cache…
+            </p>
           )}
           {data &&
             (sections.length || grouped.components.repos.length ? (
@@ -575,7 +579,9 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
               // thing that can put a card on this page. Saying "nothing here" first
               // and filling the page a moment later would report a fact this page
               // had not finished checking.
-              <p className="cc-empty">Reading the model catalog…</p>
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner /> Reading the model catalog…
+              </p>
             ) : (
               // Two different nothings: no cache dir at all (nothing has ever
               // pulled from the Hub) versus a cache that has been emptied. The
@@ -592,11 +598,16 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
               // is nowhere to send anybody from here, and a button that went to a
               // second empty grid was never the answer. The search box above is
               // still a way out of it, and it is on screen in this state too.
-              <p className="cc-empty">
-                {data.exists
-                  ? "Nothing cached here yet."
-                  : "No Hugging Face cache on this machine — the first download from the Hub creates it."}
-              </p>
+              <Empty>
+                <EmptyHeader>
+                  <EmptyTitle>{data.exists ? "Nothing cached here yet" : "No Hugging Face cache on this machine"}</EmptyTitle>
+                  {!data.exists && (
+                    <EmptyDescription>
+                      The first download from the Hub creates it.
+                    </EmptyDescription>
+                  )}
+                </EmptyHeader>
+              </Empty>
             ))}
         </>
       )}

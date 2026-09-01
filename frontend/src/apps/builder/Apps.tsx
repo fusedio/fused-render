@@ -27,6 +27,14 @@ import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
+import { SearchIcon } from "lucide-react";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@platform/shadcn/ui/input-group";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 
 // The grid's three phases. "partial" is a REAL, OPENABLE prefix of the final
 // grid — Home's recent-first row (see the fetch effect) — not a placeholder:
@@ -287,8 +295,8 @@ export default function Apps({ config }: { config: Config }) {
   const active = mode === "repo" ? tag : category;
 
   return (
-    <div className="apps-page">
-      <div className="apps-inner">
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-[1120px] px-7 pt-9 pb-18">
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
@@ -302,65 +310,72 @@ export default function Apps({ config }: { config: Config }) {
         <ClaudeHealthStrip />
         <FdaStrip />
 
-        <div className="apps-toolbar">
+        <div className="mb-3.5 flex flex-wrap items-center justify-end gap-2.5">
           {/* Facet selector: which chip set filters the grid. Switching facets
               resets the filter to All — a selection from the old facet would
-              otherwise keep narrowing the grid invisibly under the new chips. */}
-          <div className="apps-filter-mode" role="group" aria-label="Filter by">
+              otherwise keep narrowing the grid invisibly under the new chips.
+              Always exactly one facet is on, so an empty toggle value (the
+              press that would deselect the active segment) is ignored. */}
+          <ToggleGroup
+            className="mr-auto"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Filter by"
+            value={[mode]}
+            onValueChange={(value) => {
+              const next = value[0] as FilterMode | undefined;
+              if (!next || next === mode) return;
+              setMode(next);
+              setFilter(next, null);
+            }}
+          >
             {MODES.map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                className={"apps-filter-mode-btn" + (mode === m.key ? " is-active" : "")}
-                onClick={() => {
-                  setMode(m.key);
-                  setFilter(m.key, null);
-                }}
-              >
+              <ToggleGroupItem key={m.key} value={m.key}>
                 {m.label}
-              </button>
+              </ToggleGroupItem>
             ))}
-          </div>
+          </ToggleGroup>
           {/* Held open through the partial phase (chips are catalog-derived and
               so still empty then): letting the row appear when the catalog
               lands would push the grid down under a pointer already on a
-              card. */}
+              card. "" stands for All — never a real chip value — so the group
+              always carries exactly one pressed item. */}
           {(chips.length > 0 || tag !== null || category !== null
             || apps.status === "partial") && (
-            <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
-              {/* Active only when nothing filters; clicking clears both params. */}
-              <button
-                type="button"
-                className={"apps-tag-chip" + (tag === null && category === null ? " is-active" : "")}
-                onClick={() => setFilter(mode, null)}
-              >
-                All
-              </button>
+            <ToggleGroup
+              className="flex-wrap justify-end"
+              size="sm"
+              aria-label={`Filter by ${modeLabel(mode)}`}
+              value={[active ?? ""]}
+              onValueChange={(value) => {
+                const next = value[0] as string | undefined;
+                // Re-pressing the active chip deselects in base-ui (empty
+                // value) — that gesture means "back to All" here.
+                if (next === undefined || next === "") setFilter(mode, null);
+                else setFilter(mode, next);
+              }}
+            >
+              <ToggleGroupItem value="">All</ToggleGroupItem>
               {chips.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  className={"apps-tag-chip" + (active === c ? " is-active" : "")}
-                  onClick={() => setFilter(mode, active === c ? null : c)}
-                >
+                <ToggleGroupItem key={c} value={c}>
                   {c}
-                </button>
+                </ToggleGroupItem>
               ))}
-            </div>
+            </ToggleGroup>
           )}
-          <div className="apps-search">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M21 21l-4.3-4.3" />
-            </svg>
-            <input
+          <InputGroup className="max-w-[340px] flex-[0_1_240px]">
+            <InputGroupAddon>
+              <SearchIcon aria-hidden="true" />
+            </InputGroupAddon>
+            <InputGroupInput
               type="search"
               placeholder="Search apps…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
             />
-          </div>
+          </InputGroup>
         </div>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -370,7 +385,7 @@ export default function Apps({ config }: { config: Config }) {
         {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status !== "loading" && (
           <>
-            <div className="apps-count">
+            <div className="mb-3 text-xs text-muted-foreground">
               {apps.status === "partial"
                 ? "Recently opened — loading all apps…"
                 : shown.length === all.length
@@ -381,14 +396,18 @@ export default function Apps({ config }: { config: Config }) {
               // Nothing to say yet during the partial phase: "no apps match" is
               // a claim about the whole catalog, which has not arrived.
               apps.status === "partial" ? null : (
-                <div className="home-empty">
-                  {all.length === 0
-                    ? "No apps yet. Describe one in the composer above to create it."
-                    : "No apps match — clear the search or filter."}
-                </div>
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyDescription>
+                      {all.length === 0
+                        ? "No apps yet. Describe one in the composer above to create it."
+                        : "No apps match — clear the search or filter."}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               )
             ) : (
-              <div className="apps-cards">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4.5">
                 {shown.map((app) => (
                   <AppPreviewCard
                     key={app.path}

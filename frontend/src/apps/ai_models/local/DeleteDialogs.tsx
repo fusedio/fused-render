@@ -20,6 +20,8 @@ import { type Pending } from "./LocalTab";
 import { type AiModelDeleteTarget } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { Modal } from "@platform/ui/modal/Modal";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 
 export function DeleteDialogs({
   pending,
@@ -45,22 +47,18 @@ export function DeleteDialogs({
         onClose={onClose}
         footer={
           <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy}
-              onClick={onClose}
-            >
+            <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="btn btn-danger"
+              variant="destructive"
               disabled={busy}
               onClick={() => onConfirm([{ dir: pending.repo.dir }], `deleted ${pending.repo.id}`)}
             >
+              {busy && <Spinner data-icon="inline-start" />}
               {busy ? "Deleting…" : `Delete · ${formatSize(pending.repo.size)}`}
-            </button>
+            </Button>
           </>
         }
       >

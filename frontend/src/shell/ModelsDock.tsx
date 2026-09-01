@@ -51,14 +51,20 @@
 // RepoUpdatesCardView use, for the identical reason: no polling, no network,
 // no `window`/`document`, so ModelsDock.test.tsx can render the view
 // directly with a fixed model list rather than mocking `useAiRuntime`.
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import StatusDot from "@platform/ui/StatusDot";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "@platform/shadcn/ui/empty";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@platform/shadcn/ui/popover";
 
 /** For a caller that mounts the view without an `onClose` — the pure view's
  *  outside-pointer-down handler needs a function, not a branch. */
@@ -273,9 +279,9 @@ function ModelRow({
         <span className="dl-title dl-title-id" title={model.model}>
           {repoName(model.model)}
         </span>
-        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
+        <Button variant="outline" size="xs" onClick={unload} disabled={busy}>
           {busy ? "Unloading…" : "Unload"}
-        </button>
+        </Button>
       </div>
       {/* The figures, on their own line — `.dl-row-figures` in
           notifications.css. A non-ready worker holds no weights yet, so there
@@ -338,13 +344,23 @@ export function ModelsCardView({
   // (as the merged Activity chip's did) answers a different question than
   // the one the user relies on this dot for.
   const idle = models.length === 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host" ref={hostRef}>
+    // The `.dl-host` div is the chip's STATUS-BAR SEGMENT (height, flex) and
+    // nothing else now: the panel is a shadcn Popover (base-ui), which portals,
+    // positions above the chip, and reports every close intent through
+    // onOpenChange — outside pointer-down and Escape land as non-trigger
+    // reasons and spend the same transient `onClose` (forceClose) the old
+    // useDismissOnOutside spent, while a trigger press keeps meaning the
+    // preference-aware `onToggle`.
+    <div className="dl-host">
+    <Popover
+      open={!collapsed}
+      onOpenChange={(next, details) => {
+        if (details.reason === "trigger-press") onToggle();
+        else if (!next) (onClose ?? NOOP)();
+      }}
+    >
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
           inspiration" — the bar shows the category NAME and nothing that
@@ -354,11 +370,13 @@ export function ModelsCardView({
           apply here). The label is "Models" whether or not anything is
           resident — the ONLY difference between idle and active is whether the
           circle beside it is outlined or filled, plus `.is-idle`'s muting. */}
-      <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show loaded models" : "Hide loaded models"}
+      <PopoverTrigger
+        render={
+          <button
+            className={"dl-toggle" + (idle ? " is-idle" : "")}
+            title={collapsed ? "Show loaded models" : "Hide loaded models"}
+          />
+        }
       >
         {/* THE SAME CIRCLE AS EVERY OTHER CHIP (D590, user: "lets just stick
             to a circle for all items"). Filled whenever ANY model is
@@ -370,25 +388,28 @@ export function ModelsCardView({
           on={models.length > 0}
           label={models.length > 0 ? "models loaded" : "no models loaded"}
         />
-      </button>
-      {!collapsed && (
-        <div className="dl-panel">
-          {idle ? (
-            <div className="dl-panel-empty">No models loaded</div>
-          ) : (
-            <div className="dl-rows">
-              {models.map((m) => (
-                <ModelRow
-                  key={m.model}
-                  model={m}
-                  ceilingBytes={ceilingBytes}
-                  onUnload={onUnload}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" className="w-80 p-2">
+        {idle ? (
+          <Empty className="p-4">
+            <EmptyHeader>
+              <EmptyDescription>No models loaded</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="dl-rows">
+            {models.map((m) => (
+              <ModelRow
+                key={m.model}
+                model={m}
+                ceilingBytes={ceilingBytes}
+                onUnload={onUnload}
+              />
+            ))}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
     </div>
   );
 }

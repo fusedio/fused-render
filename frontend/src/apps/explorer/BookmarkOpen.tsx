@@ -37,10 +37,10 @@ export default function BookmarkOpen({ file }: { file?: string }) {
 
   if (error) {
     return (
-      <div className="status-message error">
+      <div className="p-6 text-sm text-destructive">
         Failed to open {target || "bookmark"}: {error}
       </div>
     );
   }
-  return <div className="status-message">Opening bookmark…</div>;
+  return <div className="p-6 text-sm text-muted-foreground">Opening bookmark…</div>;
 }

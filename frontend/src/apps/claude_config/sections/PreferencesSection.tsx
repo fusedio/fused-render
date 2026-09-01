@@ -17,6 +17,15 @@
 // a key actually has a value — those two are what keep an inherited value
 // distinguishable from a chosen one.
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
@@ -98,8 +107,8 @@ function ScalarControl({
   };
 
   return (
-    <input
-      className="field-control cc-scalar"
+    <Input
+      className="cc-scalar"
       type={entry.control === "number" ? "number" : "text"}
       aria-label={entry.label}
       value={draft}
@@ -190,16 +199,15 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
           the same glyph as a local re-read. */}
       <SectionToolbar summary={`${data.schema.length} settings from the checked-in catalog`}
         onRefresh={reload}>
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="outline"
           disabled={refreshing}
           title="Re-fetch defaults & docs from code.claude.com and rewrite settings_catalog.json"
           onClick={refresh}
         >
           <Icon name="refresh" />
           {refreshing ? "Refreshing…" : "Refresh catalog"}
-        </button>
+        </Button>
       </SectionToolbar>
       {groups.map((g) => (
         <Group key={g.name} title={g.name}>
@@ -218,15 +226,16 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                       // and rendered ONLY once the value actually differs from
                       // the default, so it never sits beside a control that
                       // has nothing to reset.
-                      <button
-                        type="button"
-                        className="cc-iconbtn cc-reset"
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="cc-reset"
                         title="Reset to default"
                         aria-label={`Reset ${d.label} to default`}
                         onClick={() => patch(d.key, null)}
                       >
                         <Icon name="undo" />
-                      </button>
+                      </Button>
                     ) : (
                       // Column 1's other state: a quiet hint rather than
                       // inline text, so the fact ("Claude default", or the
@@ -274,29 +283,34 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                       />
                     )}
                     {d.control === "select" && (
-                      <select
-                        className="field-control"
-                        aria-label={d.label}
+                      <Select
                         value={isSet ? String(val) : ""}
-                        onChange={(e) => patch(d.key, e.target.value === "" ? null : e.target.value)}
+                        onValueChange={(v) => patch(d.key, v === "" ? null : v)}
                       >
-                        <option value="">— {unsetLabel(d)} —</option>
-                        {/* The value on disk when the catalog doesn't list it.
-                            settings.json is not validated against our curated
-                            options, and a select with no matching option falls
-                            back to the placeholder — i.e. a key that IS set
-                            (model: "fable") would render as "Claude default".
-                            Showing it as its own option is the difference
-                            between reporting the file and contradicting it. */}
-                        {isSet && !(d.options || []).includes(String(val)) && (
-                          <option value={String(val)}>{String(val)} (not in catalog)</option>
-                        )}
-                        {(d.options || []).map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger aria-label={d.label}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">— {unsetLabel(d)} —</SelectItem>
+                          {/* The value on disk when the catalog doesn't list it.
+                              settings.json is not validated against our curated
+                              options, and a select with no matching option falls
+                              back to the placeholder — i.e. a key that IS set
+                              (model: "fable") would render as "Claude default".
+                              Showing it as its own option is the difference
+                              between reporting the file and contradicting it. */}
+                          {isSet && !(d.options || []).includes(String(val)) && (
+                            <SelectItem value={String(val)}>
+                              {String(val)} (not in catalog)
+                            </SelectItem>
+                          )}
+                          {(d.options || []).map((o) => (
+                            <SelectItem key={o} value={o}>
+                              {o}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     )}
                     {(d.control === "text" || d.control === "number") && (
                       <ScalarControl

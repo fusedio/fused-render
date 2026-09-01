@@ -24,6 +24,8 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
 import { useConfigOpen, ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
@@ -390,13 +392,12 @@ export function TranscribeStage({ model }: { model: string }) {
               )}
             </div>
             {phase.step === "running" && (
-              <button
-                type="button"
-                className="btn btn-secondary"
+              <Button
+                variant="outline"
                 onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
               >
                 Stop
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -434,7 +435,11 @@ export function TranscribeStage({ model }: { model: string }) {
         </ConfigPanel>
 
 
-        {error && <p className="pg-error">{error}</p>}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
         {source && phase.step !== "recording" && (
           // The recording itself, playable — hearing what the model heard is
@@ -449,9 +454,8 @@ export function TranscribeStage({ model }: { model: string }) {
             </div>
             <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
             {!busy && (
-              <button
-                type="button"
-                className="btn btn-secondary"
+              <Button
+                variant="outline"
                 onClick={() => {
                   setError(null);
                   void transcribePath(source.path).catch((e: Error) => {
@@ -461,17 +465,18 @@ export function TranscribeStage({ model }: { model: string }) {
                 }}
               >
                 {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
-              </button>
+              </Button>
             )}
             {!busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-none"
                 title="Drop this recording and start over"
                 onClick={clear}
               >
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         )}

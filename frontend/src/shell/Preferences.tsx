@@ -54,6 +54,17 @@ import type { CallsParamsMode, HfAuth, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 
@@ -70,44 +81,35 @@ function AppearanceSection() {
   return (
     <section className="prefs-section">
       <h2>Appearance</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Light or dark for this app. Stored in this browser profile, so each browser and the
         desktop window remember their own choice. Applies immediately.
       </p>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "system"}
-          onChange={() => setPref("system")}
-        />
-        <span>
-          <b>System</b> — follows your desktop appearance, including a scheduled day/night
-          switch.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "light"}
-          onChange={() => setPref("light")}
-        />
-        <span>
-          <b>Light</b> — always light, whatever your desktop is set to.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "dark"}
-          onChange={() => setPref("dark")}
-        />
-        <span>
-          <b>Dark</b> — always dark, whatever your desktop is set to.
-        </span>
-      </label>
+      <RadioGroup
+        value={pref}
+        onValueChange={(v) => setPref(v as typeof pref)}
+        aria-label="Appearance"
+      >
+        <label className="prefs-radio">
+          <RadioGroupItem value="system" />
+          <span>
+            <b>System</b> — follows your desktop appearance, including a scheduled day/night
+            switch.
+          </span>
+        </label>
+        <label className="prefs-radio">
+          <RadioGroupItem value="light" />
+          <span>
+            <b>Light</b> — always light, whatever your desktop is set to.
+          </span>
+        </label>
+        <label className="prefs-radio">
+          <RadioGroupItem value="dark" />
+          <span>
+            <b>Dark</b> — always dark, whatever your desktop is set to.
+          </span>
+        </label>
+      </RadioGroup>
     </section>
   );
 }
@@ -133,7 +135,7 @@ function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   return (
     <>
       <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <Checkbox checked={enabled} disabled={busy} onCheckedChange={toggle} />
         <span>
           <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
           them aloud.
@@ -192,14 +194,14 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
   return (
     <section className="prefs-section">
       <h2>Canvases</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Canvases are Fused Workbench canvases opened locally: a listing of the canvases on your
         account and a per-canvas workspace with the live workbench embedded, editing the same
         UDFs. Off by default — turn it on and it appears in the sidebar (once you are signed in to
         Fused) and in this Settings menu.
       </p>
       <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <Checkbox checked={enabled} disabled={busy} onCheckedChange={toggle} />
         <span>
           <b>Show Canvases</b> in the sidebar and the Settings menu.
         </span>
@@ -227,7 +229,7 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   return (
     <section className="prefs-section">
       <h2>Default model</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Which Claude model this app reaches for when nothing else has said. It preselects the
         chat's model chip and picks the model behind <code>fused.ai</code>. A model chosen in a
         chat, or one a page passes to <code>fused.ai</code> itself, still wins — this only
@@ -236,11 +238,11 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
       <div className="prefs-field">
         <label>
           Model{" "}
-          <select
+          <Select
             value={prefs.model.default}
             disabled={busy}
-            onChange={async (e) => {
-              const next = e.target.value as Prefs["model"]["default"];
+            onValueChange={async (v) => {
+              const next = v as Prefs["model"]["default"];
               setBusy(true);
               setError(null);
               try {
@@ -252,12 +254,19 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
               }
             }}
           >
-            {prefs.model.choices.map((m) => (
-              <option key={m} value={m}>
-                {MODEL_LABELS[m] ?? m}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger>
+              <SelectValue>
+                {(v: string) => MODEL_LABELS[v] ?? v}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {prefs.model.choices.map((m) => (
+                <SelectItem key={m} value={m}>
+                  {MODEL_LABELS[m] ?? m}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -328,7 +337,7 @@ function HuggingFaceSection() {
   return (
     <section className="prefs-section">
       <h2>Hugging Face</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Sign in to download AI models. Without an account the Hub serves this machine
         anonymously, meaning a lower rate limit, slower downloads, and no access to gated or
         private repos. Signing in hands the token to <code>huggingface_hub</code>, which stores
@@ -340,32 +349,35 @@ function HuggingFaceSection() {
           {auth.pending ? (
             <div className="prefs-field">
               <p>
-                <a
-                  className="btn btn-primary hf-authorize-link"
-                  href={auth.pending.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Button
+                  render={
+                    <a
+                      href={auth.pending.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    />
+                  }
                 >
                   Authorize on huggingface.co
-                </a>
+                </Button>
               </p>
               {/* The code is shown as well as embedded in that link: the link
                   carries it, but the Hub asks for confirmation, and somebody who
                   opened the page in a different browser needs to type it. */}
-              <p className="deploy-muted">
+              <p className="text-xs text-muted-foreground">
                 Waiting for you to authorize. If asked for a code, enter{" "}
                 <code>{auth.pending.userCode}</code>. This code expires in{" "}
                 {Math.max(1, Math.round(auth.pending.secondsLeft / 60))} min.
               </p>
               <div className="prefs-actions">
-                <button
+                <Button
                   type="button"
-                  className="btn btn-secondary"
+                  variant="outline"
                   disabled={busy}
                   onClick={() => void act(cancelHfLogin)}
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
@@ -375,24 +387,24 @@ function HuggingFaceSection() {
                   <span>
                     Signed in{auth.account ? <> as <b>{auth.account}</b></> : null}
                   </span>
-                  <button
+                  <Button
                     type="button"
-                    className="btn btn-danger-text"
+                    variant="ghost"
+                    className="text-destructive"
                     disabled={busy || locked}
                     onClick={() => void act(hfLogout)}
                   >
                     Log out
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button
+                <Button
                   type="button"
-                  className="btn btn-primary"
                   disabled={busy || locked}
                   onClick={() => void act(() => startHfLogin())}
                 >
                   Log in to Hugging Face
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -404,7 +416,7 @@ function HuggingFaceSection() {
               one no control can show: a variable overriding hf's store, where
               the button is present and would change nothing. */}
           {locked && (
-            <div className="deploy-muted">
+            <div className="text-xs text-muted-foreground">
               Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
               environment — hf reads that ahead of its own store, so signing in here would
               change nothing until the variable is removed.
@@ -457,7 +469,7 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   return (
     <section className="prefs-section">
       <h2>Call log</h2>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Records every API call your pages make — each <code>runPython</code>, <code>readFile</code>,{" "}
         <code>stat</code> and <code>writeFile</code>, with its duration, result size, output and
         any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
@@ -469,17 +481,16 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           reports reality. They diverge whenever FUSED_RENDER_CALLS wins, and
           the control is disabled then so the discrepancy can't be acted on. */}
       <label className="prefs-radio">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={calls.enabled}
           disabled={busy || enabledLocked}
-          onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
+          onCheckedChange={() => apply(() => putCallsEnabled(!calls.enabled))}
         />
         <span>
           <b>Record API calls</b> made by pages rendered in this app.
         </span>
       </label>
-      <div className="deploy-muted">
+      <div className="text-xs text-muted-foreground">
         Currently <b>{calls.effective_enabled ? "recording" : "not recording"}</b>
         {enabledLocked && (
           <>
@@ -495,17 +506,26 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           {/* Gated on what is actually recording, not on the stored pref —
               otherwise an env-forced off state leaves these live, and an
               env-forced on state greys them out while calls are landing. */}
-          <select
+          <Select
             value={calls.params}
             disabled={busy || !calls.effective_enabled}
-            onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
+            onValueChange={(v) => apply(() => putCallsParamsMode(v as CallsParamsMode))}
           >
-            <option value="full">Record values</option>
-            <option value="keys">Record names only</option>
-            <option value="off">Record nothing</option>
-          </select>
+            <SelectTrigger>
+              <SelectValue>
+                {(v: string) =>
+                  ({ full: "Record values", keys: "Record names only", off: "Record nothing" })[v] ?? v
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="full">Record values</SelectItem>
+              <SelectItem value="keys">Record names only</SelectItem>
+              <SelectItem value="off">Record nothing</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
-        <p className="deploy-muted">
+        <p className="text-xs text-muted-foreground">
           A run's parameters are usually the whole repro, so they are recorded by default — they
           are already visible in the URL. Switch to names-only if a page passes a secret as a
           parameter.
@@ -514,27 +534,34 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       <div className="prefs-field">
         <label>
           Keep for{" "}
-          <select
+          <Select
             value={String(calls.retention_days)}
             disabled={busy || !calls.effective_enabled || retentionLocked}
-            onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
+            onValueChange={(v) => apply(() => putCallsRetentionDays(Number(v)))}
           >
-            <option value="1">1 day</option>
-            <option value="7">7 days</option>
-            <option value="14">14 days</option>
-            <option value="90">90 days</option>
-            <option value="0">Until the size cap</option>
-          </select>
+            <SelectTrigger>
+              <SelectValue>
+                {(v: string) => (v === "0" ? "Until the size cap" : describeRetention(Number(v)))}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">1 day</SelectItem>
+              <SelectItem value="7">7 days</SelectItem>
+              <SelectItem value="14">14 days</SelectItem>
+              <SelectItem value="90">90 days</SelectItem>
+              <SelectItem value="0">Until the size cap</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         {retentionLocked && (
-          <p className="deploy-muted">
+          <p className="text-xs text-muted-foreground">
             Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked by{" "}
             <code>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</code> for this
             process; the choice above applies once the variable is removed.
           </p>
         )}
       </div>
-      <p className="deploy-muted">
+      <p className="text-xs text-muted-foreground">
         Stored at <code>{calls.dir}</code>
         {calls.dir_exists ? "." : " — no calls recorded yet, so the folder does not exist."}
       </p>
@@ -546,14 +573,15 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           append, so browsing beforehand navigates to a path that fails to stat
           — an error card where the answer is simply "nothing has run yet",
           which is also the answer to "why has no page got a Calls mode?". */}
-      <button
+      <Button
         type="button"
+        variant="outline"
         disabled={!calls.dir_exists}
         title={calls.dir_exists ? undefined : "No calls have been recorded yet"}
         onClick={() => navigate(calls.dir, { isDir: true })}
       >
         Browse call logs
-      </button>
+      </Button>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -598,38 +626,24 @@ export default function Preferences() {
       {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (
         <>
-          <div className="prefs-tabs">
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "render" ? " active" : "")}
-              onClick={() => setTab("render")}
-            >
-              Render preferences
-            </button>
-            {/* AI — which model, and with whose credentials (D403). Named for
-                the subject rather than for the two controls in it, so adding a
-                third does not rename the tab. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "ai" ? " active" : "")}
-              onClick={() => setTab("ai")}
-            >
-              AI
-            </button>
-            {/* Indexing — the file index behind the explorer's search. The TAB
-                is always present — a user looking for "why is search
-                finding/missing this" has nowhere else to go — even though
-                indexing itself now has an opt-out toggle inside it
-                (`indexing_enabled`): the panel is where that answer lives,
-                on or off. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
-              onClick={() => setTab("indexing")}
-            >
-              Indexing
-            </button>
-          </div>
+          {/* Tab state lives in the URL (`?tab=`) — the Tabs component is
+              controlled and setTab navigates, never local state. */}
+          <Tabs value={tab} onValueChange={(v) => setTab(v as PrefsTab)}>
+            <TabsList>
+              <TabsTrigger value="render">Render preferences</TabsTrigger>
+              {/* AI — which model, and with whose credentials (D403). Named for
+                  the subject rather than for the two controls in it, so adding a
+                  third does not rename the tab. */}
+              <TabsTrigger value="ai">AI</TabsTrigger>
+              {/* Indexing — the file index behind the explorer's search. The TAB
+                  is always present — a user looking for "why is search
+                  finding/missing this" has nowhere else to go — even though
+                  indexing itself now has an opt-out toggle inside it
+                  (`indexing_enabled`): the panel is where that answer lives,
+                  on or off. */}
+              <TabsTrigger value="indexing">Indexing</TabsTrigger>
+            </TabsList>
+          </Tabs>
           <div className="prefs-tabpanel">
             {tab === "render" && (
               <>

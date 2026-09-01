@@ -47,6 +47,10 @@ import {
   resumable,
 } from "@apps/ai_models/lib/aiModelGroups";
 import { tabHref } from "@apps/ai_models/routes";
+import { Trash2Icon } from "lucide-react";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Spinner } from "@platform/shadcn/ui/spinner";
 
 /** Where the Try button goes: the playground, with this model selected and
  *  nothing else carried over. */
@@ -418,7 +422,7 @@ export function RepoCard({
             a Space in the same cache is the exception the reader has to notice —
             it is not loadable, its Hub address is a different one (HUB_PREFIX),
             and the tag is the only thing on the card that says so. */}
-        {repo.kind !== "model" && <span className="cc-pill">{repo.kind}</span>}
+        {repo.kind !== "model" && <Badge variant="outline">{repo.kind}</Badge>}
         {/* Everything the face no longer carries, one click away and costing
             the head one 22px button. Last in the row, so it sits in the card's
             top-right corner whatever the name's length. */}
@@ -622,25 +626,28 @@ export function RepoCard({
             )
           )}
           {live ? (
-            <button
+            <Button
               type="button"
-              className="am-card-power am-card-power-on"
+              variant="outline"
+              size="xs"
               disabled={busy}
               data-hint={`Unload ${repo.id} and give its memory back`}
               onClick={onUnload}
             >
               Unload
-            </button>
+            </Button>
           ) : loading ? (
-            <button
+            <Button
               type="button"
-              className="am-card-power"
+              variant="outline"
+              size="xs"
               disabled
               data-hint={`${repo.id} is loading into memory — the ✕ on the progress row stops it`}
               aria-label={`${repo.id} is loading`}
             >
+              <Spinner data-icon="inline-start" />
               Loading…
-            </button>
+            </Button>
           ) : resumable(repo) && !resumeCapability ? (
             /* THE DEAD END, given a way out (D437). A user hit this in the
                wild: a folder holding one 40-byte `refs/main` and nothing else,
@@ -652,9 +659,10 @@ export function RepoCard({
                So when the resume is impossible, the primary control becomes the
                act that IS possible. Same trash target, same confirm dialog: this
                is the labelled door to it, not a second way of deleting. */
-            <button
+            <Button
               type="button"
-              className="am-card-power am-card-power-discard"
+              variant="destructive"
+              size="xs"
               disabled={busy || !!inUse}
               data-hint={
                 inUse
@@ -669,7 +677,7 @@ export function RepoCard({
               onClick={onDeleteRepo}
             >
               Delete
-            </button>
+            </Button>
           ) : resumable(repo) ? (
             /* The one card state whose control is a DOWNLOAD rather than a Load
                (D424). There is nothing to load — the snapshot is incomplete —
@@ -684,21 +692,23 @@ export function RepoCard({
                ways out of this state.
                Disabled while the pull is actually running, where "Downloading…"
                is what the label says and the job row below carries the bytes. */
-            <button
+            <Button
               type="button"
-              className="am-card-power"
+              variant="outline"
+              size="xs"
               disabled={busy || fetching || !!job}
               data-hint={`Continue downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
               aria-label={`Continue downloading ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
-              <DownloadGlyph />
+              {fetching || job ? <Spinner data-icon="inline-start" /> : <DownloadGlyph />}
               {fetching || job ? "Downloading…" : "Continue downloading"}
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
-              className="am-card-power"
+              variant="outline"
+              size="xs"
               disabled={busy || !!job || !!refusal}
               data-hint={refusal ?? `Load ${repo.id} into memory so it can answer`}
               /* The reason again, in the accessible name. A hover-only hint is
@@ -711,8 +721,9 @@ export function RepoCard({
               }
               onClick={onLoad}
             >
+              {job && <Spinner data-icon="inline-start" />}
               {job ? "Loading…" : "Load"}
-            </button>
+            </Button>
           )}
           {/* THERE IS NO CancelButton HERE ANY MORE (2026-08-24). It was the way
               out of a running download (D440) — necessary, because while a pull
@@ -737,8 +748,11 @@ export function RepoCard({
               silently falls back to a different model. A real <a href>, like
               Explore beside it. */}
           {repo.capability && !refusal && (
-            <a
-              className="cc-iconbtn am-card-try"
+            <Button
+              variant="ghost"
+              size="xs"
+              className="am-card-try"
+              render={<a
               /* An EXPLICIT search, not the current one: `tabHref`'s default is
                  to carry the query across a tab switch (see routes.ts), which
                  is right for the strip and wrong here — this link's whole job
@@ -760,9 +774,10 @@ export function RepoCard({
                 e.preventDefault();
                 navigateUrl(tryHref(repo));
               }}
+              />}
             >
               Try
-            </a>
+            </Button>
           )}
           {/* NO EXPLORE ICON, AND NO CHEVRON (2026-08-24). Explore is the same
               destination it always was — this folder's own model card view
@@ -771,28 +786,18 @@ export function RepoCard({
               had nothing left to open once the drawer's facts became rows in
               that panel. What is left in this strip is one verb, one link and
               one trash: the acts, and nothing that merely reveals. */}
-          <button
+          <Button
             type="button"
-            className="cc-iconbtn cc-iconbtn-danger"
+            variant="ghost"
+            size="icon-xs"
+            className="text-destructive"
             data-hint={inUse ? `Cannot delete ${repo.id}: ${inUse}` : `Delete ${repo.id}`}
             aria-label={`Delete ${repo.id}`}
             disabled={!!inUse}
             onClick={onDeleteRepo}
           >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
-            </svg>
-          </button>
+            <Trash2Icon />
+          </Button>
         </span>
       </div>
       {/* NO REFUSAL PARAGRAPH, AND NO DRAWER, BELOW THIS POINT (2026-08-24).
