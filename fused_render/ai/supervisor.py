@@ -124,6 +124,11 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+#: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
+#: completions from the same resident model are two pieces of work with two
+#: answers, and a shared id would have the second overwrite the first's row
+#: mid-stream.
+TEXT_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-text:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -1577,6 +1582,35 @@ def _transcribe_title(request: dict, model: str) -> str:
 def transcribe_job_id(uid: str) -> str:
     """The download-manager row for one transcription. See `image_job_id`."""
     return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_job_id(uid: str) -> str:
+    """The download-manager row for one text completion. See `image_job_id`."""
+    return TEXT_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_row_fields(title: str, model: str = "") -> dict:
+    """Everything a report must carry for a text-generation row to survive
+    being REBUILT — see `transcribe_row_fields`'s docstring for the full
+    argument (a row can be recreated from scratch on any tick, so every
+    reporter restates its identity rather than a mutable field somewhere
+    holding it).
+
+    Driven from `server/ai.py`'s `_local_relay`, not from this module: that
+    is the caller that already turns a done-frame/error/cancellation into a
+    verdict for both the streaming and non-streaming shapes, and it is the
+    one that mints ids for the other kinds too (`image_job_id`,
+    `transcribe_job_id`). `generate_text` itself stays fail-fast with no job
+    of its own — see its own docstring — so there is nothing here shaped
+    like `_transcribe_row`'s in-progress variant; the caller builds its own
+    opening/tick/terminal payloads directly off this one.
+
+    `unit="tokens"`: the row counts chunks emitted, not bytes or seconds —
+    unlike a transcription's `"s"` or a download's `"bytes"`, the useful
+    number here is how much has been said so far.
+    """
+    return {"title": title, "model": model, "kind": "task", "cancellable": True,
+            "unit": "tokens"}
 
 
 def start_transcribe(model: str, request: dict, job: str) -> None:
