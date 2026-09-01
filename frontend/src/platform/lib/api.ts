@@ -934,6 +934,11 @@ export interface Prefs {
     ip: string | null;
     port: number | null;
     error: string | null;
+    // The https listener beside the http one (for the native app); its
+    // failure leaves browsers working and is reported separately.
+    https_url: string | null;
+    https_port: number | null;
+    tls_error: string | null;
     // Devices paired by scanning the QR code (lan.py): what the Preferences
     // list shows and can revoke.
     devices: LanDevice[];

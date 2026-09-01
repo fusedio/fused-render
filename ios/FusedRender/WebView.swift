@@ -191,12 +191,18 @@ struct WebView: UIViewRepresentable {
         }
 
         // Pages may ask for the microphone / camera. Over https they have a
-        // secure context and WebKit asks us; grant, and let iOS's own
-        // permission prompt decide.
+        // secure context and WebKit asks us. Grant silently only to the paired
+        // computer's own page in the main frame — the same line the capture
+        // bridge draws; anything else (a third-party iframe inside an app)
+        // gets WebKit's own prompt so nothing records behind the user's back.
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-            decisionHandler(.grant)
+            if frame.isMainFrame, origin.host == server.host {
+                decisionHandler(.grant)
+            } else {
+                decisionHandler(.prompt)
+            }
         }
     }
 }

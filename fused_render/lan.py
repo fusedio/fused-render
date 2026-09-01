@@ -299,6 +299,10 @@ _LAST_SEEN_STEP_S = 10 * 60
 
 _pair_tokens: dict[str, float] = {}  # token -> expiry (monotonic)
 _pair_lock = threading.Lock()
+# One lock around every read-modify-write of lan_devices.json: the LAN thread
+# bumps last_seen while the loopback thread revokes, and an unlocked bump could
+# write back a snapshot that still contains the device just revoked.
+_devices_lock = threading.Lock()
 
 
 def _devices_path() -> str:
@@ -334,12 +338,12 @@ def mint_pair_token() -> str:
     import time
 
     token = secrets.token_urlsafe(24)
-    now = time.monotonic()
     with _pair_lock:
-        for t, exp in list(_pair_tokens.items()):
-            if exp < now:
-                del _pair_tokens[t]
-        _pair_tokens[token] = now + PAIR_TOKEN_TTL_S
+        # Exactly one live code: Preferences shows one QR, and minting a new
+        # one (rotation, "New code", a pairing) must invalidate what the old
+        # QR still displays somewhere.
+        _pair_tokens.clear()
+        _pair_tokens[token] = time.monotonic() + PAIR_TOKEN_TTL_S
     return token
 
 
@@ -398,9 +402,10 @@ def _pair_device(user_agent: str) -> tuple[str, dict]:
         "paired_at": now,
         "last_seen": now,
     }
-    devices = _read_devices()
-    devices.append(record)
-    _write_devices(devices)
+    with _devices_lock:
+        devices = _read_devices()
+        devices.append(record)
+        _write_devices(devices)
     return secret, _public(record)
 
 
@@ -413,16 +418,18 @@ def list_devices() -> list[dict]:
 
 
 def revoke_device(device_id: str) -> bool:
-    devices = _read_devices()
-    kept = [d for d in devices if d.get("id") != device_id]
-    if len(kept) == len(devices):
-        return False
-    _write_devices(kept)
+    with _devices_lock:
+        devices = _read_devices()
+        kept = [d for d in devices if d.get("id") != device_id]
+        if len(kept) == len(devices):
+            return False
+        _write_devices(kept)
     return True
 
 
 def revoke_all_devices() -> None:
-    _write_devices([])
+    with _devices_lock:
+        _write_devices([])
 
 
 def _cookie_secret(scope) -> str | None:
@@ -444,17 +451,18 @@ def _paired(scope) -> bool:
     if not secret:
         return False
     digest = _hash(secret)
-    devices = _read_devices()
-    for d in devices:
-        if d.get("hash") == digest:
-            now = time.time()
-            if now - float(d.get("last_seen") or 0) > _LAST_SEEN_STEP_S:
-                d["last_seen"] = now
-                try:
-                    _write_devices(devices)
-                except OSError:
-                    pass
-            return True
+    with _devices_lock:
+        devices = _read_devices()
+        for d in devices:
+            if d.get("hash") == digest:
+                now = time.time()
+                if now - float(d.get("last_seen") or 0) > _LAST_SEEN_STEP_S:
+                    d["last_seen"] = now
+                    try:
+                        _write_devices(devices)
+                    except OSError:
+                        pass
+                return True
     return False
 
 
@@ -892,11 +900,15 @@ class _Controller:
         if self.running and ip and ip != self._ip:
             # Wi-Fi changed under us: re-advertise the new address, and reissue
             # the certificate (it names the address) on a fresh https listener.
-            self._advertise(ip)
-            if ip != self._tls_ip:
-                with self._lock:
-                    self._stop_tls()
-                    self._start_tls(ip)
+            # Under the controller lock: this runs on whatever thread asks for
+            # prefs, and must not race apply()'s start/stop of the same
+            # zeroconf and tls state.
+            with self._lock:
+                if self.running and ip != self._ip:
+                    self._advertise(ip)
+                    if ip != self._tls_ip:
+                        self._stop_tls()
+                        self._start_tls(ip)
         from fused_render import lan_tls
 
         try:

@@ -113,7 +113,11 @@ def ensure_server_cert(hosts: list[str], ips: list[str]) -> tuple[str, str]:
             have_dns = sorted(san.get_values_for_type(x509.DNSName))
             have_ips = sorted(str(i) for i in san.get_values_for_type(x509.IPAddress))
             fresh = cur.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=14)
-            if have_dns == wanted_dns and have_ips == wanted_ips and fresh and cur.issuer == ca_cert.subject:
+            # Signature check, not an issuer-name check: a regenerated CA has
+            # the same name, and a leaf the old key signed would then be served
+            # while the QR advertises the new CA — every new pairing failing.
+            cur.verify_directly_issued_by(ca_cert)
+            if have_dns == wanted_dns and have_ips == wanted_ips and fresh:
                 return cert_path, key_path
         except Exception:  # noqa: BLE001 — unreadable leaf → reissue
             pass

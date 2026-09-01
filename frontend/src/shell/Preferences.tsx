@@ -298,6 +298,15 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
       {enabled && !lan?.running && (
         <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
       )}
+      {/* The listener can be up while a piece of it failed — zeroconf missing
+          (no render.fused.local name), no network address, or the https
+          listener down. Those must not hide behind a working QR. */}
+      {enabled && lan?.running && lan.error && (
+        <ErrorBanner>{`Sharing, but: ${lan.error}`}</ErrorBanner>
+      )}
+      {enabled && lan?.running && !lan.error && lan.tls_error && (
+        <ErrorBanner>{`The app's https listener is down (browsers unaffected): ${lan.tls_error}`}</ErrorBanner>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
