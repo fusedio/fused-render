@@ -55,6 +55,11 @@ export interface Job {
   // Server-computed: running, but nothing has reported in a while. The reporter
   // is gone (its page was closed); the work may well be carrying on.
   stalled: boolean;
+  // The id of another row this row is blocked on, or "" for the ordinary
+  // case — set server-side while an image/video render waits on a shared
+  // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
+  // `mergedRows` below for what the manager does with it.
+  waiting_for: string;
 }
 
 export interface JobsSnapshot {
@@ -219,6 +224,34 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
     const entry = scheduleEntryId(j.id);
     return entry === "" || !ids.has(entry);
   });
+}
+
+/**
+ * `jobRows`'s sibling for the other place two rows can describe ONE unit of
+ * work (SPEC §36): an image/video render blocked on a shared model load used
+ * to open a SECOND row — "Waiting for FLUX.2-klein-4B — Loading weights…" —
+ * right beside the load's own "Loading weights…" row, both true, both saying
+ * the same thing. `_wait_ready` (`fused_render/ai/supervisor.py`) now merges
+ * the load's live progress onto the caller's row instead and marks it
+ * `waiting_for` the load's job id; this is the client half that acts on it —
+ * drop whichever row is NAMED by another row's `waiting_for`, for as long as
+ * that reference is live.
+ *
+ * "Live" is `isRunning`, deliberately, not "present": a reference from a row
+ * that has gone TERMINAL — most tellingly, an `error` — must not hide
+ * anything, because that is exactly the case the merge exists to still get
+ * right (D266) — a wait that ends in a real load failure has to show up as
+ * two rows again, one for each side's own failure, not stay collapsed into
+ * whichever tick last pointed at the other.
+ *
+ * `waiting_for` is server-only (`fused_render/jobs.py` `Job.waiting_for`), so
+ * a page cannot use this filter to hide a row it does not own.
+ */
+export function mergedRows(jobs: Job[]): Job[] {
+  const hidden = new Set(
+    jobs.filter((j) => j.waiting_for && isRunning(j)).map((j) => j.waiting_for),
+  );
+  return jobs.filter((j) => !hidden.has(j.id));
 }
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
