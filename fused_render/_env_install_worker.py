@@ -88,6 +88,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 try:
     import fcntl  # POSIX only; Windows raises ImportError, handled below.
@@ -201,7 +204,8 @@ def _uv_env(**overrides):
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None,
-           activity=None, bytes_done=None, bytes_total=None, needs_build=None):
+           activity=None, bytes_done=None, bytes_total=None, needs_build=None,
+           platform_incompatible=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
     # same file (envinstall._write) and two writers racing on one temp means the
     # first os.replace consumes the second's file, whose replace then fails.
@@ -227,13 +231,23 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
     # the "Install anyway" retry off this field instead of re-parsing `error`'s
     # text itself. `error` still carries uv's message verbatim (SPEC PY-18) —
     # this is an ADDITIONAL field, not a replacement for it.
+    #
+    # `platform_incompatible`: set instead of (never alongside) `needs_build`
+    # when `_incompatible_platform_name` (below) determines the refused
+    # package can never build HERE — a dict of `{"package", "platform",
+    # "current_platform"}`, or None. `error` is still uv's verbatim text
+    # either way; this is what lets `envinstall._mirror_into_jobs` and
+    # `runtime.js` each render their own plain-language sentence instead of
+    # uv's jargon, and skip the "Install anyway" retry entirely for a
+    # platform nothing will ever satisfy.
     path = os.path.join(progress_dir, "progress.json")
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": pct, "detail": detail, "done": done,
                    "error": error, "pid": os.getpid(), "ts": time.time(),
                    "activity": activity, "bytes_done": bytes_done,
-                   "bytes_total": bytes_total, "needs_build": needs_build}, f)
+                   "bytes_total": bytes_total, "needs_build": needs_build,
+                   "platform_incompatible": platform_incompatible}, f)
     os.replace(tmp, path)
 
 
@@ -1650,9 +1664,14 @@ _NO_BUILD_HINT = re.compile(
 # Verified against real uv 0.12.5 (`uv lock && uv sync --no-default-groups
 # --no-build --no-install-project`). The package name sits before the
 # `==version @ source` — `[^`=]+` stops at the first `=` so a name is never
-# captured with its pin attached.
+# captured with its pin attached. The second group captures everything
+# between `==` and the closing backtick — uv writes `X==1.2.3 @
+# registry+https://…` inside them, so `_no_build_pinned_version` (below)
+# still has to trim the ` @ source` suffix off itself; the hint wording
+# never carries a pin at all, since it fires during resolution, before uv
+# has settled on one version to try.
 _NO_BUILD_DISTRIBUTION = re.compile(
-    r"Distribution `([^`=]+)==[^`]*` can't be installed because it is marked as `--no-build`")
+    r"Distribution `([^`=]+)==([^`]*)` can't be installed because it is marked as `--no-build`")
 
 
 def _no_build_package(message):
@@ -1673,6 +1692,170 @@ def _no_build_package(message):
         return hint[1]
     dist = _NO_BUILD_DISTRIBUTION.search(message)
     return dist[1] if dist else None
+
+
+def _no_build_pinned_version(message):
+    """The exact version uv refused to build, when the refusal came from the
+    install-time `_NO_BUILD_DISTRIBUTION` wording (a `uv.lock` already pins
+    one). None for the resolution-time `hint:` wording, which names no
+    version at all, and None whenever `_no_build_package` itself would —
+    callers only ever call this once that already matched.
+    """
+    if not isinstance(message, str):
+        return None
+    dist = _NO_BUILD_DISTRIBUTION.search(message)
+    if not dist:
+        return None
+    return dist[2].split()[0] if dist[2].split() else None
+
+
+# Dogfooding on Linux surfaced a refusal `_no_build_package` correctly
+# detects but that the "Install anyway" prompt cannot honestly offer:
+# `pyobjc-framework-applicationservices`, a macOS-only wheel set with no
+# `sys_platform` marker in the manifest to have warned about it earlier.
+# Compiling it here needs Objective-C frameworks this machine will never
+# have — the prompt is not a real choice, only a guaranteed multi-minute
+# wait ending in the same failure. uv's own refusal text cannot tell the two
+# cases apart (`_NO_BUILD_HINT`/`_NO_BUILD_DISTRIBUTION` are byte-identical
+# for "no wheels exist" and "wheels exist, but not for this platform"), so
+# this looks the fact up independently, on PyPI.
+#
+# Modelled on `ai/hub_metadata.py`'s `_fetch_raw` rather than
+# `update/common.py`'s manifest fetch: the update path is security-critical
+# and correctly fails CLOSED (raises, refuses to trust an unverifiable
+# manifest) — but a platform-incompatibility check that cannot complete must
+# fail OPEN, to the ordinary compile prompt, exactly like `hub_metadata`
+# already does for its own best-effort catalog enrichment. Same shape here:
+# one broad exception tuple, a short timeout, a byte cap, no exception ever
+# escapes this function.
+_PYPI_TIMEOUT_S = 3.0
+_PYPI_MAX_BYTES = 2 * 1024 * 1024
+_PYPI_PROJECT_URL = "https://pypi.org/pypi/{name}/json"
+_PYPI_RELEASE_URL = "https://pypi.org/pypi/{name}/{version}/json"
+_PYPI_UNREACHABLE = (urllib.error.URLError, OSError, ValueError, TimeoutError)
+
+
+def _fetch_pypi_json(name, version):
+    """The PyPI JSON body for `name`==`version` (`_NO_BUILD_DISTRIBUTION` case),
+    or for the project's latest release when `version` is None
+    (`_NO_BUILD_HINT` gives no version at all) — or None on ANY failure:
+    offline, unreachable, a timeout, a 404 for a version PyPI never
+    published, a non-JSON body, anything. This is the one network seam
+    `_incompatible_platform_name` calls through, and the only one this
+    module has — kept to a single injectable function so tests can cover
+    every branch (wheels-elsewhere-only, no-wheels, timeout, malformed JSON,
+    404) by swapping this one thing, without a socket.
+    """
+    url = (_PYPI_RELEASE_URL.format(name=urllib.parse.quote(name),
+                                     version=urllib.parse.quote(version))
+           if version else _PYPI_PROJECT_URL.format(name=urllib.parse.quote(name)))
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=_PYPI_TIMEOUT_S) as response:
+            raw = response.read(_PYPI_MAX_BYTES + 1)
+        if len(raw) > _PYPI_MAX_BYTES:
+            return None
+        return json.loads(raw)
+    except _PYPI_UNREACHABLE:
+        return None
+
+
+def _wheel_platform_tags(filename):
+    """The platform compatibility tag(s) a `.whl` filename declares (PEP 427:
+    `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`) — a wheel
+    naming multiple compatible platform tags dot-joins them in that last
+    field, e.g. `macosx_10_9_x86_64.macosx_11_0_arm64`, so this returns a
+    set. None when `filename` is not shaped like a wheel at all: no `.whl`
+    suffix, or fewer than the five dash-separated fields PEP 427 always
+    writes (name/version themselves never contain a dash — the spec
+    requires `-` be normalized to `_` in both — so the LAST field is always
+    the platform tag regardless of how many dashes precede it).
+    """
+    if not filename.endswith(".whl"):
+        return None
+    parts = filename[: -len(".whl")].split("-")
+    if len(parts) < 5:
+        return None
+    return set(parts[-1].split("."))
+
+
+# A tag's PLATFORM FAMILY, not its exact tag — `macosx_10_9_universal2` and
+# `macosx_11_0_arm64` are both just "macOS" for this purpose, and treating
+# them as distinct would make two wheels for the same OS look like coverage
+# of two different ones.
+_PLATFORM_TAG_PREFIXES = (
+    ("macosx", "macosx"),
+    ("win", "win"),
+    ("manylinux", "linux"),
+    ("musllinux", "linux"),
+    ("linux", "linux"),
+)
+_PLATFORM_DISPLAY_NAME = {"macosx": "macOS", "win": "Windows", "linux": "Linux"}
+_CURRENT_PLATFORM_FAMILY = {"darwin": "macosx", "win32": "win", "linux": "linux"}.get(sys.platform)
+_CURRENT_PLATFORM_NAME = _PLATFORM_DISPLAY_NAME.get(_CURRENT_PLATFORM_FAMILY, sys.platform)
+
+
+def _platform_tag_family(tag):
+    if tag == "any":
+        return "any"  # a pure-python wheel: runs everywhere, no platform to name
+    for prefix, family in _PLATFORM_TAG_PREFIXES:
+        if tag.startswith(prefix):
+            return family
+    return None  # an unrecognized tag — never trusted to mean "not this platform"
+
+
+def _incompatible_platform_name(name, version, *, fetch=None):
+    """The human platform name (e.g. `"macOS"`) when PyPI publishes wheels
+    for `name`[`==version`] but NONE of them can ever run on this machine —
+    or None, which callers MUST treat as "fall back to the ordinary compile
+    prompt", in every one of these cases:
+
+    - no wheels at all (a source-only project — compiling is legitimate);
+    - a wheel exists that DOES cover this platform, or is pure-python
+      (`any`), or carries a tag this function does not recognize — the last
+      one on purpose: a future platform tag this code has never seen is not
+      evidence the current platform is unsupported, only that this function
+      is not yet current;
+    - the lookup itself could not reach a confident answer at all (`fetch`
+      returned None — see `_fetch_pypi_json`'s own docstring for the full
+      list of ways that happens).
+
+    Deriving the name from the tags actually found, never from a hardcoded
+    package list: this must work for the next macOS-only (or Windows-only,
+    or Linux-only) package nobody has heard of yet, not only the one that
+    was dogfooded.
+
+    `fetch` defaults to `_fetch_pypi_json`; tests inject a fake so every
+    branch is covered without a socket.
+    """
+    fetch = fetch or _fetch_pypi_json
+    payload = fetch(name, version)
+    if not isinstance(payload, dict):
+        return None
+    urls = payload.get("urls")
+    if not isinstance(urls, list) or not urls:
+        return None
+    families = set()
+    for entry in urls:
+        if not isinstance(entry, dict) or entry.get("packagetype") != "bdist_wheel":
+            continue
+        filename = entry.get("filename")
+        if not isinstance(filename, str):
+            continue
+        tags = _wheel_platform_tags(filename)
+        if tags:
+            families.update(_platform_tag_family(tag) for tag in tags)
+    if not families:
+        return None
+    if "any" in families or None in families or _CURRENT_PLATFORM_FAMILY in families:
+        return None
+    names = sorted({_PLATFORM_DISPLAY_NAME.get(family, family) for family in families},
+                   key=str.casefold)
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + ", and " + names[-1]
 
 
 def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
@@ -1700,13 +1883,14 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
     finished = []
 
     def write(stage, pct, detail="", done=False, error=None,
-              activity=None, bytes_done=None, bytes_total=None, needs_build=None):
+              activity=None, bytes_done=None, bytes_total=None, needs_build=None,
+              platform_incompatible=None):
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
             _write(progress_dir, stage, pct, detail, done, error,
                    activity=activity, bytes_done=bytes_done, bytes_total=bytes_total,
-                   needs_build=needs_build)
+                   needs_build=needs_build, platform_incompatible=platform_incompatible)
             # Latched only once the record is actually ON DISK. Latching before the
             # write would make a FAILED terminal write shut the file anyway, and the
             # `except` path's error record — the one carrying the reason — would
@@ -1830,7 +2014,32 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         # the possibility) must never be misread as the refusal this run
         # itself opted out of.
         needs_build = _no_build_package(str(e)) if not allow_build else None
-        write("error", 100, "", done=True, error=message, needs_build=needs_build)
+        # A `--no-build` refusal splits further: is this platform ever going
+        # to satisfy it, or is compiling a real (if slow, if risky) option?
+        # Checked only once `needs_build` is already set — a plain resolver
+        # failure never reaches this lookup at all — and the lookup itself
+        # can never turn a genuine refusal into something else: it can only
+        # downgrade `needs_build` to `platform_incompatible`, never invent
+        # either from nothing.
+        platform_incompatible = None
+        if needs_build:
+            incompatible = _incompatible_platform_name(
+                needs_build, _no_build_pinned_version(str(e)))
+            if incompatible:
+                platform_incompatible = {
+                    "package": needs_build,
+                    "platform": incompatible,
+                    "current_platform": _CURRENT_PLATFORM_NAME,
+                }
+                # Not a compile QUESTION any more — a platform FACT. Clearing
+                # `needs_build` here (rather than leaving both fields set) is
+                # what keeps this out of `envinstall._mirror_into_jobs`'s
+                # "waiting for your approval" branch and out of runtime.js's
+                # `confirmBuildRetry`: both key off `needs_build` alone, so a
+                # refusal this platform can never satisfy must not carry it.
+                needs_build = None
+        write("error", 100, "", done=True, error=message, needs_build=needs_build,
+              platform_incompatible=platform_incompatible)
         raise
 
 
