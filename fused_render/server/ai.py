@@ -1745,7 +1745,19 @@ def _ai_usage(raw) -> dict | None:
 # Warm claude instance for fused.ai (D168/D169): pay the ~2s Node/CLI
 # startup before the first request instead of inside it. Fire-and-forget —
 # server readiness never waits on it, and a missing binary just skips it.
+#
+# A fresh `_AiSession` is built here rather than reusing the module-level
+# one: `_AiSession.lock` is an `asyncio.Lock`, which binds itself to
+# whichever event loop first contends it and never rebinds. `prewarm_ai()`
+# is an `@on_startup` hook, so every app build touches its session's lock;
+# reusing one instance across two independent app builds (each with its own
+# event loop, e.g. two `TestClient(create_app(...))` blocks in one process)
+# risks a `RuntimeError: ... is bound to a different event loop` the moment
+# that lock is ever contended in one of those builds. A fresh session per
+# app keeps a build's lock scoped to only its own lifespan's loop.
 def prewarm_ai():
+    global _AI_SESSION
+    _AI_SESSION = _AiSession()
     _AI_SESSION.prewarm_default()
 
 async def shutdown_ai_session():

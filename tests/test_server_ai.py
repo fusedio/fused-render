@@ -1682,3 +1682,48 @@ def test_export_rejects_ai(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert any("fused.ai() is not supported on a hosted page" in e
                for e in plan.errors)
+
+
+# -- one AI session per app build, never shared across event loops ----------
+# `asyncio.Lock` binds itself to whichever event loop first CONTENDS it (an
+# uncontended acquire/release never binds at all) and permanently raises on
+# any later contended acquire from a different loop.  `_AiSession.lock` is
+# touched by both `prewarm_default()` and `shutdown()`, so a session object
+# reused across two independent app builds - each with its own event loop -
+# risks exactly that cross-loop RuntimeError the moment its lock is ever
+# contended in one of those builds.
+
+
+def test_a_contended_asyncio_lock_raises_when_reused_from_another_loop():
+    import asyncio
+
+    lock = asyncio.Lock()
+
+    async def hold_then_release():
+        async with lock:
+            await asyncio.sleep(0.02)
+
+    async def contend():
+        async with lock:
+            pass
+
+    async def first_loop():
+        await asyncio.gather(hold_then_release(), contend())
+
+    asyncio.run(first_loop())  # contended acquire binds `lock` to this loop
+
+    with pytest.raises(RuntimeError, match="different event loop"):
+        # An UNCONTENDED acquire never calls the loop-binding check at all
+        # (that's the fast path `Lock.acquire()` takes when nobody else
+        # holds it) - only a second contended acquire, from this second
+        # loop, exercises the check that finds the stale binding.
+        asyncio.run(first_loop())
+
+
+def test_prewarm_ai_gives_each_app_build_its_own_session(monkeypatch):
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    first = _server_ai._AI_SESSION
+    _server_ai.prewarm_ai()
+    second = _server_ai._AI_SESSION
+    assert second is not first
+    assert isinstance(second, _server_ai._AiSession)
