@@ -201,8 +201,8 @@ def _claude_seconds(data: dict) -> float | None:
 # until the next sign-in.
 #
 # IMPORTED, not written here. These used to be two literal tuples, and the app
-# held four such lists across this module, claude_config/lib.py, the learn
-# content's check_env.py and core_apps/sessions/analyze.py. Any directory
+# held four such lists across this module, claude_config/lib.py, and the
+# retired learn and sessions bundled content. Any directory
 # only some of them knew about was a directory where the app disagreed with
 # itself: a CLI in `~/.bun/bin` gave a working Preferences → Claude config tab
 # and an `ai_unavailable` from `fused.ai()` on the same machine. claude_health

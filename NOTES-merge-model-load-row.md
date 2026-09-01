@@ -1,6 +1,6 @@
 # Notes for a follow-up builder — merge-model-load-row
 
-Scratch notes beside DECISIONS.md's D627 entry (which has the actual design).
+Scratch notes beside DECISIONS.md's D628 entry (which has the actual design).
 This file is just the things that would otherwise only live in my head:
 deviations from the brief, dead ends, and loose ends worth knowing about.
 

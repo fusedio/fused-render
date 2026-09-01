@@ -13,9 +13,8 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
-  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
-  // every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts) — every mount lives at
+  // `${mounts_root}/<name>`.
   mounts_root: string;
   // Where shell code may write scratch files — bytes the app made and can
   // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
@@ -26,11 +25,6 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
-  // Whether the builtin sessions mount record exists yet — a surface linking
-  // into it renders only when this is true, so it's never a dead link
-  // (unpackaged dev run with no zip, or the brief window before startup's
-  // background automount thread has upserted the record).
-  sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
@@ -1407,10 +1401,6 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Sessions, D123/D227) that the
-  // server re-creates on every startup — the API rejects deleting it, so the
-  // Mounts view hides Delete for it too (unmount still works).
-  builtin: boolean;
   // Why restarting the rclone daemon would help this mount, else null:
   //  - "params" = the mount is live but its running options no longer match the
   //    record (e.g. read_only flipped) — a restart re-mounts to apply them.
