@@ -66,6 +66,10 @@ ALIAS_HOSTNAME = "render.local"
 #: Port 80 first so the URL carries no port (macOS ≥ 10.14 lets a non-root
 #: process bind it); the fallbacks are for Linux/Windows or a taken 80.
 PORT_CANDIDATES = (80, 8080, 1888)
+#: The https listener beside it (lan_tls.py): trusted by the native shell,
+#: which pins our private CA from the pairing QR; browsers keep http. 443
+#: first so the app's URL carries no port.
+TLS_PORT_CANDIDATES = (443, 8443, 1889)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -82,15 +86,39 @@ _ROOTS_TTL_S = 2.0
 _roots_cache: tuple[float, list[str]] | None = None
 
 
+#: The ONLY subfolders of the app-state dir (``home_dir()``, i.e.
+#: ``~/.fused-render`` or a branch nest of it) the LAN side may reach. That dir
+#: also holds the private CA key (``lan_tls/``), every Claude transcript,
+#: logs, search indexes, mount definitions and gigabytes of venvs and git
+#: branches — none of an app's business, and a paired phone that could read
+#: ``lan_tls/ca.key`` could impersonate the computer's https forever. So the
+#: state dir is NOT a root; only these leaves are, and everything else there is
+#: 404 over the LAN. Apps are not meant to write under the state dir at all —
+#: when a feature deliberately needs a new folder here, add its relative path
+#: to this list. Kept in sync by hand, on purpose.
+_HOME_SUBROOTS = (
+    "ai/images",      # /api/ai/image output
+    "ai/videos",      # /api/ai/video output
+    "ai/transcripts", # /api/ai/transcribe output
+    "recordings",     # fused.capture uploads
+    "data",           # per-app scratch state (data/<app>/…)
+    "canvases",       # the canvases sub-app store
+    "slides",         # the slides sub-app store
+    "docs",           # the docs sub-app store
+    "appfiles",       # .fused app-file staging
+    "app-versions",   # per-app version history
+)
+
+
 def allowed_roots() -> list[str]:
     """The folders the LAN side may reach: the whole workspace (``~/Fused`` —
-    every tag folder: local, showcase, clones …), the app state dir
-    (``~/.fused-render``, where apps keep per-install data beside prefs;
-    ``FUSED_RENDER_HOME`` moves it, so both the default and the effective dir
-    are listed), and every LINKED app — an external folder registered through
-    "Open app" (registered_apps.py), which the /apps hub lists beside the
-    workspace. Registered folders come from a JSON store, so the list is held
-    for a couple of seconds: one page load fans out into many scoped reads."""
+    every tag folder: local, showcase, clones …), a fixed allow-list of
+    app-data leaves under the app-state dir (``_HOME_SUBROOTS`` — NOT the whole
+    state dir, which holds the CA key, transcripts and logs), and every LINKED
+    app — an external folder registered through "Open app" (registered_apps.py),
+    which the /apps hub lists beside the workspace. Registered folders come from
+    a JSON store, so the list is held for a couple of seconds: one page load
+    fans out into many scoped reads."""
     global _roots_cache
     import time
 
@@ -99,7 +127,9 @@ def allowed_roots() -> list[str]:
         return _roots_cache[1]
     from fused_render.shell.storage import home_dir
 
-    roots = [fused_dir(), os.path.expanduser("~/.fused-render"), home_dir()]
+    home = home_dir()
+    roots = [fused_dir()]
+    roots.extend(os.path.join(home, sub) for sub in _HOME_SUBROOTS)
     try:
         from fused_render import registered_apps
 
@@ -246,12 +276,13 @@ def _not_found() -> Response:
 # http://render.fused.local/pair?t=<token>; the phone scans it, /pair sets a
 # long-lived device cookie and lands on the grid. No PIN, no approval dialog.
 # The token is minted over LOOPBACK (the desktop's own API — a LAN peer cannot
-# mint one) and is good for five minutes, AS MANY TIMES AS NEEDED — Preferences
-# rotates the code every five minutes. Multi-use is deliberate (owner's call):
-# iOS's Control Center scanner opens the URL in a sandboxed in-app browser whose
-# "Open in Safari" re-opens the SAME URL, so a single-use token paired the
-# sandbox and told Safari the code had expired. Every browser that opens a
-# live URL becomes its own device row; the list shows them all. The cookie is
+# mint one), is good for five minutes and pairs ONE device: Preferences shows a
+# fresh code the moment a pairing lands (it watches the device list) and every
+# five minutes regardless. Single-use is the owner's call (2026-08-28): a code
+# photographed off the screen must not pair a second device. The known cost —
+# iOS's Control Center scanner opens the URL in a sandboxed in-app browser
+# whose "Open in Safari" re-opens the same, now spent, URL — is accepted; the
+# Camera app and the native shell pair the right browser first time. The cookie is
 # 128 bits of randomness; the store keeps its SHA-256 plus a name derived from
 # the user agent, so a stolen store file cannot forge a cookie and the
 # Preferences list can say "iPhone · Safari, last seen 2h ago" and revoke it.
@@ -297,7 +328,7 @@ def _hash(secret: str) -> str:
 
 
 def mint_pair_token() -> str:
-    """A five-minute, multi-use pairing token. Loopback callers only (the router
+    """A five-minute, single-use pairing token. Loopback callers only (the router
     below is on the inner app; the LAN wrapper never forwards it)."""
     import secrets
     import time
@@ -312,11 +343,12 @@ def mint_pair_token() -> str:
     return token
 
 
-def _pair_token_valid(token: str) -> bool:
+def _spend_pair_token(token: str) -> bool:
+    """True once per token: valid and not used before."""
     import time
 
     with _pair_lock:
-        exp = _pair_tokens.get(token)
+        exp = _pair_tokens.pop(token, None)
     return exp is not None and exp >= time.monotonic()
 
 
@@ -336,7 +368,10 @@ def _device_name(user_agent: str) -> str:
         device = "Linux"
     else:
         device = "Device"
-    if "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
+    if "FusedRender-iOS/" in ua:
+        # The native shell (ios/) — not a browser, whatever WebKit's UA says.
+        browser = "Fused Render app"
+    elif "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
         browser = "Chrome"
     elif "Edg" in ua:
         browser = "Edge"
@@ -466,26 +501,43 @@ def _unauthorized(scope) -> Response:
     return JSONResponse({"error": "not paired"}, status_code=401)
 
 
-def _with_cookie(response: Response, secret: str) -> Response:
+def _with_cookie(response: Response, secret: str, *, secure: bool) -> Response:
+    # A cookie minted over https (the app) must never travel over http: without
+    # `Secure`, a plain http://render.fused.local link inside a page would replay
+    # it in cleartext on the Wi-Fi. Browsers pair over http and keep a plain one.
     response.set_cookie(COOKIE, secret, max_age=COOKIE_MAX_AGE_S, httponly=True,
-                        samesite="lax", path="/")
+                        samesite="lax", path="/", secure=secure)
     return response
 
 
+#: Called with the new device's public record when a phone pairs — the desktop
+#: app hooks a notification here ("iPhone · Fused Render app paired"); the CLI
+#: leaves it None and logs.
+on_paired = None
+
+
 def _handle_pair(scope) -> Response:
-    """A live token pairs THIS browser and lands it on the grid. Multi-use for
-    the token's five minutes (see the section comment): the Control Center
-    scanner's sandbox and the Safari it hands off to both open the same URL."""
+    """A live token pairs THIS browser and lands it on the grid. SINGLE use
+    (owner's call, 2026-08-28): one scan, one device; Preferences shows a fresh
+    code the moment a pairing lands. A code that was already used, or has run
+    out, gets the expired page."""
     query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
     token = (query.get("t") or [""])[0]
-    if not token or not _pair_token_valid(token):
+    if not token or not _spend_pair_token(token):
         return _pair_page(
             "That code has expired",
-            "Pairing codes last five minutes. Open Preferences → Share on local network on "
-            "the computer — it shows a fresh one — and scan again.",
+            "Each code pairs one device and lasts five minutes. Open Preferences → Render "
+            "local network on the computer — it shows a fresh one — and scan again.",
             "Not paired.")
-    secret, _record = _pair_device(_header(scope, b"user-agent"))
-    return _with_cookie(RedirectResponse("/", status_code=302), secret)
+    secret, record = _pair_device(_header(scope, b"user-agent"))
+    logger.info("lan: paired %s", record.get("name"))
+    if on_paired is not None:
+        try:
+            on_paired(record)
+        except Exception:  # noqa: BLE001 — a notification must never fail a pairing
+            logger.warning("lan: on_paired hook failed", exc_info=True)
+    return _with_cookie(RedirectResponse("/", status_code=302), secret,
+                        secure=scope.get("scheme") == "https")
 
 
 _RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")
@@ -495,9 +547,11 @@ _runtime_cache: tuple[tuple[float, float], bytes] | None = None
 
 def _phone_runtime() -> Response:
     """``/static/runtime.js`` for the phone: the stock runtime followed by
-    ``static/lan/runtime-phone.js``, which replaces the members that mean
-    something different on a phone (``fused.capture.*``, ``fused.fileIndex``,
-    ``fused.device``). Same URL the ``/render`` injection already emits, so no
+    ``static/lan/runtime-phone.js``, which sets ``fused.device`` and makes
+    ``fused.capture.*`` / ``fused.fileIndex`` fail fast with an error naming
+    where they ARE available (the computer, or the Fused Render app) — the
+    desktop implementations would record the computer, which is nonsense from
+    a phone. Same URL the ``/render`` injection already emits, so no
     HTML rewriting; the desktop's loopback server keeps serving the stock file.
     Concatenated once per (mtime, mtime) so a dev edit shows on reload."""
     global _runtime_cache
@@ -565,6 +619,20 @@ class LanApp:
             return _not_found()
         if path == "/pair" and method == "GET":
             return _handle_pair(scope)
+        if path == "/lan/ca.pem" and method == "GET":
+            # The private CA's PUBLIC certificate, for the native shell to pin
+            # after checking it against the fingerprint the QR carried.
+            from fused_render import lan_tls
+
+            return Response(lan_tls.ca_pem(), media_type="application/x-pem-file",
+                            headers={"Cache-Control": "no-store"})
+        if path == "/api/lan/tls" and method == "GET":
+            # Where https is and which CA signs it — for a shell that found the
+            # computer over Bonjour rather than a QR (trust on first use).
+            from fused_render import lan_tls
+
+            return JSONResponse({"https_port": _controller.tls_port,
+                                 "ca_fingerprint": lan_tls.ca_fingerprint() if _controller.tls_running else None})
         if not _paired(scope):
             return _unauthorized(scope)
 
@@ -583,7 +651,12 @@ class LanApp:
         if path.startswith("/a/"):
             return self._app_shortcut(path[3:])
         if path == "/static/runtime.js" and method in ("GET", "HEAD"):
-            return _phone_runtime()
+            # The native iOS shell (ios/) marks its user agent: it gets the
+            # STOCK runtime — a phone browser gets the "not available here"
+            # overrides, the shell installs its own native bridge on top
+            # (ios/FusedRender/Resources/runtime-ios.js).
+            if "FusedRender-iOS/" not in _header(scope, b"user-agent"):
+                return _phone_runtime()
 
         if any(path.startswith(p) for p in _PREFIXES):
             return None
@@ -785,6 +858,12 @@ class _Controller:
         self._ip: str | None = None
         self.port: int | None = None
         self.error: str | None = None
+        # The https listener (lan_tls.py) beside the http one.
+        self._tls_server = None
+        self._tls_thread: threading.Thread | None = None
+        self._tls_ip: str | None = None
+        self.tls_port: int | None = None
+        self.tls_error: str | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -794,16 +873,36 @@ class _Controller:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive() and self.port is not None
 
+    @property
+    def tls_running(self) -> bool:
+        return self._tls_thread is not None and self._tls_thread.is_alive() and self.tls_port is not None
+
     def url(self) -> str | None:
         if not self.running:
             return None
         return f"http://{HOSTNAME}/" if self.port == 80 else f"http://{HOSTNAME}:{self.port}/"
 
+    def https_url(self) -> str | None:
+        if not self.tls_running:
+            return None
+        return f"https://{HOSTNAME}/" if self.tls_port == 443 else f"https://{HOSTNAME}:{self.tls_port}/"
+
     def status(self) -> dict:
         ip = lan_ip()
         if self.running and ip and ip != self._ip:
-            # Wi-Fi changed under us: re-advertise the new address.
+            # Wi-Fi changed under us: re-advertise the new address, and reissue
+            # the certificate (it names the address) on a fresh https listener.
             self._advertise(ip)
+            if ip != self._tls_ip:
+                with self._lock:
+                    self._stop_tls()
+                    self._start_tls(ip)
+        from fused_render import lan_tls
+
+        try:
+            fingerprint = lan_tls.ca_fingerprint() if self.running else None
+        except Exception:  # noqa: BLE001
+            fingerprint = None
         return {
             "running": self.running,
             "url": self.url(),
@@ -812,8 +911,21 @@ class _Controller:
             "ip": ip,
             "port": self.port,
             "error": self.error,
+            "https_url": self.https_url(),
+            "https_port": self.tls_port,
+            "tls_error": self.tls_error,
+            "ca_fingerprint": fingerprint,
             "devices": list_devices(),
         }
+
+    def _stop_tls(self) -> None:
+        server, thread = self._tls_server, self._tls_thread
+        self._tls_server = self._tls_thread = None
+        self.tls_port = None
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(timeout=5.0)
 
     # -- start/stop
     def apply(self, enabled: bool) -> None:
@@ -855,21 +967,67 @@ class _Controller:
         thread.start()
         self._server, self._thread = server, thread
         ip = lan_ip()
+        # https first: the mDNS record names its port.
+        self._start_tls(ip)
         if ip:
             self._advertise(ip)
         else:
             self.error = "no network address found"
-        logger.info("lan: sharing ~/Fused/local at %s (%s:%s)", self.url(), ip, self.port)
+        logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ip)
+
+    def _start_tls(self, ip: str | None) -> None:
+        """The https listener for the native shell (lan_tls.py). Best-effort:
+        a failure here leaves http working and is reported in `tls_error`."""
+        import uvicorn
+
+        from fused_render import lan_tls
+
+        self.tls_error = None
+        try:
+            cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], [ip] if ip else [])
+            self._tls_ip = ip
+        except Exception as e:  # noqa: BLE001
+            self.tls_error = f"certificate: {e}"
+            logger.warning("lan: tls certificate failed: %s", e)
+            return
+        sock = None
+        for port in TLS_PORT_CANDIDATES:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
+                sock.listen(128)
+                self.tls_port = port
+                break
+            except OSError as e:
+                sock.close()
+                sock = None
+                logger.info("lan: tls port %s unavailable (%s)", port, e)
+        if sock is None:
+            self.tls_error = "no free https port among " + ", ".join(map(str, TLS_PORT_CANDIDATES))
+            self.tls_port = None
+            return
+        config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
+                                log_level="warning", lifespan="on",
+                                ssl_certfile=cert, ssl_keyfile=key)
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
+                                  daemon=True, name="fused-lan-tls")
+        thread.start()
+        self._tls_server, self._tls_thread = server, thread
 
     def _stop(self) -> None:
         self._unadvertise()
         server, thread = self._server, self._thread
-        self._server = self._thread = None
-        self.port = None
-        if server is not None:
-            server.should_exit = True
-        if thread is not None:
-            thread.join(timeout=5.0)
+        tls_server, tls_thread = self._tls_server, self._tls_thread
+        self._server = self._thread = self._tls_server = self._tls_thread = None
+        self.port = self.tls_port = None
+        for s in (server, tls_server):
+            if s is not None:
+                s.should_exit = True
+        for t in (thread, tls_thread):
+            if t is not None:
+                t.join(timeout=5.0)
         logger.info("lan: sharing stopped")
 
     # -- mDNS
@@ -890,7 +1048,8 @@ class _Controller:
                     addresses=[socket.inet_aton(ip)],
                     port=self.port or 80,
                     server=host + ".",
-                    properties={"path": "/"},
+                    # `https`: the port the native shell should prefer.
+                    properties={"path": "/", **({"https": str(self.tls_port)} if self.tls_port else {})},
                 )
                 zc.register_service(info)
                 infos.append(info)
@@ -945,15 +1104,29 @@ def _require_fused(x_fused: str | None):
 @router.get("/api/lan/pair-token")
 def api_lan_pair_token():
     """Mint a one-time pairing token and the URL to put in the QR code."""
+    from fused_render import lan_tls
+
     token = mint_pair_token()
     base = _controller.url()
-    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode({"t": token})
+    # The QR is an http URL so a browser can use it as-is. Two extra params
+    # ride along for the native shell: `ca`, the private CA's fingerprint, and
+    # `s`, the https port — it fetches /lan/ca.pem, checks the fingerprint, pins
+    # the CA, and pairs over https instead. Browsers ignore both.
+    params = {"t": token}
+    if _controller.tls_running:
+        try:
+            params["ca"] = lan_tls.ca_fingerprint()
+            params["s"] = str(_controller.tls_port)
+        except Exception:  # noqa: BLE001 — https stays optional
+            pass
+    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode(params)
     ip = _controller._ip or lan_ip()
     port = _controller.port
     ip_url = None
     if ip:
-        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode({"t": token})
-    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S}
+        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode(params)
+    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S,
+            "https_url": _controller.https_url(), "ca_fingerprint": params.get("ca")}
 
 
 @router.get("/api/lan/devices")
