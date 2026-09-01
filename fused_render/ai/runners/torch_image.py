@@ -754,7 +754,7 @@ def generate(body):
     # nothing has been fitted for this VAE, which is what lets the callback below
     # call it unconditionally — see `preview.sink`.
     frames = preview.sink(body.get("outPreview"), _loaded.get("vae"))
-    grid = preview.token_grid(width, height)
+    grid = preview.token_grid(_loaded.get("vae"), width, height)
 
     def on_step_end(pipeline, step, timestep, callback_kwargs):
         now = time.time()
