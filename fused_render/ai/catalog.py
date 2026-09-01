@@ -582,23 +582,57 @@ SUGGESTIONS: dict[str, list[dict]] = {
     ],
     "diffusers-image": [
         {
+            "id": "segmind/tiny-sd",
+            "params": "0.5B",
+            # No `quantization` field: this is plain fp16 diffusers weights,
+            # not a quantized checkpoint — the same reason
+            # `mlx-community/whisper-large-v3-mlx` above carries none. Adding
+            # one here would also be a wrong one: `fit._weight_bytes` would
+            # read it as a bytes-per-param claim to check `size_gb` against,
+            # and this repo's small size next to its param count comes from
+            # being a genuinely distilled UNet, not from a quantization
+            # scheme the field could name honestly.
+            "label": "Tiny SD (Segmind, SD1.5-distilled)",
+            "nickname": "Tiny SD",
+            # The whole repo, which is what `download()` fetches — a distilled
+            # UNet (647MB), CLIP's text encoder (246MB) and the SD1.5 VAE
+            # (167MB), all fp16, with no component repo or skipped subfolder to
+            # net out.
+            #
+            # Those three are `pytorch_model.bin`/`diffusion_pytorch_model.bin`
+            # pickles: this repo publishes no safetensors at all. Loadable —
+            # `formats.TORCH_WEIGHTS` names `.bin` and the diffusers runner
+            # opens every extension in it — but the AI Models page counts
+            # parameters off safetensors headers only, so this card takes its
+            # figure from the `params` field above and from nowhere else.
+            "size_gb": 1.1,
+            "note": "The smallest and quickest model here by a wide margin — "
+                    "a distilled Stable Diffusion 1.5, 512x512 only, and "
+                    "well behind FLUX.2 klein on prompt following and detail.",
+            # Not a step-distilled model: it wants ordinary SD1.5-class step
+            # counts, so it carries no `defaults` override and the server's
+            # generic default steps apply.
+        },
+        {
             "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
             "params": "4B",
             "quantization": "SDNQ 4-bit",
-            # **What a bare `fused.ai.image()` starts.** It wins on every axis
-            # measured against the int8 row below — smaller to fetch (5.5GB vs
-            # 8.2GB), half the resident set, ~28% quicker per image — so being
-            # first in the smallest-first order and being the recommended one
-            # agree here, which is not always true of this field (see
-            # `SUGGESTIONS`' own note: `recommended` is a SECOND axis).
+            # **The recommended pick, not what a bare `fused.ai.image()`
+            # starts** — the `segmind/tiny-sd` row above is smaller and takes
+            # position 0, which is exactly the independence `SUGGESTIONS`'
+            # own note describes: `recommended` is a second axis, not a tie
+            # to the default. Against the int8 row below it still wins on
+            # every axis measured — smaller to fetch (5.5GB vs 8.2GB), half
+            # the resident set, ~28% quicker per image — which is why it is
+            # the one marked here.
             #
             # The cost of the flag sitting here rather than below is a
             # dependency: this row cannot load without `sdnq`, whose whole
             # integration is a mutation of a diffusers mapping that is not
             # public API (see the runner manifests, and
             # `torch_image._register_extra_quantizers`). If that breaks, it
-            # breaks the DEFAULT image model rather than an alternative one —
-            # which is what the manifests' `<0.3` ceiling and
+            # breaks the RECOMMENDED image model rather than an alternative
+            # one — which is what the manifests' `<0.3` ceiling and
             # `test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_
             # below_0_3` exist to make loud instead of silent.
             "recommended": True,
@@ -676,8 +710,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # `from_pretrained` needs to import BEFORE it ever reaches the
             # transformer above. Omitting `bitsandbytes` from the three
             # `diffusers_image*` runner manifests (it was omitted from all
-            # three) meant the ONLY entry in this list — what a bare
-            # `fused.ai.image()` starts — failed on every engine with
+            # three) meant this row failed on every engine with
             #
             #     ImportError: Using `bitsandbytes` 4-bit quantization
             #     requires bitsandbytes: `pip install -U

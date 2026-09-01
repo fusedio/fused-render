@@ -674,9 +674,10 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     assert resolution.runner.code == "diffusers-image" and resolution.honoured
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
-    # Smallest first, which is also fastest first here: the SDNQ repo is 5.5GB
-    # against the int8 split's 8.2GB, and holds half as much on the card.
+    # Smallest first: the tiny-sd row is 0.6GB, then the SDNQ repo at 5.5GB
+    # (which is still the recommended one), then the int8 split's 8.2GB.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "segmind/tiny-sd",
         "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
         "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
