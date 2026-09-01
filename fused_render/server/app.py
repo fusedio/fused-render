@@ -20,6 +20,7 @@ import json
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -303,6 +304,42 @@ def _export_bundled_uv_path() -> None:
     os.environ["PATH"] = (uv_dir + os.pathsep + path) if path else uv_dir
 
 
+def _lifespan(startup_handlers: list, shutdown_handlers: list):
+    """The startup/shutdown contract `on_event` used to provide.
+
+    Lifted out of `create_app` so it can be driven with fake handlers rather
+    than with the 19 real ones, which start schedulers and warm engines. The
+    lists are read when the app STARTS, not when this is called, so a handler
+    registered further down `create_app` is still picked up.
+
+    Two details are the whole reason this is not a one-liner, both taken from
+    what `on_event` actually did (fastapi/routing.py, `_startup`/`_shutdown`
+    and `_DefaultLifespan`):
+
+    * Both lists run in REGISTRATION order. Shutdown is **not** reversed — it
+      reads like it ought to be, and it never was, so reversing it here would
+      be a silent behaviour change wearing the clothes of a cleanup.
+    * Shutdown runs even when the served application raised, because
+      `__aexit__` ran regardless once `__aenter__` had returned. A bare
+      `yield` with no `finally` would quietly stop doing that. A startup that
+      raises still skips shutdown entirely, because `__aenter__` never
+      returned — which is why the `try` opens after the startup loop rather
+      than around it.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        for handler in startup_handlers:
+            await handler()
+        try:
+            yield
+        finally:
+            for handler in shutdown_handlers:
+                await handler()
+
+    return lifespan
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -313,7 +350,40 @@ def create_app(start_dir: str) -> FastAPI:
     # and the page's "running" label never drifts from what actually runs.
     _forced_engine()
 
-    app = FastAPI(title="fused-render")
+    # Startup/shutdown work, collected here and run by `lifespan` below.
+    #
+    # These were 19 `on_event` hooks until FastAPI deprecated that decorator.
+    # The lists exist because a `lifespan` has to be handed to `FastAPI(...)`
+    # at construction, while the handlers are defined further down — several
+    # of them beside the routes they belong with. So the decorators keep
+    # working exactly where they are, and the lifespan reads the lists when
+    # the app is STARTED rather than when it is built.
+    #
+    # The ORDER is the contract, and it is deliberately the one `on_event`
+    # had (fastapi/routing.py, `_startup`/`_shutdown`): both lists run in
+    # REGISTRATION order. Shutdown is NOT reversed — it looks like it ought
+    # to be and it never was, so reversing it here would be a silent
+    # behaviour change wearing the clothes of a cleanup.
+    startup_handlers: list = []
+    shutdown_handlers: list = []
+
+    def on_startup(func):
+        startup_handlers.append(func)
+        return func
+
+    def on_shutdown(func):
+        shutdown_handlers.append(func)
+        return func
+
+    app = FastAPI(title="fused-render",
+                  lifespan=_lifespan(startup_handlers, shutdown_handlers))
+    # Exposed so the registry is inspectable — `on_event` kept its own on
+    # `app.router.on_startup`/`on_shutdown`, and losing that would mean the
+    # ORDER these run in, which is the contract, could only be checked by
+    # reading 450 lines of decorators. `tests/test_app_lifespan.py` asserts
+    # the exact sequence against what `on_event` produced.
+    app.state.startup_handlers = startup_handlers
+    app.state.shutdown_handlers = shutdown_handlers
     app.state.start_dir = start_dir
 
     # Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy
@@ -321,20 +391,20 @@ def create_app(start_dir: str) -> FastAPI:
     # unhandled-exception/access-log middleware — bodies live in
     # _server_common.py / _server_ai.py; only the app-bound registration
     # stays here (an on_event hook needs the actual `app` it's attached to).
-    @app.on_event("startup")
+    @on_startup
     async def _startup_pooled_client():
         await open_pooled_client(app)
 
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_pooled_client():
         await close_pooled_client(app)
 
-    @app.on_event("startup")
+    @on_startup
     async def _startup_prewarm_ai():
         prewarm_ai()
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
-    @app.on_event("startup")
+    @on_startup
     async def _startup_warm_engine():
         from fused_render import engine
 
@@ -362,7 +432,7 @@ def create_app(start_dir: str) -> FastAPI:
     # docstring — for exactly the race a code review caught (2026-08-26).
     _background_apps_shutdown = threading.Event()
 
-    @app.on_event("startup")
+    @on_startup
     async def _startup_resurrect_background_apps():
         from fused_render import background_apps
 
@@ -370,7 +440,7 @@ def create_app(start_dir: str) -> FastAPI:
                          args=(_background_apps_shutdown,),
                          name="background-apps-resurrect", daemon=True).start()
 
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_background_apps_resurrection():
         _background_apps_shutdown.set()
 
@@ -386,7 +456,7 @@ def create_app(start_dir: str) -> FastAPI:
     # pre-bind path (D228). A startup event rather than the create_app body for
     # the usual reason — tests build apps without running lifespan, so they
     # never reach the user's real config.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_sync_user_plugin():
         from fused_render import user_plugin
 
@@ -401,33 +471,34 @@ def create_app(start_dir: str) -> FastAPI:
     # The first tick is also the catch-up pass — it is what sends a message that
     # came due while the app was closed — so nothing here waits for a due time
     # that has already gone by.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_schedule():
         from fused_render import schedule
 
         schedule.start()
 
     # Has a modified installation been put back? (selffix.reconcile). A startup
-    # event rather than the create_app body for the usual reason — tests build
+    # handler rather than the create_app body for the usual reason — tests build
     # apps without running lifespan — and on its own thread because it hashes
     # the whole package when, and only when, a marker is actually there.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_selffix_reconcile():
         from fused_render import selffix
 
         selffix.start_reconcile()
+
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.
     # A startup event for the same reason as `_startup_schedule`: it is a
     # thread for the life of the process that reads the user's real ~/.claude,
     # and tests build apps without lifespan.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_tasks_watch():
         from fused_render import tasks_watch
 
         tasks_watch.start()
 
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
 
@@ -437,7 +508,7 @@ def create_app(start_dir: str) -> FastAPI:
     # reason as `_startup_schedule` above: tests build apps with no lifespan,
     # and this starts a thread that lives for the process — building one per
     # test-constructed app would leak a thread per test.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_ai_idle_reaper():
         from fused_render.ai import supervisor
 
@@ -453,7 +524,7 @@ def create_app(start_dir: str) -> FastAPI:
     # shape as the idle reaper above, not the create_app body: it fires one
     # probe immediately and then re-probes every few hours for the rest of
     # the process's life.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_ai_hardware_refresh():
         from fused_render.ai import supervisor
 
@@ -467,7 +538,7 @@ def create_app(start_dir: str) -> FastAPI:
     # plain disk read), and this background thread is the sole writer,
     # mirroring the hardware-refresh hook immediately above for the
     # identical reason.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_ai_hub_metadata_refresh():
         from fused_render.ai import supervisor
 
@@ -487,17 +558,17 @@ def create_app(start_dir: str) -> FastAPI:
     # event at all — a stale file there is exactly the case `resolve_origin()`
     # is required to connect-probe before trusting, so it is a correctness gap
     # this side does not need to close.
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_server_json():
         remove_server_json()
 
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_captures():
         from fused_render import capture
 
         capture.stop_all()
 
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor
 
@@ -505,7 +576,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     # Every managed engine dies with the app: template daemons and /api/engine
     # warm workers alike (stop_all clears both).
-    @app.on_event("shutdown")
+    @on_shutdown
     async def _shutdown_engines():
         from fused_render.server import engine_host
 
@@ -520,7 +591,7 @@ def create_app(start_dir: str) -> FastAPI:
     #
     # Best-effort like every other startup chore here: a home dir that cannot be
     # listed is a disk problem, not a reason to refuse to serve.
-    @app.on_event("startup")
+    @on_startup
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
@@ -782,7 +853,7 @@ def create_app(start_dir: str) -> FastAPI:
     # of each root, so a reload loop does not queue scan after scan. First boot
     # takes seconds over a whole home; while it runs, the explorer's search
     # falls back to the live walk with no error state (SPEC server-api.md §2).
-    @app.on_event("startup")
+    @on_startup
     async def _startup_index_scan():
         await index_routes.startup_scan(start_dir)
         # ...and warm the corpus path the explorer's home search reads, on a
