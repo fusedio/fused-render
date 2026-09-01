@@ -46,10 +46,10 @@ targets:
       path: FusedRender/FusedRender.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.io.fused.render
+          - group.io.fused.render.ios
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render
+        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render.ios
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -96,10 +96,10 @@ targets:
       path: FusedRenderWidgets/FusedRenderWidgets.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.io.fused.render
+          - group.io.fused.render.ios
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render.ios.widgets
         INFOPLIST_KEY_CFBundleDisplayName: Fused apps
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES

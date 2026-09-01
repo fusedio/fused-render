@@ -8,7 +8,7 @@ import Foundation
 import SwiftUI
 
 enum FusedShared {
-    static let appGroup = "group.io.fused.render"
+    static let appGroup = "group.io.fused.render.ios"
     static let scheme = "fusedrender"
 
     /// The App Group container, or — when the entitlement is missing (an
