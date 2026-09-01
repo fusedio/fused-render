@@ -108,6 +108,16 @@ _AI_TIMEOUT_S = 600.0
 # Well under 30s so a busy loop or a slow machine still leaves margin, and no
 # faster than it needs to be: nothing reads these ticks but the clock.
 _REMOTE_TICK_S = 10.0
+# How often the beat checks the row's ✕ (`cancel_requested`) while a call is
+# in flight — the same POLL-OFTEN/REPORT-RARELY split `schedule._await_turn`
+# and `supervisor._CANCEL_CHECK_INTERVAL_S` already make at the two other
+# places this app parks work behind a lock or a slow turn: a read
+# (`jobs.list_jobs()`, no write) rather than a `_report_remote()` tick, so
+# checking ten times as often as the display heartbeat does not also WRITE
+# ten times as often. `_REMOTE_TICK_S`'s own "no faster than it needs to be"
+# is about the write; this is the read, and a press sitting unnoticed for up
+# to `_REMOTE_TICK_S` would be a ✕ that reads as broken.
+_REMOTE_CANCEL_POLL_S = 1.0
 # The row's detail line. Says only that this is remote — the model rides its
 # own field (`jobs.py` `Job.model`, a dimmed suffix JobRow draws after the
 # title), so the one thing this line is for is the fact a local row's detail
@@ -118,6 +128,20 @@ _REMOTE_ROW_DETAIL = "Claude — remote"
 # that has not started, which "Claude — remote" alone would show as work in
 # progress. `supervisor._QUEUED_DETAIL`'s twin.
 _REMOTE_QUEUED_DETAIL = "Queued — another Claude call is in flight"
+# …and while the model is in an extended-thinking block rather than writing
+# the answer (AI-5h follow-up #1). Probed against the real CLI (2.1.252,
+# sonnet, effort xhigh vs. low): thinking blocks arrive, but their text is
+# always empty — `display` defaults to "omitted" on every effort-capable
+# model — so a word count is not an available signal, only the fact that
+# thinking is happening at all. Paired with the client's own elapsed clock
+# (jobs.ts `jobElapsedLabel`, which reads every running row's `started_at`
+# already) this alone renders as "Thinking — 1m 20s" with no new server-side
+# timer needed — the row's whole-call elapsed time is close enough to the
+# thinking phase's own, since thinking begins almost immediately after a
+# turn starts. A low-effort or non-effort-capable (haiku) call never sees
+# this at all: `on_phase` is simply never called with "thinking", and the
+# row reads `_REMOTE_ROW_DETAIL` for its whole life, same as before this.
+_REMOTE_THINKING_DETAIL = "Thinking — remote"
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
@@ -661,15 +685,22 @@ class _AiSession:
 _AI_SESSION = _AiSession()
 
 
-async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
+async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None,
+                    on_phase=None) -> dict:
     """Write the user message to a stream-json process and read events until
     the terminal `result` line; return it parsed.
 
-    `on_delta(text)` is called per text_delta when streaming (thinking_delta
-    and every other event type are skipped). The timeout covers message-write
-    to result. Raises asyncio.TimeoutError or _AiProcFailure (died/EOF/
-    garbage before a result — the process is reaped on EOF; the session
-    notices its death via returncode on the next request)."""
+    `on_delta(text)` is called per text_delta when streaming (every other
+    delta type, including thinking_delta, is skipped — its own text is
+    always empty; see `_REMOTE_THINKING_DETAIL`'s comment). `on_phase(phase)`
+    is called once per `content_block_start`, `phase` being `"thinking"` or
+    `"writing"` — the two block types this app's calls ever produce, since
+    `--tools=` rules out a tool_use block. Called regardless of streaming:
+    it is the row's OWN phase readout, not something only a page reading
+    deltas gets to see. The timeout covers message-write to result. Raises
+    asyncio.TimeoutError or _AiProcFailure (died/EOF/garbage before a
+    result — the process is reaped on EOF; the session notices its death
+    via returncode on the next request)."""
     message = json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": prompt}]}})
     deadline = asyncio.get_running_loop().time() + timeout
@@ -707,15 +738,24 @@ async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
             continue
         if event.get("type") == "result":
             return event
-        if on_delta is not None and event.get("type") == "stream_event":
+        if event.get("type") == "stream_event":
             inner = event.get("event")
-            if isinstance(inner, dict) \
-                    and inner.get("type") == "content_block_delta":
+            if not isinstance(inner, dict):
+                continue
+            itype = inner.get("type")
+            if on_delta is not None and itype == "content_block_delta":
                 delta = inner.get("delta")
                 if isinstance(delta, dict) \
                         and delta.get("type") == "text_delta" \
                         and isinstance(delta.get("text"), str):
                     on_delta(delta["text"])
+            elif on_phase is not None and itype == "content_block_start":
+                block = inner.get("content_block")
+                block_type = block.get("type") if isinstance(block, dict) else None
+                if block_type == "thinking":
+                    on_phase("thinking")
+                elif block_type == "text":
+                    on_phase("writing")
 
 
 def _ai_result_payload(data: dict, requested_model: str):
@@ -1397,11 +1437,14 @@ async def _ai_relay(body: dict):
     # progress tick on the first) — with wording that says "remote" up
     # front, which is the whole point of adding it.
     #
-    # `cancellable=False`: JobRow renders a ✕ on any running, cancellable row
-    # (DownloadManager.tsx), and pressing it only sets jobs.py's
-    # `cancel_requested` flag for a reporter to notice on its next tick.
-    # Nothing in this relay polls that flag, so advertising a ✕ here would
-    # ship a button that visibly does nothing when pressed.
+    # `cancellable=True` (SPEC BG-4: a server-owned row's ✕ is an ACTION, not
+    # merely a request nobody reads back). `_start_remote_beat` below is what
+    # earns the claim: it polls `cancel_requested` far more often than the
+    # display tick and cancels this call's own asyncio task the moment it
+    # sees it, whether the task is mid-turn or still parked on
+    # `_AI_SESSION.lock` — `asyncio.Lock.acquire()` abandons a cancelled
+    # waiter cleanly, so a QUEUED call's ✕ frees the lock for whoever is next
+    # rather than making them wait out a turn nobody wants any more.
     #
     # NOT opened here, before the stream/non-stream fork: `ndjson()` below is
     # an async generator that Starlette only starts iterating once it
@@ -1414,10 +1457,21 @@ async def _ai_relay(body: dict):
     # with nothing yet committed to closing it.
     _remote_job = jobs.SERVER_ID_PREFIX + "ai-claude:" + uuid.uuid4().hex
     _remote_job_closed = False
+    # Set by the beat right before IT cancels `task` (the row's ✕) — the one
+    # thing that tells the branches below "this CancelledError is ours" apart
+    # from every other source of one. `task.cancelled()` cannot do this job:
+    # asyncio marks a Task cancelled whenever its coroutine raises
+    # CancelledError for ANY reason (an internal `_AiProcFailure` retry racing
+    # a real client disconnect, say), not only when something called
+    # `task.cancel()` — so reading `task.cancelled()` here would relabel a
+    # genuine disconnect as a user-pressed ✕.
+    _beat_cancelled_task = False
 
-    def _report_remote(**fields) -> None:
+    def _report_remote(**fields) -> dict | None:
         """One tick on the remote-Claude row, best-effort (never breaks the
-        call — same discipline as supervisor._report).
+        call — same discipline as supervisor._report). Returns the stored
+        record, or None if there was nothing to store (a late tick after the
+        row already closed) or the write itself failed.
 
         Catches EVERYTHING, like every other reporter here
         (`supervisor._report`, `schedule._report`, `claude_install._report`):
@@ -1432,12 +1486,12 @@ async def _ai_relay(body: dict):
         nonlocal _remote_job_closed
         if fields.get("state") in jobs.TERMINAL_STATES:
             if _remote_job_closed:
-                return
+                return None
             _remote_job_closed = True
         try:
-            jobs.upsert({"id": _remote_job, **fields}, server=True)
+            return jobs.upsert({"id": _remote_job, **fields}, server=True)
         except Exception:  # noqa: BLE001 — reporting is never authoritative
-            pass
+            return None
 
     def _open_remote_job() -> None:
         # Same title convention as the local rows (supervisor._start_render):
@@ -1451,7 +1505,21 @@ async def _ai_relay(body: dict):
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
         _report_remote(title=title[:80], model=model, state="running", kind="task",
-                       cancellable=False, detail=_REMOTE_ROW_DETAIL)
+                       cancellable=True, detail=_REMOTE_ROW_DETAIL)
+
+    def _remote_cancel_requested() -> bool:
+        """Was the row's ✕ pressed? A READ (`jobs.list_jobs()`, like
+        `supervisor._cancel_state`), not a write — the beat calls this every
+        `_REMOTE_CANCEL_POLL_S`, far more often than the display tick, and a
+        poll that wrote on every call would turn "check the flag" into "spam
+        the registry". A closed or evicted row reads as "not requested": this
+        call is either already finished (nothing left to cancel) or its row
+        aged out from under it, and the belt-and-suspenders cancel in every
+        `finally` below is what a genuinely-missed press would still need."""
+        for record in jobs.list_jobs():
+            if record["id"] == _remote_job:
+                return bool(record.get("cancel_requested"))
+        return False
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
@@ -1464,29 +1532,55 @@ async def _ai_relay(body: dict):
         _report_remote(state="done")  # dismiss() refuses a still-running row
         jobs.dismiss(_remote_job)
 
-    def _start_remote_beat():
-        """Start the row's display heartbeat; returns the task that runs it.
+    def _start_remote_beat(task):
+        """Start the row's heartbeat AND cancel-watch; returns the task that
+        runs both. `task` is `run_once`'s own asyncio task — the one thing
+        this beat may cancel, and the only thing that makes `cancellable=True`
+        above an honest claim rather than a ✕ that does nothing.
 
-        `_REMOTE_TICK_S` says why a row with nothing new to report still has
-        to report. This carries NO FIELDS, which is the whole design of it:
-        `jobs.upsert` applies only the keys present, so an id and nothing else
-        is precisely "still here" and is incapable of saying anything more —
-        it cannot move a bar, cannot overwrite the detail `run_once` sets
-        while this call is parked in the queue, and is not an *opening* report
-        (jobs.py reopens a dismissed or forgotten id only for a report that
-        states `running` outright), so it can never blink a closed row back
-        onto the screen. `schedule._report` documents the same fieldless call
-        for the same registry.
+        Two cadences sharing one loop, the same split `schedule._await_turn`
+        and `supervisor._CANCEL_CHECK_INTERVAL_S` already make at the other
+        two places this app parks work behind a lock or a slow turn: POLLED
+        every `_REMOTE_CANCEL_POLL_S` (a read, `_remote_cancel_requested`),
+        REPORTED only every `_REMOTE_TICK_S` (the write, `_report_remote()`
+        with no fields — see that constant's own comment for why a row with
+        nothing new still has to say so).
 
-        A tick after the outcome is already reported is impossible rather than
-        merely unlikely: `_remote_job_closed` is set by the terminal report
-        itself, and is re-read here after every sleep."""
+        `jobs.upsert` applies only the keys present, so a fieldless tick is
+        precisely "still here": it cannot move a bar, cannot overwrite the
+        detail `run_once` sets while this call is parked in the queue, and is
+        not an *opening* report (jobs.py reopens a dismissed or forgotten id
+        only for a report that states `running` outright), so it can never
+        blink a closed row back onto the screen. `schedule._report`
+        documents the same fieldless call for the same registry.
+
+        A tick — or a cancel — after the outcome is already reported is
+        impossible rather than merely unlikely: `_remote_job_closed` is set
+        by the terminal report itself, and is re-read here after every sleep,
+        before either the poll or the report.
+
+        Cancelling `task` is enough on its own to stop a QUEUED call too:
+        `run_once` awaits `_AI_SESSION.lock` before it does anything else, and
+        `asyncio.Lock.acquire()` abandons a cancelled waiter cleanly rather
+        than acquiring on its way out — so a ✕ pressed while parked behind
+        another call's turn frees the lock for whoever is next, instead of
+        making them wait out a turn nobody wants any more (SPEC BG-4: the
+        server owns this process and can really stop it, queued or not)."""
         async def beat() -> None:
+            nonlocal _beat_cancelled_task
+            elapsed = 0.0
             while True:
-                await asyncio.sleep(_REMOTE_TICK_S)
+                await asyncio.sleep(_REMOTE_CANCEL_POLL_S)
                 if _remote_job_closed:
                     return
-                _report_remote()
+                if _remote_cancel_requested():
+                    _beat_cancelled_task = True
+                    task.cancel()
+                    return
+                elapsed += _REMOTE_CANCEL_POLL_S
+                if elapsed >= _REMOTE_TICK_S:
+                    elapsed = 0.0
+                    _report_remote()
 
         return asyncio.ensure_future(beat())
 
@@ -1522,6 +1616,16 @@ async def _ai_relay(body: dict):
                 delivered = True
                 on_delta(text)
 
+        def on_phase(phase):
+            # The row's OWN readout of thinking vs. writing (AI-5h follow-up
+            # #1) — wired here, not threaded through `_ai_relay`'s two
+            # branches, because both would do exactly this and nothing else.
+            # Never touches `delivered`: a thinking phase with no text yet
+            # is not a delta reaching the client, so it must not forfeit the
+            # one-retry-on-fresh-spawn guarantee below.
+            _report_remote(detail=_REMOTE_THINKING_DETAIL if phase == "thinking"
+                                  else _REMOTE_ROW_DETAIL)
+
         # Contended: this call has not begun, and a row reading exactly like
         # one that is generating is the row lying by omission — the same fix
         # supervisor's `_QUEUED_DETAIL` is for the transcription queue, at the
@@ -1539,7 +1643,7 @@ async def _ai_relay(body: dict):
                 proc = await _AI_SESSION.configure(model, system_prompt,
                                                    effort)
                 return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                       on_delta=deliver)
+                                       on_delta=deliver, on_phase=on_phase)
             except asyncio.CancelledError:
                 # Client went away mid-turn: the process is still emitting
                 # this turn's events, and a later request's /clear loop would
@@ -1556,7 +1660,7 @@ async def _ai_relay(body: dict):
                     proc = await _AI_SESSION.configure(
                         model, system_prompt, effort)
                     return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                           on_delta=deliver)
+                                           on_delta=deliver, on_phase=on_phase)
                 except asyncio.CancelledError:
                     # Cancelled mid-retry: the respawned instance is left
                     # mid-reconfig/mid-turn. Discard it too, or the next
@@ -1569,10 +1673,26 @@ async def _ai_relay(body: dict):
 
     if not stream:
         _open_remote_job()
-        beat = _start_remote_beat()
+        # A TASK, not a bare `await`, so the beat can cancel `run_once` on its
+        # own — a ✕ press — without cancelling the request handler that is
+        # still holding a connection open for a client who is still there and
+        # still wants an answer, even a "cancelled" one.
+        task = asyncio.ensure_future(run_once())
+        beat = _start_remote_beat(task)
         try:
             try:
-                data = await run_once()
+                data = await task
+            except asyncio.CancelledError:
+                if not _beat_cancelled_task:
+                    # Some other source — a real client disconnect, most
+                    # likely. `finally` below reaps whatever `task` is still
+                    # doing.
+                    raise
+                # The beat's own cancel poll did this (the row's ✕). The
+                # client is still here, waiting on THIS response, so it gets
+                # a real answer rather than a dropped connection.
+                _report_remote(state="cancelled")
+                return _ai_error("cancelled", "the call was cancelled")
             except asyncio.TimeoutError:
                 _report_remote(state="error",
                                message=f"timed out after {_AI_TIMEOUT_S:.0f}s")
@@ -1613,9 +1733,19 @@ async def _ai_relay(body: dict):
             _report_remote(state="error", message="internal error")
             raise
         finally:
-            # The heartbeat first, so nothing is still ticking a row this
-            # block is about to close.
+            # The heartbeat first, so nothing is still ticking (or cancelling)
+            # a row this block is about to close.
             await _stop_remote_beat(beat)
+            if not task.done():
+                # A real client disconnect, reaped the same way the streaming
+                # branch's own `finally` does: `run_once`'s cancel branch
+                # (discard the now-mid-turn instance) has to actually run
+                # before this function returns.
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             # Belt-and-suspenders: anything that reaches here without one of
             # the terminal reports above closes the row as cancelled rather
             # than leaving it running forever. A no-op once a real terminal
@@ -1636,10 +1766,10 @@ async def _ai_relay(body: dict):
         # sync: no code path can create a row without something guaranteed
         # to run also being on the hook to close it.
         _open_remote_job()
-        beat = _start_remote_beat()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))
+        beat = _start_remote_beat(task)
         try:
             while True:
                 get = asyncio.ensure_future(queue.get())
@@ -1657,6 +1787,22 @@ async def _ai_relay(body: dict):
                 break
             try:
                 data = task.result()
+            except asyncio.CancelledError:
+                if not _beat_cancelled_task:
+                    raise  # some other source — treat like any other bug/disconnect below
+                # The beat's own cancel poll did this (the row's ✕), not a
+                # client disconnect. The client is still reading this stream,
+                # so it gets a real done frame rather than a broken
+                # connection. NOT counted as an ai_metrics failure, same
+                # reasoning as `model_loading` (AI-12b): this call did exactly
+                # what its ✕ asked, and counting a deliberate stop beside a
+                # timeout or a missing binary would make "3 failed" mean "the
+                # user changed their mind" as often as "the AI is not working".
+                _report_remote(state="cancelled")
+                yield json.dumps({"type": "done", "ok": False, "error": {
+                    "type": "cancelled",
+                    "message": "the call was cancelled"}}) + "\n"
+                return
             except asyncio.TimeoutError:
                 ai_metrics.record_failure(model, "timeout")
                 _report_remote(

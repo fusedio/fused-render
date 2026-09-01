@@ -252,7 +252,10 @@ const { text, model, usage } = await fused.ai(prompt, {
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
-  an unexpected shape), or `"timeout"` (no answer within 600 s). `opts.effort`
+  an unexpected shape), `"timeout"` (no answer within 600 s), or `"cancelled"` (the
+  status bar's ✕ was pressed — see below; NOT counted toward AI-12's failure metric,
+  the same carve-out `model_loading` gets, since a deliberate stop is not evidence the
+  AI is broken). `opts.effort`
   (`"low" | "medium" | "high" | "xhigh"`, **default `low`**): `low` — and an
   omitted effort — means **no extended thinking**, enforced with a thinking-budget
   clamp that works on every model; `medium`/`high`/`xhigh` pass through to
@@ -278,9 +281,21 @@ const { text, model, usage } = await fused.ai(prompt, {
   **Visible while it runs**: each call opens one server-owned row in the status
   bar's Activity section (§36), titled with the prompt and detailed "Claude —
   remote" so remote work is tellable from a local model's, dropped the moment
-  the call succeeds. It is not cancellable (nothing in the relay polls the flag,
-  and a ✕ that does nothing is worse than none), it says when it is waiting its
-  turn behind another call rather than looking busy, and it heartbeats for as
+  the call succeeds. **Cancellable** (BG-4: this process owns the CLI and can
+  really stop it) — the beat that keeps the row's heartbeat also polls
+  `cancel_requested` every second, far more often than the 10s display tick, and
+  cancels the call's own asyncio task the moment it sees the ✕: mid-turn, that
+  discards the CLI process and rejects with `.type: "cancelled"`; still queued
+  behind another call's turn, `asyncio.Lock.acquire()` abandons the cancelled
+  wait cleanly, so the ✕ frees the lock for whoever is next rather than making
+  them wait out a turn nobody wants any more. It says when it is waiting its
+  turn behind another call rather than looking busy, it says "Thinking —
+  remote" for as long as the model is in an extended-thinking block rather
+  than writing the answer (probed against the real CLI: the block's own text
+  is always empty — `display` defaults to "omitted" on every effort-capable
+  model — so this is the fact of thinking, not a word count; a low-effort or
+  non-effort-capable call never sees the phase at all and reads "Claude —
+  remote" throughout, same as before), and it heartbeats for as
   long as the call runs (AI-5h) — without which any call slower than
   `STALE_AFTER_S` reported itself as no longer being reported.
 

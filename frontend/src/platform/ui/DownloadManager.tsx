@@ -123,6 +123,7 @@ import {
   fetchJobs,
   isRunning,
   jobAmount,
+  jobElapsedLabel,
   jobFraction,
   jobRows,
   inFlightJobs,
@@ -172,10 +173,18 @@ function useJobs(): {
    *  pre-existing jobs as arrivals on load (D574 bug 2). */
   settled: boolean;
   jobs: Job[];
+  /** The SERVER's clock (ms) as of the last successful poll — for a live
+   *  elapsed-time clock on a running row (`jobElapsedLabel`), measured
+   *  against jobs.ts's own `now` rather than the browser's `Date.now()` for
+   *  the same reason `GET /api/jobs` sends it at all (a throttled/suspended
+   *  tab's own clock disagrees). Starts at `Date.now()` — a reasonable guess
+   *  until the first response corrects it. */
+  nowMs: number;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
@@ -239,6 +248,7 @@ function useJobs(): {
         setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
+          setNowMs(snapshot.now * 1000);
           scheduleFor(snapshot.jobs);
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
@@ -295,7 +305,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, settled, refresh, patch };
+  return { jobs, settled, nowMs, refresh, patch };
 }
 
 function Bar({ job }: { job: Job }) {
@@ -414,12 +424,19 @@ export function JobRow({
   job,
   onChanged,
   onPatch,
+  nowMs = Date.now(),
   cancelFn = cancelJob,
   dismissFn = dismissJob,
 }: {
   job: Job;
   onChanged: () => void;
   onPatch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** The clock a running row's elapsed time is measured against
+   *  (`jobElapsedLabel`) — the server's, ideally (`useJobs`'s own `nowMs`).
+   *  Defaults to the browser's own `Date.now()` so every existing caller
+   *  (this file's own tests included) keeps working unchanged; only
+   *  `useJobs`'s poll loop has anything better to hand in. */
+  nowMs?: number;
   /** Test seam only (D572's own failure-path test uses it) — every real
    *  caller gets the real `cancelJob`/`dismissJob` (@platform/lib/jobs) by
    *  default. Injectable rather than mocked so a rejected-request test does
@@ -447,6 +464,10 @@ export function JobRow({
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
   const status = jobStatusLine(job);
+  // "" once the job is no longer running (`jobElapsedLabel`'s own doc) — a
+  // remote Claude call is the row this earns its keep for: no bytes, no
+  // percent, nothing but "Claude — remote" for as long as ten minutes.
+  const elapsed = jobElapsedLabel(job, nowMs);
   // THE PROGRESS FACTS TOGETHER, dot-joined (D598, user: "why isn't the step
   // count next to denoising?"). `0 / 4` is a progress fact, so it belongs with
   // the other progress facts rather than up beside the title, where it was a
@@ -469,7 +490,7 @@ export function JobRow({
   // `??` once, not twice: `join` returns "" rather than null for an empty
   // list, so a second `??` would be dead — the `&&` at the render site is what
   // handles the all-absent case.
-  const statusLine = failure ?? [status, amount].filter(Boolean).join(" · ");
+  const statusLine = failure ?? [status, amount, elapsed].filter(Boolean).join(" · ");
 
   // Two controls, one meaning each — because "stop this" and "take it off my
   // screen" read as the same gesture when both hide behind an identical ✕, and
@@ -694,6 +715,7 @@ export function DownloadManagerView({
   engines,
   refresh,
   patch,
+  nowMs = Date.now(),
 }: {
   reported: Job[];
   /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
@@ -715,6 +737,11 @@ export function DownloadManagerView({
   engines?: EnginesSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** The clock a running row's elapsed time is measured against — see
+   *  `JobRow`'s own doc. Defaults to the browser's `Date.now()` so every
+   *  existing caller (this file's own tests included) keeps working
+   *  unchanged. */
+  nowMs?: number;
 }) {
   const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
   // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
@@ -987,7 +1014,13 @@ export function DownloadManagerView({
                         <div className="dl-rows">
                           {queue?.rows}
                           {jobs.map((job) => (
-                            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                            <JobRow
+                              key={job.id}
+                              job={job}
+                              onChanged={refresh}
+                              onPatch={patch}
+                              nowMs={nowMs}
+                            />
                           ))}
                         </div>
                         {queue?.note}
@@ -1042,7 +1075,7 @@ export default function DownloadManager({
   queue?: QueueSlot;
   engines?: EnginesSlot;
 }) {
-  const { jobs: reported, settled, refresh, patch } = useJobs();
+  const { jobs: reported, settled, nowMs, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
@@ -1051,6 +1084,7 @@ export default function DownloadManager({
       engines={engines}
       refresh={refresh}
       patch={patch}
+      nowMs={nowMs}
     />
   );
 }

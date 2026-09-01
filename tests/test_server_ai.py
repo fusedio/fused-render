@@ -79,6 +79,15 @@ def _delta_line(text):
         "delta": {"type": "text_delta", "text": text}}})
 
 
+def _block_start_line(block_type, text=""):
+    """A content_block_start for `block_type` ("thinking" or "text") — what
+    on_phase (_ai_drive/ai.py) reads. `text` matches the real CLI's own shape
+    (probed on 2.1.252): a thinking block's own text is always empty."""
+    return json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start",
+        "content_block": {"type": block_type, block_type: text}}})
+
+
 def _result_lines(payload=None, deltas=()):
     """Scripted stdout for one turn: stream_event deltas, then the result."""
     lines = [_delta_line(t) for t in deltas]
@@ -389,17 +398,16 @@ def test_relay_remote_job_row_title_is_truncated_to_80_chars(monkeypatch):
     assert row["title"] == "x" * 80
 
 
-def test_relay_remote_job_row_does_not_advertise_a_dead_cancel(monkeypatch):
+def test_relay_remote_job_row_is_cancellable(monkeypatch):
     # JobRow renders a ✕ Cancel affordance whenever cancellable=True on a
-    # running row. Nothing in the remote-Claude path polls cancel_requested,
-    # so a row claiming to be cancellable would ship a button that does
-    # nothing — the thing the brief explicitly forbids. Checked on the
-    # errored path for the same reason as the title test above: a success
-    # dismisses the row before anything could inspect it.
+    # running row (SPEC BG-4). This row earns the claim: the beat below
+    # actually polls cancel_requested and stops the call when it is set.
+    # Checked on the errored path for the same reason as the title test
+    # above: a success dismisses the row before anything could inspect it.
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     _relay({"prompt": "hello"})
     row = jobs.list_jobs()[0]
-    assert row["cancellable"] is False
+    assert row["cancellable"] is True
 
 
 def test_relay_remote_job_row_closes_on_cli_error(monkeypatch):
@@ -498,6 +506,85 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     assert jobs.list_jobs() == []  # this path never touches jobs.py itself
 
 
+# -- the row's thinking-phase readout ---------------------------------------
+#
+# AI-5h follow-up #1, resolved by probing the real CLI (2.1.252, sonnet,
+# effort xhigh vs. low): thinking blocks arrive, but a block's own text is
+# always empty — `display` defaults to "omitted" on every effort-capable
+# model — so the row can say THAT the model is thinking, never how much it
+# has said. Detected the same way a real page tells the two apart:
+# `content_block_start`'s `content_block.type`, "thinking" or "text".
+
+
+def test_relay_row_says_thinking_during_a_thinking_block_then_reverts(monkeypatch):
+    _cli_ok(monkeypatch, lines=[
+        _block_start_line("thinking"),
+        _block_start_line("text"),
+        _delta_line("hi"),
+        json.dumps(_CLI_RESULT),
+    ])
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp = _relay({"prompt": "hello", "effort": "xhigh"})
+    assert _data(resp)["ok"] is True
+    assert details == [
+        _server_ai._REMOTE_ROW_DETAIL,       # _open_remote_job's opening report
+        _server_ai._REMOTE_THINKING_DETAIL,  # the thinking block starts
+        _server_ai._REMOTE_ROW_DETAIL,       # the text block starts — writing
+    ]
+
+
+def test_relay_stream_row_says_thinking_too(monkeypatch):
+    # The row's phase readout is wired once, inside run_once — shared by both
+    # branches — but checked on the streaming path too since it has its own
+    # copy of everything else about this row's lifecycle.
+    _cli_ok(monkeypatch, lines=[
+        _block_start_line("thinking"),
+        _block_start_line("text"),
+        _delta_line("hi"),
+        json.dumps(_CLI_RESULT),
+    ])
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp, frames = _stream({"prompt": "hello", "stream": True})
+    assert frames[-1]["ok"] is True
+    assert _server_ai._REMOTE_THINKING_DETAIL in details
+    assert details[-1] == _server_ai._REMOTE_ROW_DETAIL
+
+
+def test_relay_row_never_says_thinking_when_there_is_no_thinking_block(monkeypatch):
+    # The control: a call with no thinking block at all (a low-effort or
+    # non-effort-capable model) must never claim to be thinking — the row
+    # reads "Claude — remote" for its whole life, same as before this.
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi"]))
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    _relay({"prompt": "hello"})
+    assert _server_ai._REMOTE_THINKING_DETAIL not in details
+    assert all(d == _server_ai._REMOTE_ROW_DETAIL for d in details)
+
+
 # -- the row's heartbeat ----------------------------------------------------
 #
 # The bug these pin: the row was opened ONCE and then never touched again until
@@ -512,11 +599,12 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
 # rather than by waiting out the real 30s.
 
 
-def _tight_timers(monkeypatch, stale=0.4, tick=0.02, timeout=2.0):
+def _tight_timers(monkeypatch, stale=0.4, tick=0.02, timeout=2.0, cancel_poll=0.02):
     """The real ratio — a heartbeat comfortably inside the stale window —
     at a hundredth of the wall-clock. Returns nothing; every knob is a
     module global read at call time."""
     monkeypatch.setattr(_server_ai, "_REMOTE_TICK_S", tick)
+    monkeypatch.setattr(_server_ai, "_REMOTE_CANCEL_POLL_S", cancel_poll)
     monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", timeout)
     monkeypatch.setattr(jobs, "STALE_AFTER_S", stale)
 
@@ -656,6 +744,114 @@ def test_a_call_waiting_its_turn_says_so_rather_than_looking_busy(monkeypatch):
     # rather than saying "queued" for the rest of its life.
     assert queued[-1]["detail"] == _server_ai._REMOTE_ROW_DETAIL
     assert not any(row["stalled"] for row in queued)
+
+
+# -- real cancellation -------------------------------------------------------
+#
+# The row is cancellable (SPEC BG-4): the beat that heartbeats it also polls
+# `cancel_requested` far more often than the display tick and cancels the
+# call's own asyncio task the moment it sees the ✕, whether the task is
+# mid-turn or still parked on `_AI_SESSION.lock`.
+
+
+def test_cancelling_a_running_call_stops_it_and_answers_cancelled(monkeypatch):
+    _cli_ok(monkeypatch, turn_delay=5.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        relay = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "hello"}))
+        # Wait for the row to exist, then press its ✕ — same call the
+        # dock's Cancel button makes (routers/jobs.py `api_jobs_cancel`).
+        while not jobs.list_jobs():
+            await asyncio.sleep(0.01)
+        row_id = jobs.list_jobs()[0]["id"]
+        jobs.request_cancel(row_id)
+        return await relay
+
+    resp = asyncio.run(go())
+    data = _data(resp)
+    assert data["ok"] is False
+    assert data["error"]["type"] == "cancelled"
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "cancelled"
+    # The wedged/mid-turn instance must not be handed to the next request —
+    # same discipline as a genuine client disconnect (run_once's own
+    # CancelledError branch).
+    assert _server_ai._AI_SESSION._proc is None
+
+
+def test_cancelling_a_running_STREAMING_call_yields_a_cancelled_done_frame(
+        monkeypatch):
+    _cli_ok(monkeypatch, lines=[_delta_line("hi")], turn_delay=5.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        resp = await _server_ai._ai_relay({"prompt": "hello", "stream": True})
+        frames = []
+
+        async def drain():
+            async for chunk in resp.body_iterator:
+                frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+
+        pump = asyncio.ensure_future(drain())
+        while not jobs.list_jobs():
+            await asyncio.sleep(0.01)
+        jobs.request_cancel(jobs.list_jobs()[0]["id"])
+        await pump
+        return frames
+
+    frames = asyncio.run(go())
+    assert frames[-1]["ok"] is False
+    assert frames[-1]["error"]["type"] == "cancelled"
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "cancelled"
+
+
+def test_cancelling_a_queued_call_frees_the_lock_without_waiting_its_turn(
+        monkeypatch):
+    """The case the follow-up called out as the one most worth cancelling: a
+    second call parked behind the first's `_AI_SESSION.lock` has not started
+    at all, so its ✕ should not have to wait out the first call's whole turn
+    — `asyncio.Lock.acquire()` abandons a cancelled waiter cleanly."""
+    _cli_ok(monkeypatch, turn_delay=1.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        first = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "one"}))
+        await asyncio.sleep(0.1)  # let it take the lock
+        second = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "two"}))
+        # Wait for the QUEUED row specifically (there are two rows now).
+        while not any(j["title"] == "two" for j in jobs.list_jobs()):
+            await asyncio.sleep(0.01)
+        queued_id = next(j["id"] for j in jobs.list_jobs() if j["title"] == "two")
+        started = asyncio.get_running_loop().time()
+        jobs.request_cancel(queued_id)
+        second_resp = await second
+        elapsed = asyncio.get_running_loop().time() - started
+        first_resp = await first
+        return second_resp, elapsed, first_resp
+
+    second_resp, elapsed, first_resp = asyncio.run(go())
+    assert _data(second_resp)["error"]["type"] == "cancelled"
+    # Settled well inside the first call's own 1s turn — it never had to wait
+    # one out, because the ✕ aborted its own lock wait instead of the turn.
+    assert elapsed < 0.5
+    assert _data(first_resp)["ok"] is True
+
+
+def test_a_cancel_pressed_after_the_call_already_settled_is_a_no_op(
+        monkeypatch):
+    """A press that lands after the outcome was already reported — a slow
+    click racing a fast answer — must not resurrect or corrupt a row that is
+    already gone. `_remote_cancel_requested` reading a missing row as "not
+    requested" is what makes this safe."""
+    _cli_ok(monkeypatch, _CLI_RESULT)
+    _tight_timers(monkeypatch)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert jobs.list_jobs() == []  # success dismisses its row immediately
+    # Nothing to press any more — this must not raise.
+    assert jobs.request_cancel("sys:ai-claude:doesnotexist") is None
 
 
 # -- happy path -----------------------------------------------------------------
@@ -1016,6 +1212,38 @@ def test_relay_instance_failing_midcall_retries_fresh_once(monkeypatch):
     assert len(fake.calls) == 1  # the retry spawn
     assert fake.procs[0].prompt == "hello"
     assert wedged.killed  # the wedged instance was discarded, not kept
+
+
+def test_relay_retry_still_reports_the_thinking_phase(monkeypatch):
+    # Bugbot catch: the fresh-spawn retry call to `_ai_drive` did not carry
+    # `on_phase` (only `on_delta`) — a thinking block seen on the FIRST
+    # attempt (then lost when that instance died mid-turn) left the row
+    # stuck on "Thinking — remote" for the rest of the call, including the
+    # retry's own writing phase, because nothing on the retry path could
+    # ever flip it back.
+    procs = [
+        _FakeProc(turns=[[_block_start_line("thinking")]]),  # dies mid-thinking
+        _FakeProc(turns=[[_block_start_line("text")] + _result_lines(deltas=["hi"])]),
+    ]
+    fake = _FakeSpawn(factory=lambda: procs.pop(0))
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which",
+                        lambda name: "/usr/local/bin/claude")
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 2  # the first attempt, then the retry's respawn
+    assert details[-1] == _server_ai._REMOTE_ROW_DETAIL
 
 
 def test_relay_wedged_clear_kills_and_respawns(monkeypatch):

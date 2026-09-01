@@ -345,6 +345,27 @@ export function jobAmount(job: Job): string {
   return `${num(done, scale.div)} / ${num(total, scale.div)} ${scale.unit}`;
 }
 
+// How long a RUNNING job has been going, as a clock ("1:24"), or "" once it
+// is no longer running — an ended job's age is not what this line is for,
+// and `jobStatusLine` already has its own words for every terminal state.
+//
+// `nowMs` should be the SERVER's clock (`JobsSnapshot.now`, scaled to ms),
+// not the browser's own `Date.now()`: the two disagree after a tab throttle
+// or a suspend (the same reasoning `GET /api/jobs`'s own `now` field exists
+// for — see jobs.py `list_jobs`), and the visible symptom would be a call
+// that has been running for minutes reading as 0:00, or as negative.
+//
+// Every row gets this, not only the ones with no other numbers to show
+// (a download already prints bytes; a transcription already prints a
+// seconds-of-audio clock) — `started_at`/`now` were already being handed to
+// the client on every poll (SPEC BG-8) for exactly this measurement, and a
+// remote Claude call is the row that has NOTHING else: no bytes, no percent,
+// nothing but "Claude — remote" for as long as ten minutes.
+export function jobElapsedLabel(job: Job, nowMs: number): string {
+  if (!isRunning(job)) return "";
+  return clock(Math.max(0, nowMs / 1000 - job.started_at));
+}
+
 // The one line under the title. In priority order, because the states overlap:
 // an error's message beats everything (it is the thing to act on), a cancel
 // that has been asked for but not yet honored has to say so or the ✕ reads as

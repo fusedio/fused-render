@@ -7,6 +7,7 @@ import {
   clearableCount,
   GRACE_MS,
   jobAmount,
+  jobElapsedLabel,
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
@@ -95,6 +96,25 @@ test("seconds with no total still say how far in we are", () => {
 
 test("nothing reported reads as nothing, not as 0", () => {
   expect(jobAmount(job({ done: null, total: null }))).toBe("");
+});
+
+// ------------------------------------------------------------------ elapsed
+
+test("a running job reads its elapsed time as a clock, against the given clock", () => {
+  expect(jobElapsedLabel(job({ started_at: 1000 }), 1042_000)).toBe("0:42");
+  expect(jobElapsedLabel(job({ started_at: 0 }), 4530_000)).toBe("1:15:30");
+});
+
+test("a job that has not started yet by this clock reads as 0:00, not negative", () => {
+  // Server clock drift (a throttled/suspended tab's own `nowMs` running
+  // behind) must not print a negative clock.
+  expect(jobElapsedLabel(job({ started_at: 1000 }), 999_000)).toBe("0:00");
+});
+
+test("a finished job has no elapsed clock — that is not what this line is for", () => {
+  for (const state of ["done", "error", "cancelled"] as const) {
+    expect(jobElapsedLabel(job({ state, started_at: 0 }), 60_000)).toBe("");
+  }
 });
 
 // --------------------------------------------------------------- status line

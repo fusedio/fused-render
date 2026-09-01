@@ -63,8 +63,10 @@ function text(node: ReactTestRendererJSON | string | null): string {
     .join("");
 }
 
-function renderRow(job: Job): ReactTestRendererJSON {
-  const tree = create(<JobRow job={job} onChanged={() => {}} onPatch={() => {}} />).toJSON();
+function renderRow(job: Job, nowMs?: number): ReactTestRendererJSON {
+  const tree = create(
+    <JobRow job={job} onChanged={() => {}} onPatch={() => {}} nowMs={nowMs} />,
+  ).toJSON();
   if (tree === null || Array.isArray(tree)) throw new Error("JobRow did not render a single root node");
   return tree;
 }
@@ -106,6 +108,24 @@ test("a model equal to the title draws no .dl-model suffix — a load row must n
   // suffix would otherwise repeat it verbatim right next to itself.
   const root = renderRow({ ...BASE, title: "org/model", model: "org/model" });
   expect(findAll(root, "dl-model")).toHaveLength(0);
+});
+
+test("a running row's status line carries a live elapsed clock, measured against the given nowMs", () => {
+  const root = renderRow({ ...BASE, started_at: 1000 }, 1042_000);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  // BASE's own detail/amount ("Denoising — step 2/4 · ~2s left" plus a 45/100
+  // amount) stays exactly what it was — the clock is APPENDED, not swapped in.
+  expect(text(status[0])).toBe("Denoising — step 2/4 · ~2s left · 45 / 100 · 0:42");
+});
+
+test("a done job carries no elapsed clock at all — an ended job's age is not this line's job", () => {
+  // `state: "done"` returns null from JobRow itself (see the test below), so
+  // this is checked on `cancelled` — the other terminal state that still
+  // draws a row.
+  const root = renderRow({ ...BASE, state: "cancelled", started_at: 1000 }, 1999_000);
+  const status = findAll(root, "dl-status");
+  expect(text(status[0])).not.toContain(":");
 });
 
 test("a done job draws nothing at all — success clears itself from the corner", () => {
