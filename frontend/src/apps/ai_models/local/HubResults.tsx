@@ -26,8 +26,9 @@
 // join that makes an in-app Hub search worth having is "you already have this
 // one", and the page's own walk is the only honest source for it.
 import { useEffect, useState } from "react";
-import { HubResultCard } from "./RecommendedCard";
-import { type DiskCard, resultDisk, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
+import { HubResultsTable } from "./HubResultsTable";
+import { type DiskCard, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
+import { groupIntoFamilies } from "@apps/ai_models/lib/hubFamilies";
 import {
   bySizeAscending,
   needsHubLogin,
@@ -376,6 +377,11 @@ export function HubResults({
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
       : models;
+  // One row per model FAMILY (task 3), grouped over whatever order `shown`
+  // settled on — server ranking, or the page's own size pass — so the fit/
+  // trending/size ordering already decided above survives into which family
+  // leads and which order the rows themselves appear in (`hubFamilies.ts`).
+  const families = shown ? groupIntoFamilies(shown) : null;
 
   return (
     <section className="am-section">
@@ -448,27 +454,24 @@ export function HubResults({
           Nothing on {host} matches that — among the models this app can run.
         </p>
       )}
-      {shown !== null && shown.length > 0 && (
+      {families !== null && families.length > 0 && (
         // A refetch in flight DIMS the rows rather than replacing them: the old
         // answer is the best one there is until the new one lands, and swapping
         // it for empty space makes typing feel like the page is breaking. A size
         // pass is the same situation — these are the right rows in the wrong
         // order — so it wears the same treatment rather than inventing one.
-        <div className={"cc-mdgrid am-grid" + (loading || measuring ? " am-hub-stale" : "")}>
-          {shown.map((m) => (
-            <HubResultCard
-              key={m.id}
-              model={m}
-              curated={curated.has(m.id)}
-              runner={runners.get(m.capability) ?? null}
-              disk={resultDisk(m.id, cards)}
-              authenticated={authenticated}
-              busy={pulling(m.id)}
-              job={jobByModel.get(m.id)}
-              onDownload={() => onDownload(m.id, m.capability)}
-              onCancel={onCancel}
-            />
-          ))}
+        <div className={loading || measuring ? "am-hub-stale" : undefined}>
+          <HubResultsTable
+            families={families}
+            cards={cards}
+            runners={runners}
+            curated={curated}
+            jobByModel={jobByModel}
+            pulling={pulling}
+            authenticated={authenticated}
+            onDownload={onDownload}
+            onCancel={onCancel}
+          />
         </div>
       )}
     </section>

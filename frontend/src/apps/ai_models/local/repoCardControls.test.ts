@@ -370,12 +370,15 @@ describe("what the card's face keeps, and what the (i) takes", () => {
   });
 
   it("leads every Download with the same glyph", () => {
-    // Three buttons draw it — a recommendation, a Hub result, and a partly
-    // downloaded repo's "Continue downloading" — and the point of the glyph is
-    // that those read as one act, so there is one copy of the path.
+    // Three call sites draw it — a recommendation, a Hub result row (now a
+    // table row, `HubResultsTable.tsx`, task 4), and a partly downloaded
+    // repo's "Continue downloading" — and the point of the glyph is that
+    // those read as one act, so there is one copy of the path.
     expect(PROGRESS).toContain("export function DownloadGlyph()");
     const REC = readFileSync(join(HERE, "RecommendedCard.tsx"), "utf8");
-    expect(REC.match(/<DownloadGlyph \/>/g)?.length).toBe(2);
+    expect(REC.match(/<DownloadGlyph \/>/g)?.length).toBe(1);
+    const TABLE = readFileSync(join(HERE, "HubResultsTable.tsx"), "utf8");
+    expect(TABLE.match(/<DownloadGlyph \/>/g)?.length).toBe(1);
     expect(CARD).toContain("<DownloadGlyph />");
   });
 
@@ -392,31 +395,34 @@ describe("what the card's face keeps, and what the (i) takes", () => {
 });
 
 // ---- one species of card (2026-08-25) ---------------------------------------
-// A recommendation, a Hub result and a cached repo are one thing at three
-// stages of its life, and the page draws them side by side in the same row —
-// which is the one place a difference in SHAPE cannot be missed. Akshil, twice:
-// "why do we have inconsistency between the downloaded card and the normal
-// card... at least the name, the mlx-community thing and the size should be
-// same. We can move the MLX LM tag onto the information icon."
+// A recommendation and a cached repo are one thing at two stages of its life,
+// and the page draws them side by side in the same row — which is the one
+// place a difference in SHAPE cannot be missed. Akshil, twice: "why do we have
+// inconsistency between the downloaded card and the normal card... at least
+// the name, the mlx-community thing and the size should be same. We can move
+// the MLX LM tag onto the information icon."
+//
+// **A Hub search result stopped being one of these cards in task 4** (the
+// dense results table, `HubResultsTable.tsx`) — deliberately: eleven columns
+// of a fit-scored table do not fit `ModelCard`'s card shape at all, which is
+// the whole argument for replacing the grid rather than amending it. So the
+// invariants below are about `RecommendedCard` alone now; the analogous ones
+// for the table row live in the `HubResultsTable` describe block underneath.
 describe("every card on the page has the same bones", () => {
   const REC = readFileSync(join(HERE, "RecommendedCard.tsx"), "utf8");
 
   it("name, then a caption line of size + repo id, in that order", () => {
-    // The shared skeleton draws it once for both of the not-on-disk cards.
     expect(REC).toContain('<div className="am-card-sub">');
     expect(REC).toContain('<span className="am-card-slug cc-mono" data-hint={slug}>{slug}</span>');
     const sub = REC.slice(REC.indexOf('<div className="am-card-sub"'));
     expect(sub.indexOf("am-card-slug")).toBeLessThan(sub.indexOf("{size.text}"));
-    // Both callers hand it the same two things the disk card shows.
-    expect(REC.match(/slug=\{model\.id\}/g)?.length).toBe(2);
-    // The Hub result shows the model half of the id up top, like the others.
-    expect(REC).toContain("text: modelName(model.id),");
+    expect(REC.match(/slug=\{model\.id\}/g)?.length).toBe(1);
   });
 
   it("the engine tag is a row in the (i), not a chip on the face", () => {
     expect(REC).not.toContain("<EngineTag");
     expect(REC).not.toContain("engineHueStyle(");
-    expect(REC.match(/<InfoButton name=\{model\.id\}/g)?.length).toBe(2);
+    expect(REC.match(/<InfoButton name=\{model\.id\}/g)?.length).toBe(1);
     expect(REC).toContain('label: "Engine"');
   });
 
@@ -425,11 +431,28 @@ describe("every card on the page has the same bones", () => {
     // greyed Download. That half is not identity, so it stays — as the verb.
     expect(REC).toContain("function SwitchEngines(");
     expect(REC).toContain("{!runner?.available && <SwitchEngines runner={runner} />}");
-    expect(REC).toContain("{!loadable && <SwitchEngines runner={runner} />}");
     expect(REC).toContain('className="am-card-fix"');
+  });
+});
+
+// ---- the dense results table (task 4) --------------------------------------
+// `HubResultsTable.tsx` is a genuinely different SHAPE from `ModelCard` — a
+// `<table>` row, following `BenchmarkTab.tsx`'s own table rather than the
+// card skeleton — but it keeps the facts a Hub result has always had to
+// carry: the same glyph, the same "why Download is dead" verb, and the same
+// partly-downloaded state (D424).
+describe("the Hub results table keeps a search result's own facts", () => {
+  const TABLE = readFileSync(join(HERE, "HubResultsTable.tsx"), "utf8");
+
+  it("still names the reason a dead Download is dead, on the row", () => {
+    expect(TABLE).toContain("{!loadable && <SwitchEngines runner={runner} />}");
   });
 
   it("the partly-downloaded tag survives, because it is state", () => {
-    expect(REC).toContain("{PARTIAL_TAG}");
+    expect(TABLE).toContain("{PARTIAL_TAG}");
+  });
+
+  it("still shows the model half of the id, like every other row on the page", () => {
+    expect(TABLE).toContain("modelName(display.name)");
   });
 });

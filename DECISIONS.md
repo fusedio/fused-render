@@ -31,6 +31,75 @@ builder picking this up should read this before touching code.
   once per `api_hub_search` call, before the row comprehension — never inside
   `_model_row` itself, and never per-row.
 
+## Task 4 — the dense results table
+
+- **New pure module `hubTableView.ts`** exports one function per cell rule
+  (`ageLabel`, `fitCell`, `speedLabel`, `runModeLabel`, `popLabel`,
+  `variantLabel`, `familyDisplay`, `paramsLabel`) rather than one aggregating
+  `tableRow()` function — I wrote an aggregator first, then removed it: it
+  wasn't tested on its own (the plan only asked to "drive every cell rule"),
+  and `HubResultsTable.tsx` reads each cell straight from the primary
+  model, so the aggregator only added an untested indirection.
+- **Byte formatting**: the plan says "reuses `shared/modelSize.ts`", but that
+  module's exports (`modelSizeLabel`, `modelSizeHint`) are catalog/job-hybrid
+  helpers (advertised `size_gb` vs. a live download's total) that do not apply
+  to a Hub search row at all — a Hub result already has its own size story
+  (`hubSize.ts`'s `hubSizeLabel`/`hubSizeTitle`/`hubSizeBytes`, task-1/2/3's
+  `estimatedSize` + the lazy `usedStorage` fallback), which is what the Size
+  column actually reuses. What `shared/modelSize.ts` really share is
+  `@platform/lib/format`'s `formatSize` underneath — `hubTableView.ts` reuses
+  THAT (by way of `formatParams`/`timeAgo`, also from `format.ts`) rather than
+  writing a second byte/param formatter, which I believe is the substance of
+  what the plan's line was after.
+- **Family display rule** (`familyDisplay`): the row's bold name is
+  `primary.baseModel ?? primary.id`; the muted sub-line is `primary.id`
+  ONLY when it differs from the bold name — i.e., a standalone repo (no
+  `baseModel`) shows one line, never its own id twice. This is a design
+  choice I made reading the mock's own caption ("The second line... is the
+  variant actually being offered") rather than something spelled out as a
+  rule anywhere in the plan text itself.
+- **`SwitchEngines` was exported** out of `RecommendedCard.tsx` (was a
+  private function) so `HubResultsTable.tsx` could reuse it rather than
+  forking a second copy of the "why Download is dead" amber link.
+- **Existing disk-state washes reused directly** (`am-card-have`,
+  `am-card-part-unknown`, `am-card-arriving` — the same classes
+  `RecommendedCard`/`RepoCard` use), rather than new `am-hubtable-*`
+  equivalents — same D436 argument the plan itself makes for the table
+  overall, applied one level down to the row wash specifically.
+- **Column-drop thresholds are container-query breakpoints on the table's own
+  inline size** (`container-type: inline-size` on `.am-hubtable-wrap`), not
+  the viewport — a split pane narrows the same columns a full-width window
+  would. The five pixel thresholds (760/660/560/460/380) are my own numbers,
+  chosen to be comfortably wider than each column's own content plus the ones
+  still visible at that point; they are not measured against a real rendered
+  table (no browser available to this builder) and are the one thing in this
+  task most worth a visual check before merge.
+- **Frontend test-text hazard (repo-instructed check) found ONE real hit**:
+  `frontend/src/apps/ai_models/local/repoCardControls.test.ts` greps
+  `RecommendedCard.tsx`'s source text and asserted counts (`2` occurrences of
+  `<DownloadGlyph />`, `<InfoButton name={model.id}`, `slug={model.id}`, plus
+  a whole "every card on the page has the same bones" describe block) that
+  assumed HubResultCard still lived in that file. Fixed by: lowering the
+  RecommendedCard-only counts to `1`, adding an equivalent count check against
+  the new `HubResultsTable.tsx`, and splitting the "same bones" describe block
+  into one for `RecommendedCard` (still a card) and a new one for the table
+  row (a different shape by design — the whole point of task 4). No
+  `tests/` (Python) file referenced any of the deleted symbols/classes
+  (`HubResultCard`, `cc-mdgrid`, `am-grid`) — confirmed by grep before
+  finishing this task.
+- **`.am-grid`** (the deleted grid's own CSS) had no other consumer anywhere
+  in the frontend (confirmed by grep) — removed rather than left dead, with a
+  one-line pointer comment left in its place.
+- **Not implemented, and worth flagging for the reviewer**: I did not verify
+  this table visually in a running app (no browser/dev-server access from
+  this builder, and starting one is out of scope per this build's own
+  hazards). Typecheck, the full `bun test` run, and `python -m pytest
+  tests/test_hub_models.py` are all green, and `bun run build` succeeds, but
+  the column-hiding container queries, the fit bar's rendered width, and the
+  overall row density are unverified by eye. Recommend an actual look at
+  "search qwen" and a narrowed split pane before merge, per the plan's own
+  "how we'll know it works" section.
+
 ## Task 3 — one entry per model family
 
 - `_EXPAND` already contained `"tags"` before this task started (it was added

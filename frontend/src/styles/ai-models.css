@@ -617,9 +617,8 @@
    Ragged is the state the page is in ALL the time; a stretched neighbour is the
    state it is in while a drawer is open, and `margin-top: auto` on the footer
    below makes that case read as deliberate rather than as a hole. */
-.am-grid {
-  align-items: stretch;
-}
+/* `.am-grid` (the card grid task 4 replaced with `.am-hubtable`) is gone —
+   see that block, further down, for its replacement. */
 
 /* …which is the other half of it: the facts sit under the head, and the
    footer sits on the floor of whatever height the row settled on. Without
@@ -3417,4 +3416,190 @@ button.am-bench-model:focus-visible {
 .am-bench-forget:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* ---- The dense Hub results table (task 4) --------------------------------
+   Replaces the card grid the search face used to draw (`.am-grid`, above).
+   Follows `.am-bench-table` above it — same app, same stylesheet, the same
+   sticky-head-free plain table with tabular numbers on the right. Container
+   queries rather than `overflow-x: auto`: the plan's own requirement is that
+   COLUMNS drop as the pane narrows and the page never scrolls sideways, which
+   `.am-bench-tablewrap`'s horizontal scroll deliberately does not attempt —
+   an eleven-column table over a fit-scored search is read a row at a time,
+   not scrolled through sideways to find the number that matters. */
+.am-hubtable-wrap {
+  container-type: inline-size;
+  margin-top: 6px;
+}
+
+.am-hubtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-hubtable th,
+.am-hubtable td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.am-hubtable th.num,
+.am-hubtable td.num {
+  text-align: right;
+}
+
+.am-hubtable thead th {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+/* The Fit column: a three-way dot plus a continuous bar over the SAME score
+   (SPEC AI-19) — the dot is what a reader scans a column of, the bar is what
+   says how much headroom by how far it fills. */
+.am-hubtable-fit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.am-hubtable-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.am-hubtable-dot-easy {
+  background: var(--success);
+}
+
+.am-hubtable-dot-tight {
+  background: var(--warning);
+}
+
+.am-hubtable-dot-no {
+  background: var(--error);
+}
+
+.am-hubtable-bar {
+  display: inline-block;
+  position: relative;
+  width: 46px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  flex: none;
+}
+
+.am-hubtable-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  /* `width` is set inline, per row — the one thing about a score a stylesheet
+     cannot know (see `HubResultsTable.tsx`). */
+}
+
+.am-hubtable-dash {
+  color: var(--fg-muted);
+}
+
+/* The Model column: the family's own name, the curated seal, the state tag
+   and — on its own line — the actual repo a Download button acts on. */
+.am-hubtable-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  white-space: normal;
+}
+
+.am-hubtable-name > a {
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.am-hubtable-name > a:hover {
+  text-decoration: underline;
+}
+
+.am-hubtable-variant-id {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-hubtable-partial {
+  font-size: 10px;
+  color: var(--warning-soft);
+  border: 1px dashed var(--warning-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* Var. — how many other repos this row folded in. A pill, not a bare number,
+   for the same reason `catalog.py`'s recommended badge is one: it is a COUNT,
+   not a measurement, and the shape says so before the digit is read. */
+.am-hubtable-varcount {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+}
+
+/* The disk-state washes themselves (`am-card-have`, `am-card-part-unknown`,
+   `am-card-arriving`) are the SAME classes every other card on this page
+   wears for the same three states (D436) — see `HubResultsTable.tsx`, and
+   their rules further up this file. Nothing hubtable-specific needed here. */
+
+.am-hubtable-action {
+  text-align: right;
+}
+
+/* Column-hiding, narrowest first: tok/s, Mode, Params, Pop. and New drop in
+   that order as the pane narrows — never the fit, name, size or action
+   cells, which is the plan's own line in the sand. Thresholds are the
+   TABLE's own inline size (`container-type: inline-size` above), not the
+   viewport, so a split pane narrows the same columns a full-width window
+   would. */
+@container (max-width: 760px) {
+  .am-hubtable .am-col-tok {
+    display: none;
+  }
+}
+
+@container (max-width: 660px) {
+  .am-hubtable .am-col-mode {
+    display: none;
+  }
+}
+
+@container (max-width: 560px) {
+  .am-hubtable .am-col-params {
+    display: none;
+  }
+}
+
+@container (max-width: 460px) {
+  .am-hubtable .am-col-pop {
+    display: none;
+  }
+}
+
+@container (max-width: 380px) {
+  .am-hubtable .am-col-new {
+    display: none;
+  }
 }
