@@ -1694,6 +1694,24 @@ _JOB_MIRROR_POLL_S = 0.5
 _CANCELLED_ERROR = "the install was cancelled"
 
 
+def _claim_token(key: str) -> bytes | None:
+    """The on-disk claim's own content — `f"{pid} {time}\\n"`, from `_claim`
+    — or None if there is currently no claim at all.
+
+    This is the one thing that changes identity between two attempts on the
+    SAME key: `_claim` never rewrites a live claim in place, only creates one
+    (first attempt) or unlinks-then-recreates one it is taking over from a
+    finished or dead installer (a retry). Reading it back is how a mirror
+    thread tells "still my attempt" from "a later attempt already took this
+    key over" without any state of its own to compare against.
+    """
+    try:
+        with open(_claim_path(key), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = False) -> None:
     """Give this install a row in the shell's jobs dock, for as long as it can
     run — which can outlive the request that started it. `_spawn` detaches the
@@ -1721,6 +1739,32 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     cancellation path for both surfaces, rather than the dock's ✕ silently
     doing nothing because nothing downstream ever reads it.
 
+    ONE THREAD PER CLAIM, not per job id: because the job id is deterministic
+    per key, a retry landing inside this thread's own poll window reuses it
+    while THIS thread is still running — `start()` unlinks `progress.json`
+    and takes over the claim before spawning the new worker and starting a
+    second `_mirror_into_jobs`. This thread captures the claim's own content
+    (`_claim_token`, above) the moment it starts, and every tick reconfirms
+    the claim on disk still matches before touching the row at all. The
+    retry's takeover unlinks-and-recreates the claim, so the instant that
+    happens this thread's token check fails and it steps aside quietly —
+    no upsert, no cancel — leaving the row to the NEW thread the retry
+    started, which opens with its own fresh upsert. Two threads never both
+    drive the row: the loser of the token check ends before it would have
+    read the stale synthetic "spawn" record `progress()` hands out for the
+    new claim, which is what used to keep it looping alongside the new
+    thread believing nothing had finished yet.
+
+    The SAME reuse is why a stale `cancel_requested` cannot survive to the
+    new attempt on its own: `jobs.upsert`'s state-transition rule only clears
+    it on a transition INTO a terminal state, so a mirror thread that never
+    got there (this thread's own `jobs.upsert` calls are best-effort) can
+    leave the row `running` with the flag still set for the next attempt to
+    inherit. The opening `jobs.clear_cancel_requested` call below disowns
+    that inherited flag right after the opening upsert, on every attempt —
+    a ✕ pressed after that point still sets it normally, through the same
+    `jobs.request_cancel` the dock always used.
+
     Best-effort throughout: a `jobs.upsert` failure must never take the
     install down with it, only leave its dock row missing or stale for one
     tick — which the dock already renders honestly.
@@ -1744,6 +1788,11 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     job_id = f"sys:env-install:{key}"
     name = projectenv.display_name(project_dir)
     title = f"Downloading Python for {name}" if downloading_python else f"Preparing {name}"
+    # Captured NOW, before the thread even starts: this is the claim THIS
+    # call's `start()` just (re)created, one line above in every caller. A
+    # later retry's takeover replaces it, which is exactly the change this
+    # thread must notice.
+    claim_token = _claim_token(key)
 
     def run() -> None:
         try:
@@ -1752,10 +1801,46 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                  "state": jobs.RUNNING, "cancellable": True},
                 server=True,
             )
+            # A flag a PREVIOUS attempt's dead mirror left set (see the
+            # docstring above) belongs to that attempt, not this one — clear
+            # it once, right after opening the row, so a fresh ✕ from here
+            # on is the only way this attempt gets cancelled.
+            jobs.clear_cancel_requested(job_id)
         except (jobs.JobError, ValueError):
             pass
         while True:
-            prog = progress(key) or {}
+            current_token = _claim_token(key)
+            if (
+                claim_token is not None
+                and current_token is not None
+                and current_token != claim_token
+            ):
+                # Superseded: a retry re-claimed this key before this thread
+                # observed a terminal record. The retry's own thread owns
+                # the row now — leave it alone. (`current_token is None` is
+                # NOT this case — `_claim`'s own unlink-then-recreate takeover
+                # briefly passes through no-claim-at-all, and treating that
+                # instant as supersession would race the `prog is None`
+                # branch below into wrongly diagnosing a live retry as a
+                # vanished install.)
+                return
+            prog = progress(key)
+            if prog is None:
+                # The record AND the claim are both gone (an external
+                # cache-clear under `progress_dir(key)`, say) — there is
+                # nothing left to poll. Ending the row honestly beats
+                # spinning on it forever, which a bare `or {}` here used to
+                # do: `{}.get("done")` is always falsy, so `finished` could
+                # never become True again.
+                try:
+                    jobs.upsert(
+                        {"id": job_id, "state": "error",
+                         "message": "the install's progress record disappeared"},
+                        server=True,
+                    )
+                except (jobs.JobError, ValueError):
+                    pass
+                return
             fields: dict[str, Any] = {}
             detail = prog.get("detail")
             if isinstance(detail, str):
@@ -1794,10 +1879,13 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                     # normally instead of sticking, and it reads as
                     # "stopped" rather than "broken". If the user clicks
                     # "Install anyway", the retry POSTs to the same key, so
-                    # `_claim`/`_spawn` reuse this same job id and the next
-                    # tick's `fields["state"] = "running"` flips the row
-                    # straight back — this branch is not the row's last
-                    # word, only its word while the question is open.
+                    # `_claim`/`_spawn` reuse this same job id — this
+                    # thread's own loop never assigns "running" again after
+                    # this tick (`finished` is now True, so it returns
+                    # below), so it is the RETRY's new `_mirror_into_jobs`
+                    # thread and its own opening upsert that flips the row
+                    # back — this branch is not the row's last word, only
+                    # its word while the question is open.
                     fields["state"] = "cancelled"
                     fields["message"] = f"waiting for your approval to compile {needs_build}"
                 elif error:
@@ -1907,12 +1995,17 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True) 
     # A row in the shell's jobs dock, for as long as this install can run —
     # which can outlive the request that started it (`_spawn` detaches the
     # worker on purpose, and the page that clicked Install may navigate away
-    # or close). Started here, once, by the ONE call that actually claimed the
-    # key: the four callers that would otherwise join a running install never
-    # reach this line at all (see the `_claim` branch above), so there is
-    # never a second thread mirroring the same key. Skipped when the caller
-    # said `report_job=False` — it already mirrors this exact install into a
-    # row of its own (see the parameter's own docstring).
+    # or close). Started here, once per call, by the ONE call that actually
+    # claimed the key: the four callers that would otherwise join a running
+    # install never reach this line at all (see the `_claim` branch above).
+    # A RETRY of a finished attempt does reach it again for the identical
+    # key — a second call, not a second claimant — which can start a second
+    # thread briefly alongside a first one still finishing its own poll
+    # loop; `_mirror_into_jobs`'s own docstring is where that overlap is
+    # actually resolved (the older thread notices its claim was superseded
+    # and steps aside). Skipped when the caller said `report_job=False` — it
+    # already mirrors this exact install into a row of its own (see the
+    # parameter's own docstring).
     if report_job:
         _mirror_into_jobs(key, project_dir, downloading_python=bool(acquire_python))
     # Written by the PARENT, before the worker's first write lands, so the very

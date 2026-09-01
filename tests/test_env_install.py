@@ -1041,6 +1041,135 @@ def test_a_joining_caller_starts_no_second_mirror_thread(
 
 
 @requires_fused
+def test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A mirror thread that dies without writing a terminal state (its own
+    `jobs.upsert` calls are best-effort) can leave the row `running` with
+    `cancel_requested` still set — `upsert`'s state-transition rule only
+    clears it on a transition INTO a terminal state, which a dead thread
+    never reaches. Because the job id is deterministic per venv key, a
+    fresh attempt on that key must not inherit that flag as its own cancel;
+    only a ✕ pressed against ITS OWN row does that."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+
+    key = envinstall.venv_key_for(proj)
+    job_id = f"sys:env-install:{key}"
+
+    # A previous attempt's dead mirror, simulated directly: the row exists,
+    # running, with a cancel request nobody ever cleared.
+    jobs.upsert({"id": job_id, "title": "Preparing x", "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True}, server=True)
+    jobs.request_cancel(job_id)
+    assert jobs.list_jobs()[0]["cancel_requested"] is True
+
+    rec = envinstall.start(proj)
+    assert rec["key"] == key
+
+    _wait_until(lambda: (j := _job(job_id)) and j["cancel_requested"] is False and j)
+    # A few more ticks — long enough that a wrongly-honored stale flag would
+    # already have cancelled the fresh install.
+    time.sleep(0.1)
+    prog = envinstall.progress(key)
+    assert prog is not None and prog.get("error") != "the install was cancelled"
+
+    # A FRESH ✕ against this attempt's own row still cancels it for real.
+    jobs.request_cancel(job_id)
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    prog = envinstall.progress(key)
+    assert prog["error"] == "the install was cancelled"
+
+
+@requires_fused
+def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Finding D's race: the retry's takeover (unlink `progress.json`, take
+    over the claim) can land inside the first mirror thread's sleep, so its
+    NEXT tick used to read the fresh claim's synthetic "spawn" record
+    instead of ever observing a terminal one — and kept looping forever
+    beside the new thread. The claim-token check at the top of each tick
+    must retire the superseded thread before it gets that far."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.2)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    def alive_mirrors():
+        return [t for t in threading.enumerate()
+                if t.name == "env-install-jobs-mirror" and t.is_alive()]
+
+    assert len(alive_mirrors()) == 1
+
+    # Both land inside the SAME poll window: the worker's needs_build
+    # refusal, then the user's retry — well before thread A's next tick.
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "no-build refusal", "needs_build": "foolib",
+        "pid": os.getpid(), "ts": time.time(),
+    })
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key
+
+    # Thread A's next tick lands after the retry: it must retire itself
+    # rather than keep looping beside thread B.
+    _wait_until(lambda: len(alive_mirrors()) <= 1, timeout=3.0)
+    time.sleep(0.3)
+    assert len(alive_mirrors()) <= 1, "two mirror threads are both driving this job id"
+
+    row = _job(job_id)
+    assert row["state"] == jobs.RUNNING, row
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+
+
+@requires_fused
+def test_a_vanished_progress_record_and_claim_ends_the_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`prog = progress(key) or {}` used to make `finished` permanently
+    False once BOTH the record and the claim disappeared — the whole
+    `progress_dir(key)` lives under `home_dir()/cache/_env_install`,
+    reachable by any cache-clearing path — spinning forever and
+    resurrecting a phantom "Preparing X" dock row instead of ending it."""
+    import shutil
+
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    shutil.rmtree(envinstall.progress_dir(key), ignore_errors=True)
+
+    row = _wait_until(
+        lambda: (j := _job(job_id)) and j["state"] in jobs.TERMINAL_STATES and j
+    )
+    assert row["state"] == "error"
+    assert "disappeared" in (row.get("message") or "")
+
+
+@requires_fused
 def test_the_bootstrap_rounds_jobs_row_is_titled_for_the_interpreter(
     tmp_path, monkeypatch, _fresh_script_python
 ):
