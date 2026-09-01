@@ -4086,7 +4086,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # revision, a local dir — and a fetch that quietly ignored one would
         # download the wrong thing. Ours honours exactly the two it knows about.
         # A listing with no sha is the same problem: nothing to pin to.
-        return hub()
+        #
+        # `files is None`/`not sha` is exactly the state a failed `_repo_files`
+        # listing above leaves — the same flaky-network case most likely to
+        # have left an orphan part file behind on an earlier attempt. Swept
+        # here too, same as every other successful return in this function,
+        # or a repo whose listing keeps failing stays "partial" forever no
+        # matter how many times hf itself completes it underneath.
+        result = hub()
+        _sweep_orphan_parts(repo_folder(model_id))
+        return result
     names = [name for name, _size in files]
     try:
         fetched = fetch_with_progress(

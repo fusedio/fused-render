@@ -2608,6 +2608,31 @@ def test_download_snapshots_fallback_wires_a_byte_counter_through(
     assert len(seen_bars) == 1, "the fallback did not pass its own tqdm_class through"
 
 
+def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch,
+                                                                tmp_path):
+    """An unrecognised keyword argument routes straight to `hub()` — same branch
+    `files is None`/`not sha` takes, which is exactly the state a failed
+    `_repo_files` listing leaves. `download_file`'s equivalent branch already
+    sweeps (SPEC AI-5l); this pins that `download_snapshot`'s does too, or a
+    repo whose caller passes an extra kwarg stays "partial" forever no matter
+    how many times hf completes it underneath."""
+    folder = _cache_folder(tmp_path)
+    orphan = folder / "blobs" / "0ldetag.fusedpart"
+    orphan.write_bytes(b"an earlier fetch's leftovers")
+    stale = time.time() - base._PART_GRACE_SECONDS - 60
+    os.utime(str(orphan), (stale, stale))
+
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x", revision="abc123") == snapshot
+    assert not orphan.exists(), "the kwargs fallback did not sweep orphan parts"
+
+
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
         base, monkeypatch, tmp_path):
     """`_record_fetch` writes a per-writer temp and `os.replace`s it, so a crash
