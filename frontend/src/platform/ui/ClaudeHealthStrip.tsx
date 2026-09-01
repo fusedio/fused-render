@@ -6,9 +6,8 @@
 // invites a prompt. The app folder gets created, the session fails, and the
 // TroubleCard explains it well — but the user has already typed a brief and
 // watched a folder appear before learning that the thing the app is built around
-// was never set up. `/api/config` had the right doctrine all along: it publishes
-// `sessions_mount_ready` so a link into a bundled mount renders only when it works,
-// "so it's never a dead link". This is that gate for everything Claude-dependent.
+// was never set up. The doctrine: a surface renders only when it works, "so
+// it's never a dead link". This is that gate for everything Claude-dependent.
 //
 // **It is not a wizard and not a gate.** The file explorer is completely useful
 // without Claude Code, and nothing here blocks it: the strip is a row above the

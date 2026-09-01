@@ -9,10 +9,8 @@ can be told *before* a prompt has been typed:
   * is it new enough for the flag set `server/ai.py:_ai_cmd` spawns it with
   * is it signed in
 
-`/api/config` already establishes the pattern: it publishes
-`sessions_mount_ready` so a link into a bundled mount renders only when it
-works, "so it's never a dead link". Claude Code had no equivalent, so every
-Claude-dependent surface rendered
+The pattern is "tell the surface up front, so it's never a dead link".
+Claude Code had no equivalent, so every Claude-dependent surface rendered
 as available and found out otherwise on click.
 
 **This module is the one place in the package that names an install directory.**
@@ -69,8 +67,8 @@ BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # the *user* PATH afterwards stays invisible until the next sign-in.
 #
 # This is the UNION of the four lists that used to exist independently across
-# server/ai.py, claude_config/lib.py, the learn content's check_env.py and
-# core_apps/sessions/analyze.py. A directory only one of them knew about was a
+# server/ai.py, claude_config/lib.py, and the retired learn and sessions
+# bundled content. A directory only one of them knew about was a
 # directory where the app disagreed with itself.
 #
 # Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to be
