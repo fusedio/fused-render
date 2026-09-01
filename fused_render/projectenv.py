@@ -1003,10 +1003,13 @@ def _sidecar_source_dir(source: str) -> str:
     keeps sidecars written the OLD way (a plain absolute path, and there are
     installed copies with those on disk) reading correctly: `_PACKAGE_IDENTITY` is
     deliberately unspellable as a path, so no real recorded path can start with it
-    and be misread as an in-app one, and a bundled venv from before this change
-    simply keeps the behaviour it had — never reclaimed until its next rebuild
-    rewrites the sidecar. The one thing that must never happen, reclaiming a venv
-    whose source is alive, is impossible either way.
+    and be misread as an in-app one. Such a sidecar is no longer immune to `gc()`
+    the way it once was: the RELOCATED arm reads its unchanged path like any
+    other source directory, and reclaims it the moment `venv_dir_for` disagrees
+    about where its venv belongs (D630 made that disagreement the common case,
+    not a rebuild-only event). The one thing that must never happen, reclaiming
+    a venv whose source is alive AND still agrees with policy, is impossible
+    either way.
     """
     if source == _PACKAGE_IDENTITY:
         return _PACKAGE_DIR
