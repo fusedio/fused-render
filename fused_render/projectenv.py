@@ -56,6 +56,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import threading
@@ -763,28 +764,58 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
     if isinstance(uv_toml, dict):
         index_urls += _tool_uv_index_urls(uv_toml)
     for url in index_urls:
-        host = urllib.parse.urlparse(url).netloc or url
+        host = _index_host(url)
         found.append({"name": host, "reason": "a custom package index for everything"})
 
     return found
 
 
+def _index_host(url: str) -> str:
+    """The disclosable name for a project-wide index/`find-links` URL:
+    hostname plus port when there is one, with any userinfo stripped.
+
+    `urlparse(url).netloc` includes userinfo (`user:token@host`), so using
+    it directly would render a credential straight into the consent prompt
+    AND into `/api/run`'s `needs_install` payload — the one thing this
+    disclosure must never do. The port is informative (it can be the only
+    thing distinguishing a private mirror from the public index at the same
+    host) and carries no secret, so it stays.
+
+    A value with no scheme (`urlparse` then finds no netloc at all — uv
+    still accepts it as an index) falls back to the raw text, but that text
+    can itself be `user:token@host/path` with no `//` to make `urlparse`
+    recognise it as authority; the regex strips a leading `userinfo@` from
+    it exactly like the normal case does, so the fallback never leaks what
+    the normal path already protects against.
+    """
+    host = urllib.parse.urlparse(url).hostname
+    if host:
+        port = urllib.parse.urlparse(url).port
+        return f"{host}:{port}" if port else host
+    return re.sub(r"^[^/@]*@", "", url)
+
+
 def _tool_uv_index_urls(uv: dict) -> list[str]:
-    """The project-wide index URLs named in a `[tool.uv]`-shaped table:
-    `index-url`/`default-index`, `extra-index-url` (string or list), and any
-    `[[index]]` table with no `explicit = true`. Shared between
-    `pyproject.toml`'s `[tool.uv]` and `uv.toml`'s top level, which use
-    identical keys (see `_load_uv_toml`)."""
+    """The project-wide index/download-source URLs named in a
+    `[tool.uv]`-shaped table: `index-url`/`default-index`,
+    `extra-index-url` (string or list), any `[[index]]` table with no
+    `explicit = true`, and `find-links` (string or list) — uv prefers
+    wheels from a `find-links` host exactly like a custom index, so leaving
+    it undisclosed would let a folder route every wheel-less package
+    through an attacker's host while the prompt still said "a one-time
+    download." Shared between `pyproject.toml`'s `[tool.uv]` and
+    `uv.toml`'s top level, which use identical keys (see `_load_uv_toml`)."""
     index_urls: list[str] = []
     for key in ("index-url", "default-index"):
         value = uv.get(key)
         if isinstance(value, str):
             index_urls.append(value)
-    extra = uv.get("extra-index-url")
-    if isinstance(extra, str):
-        index_urls.append(extra)
-    elif isinstance(extra, list):
-        index_urls.extend(u for u in extra if isinstance(u, str))
+    for key in ("extra-index-url", "find-links"):
+        value = uv.get(key)
+        if isinstance(value, str):
+            index_urls.append(value)
+        elif isinstance(value, list):
+            index_urls.extend(u for u in value if isinstance(u, str))
     tables = uv.get("index")
     if isinstance(tables, list):
         for table in tables:

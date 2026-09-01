@@ -574,6 +574,108 @@ def test_an_explicit_tool_uv_index_table_is_not_reported(home):
     assert projectenv.nonstandard_dependencies_of(str(proj)) == []
 
 
+def test_a_credentialed_index_url_discloses_host_not_the_token(home):
+    """`urlparse(url).netloc` includes userinfo — a `user:token@host` index
+    would otherwise put the token itself into the consent prompt (and, via
+    `engine.py`'s `nonstandard`, into `/api/run`'s `needs_install` payload).
+    Only the hostname belongs there; the port is informative and carries no
+    secret, so it stays."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nindex-url = "https://user:s3cr3t@pkgs.example.com:8443/simple"\n',
+        encoding="utf-8",
+    )
+
+    found = projectenv.nonstandard_dependencies_of(str(proj))
+    assert found == [
+        {"name": "pkgs.example.com:8443", "reason": "a custom package index for everything"},
+    ]
+    assert "s3cr3t" not in found[0]["name"]
+    assert "user" not in found[0]["name"]
+
+
+def test_a_credentialed_uv_toml_index_url_discloses_host_not_the_token(home):
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "uv.toml").write_text(
+        'index-url = "https://user:s3cr3t@attacker.example.com/simple"\n',
+        encoding="utf-8",
+    )
+
+    found = projectenv.nonstandard_dependencies_of(str(proj))
+    assert found == [
+        {"name": "attacker.example.com", "reason": "a custom package index for everything"},
+    ]
+    assert "s3cr3t" not in found[0]["name"]
+
+
+def test_an_unparseable_index_value_falls_back_without_leaking_credentials(home):
+    """`urlparse(...).netloc` is empty for a value that is not really a URL
+    (uv treats a bare `pypi` or a local path as a resolvable default index
+    too) — the old `or url` fallback echoed that raw text verbatim, which
+    still contains `user:token@` when the "URL" is malformed rather than
+    merely relative. The fallback must scrub userinfo exactly like the
+    normal case does."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nindex-url = "user:s3cr3t@pkgs.example.com/simple"\n',
+        encoding="utf-8",
+    )
+
+    found = projectenv.nonstandard_dependencies_of(str(proj))
+    assert len(found) == 1
+    assert "s3cr3t" not in found[0]["name"]
+    assert "user:" not in found[0]["name"]
+    assert found[0]["name"] == "pkgs.example.com/simple"
+
+
+def test_find_links_string_form_is_disclosed(home):
+    """`find-links` is a project-wide download source uv honours in
+    `[tool.uv]` exactly like `index-url` — a folder naming one there routes
+    every wheel-less package through it, and the prompt must say so instead
+    of rendering the no-op "a one-time download" detail shape 3 exists to
+    replace."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nfind-links = "https://attacker.example.com/wheels"\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "attacker.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_find_links_list_form_is_disclosed(home):
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "pyproject.toml").write_text(
+        (proj / "pyproject.toml").read_text(encoding="utf-8")
+        + '\n[tool.uv]\nfind-links = ["https://attacker.example.com/wheels", '
+        '"https://other.example.com/wheels"]\n',
+        encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "attacker.example.com", "reason": "a custom package index for everything"},
+        {"name": "other.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
+def test_find_links_in_uv_toml_is_disclosed(home):
+    """Same key, top level, identically honoured by uv for this folder — see
+    `_load_uv_toml`."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "uv.toml").write_text(
+        'find-links = ["https://attacker.example.com/wheels"]\n', encoding="utf-8",
+    )
+
+    assert projectenv.nonstandard_dependencies_of(str(proj)) == [
+        {"name": "attacker.example.com", "reason": "a custom package index for everything"},
+    ]
+
+
 # ---------------------------------------------------------------------------
 # The venv key: the folder's absolute path, hashed as given
 # ---------------------------------------------------------------------------
