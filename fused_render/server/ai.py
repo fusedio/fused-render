@@ -1483,7 +1483,7 @@ async def _ai_relay(body: dict):
                     proc = await _AI_SESSION.configure(
                         model, system_prompt, effort)
                     return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                           on_delta=deliver)
+                                           on_delta=deliver, on_phase=on_phase)
                 except asyncio.CancelledError:
                     # Cancelled mid-retry: the respawned instance is left
                     # mid-reconfig/mid-turn. Discard it too, or the next

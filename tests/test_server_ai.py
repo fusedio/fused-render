@@ -1214,6 +1214,38 @@ def test_relay_instance_failing_midcall_retries_fresh_once(monkeypatch):
     assert wedged.killed  # the wedged instance was discarded, not kept
 
 
+def test_relay_retry_still_reports_the_thinking_phase(monkeypatch):
+    # Bugbot catch: the fresh-spawn retry call to `_ai_drive` did not carry
+    # `on_phase` (only `on_delta`) — a thinking block seen on the FIRST
+    # attempt (then lost when that instance died mid-turn) left the row
+    # stuck on "Thinking — remote" for the rest of the call, including the
+    # retry's own writing phase, because nothing on the retry path could
+    # ever flip it back.
+    procs = [
+        _FakeProc(turns=[[_block_start_line("thinking")]]),  # dies mid-thinking
+        _FakeProc(turns=[[_block_start_line("text")] + _result_lines(deltas=["hi"])]),
+    ]
+    fake = _FakeSpawn(factory=lambda: procs.pop(0))
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which",
+                        lambda name: "/usr/local/bin/claude")
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    real = jobs.upsert
+    details = []
+
+    def upsert(body, **kwargs):
+        if "detail" in body:
+            details.append(body["detail"])
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 2  # the first attempt, then the retry's respawn
+    assert details[-1] == _server_ai._REMOTE_ROW_DETAIL
+
+
 def test_relay_wedged_clear_kills_and_respawns(monkeypatch):
     # A /clear that never settles within the control timeout means a wedged
     # process: kill, respawn, retry the request.
