@@ -44,7 +44,7 @@ import {
   lookupTotalSize,
 } from "@apps/ai_models/lib/hubSize";
 import { InfoButton } from "./ModelInfo";
-import { modelName, RecommendedMark } from "./RepoCard";
+import { modelName, CuratedMark } from "./RepoCard";
 import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
@@ -140,10 +140,10 @@ function ModelCard({
             downloaded ones (Akshil, 2026-08-25: "do we show the badge on fused
             selected models that are downloaded only? I think we should show it
             on non-downloaded models as well"). It marks the MODEL, not the
-            download — a recommendation is the one card that is curated by
+            download — a recommendation card is a member of the shortlist by
             construction, so hiding the mark until the weights land was the page
             saying least where it was surest. */}
-        {marked && <RecommendedMark />}
+        {marked && <CuratedMark />}
         {badges}
         {info}
       </div>
@@ -393,7 +393,7 @@ function count(n: number | null): string | null {
  */
 export function HubResultCard({
   model,
-  recommended,
+  curated,
   runner,
   disk,
   authenticated,
@@ -405,9 +405,9 @@ export function HubResultCard({
   model: HubModel;
   /** Whether the curation names this exact repo id. A search is the Hub's list,
    *  not ours, so most rows are not marked — but a search that turns up a model
-   *  this app recommends should say so, or the page's own opinion depends on
+   *  in this app's shortlist should say so, or the page's own opinion depends on
    *  which surface you found the model through. */
-  recommended: boolean;
+  curated: boolean;
   /** Which backend would load this capability here, from the catalog — the same
    *  table the recommended cards read. */
   runner: SectionRunner | null;
@@ -538,7 +538,7 @@ export function HubResultCard({
         title: `Open ${model.id} on the Hub`,
       }}
       slug={model.id}
-      marked={recommended}
+      marked={curated}
       info={<InfoButton name={model.id} rows={[engineRow(runner, true)]} />}
       badges={
         <>

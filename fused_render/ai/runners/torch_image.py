@@ -93,12 +93,53 @@ _loaded = {}
 #: read from `formats.COMPONENT_REPOS` rather than repeated here: that repo also
 #: lands in the Hub cache, where the AI Models page has to be able to say what
 #: it is, and the page runs in a process that cannot import this venv.
+#:
+#: **`quantize_4bit` names the components to quantize AT LOAD, and it exists
+#: because swapping the transformer only fixed the smaller half of the bill.**
+#: The recipe below replaces a 7.75GB bf16 transformer with a 2.43GiB Q4_K_M
+#: GGUF and leaves everything else at bf16 — but this repo's TEXT ENCODER is
+#: 7.5GB on its own, so after the swap the encoder is ~70% of what the worker
+#: holds. Measured on a 15.9GiB RX 9060 XT, 512x512 at 4 steps, prompt and seed
+#: fixed:
+#:
+#:   * bf16 text encoder: `memory_allocated` 10.15GiB, `drm-memory-vram`
+#:     10.37GiB, warm render 5.66s / 5.72s, load+`to("cuda")` 3.45s + 3.00s.
+#:   * NF4 text encoder: `memory_allocated` 5.10GiB, `drm-memory-vram` 5.35GiB,
+#:     warm render 5.76s, load+`to("cuda")` 5.32s + 0.18s.
+#:
+#: So it HALVES the resident set and is a wash on the clock — 5.76s against
+#: 5.72s is inside the run-to-run spread, and the total time to a loaded
+#: pipeline actually FALLS (5.50s vs 6.45s), because quantizing costs ~1.9s at
+#: load and then there are half as many bytes to copy to the card. Peak during
+#: a render drops too (6.65GiB vs a 12.28GiB reserved high-water), which is
+#: what `_place()` is measuring against.
+#:
+#: **NF4 rather than int8, and bitsandbytes rather than a second repo**, for
+#: three converging reasons: `bitsandbytes` is already declared in all three
+#: manifests and verified on this hardware (see any of their headers), so this
+#: costs no new dependency; `tonera/FLUX.2-klein-4B-int8-diffusers` — the model
+#: `catalog.py` already recommends — ships its OWN text encoder as bnb NF4
+#: (`"load_in_4bit": true, "bnb_4bit_quant_type": "nf4"`), so this is the same
+#: format the app already loads rather than a new one; and quantizing at load
+#: needs no pre-quantized upload to exist for a given repo, which a table of
+#: editorial judgements should not have to wait for.
+#:
+#: **What this does NOT fix is the download.** The bf16 encoder is still
+#: fetched and then quantized in this process, so `keep` is unchanged and the
+#: bytes on disk are what they were — see `catalog.py`'s SDNQ entry for the
+#: other route, which is smaller to fetch and faster per render but arrives as
+#: a whole separate repo.
+#:
+#: A recipe WITHOUT this key quantizes nothing, which is why it is a list of
+#: component names rather than a boolean: the next recipe may want its VAE left
+#: alone, or a pipeline with three text encoders may want two of them.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
+        "quantize_4bit": ["text_encoder"],
         # `*` crosses `/` in fnmatch, so `tokenizer*/*` covers a `tokenizer_2`
         # a future FLUX may add, and nothing at the root ever matches.
         "keep": ["model_index.json", "scheduler/*", "tokenizer*/*",
@@ -114,6 +155,115 @@ def _component_file(recipe):
 
 def _recipe(model_id):
     return _GGUF_RECIPES.get(model_id)
+
+
+def _register_extra_quantizers():
+    """Teach diffusers the quantization backends it does not ship, by importing
+    the packages that register themselves into its mapping.
+
+    Today that is exactly one: `sdnq`, which
+    `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` (`catalog.py`) is serialized
+    with. diffusers 0.39 knows autoround, bitsandbytes, gguf, modelopt, quanto
+    and torchao — every other quantized repo this app loads is one of those,
+    and needs nothing here.
+
+    **Imported for a SIDE EFFECT, which is why it looks like an unused
+    import.** `sdnq/quantizer.py` ends by mutating
+    `diffusers.quantizers.auto.AUTO_QUANTIZER_MAPPING` and its transformers
+    twin. Nothing in this file calls an sdnq name, and nothing should: the
+    whole integration is that `from_pretrained` can now resolve
+    `"quant_method": "sdnq"` out of a component's `config.json` on its own.
+    See the runner manifests for the version ceiling that risk buys.
+
+    **Absence is tolerated here, unlike `_load_quantization`'s refusal to
+    swallow its own failure.** The asymmetry is real: that function runs only
+    when a recipe explicitly asked for quantization, so failing it silently
+    would load a model at four times its promised size. This runs on EVERY
+    load, including the many that have nothing to do with sdnq, and a missing
+    optional package must not be what stops an ordinary bf16 pipeline from
+    loading. A model that genuinely needs it still fails loudly — diffusers
+    raises on the unknown `quant_method` it cannot resolve, naming it — so
+    nothing is hidden, it is just reported by the layer that actually knows the
+    requirement was unmet.
+    """
+    try:
+        import sdnq  # noqa: F401 - imported to register, not to call
+    except Exception as error:  # noqa: BLE001 - an optional backend must never break loading
+        # A load that never needed sdnq must still succeed, which is why this
+        # is caught rather than raised — but a load that DOES need it now fails
+        # later with diffusers' own "Unknown quantization type, got sdnq"
+        # ValueError, which names what went missing but not why. This
+        # breadcrumb is the why: it puts the real import error (a triton
+        # mismatch, a missing wheel, whatever broke `sdnq/quantizer.py`'s own
+        # import chain) next to that later failure instead of leaving it
+        # silently discarded.
+        sys.stderr.write("[fused] sdnq did not register its quantization "
+                         f"backend: {error.__class__.__name__}: {error}\n")
+
+
+def _load_quantization(recipe):
+    """The `quantization_config=` for `recipe`'s `quantize_4bit` components, or
+    None when it names none — see `_GGUF_RECIPES` for the measured numbers and
+    why NF4.
+
+    **Double quantization is on.** It quantizes the per-block constants the
+    first pass produces, which is the difference between ~0.5 and ~0.4 bits of
+    overhead per weight — small in ratio, but this is a 7.5GB component and the
+    accuracy cost is the one bitsandbytes documents as negligible. It is also
+    what `tonera/FLUX.2-klein-4B-int8-diffusers`'s own text encoder was
+    serialized with (`"bnb_4bit_use_double_quant": true`), so the two models
+    this runner loads now hold their encoders in the same format.
+
+    **`bnb_4bit_compute_dtype` matches the pipeline's `torch_dtype`, and has
+    to.** NF4 is a STORAGE format: every matmul dequantizes to the compute
+    dtype first, and a float32 compute dtype against bf16 activations is both
+    slower and a dtype mismatch waiting to surface inside an attention block.
+    The default is float32, so leaving it out would be choosing the wrong one
+    silently.
+
+    **Also correct on Apple Silicon, where `_place()` sends the whole pipe to
+    `mps` instead of `cuda`.** This is not a CUDA/ROCm-only trick that happens
+    to survive that move: bitsandbytes has shipped a real `mps` backend since
+    0.49.0 (`backends/mps/ops.py`), registering `quantize_4bit`,
+    `dequantize_4bit`, `gemv_4bit` and `gemm_4bit` behind pure-PyTorch
+    fallbacks that need no compiled kernel — only the Hub kernel it also tries
+    is macOS-26-and-up. `Params4bit.to()` has no device allow-list; it
+    dispatches through whichever of those is registered for the tensor's
+    device. The runner manifests' `bitsandbytes>=0.46.1,<1` floor predates a
+    macOS wheel — PyPI carries none for bitsandbytes before 0.49.0 — so
+    without a committed lockfile a Mac's `uv sync` can only land on 0.49.0 or
+    newer, which is exactly the range with the mps backend. The same NF4
+    format already ships on `mps` for `tonera/FLUX.2-klein-4B-int8-diffusers`'s
+    text encoder, which resolves its `quantization_config` straight out of
+    that repo's `config.json` rather than through this function — this recipe
+    is the second caller of a device this dependency already had to work on,
+    not the first.
+
+    Deliberately NOT wrapped in a try/except. A `_place()` probe that raises
+    must degrade to offload because a measurement is advisory; a quantization
+    the recipe explicitly asked for is not — if it cannot be applied, the model
+    would load at four times the size this recipe promises `_place()` it needs,
+    and quietly land in offload on a card that could have held it. Loud is
+    correct: `worker_base` turns the raise into the page's load error, with the
+    library's own message about what was missing.
+    """
+    components = (recipe or {}).get("quantize_4bit")
+    if not components:
+        return None
+
+    import torch
+    from diffusers import PipelineQuantizationConfig
+
+    return PipelineQuantizationConfig(
+        quant_backend="bitsandbytes_4bit",
+        quant_kwargs={
+            "load_in_4bit": True,
+            "bnb_4bit_quant_type": "nf4",
+            "bnb_4bit_use_double_quant": True,
+            "bnb_4bit_compute_dtype": torch.bfloat16,
+        },
+        components_to_quantize=list(components),
+    )
 
 
 # --------------------------------------------------------------- model loading
@@ -147,25 +297,211 @@ def download(model_id):
     return {"snapshot": snapshot, "gguf": gguf}
 
 
+#: How much VRAM `_place` refuses to plan into, on top of every component
+#: size it measures — 3 GiB by default, overridable with `FUSED_RENDER_AI_
+#: VRAM_HEADROOM_GB` (a float, e.g. `1.5`). This is a CONSERVATIVE PLACEHOLDER,
+#: not a measured figure: the denoising loop's own activations (latents,
+#: attention maps, the VAE's decode buffers) cost real VRAM on top of the
+#: weights this module CAN measure in-process, and nobody has yet profiled
+#: how that scales with resolution on the hardware this shipped for (a 15.9
+#: GiB RX 9060 XT running FLUX.2-klein-4B). 3 GiB is a guess wide enough to
+#: survive a 1024² render without starving diffusers' allocator; it is also
+#: the ONE NUMBER standing between a placement decision that fits and a mid
+#: -render OOM at a resolution nobody has actually measured here. Narrowing
+#: it needs a real profile (`torch.cuda.max_memory_allocated()` across a
+#: sweep of resolutions), not a smaller guess.
+_VRAM_HEADROOM_BYTES = 3 * (1 << 30)
+
+#: Env var for `_VRAM_HEADROOM_BYTES`, same "set AND parsable" precedence as
+#: `prefs.ai_idle_unload_minutes_override` — an unset, unparsable, OR
+#: out-of-range (negative, infinite, or implausibly large) value is silently
+#: ignored rather than treated as an intentional zero, so a typo in this
+#: variable degrades to the documented default instead of removing the safety
+#: margin it exists to keep. See `_vram_headroom_bytes` for why "parses" is
+#: not the same question as "sane".
+_VRAM_HEADROOM_ENV = "FUSED_RENDER_AI_VRAM_HEADROOM_GB"
+
+
+def _vram_headroom_bytes():
+    """`_VRAM_HEADROOM_BYTES`, or the env override — sanity-checked, not just
+    parsed. A bare `float()`/`except ValueError` pair let two bad values
+    through: `-4` parses fine and returns a NEGATIVE headroom, which makes
+    `_place` plan into MORE VRAM than is free — the opposite of the margin
+    this knob exists to keep — and `inf` (or any string large enough to
+    overflow) parses fine too, then raises `OverflowError` out of `int(...)`,
+    a class `except ValueError` never caught. That second one used to reach
+    `_place`'s own outer blanket `except`, so it "worked" by accident —
+    silently landing on plain offload — rather than by returning the
+    documented default the way every other unparsable value does. Both are
+    now caught before `int()` ever runs: a plausible headroom is `0 <= value
+    < 1024` (GiB), and anything outside that — negative, infinite, or just
+    absurd — is treated exactly like a value that failed to parse at all.
+    """
+    raw = os.environ.get(_VRAM_HEADROOM_ENV)
+    if not raw:
+        return _VRAM_HEADROOM_BYTES
+    try:
+        value = float(raw)
+        if not (0 <= value < 1024):
+            return _VRAM_HEADROOM_BYTES
+        return int(value * (1 << 30))
+    except (ValueError, OverflowError):
+        return _VRAM_HEADROOM_BYTES
+
+
+def _component_bytes(module):
+    """Bytes a loaded `torch.nn.Module` component will cost on a device —
+    parameters AND buffers, because a component can hold real weight-sized
+    tensors in either bucket (a GGUF-quantized transformer's scale/zero-point
+    tensors are commonly registered as buffers, not parameters, and skipping
+    them would undercount exactly the component this feature was built to
+    place). Measured while the component is still on CPU — `_place` runs
+    before ANY `.to()`/offload call, so this is the true per-component size
+    for any repo, with no catalog lookup and no reliance on a config file
+    agreeing with what actually got loaded.
+    """
+    total = 0
+    for param in module.parameters():
+        total += param.numel() * param.element_size()
+    for buf in module.buffers():
+        total += buf.numel() * buf.element_size()
+    return total
+
+
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
-    Three cases and one wrinkle. On CUDA, `enable_model_cpu_offload` keeps a
-    model bigger than the card's VRAM working. On Apple Silicon that same call
-    is counterproductive — "GPU memory" there is the SAME unified pool as system
-    RAM, so offloading buys nothing and adds transfers — hence a plain move. And
-    MPS generators are unreliable, so the seed is taken on the CPU whatever the
-    pipeline runs on; a reproducible seed is worth more than the microsecond.
+    Two cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
+    FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9 GiB RX 9060
+    XT with 2.0 GiB already used system-wide. The unconditional `enable_
+    model_cpu_offload()` this branch used to call regardless of card size
+    left `RssAnon` at 11.7 GiB (the weights, parked in system RAM by
+    accelerate) and the worker's own VRAM at 0.59 GiB (HIP context and
+    staging only) — the wrong side of the trade on a card that could hold
+    the whole model resident:
 
-    The two are returned separately because they genuinely differ on MPS, and
-    collapsing them is what hid the device from `/health` for as long as this
-    function only answered the seed's question: a FLUX render on a Windows CPU
-    is tens of minutes, and nothing on screen said which case the user was in.
+    1. **All-GPU** — every component's measured size plus `_vram_headroom_
+       bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
+       ("cuda")`, nothing streamed per render.
+    2. **Offload** — it does not fit: today's unconditional `enable_model_cpu_
+       offload()`, unchanged.
+
+    A raising `mem_get_info()` or a raising component measurement (an older
+    torch, an exotic component type this probe did not anticipate) degrades
+    straight to case 2 — the same "a probe must never break loading" reasoning
+    `release()`'s per-backend try/except documents just below, applied to the
+    measurement instead of the reclaim. That promise covers the MEASUREMENT;
+    the all-gpu case's own `pipe.to("cuda")` gets the identical treatment for
+    the same reason — `_vram_headroom_bytes()`'s margin is explicitly a
+    guess, `free` is sampled once before the move rather than continuously,
+    and a competing process (or a component whose real device cost exceeds
+    `numel * element_size`) can turn a move that looked safe into a raise. A
+    load that would have SUCCEEDED via plain offload must not fail outright
+    just because the faster path was tried first, so a raising `.to("cuda")`
+    falls back to `enable_model_cpu_offload()` exactly like case 2.
+
+    **A third case — pinning the "hot" set (denoiser + VAE) resident while
+    leaving the text encoder to offload's per-call fetch — was built,
+    measured, and removed.** A code review surfaced five defects, and
+    chasing them down showed the branch could not pay for itself:
+
+    - *Unreachable for the shipping pipeline.* With exactly one non-hot
+      `nn.Module`, `hot_bytes + max(other) == total_bytes` exactly, so the
+      `elif` was byte-for-byte the `if` above it and could never be the
+      first to pass. FLUX.2-klein-4B — the pipeline this feature was built
+      for — is that shape (`text_encoder`, `transformer`, `vae`).
+    - *It did not save what it claimed.* accelerate's offload is a CHAIN:
+      `CpuOffload.pre_forward` offloads `prev_module_hook`'s model
+      (`accelerate/hooks.py:744-765`). With the full seq `"text_encoder->
+      transformer->vae"`, the transformer's first forward evicted the text
+      encoder before denoising even started. Truncating the seq to
+      `"text_encoder"` (removing the hot names, as an earlier revision of
+      this function did) deleted that link, so the text encoder stayed
+      resident for the ENTIRE denoising loop — making hot-gpu's steady-state
+      VRAM equal to all-gpu's while claiming to be the cheaper option.
+    - *The pin round-tripped every render anyway.* Every FLUX `__call__`
+      ends in `maybe_free_model_hooks()`, which re-enters `enable_model_
+      cpu_offload` and unconditionally runs `self.to("cpu", silence_dtype_
+      warnings=True)` (`diffusers/pipelines/pipeline_utils.py:1244`) before
+      re-placing the excluded set — so the "pinned" components made a
+      GPU→CPU→GPU trip on every single image, not just at load time.
+    - *No fallback on the pin*, unlike the all-gpu move beside it.
+    - *`max(others)` undercounts peak* for a pipeline that keeps several
+      non-hot components resident at once (a `safety_checker`/`watermarker`
+      already in a class's `_exclude_from_cpu_offload`, or a `controlnet`
+      absent from the seq) — an error in the OOM direction.
+
+    A survey of what could ever reach the branch found nothing worth keeping
+    it for, either. Measured from the HuggingFace API (raw repo totals,
+    which OVERCOUNT because these repos carry several precision variants of
+    the same weights): FLUX.1-schnell has 2 non-hot components with a 0.25
+    GB gap between `hot+max(other)` and `total`; SDXL 2 components with a
+    1.24 GB gap; SD3.5-medium 3 components with a 3.27 GB raw gap (~1.65 GB
+    at what actually loads in bf16). SD3.5's three text encoders are the
+    only structurally good fit for this — and even there, on the 15.9 GiB
+    RX 9060 XT this feature was built for (~13.9 GiB free, 3 GiB headroom)
+    SD3.5-medium at bf16 needs 19.3 GiB for all-gpu and 17.7 GiB for
+    hot-gpu, so it still lands in plain offload; quantized far enough to
+    reach hot-gpu, it fits all-gpu outright instead.
+
+    Recorded here so the next person with the same idea finds the
+    accelerate-chain reason it is not as easy as it looks, rather than
+    reinventing it: pinning is a hook-chain problem, not a "which components
+    stay resident" problem, and the seq-truncation fix has to preserve the
+    chain through whatever it keeps hot. If a three-text-encoder pipeline
+    (SD3.5 and friends) ever joins the catalog, that is when to revisit —
+    and the chain semantics above are the thing to get right this time.
+
+    The MPS and CPU branches are untouched: MPS's unified memory makes
+    offloading pure overhead there (see below), and CPU has nothing to place.
+    MPS generators are unreliable, so the seed is taken on the CPU whatever
+    the pipeline runs on; a reproducible seed is worth more than the
+    microsecond. The two return values differ on MPS, and collapsing them is
+    what hid the device from `/health` for as long as this function only
+    answered the seed's question: a FLUX render on a Windows CPU is tens of
+    minutes, and nothing on screen said which case the user was in.
+
+    Every case reports which one happened via `set_state(placement=...)`,
+    which reaches the WORKER's own `/health` endpoint (`worker_base.snapshot`)
+    — but nothing downstream reads it today. `supervisor._health` only lifts
+    `state`/`detail`/`resident_bytes`/`os_footprint_bytes`/`device` out of
+    that response into the `Worker` it is polling, and `describe()` (what the
+    app's own `/health`-adjacent API and the AI Models page actually see)
+    forwards none of those extra fields either. So `placement` exists,
+    survives one hop, and stops — it is not yet visible outside this
+    process. Forwarding it is a small, separate change (a `Worker.placement`
+    field plus one more key in `describe()`'s dict); this function sets the
+    state on the assumption that whoever wires that up later will find it
+    waiting here, not because the wiring exists yet.
     """
     import torch
 
     if torch.cuda.is_available():
-        pipe.enable_model_cpu_offload()
+        placement = None
+        try:
+            free, _ = torch.cuda.mem_get_info()
+            headroom = _vram_headroom_bytes()
+            sizes = {
+                name: _component_bytes(component)
+                for name, component in pipe.components.items()
+                if isinstance(component, torch.nn.Module)
+            }
+            total_bytes = sum(sizes.values())
+            placement = "all-gpu" if total_bytes + headroom <= free else "offload"
+        except Exception:  # noqa: BLE001 - the size probe must never break loading
+            placement = None
+
+        if placement == "all-gpu":
+            try:
+                pipe.to("cuda")
+            except Exception:  # noqa: BLE001 - the move must degrade like the probe above
+                pipe.enable_model_cpu_offload()
+                placement = "offload"
+        else:
+            pipe.enable_model_cpu_offload()
+            placement = "offload"
+
+        worker_base.set_state(placement=placement)
         return "cuda", "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         pipe.to("mps")
@@ -177,6 +513,10 @@ def _place(pipe):
 def load(model_id, fetched):
     import torch
 
+    # Before either branch below: the no-recipe branch is the one that loads
+    # the SDNQ repo, and `from_pretrained` reads `quant_method` out of the
+    # component configs itself — so the mapping has to be populated first.
+    _register_extra_quantizers()
     recipe = _recipe(model_id)
     if recipe:
         import diffusers
@@ -195,8 +535,17 @@ def load(model_id, fetched):
         # diffusers resolves the components it still needs from the cache we
         # just filled, and skips the transformer subfolder because one is
         # passed here — which is also why `download` did not fetch it.
+        #
+        # `quantization_config=None` when the recipe names nothing is the
+        # library's own default for the parameter, so the no-recipe and
+        # no-`quantize_4bit` paths reach exactly the call they reached before.
+        # `components_to_quantize` is what keeps this off the transformer: it
+        # is already quantized and already BUILT, passed in above as an object
+        # rather than a name, and asking diffusers to quantize it again would
+        # be asking it to re-quantize GGUF weights.
         pipe = pipeline_cls.from_pretrained(
-            model_id, transformer=transformer, torch_dtype=torch.bfloat16)
+            model_id, transformer=transformer, torch_dtype=torch.bfloat16,
+            quantization_config=_load_quantization(recipe))
     else:
         from diffusers import AutoPipelineForText2Image
 
@@ -214,6 +563,33 @@ def load(model_id, fetched):
     # which is what keeps this additive for every other pipeline.
     vae = getattr(pipe, "vae", None)
     _loaded["vae"] = None if vae is None else type(vae).__name__
+    # Tile the VAE's own decode rather than the pipeline's: `Flux2KleinPipeline`
+    # has neither `enable_vae_tiling` nor `enable_vae_slicing` (`hasattr` is
+    # False for both, diffusers 0.39), so the usual one-line pipeline wrapper
+    # is not there to call — but `AutoencoderKLFlux2.enable_tiling()` is, and
+    # going straight to the VAE object captured above is what this recipe has
+    # instead. It is a no-op until a render is actually big enough to need it:
+    # `AutoencoderKLFlux2._decode` only takes the tiled path when `self.use_
+    # tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] >
+    # self.tile_latent_min_size)`, so calling this unconditionally at load
+    # time costs nothing on a small render — the VAE itself gates on the
+    # latent's own shape, a number this function does not have and should not
+    # try to guess at. That gate is also why this closes the gap `_VRAM_
+    # HEADROOM_BYTES`'s own docstring admits it cannot measure: "the VAE's
+    # decode buffers" is the one of its three unmeasured terms that scales
+    # quadratically with resolution, and tiling removes that term from the
+    # decode rather than asking the 3 GiB guess to keep covering for it.
+    # Absence is tolerated the same way `_register_extra_quantizers` tolerates
+    # a missing optional backend just above: a pipeline with no VAE, or a VAE
+    # class without `enable_tiling` (a fake in a test, some future pipeline
+    # shape), must not stop an otherwise-working load over an optimization
+    # nobody asked for by name — unlike `_load_quantization`'s quantization
+    # config, which IS an explicit request and is deliberately not swallowed.
+    if vae is not None:
+        try:
+            vae.enable_tiling()
+        except Exception:  # noqa: BLE001 - an optional optimization must never break loading
+            pass
     # See `worker_base.STATE["device"]`: "this machine has a GPU" and "this
     # pipeline is using one" are different facts, and only this process knows the
     # second. Since D381 that gap is the ORDINARY case rather than a Windows
@@ -378,7 +754,7 @@ def generate(body):
     # nothing has been fitted for this VAE, which is what lets the callback below
     # call it unconditionally — see `preview.sink`.
     frames = preview.sink(body.get("outPreview"), _loaded.get("vae"))
-    grid = preview.token_grid(width, height)
+    grid = preview.token_grid(_loaded.get("vae"), width, height)
 
     def on_step_end(pipeline, step, timestep, callback_kwargs):
         now = time.time()
@@ -462,6 +838,44 @@ def generate(body):
     }
 
 
+def _gpu_footprint():
+    """`worker_base.serve(footprint=...)`'s hook: what this worker is holding
+    in a DISCRETE GPU's own memory, invisible to RSS and (off darwin) to
+    `os_footprint_bytes()`'s platform reading — see `worker_base._footprint`'s
+    own docstring for the gap this closes and the measured numbers that found
+    it (a ROCm FLUX.2-klein-4B worker: 11.7 GiB of weights in RSS, 0.59 GiB of
+    driver context neither RSS nor a `psutil` read can see).
+
+    **`memory_reserved()`, not `memory_allocated()`** — deliberately the
+    opposite choice from `memory()` above, which sums `memory_allocated()`
+    because it feeds `resident_bytes()` -> `peak_resident_bytes()` ->
+    `fit.py`'s "measured" rung, where the question is "what did the tensors
+    actually cost". This hook answers a different question — "what is the
+    driver holding onto RIGHT NOW" — and `release()`'s `torch.cuda.empty_
+    cache()` call hands back the RESERVED pool, not merely whatever happened
+    to be allocated at that instant. Reporting `memory_allocated()` here would
+    make the idle-release timer firing invisible in `os_footprint_bytes()`:
+    the number would already have looked small before the reclaim, since
+    allocated tracks live tensors and a finished render has none.
+
+    **CUDA only, never MPS** — the trap this docstring exists to name: on
+    darwin, `worker_base.os_footprint_bytes()`'s `phys_footprint` reading
+    ALREADY counts the Metal pool a torch-on-MPS build allocates through
+    (`resident_bytes()`'s own docstring measured 23 GB of it, invisible to
+    RSS but not to `phys_footprint`). Reporting an MPS figure through this
+    hook on top of that would double the same bytes into the total — the
+    additive combination `os_footprint_bytes()` performs is only correct
+    because CUDA/ROCm VRAM and Linux RSS are genuinely disjoint; Metal's pool
+    and `phys_footprint` are not. Hence the single `torch.cuda.is_available()`
+    gate below and nothing checking `torch.backends.mps` at all.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        return int(torch.cuda.memory_reserved())
+    return None
+
+
 def main():
     """Serve, forever. The entry point each variant's `worker.py` shell calls.
 
@@ -470,4 +884,5 @@ def main():
     body is a path insert and a call to this.
     """
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, release=release)
+                      streaming=False, memory=memory, release=release,
+                      footprint=_gpu_footprint)

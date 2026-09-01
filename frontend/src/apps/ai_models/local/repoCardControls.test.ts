@@ -345,13 +345,28 @@ describe("what the card's face keeps, and what the (i) takes", () => {
   });
 
   it("marks the curation's picks, and takes the answer from the page", () => {
-    // A repo row has no opinion about whether we recommend it; the catalog does,
-    // and the page is what holds the catalog.
-    expect(CARD).toContain("{recommended && <RecommendedMark />}");
-    expect(CARD).toContain('aria-label="Recommended by Fused"');
+    // A repo row has no opinion about its own membership in the shortlist; the
+    // catalog does, and the page is what holds the catalog.
+    expect(CARD).toContain("{curated && <CuratedMark />}");
+    expect(CARD).toContain('aria-label="Curated by Fused"');
+    // The badge marks membership of the curated shortlist, a WIDER set than the
+    // catalog's `recommended` axis (one row per capability and engine, read only
+    // by the Playground's sidebar) — the two strings a reader or a screen reader
+    // actually receives must not claim that narrower axis. Scoped to those two
+    // lines rather than the whole file, which is free to discuss the difference
+    // in prose and does.
+    for (const copy of [/data-hint="[^"]*"/, /aria-label="Curated[^"]*"/]) {
+      const line = CARD.match(copy);
+      expect(line).not.toBeNull();
+      expect(line![0]).not.toContain("Recommended");
+    }
     const LOCAL = readFileSync(join(HERE, "LocalTab.tsx"), "utf8");
-    expect(LOCAL).toContain("recommended={curated.has(r.id)}");
-    expect(LOCAL).toContain("const curated = new Set<string>(");
+    expect(LOCAL).toContain("curated={curated.has(r.id)}");
+    // And takes it from the shared helper rather than building its own set: a
+    // card's `r.id` is a REPO id, and the set has to be keyed to match or a
+    // filename-keyed llama.cpp entry never marks its own disk card
+    // (`curatedRepoIds`, aiModelGroups.ts).
+    expect(LOCAL).toContain("const curated = curatedRepoIds(catalog);");
   });
 
   it("leads every Download with the same glyph", () => {

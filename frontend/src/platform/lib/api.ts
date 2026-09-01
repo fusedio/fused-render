@@ -13,9 +13,8 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
-  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
-  // every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts) — every mount lives at
+  // `${mounts_root}/<name>`.
   mounts_root: string;
   // Where shell code may write scratch files — bytes the app made and can
   // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
@@ -26,11 +25,6 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
-  // Whether the builtin sessions mount record exists yet — a surface linking
-  // into it renders only when this is true, so it's never a dead link
-  // (unpackaged dev run with no zip, or the brief window before startup's
-  // background automount thread has upserted the record).
-  sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
@@ -240,6 +234,16 @@ export interface ClaudeHealth {
   /** `claude doctor`'s own report, when it was run. Only measured while
       something already looks wrong — a healthy machine never pays for it. */
   doctor: ClaudeDoctor | null;
+  /** Whether a TERMINAL can find `claude`, as opposed to this app. The native
+      installer never edits an rc file, so the app can be fully working while
+      `claude` in a terminal says "command not found". Only an explicit `false`
+      — a login-shell probe that came back empty — may show the fix; `null`
+      means unknown or not ours to say (Windows, an override). */
+  on_shell_path: boolean | null;
+  /** The exact rc-append line the one-click fix runs, shown before it runs.
+      null when there is nothing safe to offer (fish, Windows, a binary outside
+      the home directory). */
+  path_fix_command: string | null;
   checked_at: number;
 }
 
@@ -288,6 +292,19 @@ export function startClaudeInstall(
 
 export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
   return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** Append the PATH line to the user's shell profile — the fix for a CLI the
+    app can see and the terminal cannot. Rejects with the server's sentence
+    when it refuses (a shell it cannot safely edit, an unwritable rc file). */
+export function linkClaudePath(): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson("/api/claude/link-path", {});
 }
 
 /** A browser sign-in, as the server holds it.
@@ -974,6 +991,27 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
+  // the stored switch plus the live listener — `url` once it is serving
+  // (http://render.fused.local/), `error` when the bind or mDNS failed.
+  lan: {
+    enabled: boolean;
+    running: boolean;
+    url: string | null;
+    host: string;
+    alias: string;
+    ip: string | null;
+    port: number | null;
+    error: string | null;
+    // The https listener beside the http one (for the native app); its
+    // failure leaves browsers working and is reported separately.
+    https_url: string | null;
+    https_port: number | null;
+    tls_error: string | null;
+    // Devices paired by scanning the QR code (lan.py): what the Preferences
+    // list shows and can revoke.
+    devices: LanDevice[];
+  };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -1164,6 +1202,54 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export interface LanDevice {
+  id: string;
+  name: string; // "iPhone · Safari", derived from the user agent at pairing
+  paired_at: number; // epoch seconds
+  last_seen: number;
+}
+
+// A one-time pairing URL for the QR code (five minutes, single use). `ip_url`
+// carries the same token behind the raw LAN address, for a phone whose
+// resolver does not do multi-label .local names.
+export function getLanPairToken(): Promise<{ url: string; ip_url: string | null; ttl_s: number }> {
+  return getJson("/api/lan/pair-token");
+}
+
+export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return getJson("/api/lan/devices");
+}
+
+// A device that paired since the shell last dismissed the news — one row in
+// the status bar's Notifications section (RepoUpdatesDock).
+export type LanPairingEvent = { id: string; name: string; at: number };
+
+export function getLanPairings(): Promise<{ pairings: LanPairingEvent[] }> {
+  return getJson("/api/lan/pairings");
+}
+
+export function dismissLanPairing(id: string): Promise<{ pairings: LanPairingEvent[] }> {
+  return postJson("/api/lan/pairings/dismiss", { id });
+}
+
+async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
+  const r = await fetch(path, { method: "DELETE", headers: { "X-Fused": "1" } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export function revokeLanDevice(id: string): Promise<{ devices: LanDevice[] }> {
+  return lanDelete(`/api/lan/devices/${encodeURIComponent(id)}`);
+}
+
+export function revokeAllLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return lanDelete("/api/lan/devices");
+}
+
+export function putLanEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { lan_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1407,10 +1493,6 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Sessions, D123/D227) that the
-  // server re-creates on every startup — the API rejects deleting it, so the
-  // Mounts view hides Delete for it too (unmount still works).
-  builtin: boolean;
   // Why restarting the rclone daemon would help this mount, else null:
   //  - "params" = the mount is live but its running options no longer match the
   //    record (e.g. read_only flipped) — a restart re-mounts to apply them.
@@ -3265,11 +3347,22 @@ export interface AiCatalogModel {
    *  Absent where no honest short name exists — the header omits the line
    *  rather than inventing one. */
   quantization?: string | null;
-  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
-   *  denoise count a distilled image model was benchmarked at. Absent on
-   *  cached entries and on models nobody has measured; the consumer keeps the
-   *  server's default then. */
-  defaults?: { steps?: number } | null;
+  /** Curated per-model generation hints (catalog.py): `steps` is the denoise
+   *  count the model was benchmarked at; `width`/`height` are its native
+   *  render size; `guidance` is the CFG scale that suits it — real
+   *  classifier-free guidance for an ordinary model, a distilled guidance
+   *  embedding for a guidance-distilled one, so the right number varies
+   *  wildly by model and cannot be guessed client-side. Each field is
+   *  independently optional — a curator may know a model's steps without
+   *  knowing its native resolution, say. Absent entirely on cached entries
+   *  and on models nobody has measured; the consumer keeps the server's
+   *  default then. */
+  defaults?: {
+    steps?: number;
+    width?: number;
+    height?: number;
+    guidance?: number;
+  } | null;
   /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
    *  Null when nothing is known at all (no size, no measurement, no curator
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`

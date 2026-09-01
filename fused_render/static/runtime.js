@@ -1676,14 +1676,14 @@
   // carried N listeners, so a single click cancelled every install.
   //
   // The count is what lets the row outlive an individual waiter. It is normally 1
-  // now, because `installEnv` dedups by key before `showInstall` is ever reached
-  // (SPEC PY-16 makes five scripts in one folder ONE key, and they join one
-  // promise rather than each opening a row). It is kept rather than removed
+  // now, because `installEnv` dedups by key before `ensureInstallRow` is ever
+  // reached (SPEC PY-16 makes five scripts in one folder ONE key, and they join
+  // one promise rather than each opening a row). It is kept rather than removed
   // because the invariant it encodes — the row goes when the LAST waiter settles,
   // never when the first does — is the one that has to hold if anything ever
-  // reaches `showInstall` twice for a key, and it costs a single integer. Living
-  // inside the entry means "which row" and "how many waiters" are one piece of
-  // state that cannot disagree with itself.
+  // reaches `ensureInstallRow` twice for a key, and it costs a single integer.
+  // Living inside the entry means "which row" and "how many waiters" are one
+  // piece of state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
@@ -1819,18 +1819,19 @@
       "align-items:center", "width:100%",
     ].join(";");
     el.appendChild(rows);
-    // `mountTimer` is part of the state, not a local in `showInstall`: the delay has
-    // to be cancellable from `hideInstall` (an install that finishes inside the
-    // window must not mount an overlay afterwards) and must not be restarted by a
-    // second install arriving while it is still pending.
+    // `mountTimer` is part of the state, not a local in `ensureInstallRow`: the
+    // delay has to be cancellable from `hideInstall` (an install that finishes
+    // inside the window must not mount an overlay afterwards) and must not be
+    // restarted by a second install arriving while it is still pending.
     installUi = { el, rows, mounted: false, mountTimer: null };
     return installUi;
   }
 
-  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY in
-  // `showInstall` even though mounting is delayed: `installEnv` registers its cancel
-  // handler and paints its first record immediately, so the nodes have to exist
-  // before the overlay does. A row that is never mounted is simply never seen.
+  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY
+  // in `ensureInstallRow` even though mounting is delayed: `installEnv` registers
+  // its cancel handler and paints its first record immediately, so the nodes have
+  // to exist before the overlay does. A row that is never mounted is simply never
+  // seen.
   function installRow() {
     const el = document.createElement("div");
     el.style.cssText = [
@@ -1839,6 +1840,15 @@
     ].join(";");
     const title = document.createElement("div");
     title.style.cssText = "font-size:17px;font-weight:600;";
+    // Monospace by DEFAULT — this line's original job is uv's own verbatim
+    // resolver error, which is code-shaped output a monospace face makes easier
+    // to scan. `askRow` (the consent question, and its "install anyway" retry)
+    // overrides this to a proportional face for its own use: that text is prose
+    // a non-technical user reads, not output to parse, and monospace under a
+    // proportional bold title reads as a debug dump. `askRow`'s own `settle`
+    // restores the monospace default once the question is answered, since
+    // whatever paints next (the "preparing…" line, the resolver's own error) is
+    // squarely this line's original job again.
     const detail = document.createElement("div");
     detail.style.cssText =
       "opacity:0.8;max-width:60ch;white-space:pre-wrap;word-break:break-word;" +
@@ -1857,8 +1867,24 @@
       "border:1px solid #3a424e", "background:#1d222a", "color:#e6edf3",
       "font-size:13px", "cursor:pointer",
     ].join(";");
-    el.append(title, track, detail, cancel);
-    return { el, title, detail, bar, cancel };
+    // The consent question's other button. Built here rather than as a
+    // separate element the confirm step creates on demand, so the row's
+    // structure (and therefore `installing.get(key).row`, which tests reach
+    // into directly) is the same object whether or not this project has ever
+    // needed a confirm — hidden until `confirmAsk` shows it, and hidden again
+    // the moment a decision is made.
+    const install = document.createElement("button");
+    install.textContent = "Install";
+    install.style.cssText = [
+      "margin-top:6px", "padding:6px 16px", "border-radius:6px",
+      "border:1px solid #3a6ea8", "background:#2f5f9e", "color:#e6edf3",
+      "font-size:13px", "cursor:pointer", "display:none",
+    ].join(";");
+    const buttons = document.createElement("div");
+    buttons.style.cssText = "display:flex;gap:10px;";
+    buttons.append(cancel, install);
+    el.append(title, track, detail, buttons);
+    return { el, title, detail, bar, track, cancel, install };
   }
 
   // Mount after INSTALL_MOUNT_DELAY_MS, at most one timer at a time.
@@ -1877,7 +1903,13 @@
     }, INSTALL_MOUNT_DELAY_MS);
   }
 
-  function showInstall(need) {
+  // Get-or-create this key's { row, count } entry, incrementing count exactly
+  // once. Its own function (rather than inlined into `startInstall`) because
+  // the confirm step needs the row BEFORE anything is known about whether this
+  // call ends up preparing or asking a question first — the one place entry
+  // bookkeeping happens, so two increments for one call can never leave
+  // `hideInstall` decrementing past zero for whichever call never matched.
+  function ensureInstallRow(need) {
     const ui = installOverlay();
     let entry = installing.get(need.key);
     if (!entry) {
@@ -1886,21 +1918,23 @@
       ui.rows.appendChild(entry.row.el);
     }
     entry.count += 1;
-    mountInstallSoon(ui);
-    const row = entry.row;
-    // Name what is actually being prepared. The environment belongs to the
-    // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
-    // row is titled with the project — "Preparing my-app" — rather than with a
-    // joined package list that would (a) grow unbounded as a folder gains
-    // dependencies and (b) imply the row belongs to one script. The packages are
-    // demoted to the detail line, where the poller's own text takes over a beat
-    // later anyway.
-    //
-    // On the interpreter round (D214) the packages are NOT downloading yet, and
-    // titling that round with them is the kind of small lie that makes a
-    // four-minute wait feel broken — the user watches "Installing tensorflow"
-    // and nothing about tensorflow is happening. So that round keeps its own
-    // distinct title.
+    return { ui, row: entry.row };
+  }
+
+  // Name what is actually being prepared. The environment belongs to the
+  // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
+  // row is titled with the project — "Preparing my-app" — rather than with a
+  // joined package list that would (a) grow unbounded as a folder gains
+  // dependencies and (b) imply the row belongs to one script. The packages are
+  // demoted to the detail line, where the poller's own text takes over a beat
+  // later anyway.
+  //
+  // On the interpreter round (D214) the packages are NOT downloading yet, and
+  // titling that round with them is the kind of small lie that makes a
+  // four-minute wait feel broken — the user watches "Installing tensorflow"
+  // and nothing about tensorflow is happening. So that round keeps its own
+  // distinct title.
+  function paintPreparing(row, need) {
     const requirements = (need.requirements || []).join(", ");
     row.title.textContent = need.python
       ? "Installing Python " + need.python
@@ -1917,7 +1951,6 @@
       ? "contacting the installer… (" + requirements + ")"
       : "contacting the installer…";
     installBarIndeterminate(row, true);
-    return row;
   }
 
   function hideInstall(key) {
@@ -2000,8 +2033,161 @@
     return promise;
   }
 
+  // Projects a user has already said yes to, THIS PAGE LOAD. No trust store and
+  // nothing persisted (see install-consent-plan.html's "no trust store"
+  // decision): the venv's READY_MARKER is already the real once-per-folder
+  // record, so `needs_install` simply stops firing once a folder is built, and
+  // this set only has to survive one page's lifetime.
+  //
+  // What it buys, narrowly: the D214 two-round Python bootstrap reports the
+  // SAME project under two DIFFERENT keys (the interpreter round, then the
+  // packages round), so `installEnv`'s per-key dedup cannot collapse them —
+  // without this, a user who had just clicked Install would be asked again,
+  // for the install they had already approved, before the first one had even
+  // reached the network.
+  //
+  // Keyed by `need.project` PLUS a fingerprint of what was actually
+  // DISCLOSED (`nonstandardFingerprint`, below) — not by project alone.
+  // Project-alone was a real disclosure gap: approve an all-PyPI install for
+  // project X, then add `foolib @ git+https://…` to its pyproject.toml —
+  // editing the manifest and letting live-reload re-run it is this app's own
+  // core workflow (see `startInstall`'s `activeKey` comment) — and the SAME
+  // project key would still read as approved, so `confirmInstall` would be
+  // skipped and the git source fetched with the user never having seen it.
+  // Folding the disclosure into the key makes a changed disclosure re-ask
+  // while an unrelated version bump (which never touches `nonstandard`)
+  // still reuses the earlier approval — the nagging this Set exists to
+  // avoid. Falls back to `need.key` when a caller has no `project` — a
+  // defensive floor, not the expected path, since every server-built
+  // `needs_install` carries one — so two genuinely different projects can
+  // never be conflated into one approval.
+  const approvedInstalls = new Set();
+
+  // A stable string naming exactly what the confirm dialog told the user —
+  // the same information `confirmInstall` renders, just serialized instead
+  // of joined into prose. Order-independent (sorted) so two reports of the
+  // same set in a different order do not read as a changed disclosure: nothing
+  // about `nonstandard_dependencies_of` promises a stable order (see its own
+  // docstring — "Order and duplicates are not contracts callers rely on").
+  function nonstandardFingerprint(need) {
+    const nonstandard = need.nonstandard || [];
+    return nonstandard
+      .map((d) => (d && d.name) + " " + (d && d.reason))
+      .sort()
+      .join("");
+  }
+
+  // The shared shape behind every yes/no this loader ever asks on a row:
+  // hide the progress track (there is no progress yet — or not yet AGAIN —
+  // to show), paint the question into the same title/detail nodes the
+  // eventual progress paint will reuse, reveal Install beside Cancel, and
+  // resolve/reject on whichever is clicked. One element identity throughout
+  // an install, never a modal swapped out from under the page.
+  //
+  // `installLabel` lets a caller relabel the affirmative button for its own
+  // question (`confirmBuildRetry`'s "Install anyway" reads very differently
+  // from the ordinary "Install") while still driving the exact same
+  // resolve/reject/mount plumbing.
+  function askRow(row, ui, title, detail, installLabel) {
+    return new Promise((resolve, reject) => {
+      row.track.style.display = "none";
+      row.title.textContent = title;
+      // Prose, not output: `detail` defaults to the monospace face its ORIGINAL
+      // job (uv's verbatim resolver error) wants, but a question is a sentence a
+      // non-technical user reads, not text to parse — rendered monospace under
+      // the proportional bold title, it looks like a debug dump landed in the
+      // middle of a plain-English question.
+      row.detail.style.fontFamily = "ui-sans-serif,system-ui,-apple-system,sans-serif";
+      row.detail.textContent = detail;
+      row.install.textContent = installLabel;
+      row.install.style.display = "";
+
+      const settle = (approved) => {
+        row.install.removeEventListener("click", onInstall);
+        row.cancel.removeEventListener("click", onCancel);
+        row.install.style.display = "none";
+        row.install.textContent = "Install";
+        row.track.style.display = "";
+        // Back to the monospace default: whatever paints `detail` next —
+        // `paintPreparing`'s "contacting the installer…", the resolver's own
+        // verbatim error — is this line's original job again.
+        row.detail.style.fontFamily = "ui-monospace,Menlo,Consolas,monospace";
+        if (approved) resolve();
+        else reject();
+      };
+      const onInstall = () => settle(true);
+      const onCancel = () => settle(false);
+      row.install.addEventListener("click", onInstall);
+      row.cancel.addEventListener("click", onCancel);
+
+      // A QUESTION must appear at once — `mountInstallSoon`'s delay exists to
+      // keep a merely-FAST install from flashing a modal open and shut (D213),
+      // which only makes sense once something is actually running. Nothing is
+      // running yet: the user has taken no action, so there is no "it might
+      // finish before anyone notices" case here to protect, and a delayed
+      // question would just read as a stuck page.
+      if (!ui.mounted) {
+        if (ui.mountTimer !== null) {
+          clearTimeout(ui.mountTimer);
+          ui.mountTimer = null;
+        }
+        document.body.appendChild(ui.el);
+        ui.mounted = true;
+      }
+    });
+  }
+
+  // "Install dependencies for X?" Resolves on Install, rejects on Cancel.
+  //
+  // Only ever called with a non-empty `need.nonstandard` — `startInstall`
+  // runs an all-PyPI install straight through with no prompt, since naming
+  // every ordinary PyPI dependency trains a reflexive click and there is
+  // nothing to disclose. The detail here is that disclosure: each entry
+  // names what did NOT classify as an ordinary released version and why.
+  function confirmInstall(need, row, ui) {
+    const nonstandard = need.nonstandard || [];
+    const detail = nonstandard.map((d) => d.name + " — " + d.reason).join("\n");
+    return askRow(
+      row, ui,
+      "Install dependencies for " + (need.name || "the environment") + "?",
+      detail, "Install"
+    );
+  }
+
+  // "`foolib` has to be compiled on this computer." The one dependency
+  // Task 1's static classification cannot see coming — whether a plain
+  // `foo>=1.0` publishes a wheel is a fact about the index, not the
+  // declaration — so it is caught here instead, at the resolver's own
+  // failure, and named individually rather than folded into the earlier
+  // question (which had already been answered by the time this exists to
+  // ask). Declining leaves the ORIGINAL resolver error standing — nothing
+  // about declining a build is itself a cancellation of the install.
+  //
+  // `pkg` comes from `needs_build` on the polled progress record — set by
+  // the worker (`_env_install_worker.py`'s `install`), the process that
+  // actually knows `--no-build` was passed and can tell this refusal apart
+  // from a genuine resolver failure. That used to be re-derived here, by
+  // regexing uv's stderr for either of its two wordings — two detectors
+  // that could disagree is exactly the defect this rewrite removes; there is
+  // one now, and it lives where the fact actually originates.
+  //
+  // `appName` is `need.name` (same fallback `confirmInstall` uses): a
+  // non-expert reading this dialog cannot act on "no ready-to-use package"
+  // sitting next to a bare package name, and nothing in the old copy said
+  // which app even wants the dependency or what continuing costs.
+  function confirmBuildRetry(row, ui, pkg, appName) {
+    return askRow(
+      row, ui,
+      pkg + " has to be compiled on this computer",
+      appName + " needs it, but there's no prebuilt version for this system. " +
+        "Compiling runs code from " + pkg + " and can take several minutes or fail. " +
+        "Only continue if you trust it.",
+      "Install anyway"
+    );
+  }
+
   function startInstall(need, pyPath, ownPath) {
-    const row = showInstall(need);
+    const { ui, row } = ensureInstallRow(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
     // /api/env/install re-derives the project from the .py on disk and returns its
@@ -2040,82 +2226,219 @@
         })
         .catch(() => {});
     };
-    row.cancel.addEventListener("click", onCancel);
 
     const paint = (prog) => paintInstall(row, prog, notice);
 
-    // Measured from the click, not from the previous poll, so the fast window is a
-    // property of the INSTALL's age rather than of how many times we happened to
-    // poll — a slow first response would otherwise stretch the fast phase
-    // arbitrarily.
-    const startedAt = Date.now();
-    const pollDelay = () =>
-      Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
-        ? INSTALL_POLL_FAST_MS
-        : INSTALL_POLL_MS;
+    const poll = () => {
+      // Measured from the first poll, not from `startInstall`'s own call, so the
+      // fast window is a property of the DOWNLOAD's age rather than of how long
+      // the consent question happened to sit unanswered — a user who takes ten
+      // seconds to click Install must not spend the fast-poll budget on nothing
+      // having downloaded yet.
+      const startedAt = Date.now();
+      const pollDelay = () =>
+        Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
+          ? INSTALL_POLL_FAST_MS
+          : INSTALL_POLL_MS;
+      const step = () =>
+        fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
+          headers: { "X-Fused": "1" },
+        })
+          .then((res) => res.json())
+          .then((body) => {
+            const prog = body && body.progress;
+            paint(prog);
+            if (!prog) {
+              // The record vanished (or never landed). Treat as failure rather
+              // than polling forever — a silent loader is the failure mode this
+              // whole flow exists to remove.
+              throw new Error("the installer left no progress record");
+            }
+            if (!prog.done) {
+              return new Promise((r) => setTimeout(r, pollDelay())).then(step);
+            }
+            if (prog.error) {
+              const e = new Error(prog.error);
+              // Carried on the Error object rather than re-derived from its
+              // message: `needs_build` is the worker's own classification of
+              // this failure (`_env_install_worker.py`'s `install`), and the
+              // catch below reads it as-is instead of regexing `e.message`.
+              e.needsBuild = prog.needs_build || null;
+              // Mutually exclusive with `needsBuild` on the worker's own side
+              // (`_env_install_worker.py`'s `install`): a `--no-build` refusal
+              // is EITHER a question worth asking (`needsBuild`, no wheels
+              // published anywhere) OR a platform this app can never run on
+              // (wheels exist, just not for this machine) — never both. Carried
+              // the same way, as a field on the Error rather than re-derived
+              // from `e.message`, since `e.message` stays uv's raw stderr
+              // verbatim (SPEC PY-18).
+              e.platformIncompatible = prog.platform_incompatible || null;
+              throw e;
+            }
+            return prog;
+          });
+      return step();
+    };
 
-    const poll = () =>
-      fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
-        headers: { "X-Fused": "1" },
-      })
-        .then((res) => res.json())
-        .then((body) => {
-          const prog = body && body.progress;
-          paint(prog);
-          if (!prog) {
-            // The record vanished (or never landed). Treat as failure rather
-            // than polling forever — a silent loader is the failure mode this
-            // whole flow exists to remove.
-            throw new Error("the installer left no progress record");
+    // One POST + poll cycle. Split out of `runInstall` so the no-wheel retry
+    // below (Task 5) can run a SECOND cycle — with `allowBuild: true` — off
+    // the same row, the same `activeKey` handling and the same cancel
+    // handler, rather than a parallel copy of all three.
+    const tryInstall = (allowBuild) =>
+      envPost("/api/env/install", { py: pyPath, html: ownPath, allow_build: allowBuild })
+        .then(({ res, data }) => {
+          if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+          // The installer's key wins over the pre-flight's from here on (see
+          // `activeKey`). `hideInstall` still gets need.key — that is the entry
+          // `ensureInstallRow` counted.
+          if (data && typeof data.key === "string" && data.key) activeKey = data.key;
+          // Wake the jobs dock now, not before the POST: `envinstall.start()`
+          // creates the row SYNCHRONOUSLY, before this response comes back, so
+          // by the time this line runs the row is already there for the dock's
+          // resulting poll to find. A ping fired before the POST would have the
+          // dock poll, see nothing yet, and go back to sleep for a full idle
+          // interval — strictly worse than no ping. Covers every real start
+          // through this one call site: the plain first attempt, the
+          // `allow_build` "install anyway" retry, and each round of the D214
+          // two-round Python bootstrap (each round is its own `tryInstall` off
+          // its own key).
+          pingJobs();
+          paint(data && data.progress);
+          return poll();
+        })
+        .then(
+          (prog) => {
+            if (cancelled) {
+              // The install finished anyway — a cancel the server could not honour,
+              // or one that lost a race with the last poll. The user's intent still
+              // decides whether the SCRIPT runs: resolving here ran it, which is the
+              // one outcome pressing Cancel must never produce. The venv is built
+              // and stays built; only the run is abandoned.
+              const e = new Error("the install was cancelled");
+              e.type = "EnvInstallCancelled";
+              throw e;
+            }
+            return prog;
+          },
+          (err) => {
+            if (cancelled) {
+              const e = new Error("the install was cancelled");
+              e.type = "EnvInstallCancelled";
+              throw e;
+            }
+            // A resolver failure this run itself chose NOT to allow — never on
+            // the retry attempt, or a package with a genuinely missing wheel
+            // (not merely one this run refused to build) would loop forever
+            // offering the same question. `needsBuild` (set on the Error
+            // above from the worker's own `needs_build` field) is null for
+            // every other failure (bad pin, no network, a nonexistent name),
+            // which falls straight through to the ordinary error below.
+            // A platform-incompatible refusal is never a question — no retry,
+            // allowed or not, can ever satisfy it (the wheels this app needs
+            // simply are not published for this machine) — so it must not
+            // reach `confirmBuildRetry` at all. Falls straight through to the
+            // ordinary terminal-error path below, with `err.message` replaced
+            // by a plain-language sentence naming the app, the package and
+            // the platforms involved (uv's raw stderr is still what
+            // `envinstall._mirror_into_jobs` shows the jobs dock — this only
+            // changes what THIS caller's rejected promise carries).
+            if (err.platformIncompatible) {
+              const info = err.platformIncompatible;
+              const appName = need.name || "This app";
+              err.message =
+                appName +
+                " needs " +
+                info.package +
+                ", which only runs on " +
+                info.platform +
+                ". This app can't run on " +
+                info.current_platform +
+                ".";
+              err.type = "EnvInstallError";
+              err.traceback = err.message;
+              throw err;
+            }
+            const pkg = !allowBuild && err.needsBuild;
+            if (pkg) {
+              // The mid-install Cancel handler is unregistered for the
+              // question's duration — same reasoning as the very first
+              // confirm above: while this question is on screen nothing is
+              // running for `onCancel` to reach, and leaving it attached
+              // would fire both it and this question's own Cancel off one
+              // click.
+              row.cancel.removeEventListener("click", onCancel);
+              return confirmBuildRetry(row, ui, pkg, need.name || "the environment").then(
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  paintPreparing(row, need);
+                  return tryInstall(true);
+                },
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  // Declining a source build is not cancelling the install —
+                  // it is standing by the resolver's original answer, which is
+                  // what the client still needs to see.
+                  err.type = "EnvInstallError";
+                  err.traceback = err.message;
+                  throw err;
+                }
+              );
+            }
+            // Verbatim, and tagged so a page can tell an install failure from its
+            // script's own error.
+            err.type = "EnvInstallError";
+            err.traceback = err.message;
+            throw err;
           }
-          if (!prog.done) {
-            return new Promise((r) => setTimeout(r, pollDelay())).then(poll);
-          }
-          if (prog.error) throw new Error(prog.error);
-          return prog;
-        });
+        );
 
-    return envPost("/api/env/install", { py: pyPath, html: ownPath })
-      .then(({ res, data }) => {
-        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        // The installer's key wins over the pre-flight's from here on (see
-        // `activeKey`). `hideInstall` still gets need.key — that is the entry
-        // `showInstall` counted.
-        if (data && typeof data.key === "string" && data.key) activeKey = data.key;
-        paint(data && data.progress);
-        return poll();
-      })
-      .then(
+    // The actual install, run only once the question above (if any) is
+    // answered Install. Registers the REAL cancel handler here rather than
+    // for the whole of `startInstall`: while the question is still on screen
+    // nothing has started for `onCancel` to reach, and attaching it earlier
+    // would fire both it and the confirm's own Cancel off a single click.
+    const runInstall = () => {
+      row.cancel.addEventListener("click", onCancel);
+      mountInstallSoon(ui);
+      paintPreparing(row, need);
+      return tryInstall(false).then(
         (prog) => {
           row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
-          if (cancelled) {
-            // The install finished anyway — a cancel the server could not honour,
-            // or one that lost a race with the last poll. The user's intent still
-            // decides whether the SCRIPT runs: resolving here ran it, which is the
-            // one outcome pressing Cancel must never produce. The venv is built
-            // and stays built; only the run is abandoned.
-            const e = new Error("the install was cancelled");
-            e.type = "EnvInstallCancelled";
-            throw e;
-          }
           return prog;
         },
         (err) => {
           row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
-          if (cancelled) {
-            const e = new Error("the install was cancelled");
-            e.type = "EnvInstallCancelled";
-            throw e;
-          }
-          // Verbatim, and tagged so a page can tell an install failure from its
-          // script's own error.
-          err.type = "EnvInstallError";
-          err.traceback = err.message;
           throw err;
         }
       );
+    };
+
+    // Nothing to disclose (an all-PyPI manifest) means no prompt at all: a
+    // confirmation screen carrying no decision content only trains reflexive
+    // clicking. This never records an approval — there was no question to
+    // have approved — so if the manifest is later edited to add a
+    // non-standard dependency, `nonstandard` is no longer empty and the
+    // checks below run for real, with an `approvalKey` this silent install
+    // never added.
+    if ((need.nonstandard || []).length === 0) return runInstall();
+
+    const approvalKey = (need.project || need.key) + " " + nonstandardFingerprint(need);
+    if (approvedInstalls.has(approvalKey)) return runInstall();
+
+    return confirmInstall(need, row, ui).then(
+      () => {
+        approvedInstalls.add(approvalKey);
+        return runInstall();
+      },
+      () => {
+        hideInstall(need.key);
+        const e = new Error("the install was cancelled");
+        e.type = "EnvInstallCancelled";
+        throw e;
+      }
+    );
   }
 
   // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
@@ -2227,7 +2550,20 @@
       if (data.needs_install && data.needs_install.pyproject) {
         watchPath(data.needs_install.pyproject);
       }
-      if (shouldInstall(data.needs_install, installed)) {
+      // `IS_THUMBNAIL` already gates every `fused.daemon.*` call
+      // (`_daemonRejectPreview`, above) on the same principle — a picture of the
+      // page must not act like the page — and an install is the same case: a
+      // preview card boots the real `entry_html` in a sandboxed iframe purely to
+      // paint it (`AppPreviewCard.tsx`, hover included), and that boot must never
+      // reach `/api/env/install`, mount a row, or poll progress. Skipping
+      // `shouldInstall` here — rather than checking `IS_THUMBNAIL` inside it —
+      // means a preview's `needs_install` falls straight to the `!data.ok` branch
+      // below and rejects with the server's own verbatim message, the same
+      // rejection shape every other run failure already produces and every
+      // caller already catches. Nothing here starts a chain that could throw
+      // unhandled: `installEnv` (and everything downstream of it) is simply
+      // never called.
+      if (!IS_THUMBNAIL && shouldInstall(data.needs_install, installed)) {
         installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
           attempt().then((next) => handle(next, installed))
@@ -3013,9 +3349,12 @@
   // context EXCEPT the one that wrote — which is exactly the shape here (an
   // iframe writes, the shell listens), and the same mechanism the appearance
   // theme already converges through. Purely an optimisation: the shell polls
-  // /api/jobs regardless, so a browser that drops the event (or a Python worker
-  // reporting straight to the API, which runs no JS at all) is only slower to
-  // notice, never wrong. Must stay in sync with frontend's lib/jobs.ts.
+  // /api/jobs regardless, so a browser that drops the event is only slower to
+  // notice, never wrong. Called from `trackJob`'s `send()` for client-reported
+  // jobs, and from the env-install path's `tryInstall` (its row is created
+  // server-side, but the POST that triggers that is still this same-origin
+  // page's own JS, so it can ping just the same). Must stay in sync with
+  // frontend's lib/jobs.ts.
   const JOB_PING_KEY = "fused-render:jobs-ping";
 
   function pingJobs() {
@@ -4922,6 +5261,12 @@
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
+    // Which kind of client this runtime is driving. "desktop" here; the
+    // local-network listener appends static/lan/runtime-phone.js, which sets
+    // "phone-web" and swaps the members that mean something else on a phone
+    // (capture.*, fileIndex). A native shell would set "ios-app". Apps branch
+    // on this, never on user-agent sniffing.
+    device: "desktop",
     runPython,
     engine,
     daemon,

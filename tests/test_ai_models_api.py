@@ -2121,12 +2121,17 @@ def test_a_dataset_is_never_partly_downloaded(client, hub):
 
 
 def test_the_part_suffix_is_the_fetchers_own(client):
-    """Two modules, one name. This module reads a cache the fetcher writes, and
-    the constant is duplicated deliberately (see `_PART_SUFFIXES`) — so the
-    duplication is pinned rather than trusted."""
+    """Two modules, one name — twice over. This module reads a cache the
+    fetcher writes, and both constants it pins against are duplicated
+    deliberately (see `_PART_SUFFIXES`), so the duplication is pinned rather
+    than trusted: ours (`PART_SUFFIX`) and hf's own (`_HF_PART_SUFFIX`), so the
+    two suffix sets cannot drift apart in silence."""
     from fused_render.ai.runners import worker_base
 
     assert worker_base.PART_SUFFIX in ai_models_mod._PART_SUFFIXES
+    assert worker_base._HF_PART_SUFFIX in ai_models_mod._PART_SUFFIXES
+    assert set(ai_models_mod._PART_SUFFIXES) == {
+        worker_base.PART_SUFFIX, worker_base._HF_PART_SUFFIX}
 
 
 @requires_symlinks

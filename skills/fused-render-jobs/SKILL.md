@@ -56,7 +56,12 @@ job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
 
 `fused.watchJob(id).watch(cb)` is the read side: it streams a row's updates to
 your page — used to show elapsed seconds for a `fused.capture` recording, or to
-follow a model download the runtime started for you.
+follow a model download the runtime started for you. A watched row's `job.state`
+can also read `"waiting"` — there's no way to set it yourself (`trackJob`'s
+methods only ever move a row to running or one of the terminal states); it
+shows up on a row you're only watching, such as an install parked on the
+build-consent prompt, and means the row is stalled on a question only the
+user can answer, not stuck and not an error.
 
 ## Report from the WORKER, not only the page — this is the one that bites
 

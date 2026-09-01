@@ -49,6 +49,7 @@ import { RepoCard } from "./RepoCard";
 import { SearchControls } from "./SearchControls";
 import { shortCommit } from "./hub";
 import {
+  curatedRepoIds,
   diskCards,
   groupRepos,
   loadRefusal,
@@ -350,13 +351,11 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   );
 
   // Which repo ids the curation actually names — the tick beside a card's name.
-  // Same source as the two maps around it, and deliberately the same `id`
-  // equality the merge uses to drop a recommendation for a model already on
+  // Keyed by `m.repo ?? m.id` like the two maps around it, and deliberately the
+  // same equality the merge uses to drop a recommendation for a model already on
   // disk: the tick and that de-duplication have to agree, or a card could wear
-  // "recommended" while a second card recommending it sat in the same section.
-  const curated = new Set<string>(
-    (catalog ?? []).flatMap((entry) => entry.models.map((m) => m.id)),
-  );
+  // no tick while a second card recommending it sat in the same section.
+  const curated = curatedRepoIds(catalog);
 
   // What the curation says a model's whole download WEIGHS, in bytes — the
   // denominator a partly downloaded card paints its fraction against when no
@@ -434,7 +433,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         key={r.path}
         repo={r}
         label={labelByRepoId.get(r.id)}
-        recommended={curated.has(r.id)}
+        curated={curated.has(r.id)}
         loaded={loadedById.get(r.id)}
         job={jobByModel.get(r.id)}
         busy={busy}

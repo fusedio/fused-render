@@ -74,6 +74,24 @@ def _placement():
     cost in word error rate — which for a 90-minute recording is the difference
     between a wait and an afternoon. A caller who wants the accuracy back has
     the larger model as the lever, and that is the better one to reach for.
+
+    **CUDA takes the same trade, not the opposite one — `int8_float16`, not
+    plain `float16`.** This runner is not the only thing that can be resident
+    on the GPU at once (see `torch_image._place`'s size-aware placement and
+    `os_footprint_bytes()`), so a smaller footprint here is VRAM handed back to
+    whatever else is loaded, for the same small WER cost CTranslate2's own
+    quantization docs attribute to int8 generally. faster-whisper's own
+    published benchmark (its README, large-v2 on an RTX 3070 Ti) has `int8` at
+    2926MB against `float16`'s 4525MB — about a third less VRAM — while being
+    slightly FASTER, not slower (59s vs 1:03). `int8_float16` over bare `int8`
+    is what keeps that speed: it quantizes the weights but still computes the
+    non-quantized layers in float16, rather than in whatever precision the
+    checkpoint was converted at (float32, in practice) — CPUs have no native
+    float16 compute to fall back to, which is why `int8` alone is CPU's
+    version of the same choice. And it degrades safely on hardware that can't
+    do it efficiently: CTranslate2 detects an unsupported combination itself
+    and converts the weights to one the device supports, logging that it did,
+    rather than failing to load.
     """
     import ctranslate2
 
@@ -81,7 +99,7 @@ def _placement():
         cuda = ctranslate2.get_cuda_device_count() > 0
     except (AttributeError, RuntimeError):
         cuda = False
-    return ("cuda", "float16") if cuda else ("cpu", "int8")
+    return ("cuda", "int8_float16") if cuda else ("cpu", "int8")
 
 
 #: What a CTranslate2 conversion always has and a transformers checkpoint never

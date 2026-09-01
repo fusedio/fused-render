@@ -164,6 +164,38 @@ def _request(tmp_path, **over):
     }
 
 
+# -- device and compute type, and the same trade taken on both -----------------
+
+
+def _fake_ctranslate2(cuda_devices):
+    def get_cuda_device_count():
+        if isinstance(cuda_devices, Exception):
+            raise cuda_devices
+        return cuda_devices
+    return types.SimpleNamespace(get_cuda_device_count=get_cuda_device_count)
+
+
+def test_placement_without_a_cuda_device_is_int8_on_cpu(worker, monkeypatch):
+    monkeypatch.setitem(sys.modules, "ctranslate2", _fake_ctranslate2(0))
+    assert worker._placement() == ("cpu", "int8")
+
+
+def test_placement_with_a_cuda_device_is_int8_float16_not_plain_float16(
+        worker, monkeypatch):
+    """The CUDA branch takes the same memory-for-a-small-WER-cost trade the
+    CPU branch documents, not the opposite one — `int8_float16`, which keeps
+    the non-quantized layers computing in float16, not bare `int8`."""
+    monkeypatch.setitem(sys.modules, "ctranslate2", _fake_ctranslate2(1))
+    assert worker._placement() == ("cuda", "int8_float16")
+
+
+def test_placement_falls_back_to_CPU_when_the_cuda_probe_itself_fails(
+        worker, monkeypatch):
+    monkeypatch.setitem(sys.modules, "ctranslate2",
+                        _fake_ctranslate2(RuntimeError("no driver")))
+    assert worker._placement() == ("cpu", "int8")
+
+
 # -- the eager phase, which is neither lazy nor free -----------------------------
 
 
