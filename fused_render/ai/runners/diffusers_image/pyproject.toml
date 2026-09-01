@@ -178,15 +178,10 @@
 #                  documented above — hence `<0.3` rather than `<1`, tighter
 #                  than the `bitsandbytes` line beside it, on a project moving
 #                  fast: the 0.2 line shipped six releases in the eight weeks
-#                  from 0.2.1 (2026-07-04) to 0.2.6 (2026-08-30), and 0.2.6 is
-#                  the NEWEST release, not a pinned-back old one. **Say it that
-#                  way round.** An earlier draft of this note read "six
-#                  releases old", which describes being six behind — the
-#                  opposite of the truth, and it propagated into the PR
-#                  description as a staleness risk that does not exist. The
-#                  real risk is the other end of the same fact: a pre-1.0
-#                  project releasing every week or two, whose newest release is
-#                  days old and has had no soak time anywhere.
+#                  from 0.2.1 (2026-07-04) to 0.2.6 (2026-08-30). The risk is
+#                  freshness, not staleness — 0.2.6 is the NEWEST release, so
+#                  the version this floors on is one a pre-1.0 project cut days
+#                  ago and nobody has run for long.
 #                  `>=0.2.6` is the version the numbers in
 #                  `catalog.py`'s entry were measured on; there is no older
 #                  release this was verified against, so the floor is what was

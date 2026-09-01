@@ -811,9 +811,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # size class.
     #
     # Ordering unaffected: every size below FELL, none crossed a neighbour, so
-    # `default_for()` still returns `tiny.en-8bit` at position 0 exactly as
-    # before this change — see the module docstring on why that is checked
-    # explicitly rather than assumed.
+    # `default_for()` returns `tiny.en-8bit` at position 0 — see the module
+    # docstring on why that is checked explicitly rather than assumed.
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",

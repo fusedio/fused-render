@@ -663,11 +663,11 @@ def generate(body, write):
     # (or otherwise unusable — a wrapped rotating-window cache, e.g.) match
     # falls straight through to `dispatch.py`'s own "ensure we have a
     # prompt_cache" branch, which builds a fresh one and cold-prefills the
-    # whole prompt — precisely what happened before this change. Getting the
-    # match wrong in the OTHER direction — reusing a prefix that is not
-    # actually a match — is the failure this cannot have (text conditioned on
-    # the wrong conversation, silently), and it cannot happen here because the
-    # comparison is a literal token-by-token walk, not an approximation.
+    # whole prompt. Getting the match wrong in the OTHER direction — reusing a
+    # prefix that is not actually a match — is the failure this cannot have
+    # (text conditioned on the wrong conversation, silently), and it cannot
+    # happen here because the comparison is a literal token-by-token walk, not
+    # an approximation.
     #
     # **One `PromptCacheState`, kept across turns in `_loaded` for exactly as
     # long as this process keeps its model** — same lifetime as `model` and
@@ -692,8 +692,8 @@ def generate(body, write):
     # passes this file's OWN gate on `vision_config` alone, with none of those
     # four id keys, would make `dispatch.py`'s guard a silent no-op — the
     # exact "reusing a cache across turns with different attached images"
-    # correctness bug this task exists to rule out, on an architecture this
-    # file cannot enumerate in advance. Excluding the whole image branch is
+    # correctness bug that must not happen, on an architecture this file
+    # cannot enumerate in advance. Excluding the whole image branch is
     # the same discipline `prompt_tokens = None if images` already applies a
     # few lines up: refuse to guess about the image path rather than trust a
     # check whose coverage this file cannot fully verify, and report/behave
