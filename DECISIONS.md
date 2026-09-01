@@ -31,6 +31,31 @@ builder picking this up should read this before touching code.
   once per `api_hub_search` call, before the row comprehension — never inside
   `_model_row` itself, and never per-row.
 
+## Task 3 — one entry per model family
+
+- `_EXPAND` already contained `"tags"` before this task started (it was added
+  in task 1 or earlier, not by me) — the plan's file list says to add it, but
+  it was a no-op; nothing changed there.
+- `_base_model(tags)` uses `str.partition(":")` on the tag with its
+  `base_model:` prefix stripped, taking the FIRST matching tag when more than
+  one base_model tag exists (undocumented by the Hub, so "first wins" is a
+  choice, not a spec). A malformed tag (missing the second colon, or an empty
+  relation/id either side of it) is skipped rather than partially parsed.
+- `hubFamilies.ts`'s `groupIntoFamilies` keys a family on `baseModel ?? id`.
+  A variant whose named base model never appears among the SAME page of
+  results (dropped upstream by D313, or just outside the query match) still
+  groups under that base id rather than standing alone under its own —
+  covered by its own test (`"a variant whose base model never appeared..."`).
+  Primary selection is fit-score desc, then downloads desc, then the
+  server's own ranking as the final tie-break (relies on `Array.sort`'s
+  ES2019+ stability guarantee, not manual index bookkeeping).
+- Family ORDER (the array `groupIntoFamilies` returns) follows first
+  appearance of each family's key in the input — i.e., whichever member
+  (primary or variant) the server ranked first decides where the whole
+  family sits. This wasn't specified by the plan; I chose it because it's
+  the only rule that makes the server's sort (by fit/trending/downloads/etc)
+  visibly survive grouping rather than being silently redone.
+
 ## Task 2 — rank by fit, trending, hide what cannot run
 
 - `sort="fit"` is accepted by `api_hub_search` but deliberately NOT a key in

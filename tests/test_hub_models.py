@@ -561,6 +561,41 @@ def test_the_hardware_and_footprint_store_are_read_once_per_request_not_per_row(
     assert cached_hardware_calls == [1]
 
 
+# -- one entry per model family (task 3) -------------------------------------
+
+
+def test_a_base_model_tag_is_parsed_into_basemodel_and_relation(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "unsloth/x-GGUF", tags=["base_model:quantized:org/x"])]))
+    row = _search(client).json()["models"][0]
+    assert row["baseModel"] == "org/x"
+    assert row["relation"] == "quantized"
+
+
+def test_a_finetune_relation_is_parsed_too(client, hub_cache, monkeypatch):
+    # MLX ports on this machine mostly declare `finetune`, not `quantized` — a
+    # grouping keyed on `quantized` alone would split exactly these families.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "mlx-community/gemma-3-12b-it-4bit", tags=["base_model:finetune:google/gemma-3-12b-it"])]))
+    row = _search(client).json()["models"][0]
+    assert row["baseModel"] == "google/gemma-3-12b-it"
+    assert row["relation"] == "finetune"
+
+
+def test_a_row_with_no_base_model_tag_carries_nulls(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/standalone", tags=["region:us"])]))
+    row = _search(client).json()["models"][0]
+    assert row["baseModel"] is None
+    assert row["relation"] is None
+
+
+def test_a_row_with_no_tags_at_all_carries_nulls_not_a_500(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/bare", tags=None)]))
+    row = _search(client).json()["models"][0]
+    assert row["baseModel"] is None
+    assert row["relation"] is None
+
+
 # -- ranking by fit, trending, and hiding what cannot run (task 2) ----------
 
 

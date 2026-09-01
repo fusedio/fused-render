@@ -32,6 +32,8 @@ function row(extra: Partial<HubModel> = {}): HubModel {
     fit: null,
     speedEstimate: null,
     created: null,
+    baseModel: null,
+    relation: null,
     local: { state: "none" },
     url: "https://huggingface.co/org/m",
     ...extra,

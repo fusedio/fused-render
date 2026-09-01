@@ -3067,6 +3067,14 @@ export interface HubModel {
   /** ISO8601, or null when the Hub did not say. The field the "New" sort
    *  orders by, now actually drawn rather than fetched and discarded. */
   created: string | null;
+  /** What this repo was derived from, parsed off the Hub's own
+   *  `base_model:<relation>:<id>` tag — null/null for a row standing alone.
+   *  See `hubFamilies.ts` for the grouping rule this feeds. */
+  baseModel: string | null;
+  /** e.g. "quantized", "finetune", "merge", "adapter" — free text on the
+   *  Hub's side, so this is not a closed union. Null exactly when `baseModel`
+   *  is. */
+  relation: string | null;
   local: HubModelLocal;
   url: string;
 }
