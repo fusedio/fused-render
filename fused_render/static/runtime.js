@@ -2264,6 +2264,15 @@
               // this failure (`_env_install_worker.py`'s `install`), and the
               // catch below reads it as-is instead of regexing `e.message`.
               e.needsBuild = prog.needs_build || null;
+              // Mutually exclusive with `needsBuild` on the worker's own side
+              // (`_env_install_worker.py`'s `install`): a `--no-build` refusal
+              // is EITHER a question worth asking (`needsBuild`, no wheels
+              // published anywhere) OR a platform this app can never run on
+              // (wheels exist, just not for this machine) — never both. Carried
+              // the same way, as a field on the Error rather than re-derived
+              // from `e.message`, since `e.message` stays uv's raw stderr
+              // verbatim (SPEC PY-18).
+              e.platformIncompatible = prog.platform_incompatible || null;
               throw e;
             }
             return prog;
@@ -2313,6 +2322,31 @@
             // above from the worker's own `needs_build` field) is null for
             // every other failure (bad pin, no network, a nonexistent name),
             // which falls straight through to the ordinary error below.
+            // A platform-incompatible refusal is never a question — no retry,
+            // allowed or not, can ever satisfy it (the wheels this app needs
+            // simply are not published for this machine) — so it must not
+            // reach `confirmBuildRetry` at all. Falls straight through to the
+            // ordinary terminal-error path below, with `err.message` replaced
+            // by a plain-language sentence naming the app, the package and
+            // the platforms involved (uv's raw stderr is still what
+            // `envinstall._mirror_into_jobs` shows the jobs dock — this only
+            // changes what THIS caller's rejected promise carries).
+            if (err.platformIncompatible) {
+              const info = err.platformIncompatible;
+              const appName = need.name || "This app";
+              err.message =
+                appName +
+                " needs " +
+                info.package +
+                ", which only runs on " +
+                info.platform +
+                ". This app can't run on " +
+                info.current_platform +
+                ".";
+              err.type = "EnvInstallError";
+              err.traceback = err.message;
+              throw err;
+            }
             const pkg = !allowBuild && err.needsBuild;
             if (pkg) {
               // The mid-install Cancel handler is unregistered for the

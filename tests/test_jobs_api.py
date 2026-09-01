@@ -456,6 +456,55 @@ def test_an_unread_error_outlives_even_the_unread_backstop():
     assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
 
 
+def test_an_unread_waiting_row_outlives_even_the_unread_backstop():
+    """`WAITING` gets the same unconditional exemption as `error` (`_sweep`'s
+    retention loop `continue`s on `job.state in ("error", WAITING)` before
+    either retention clock is even considered): a row sitting on uv's
+    "Install anyway" question must not vanish from the dock while the
+    question is still open, no matter how long nobody has looked at it."""
+    jobs.upsert({"id": "q", "title": "b", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=1000.0)
+    assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
+
+
+def test_a_waiting_row_is_not_swept_by_the_finished_ttl_either():
+    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
+    jobs.upsert({"id": "q", "title": "b", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=1000.0)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"ok", "q"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == {"q"}, "a WAITING row must stay exactly like an error row does"
+
+
+def test_request_cancel_does_nothing_to_a_waiting_row(client):
+    """`request_cancel` stays guarded on `RUNNING` alone: a `WAITING` row's
+    reporter (the worker process) has already exited, so there is nobody
+    left to signal — the dock's ✕ against a `WAITING` row goes through
+    `dismiss` instead, exactly like it already does for `done`/`cancelled`."""
+    jobs.upsert({"id": "q", "title": "b", "state": jobs.WAITING, "cancellable": True,
+                 "message": "waiting for your approval to compile foolib"}, server=True)
+
+    res = client.post("/api/jobs/q/cancel", headers={"X-Fused": "1"})
+    assert res.status_code == 200
+    row = res.json()
+    assert row["state"] == jobs.WAITING
+    assert row["cancel_requested"] is False, (
+        "a WAITING row has nothing running to signal a cancel to"
+    )
+
+
+def test_a_waiting_row_can_be_dismissed_like_a_finished_one(client):
+    jobs.upsert({"id": "q", "title": "b", "state": jobs.WAITING, "cancellable": True,
+                 "message": "waiting for your approval to compile foolib"}, server=True)
+
+    res = client.post("/api/jobs/q/dismiss", headers={"X-Fused": "1"})
+    assert res.status_code == 200
+    assert listing(client) == []
+
+
 def test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock():
     """`jobs.list_jobs()` is not only the shell's `GET /api/jobs` —
     `supervisor._cancel_state` (polled every 0.5s for the whole duration of

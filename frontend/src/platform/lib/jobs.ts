@@ -11,7 +11,15 @@
 // zero; a row that says "stalled" for work that finished).
 import { getJson, postJson } from "@platform/lib/api";
 
-export type JobState = "running" | "done" | "error" | "cancelled";
+// "waiting" — the two NON-terminal states are "running" and "waiting". Work
+// has stopped and is not coming back on its own: it is sitting on a QUESTION
+// only the user can answer (today, the sole producer is
+// `envinstall._mirror_into_jobs`'s `needs_build` branch: uv's "Install
+// anyway" compile prompt). Not "running" — nothing is actually in flight, so
+// a bar or a spinner would lie. Not terminal either: none of "done" / "error"
+// / "cancelled" means "stopped, waiting on you" (see `fused_render/jobs.py`'s
+// own state-machine comment for the fuller reasoning).
+export type JobState = "running" | "waiting" | "done" | "error" | "cancelled";
 export type JobKind = "download" | "task";
 // Who is running the work, which decides what ✕ can do (SPEC BG-4). "page" —
 // only the page knows what stopping means, so cancel is a request it honours.
@@ -44,7 +52,7 @@ export interface Job {
   // raise it (never-understate).
   total_scope: "download" | "phase";
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
-  message: string; // the error text, when state is "error"
+  message: string; // the error text when state is "error"; the question's caption when state is "waiting"
   page: string; // the .html that raised it (attribution)
   owner: JobOwner;
   cancellable: boolean;
@@ -346,6 +354,13 @@ export function jobStatusLine(job: Job): string {
   if (job.state === "error") return job.message || "Failed";
   if (job.state === "cancelled") return job.detail || "Cancelled";
   if (job.state === "done") return job.detail || "Done";
+  // A question on the page, not a failure and not progress — the caption
+  // names what it is waiting on (e.g. "waiting for your approval to compile
+  // <pkg>"). Checked ahead of `stalled`/`cancel_requested` below: both of
+  // those describe a REPORTER that has gone quiet or been asked to stop, and
+  // a "waiting" row's reporter already exited on purpose the moment it wrote
+  // this state (see `fused_render/jobs.py`'s own comment on `WAITING`).
+  if (job.state === "waiting") return job.message || "Waiting for you";
   // Stalled outranks a pending cancel, and says so explicitly when both hold.
   // "Cancelling…" claims something is working on the request; if the reporter
   // died before honoring it, that claim would stand for the whole ten-minute

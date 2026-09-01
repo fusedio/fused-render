@@ -1786,8 +1786,13 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     from fused_render import jobs, projectenv
 
     job_id = f"sys:env-install:{key}"
-    name = projectenv.display_name(project_dir)
-    title = f"Downloading Python for {name}" if downloading_python else f"Preparing {name}"
+    # Named `app_name`, not `name`: the loop a few lines into `run()` below
+    # (`for name in ("done", "total")`) shadows a bare `name` on every tick,
+    # and the `platform_incompatible` branch further down needs THIS value
+    # (the project's display name, not "done" or "total") to compose its own
+    # message.
+    app_name = projectenv.display_name(project_dir)
+    title = f"Downloading Python for {app_name}" if downloading_python else f"Preparing {app_name}"
     # Captured NOW, before the thread even starts: this is the claim THIS
     # call's `start()` just (re)created, one line above in every caller. A
     # later retry's takeover replaces it, which is exactly the change this
@@ -1858,6 +1863,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 fields["unit"] = "bytes"
             error = prog.get("error")
             needs_build = prog.get("needs_build")
+            platform_incompatible = prog.get("platform_incompatible")
             finished = bool(prog.get("done"))
             if finished:
                 if error == _CANCELLED_ERROR:
@@ -1869,16 +1875,13 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                     # refusal text (`_env_install_worker.py`'s `install`,
                     # SPEC PY-18), which is exactly the wrong thing to show
                     # in a notification: a stack of jargon a non-expert
-                    # cannot act on, sitting in a RED row that (per
-                    # `jobs.py`'s `_sweep`) stays put until dismissed because
-                    # `error` rows are deliberately kept. `jobs.py`'s
-                    # `TERMINAL_STATES` has exactly three members
-                    # (`done`/`error`/`cancelled`) and none of them means
-                    # "stopped, waiting on you" — `cancelled` is the least
-                    # wrong of the three: it is terminal, it ages out
-                    # normally instead of sticking, and it reads as
-                    # "stopped" rather than "broken". If the user clicks
-                    # "Install anyway", the retry POSTs to the same key, so
+                    # cannot act on. `jobs.py`'s `WAITING` state exists for
+                    # exactly this row: non-terminal (nothing has actually
+                    # finished — the question is still open), kept on the
+                    # dock until dismissed the same as `error` (`jobs.py`'s
+                    # `_sweep`), and rendered as a question rather than as
+                    # "stopped" or "broken". If the user clicks "Install
+                    # anyway", the retry POSTs to the same key, so
                     # `_claim`/`_spawn` reuse this same job id — this
                     # thread's own loop never assigns "running" again after
                     # this tick (`finished` is now True, so it returns
@@ -1886,8 +1889,25 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                     # thread and its own opening upsert that flips the row
                     # back — this branch is not the row's last word, only
                     # its word while the question is open.
-                    fields["state"] = "cancelled"
+                    fields["state"] = jobs.WAITING
                     fields["message"] = f"waiting for your approval to compile {needs_build}"
+                elif platform_incompatible:
+                    # A DIFFERENT `--no-build` refusal from the one above —
+                    # `_env_install_worker.py`'s `_incompatible_platform_name`
+                    # already determined this platform can never satisfy it
+                    # (a macOS-only wheel set on Linux, say), so there is no
+                    # question left to ask: this is a genuine, terminal
+                    # failure, not a QUESTION the way `needs_build` is. Kept
+                    # as an ordinary `error` row (sticky until dismissed, same
+                    # as any other), but with a plain-language `message`
+                    # instead of uv's raw stderr — `error` (below the `if`)
+                    # still carries that verbatim, per SPEC PY-18.
+                    fields["state"] = "error"
+                    fields["message"] = (
+                        f"{app_name} needs {platform_incompatible.get('package')}, which "
+                        f"only runs on {platform_incompatible.get('platform')}. This app "
+                        f"can't run on {platform_incompatible.get('current_platform')}."
+                    )
                 elif error:
                     fields["state"] = "error"
                     fields["message"] = str(error)

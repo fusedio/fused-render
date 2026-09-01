@@ -914,16 +914,15 @@ def test_dismissing_the_dock_row_cancels_the_real_install(
 
 
 @requires_fused
-def test_a_needs_build_refusal_mirrors_as_cancelled_not_error(
+def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
     tmp_path, monkeypatch, _fresh_script_python
 ):
     """The `--no-build` refusal (`_env_install_worker.py`'s `install`, which
     sets `needs_build` alongside uv's verbatim `error`) is a QUESTION on the
     page — `confirmBuildRetry`'s "Install anyway" — not a genuine resolver
     failure. It must not reach the jobs dock as a sticky red `error` row
-    carrying uv's raw stderr; `jobs.py`'s three `TERMINAL_STATES` make
-    `cancelled` the least-wrong stand-in (terminal, ages out normally,
-    reads as "stopped" rather than "broken"), with a short plain-language
+    carrying uv's raw stderr; `jobs.py`'s `WAITING` state exists for exactly
+    this: non-terminal, kept until dismissed, with a short plain-language
     message naming the package instead of uv's text.
     """
     from fused_render import jobs
@@ -949,12 +948,62 @@ def test_a_needs_build_refusal_mirrors_as_cancelled_not_error(
         "pid": os.getpid(), "ts": time.time(),
     })
 
-    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] in jobs.TERMINAL_STATES and j)
-    assert row["state"] == "cancelled", row
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
+    assert row["state"] == jobs.WAITING, row
     assert row.get("message") == "waiting for your approval to compile foolib", row
     assert "Distribution" not in (row.get("message") or ""), (
         "uv's raw stderr must never reach the jobs-dock message"
     )
+
+
+@requires_fused
+def test_a_platform_incompatible_refusal_mirrors_as_a_plain_language_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Unlike `needs_build`, `platform_incompatible` (set by
+    `_env_install_worker.py`'s `install` once `_incompatible_platform_name`
+    determines no wheel anywhere targets this machine) is a genuine, terminal
+    failure — there is no retry that could ever satisfy it. It mirrors as an
+    ordinary sticky `error` row, but with a friendly sentence naming the app,
+    the package and the platforms, not uv's raw stderr — that verbatim text
+    stays only in `envinstall.progress(key)["error"]` (SPEC PY-18)."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    raw_error = (
+        "RuntimeError: Failed to build the environment: error: Distribution "
+        "`pyobjc-framework-applicationservices==10.3.1` can't be installed "
+        "because it is marked as `--no-build` but has no binary distribution"
+    )
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": raw_error,
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS",
+            "current_platform": "Linux",
+        },
+        "pid": os.getpid(), "ts": time.time(),
+    })
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "error" and j)
+    assert row["state"] == "error", row
+    app_name = projectenv.display_name(proj)
+    assert row.get("message") == (
+        f"{app_name} needs pyobjc-framework-applicationservices, which only "
+        "runs on macOS. This app can't run on Linux."
+    ), row
+    assert "Distribution" not in (row.get("message") or ""), (
+        "uv's raw stderr must never reach the jobs-dock message"
+    )
+    prog = envinstall.progress(key)
+    assert "Distribution" in prog["error"], "uv's raw stderr must stay verbatim in progress"
 
 
 @requires_fused
@@ -989,7 +1038,7 @@ def test_a_needs_build_row_flips_back_to_running_on_the_retry(
                  "binary distribution",
         "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
     })
-    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
 
     # "Install anyway" -> the retry POST, same project, allow_build=True.
     retry = envinstall.start(proj, allow_build=True)
@@ -1032,7 +1081,7 @@ def test_a_successful_retry_clears_the_needs_build_row_caption(
                  "binary distribution",
         "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
     })
-    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
     assert row.get("message") == "waiting for your approval to compile foolib", row
 
     retry = envinstall.start(proj, allow_build=True)
@@ -3841,6 +3890,13 @@ def _worker_module(name="_env_install_worker_hb"):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Every call loads its own fresh module object, so patching the network
+    # seam HERE — rather than in each test — is what keeps the whole suite
+    # offline by default: a `needs_build` test that has nothing to do with
+    # platform detection must not spend its run on a real PyPI lookup (or
+    # depend on network being reachable at all). Tests exercising
+    # `_incompatible_platform_name` override this with their own fake.
+    module._fetch_pypi_json = lambda *a, **k: None
     return module
 
 
@@ -4048,6 +4104,201 @@ def test_allow_build_true_never_sets_needs_build(tmp_path, monkeypatch):
                        str(tmp_path / "cache"), allow_build=True)
     rec = _record(d)
     assert rec.get("needs_build") is None, rec
+
+
+# --- platform-incompatible --no-build refusals ---------------------------------
+#
+# Dogfooding on Linux found a `--no-build` refusal Task 4/5's retry prompt
+# cannot honestly offer: a macOS-only wheel set (no `sys_platform` marker to
+# have warned about it earlier) that will never compile here no matter how
+# long the user waits. `_incompatible_platform_name` tells this apart from a
+# genuine source-only project by looking the package up on PyPI — these
+# tests inject `_fetch_pypi_json` so every branch is covered without a
+# socket, per the module's own fail-open contract.
+
+def _wheel_url(filename, packagetype="bdist_wheel"):
+    return {"filename": filename, "packagetype": packagetype}
+
+
+def test_incompatible_platform_name_is_none_when_a_wheel_covers_this_platform(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_ok")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", None, fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_names_the_platform_wheels_are_published_for(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_mac_only")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl"),
+    ]}
+    name = worker._incompatible_platform_name(
+        "pyobjc-framework-applicationservices", "10.3.1", fetch=lambda n, v: payload)
+    assert name == "macOS"
+
+
+def test_incompatible_platform_name_joins_more_than_one_platform(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_two")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-py3-none-win_amd64.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name == "macOS and Windows"
+
+
+def test_incompatible_platform_name_is_none_for_a_source_only_project(monkeypatch):
+    """No wheels at all — an sdist-only package — is a LEGITIMATE build, not
+    an incompatibility: the plain compile prompt must still be offered."""
+    worker = _worker_module("_env_install_worker_platform_sdist")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [_wheel_url("foolib-1.0.tar.gz", packagetype="sdist")]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_is_none_when_a_pure_python_wheel_exists(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_any")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-py3-none-any.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_is_none_when_the_lookup_fails(monkeypatch):
+    """The mandatory fail-open path: a timeout, an offline machine, a 404 for
+    a version PyPI never published, or a malformed body must ALL read as
+    "cannot tell" — never as "this platform is unsupported"."""
+    worker = _worker_module("_env_install_worker_platform_unreachable")
+    for fake_fetch in (
+        lambda n, v: None,             # timeout / offline / 404 / non-JSON body
+        lambda n, v: [],               # malformed: not even a dict
+        lambda n, v: {},               # malformed: no "urls" key
+        lambda n, v: {"urls": "nope"}, # malformed: "urls" is not a list
+        lambda n, v: {"urls": [{"packagetype": "bdist_wheel", "filename": 123}]},
+    ):
+        assert worker._incompatible_platform_name("foolib", "1.0", fetch=fake_fetch) is None
+
+
+def test_fetch_pypi_json_fails_open_on_every_network_error(monkeypatch):
+    """`_fetch_pypi_json` itself — the module's one real network seam — must
+    swallow every failure mode rather than let one escape as an exception
+    the caller has to remember to catch."""
+    worker = _worker_module("_env_install_worker_fetch_errors")
+
+    class _Boom:
+        def __init__(self, exc):
+            self._exc = exc
+
+        def __enter__(self):
+            raise self._exc
+
+        def __exit__(self, *a):
+            return False
+
+    for exc in (
+        TimeoutError("timed out"),
+        OSError("network unreachable"),
+        worker.urllib.error.URLError("no route to host"),
+    ):
+        monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *a, **k: _Boom(exc))
+        assert worker._fetch_pypi_json("foolib", None) is None
+
+    # A 200 with a body that isn't valid JSON must also fail open, not raise.
+    class _BadJSON:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"not json"
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *a, **k: _BadJSON())
+    assert worker._fetch_pypi_json("foolib", None) is None
+
+
+def test_needs_build_stays_set_when_the_platform_check_cannot_complete(tmp_path, monkeypatch):
+    """`install()`'s except block: the mandatory fail-open path end to end.
+    When `_incompatible_platform_name` cannot reach a confident answer (the
+    default fake in `_worker_module` always returns None, simulating an
+    unreachable PyPI), `needs_build` must be left set exactly as Task
+    4/5 already tested — the ordinary "Install anyway" prompt, not a
+    fabricated hard error.
+    """
+    worker = _worker_module("_env_install_worker_platform_fails_open")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "foolib", rec
+    assert rec.get("platform_incompatible") is None, rec
+
+
+def test_install_sets_platform_incompatible_and_clears_needs_build(tmp_path, monkeypatch):
+    """The platform-incompatible case, end to end through `install()`: a
+    macOS-only refusal must clear `needs_build` (so `envinstall`/`runtime.js`
+    never offer the futile "Install anyway" retry) and set
+    `platform_incompatible` with the package, the platform wheels ARE
+    published for, and this machine's own platform name — `error` still
+    carries uv's raw text verbatim (SPEC PY-18)."""
+    worker = _worker_module("_env_install_worker_platform_incompatible_e2e")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    worker._CURRENT_PLATFORM_NAME = "Linux"
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `pyobjc-framework-applicationservices==10.3.1 "
+            "@ registry+https://pypi.org/simple` can't be installed because it "
+            "is marked as `--no-build` but has no binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    seen = []
+
+    def _fetch(name, version):
+        seen.append((name, version))
+        return {"urls": [_wheel_url(
+            "pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl")]}
+
+    monkeypatch.setattr(worker, "_fetch_pypi_json", _fetch)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec.get("needs_build") is None, (
+        "a platform-incompatible refusal must not also read as a compile question"
+    )
+    assert rec["platform_incompatible"] == {
+        "package": "pyobjc-framework-applicationservices",
+        "platform": "macOS",
+        "current_platform": "Linux",
+    }, rec
+    assert "marked as `--no-build`" in rec["error"], "error must still carry uv's verbatim text"
+    # The version uv named in its own refusal text was threaded through to
+    # the PyPI lookup, not dropped in favour of a name-only (latest-release)
+    # query that could answer for the WRONG version.
+    assert seen == [("pyobjc-framework-applicationservices", "10.3.1")]
 
 
 def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):

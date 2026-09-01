@@ -104,6 +104,17 @@ test("an error's message outranks whatever detail was last set", () => {
   expect(line).toBe("disk full");
 });
 
+test("a waiting row's message names the question, not a generic label", () => {
+  const line = jobStatusLine(
+    job({ state: "waiting", message: "waiting for your approval to compile foolib" })
+  );
+  expect(line).toBe("waiting for your approval to compile foolib");
+});
+
+test("a waiting row without a message still says something, not the raw detail", () => {
+  expect(jobStatusLine(job({ state: "waiting", detail: "installing" }))).toBe("Waiting for you");
+});
+
 test("a requested cancel says so — the ✕ must not read as broken", () => {
   expect(jobStatusLine(job({ cancel_requested: true, detail: "shard 3/8" }))).toBe("Cancelling…");
 });

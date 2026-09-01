@@ -40,12 +40,28 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
-# The state machine. "running" is the only non-terminal state; the three
-# terminal ones differ in what the user has to do about them, which is what
-# decides how long each is kept (see `_sweep`).
+# The state machine. "running" and "waiting" are the two NON-terminal
+# states; the three terminal ones differ in what the user has to do about
+# them, which is what decides how long each is kept (see `_sweep`).
+#
+# `WAITING`: work has stopped and is not coming back on its own — it is
+# sitting on a QUESTION only the user can answer (today, the sole producer is
+# `envinstall._mirror_into_jobs`'s `needs_build` branch: uv's "Install
+# anyway" compile prompt). Not `RUNNING` — nothing is actually in flight, so
+# a bar or a spinner would be a lie. Not `TERMINAL` either, and deliberately
+# so: none of the three terminal states means "stopped, waiting on you" —
+# `done` and `cancelled` both read as the row having reached an end the user
+# does not need to act on, and `error` reads as "broken", which is worse than
+# wrong here, since the compile prompt this row is sitting in front of is
+# still an open, answerable question, not a failure. Kept OUT of
+# `TERMINAL_STATES` on purpose: `upsert`'s finished-transition bookkeeping
+# (`finished_at`, clearing `cancel_requested`) does not apply to a row that
+# has not actually finished, and `_sweep`'s age-out clock must not start
+# either — see `_sweep`'s own comment for how it is kept instead.
 RUNNING = "running"
+WAITING = "waiting"
 TERMINAL_STATES = ("done", "error", "cancelled")
-STATES = (RUNNING,) + TERMINAL_STATES
+STATES = (RUNNING, WAITING) + TERMINAL_STATES
 
 # What the record means for a progress bar: a download reads its numbers as
 # bytes and has a bar; a task may have no numbers at all and reads as a
@@ -459,6 +475,14 @@ def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
     stays "running, cancelling…" until the work actually stops, which is the
     truth — a row that flips to "cancelled" while a 4-minute download carries
     on underneath it would be a lie the UI told to feel responsive.
+
+    Guarded on `RUNNING` alone, unchanged by `WAITING`'s arrival: a
+    `WAITING` row has nothing left running to signal a cancel TO (the worker
+    that wrote it already exited), so the client's own `canCancel` never
+    calls this route for one at all — the dock's ✕ on a `WAITING` row goes
+    through `dismiss`, below, exactly like it already does for `done` and
+    `cancelled`. Setting `cancel_requested` here for a state nothing is
+    listening for would only leave a flag standing that nothing ever clears.
     """
     now = time.time() if now is None else now
     with _lock:
@@ -678,8 +702,17 @@ def _sweep(now: float) -> None:
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:
                 _forget(job_id, now)
-        elif job.state == "error":
-            continue  # kept until dismissed — see FINISHED_TTL_S
+        elif job.state in ("error", WAITING):
+            # Both kept until dismissed, for the same reason `error` already
+            # was — see FINISHED_TTL_S. A `WAITING` row's reporter has
+            # already returned (the worker that wrote it has exited; nothing
+            # is polling any more), so there is no heartbeat left to keep it
+            # "fresh" the way a `RUNNING` row's own ticks do — aging it out
+            # on any clock would make the question it is sitting in front of
+            # (uv's "Install anyway" prompt, still open on the page) vanish
+            # from the dock while it is still exactly as open as when it
+            # appeared.
+            continue
         elif job.first_read_at is not None:
             if (now - job.first_read_at) > FINISHED_TTL_S:
                 _forget(job_id, now)
