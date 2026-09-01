@@ -26,9 +26,7 @@ machine you're on and hands you the right build:
 - **Windows** — 64-bit `.exe` installer
 - **Linux** — AppImage
 
-Each one is the packaged app: it carries its own Python runtime plus the
-`fused` CLI and rclone, so there is nothing to install first and nothing to
-build. macOS is the native build; Windows and Linux have limited support.
+macOS is the native build; Windows and Linux have limited support.
 
 If the first run goes wrong, the page's
 [troubleshooting section](https://render.fused.io/#troubleshooting) has the
