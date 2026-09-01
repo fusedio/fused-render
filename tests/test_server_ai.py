@@ -1426,8 +1426,8 @@ def test_posix_candidates_are_the_documented_install_locations():
     """The three canonical locations, canonical-first — and nothing hand-written.
 
     This used to pin the tuple exactly, which is what let the list here drift
-    from the three OTHER lists the app kept (claude_config/lib.py, the learn
-    content's check_env.py, core_apps/sessions/analyze.py): each was
+    from the OTHER lists the app kept (claude_config/lib.py, the retired
+    learn and sessions bundled content): each was
     correct against its own test and none agreed with the others, so a CLI in
     `~/.bun/bin` was found by the Claude-config tab and not by fused.ai. The
     union lives in claude_health now; the identity assertion is what keeps this

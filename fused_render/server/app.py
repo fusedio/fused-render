@@ -766,9 +766,8 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(claude_config_router)
     # Is Claude Code usable at all (routers/claude_health.py): found / version /
     # signed-in, so the first run can be TOLD rather than left to discover it by
-    # failing. Same doctrine as /api/config's sessions_mount_ready, which gates
-    # a link into a bundled mount so it is never dead — this is that gate for
-    # everything Claude-dependent. Its own endpoint, not a /api/config field:
+    # failing — the gate for everything Claude-dependent, so no surface is ever
+    # a dead link. Its own endpoint, not a /api/config field:
     # the facts behind it are process spawns, and /api/config is read on every
     # page load. The cache is warmed by the entry points (claude_health.
     # warm_in_background), never from here — importing the server in a test must
