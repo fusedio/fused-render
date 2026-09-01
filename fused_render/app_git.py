@@ -103,18 +103,29 @@ LOCAL_TAG = "local"
 # file-scoped chat template used to write beside the entry html — still
 # ignored, because an existing repo may already have one.
 #
-# `.venv/` is here for a different reason: the app NEVER creates one (project
-# venvs live under ~/.fused-render/venvs — SPEC PY-16, MD-7), but a user who runs
-# `uv run` or `uv sync` in their own terminal will, and a scoped `git add -A`
-# would sweep tens of thousands of files into the app's history. `pyproject.toml`
-# and `uv.lock` are deliberately NOT ignored: those are source and belong in the
-# repo — they are what makes the folder reproduce on another machine.
+# `.venv/` is here for a different reason: the app builds one directly inside
+# a writable app folder now (`projectenv.venv_dir_for`, SPEC PY-16), so it is
+# the COMMON case, not only something a user's own `uv run`/`uv sync` might
+# leave behind — either way a scoped `git add -A` would sweep tens of thousands
+# of files into the app's history. `pyproject.toml` and `uv.lock` are
+# deliberately NOT ignored: those are source and belong in the repo — they are
+# what makes the folder reproduce on another machine.
 # `.fused/` is the app's own state folder (D548): machine-local by
 # definition — a cache that can be deleted at any time, and data keyed to
 # THIS machine's absolute paths — so it is never app history. The trailing
 # slash matters: it matches the directory only, leaving an exported
 # `<name>.fused` app file (SPEC §43) tracked like any other artifact.
-_GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
+#
+# `.fused-render-write-probe.*` is the env-install worker's own transient:
+# `_env_install_worker._writable_dir` create-exclusive's
+# `.fused-render-write-probe.<pid>` to test whether a folder can be written to,
+# and unlinks it — best-effort, so a process that dies between the `os.open`
+# and the `os.unlink` leaves a stray zero-byte file behind. Left unignored, a
+# scoped `git add -A` would sweep that leftover into the app's history.
+_GITIGNORE = (
+    "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
+    ".fused-render-write-probe.*\n"
+)
 
 # The shared repo's root .gitignore: the per-app set plus the one file macOS
 # drops into any folder the Finder has looked at. Written once at repo

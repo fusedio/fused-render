@@ -683,12 +683,73 @@ def test_find_links_in_uv_toml_is_disclosed(home):
 # ---------------------------------------------------------------------------
 
 
-def test_venv_dir_is_under_the_home_dir_never_in_the_project(home, tmp_path):
+def test_venv_dir_is_in_the_project_by_default(home):
+    """A writable folder of the user's gets the layout every other Python tool
+    already expects — `uv run`, VS Code, the notebook kernel picker's own
+    `.venv` walk — rather than a hash under the home dir."""
+    proj = _write_project(home / "proj")
+    assert projectenv.venv_dir_for(str(proj)) == str(proj / ".venv")
+
+
+def test_FUSED_RENDER_VENV_IN_TREE_0_forces_the_home_store(home, tmp_path, monkeypatch):
+    """The escape hatch: a cloud-synced or network-mounted project folder would
+    otherwise sync a multi-gigabyte venv along with the user's files."""
+    monkeypatch.setenv("FUSED_RENDER_VENV_IN_TREE", "0")
     proj = _write_project(home / "proj")
     venv = projectenv.venv_dir_for(str(proj))
 
     assert venv.startswith(os.path.join(str(tmp_path / "home"), "venvs") + os.sep)
     assert not venv.startswith(str(proj) + os.sep)
+
+
+def test_a_folder_inside_the_package_resolves_to_the_home_store(home):
+    """The packaged app's own tree is read-only in the shapes it ships in (the
+    AppImage's squashfs mount, a Windows `Program Files` install) — reused from
+    `_venv_identity`'s existing package-relative case rather than a second
+    derivation of "is this in the package"."""
+    runner = os.path.join(projectenv._PACKAGE_DIR, "ai", "runners", "faster_whisper")
+    venv = projectenv.venv_dir_for(runner)
+
+    assert venv == os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(runner))
+    assert not venv.startswith(runner + os.sep)
+
+
+def test_a_non_writable_project_folder_falls_back_to_the_home_store(home):
+    if os.name == "nt":
+        pytest.skip("chmod does not model Windows ACL denial the way this probe reads it")
+    if os.geteuid() == 0:
+        pytest.skip("root writes through a permission-denied directory")
+    proj = _write_project(home / "proj")
+    os.chmod(proj, 0o500)
+    try:
+        venv = projectenv.venv_dir_for(str(proj))
+    finally:
+        os.chmod(proj, 0o700)  # so pytest can clean up the tmp dir
+
+    assert venv == os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(str(proj)))
+
+
+def test_the_writability_answer_is_memoised(home, monkeypatch):
+    """One probe per project per process — `venv_dir_for` runs on the
+    `/api/run` pre-flight path, and an unmemoised create-exclusive probe per
+    request is filesystem churn on the hot path."""
+    proj = _write_project(home / "proj")
+    probes = []
+    real_probe = projectenv._probe_writable
+
+    def _counting(path):
+        probes.append(path)
+        return real_probe(path)
+
+    monkeypatch.setattr(projectenv, "_probe_writable", _counting)
+
+    projectenv.venv_dir_for(str(proj))
+    projectenv.venv_dir_for(str(proj))
+    assert len(probes) == 1
+
+    projectenv.reset_writable_cache()
+    projectenv.venv_dir_for(str(proj))
+    assert len(probes) == 2
 
 
 def test_venv_key_is_the_sha256_of_the_absolute_path(home):
@@ -916,13 +977,31 @@ def test_a_header_never_supplies_an_environment(home):
 
 
 def _fake_venv(project_dir):
-    venv = projectenv.venv_dir_for(project_dir)
+    """A home-store venv for *project_dir*, sidecar written and ready.
+
+    Built at `<venvs_root>/<key>` directly rather than through `venv_dir_for` —
+    these tests are about the orphan-reclaim mechanics of the home store itself
+    (a project's parent surviving its own deletion, an unplugged volume, a
+    missing sidecar), which is a question about that store regardless of
+    whether `venv_dir_for` would place a FRESH venv there today. Going through
+    `venv_dir_for` would put the venv inside `project_dir` for the writable tmp
+    dirs these tests use, so deleting the project would delete the "orphan"
+    along with it and the test would assert nothing.
+    """
+    venv = os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(project_dir))
     os.makedirs(venv, exist_ok=True)
     projectenv.write_sidecar(venv, project_dir, projectenv.state_digest(project_dir))
     return venv
 
 
-def test_gc_reclaims_a_venv_whose_source_is_gone(home):
+def test_gc_reclaims_a_venv_whose_source_is_gone(home, monkeypatch):
+    # The escape hatch pins "still-here"'s venv to the home store too, so its
+    # survival below tests the GONE-vs-ALIVE distinction this test is about
+    # rather than tripping the separate RELOCATED arm — both live folders are
+    # writable tmp dirs, and without this `venv_dir_for` would already agree
+    # "still-here"'s venv belongs at `<still-here>/.venv`, making it relocated
+    # (and reclaimed) regardless of what this test does.
+    monkeypatch.setenv("FUSED_RENDER_VENV_IN_TREE", "0")
     proj = _write_project(home / "gone")
     venv = _fake_venv(str(proj))
     live = _write_project(home / "still-here")
@@ -998,6 +1077,75 @@ def test_a_renamed_folder_orphans_its_venv_and_gc_reclaims_it(home):
     assert new_venv != old_venv, "a moved folder must get a fresh environment"
     assert projectenv.gc() == 1
     assert not os.path.exists(old_venv)
+
+
+# ---------------------------------------------------------------------------
+# GC: a venv the home store still holds after policy moved it in-tree
+# ---------------------------------------------------------------------------
+
+
+def test_gc_reclaims_a_home_store_venv_whose_project_now_resolves_in_tree(home):
+    """A venv built back when everything lived under the home store, for a
+    project that is a plain writable folder today — `venv_dir_for` no longer
+    agrees this is where its venv belongs, and nothing else will ever read a
+    directory `venv_dir_for` does not point at."""
+    proj = _write_project(home / "proj")
+    stray = _fake_venv(str(proj))
+
+    assert projectenv.venv_dir_for(str(proj)) != stray, (
+        "the fixture is vacuous unless policy actually disagrees with the venv's "
+        "current location"
+    )
+    assert projectenv.gc() == 1
+    assert not os.path.exists(stray)
+
+
+def test_gc_keeps_a_home_store_venv_whose_source_folder_is_unreachable(home, tmp_path):
+    """The dangerous case: an unplugged external drive must not be read as
+    'relocated' and reclaimed.
+
+    It falls out of the writability probe rather than needing its own check —
+    an unreachable folder cannot be probed, so `venv_dir_for` answers the home
+    store for it too, and a home-store venv is never "relocated" out from under
+    itself. Getting this backwards would delete a multi-gigabyte venv the
+    instant its volume is disconnected, on every single `gc()` at startup.
+    """
+    volume = tmp_path / "Volumes" / "BigDisk"
+    proj = _write_project(volume / "work" / "app")
+    venv = _fake_venv(str(proj))
+
+    import shutil
+
+    shutil.rmtree(tmp_path / "Volumes")  # the drive goes away entirely
+
+    assert projectenv.gc() == 0, "an unreachable volume was treated as relocated"
+    assert os.path.exists(venv)
+
+
+# ---------------------------------------------------------------------------
+# Renaming an in-tree project keeps its venv (the point of moving it in-tree)
+# ---------------------------------------------------------------------------
+
+
+def test_renaming_an_in_tree_project_keeps_pointing_at_the_same_venv(home):
+    """The venv travels with the folder because it is INSIDE the folder — a
+    rename that keeps the folder intact keeps `.venv` with it, unlike the
+    home-store case where the key is derived from the path and a rename
+    orphans it (see `test_a_renamed_folder_orphans_its_venv_and_gc_reclaims_it`,
+    which is the same fact for that path)."""
+    proj = _write_project(home / "before")
+    venv = projectenv.venv_dir_for(str(proj))
+    os.makedirs(venv)
+    marker = os.path.join(venv, "some-file")
+    open(marker, "w").close()
+
+    proj.rename(home / "after")
+
+    moved_venv = projectenv.venv_dir_for(str(home / "after"))
+    assert moved_venv == str(home / "after" / ".venv")
+    assert os.path.exists(os.path.join(moved_venv, "some-file")), (
+        "the venv did not travel with its folder"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1115,8 +1263,11 @@ def test_gc_reclaims_a_venvs_mirror_with_it(home):
     assert not os.path.exists(mirror), "the mirror outlived the venv it belonged to"
 
 
-def test_gc_never_reclaims_a_mirror_on_its_own_account(home):
+def test_gc_never_reclaims_a_mirror_on_its_own_account(home, monkeypatch):
     """A mirror beside a LIVE venv is holding that venv's lock."""
+    # Pins the venv to the home store: "live" is a writable tmp dir, and this
+    # test is about the mirror-beside-a-venv rule, not the RELOCATED arm.
+    monkeypatch.setenv("FUSED_RENDER_VENV_IN_TREE", "0")
     proj = _write_project(home / "live")
     venv = os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(str(proj)))
     os.makedirs(venv)
@@ -1201,7 +1352,7 @@ def test_gc_keeps_a_BUNDLED_venv_whose_runner_the_new_mount_still_has(home, monk
     assert os.path.isdir(venv)
 
 
-def test_gc_still_reads_a_sidecar_written_the_OLD_way(home):
+def test_gc_still_reads_a_sidecar_written_the_OLD_way(home, monkeypatch):
     """Installed copies have absolute-path sidecars on disk right now.
 
     The identity is deliberately unspellable as a path, so a recorded path can
@@ -1211,6 +1362,10 @@ def test_gc_still_reads_a_sidecar_written_the_OLD_way(home):
     both directions: a venv that becomes uncollectable, or one collected while its
     source is alive.
     """
+    # "live" is a writable tmp dir, so without the escape hatch its home-store
+    # venv would be RELOCATED (policy now wants `<live>/.venv`) and reclaimed
+    # for that reason — which is correct but is not what this test pins.
+    monkeypatch.setenv("FUSED_RENDER_VENV_IN_TREE", "0")
     import json
 
     def _old_style_sidecar(folder):

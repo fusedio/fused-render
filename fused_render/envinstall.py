@@ -24,13 +24,17 @@ pattern in this repo, not two):
 Two things this module must never get wrong:
 
 **The key is the project folder's, and it is OURS.** `venv_key_for` delegates to
-`projectenv`, which hashes the folder's absolute path; the venv lives under
-`<home_dir()>/venvs/<key>`, not in the backend's store. That is why nothing here
-reaches for upstream's `_venvs_path` any more: we build the environment with
-`uv sync` and hand the resulting interpreter to the backend as `interpreter=`,
-so upstream never has to agree with us about a directory. What it DOES still
-have to agree with us about is the base interpreter (`_python_executable`), and
-that one attribute is still read off the live backend rather than restated.
+`projectenv`, which hashes the folder's absolute path; where the venv itself
+lives is `projectenv.venv_dir_for`'s call, not this module's or the backend's —
+`<project_dir>/.venv` for a folder this app can write to, `<home_dir()>/venvs/
+<key>` for one it cannot (a read-only in-package runner folder, an unwritable
+mount, `FUSED_RENDER_VENV_IN_TREE=0`). That is why nothing here reaches for
+upstream's `_venvs_path` any more, and why the split does not matter to it: we
+build the environment with `uv sync` and hand the resulting interpreter to the
+backend as `interpreter=`, so upstream never has to agree with us about a
+directory, in either case. What it DOES still have to agree with us about is
+the base interpreter (`_python_executable`), and that one attribute is still
+read off the live backend rather than restated.
 
 **Errors are verbatim.** uv's own stderr is written into `progress.json`
 unchanged. "No solution found ... imagecodecs has no wheels with a matching
@@ -192,11 +196,13 @@ _ENDINGS_LOCK = threading.Lock()
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 #
-# `_venvs_path` used to be here too and is deliberately gone: project venvs now
-# live under our own home dir (`projectenv.venvs_root()`), built by `uv sync` and
-# handed to the backend as `interpreter=`, so there is no longer a directory the
-# two sides have to agree on. `_python_executable` remains, because the base
-# interpreter still has to be the one the backend was constructed with.
+# `_venvs_path` used to be here too and is deliberately gone: project venvs are
+# built by `uv sync` and handed to the backend as `interpreter=`, wherever
+# `projectenv.venv_dir_for` puts them (in the project itself, or under our own
+# home dir for the folders that cannot hold one), so there is no longer a
+# directory the two sides have to agree on. `_python_executable` remains,
+# because the base interpreter still has to be the one the backend was
+# constructed with.
 BACKEND_ATTRS = ("_python_executable",)
 
 # venv directory -> "does its own python actually run" (D212). Populated by
@@ -478,7 +484,13 @@ def venv_key_for(project_dir: str) -> str:
 
 
 def venv_dir_for(project_dir: str) -> str:
-    """Where `project_dir`'s environment lives — under OUR home dir (MD-7)."""
+    """Where `project_dir`'s environment lives — `projectenv`'s call, not ours.
+
+    `<project_dir>/.venv` for a folder this app can write to; OUR home dir for
+    one it cannot (a read-only in-package runner folder, an unwritable mount,
+    `FUSED_RENDER_VENV_IN_TREE=0`). See `projectenv.venv_dir_for` for the exact
+    predicate.
+    """
     from fused_render import projectenv
 
     return projectenv.venv_dir_for(project_dir)
@@ -488,9 +500,10 @@ def venv_python_for(project_dir: str) -> str:
     """The interpreter inside `project_dir`'s environment.
 
     What `run_python` passes to the backend as `interpreter=` once
-    `is_installed` says yes. This is the whole reason the venv can live in our
-    home dir rather than in the backend's store: the backend is told which
-    interpreter to run on, so it never has to find the directory itself.
+    `is_installed` says yes. This is the whole reason the venv's location is
+    ours to decide rather than the backend's store: the backend is told which
+    interpreter to run on, so it never has to find the directory itself,
+    whether that directory sits in the project or under our own home dir.
     """
     return _venv_python(venv_dir_for(project_dir))
 

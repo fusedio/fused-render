@@ -55,11 +55,16 @@ cannot be written to, in a manifest-only mirror of it beside the venv — see
 packaged builds). The declaration is the
 folder's `pyproject.toml`; `uv sync` is the command that turns one into an
 environment, resolves it, and writes the `uv.lock` the user commits. It is
-pointed at a venv OUTSIDE the folder through `UV_PROJECT_ENVIRONMENT` (see
-`projectenv` for why derived state never lands in the user's tree) and at a
-cache on the same filesystem through `UV_CACHE_DIR`, which is what lets uv
-hardlink wheels instead of silently copying them. `UV_LINK_MODE` is deliberately
-left UNSET — uv's default already prefers hardlinks and falls back on its own.
+pointed at `<venv_dir>` through `UV_PROJECT_ENVIRONMENT` rather than trusting
+uv's own default resolution of that path — `<venv_dir>` arrived in argv already
+computed by `projectenv.venv_dir_for`, which puts it INSIDE the folder for one
+this app can write to (`<project_dir>/.venv`, the common case now) and under
+our own home dir for one it cannot (a read-only in-package runner folder, an
+unwritable mount, `FUSED_RENDER_VENV_IN_TREE=0`) — and at a cache on the same
+filesystem through `UV_CACHE_DIR` whenever the caller asked for one, which is
+what lets uv hardlink wheels instead of silently copying them. `UV_LINK_MODE`
+is deliberately left UNSET — uv's default already prefers hardlinks and falls
+back on its own.
 
 **The ready marker and the source sidecar are written HERE, in that order.**
 The sidecar records what the venv was built from and is what makes a later
@@ -1153,6 +1158,56 @@ def _venv_python(venv_dir):
     return os.path.join(venv_dir, "bin", "python")
 
 
+#: Budget for `_venv_runs`'s probe, in seconds. Kept in step with
+#: `envinstall._VENV_PROBE_TIMEOUT_S`; restated rather than imported (D152). Cold
+#: start on a slow volume is why this is not tighter — see that constant.
+_VENV_PROBE_TIMEOUT_S = 5
+
+
+def _venv_runs(venv_dir):
+    """Can this venv's own interpreter start at all? One subprocess, no imports.
+
+    Restated from `envinstall._venv_runs` rather than imported — this worker
+    must not import `fused_render` (D152) — with the SAME three-valued answer,
+    for the same reason: the caller here destroys a directory on a False, so a
+    transient failure misread as one would delete a venv that was never broken.
+
+      True  — the probe completed and the interpreter exited 0.
+      False — DEFINITE evidence there is no usable interpreter here: a non-zero
+              exit, or the spawn failed on the executable itself.
+      None  — INCONCLUSIVE (a timeout, another `OSError`, or a child killed by a
+              signal). Not a fact about the venv — the caller must not act on it.
+
+    `-c ""`: the question is "does this interpreter reach the point of executing
+    a program", not "are its requirements importable" — a venv whose base prefix
+    is gone dies before that, which is the property this exists to catch.
+
+    Run with `_uv_env()`'s scrubbed environment (PYTHONHOME/PYTHONPATH/etc.
+    stripped) so a poisoned ambient env cannot make a broken interpreter look
+    fine, the same reasoning `envinstall._venv_runs` gives for borrowing
+    `engine._child_env()` on its side.
+    """
+    exe = _venv_python(venv_dir)
+    try:
+        proc = subprocess.run(
+            [exe, "-c", ""],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=_VENV_PROBE_TIMEOUT_S, env=_uv_env(),
+            close_fds=False,
+        )
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode < 0:
+        # Killed by a signal — no verdict, same as a timeout (D277's other half).
+        return None
+    if proc.returncode != 0:
+        return False
+    return True
+
+
 def _state_digest(project_dir):
     """sha256 of `pyproject.toml` — the declaration this environment was built from.
 
@@ -1413,21 +1468,44 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
     caller of `_build` (this module's own tests, mainly) keeps working
     unchanged; nothing reads a tracker nobody handed in.
 
-    An UNMARKED but existing venv directory is removed first. That is the D212
-    repair, and it has to be a removal rather than a reconcile: the failure it
-    exists for is a venv whose recorded base prefix does not exist, which
-    `uv sync` would happily leave in place because the packages inside it are
-    already correct. The marker's absence is the only signal that the directory
-    is not to be trusted, and `envinstall.is_installed` is what unlinks it.
+    An UNMARKED existing venv directory is PROBED, not removed on sight: the
+    D212 failure this guards is a venv whose recorded base prefix no longer
+    exists, which `uv sync` would happily leave in place because the packages
+    inside it are already correct — but a missing marker is no longer taken as
+    proof of that on its own. Since the venv's own location is now the project's
+    `.venv` (`projectenv.venv_dir_for`), a folder with no marker is just as
+    often a venv a developer built by hand — `uv sync`, `uv venv`, a plain
+    `python -m venv` run in their own project — with dev-group packages,
+    editable installs and manually `uv pip install`ed extras that this worker
+    has no business deleting. `_venv_runs` (this module's own restatement of
+    `envinstall._venv_runs`, per D152) answers "does the directory's own
+    interpreter start at all": a False destroys it (the D212 case — `uv sync`
+    below then rebuilds it from scratch), a True leaves it in place for `uv
+    sync` to reconcile (the adoption case), and an inconclusive probe leaves it
+    alone too, on the same "do not act on a non-answer" discipline `_venv_runs`
+    documents. `envinstall.is_installed` is what unlinks the marker that puts a
+    venv in this unmarked state to begin with.
 
     Environment, not flags, for the two directories, because uv reads both itself
     and a flag would only cover the invocation we remember to put it on:
 
-      UV_PROJECT_ENVIRONMENT  the venv lives in the home dir, never in the user's
-                              folder (MD-7). Without it uv writes `<project>/.venv`,
-                              which for a core template would be destroyed by the
-                              release-time re-stage and cost a full re-download of
-                              numpy/pyproj/imagecodecs on every upgrade.
+      UV_PROJECT_ENVIRONMENT  `venv_dir` is always stated explicitly rather than
+                              left to uv's own default resolution, even though for
+                              the common in-tree case (`projectenv.venv_dir_for`
+                              already answered `<project_dir>/.venv`) that happens
+                              to be the same path uv would have picked on its own —
+                              worth setting anyway, because the one case this
+                              worker cannot tell apart from here still needs it: a
+                              read-only in-package runner folder cannot hold a
+                              `.venv` at all, so its build has to land in the home
+                              store instead (D376). A staged core template's
+                              folder is writable and takes the in-tree path like
+                              any other project; a release-time re-stage wipes its
+                              `.venv` along with the rest of the staged tree, and
+                              the rebuild is a hardlink relink from the uv cache
+                              (which lives outside the staged tree) rather than a
+                              re-download — an accepted cost, not a reason to
+                              route it through the home store (D630).
       UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
                               only when the caller asked for isolation
                               (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).
@@ -1516,7 +1594,24 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
             "happens in a source checkout.)" % project_dir
         )
     if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
-        shutil.rmtree(venv_dir, ignore_errors=True)
+        verdict = _venv_runs(venv_dir)
+        if verdict is False:
+            print(
+                "install worker: destroying %s — unmarked, and its own "
+                "interpreter will not run" % venv_dir,
+                file=sys.stderr,
+            )
+            shutil.rmtree(venv_dir, ignore_errors=True)
+        elif verdict is True:
+            print(
+                "install worker: adopting %s — unmarked, but its own "
+                "interpreter runs; uv sync will reconcile it" % venv_dir,
+                file=sys.stderr,
+            )
+        # else: inconclusive (a timeout, a signal, a transient OSError) — not
+        # evidence about the venv, so nothing is destroyed and nothing is
+        # logged as a verdict that was never reached; `uv sync` below will
+        # surface any real problem itself.
 
     # `--no-default-groups` because PY-16 makes `[project].dependencies` the whole
     # declaration, and without it uv also installs the default dependency-groups

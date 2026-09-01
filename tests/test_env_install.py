@@ -134,19 +134,69 @@ def test_the_key_does_not_move_when_the_dependencies_do(tmp_path):
     assert envinstall.venv_key_for(proj) == before
 
 
-def test_the_venv_lives_in_our_home_dir_never_in_the_project(tmp_path):
-    """MD-7: derived state goes to the home dir, source travels with the file.
+def test_the_venv_lives_in_the_project_by_default(tmp_path):
+    """A writable user folder gets the standard `<project>/.venv` layout --
+    what `uv run`, VS Code, and our own notebook kernel picker already expect.
 
-    An in-folder `.venv` for a core template would be destroyed by the
-    release-time re-stage, costing a full re-download of numpy/pyproj/imagecodecs
-    on every upgrade.
+    `envinstall.venv_dir_for` is a thin pass-through to `projectenv`'s
+    placement rule; the point of this test is that the loader reads that
+    rule rather than any home-dir shape of its own.
     """
     proj = _project(tmp_path)
     venv = envinstall.venv_dir_for(proj)
 
     assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
+
+
+def test_an_in_package_runner_folder_still_uses_the_home_store(tmp_path):
+    """MD-7 survives for exactly the case it was written for: a folder that
+    ships INSIDE the installed `fused_render` package — an AI runner folder,
+    never staged anywhere, always read directly from the package tree — is
+    read-only in every shape the app actually ships (the AppImage squashfs
+    mount, a Windows `Program Files` install), so nothing can be written
+    there at all and its venv has to live under our own home dir instead
+    (D376).
+
+    A STAGED core template is a different folder with a different reason for
+    its placement: it is copied to a writable location
+    (`core_templates.core_templates_dir()`) and takes the ordinary in-tree
+    path like any other writable project —
+    `test_a_staged_core_template_resolves_to_an_in_tree_venv` pins that. This
+    test is deliberately a real runner folder rather than a synthetic staged
+    one, so the two cases cannot be conflated.
+    """
+    import fused_render
+
+    package_dir = os.path.dirname(os.path.abspath(fused_render.__file__))
+    proj = os.path.join(package_dir, "ai", "runners", "faster_whisper")
+
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
     assert venv.startswith(str(tmp_path / "home"))
     assert not venv.startswith(proj + os.sep)
+
+
+def test_a_staged_core_template_resolves_to_an_in_tree_venv(tmp_path, monkeypatch):
+    """A core template staged under `~/.fused-render/.core-templates/<name>`
+    is a writable folder like any other project (D630): it takes the ordinary
+    in-tree path, `<staged>/<name>/.venv`, rather than the home store. A
+    release-time re-stage wiping that `.venv` is an accepted cost — the uv
+    cache lives outside the staged tree, on the same filesystem, so the
+    rebuild is a hardlink relink rather than a re-download (D630) — and is
+    not a reason to route a staged template through the home store the way an
+    in-PACKAGE runner folder has to be
+    (`test_an_in_package_runner_folder_still_uses_the_home_store`).
+    """
+    core_dir = str(tmp_path / "home" / ".core-templates")
+    proj = os.path.join(core_dir, "geotiff")
+    os.makedirs(proj)
+
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
 
 
 def test_the_interpreter_handed_to_the_run_is_the_projects_own(tmp_path):
@@ -1443,6 +1493,27 @@ def test_editing_the_declaration_makes_a_ready_venv_report_not_installed(
     assert (venv_dir / envinstall.READY_MARKER).exists(), (
         "a stale venv is re-synced, not condemned — `uv sync` reconciles in place"
     )
+
+
+@requires_fused
+def test_renaming_a_project_keeps_its_venv_installed_no_rebuild(tmp_path, monkeypatch):
+    """The in-tree venv travels with the folder, so a rename is not an orphan.
+
+    Under the old home-dir key (the folder's absolute path, hashed), a rename
+    changed the key and abandoned the venv on disk (SPEC PY-16 called that a
+    feature). In-tree, `venv_dir_for` is `<project>/.venv` -- moving the folder
+    moves the venv with it, `os.rename` included -- so the same environment is
+    still there, still marked, and `is_installed` sees it without a rebuild.
+    """
+    proj = _project(tmp_path, name="before", deps=["cowsay"])
+    _marked_venv(proj, runnable=True)
+    assert envinstall.is_installed(proj) is True
+
+    moved = str(tmp_path / "after")
+    os.rename(proj, moved)
+
+    assert envinstall.venv_dir_for(moved) == os.path.join(moved, ".venv")
+    assert envinstall.is_installed(moved) is True
 
 
 @requires_fused
@@ -3025,18 +3096,26 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
 
 @requires_fused
 def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypatch):
-    """D212\'s repair has to be a replacement, not a reconcile.
+    """D212\'s repair has to be a replacement, not a reconcile — for a directory
+    that has no usable interpreter to reconcile in the first place.
 
     The failure it exists for is a venv whose recorded base prefix is gone, which
     `uv sync` would happily leave in place because the packages inside it are
-    already correct. The marker\'s absence is the only signal the directory is not
-    to be trusted.
+    already correct. Here the directory has no `bin/python` at all, so the
+    readiness probe reports a definite False and the marker\'s absence is not
+    the only signal — its own interpreter cannot even start.
     """
     proj = _project(tmp_path, deps=["pip"])
     venv_dir = envinstall.venv_dir_for(proj)
     os.makedirs(venv_dir)
     open(os.path.join(venv_dir, "leftover"), "w").close()
     worker = _worker_module("_env_install_worker_rmtree")
+    # The probe itself is a genuine `subprocess.run` spawn — stubbed here so
+    # the `subprocess.Popen` fake below (built for uv's `sync` invocation,
+    # with no `communicate()`) never has to answer for it too;
+    # `test_venv_runs_reports_false_for_a_missing_interpreter` covers the
+    # real spawn against a directory exactly like this one.
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: False)
 
     def _fake_run(cmd, **kw):
         os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
@@ -3060,6 +3139,137 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
     assert not os.path.exists(os.path.join(venv_dir, "leftover"))
+
+
+@requires_fused
+def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, monkeypatch):
+    """A hand-built venv — `uv venv`, `python -m venv`, a plain `uv sync` run
+    by the developer themselves in their own project folder — has no
+    `_READY_MARKER` (we never wrote one) but a perfectly good interpreter.
+
+    Destroying it on sight, the old behaviour, silently deleted dev-group
+    packages, editable installs and anything `uv pip install`ed by hand, with
+    no prompt and no log line the user could ever see. The readiness probe
+    (`worker._venv_runs`, restated from `envinstall._venv_runs` per D152) is
+    what tells the two cases apart: an interpreter that runs is left in place
+    for `uv sync` to reconcile, which is what makes adopting a hand-built
+    `.venv` real instead of merely advertised in the module docstring.
+
+    The probe itself (a real subprocess spawn) is stubbed here rather than
+    exercised end to end: `_build`'s own `subprocess.Popen` fake below answers
+    for uv's `sync` invocation and has no `communicate()`, which is what a real
+    `subprocess.run` probe needs — `test_venv_runs_reports_a_real_interpreter`
+    covers the genuine spawn instead.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_adopt")
+
+    os.makedirs(venv_dir)
+    hand_built_marker = os.path.join(venv_dir, "pyvenv.cfg")
+    open(hand_built_marker, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: True)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(hand_built_marker), (
+        "an unmarked venv whose own interpreter runs must be left for "
+        "`uv sync` to reconcile, not destroyed"
+    )
+
+
+@requires_fused
+def test_an_unmarked_venv_whose_probe_is_inconclusive_is_left_alone(tmp_path, monkeypatch):
+    """A timeout or a transient `OSError` from the readiness probe is not
+    evidence about the venv — `_venv_runs`\' own three-valued discipline, and
+    the worker must not act on `None` any more than `envinstall._venv_runs`\'
+    caller does.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_inconclusive")
+
+    os.makedirs(venv_dir)
+    survivor = os.path.join(venv_dir, "pyvenv.cfg")
+    open(survivor, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: None)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(survivor), (
+        "an inconclusive probe must not be read as a verdict either way"
+    )
+
+
+def test_venv_runs_reports_a_real_interpreter(tmp_path):
+    """`_venv_runs` True, for a genuine `-c ""` spawn against a real python —
+    not a stub script that exits 0, which would also pass a probe that had
+    regressed into `os.path.exists`.
+    """
+    worker = _worker_module("_env_install_worker_probe_true")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    assert worker._venv_runs(venv_dir) is True
+
+
+def test_venv_runs_reports_false_for_a_missing_interpreter(tmp_path):
+    """No `bin/python` at all is definite evidence, not a non-answer — the
+    exact `FileNotFoundError` case a base-prefix-gone venv also produces.
+    """
+    worker = _worker_module("_env_install_worker_probe_false")
+    assert worker._venv_runs(str(tmp_path / "nonexistent-venv")) is False
+
+
+def test_venv_runs_reports_none_on_timeout(tmp_path, monkeypatch):
+    """A timeout is INCONCLUSIVE, not a False — the same three-valued
+    discipline `envinstall._venv_runs` documents, restated here because the
+    caller (`_build`) destroys a directory on a definite False.
+    """
+    worker = _worker_module("_env_install_worker_probe_none")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    def _stall(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0] if a else "python", timeout=5)
+
+    monkeypatch.setattr(worker.subprocess, "run", _stall)
+
+    assert worker._venv_runs(venv_dir) is None
 
 
 @requires_fused
@@ -3572,6 +3782,35 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
     with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
         recorded = json.load(fh)["path"]
     assert recorded == "<fused_render>/ai/runners/faster_whisper"
+
+
+@requires_fused
+def test_a_bundled_runner_resolves_to_the_home_store_and_still_gets_a_mirror(tmp_path, monkeypatch):
+    """The two mechanisms compose: package identity picks the STORE, writability
+    picks whether the SYNC needs a mirror. A synthetic package layout (the same
+    fake `_PACKAGE_DIR` the sidecar-identity test above uses) is made read-only,
+    which is what the real AppImage squashfs mount and Program Files install both
+    are — `_sync_root` does not know or care about package identity, only
+    writability, so this pins that the two questions still land on the same
+    folder correctly rather than only in isolation.
+    """
+    pkg = tmp_path / ".mount_FusedRaaaaaa" / "fused_render"
+    runner = _project(pkg / "ai" / "runners", name="faster_whisper", deps=["pip"])
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    worker = _worker_module("_env_install_worker_bundled_mirror")
+
+    venv_dir = envinstall.venv_dir_for(runner)
+    assert venv_dir.startswith(str(tmp_path / "home" / "venvs" / ""))
+
+    os.chmod(runner, 0o555)
+    try:
+        if worker._writable_dir(runner):
+            pytest.skip("running as root: a read-only directory is still writable")
+        root = worker._sync_root(runner, venv_dir)
+    finally:
+        os.chmod(runner, 0o755)
+
+    assert root == venv_dir + ".src", "a read-only runner folder must sync through its mirror"
 
 
 @requires_fused
