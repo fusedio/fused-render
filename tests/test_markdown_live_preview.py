@@ -392,6 +392,35 @@ def test_a_cell_carries_no_bare_data_line_only_the_namespaced_keys(table_note_fi
                 assert namespaced in cell["data"], (namespaced, cell["data"])
 
 
+def test_the_cell_source_map_reaches_inside_a_code_span_and_a_link(table_note_file):
+    r"""`_cellSpans` is what turns a click's rendered hit into a RAW offset,
+    and the walk stops at the first node it has an entry for. An entry only
+    for the `<code>` element would therefore collapse every click inside a
+    code span onto the opening backtick, because an element entry contributes
+    no character offset — so the body's own text node is recorded too, at the
+    offset one past the fence. Same for a link label that came through
+    unescaped: `[lbl](...)` puts its text at 1, past the `[`.
+    """
+    bold_th, code_th, link_th, plain_th = table_dom(table_note_file)["children"][0]["children"]
+
+    assert [(s["tag"], s["text"], s["from"]) for s in code_th["spans"]] == [
+        ("code", "code", 0),   # the construct, for a hit on the element itself
+        ("#text", "code", 1),  # its body, one past the backtick
+    ]
+    assert [(s["tag"], s["text"], s["from"]) for s in link_th["spans"]] == [
+        ("a", "lbl", 0),
+        ("#text", "lbl", 1),
+    ]
+    # Emphasis needs no second entry: `renderInline` recurses into its body
+    # and the text run it emits there is already the recorded node.
+    assert [(s["tag"], s["text"], s["from"]) for s in bold_th["spans"]] == [
+        ("#text", "Bold", 2),
+    ]
+    assert [(s["tag"], s["text"], s["from"]) for s in plain_th["spans"]] == [
+        ("#text", "Plain", 0),
+    ]
+
+
 # A destination containing a balanced paren (SPEC.md MD-31b), in a table cell:
 # its own fixture rather than growing TABLE_NOTE, since TABLE_SOURCE pins that
 # fixture's exact source text against two tests above and both index into a

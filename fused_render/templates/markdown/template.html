@@ -1708,10 +1708,13 @@
     // is an array the caller collects into (append-only, so recursive calls
     // share one array across the whole cell), and `base` is the source
     // offset of `text` within that cell's raw string (0 for the top-level
-    // call). Every node this function appends gets one entry, `{node,
-    // from}` — `from` is `base + m.index` for a markup node (the click
-    // resolver needs the node's own start, not its body's) and `base + last`
-    // for a plain text run. Both parameters are optional and default to
+    // call). Every node this function appends gets an entry, `{node, from}`
+    // — `from` is `base + m.index` for a markup node (the click resolver
+    // needs the node's own start, not its body's) and `base + last` for a
+    // plain text run. A code span and a plain-label link add a second entry
+    // for their inner text node, since that text is a verbatim slice of the
+    // source and so resolves per character rather than to the construct's
+    // start. Both parameters are optional and default to
     // "don't bother" (no `spans` array, `base` 0), so the existing 2-argument
     // call sites (recursing into `<code>`'s siblings is never needed, since a
     // code span's contents are never re-parsed) keep working unchanged.
@@ -1742,7 +1745,20 @@
           }
           code.textContent = body;
           parent.appendChild(code);
-          if (spans) spans.push({ node: code, from: base + m.index });
+          if (spans) {
+            spans.push({ node: code, from: base + m.index });
+            // The body is a verbatim slice of the source — `textContent`,
+            // never unescaped — so its text node maps character for
+            // character and earns an entry of its own. Without one the
+            // click resolver walks past it to the `<code>` element and
+            // every click inside a code span lands on the opening fence.
+            if (code.firstChild) {
+              spans.push({
+                node: code.firstChild,
+                from: base + m.index + m[1].length + (body === m[2] ? 0 : 1),
+              });
+            }
+          }
         } else if (/^!?\[\[/.test(m[0])) {
           const node = wikilinkWidget(m[0]).build();
           parent.appendChild(node);
@@ -1753,7 +1769,16 @@
           a.textContent = unescapeInline(m[3]) || m[4];
           applyLinkTarget(a, m[4]);
           parent.appendChild(a);
-          if (spans) spans.push({ node: a, from: base + m.index });
+          if (spans) {
+            spans.push({ node: a, from: base + m.index });
+            // Only a label that came through unescaped and non-empty sits
+            // at a known source offset (one past the `[`); an unescaped or
+            // url-substituted label has no character-for-character mapping,
+            // and a click in it resolves to the link's own start instead.
+            if (a.firstChild && a.textContent === m[3]) {
+              spans.push({ node: a.firstChild, from: base + m.index + 1 });
+            }
+          }
         } else if (m[5] !== undefined) {
           // `base + m.index + 2`: past the opening `~~`, at the body's own
           // source offset, so a click landing in the recursed text resolves
@@ -1989,12 +2014,11 @@
                 : document.caretPositionFromPoint(event.clientX, event.clientY);
               const hitOffset = hit && (hit.startOffset !== undefined ? hit.startOffset : hit.offset);
               // Walk from the exact node the browser hit up to whichever
-              // ancestor `_cellSpans` recorded — a `<code>` span's text isn't
-              // itself recorded (its body is set via `textContent`, never
-              // re-parsed by `renderInline`), so a click inside one resolves
-              // through the `<code>` element a level up. Stops at `td`
-              // itself: nothing above the cell's own children is this cell's
-              // source.
+              // ancestor `_cellSpans` recorded — a widget's inner DOM has no
+              // entry of its own, so a click inside one resolves through the
+              // recorded element a level up, to that construct's start.
+              // Stops at `td` itself: nothing above the cell's own children
+              // is this cell's source.
               let resolved = null;
               for (let node = hit && (hit.startContainer || hit.offsetNode);
                    node && node !== td; node = node.parentNode) {

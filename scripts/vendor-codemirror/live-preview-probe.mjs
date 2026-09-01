@@ -102,6 +102,15 @@ function serializeNode(node) {
     // `style.textAlign`, and the fake `style` is a plain object a test can
     // read straight back.
     style: Object.assign({}, node.style || {}),
+    // A table cell also carries the source map `renderInline` builds beside
+    // its DOM (template.html's `_cellSpans`) — what turns a click's rendered
+    // hit into a RAW offset. Flattened to `{from, tag, text}` so a test can
+    // assert the mapping without a pointer to drive.
+    spans: Array.prototype.map.call(node._cellSpans || [], (s) => ({
+      from: s.from,
+      tag: s.node.nodeType === 3 ? "#text" : (s.node.tagName || "").toLowerCase(),
+      text: s.node.textContent || s.node.nodeValue || "",
+    })),
     children: Array.prototype.map.call(node.children || [], serializeNode),
   };
 }

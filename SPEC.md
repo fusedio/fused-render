@@ -3823,7 +3823,11 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     the source map `renderInline` records beside the DOM (`_cellSpans`): the
     hit is measured in *rendered* text but the caret is placed in *raw*
     source, so counting rendered characters would skew by every marker the
-    cell renders away. The cell's own bookkeeping is namespaced
+    cell renders away. The map reaches *inside* a construct whose rendered
+    text is a verbatim slice of the source — a code span's body, an unescaped
+    link label — since an entry for the wrapping element alone carries no
+    character offset and would collapse every click in a code span onto the
+    opening backtick. The cell's own bookkeeping is namespaced
     (`data-cell-row` and friends): a bare `data-line` is the outline rail's
     selector, and the delegated handler would claim the click as a jump to a
     heading before the cell — or a link inside it — ever saw it.
