@@ -2407,18 +2407,26 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
 
 @requires_fused
 def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypatch):
-    """D212\'s repair has to be a replacement, not a reconcile.
+    """D212\'s repair has to be a replacement, not a reconcile — for a directory
+    that has no usable interpreter to reconcile in the first place.
 
     The failure it exists for is a venv whose recorded base prefix is gone, which
     `uv sync` would happily leave in place because the packages inside it are
-    already correct. The marker\'s absence is the only signal the directory is not
-    to be trusted.
+    already correct. Here the directory has no `bin/python` at all, so the
+    readiness probe reports a definite False and the marker\'s absence is not
+    the only signal — its own interpreter cannot even start.
     """
     proj = _project(tmp_path, deps=["pip"])
     venv_dir = envinstall.venv_dir_for(proj)
     os.makedirs(venv_dir)
     open(os.path.join(venv_dir, "leftover"), "w").close()
     worker = _worker_module("_env_install_worker_rmtree")
+    # The probe itself is a genuine `subprocess.run` spawn — stubbed here so
+    # the `subprocess.Popen` fake below (built for uv's `sync` invocation,
+    # with no `communicate()`) never has to answer for it too;
+    # `test_venv_runs_reports_false_for_a_missing_interpreter` covers the
+    # real spawn against a directory exactly like this one.
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: False)
 
     def _fake_run(cmd, **kw):
         os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
@@ -2442,6 +2450,137 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
     assert not os.path.exists(os.path.join(venv_dir, "leftover"))
+
+
+@requires_fused
+def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, monkeypatch):
+    """A hand-built venv — `uv venv`, `python -m venv`, a plain `uv sync` run
+    by the developer themselves in their own project folder — has no
+    `_READY_MARKER` (we never wrote one) but a perfectly good interpreter.
+
+    Destroying it on sight, the old behaviour, silently deleted dev-group
+    packages, editable installs and anything `uv pip install`ed by hand, with
+    no prompt and no log line the user could ever see. The readiness probe
+    (`worker._venv_runs`, restated from `envinstall._venv_runs` per D152) is
+    what tells the two cases apart: an interpreter that runs is left in place
+    for `uv sync` to reconcile, which is what makes adopting a hand-built
+    `.venv` real instead of merely advertised in the module docstring.
+
+    The probe itself (a real subprocess spawn) is stubbed here rather than
+    exercised end to end: `_build`'s own `subprocess.Popen` fake below answers
+    for uv's `sync` invocation and has no `communicate()`, which is what a real
+    `subprocess.run` probe needs — `test_venv_runs_reports_a_real_interpreter`
+    covers the genuine spawn instead.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_adopt")
+
+    os.makedirs(venv_dir)
+    hand_built_marker = os.path.join(venv_dir, "pyvenv.cfg")
+    open(hand_built_marker, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: True)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(hand_built_marker), (
+        "an unmarked venv whose own interpreter runs must be left for "
+        "`uv sync` to reconcile, not destroyed"
+    )
+
+
+@requires_fused
+def test_an_unmarked_venv_whose_probe_is_inconclusive_is_left_alone(tmp_path, monkeypatch):
+    """A timeout or a transient `OSError` from the readiness probe is not
+    evidence about the venv — `_venv_runs`\' own three-valued discipline, and
+    the worker must not act on `None` any more than `envinstall._venv_runs`\'
+    caller does.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_inconclusive")
+
+    os.makedirs(venv_dir)
+    survivor = os.path.join(venv_dir, "pyvenv.cfg")
+    open(survivor, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: None)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(survivor), (
+        "an inconclusive probe must not be read as a verdict either way"
+    )
+
+
+def test_venv_runs_reports_a_real_interpreter(tmp_path):
+    """`_venv_runs` True, for a genuine `-c ""` spawn against a real python —
+    not a stub script that exits 0, which would also pass a probe that had
+    regressed into `os.path.exists`.
+    """
+    worker = _worker_module("_env_install_worker_probe_true")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    assert worker._venv_runs(venv_dir) is True
+
+
+def test_venv_runs_reports_false_for_a_missing_interpreter(tmp_path):
+    """No `bin/python` at all is definite evidence, not a non-answer — the
+    exact `FileNotFoundError` case a base-prefix-gone venv also produces.
+    """
+    worker = _worker_module("_env_install_worker_probe_false")
+    assert worker._venv_runs(str(tmp_path / "nonexistent-venv")) is False
+
+
+def test_venv_runs_reports_none_on_timeout(tmp_path, monkeypatch):
+    """A timeout is INCONCLUSIVE, not a False — the same three-valued
+    discipline `envinstall._venv_runs` documents, restated here because the
+    caller (`_build`) destroys a directory on a definite False.
+    """
+    worker = _worker_module("_env_install_worker_probe_none")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    def _stall(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0] if a else "python", timeout=5)
+
+    monkeypatch.setattr(worker.subprocess, "run", _stall)
+
+    assert worker._venv_runs(venv_dir) is None
 
 
 @requires_fused
