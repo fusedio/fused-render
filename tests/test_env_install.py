@@ -1005,6 +1005,52 @@ def test_a_needs_build_row_flips_back_to_running_on_the_retry(
 
 
 @requires_fused
+def test_a_successful_retry_clears_the_needs_build_row_caption(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The `needs_build` branch sets `message` to "waiting for your approval
+    to compile <pkg>" on the cancelled row. The retry's mirror thread reuses
+    the SAME job id, and `jobs.upsert`'s `"message" in body` guard leaves a
+    key that is absent untouched — so a retry that goes on to succeed must
+    clear `message` itself on its opening upsert, or the done row keeps
+    captioning a question that was already answered."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `foolib==1.2.3 @ registry+https://pypi.org/simple` "
+                 "can't be installed because it is marked as `--no-build` but has no "
+                 "binary distribution",
+        "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
+    })
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row.get("message") == "waiting for your approval to compile foolib", row
+
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key
+
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.RUNNING and j)
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+    assert not row.get("message"), (
+        "a successful retry's row must not still caption a previous "
+        f"attempt's approval question: {row!r}"
+    )
+
+
+@requires_fused
 def test_a_joining_caller_starts_no_second_mirror_thread(
     tmp_path, monkeypatch, _fresh_script_python
 ):

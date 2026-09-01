@@ -1798,7 +1798,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
         try:
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
-                 "state": jobs.RUNNING, "cancellable": True},
+                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
                 server=True,
             )
             # A flag a PREVIOUS attempt's dead mirror left set (see the
