@@ -927,3 +927,219 @@ behaviour there is correct; only the doubles were behind.
   tests/test_jobs_api.py tests/test_server_env_install.py` (362 passed) and
   `tests/test_env_install.py -n 0 -q` (150 passed, 1 skipped). Did not run
   the full suite.
+
+## Round 6: a futile compile prompt on an unfixable platform, and a job row that lied about being cancelled
+
+Two changes, both scoped by the task brief rather than found via review.
+
+### Change 1 — platform-incompatible `--no-build` refusals must not offer a futile compile
+
+**Problem.** `_no_build_package()` (`_env_install_worker.py`) parses uv's
+`--no-build` refusal out of two distinct stderr wordings
+(`_NO_BUILD_HINT` — resolution time, no version; `_NO_BUILD_DISTRIBUTION`
+— install time, `uv.lock` already pins one), but uv's text does not say
+*why* it refused. A macOS-only dependency (e.g.
+`pyobjc-framework-applicationservices`, no `sys_platform` marker) on Linux
+gets exactly the same refusal text as a package that genuinely has no
+wheels anywhere and would need a real compile — so both reached
+`confirmBuildRetry`'s "Install anyway" prompt, and the platform-incompatible
+one could never succeed no matter how many times the user clicked it.
+
+**Fix.** `_incompatible_platform_name(name, version)`: queries PyPI's JSON
+API (`https://pypi.org/pypi/{name}/json`, or `.../{name}/{version}/json`
+when uv named a specific pinned version — `_no_build_pinned_version()`
+extracts that from the install-time wording only, since the resolution-time
+`hint:` wording never names one), reads the `urls` list's `bdist_wheel`
+entries, and derives each wheel's platform family from its filename's own
+platform tag (`_wheel_platform_tags`/`_platform_tag_family` — PEP 427
+`{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, manylinux/
+musllinux/linux normalized to one "linux" family, `macosx*` to "macosx",
+`win*` to "win"). If every family found excludes the current platform (and
+`any`/unrecognized tags never count as exclusive), returns a human platform
+name (or a joined list — "macOS and Windows", "A, B, and C") built from
+whichever families actually turned up — never a hardcoded package or
+platform list, so nothing here special-cases pyobjc. If PyPI has no wheels
+at all, or the entry is source-only, or the lookup cannot complete for any
+reason, returns `None` and the caller's `needs_build` stays exactly as it
+was: the compile prompt is still offered, since compiling might genuinely
+work.
+
+**Fail-open modeled on `ai/hub_metadata.py`'s `_fetch_raw`, not
+`update/common.py`'s manifest fetch.** `update/common.py` is fail-CLOSED on
+purpose — a corrupted or unreachable update manifest must not be treated as
+"no update available" (a security property: silently trusting a fetch
+failure there could hide an update meant to ship a fix). This lookup is the
+opposite: it exists only to UPGRADE a message's wording, and getting it
+wrong in the conservative direction (leave `needs_build` set, offer the
+prompt exactly as today) has no security consequence at all — worst case is
+an unfixable prompt the user could always ignore, same as today. So
+`_fetch_pypi_json` catches `urllib.error.URLError`, `OSError`,
+`TimeoutError`, and `ValueError` (malformed JSON) and returns `None` on
+every one, exactly like `_fetch_raw`'s blanket `except Exception`. Timeout
+is a plain 3-second `urllib.request.urlopen(..., timeout=_PYPI_TIMEOUT_S)`
+— short enough not to stall a user-visible install, generous enough for a
+JSON API call under normal network conditions. A response body capped at 2
+MiB guards against a pathological reply hanging JSON parsing.
+
+No new third-party dependency: parsing is hand-rolled stdlib
+(`urllib.request`/`urllib.error`/`json`), consistent with
+`_env_install_worker.py`'s existing zero-third-party-import convention
+(D152: the detached worker must never import `fused_render`, and by
+established practice imports nothing else either) — `packaging` was
+available but a manual wheel-tag split was chosen instead to keep that
+convention rather than break it for one call site.
+
+**`install()`'s except block**: computes `platform_incompatible` only when
+`needs_build` was already set (never invents either from nothing), and
+clears `needs_build` when the platform check succeeds — the two fields are
+mutually exclusive by construction, so every downstream consumer can branch
+on `needs_build` alone with no additional guard. `progress.json` gains
+`platform_incompatible` as a purely additive field; `error` keeps carrying
+uv's raw stderr verbatim throughout (SPEC PY-18) — the friendly sentence
+lives only in the new field, never overwrites `error`.
+
+**Signal path**: worker's `install()` except block → `write()`/`_write()`
+→ `progress.json`'s `platform_incompatible` key → `GET /api/env/progress`
+(returns `prog` verbatim, no server plumbing needed) → client's `poll()`
+in `runtime.js` (`e.platformIncompatible = prog.platform_incompatible ||
+null`, alongside the existing `e.needsBuild`) → `tryInstall`'s rejection
+handler, which checks `err.platformIncompatible` *before* the
+`!allowBuild && err.needsBuild` check and, when set, composes the
+plain-language sentence, assigns it to `err.message`, and falls straight
+into the ordinary `err.type = "EnvInstallError"` terminal-error path —
+`confirmBuildRetry` is never reached for a platform-incompatible refusal.
+
+**Tests** (`tests/test_env_install.py`, all offline — `_worker_module`'s
+helper stubs `_fetch_pypi_json` to return `None` by default so the whole
+suite stays network-free without every test remembering to patch it):
+covers a wheel that covers the current platform (no incompatibility), a
+real pyobjc filename set (names "macOS"), two-and-three-platform joins, a
+source-only project, a pure-Python wheel, five distinct lookup-failure
+shapes (`None`, missing `urls`, empty `urls`, non-dict payload, non-list
+`urls`), `_fetch_pypi_json` itself failing open on `TimeoutError`/`OSError`/
+`URLError`/malformed JSON, `needs_build` staying set when the platform
+check cannot complete, and a full end-to-end `install()` run asserting the
+exact `platform_incompatible` dict, that `error` still carries uv's literal
+text, and that the exact refused version was threaded through to the PyPI
+lookup.
+
+### Change 2 — a job row must not say "Cancelled" while it is waiting on the user
+
+**Problem.** `jobs.py`'s `TERMINAL_STATES` has exactly three members
+(`done`/`error`/`cancelled`) and none of them means "stopped, waiting on
+you" — so `envinstall._mirror_into_jobs`'s `needs_build` branch borrowed
+`cancelled` (documented in the "Dogfooding fix" section above as "the least
+wrong of the three"), producing a status-bar Activity row reading
+"Preparing OpenWhisper / Cancelled" while the compile-consent prompt was
+still on screen, open and unanswered.
+
+**Fix.** `jobs.py` gains `WAITING = "waiting"`, a second non-terminal state
+alongside `RUNNING`. Not `RUNNING`, because nothing is actually in flight —
+a bar or spinner would lie. Not `TERMINAL`, because `upsert`'s
+finished-transition bookkeeping (`finished_at`, clearing
+`cancel_requested`) does not apply to a row that has not actually finished,
+and `_sweep`'s age-out clock must not start either. `_sweep`'s retention
+loop now `continue`s on `job.state in ("error", WAITING)` — kept until
+dismissed, same reasoning `error` already had: a `WAITING` row's worker has
+already exited (nothing is polling any more to keep it "fresh" the way a
+`RUNNING` row's own ticks do), so aging it out on any clock would make an
+still-open question vanish from the dock. `request_cancel`'s guard stays
+`if job.state == RUNNING` unchanged — a `WAITING` row's worker has already
+exited, so there is nothing left to signal a cancel TO; its docstring now
+explains that the dock's ✕ on a `WAITING` row goes through `dismiss`
+instead, exactly like it already does for `done`/`cancelled`. `dismiss`,
+`is_stalled`, `_public`, and the `_sweep` cap/eviction ordering needed no
+code changes: each already keys off `RUNNING` (or `error`) specifically,
+so `WAITING` falls through them correctly by construction — verified by
+the new tests below, not just by inspection.
+
+**`envinstall._mirror_into_jobs`** (job-id `sys:env-install:<key>`): the
+`needs_build` branch now sets `fields["state"] = jobs.WAITING` (was
+`"cancelled"`) with the same "waiting for your approval to compile X"
+caption; its long comment, which used to justify the `cancelled` borrow, is
+rewritten to explain `WAITING` instead. A new `elif platform_incompatible:`
+branch (checked ahead of the plain `elif error:` fallback, same as
+`needs_build` is) sets a genuine terminal `"error"` state with a
+plain-language message built from the project's display name and the
+worker's `platform_incompatible` dict (`package`/`platform`/
+`current_platform`) — `error` (used only when the terminal record's own
+`error` field is read directly via `envinstall.progress()`) keeps carrying
+uv's raw stderr, per SPEC PY-18. The outer loop variable that used to be
+`name` was renamed to `app_name` — it was already being shadowed every tick
+by an inner `for name in ("done", "total")`, and the new
+`platform_incompatible` branch needed the project's display name in scope
+to compose its message.
+
+**Client side.** `frontend/src/platform/lib/jobs.ts`: `JobState` gains
+`"waiting"`; `jobStatusLine` renders `job.message` for it (falling back to
+"Waiting for you") ahead of the `stalled`/`cancel_requested` checks, since
+a `WAITING` row's reporter exited on purpose rather than having gone
+quiet. `frontend/src/platform/ui/DownloadManager.tsx` needed **no code
+changes**: `inFlightJobs` excludes only `isFailure` (`state === "error"`),
+so a `WAITING` row counts as in-flight and fills the Activity dot's
+`runningCount` — deliberately: a row sitting in front of an open question
+is legitimately "work happening right now" that needs the user's
+attention, the same way a running download is. `Bar`'s `indeterminate`
+check is gated on `isRunning` (`state === "running"` only), so a `WAITING`
+row draws no progress bar at all — correct, since nothing is actually
+progressing. `canCancel` is gated on the same `isRunning`, so the Cancel
+button never appears for a `WAITING` row; `canDismiss` is `!running ||
+stalled`, so its ✕ already routes to `dismiss`.
+
+**`runtime.js`**: `poll()`'s error branch now also carries
+`e.platformIncompatible = prog.platform_incompatible || null` alongside
+`e.needsBuild`. `tryInstall`'s rejection handler checks
+`err.platformIncompatible` before the existing `!allowBuild &&
+err.needsBuild` check; when set, it composes the same plain-language
+sentence as the mirror's own message, assigns it to `err.message`, and
+falls through to the ordinary `err.type = "EnvInstallError"` path —
+`confirmBuildRetry` is skipped entirely, since no retry could ever satisfy
+it. Left `installRow`/`mountInstallSoon`/`paintPreparing` (runtime.js's
+separate overlay row) untouched, as scoped — that duplication is a
+follow-up PR.
+
+**Repo-wide search for other job-state call sites**, beyond the ones
+listed in the task brief: none found. `fused_render/server/routers/jobs.py`
+has no hardcoded state enum to extend — `upsert` accepts whatever `state`
+string a reporter sends, unvalidated against a closed set, so `WAITING`
+needed no route change. `fused_render/server/routers/env.py`'s
+`/api/env/progress` returns `prog` verbatim (confirmed again this round).
+The job-state-literal hits inside `fused_render/static/runtime.js` outside
+the two edited spots (`JOB_STATE_RUNNING`, `record.state === "cancelled"`
+around lines 3280–5000) all belong to a separate AI-job polling system
+(`ai_error`/`cancelled` job records for scheduled runs), unrelated to
+env-install's job-dock mirror — confirmed by reading each site; none
+reference `needs_build` or the env-install job-id prefix.
+
+**Tests.** `tests/test_env_install.py`: renamed
+`test_a_needs_build_refusal_mirrors_as_cancelled_not_error` to
+`..._as_waiting_not_error` and updated its assertions to `jobs.WAITING`;
+updated the two other `needs_build`-mirror tests
+(`..._flips_back_to_running_on_the_retry`,
+`..._clears_the_needs_build_row_caption`) to wait for `jobs.WAITING`
+instead of `"cancelled"`; added
+`test_a_platform_incompatible_refusal_mirrors_as_a_plain_language_error`
+covering the new terminal-`error` branch end-to-end, asserting the exact
+composed message, that uv's raw stderr is absent from it, and that
+`envinstall.progress(key)["error"]` still carries that raw text verbatim.
+`tests/test_jobs_api.py`: added four tests — a `WAITING` row surviving both
+the unread backstop and the ordinary `FINISHED_TTL_S` exactly like `error`
+does, `request_cancel` leaving a `WAITING` row's `cancel_requested` false
+(nothing to signal), and a `WAITING` row being dismissible through the
+ordinary `/dismiss` route. `frontend/src/platform/lib/jobs.test.ts`: added
+two `jobStatusLine` tests for the `"waiting"` state (with and without a
+`message`).
+
+**Verification.**
+`.venv/bin/python -m pytest tests/test_env_install.py
+tests/test_server_env_install.py tests/test_jobs_api.py
+tests/test_projectenv.py -q` → 376 passed.
+`.venv/bin/python -m pytest tests/test_env_install.py -n 0 -q` → 160
+passed, 1 skipped. `bunx tsc --noEmit` (frontend) → clean. `bun test
+src/platform/lib/jobs.test.ts src/platform/ui/DownloadManager.test.tsx` →
+75 passed. Did not run the full suite (pre-existing unrelated failures on
+this machine, per the task brief, are not in scope).
+
+**Commits**: `5a2895f5` (worker-side platform-incompatible detection),
+`ff2bccb8` (`WAITING` state, `_mirror_into_jobs` rewrite, client wiring,
+tests for both).
