@@ -563,16 +563,26 @@ def _zsh_zdotdir() -> Optional[str]:
         return None
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONHOME", "PYTHONPATH")}
+    # ~/.zshenv runs before our print and may write to stdout itself, so raw
+    # stdout is not the answer: a marker separates whatever the profile said
+    # from the value we asked for, and only a value naming a real directory is
+    # trusted — anything else means the probe failed, not that ZDOTDIR is odd.
+    marker = "__FUSED_ZDOTDIR__:"
     try:
         out = subprocess.run(
-            [zsh, "-c", 'print -rn -- "$ZDOTDIR"'],
+            [zsh, "-c", f'print -r -- "{marker}$ZDOTDIR"'],
             capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
             **SUBPROCESS_KWARGS,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    value = (out or "").strip()
-    return value or None
+    for line in reversed((out or "").splitlines()):
+        if line.startswith(marker):
+            value = line[len(marker):].strip()
+            if value and os.path.isabs(value) and os.path.isdir(value):
+                return value
+            return None
+    return None
 
 
 def _home_relative(path: str) -> str:
