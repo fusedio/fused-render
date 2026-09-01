@@ -1234,6 +1234,63 @@ def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monk
     assert captured["at_most_once"] is False
 
 
+def test_proxy_call_timeout_follows_the_shipped_worker_not_idle_timeout_s(
+    client, monkeypatch
+):
+    # A `daemon =` author's own HTTP surface can opt into idle reaping
+    # (idle_timeout_s > 0) without also opting into the shipped worker's
+    # 60s-per-call budget — that budget exists for DEFAULT_DAEMON's known,
+    # short request shape (main =), not for an arbitrary daemon= route that
+    # may legitimately run longer. The two knobs (reap-eligibility and the
+    # call budget) are independent.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["call_timeout"] = call_timeout
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    # A daemon= app (own daemon.py, module="") that opted into an idle timeout.
+    own_daemon_child = engine_host.Child(
+        engine_id="bg_owndaemon", python=sys.executable, daemon="/d.py",
+        cache="c", version="v1", kind="background", idle_timeout_s=60.0)
+    monkeypatch.setattr(engine_host, "current", lambda eid: own_daemon_child)
+
+    resp = client.post("/api/engines/bg_owndaemon/proxy/slow_route", json={},
+                       headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["call_timeout"] is None
+
+
+def test_proxy_call_timeout_still_applies_to_a_main_app(client, monkeypatch):
+    # The other half: a `main =` app (DEFAULT_DAEMON + a module) still gets
+    # the 60s budget, exactly as before.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["call_timeout"] = call_timeout
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    main_child = engine_host.Child(
+        engine_id="bg_main", python=sys.executable,
+        daemon=engine_host.DEFAULT_DAEMON, cache="c", version="v1",
+        module="/m.py", kind="background", idle_timeout_s=900.0)
+    monkeypatch.setattr(engine_host, "current", lambda eid: main_child)
+
+    resp = client.post("/api/engines/bg_main/proxy/call", json={}, headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["call_timeout"] == engine_host.CALL_TIMEOUT_S
+
+
 # --------------------------------------------------- Python 3.10 compatibility
 
 

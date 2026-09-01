@@ -150,7 +150,13 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
     # /api/engine dispatch). A resident child (idle_timeout_s == 0) needs
     # neither — it is never reap-eligible — so this is a no-op for it.
     bounded = child is not None and child.idle_timeout_s > 0
-    call_timeout = engine_host.CALL_TIMEOUT_S if bounded else None
+    # The 60s call budget is a separate knob from reap-eligibility: it exists
+    # for the shipped worker's known, short request shape (a `main =` app,
+    # DEFAULT_DAEMON + a module), not for idle_timeout_s itself. A `daemon =`
+    # author's own HTTP surface can opt into idle reaping without every one
+    # of its own routes being truncated to 60s.
+    call_timeout = (engine_host.CALL_TIMEOUT_S
+                    if child is not None and child.module else None)
     if bounded:
         engine_host.mark_busy(engine_id)
     try:
