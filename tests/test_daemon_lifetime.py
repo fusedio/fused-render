@@ -1,5 +1,5 @@
-"""Warm-worker app engine (/api/engine): interpreter choice, engine id,
-validation, and the worker's warm-state / mtime-reload / error envelope."""
+"""The shipped daemon (engine_worker.py)'s warm-state / mtime-reload / error
+envelope, and idle retirement as per-child policy rather than a kind."""
 import os
 import sys
 import time
@@ -40,21 +40,6 @@ def test_interpreter_for_no_env_is_app_interpreter():
     assert projectenv.interpreter_for(None) == sys.executable
 
 
-def test_app_engine_id_is_stable_bare_and_per_path():
-    a = engine_host.app_engine_id("/tmp/proj/app.py")
-    assert a == engine_host.app_engine_id("/tmp/proj/app.py")
-    assert a != engine_host.app_engine_id("/tmp/proj/other.py")
-    assert a.startswith("app_")
-    assert engine_host._ENGINE_ID.match(a)
-
-
-def test_ensure_app_rejects_foreign_interpreter(tmp_path):
-    app = tmp_path / "app.py"
-    app.write_text("def main():\n    return {}\n", encoding="utf-8")
-    with pytest.raises(engine_host.EngineError):
-        engine_host.ensure_app(str(app), "/definitely/not/a/real/python")
-
-
 def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
     # A call that outruns its budget must become a 504 with the worker left
     # intact — never a heal/restart (which would kill the still-running worker,
@@ -65,8 +50,9 @@ def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
 
     child = engine_host.Child(
         engine_id="app_timeouttest", python=sys.executable,
-        daemon=engine_host.APP_WORKER, cache="unused",
-        version=engine_host.APP_WORKER_VERSION, module="/tmp/x.py")
+        daemon=engine_host.DEFAULT_DAEMON, cache="unused",
+        version="v1", module="/tmp/x.py", kind="background",
+        idle_timeout_s=900.0)
     monkeypatch.setattr(engine_host, "current", lambda eid: child)
     healed = []
     monkeypatch.setattr(engine_host, "restart",
@@ -89,12 +75,13 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     # A call in flight (mark_busy) must stop idle-retire from killing the worker,
     # and mark_idle must refresh last_used so idle is timed from the call's end —
     # keyed by engine_id so a heal-restart mid-call keeps the live call counted.
-    eid = engine_host.app_engine_id("/tmp/reaper-test/app.py")
+    eid = "app_reapskip"
+    idle_timeout_s = 900.0
     child = engine_host.Child(
-        engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
-        cache="unused", version=engine_host.APP_WORKER_VERSION,
-        module="/tmp/reaper-test/app.py", kind="app")
-    stale = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+        engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
+        cache="unused", version="v1", module="/tmp/reaper-test/app.py",
+        kind="background", idle_timeout_s=idle_timeout_s)
+    stale = time.monotonic() - (idle_timeout_s + 10)
     child.last_used = stale
     reaped = []
     monkeypatch.setattr(engine_host, "_terminate",
@@ -102,14 +89,14 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     engine_host._children[eid] = child
     try:
         engine_host.mark_busy(eid)
-        assert engine_host.reap_idle_app_workers() == 0  # busy: not reaped
+        assert engine_host.reap_idle_children() == 0  # busy: not reaped
         assert eid in engine_host._children
 
         engine_host.mark_idle(eid)  # balances busy AND stamps last_used = now
-        assert engine_host.reap_idle_app_workers() == 0  # freshly used
+        assert engine_host.reap_idle_children() == 0  # freshly used
 
         child.last_used = stale  # now genuinely idle
-        assert engine_host.reap_idle_app_workers() == 1
+        assert engine_host.reap_idle_children() == 1
         assert reaped == [eid]
     finally:
         engine_host._children.pop(eid, None)
@@ -120,23 +107,24 @@ def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
     # A call that timed out (504) leaves main() running in the worker; the worker
     # reports it as in-flight, so idle-retire must not kill it mid-call even once
     # its host-side busy count has been balanced and it looks idle.
-    eid = engine_host.app_engine_id("/tmp/inflight-test/app.py")
+    eid = "app_inflighttest"
+    idle_timeout_s = 900.0
     child = engine_host.Child(
-        engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
-        cache="unused", version=engine_host.APP_WORKER_VERSION,
-        module="/tmp/inflight-test/app.py", kind="app")
-    child.last_used = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+        engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
+        cache="unused", version="v1", module="/tmp/inflight-test/app.py",
+        kind="background", idle_timeout_s=idle_timeout_s)
+    child.last_used = time.monotonic() - (idle_timeout_s + 10)
     reaped = []
     monkeypatch.setattr(engine_host, "_terminate",
                         lambda c: reaped.append(c.engine_id))
     monkeypatch.setattr(engine_host, "_inflight", lambda c: 1)
     engine_host._children[eid] = child
     try:
-        assert engine_host.reap_idle_app_workers() == 0  # still running: not reaped
+        assert engine_host.reap_idle_children() == 0  # still running: not reaped
         assert eid in engine_host._children
 
         monkeypatch.setattr(engine_host, "_inflight", lambda c: 0)  # main() finished
-        assert engine_host.reap_idle_app_workers() == 1
+        assert engine_host.reap_idle_children() == 1
         assert reaped == [eid]
     finally:
         engine_host._children.pop(eid, None)
@@ -180,12 +168,10 @@ def test_warm_target_rejects_non_json_result(tmp_path):
 
 
 # --- _spawn_env: PYTHONHOME survival keyed on interpreter, not kind ----------
-# 2026-08-26 code-review fix: the old condition (`child.module and child.python
-# == sys.executable`) only preserved the packaged interpreter's own env for an
-# app warm worker (`module` is that kind's marker), so a background daemon —
-# or a template daemon — running on `sys.executable` was silently stripped of
-# PYTHONHOME and died at bootstrap in the packaged app. Pinning all four kinds
-# here so the fix can't regress by kind again.
+# The condition being pinned here doesn't gate on `module` or `kind`: a
+# background daemon — or a template daemon — running on `sys.executable`
+# must keep PYTHONHOME exactly like a `main =` daemon on the shipped worker
+# does. Pinning every kind here so the fix can't regress by kind again.
 
 def test_spawn_env_strips_for_a_venv_interpreter(monkeypatch):
     monkeypatch.setenv("PYTHONHOME", "/should/be/stripped")
@@ -196,11 +182,12 @@ def test_spawn_env_strips_for_a_venv_interpreter(monkeypatch):
     assert "PYTHONHOME" not in env
 
 
-def test_spawn_env_keeps_pythonhome_for_an_app_worker_on_sys_executable(monkeypatch):
+def test_spawn_env_keeps_pythonhome_for_a_main_daemon_on_sys_executable(monkeypatch):
     monkeypatch.setenv("PYTHONHOME", "/keep/me")
     child = engine_host.Child(
-        engine_id="app_x", python=sys.executable, daemon=engine_host.APP_WORKER,
-        cache="c", version="v1", module="/m.py", kind="app")
+        engine_id="app_x", python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
+        cache="c", version="v1", module="/m.py", kind="background",
+        idle_timeout_s=900.0)
     env = engine_host._spawn_env(child)
     assert env.get("PYTHONHOME") == "/keep/me"
 

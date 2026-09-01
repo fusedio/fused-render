@@ -518,18 +518,18 @@ def test_ensure_background_succeeds_for_a_valid_manifest_without_autostart():
         engine_host.stop(engine_id)
 
 
-def test_reap_idle_app_workers_skips_background_kind():
-    # A background child idle far past APP_IDLE_RETIRE_S must never be
-    # reaped — only kind == "app" is eligible (pattern: test_engine_app.py's
-    # idle-reaper tests).
+def test_reap_idle_children_skips_a_zero_idle_timeout():
+    # A child idle for a long time with idle_timeout_s == 0 (a `daemon =` app's
+    # default) is never reap-eligible — eligibility is the child's own policy,
+    # not its kind (pattern: test_daemon_lifetime.py's idle-reaper tests).
     eid = "bg_reapskip"
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon="/tmp/bg-daemon.py",
-        cache="unused", version="v1", kind="background")
-    child.last_used = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+        cache="unused", version="v1", kind="background", idle_timeout_s=0.0)
+    child.last_used = time.monotonic() - 10_000
     engine_host._children[eid] = child
     try:
-        assert engine_host.reap_idle_app_workers() == 0
+        assert engine_host.reap_idle_children() == 0
         assert eid in engine_host._children
     finally:
         engine_host._children.pop(eid, None)
@@ -577,7 +577,7 @@ def test_ensure_background_stores_folder_on_the_child():
 
 def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
     # Regression: engine_host.restart() rebuilds the replacement Child field
-    # by field (the same shape `ensure_app`'s reuse-or-respawn already
+    # by field (the same shape `ensure_background`'s reuse-or-respawn already
     # takes), and the first cut of D505 forgot `folder` in that rebuild —
     # invisible in every ensure_background test above, since none of them
     # go through restart(). This is exactly the path a killed-and-healed
@@ -663,7 +663,8 @@ def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, 
         daemon=str(folder / "daemon.py"), cache="c", version="v1",
         kind="background", pid=1)
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
         calls.append(folder)
         return fake_child
 
@@ -711,7 +712,8 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
         engine_id="bg_fake", python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background", pid=4242)
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
         calls.append((engine_id, python, daemon, cache, version))
         return fake_child
 
@@ -833,7 +835,8 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background", pid=9191)
 
-    def fake_ensure(eid, python, daemon, cache, version, folder=""):
+    def fake_ensure(eid, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
         ensured.append(eid)
         return fake_child
 

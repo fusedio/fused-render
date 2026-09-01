@@ -164,10 +164,10 @@ def load_manifest(folder: str) -> Manifest | None:
 
 
 def engine_id_for(folder: str) -> str:
-    """The stable engine_id for a background app's folder — same shape as
-    `engine_host.app_engine_id`, distinct prefix so the two kinds can never
-    collide. Keyed by realpath so a symlinked folder and its target share one
-    engine (and thus one running instance)."""
+    """The stable engine_id for a background app's folder, distinct from a
+    template's own engine_id prefix so the two kinds can never collide. Keyed
+    by realpath so a symlinked folder and its target share one engine (and
+    thus one running instance)."""
     digest = hashlib.sha1(os.path.realpath(folder).encode("utf-8")).hexdigest()
     return _ENGINE_ID_PREFIX + digest[:12]
 
@@ -331,9 +331,8 @@ def bring_up_args(manifest: Manifest) -> tuple[str, str]:
 
 
 def cache_dir_for(engine_id: str) -> str:
-    """Where a background app's status/log files live — mirrors
-    engine_host._app_cache_dir's "under the home dir, never beside the user's
-    code" stance (MD-7)."""
+    """Where a background app's status/log files live — under the home dir,
+    never beside the user's code (MD-7)."""
     return os.path.join(storage.home_dir(), "apps", engine_id)
 
 

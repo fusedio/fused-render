@@ -123,11 +123,12 @@ async def api_background_start(body: dict = Body(...),
     except OSError as e:
         return _error(f"could not read {os.path.basename(folder)}'s manifest: {e}",
                       status=400)
+    daemon, module = background_apps.bring_up_args(manifest)
     try:
         child = await asyncio.to_thread(
             engine_host.ensure_background, engine_id, interpreter,
-            manifest.daemon, background_apps.cache_dir_for(engine_id), version,
-            folder)
+            daemon, background_apps.cache_dir_for(engine_id), version,
+            folder, manifest.idle_timeout_s, module)
     except (engine_host.EngineError, OSError) as e:
         return _error(f"could not start {os.path.basename(folder)}'s "
                       f"background app: {e}", status=502)
@@ -198,10 +199,11 @@ async def api_background_restart(body: dict = Body(...),
         # both branches keeps them in sync.
         version = background_apps.version_for(folder, interpreter)
         if engine_host.current(engine_id) is None:
+            daemon, module = background_apps.bring_up_args(manifest)
             child = await asyncio.to_thread(
                 engine_host.ensure_background, engine_id, interpreter,
-                manifest.daemon, background_apps.cache_dir_for(engine_id), version,
-                folder)
+                daemon, background_apps.cache_dir_for(engine_id), version,
+                folder, manifest.idle_timeout_s, module)
         else:
             child = await asyncio.to_thread(
                 engine_host.restart, engine_id, None, version=version)

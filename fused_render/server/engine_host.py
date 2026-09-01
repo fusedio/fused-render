@@ -15,10 +15,13 @@ point runs inside its project venv (PY-16/D276) — the only interpreter on the
 machine holding that template's extra stack — so it hands over its own
 sys.executable. The handoff is validated rather than trusted: the python must
 live in the home venv store, and the daemon must be <templates-root>/<engine_id>
-/daemon.py under a known templates root. `ensure_app` adds a second kind of
-child — a warm worker for an app's own `.py` (see ENGINE_HOST_APPS_DESIGN.md) —
-validated by interpreter only, since its daemon is the shipped engine_worker.py,
-not a template.
+/daemon.py under a known templates root. `ensure_background` adds the other
+kind of child — a folder's own resident daemon (`background_apps.py`,
+docs/ENGINE_HOST_DESIGN.md) — validated against that folder's own manifest.
+A folder that names `main =` rather than `daemon =` gets `DEFAULT_DAEMON`,
+the shipped worker that calls the module's `main(**params)` and is otherwise
+an ordinary background child: same validation, same idle-timeout policy,
+same reap path.
 
 A restarted child starts empty, so any descriptor the pages hold would 404.
 `reinit()` records the requests that registered a template's state, and a restart
@@ -31,7 +34,6 @@ the only template-specific data, and both are supplied by the caller.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -60,24 +62,15 @@ REINIT_LIMIT = 64
 #: no separators or dots that could climb out of a templates root.
 _ENGINE_ID = re.compile(r"^[a-z0-9_]+$")
 
-# --- warm app workers (/api/engine, docs/ENGINE_HOST_APPS_DESIGN.md) ----------
-#: The standard warm worker every app bring-up spawns. A fixed shipped path, not
-#: under a templates root, so `_validate`'s daemon-path allowlist never applies.
-APP_WORKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "engine_worker.py")
-#: engine_id prefix for a warm app worker; the rest is a path hash (app_engine_id).
-_APP_ENGINE_PREFIX = "app_"
-#: Bumped when engine_worker.py's contract changes, so an older worker is retired
-#: rather than reused (via `_matches`).
-APP_WORKER_VERSION = "1"
-#: Reap a warm app worker after this long with no call; the next call re-warms.
-APP_IDLE_RETIRE_S = 15 * 60.0
+# --- the default daemon (fused_render/engine_worker.py) -----------------------
+#: The daemon a `main =` manifest gets: a fixed shipped path, not under a
+#: templates root and not inside any app folder, so `_validate`'s daemon-path
+#: allowlist never applies and `_validate_background`'s folder-containment
+#: check needs its own narrow exemption for exactly this path.
+DEFAULT_DAEMON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "engine_worker.py")
 #: How often the idle sweeper wakes.
-_APP_REAP_INTERVAL_S = 60.0
-#: Per-call budget for a warm app worker, enforced parent-side by the proxy: the
-#: same ~60s /api/run gives a script (executor.DEFAULT_TIMEOUT), not the long
-#: template-describe POST timeout. The worker does not kill its own thread.
-APP_CALL_TIMEOUT_S = 60.0
+_REAP_INTERVAL_S = 60.0
 
 
 class EngineError(RuntimeError):
@@ -91,13 +84,15 @@ class Child:
     daemon: str
     cache: str
     version: str
-    #: The module a warm app worker serves; "" for a template daemon. When set,
-    #: `_spawn` passes `--module <this>`.
+    #: The module a `main =` background daemon serves (DEFAULT_DAEMON calls
+    #: its `main(**params)`); "" for a template daemon or a `daemon =`
+    #: background daemon serving its own HTTP surface. When set, `_spawn`
+    #: passes `--module <this>`.
     module: str = ""
-    #: One of "template", "app", "background" — which bring-up path owns this
-    #: child. Explicit rather than inferred (e.g. from `module` truthiness) so
-    #: reap eligibility and other kind-specific behavior can never drift onto a
-    #: child by accident when a new kind is added.
+    #: One of "template", "background" — which bring-up path owns this child.
+    #: Explicit rather than inferred (e.g. from `module` truthiness) so
+    #: kind-specific behavior can never drift onto a child by accident when a
+    #: new kind is added.
     kind: str = "template"
     #: The declaring folder, `kind="background"` only — `""` for every other
     #: kind. Threaded through the same way `cache`/`version` already are
@@ -107,14 +102,21 @@ class Child:
     #: so a background daemon can address the background-apps API about
     #: itself without knowing its own page's `html` path.
     folder: str = ""
+    #: How long this child may sit idle before `reap_idle_children` retires
+    #: it; `0` (the default, and always the value for a template child) means
+    #: resident. A `kind="background"` child carries whatever its manifest's
+    #: `idle_timeout_s` resolved to (see `background_apps.load_manifest`) —
+    #: `0` for a written `daemon =`, positive for a `main =` app unless its
+    #: manifest overrides it.
+    idle_timeout_s: float = 0.0
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
     port: int = 0
     token: str = ""
     pid: int = 0
-    #: Last call routed to this child (monotonic); drives idle-retire of warm app
-    #: workers only.
+    #: Last call routed to this child (monotonic); drives idle-retire for a
+    #: child whose `idle_timeout_s` is non-zero.
     last_used: float = field(default_factory=time.monotonic)
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
@@ -154,8 +156,9 @@ def register_terminate_hook(fn) -> None:
 def _validate_interpreter(python: str) -> None:
     """The interpreter must be one of ours: this app's own `sys.executable`, or a
     python from the home venv store; anything else is refused. Shared by the
-    template path (`_validate`) and the warm app path (`ensure_app`); the server
-    resolves it in both, so this is an invariant check, not a trust boundary."""
+    template path (`_validate`) and the background/daemon path
+    (`ensure_background`); the server resolves it in both, so this is an
+    invariant check, not a trust boundary."""
     from fused_render.shell.storage import home_dir
 
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
@@ -454,64 +457,6 @@ def ensure(engine_id: str, python: str, daemon: str, cache: str,
         return child
 
 
-def app_engine_id(resolved_py: str) -> str:
-    """The warm-worker engine id for a resolved `.py` path: a prefixed hash of the
-    abspath, so it stays a bare `_ENGINE_ID` and two pages naming the same file
-    share one worker. Keyed by abspath (not realpath), matching projectenv."""
-    digest = hashlib.sha256(os.path.abspath(resolved_py).encode("utf-8")).hexdigest()
-    return _APP_ENGINE_PREFIX + digest[:16]
-
-
-def _app_cache_dir(engine_id: str) -> str:
-    """Where a warm app worker's status/log files live: under the home dir, never
-    beside the user's code (MD-7)."""
-    from fused_render.shell.storage import home_dir
-
-    return os.path.join(home_dir(), "cache", "engine-workers", engine_id)
-
-
-def ensure_app(resolved_py: str, python: str,
-               version: str = APP_WORKER_VERSION) -> Child:
-    """A live warm worker for *resolved_py*, spawning it on first use.
-
-    Zero-config bring-up: keyed by the resolved `.py`, spawning `engine_worker.py`
-    on the app's resolved interpreter. Validated by interpreter only (no
-    templates-root check), the same trust `/api/run` has over the file. Reuses
-    `_spawn`/`_ping`/heal; every call refreshes `last_used` for idle-retire.
-    """
-    if not os.path.isfile(resolved_py):
-        raise EngineError(f"no such Python file: {resolved_py}")
-    _validate_interpreter(python)
-    _ensure_app_reaper()
-
-    engine_id = app_engine_id(resolved_py)
-    module = os.path.abspath(resolved_py)
-    cache = _app_cache_dir(engine_id)
-
-    existing = _children.get(engine_id)
-    if (existing is not None
-            and _matches(existing, python, APP_WORKER, cache, version, module)
-            and _alive(existing) and _ping(existing)):
-        existing.last_used = time.monotonic()
-        return existing
-    with _spawn_lock:
-        existing = _children.get(engine_id)
-        if (existing is not None
-                and _matches(existing, python, APP_WORKER, cache, version, module)
-                and _alive(existing) and _ping(existing)):
-            existing.last_used = time.monotonic()
-            return existing
-        if existing is not None:
-            _terminate(existing)
-        child = Child(engine_id=engine_id, python=python, daemon=APP_WORKER,
-                      cache=cache, version=version, module=module, kind="app")
-        _spawn(child)
-        child.last_used = time.monotonic()
-        with _lock:
-            _children[engine_id] = child
-        return child
-
-
 # --- background apps (background_apps.py, SPEC.md §46) ------------------------
 
 
@@ -544,7 +489,16 @@ def _validate_background(engine_id: str, python: str, daemon: str,
     docstring, which already called this hazard out). Falls back to
     `os.path.dirname(daemon)` when `folder` is empty, preserving today's
     behavior for flat layouts and for the few direct callers (tests only —
-    every production call site passes `folder`) that still don't pass one."""
+    every production call site passes `folder`) that still don't pass one.
+
+    A `main =` manifest never sets `manifest.daemon` — it is served by
+    `DEFAULT_DAEMON`, which lives in this package, outside every app folder,
+    so the folder-containment check above cannot apply to it. This is the
+    one narrow exemption (mirroring `_validate`'s own templates-root
+    allowlist): `daemon` is accepted here ONLY when it resolves to the exact
+    `DEFAULT_DAEMON` path AND the folder's own manifest declares a `main =`
+    — never "any path", which would turn this from an invariant check back
+    into a trust boundary."""
     from fused_render import background_apps
 
     if not _ENGINE_ID.match(engine_id):
@@ -553,15 +507,19 @@ def _validate_background(engine_id: str, python: str, daemon: str,
     target = os.path.realpath(daemon)
     folder = folder or os.path.dirname(daemon)
     manifest = background_apps.load_manifest(folder)
-    if manifest is not None and os.path.realpath(manifest.daemon) == target:
-        return
+    if manifest is not None:
+        if manifest.daemon and os.path.realpath(manifest.daemon) == target:
+            return
+        if (manifest.main and target == os.path.realpath(DEFAULT_DAEMON)):
+            return
     raise EngineError(
         f"refusing to run {daemon!r}: not the declared daemon of its "
         "folder's own [tool.fused-render.app] background manifest")
 
 
 def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
-                      version: str, folder: str = "") -> Child:
+                      version: str, folder: str = "",
+                      idle_timeout_s: float = 0.0, module: str = "") -> Child:
     """A live child for a background app's engine_id, reusing the current one
     when it matches and answers — the same double-checked reuse/spawn dance as
     `ensure`, but for a `kind="background"` child, validated against its own
@@ -575,24 +533,33 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
     (D513 — re-deriving via `os.path.dirname(daemon)` breaks any manifest
     whose `daemon` names a nested path). Optional (defaults to `""`) only so
     existing direct callers that don't care about it need not pass one; every
-    production call site does."""
+    production call site does.
+
+    `idle_timeout_s` is the manifest's own policy, threaded onto `Child`
+    unchanged; a non-zero value starts the idle sweeper (see
+    `_ensure_reaper`) so this child actually gets reaped. `module` is set
+    only for a `main =` manifest (`daemon` is then `DEFAULT_DAEMON`), telling
+    `_spawn` which file to pass as `--module`."""
     _validate_background(engine_id, python, daemon, folder)
+    if idle_timeout_s > 0:
+        _ensure_reaper()
     existing = _children.get(engine_id)
     if (existing is not None and existing.kind == "background"
-            and _matches(existing, python, daemon, cache, version)
+            and _matches(existing, python, daemon, cache, version, module)
             and _alive(existing) and _ping(existing)):
         return existing
     with _spawn_lock:
         existing = _children.get(engine_id)
         if (existing is not None and existing.kind == "background"
-                and _matches(existing, python, daemon, cache, version)
+                and _matches(existing, python, daemon, cache, version, module)
                 and _alive(existing) and _ping(existing)):
             return existing
         if existing is not None:
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=daemon,
-                      cache=cache, version=version, kind="background",
-                      folder=folder)
+                      cache=cache, version=version, module=module,
+                      kind="background", folder=folder,
+                      idle_timeout_s=idle_timeout_s)
         _spawn(child)
         with _lock:
             _children[engine_id] = child
@@ -631,8 +598,9 @@ def running_engines() -> list[dict]:
     `background_running_folders` exists to keep).
 
     `folder` and `module` are reported as-is — `folder` is set for
-    `kind="background"` only and `module` for warm app workers only, so the
-    caller can label a row without having to guess the kind's conventions.
+    `kind="background"` only, and `module` for a `main =` daemon (a `daemon =`
+    app leaves it empty), so the caller can label a row without having to
+    guess the manifest's protocol.
     """
     with _lock:
         children = list(_children.values())
@@ -654,8 +622,11 @@ def running_engines() -> list[dict]:
 _reaper_started = threading.Event()
 
 
-def _ensure_app_reaper() -> None:
-    if _reaper_started.is_set() or APP_IDLE_RETIRE_S <= 0:
+def _ensure_reaper() -> None:
+    """Start the idle sweeper thread once, the first time any child is brought
+    up with a non-zero `idle_timeout_s`. Callers already gate on that, so this
+    has nothing left to check beyond "already running"."""
+    if _reaper_started.is_set():
         return
     with _spawn_lock:
         if _reaper_started.is_set():
@@ -667,11 +638,11 @@ def _ensure_app_reaper() -> None:
 
 def _reap_loop() -> None:
     while True:
-        time.sleep(_APP_REAP_INTERVAL_S)
+        time.sleep(_REAP_INTERVAL_S)
         try:
-            reap_idle_app_workers()
+            reap_idle_children()
         except Exception:  # noqa: BLE001 — a sweep failure must not kill the loop
-            logger.exception("warm app worker idle sweep failed")
+            logger.exception("idle child sweep failed")
 
 
 def mark_busy(engine_id: str) -> None:
@@ -695,17 +666,17 @@ def mark_idle(engine_id: str) -> None:
             child.last_used = time.monotonic()
 
 
-def reap_idle_app_workers(now: float | None = None) -> int:
-    """Terminate every warm app worker idle past APP_IDLE_RETIRE_S, returning the
-    count reaped. Only `kind == "app"` children are eligible — explicit, so a
-    background app can never become reap-eligible by accident (e.g. a future
-    kind that also happens to set `module`). Exposed so a test can drive it
-    directly."""
+def reap_idle_children(now: float | None = None) -> int:
+    """Terminate every child idle past its own `idle_timeout_s`, returning the
+    count reaped. A child with `idle_timeout_s == 0` (the default for a
+    `daemon =` app and every `kind="template"` child) is never a candidate —
+    eligibility is the child's own policy, not its kind. Exposed so a test can
+    drive it directly."""
     now = time.monotonic() if now is None else now
     with _lock:
         candidates = [c for c in _children.values()
-                      if c.kind == "app" and _busy.get(c.engine_id, 0) == 0
-                      and (now - c.last_used) >= APP_IDLE_RETIRE_S]
+                      if c.idle_timeout_s > 0 and _busy.get(c.engine_id, 0) == 0
+                      and (now - c.last_used) >= c.idle_timeout_s]
     # A call that outran its budget got a 504 but its main() may still be running
     # in the worker (we never kill it); the worker reports that, so skip a worker
     # that is still mid-call rather than truncate it. Pinged outside _lock.
@@ -716,7 +687,7 @@ def reap_idle_app_workers(now: float | None = None) -> int:
             _children.pop(child.engine_id, None)
             _reinit.pop(child.engine_id, None)
     for child in stale:
-        logger.info("retiring idle warm worker %s (module %s)",
+        logger.info("retiring idle child %s (module %s)",
                     child.engine_id, child.module)
         _terminate(child)
     return len(stale)
@@ -764,7 +735,8 @@ def restart(engine_id: str, failed: Child | None = None,
                       daemon=existing.daemon, cache=existing.cache,
                       version=version if version is not None else existing.version,
                       module=existing.module,
-                      kind=existing.kind, folder=existing.folder)
+                      kind=existing.kind, folder=existing.folder,
+                      idle_timeout_s=existing.idle_timeout_s)
         _spawn(child)
         _replay(child)
         with _lock:
