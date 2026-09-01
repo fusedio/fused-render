@@ -52,12 +52,23 @@ def _marker_path(core_dir: str) -> str:
     return os.path.join(core_dir, ".version")
 
 
-# __pycache__ is the ONE exclusion: template .py helpers are executed, so the
-# repo/app tree can pick up byte-caches that differ between interpreters and
-# runs while the served bytes are identical. Nothing under it is ever served —
-# the executor imports the .py sources, not the caches. Everything else in the
-# tree is in scope, including registry.json, icon.svg and template helpers.
-_DIGEST_SKIP_DIRS = {"__pycache__"}
+# __pycache__: template .py helpers are executed, so the repo/app tree can
+# pick up byte-caches that differ between interpreters and runs while the
+# served bytes are identical. Nothing under it is ever served — the executor
+# imports the .py sources, not the caches.
+#
+# .venv: `copytree`'s own `ignore=shutil.ignore_patterns(".venv")` (below)
+# already keeps a dev checkout's hand-built `fused_render/templates/<name>/
+# .venv` out of the staged copy, but the digest is a SEPARATE walk over the
+# same packaged tree — without this it still descends into and sha256's every
+# file under that venv on every server start (a full multi-GB content hash for
+# a directory that is never even staged), and any change inside it (a `uv
+# add`, a rebuild) flips the one marker the whole packaged tree shares and
+# forces a full wipe + re-stage of every OTHER template too.
+#
+# Everything else in the tree is in scope, including registry.json, icon.svg
+# and template helpers.
+_DIGEST_SKIP_DIRS = {"__pycache__", ".venv"}
 
 
 def _file_digest(path: str) -> str:

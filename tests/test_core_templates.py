@@ -84,6 +84,38 @@ def test_a_dev_checkouts_venv_is_never_staged(staged):
     assert staged.served() == "<html>dark only</html>"
 
 
+def test_a_dev_checkouts_venv_is_never_digested(staged, monkeypatch):
+    """`_tree_digest` skips `.venv` the same way `copytree`'s `ignore` does.
+
+    The copytree exclusion alone leaves the digest walking and sha256'ing
+    every file under a dev checkout's `fused_render/templates/<name>/.venv`
+    on every server start — a full multi-GB content hash paid for a
+    directory that is never even staged — and any change inside that venv
+    (a `uv add`, a rebuild) would flip the marker and force a full wipe +
+    re-stage of every OTHER template too, since the marker is one digest over
+    the whole packaged tree.
+    """
+    venv = staged.package / "csv" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("not a real interpreter", encoding="utf-8")
+
+    ensure_core_templates()
+    marker_before = staged.marker()
+    core_templates._reset_expected_marker_cache()
+
+    (venv / "bin" / "python").write_text("a different fake interpreter, still not real",
+                                          encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("re-staged over a change confined to .venv")
+
+    monkeypatch.setattr(core_templates.shutil, "copytree", boom)
+    monkeypatch.setattr(core_templates.shutil, "rmtree", boom)
+
+    ensure_core_templates()
+    assert staged.marker() == marker_before
+
+
 def test_a_legacy_bare_version_marker_restages(staged):
     """Heals every install staged by the version-only marker logic."""
     from fused_render import __version__
