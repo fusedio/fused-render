@@ -569,6 +569,10 @@ function watchPath(p) { watched.push(p); }
 var fsChanges = 0;
 function noteFsChanged() { fsChanges += 1; }
 globalThis.window = { location: { search: "?path=/page.html" } };
+// Real opens: false, matching every test below that never sets it. Preview-gate
+// tests reassign it (it's a bare `var`, so the sliced runtime's own `handle`
+// closes over this same binding) before calling `runPython`.
+var IS_THUMBNAIL = false;
 """
 
 
@@ -689,6 +693,36 @@ Promise.allSettled([
         "each /api/run that came back must report an fs change, "
         f"saw {result['fsChanges']} for {result['runs']} runs"
     )
+
+
+def test_a_previewed_page_never_triggers_an_install():
+    """Bug A: a home-page preview card boots the real app in a sandboxed
+    iframe just to paint it (AppPreviewCard.tsx's `entry_html` fallback,
+    live on hover too) — and that boot must never install anything, no
+    matter what the previewed page's own dependencies are.
+
+    `IS_THUMBNAIL` is the signal `_daemonRejectPreview` already uses for the
+    identical "a picture of a page must not act like the real page" call —
+    this reassigns the same `var` the sliced `handle()` closes over, exactly
+    as a real preview iframe's ancestor-climbing `selfOrAncestorHasFlag`
+    would resolve to true for a `_preview=1` URL.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+IS_THUMBNAIL = true;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs, prompts: globalThis.__installPrompts })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, type: err.type,
+                                        installs, prompts: globalThis.__installPrompts }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0, (
+        f"a preview must never POST to /api/env/install, saw {result['installs']}"
+    )
+    assert result["prompts"] == 0, (
+        f"a preview must never ask the install-consent question, saw {result['prompts']}"
+    )
+    assert "declares dependencies that are not installed yet" in result["message"]
 
 
 def test_cancelling_the_confirm_makes_no_install_post_and_rejects():

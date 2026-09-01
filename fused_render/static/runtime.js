@@ -2539,7 +2539,20 @@
       if (data.needs_install && data.needs_install.pyproject) {
         watchPath(data.needs_install.pyproject);
       }
-      if (shouldInstall(data.needs_install, installed)) {
+      // `IS_THUMBNAIL` already gates every `fused.daemon.*` call
+      // (`_daemonRejectPreview`, above) on the same principle — a picture of the
+      // page must not act like the page — and an install is the same case: a
+      // preview card boots the real `entry_html` in a sandboxed iframe purely to
+      // paint it (`AppPreviewCard.tsx`, hover included), and that boot must never
+      // reach `/api/env/install`, mount a row, or poll progress. Skipping
+      // `shouldInstall` here — rather than checking `IS_THUMBNAIL` inside it —
+      // means a preview's `needs_install` falls straight to the `!data.ok` branch
+      // below and rejects with the server's own verbatim message, the same
+      // rejection shape every other run failure already produces and every
+      // caller already catches. Nothing here starts a chain that could throw
+      // unhandled: `installEnv` (and everything downstream of it) is simply
+      // never called.
+      if (!IS_THUMBNAIL && shouldInstall(data.needs_install, installed)) {
         installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
           attempt().then((next) => handle(next, installed))
