@@ -541,3 +541,84 @@ suite already matches the current signatures.
 
 Did not touch `envinstall.start` or `ai/supervisor.py` — production
 behaviour there is correct; only the doubles were behind.
+
+## Dogfooding fix — the --no-build refusal reaching users as a sticky error
+- Real-world dogfooding surfaced a defect Tasks 4/5 didn't anticipate: uv's
+  `--no-build` refusal (the resolver question "Install anyway" exists to
+  answer) also reached the jobs dock as a sticky red `error` row carrying
+  uv's raw stderr verbatim — a wall of jargon a non-expert user cannot act
+  on, that stays put until dismissed (`jobs.py`'s `_sweep` keeps `error`
+  rows on purpose).
+- Root cause: `_mirror_into_jobs` (envinstall.py) had no way to tell a
+  `--no-build` refusal apart from a genuine resolver failure — both show up
+  as `progress()`'s `done: true` with a non-empty `error`.
+- Fixed by moving classification to where the fact actually originates: the
+  worker (`_env_install_worker.py`), the one process that knows whether
+  `--no-build` was passed. `install()`'s except block now calls
+  `_no_build_package(str(e))` (gated on `not allow_build`) and writes a
+  `needs_build` field — the bare package name — alongside `error`, which
+  stays uv's verbatim text per SPEC PY-18 (`_write` was given the new
+  parameter; it's additive, like `activity`/`bytes_done`/`bytes_total`
+  before it).
+- `_no_build_package` carries over the same two regexes runtime.js used to
+  own (`_NO_BUILD_HINT`, the resolution-time `hint:` line; `_NO_BUILD_DISTRIBUTION`,
+  the install-time wording once a `uv.lock` exists), with the same reasoning
+  for each anchor point transcribed into the Python comments. Both were
+  re-verified against the wordings already confirmed real in Task 4/5's
+  notes — no new empirical uv run needed, since the text itself is unchanged,
+  only where it's parsed.
+- `_mirror_into_jobs`: a finished record carrying `needs_build` now maps to
+  `state="cancelled"` with `message=f"waiting for your approval to compile
+  {pkg}"`, checked BEFORE the plain `error` branch. `jobs.py`'s
+  `TERMINAL_STATES` has exactly three members (`done`/`error`/`cancelled`)
+  and none of them actually means "stopped, awaiting you" — `cancelled` is
+  the least-wrong of the three (terminal, ages out normally instead of
+  sticking, reads as "stopped" rather than "broken"). This is a real
+  limitation: a jobs-dock user who never opens the page to see the actual
+  "Install anyway" prompt sees a row that reads as a cancelled install, not
+  as a question waiting on them. Accepted since the alternative (a fourth
+  job state, or reusing `error`) is worse on every axis that matters more.
+  The existing `_CANCELLED_ERROR` branch (a real user Cancel) is checked
+  first and is completely unaffected.
+- Confirmed by test (`test_a_needs_build_row_flips_back_to_running_on_the_retry`,
+  using two real `envinstall.start()` calls rather than hand-written
+  progress records) that the retry genuinely restarts the row: a finished
+  claim is stale (`_claim_is_stale` reads `not _in_flight`), so `start(...,
+  allow_build=True)` on the same project takes it over, re-`_spawn`s under
+  the SAME key, and `_mirror_into_jobs` opens a fresh thread under the
+  identical `sys:env-install:<key>` id — the "cancelled" row is a mid-flight
+  word, not oneshot's last one.
+- `runtime.js`: `NO_BUILD_HINT`, `NO_BUILD_DISTRIBUTION`, and `noBuildPackage`
+  deleted outright — `/api/env/progress` returns `prog` verbatim (confirmed
+  by reading `server/routers/env.py`), so `needs_build` reaches the client
+  with no new plumbing. `poll()`'s terminal-error branch now attaches
+  `e.needsBuild = prog.needs_build || null` to the thrown `Error`, and
+  `tryInstall`'s catch reads `err.needsBuild` instead of re-deriving it from
+  `err.message`. One detector now, not two that can disagree (the thing the
+  brief called out as the actual bug class here).
+- Fix 2 (prompt copy): `confirmBuildRetry` now takes `appName` and renders
+  "`<pkg>` has to be compiled on this computer" / "`<AppName>` needs it, but
+  there's no prebuilt version for this system. Compiling runs code from
+  `<pkg>` and can take several minutes or fail. Only continue if you trust
+  it." `startInstall`'s call site passes `need.name || "the environment"` —
+  the identical fallback `confirmInstall` already uses, so both dialogs stay
+  consistent when a project has no display name. Button label ("Install
+  anyway") and Cancel behaviour (declining lets the original resolver error
+  stand as `EnvInstallError`) are untouched.
+- Tests added: `tests/test_env_install.py` — `test_needs_build_is_set_for_the_resolution_time_hint`,
+  `test_needs_build_is_set_for_the_install_time_distribution_wording`,
+  `test_allow_build_true_never_sets_needs_build`, a `needs_build is None`
+  assertion added to the existing unrelated-RuntimeError test, plus
+  `test_a_needs_build_refusal_mirrors_as_cancelled_not_error` and
+  `test_a_needs_build_row_flips_back_to_running_on_the_retry` for the
+  jobs-mirror side. `tests/test_server_env_install.py` — the two existing
+  no-wheel/locked-project tests now carry `needs_build` on their mocked
+  progress records (client no longer regexes `error` at all); added
+  `test_the_retry_prompt_is_driven_by_the_field_not_by_regexing_error`
+  (an `error` string that would never have matched either old regex still
+  triggers the retry, proving detection isn't merely duplicated
+  client-side), `test_an_unrelated_resolver_failure_never_offers_a_retry`,
+  and `test_the_retry_prompt_names_the_app_not_jargon`.
+- Ran only the narrowed files (`test_env_install.py`, `test_server_env_install.py`,
+  `test_projectenv.py`) — 224 + 78 passed. Did not run the full suite (left
+  to the orchestrator; `/tmp` quota kills a full run on this machine anyway).
