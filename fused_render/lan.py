@@ -518,10 +518,14 @@ def _with_cookie(response: Response, secret: str, *, secure: bool) -> Response:
     return response
 
 
-#: Called with the new device's public record when a phone pairs — the desktop
-#: app hooks a notification here ("iPhone · Fused Render app paired"); the CLI
-#: leaves it None and logs.
-on_paired = None
+# Pairings the shell has not dismissed yet, newest last: the status bar's
+# Notifications section polls these (GET /api/lan/pairings) and shows one row
+# per event ("iPhone · Fused Render app paired"). In-memory on purpose — a
+# pairing is news, not state (the device list is the state), so a restart
+# owing nothing is right. Replaced the macOS notification-center banner
+# (rumps): the shell's own notification surface is where fused-render says
+# things now.
+_recent_pairings: list[dict] = []
 
 
 def _handle_pair(scope) -> Response:
@@ -539,11 +543,9 @@ def _handle_pair(scope) -> Response:
             "Not paired.")
     secret, record = _pair_device(_header(scope, b"user-agent"))
     logger.info("lan: paired %s", record.get("name"))
-    if on_paired is not None:
-        try:
-            on_paired(record)
-        except Exception:  # noqa: BLE001 — a notification must never fail a pairing
-            logger.warning("lan: on_paired hook failed", exc_info=True)
+    with _pair_lock:
+        _recent_pairings.append({"id": record["id"], "name": record["name"], "at": record["paired_at"]})
+        del _recent_pairings[:-20]  # a bound, not a policy — nobody pairs 20 devices unseen
     return _with_cookie(RedirectResponse("/", status_code=302), secret,
                         secure=scope.get("scheme") == "https")
 
@@ -1166,6 +1168,25 @@ def api_lan_devices_revoke_all(x_fused: str | None = Header(default=None)):
         return guard
     revoke_all_devices()
     return {"devices": []}
+
+
+@router.get("/api/lan/pairings")
+def api_lan_pairings():
+    """Pairing events the shell has not dismissed — the status bar's
+    Notifications section polls this. Loopback only (inner app; the LAN
+    wrapper never forwards it)."""
+    with _pair_lock:
+        return {"pairings": list(_recent_pairings)}
+
+
+@router.post("/api/lan/pairings/dismiss")
+def api_lan_pairing_dismiss(body: dict, x_fused: str | None = Header(default=None)):
+    if (guard := _require_fused(x_fused)) is not None:
+        return guard
+    wanted = str(body.get("id") or "")
+    with _pair_lock:
+        _recent_pairings[:] = [p for p in _recent_pairings if p["id"] != wanted]
+        return {"pairings": list(_recent_pairings)}
 
 
 def start_if_enabled() -> None:

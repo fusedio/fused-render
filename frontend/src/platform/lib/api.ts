@@ -1222,6 +1222,18 @@ export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
   return getJson("/api/lan/devices");
 }
 
+// A device that paired since the shell last dismissed the news — one row in
+// the status bar's Notifications section (RepoUpdatesDock).
+export type LanPairingEvent = { id: string; name: string; at: number };
+
+export function getLanPairings(): Promise<{ pairings: LanPairingEvent[] }> {
+  return getJson("/api/lan/pairings");
+}
+
+export function dismissLanPairing(id: string): Promise<{ pairings: LanPairingEvent[] }> {
+  return postJson("/api/lan/pairings/dismiss", { id });
+}
+
 async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
   const r = await fetch(path, { method: "DELETE", headers: { "X-Fused": "1" } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
