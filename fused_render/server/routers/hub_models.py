@@ -440,6 +440,17 @@ def _base_model(tags) -> tuple[str | None, str | None]:
     contain colons in principle (an org or repo name never does on today's
     Hub, but nothing here assumes otherwise) — `partition`, not `split`, so
     only the first two colons are consumed and the id is whatever remains.
+
+    **The relation-less form, `base_model:<id>` with no second colon, is a
+    real tag shape** — it is what the Hub emits from a model card's own
+    `base_model:` metadata when the card never set `base_model_relation:`,
+    so treating it the same as a malformed tag (as an earlier version of this
+    function did) silently ungrouped a large share of repos. When the
+    remainder has no `:` at all, the whole remainder is the id and
+    `relation` is `None` — the frontend keys a family on `baseModel` alone
+    and never reads `relation`, so this costs nothing there. A malformed
+    tag — an empty id either side of a colon that IS present — is still
+    skipped.
     """
     if not isinstance(tags, list):
         return None, None
@@ -448,7 +459,12 @@ def _base_model(tags) -> tuple[str | None, str | None]:
             continue
         rest = tag[len(_BASE_MODEL_TAG_PREFIX):]
         relation, sep, base_id = rest.partition(":")
-        if not sep or not relation or not base_id:
+        if not sep:
+            # No second colon: the Hub's relation-less `base_model:<id>` form.
+            if not relation:
+                continue
+            return relation, None
+        if not relation or not base_id:
             continue
         return base_id, relation
     return None, None
@@ -778,12 +794,19 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # this route reorders it below, over `fit.verdict`'s own score, once every
     # row's fit is known.
     sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
-    # With a task filter the Hub already returns only rows we keep, so asking
-    # for `count` is asking for what will be shown. WITHOUT one, the
-    # supported-tag pass runs here and throws most of a page away — a search for
-    # "small" sorted by downloads is mostly embedding models — so the request
-    # over-fetches and the reply is truncated after filtering.
-    fetch = count if task_filter else min(count * _OVERFETCH, _MAX_FETCH)
+    # With a task filter AND `includeUnfit`, the Hub already returns only rows
+    # we keep and nothing here drops any more of them, so asking for `count`
+    # is asking for what will be shown. In every OTHER case something between
+    # here and the reply can still throw rows away: WITHOUT a task filter, the
+    # supported-tag pass runs here and throws most of a page away (a search
+    # for "small" sorted by downloads is mostly embedding models); and by
+    # DEFAULT (`includeUnfit` false) the verdict:"no" drop below removes rows
+    # a task filter alone cannot see coming (fit is a fact about this
+    # machine, not about the pipeline tag). Either reason over-fetches, or
+    # the reply truncates to fewer than `count` rows with headroom left
+    # unused on the Hub's own answer.
+    fetch = (count if task_filter and include_unfit
+             else min(count * _OVERFETCH, _MAX_FETCH))
     params: dict[str, object] = {
         "sort": sort_field,
         "direction": direction,
@@ -853,30 +876,48 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
 
-    # A `verdict: "no"` row is a fact about THIS MACHINE's memory, not about
-    # how popular or well-classified the model is — dropped by default so a
-    # search does not fill a page with models nothing here could hold, but
-    # never silently: `hiddenUnfit` says how many, and `includeUnfit` asks for
-    # them back.
-    if include_unfit:
-        hidden_unfit = 0
-    else:
-        kept, hidden = [], 0
-        for row in models:
-            if (row.get("fit") or {}).get("verdict") == "no":
-                hidden += 1
-            else:
-                kept.append(row)
-        models, hidden_unfit = kept, hidden
-
     if sort == _FIT_SORT:
         # Descending score, nulls (nothing to judge) sorted last — `sort` is
         # Python's own stable sort, so ties (including every null-fit row
         # among themselves) keep the Hub's own most-downloaded ordering as
         # the tie-break, the same guarantee `bySizeAscending` documents for
-        # the frontend's own page-side sort.
+        # the frontend's own page-side sort. Sorted BEFORE the unfit drop
+        # below so the "would have been shown" window it counts against, and
+        # the page actually returned, agree on one order.
         models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
                     reverse=True)
+
+    def _on_disk(row: dict) -> bool:
+        return (row.get("local") or {}).get("state", "none") != "none"
+
+    # A `verdict: "no"` row is a fact about THIS MACHINE's memory, not about
+    # how popular or well-classified the model is — dropped by default so a
+    # search does not fill a page with models nothing here could hold, but
+    # never silently: `hiddenUnfit` says how many, and `includeUnfit` asks for
+    # them back. A row already on this disk — downloaded, or a fetch still in
+    # flight — is NEVER dropped by this filter regardless of verdict: this
+    # search's local join exists so someone can find a model they already
+    # have (HubResults.tsx's own header comment), and a 70B repo pulled
+    # months ago must still turn up when its name is searched, verdict or no.
+    if include_unfit:
+        hidden_unfit = 0
+    else:
+        # Counted only against the WINDOW this page would have shown absent
+        # any hiding (`models[:count]`, in the order fixed above), not the
+        # whole overfetched candidate set behind it. A search can fetch up to
+        # `_OVERFETCH`x a page's worth just to backfill after this drop, and
+        # counting hidden rows across that entire buffer reports a number far
+        # bigger than un-hiding could ever add back to THIS page — 96 rows
+        # fetched behind a 24-row page reading "71 hidden" when un-hiding only
+        # ever adds a handful. This is therefore a floor on the true count
+        # across the query, not an exact total: rows past the window are
+        # never inspected.
+        window = models[:count]
+        hidden_unfit = sum(
+            1 for row in window
+            if (row.get("fit") or {}).get("verdict") == "no" and not _on_disk(row))
+        models = [row for row in models
+                  if (row.get("fit") or {}).get("verdict") != "no" or _on_disk(row)]
 
     models = models[:count]
     return {

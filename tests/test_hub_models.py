@@ -582,6 +582,19 @@ def test_a_finetune_relation_is_parsed_too(client, hub_cache, monkeypatch):
     assert row["relation"] == "finetune"
 
 
+def test_a_relation_less_base_model_tag_still_groups(client, hub_cache, monkeypatch):
+    # The Hub emits `base_model:<id>` with no second colon when a model
+    # card sets `base_model:` metadata but never `base_model_relation:` —
+    # `rest.partition(":")` on this form yields an empty `sep`, which an
+    # earlier version of `_base_model` treated as malformed and dropped,
+    # silently ungrouping a large share of repos.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "someorg/Qwen3-8B-custom", tags=["base_model:Qwen/Qwen3-8B"])]))
+    row = _search(client).json()["models"][0]
+    assert row["baseModel"] == "Qwen/Qwen3-8B"
+    assert row["relation"] is None
+
+
 def test_a_row_with_no_base_model_tag_carries_nulls(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/standalone", tags=["region:us"])]))
     row = _search(client).json()["models"][0]
@@ -645,6 +658,29 @@ def test_a_verdict_no_row_is_absent_by_default_and_present_with_the_opt_in_flag(
     opted_in = _search(client, {"includeUnfit": True}).json()
     assert {m["id"] for m in opted_in["models"]} == {"org/fits", "org/toobig"}
     assert opted_in["hiddenUnfit"] == 0
+
+
+def test_a_model_already_on_disk_is_never_hidden_by_the_unfit_default(
+        client, hub_cache, monkeypatch):
+    # The stated reason this search exists is the local join — "you already
+    # have this one". Hiding a `verdict: "no"` row that is downloaded (or
+    # mid-download) would defeat that: someone who pulled a 70B repo months
+    # ago, or is mid-pull right now, searches its name to check on it, and
+    # the unfit default must not make the page say nothing matches.
+    _cached_repo(hub_cache, "models--org--toobig")
+    blob = hub_cache / "models--org--partial" / "blobs" / "b1"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 32)
+    fake = _reply([
+        _fitted("org/toobig", score=0, safetensors_gb=4000),
+        _fitted("org/partial", score=0, safetensors_gb=4000),
+        _fitted("org/nowhere", score=0, safetensors_gb=4000),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client).json()
+    ids = {m["id"] for m in body["models"]}
+    assert ids == {"org/toobig", "org/partial"}
+    assert body["hiddenUnfit"] == 1
 
 
 def test_limit_still_counts_rows_actually_returned_after_the_fit_filter(
@@ -962,16 +998,42 @@ def test_an_unfiltered_search_asks_for_more_than_it_shows(client, hub_cache, mon
     """The filter runs HERE for an unfiltered query, so the request has to
     over-fetch or a search for a common word comes back nearly empty.
 
-    With a task filter the Hub has already done the constraining, so asking for
-    more would be spending someone's rate limit on rows that are thrown away.
+    With a task filter AND `includeUnfit`, the Hub has already done the
+    constraining and nothing here drops anything more, so asking for more
+    would be spending someone's rate limit on rows that are thrown away.
     """
     fake = _reply([])
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"q": "small", "limit": 10})
     assert "limit=40" in fake.calls[0][0]
 
-    _search(client, {"q": "small", "task": "text-generation", "limit": 10})
+    _search(client, {"q": "small", "task": "text-generation", "limit": 10,
+                      "includeUnfit": True})
     assert "limit=10" in fake.calls[1][0]
+
+
+def test_a_task_filtered_search_still_overfetches_for_the_default_unfit_drop(
+        client, hub_cache, monkeypatch):
+    """A task filter alone doesn't mean nothing here can still drop a row —
+    by default, `verdict: "no"` rows are dropped too, and a task filter gives
+    the Hub no way to see that coming. Without over-fetching here, `limit`
+    stops meaning "rows you will be shown" the moment a task filter is set,
+    exactly as it already doesn't for an unfiltered query (D313)."""
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"q": "small", "task": "text-generation", "limit": 10})
+    assert "limit=40" in fake.calls[0][0]
+
+
+def test_limit_still_counts_rows_actually_returned_with_a_task_filter(
+        client, hub_cache, monkeypatch):
+    rows = [_fitted(f"org/fits{i}", score=100, safetensors_gb=1,
+                     pipeline_tag="text-generation") for i in range(3)]
+    rows += [_fitted("org/toobig", score=0, safetensors_gb=4000,
+                      pipeline_tag="text-generation")]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"task": "text-generation", "limit": 2}).json()
+    assert len(body["models"]) == 2
 
 
 def test_the_page_is_truncated_after_filtering_not_before(client, hub_cache, monkeypatch):
