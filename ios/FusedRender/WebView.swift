@@ -34,6 +34,9 @@ struct WebView: UIViewRepresentable {
     let server: Server
     @Binding var pairURL: URL?
     let controller: WebController
+    /// Fired with the host when the grid finishes loading — AppModel treats it
+    /// as proof a pending pairing landed (cookie set, token spent).
+    var onGridLoaded: (String) -> Void = { _ in }
 
     static let userAgentMarker: String = {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -111,7 +114,7 @@ struct WebView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(server: server, controller: controller) }
+    func makeCoordinator() -> Coordinator { Coordinator(server: server, controller: controller, onGridLoaded: onGridLoaded) }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: Server
@@ -120,12 +123,14 @@ struct WebView: UIViewRepresentable {
         var titleObservation: NSKeyValueObservation?
         weak var webView: WKWebView?
         let controller: WebController
+        let onGridLoaded: (String) -> Void
         let bridge = CaptureBridge()
 
-        init(server: Server, controller: WebController) {
+        init(server: Server, controller: WebController, onGridLoaded: @escaping (String) -> Void) {
             self.server = server
             self.baseURL = server.baseURL
             self.controller = controller
+            self.onGridLoaded = onGridLoaded
         }
 
         @objc func pulled(_ sender: UIRefreshControl) {
@@ -172,6 +177,7 @@ struct WebView: UIViewRepresentable {
             // The grid just loaded (paired, current): refresh what the widgets
             // and quick actions know.
             if let u = webView.url, u.path == "/" || u.path == "/index.html" {
+                onGridLoaded(server.host)
                 ManifestSync.refresh(from: webView, server: server)
             }
         }

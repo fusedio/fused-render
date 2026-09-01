@@ -207,7 +207,8 @@ struct ConnectedView: View {
     }
 
     var body: some View {
-        WebView(server: server, pairURL: $model.pendingPairURL, controller: web)
+        WebView(server: server, pairURL: $model.pendingPairURL, controller: web,
+                onGridLoaded: { host in model.confirmPairing(host: host) })
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }

@@ -76,6 +76,11 @@ final class AppModel: ObservableObject {
     @Published var pendingPairURL: URL?
     /// Why the last pairing attempt did not start, for the pair sheet.
     @Published var pairProblem: String?
+    /// A pairing that started but has not LANDED: the webview is loading
+    /// /pair, and only the redirect to the grid proves the token was live and
+    /// the cookie set. Remembered into `known` then, not before — an expired
+    /// code must not leave a cookieless computer that auto-opens next launch.
+    private var unconfirmed: Server?
 
     private let discovery = Discovery()
     private var bag = Set<AnyCancellable>()
@@ -152,11 +157,19 @@ final class AppModel: ObservableObject {
         var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         pairURL.path = "/pair"
         pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
-        known.removeAll { $0.host == host }
-        remember(server)
+        unconfirmed = server
         pendingPairURL = pairURL.url
         current = server
         return true
+    }
+
+    /// The webview landed on the grid for `host`. If a pairing was in flight
+    /// for that computer, it is now proven (the /pair redirect only happens
+    /// after the cookie is set) — remember it.
+    func confirmPairing(host: String) {
+        guard let server = unconfirmed, server.host == host else { return }
+        unconfirmed = nil
+        remember(server)
     }
 
     /// A widget or quick action: `fusedrender://open?host&port&path`. Go to
@@ -187,6 +200,7 @@ final class AppModel: ObservableObject {
     func disconnect() {
         current = nil
         pendingPairURL = nil
+        unconfirmed = nil
     }
 
     private func remember(_ server: Server) {

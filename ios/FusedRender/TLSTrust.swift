@@ -65,26 +65,32 @@ enum TLSTrust {
 
 /// A URLSession that trusts one server's private CA (and nothing else for
 /// https), for the native pieces that talk to the server outside the webview —
-/// the capture bridge's uploads and the manifest refresh.
-final class PinnedSession: NSObject, URLSessionDelegate {
-    private let caDER: Data?
-    let session: URLSession
+/// the capture bridge's uploads and the manifest refresh. The delegate is a
+/// separate object: a URLSession retains its delegate, so a session whose
+/// delegate is the owner never lets the owner go. This way the only cycle is
+/// session→delegate, and deinit's invalidate breaks it.
+final class PinnedSession {
+    private let session: URLSession
 
     init(caDER: Data?) {
-        self.caDER = caDER
         let config = URLSessionConfiguration.ephemeral
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
-        super.init()
-        // Re-create with self as delegate (delegate must exist at init).
-        self.sessionWithDelegate = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        session = URLSession(configuration: config, delegate: PinDelegate(caDER: caDER), delegateQueue: nil)
     }
 
-    private var sessionWithDelegate: URLSession!
+    deinit {
+        session.finishTasksAndInvalidate()
+    }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await sessionWithDelegate.data(for: request)
+        try await session.data(for: request)
     }
+}
+
+private final class PinDelegate: NSObject, URLSessionDelegate {
+    private let caDER: Data?
+
+    init(caDER: Data?) { self.caDER = caDER }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
