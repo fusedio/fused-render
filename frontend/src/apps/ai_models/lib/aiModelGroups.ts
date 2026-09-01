@@ -450,6 +450,31 @@ export function diskCards(repos: AiModelRepo[]): Map<string, DiskCard> {
   );
 }
 
+/** Which REPO IDS the curation names — the verified seal beside a card's name
+ *  (`RecommendedMark`, RepoCard.tsx), on a disk card and on a Hub search result
+ *  alike.
+ *
+ *  **Keyed by `m.repo ?? m.id`, the repo id that ADDRESSES a curated entry's
+ *  bytes, because both callers hold a repo id and neither can hold anything
+ *  else.** A disk card's `id` is the cache folder's repo id, and a search result
+ *  is a Hub repo by definition. Keying by `m.id` instead loses every
+ *  filename-keyed entry — a llama.cpp GGUF is curated under
+ *  `LFM2.5-8B-A1B-Q4_K_M.gguf` while its bytes live in
+ *  `LiquidAI/LFM2.5-8B-A1B-GGUF` — so the whole of the text-generation
+ *  shortlist sat on the disk unmarked while whisper and the embedders, whose ids
+ *  ARE their repo ids, wore the seal.
+ *
+ *  The same key `mergeSections` drops a recommendation on, and that agreement is
+ *  the point: the seal says "this card is one of ours" and the de-duplication
+ *  says "so do not recommend it again below". Disagreeing means a card wearing
+ *  no seal while a sealed recommendation for the same model sits under it.
+ */
+export function curatedRepoIds(catalog: AiCatalogCapability[] | null): Set<string> {
+  return new Set(
+    (catalog ?? []).flatMap((entry) => entry.models.map((m) => m.repo ?? m.id)),
+  );
+}
+
 /** What a HUB SEARCH RESULT says about this disk: the ✓, the "partly
  *  downloaded" tag, the Download button's absence, and where Explore goes.
  *

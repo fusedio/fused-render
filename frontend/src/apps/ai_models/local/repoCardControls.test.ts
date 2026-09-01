@@ -351,7 +351,11 @@ describe("what the card's face keeps, and what the (i) takes", () => {
     expect(CARD).toContain('aria-label="Recommended by Fused"');
     const LOCAL = readFileSync(join(HERE, "LocalTab.tsx"), "utf8");
     expect(LOCAL).toContain("recommended={curated.has(r.id)}");
-    expect(LOCAL).toContain("const curated = new Set<string>(");
+    // And takes it from the shared helper rather than building its own set: a
+    // card's `r.id` is a REPO id, and the set has to be keyed to match or a
+    // filename-keyed llama.cpp entry never marks its own disk card
+    // (`curatedRepoIds`, aiModelGroups.ts).
+    expect(LOCAL).toContain("const curated = curatedRepoIds(catalog);");
   });
 
   it("leads every Download with the same glyph", () => {
