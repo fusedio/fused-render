@@ -33,6 +33,10 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
     /// the page's later stop() gets the finished file, like the desktop's
     /// capture cache, instead of not_found.
     private var finished: [String: [String: Any]] = [:]
+    /// Stops that are still saving/uploading: an auto-stop and the page's own
+    /// stop() can overlap, and the second must wait for the first's result
+    /// instead of finding neither the live recorder nor the cache.
+    private var ending: [String: Task<[String: Any], Error>] = [:]
 
     /// The page that started a recording navigated away (or reloaded): nothing
     /// can ever stop() it now, so end it and throw the file away rather than
@@ -41,7 +45,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         finished.removeAll()
         if let rec = audio {
             audio = nil
-            Task { try? FileManager.default.removeItem(at: await rec.stop()) }
+            rec.abandon()
         }
         if let rec = screen {
             screen = nil
@@ -206,6 +210,17 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
     // MARK: stop / cancel
 
     private func end(id: String, cancel: Bool) async throws -> [String: Any] {
+        if let inFlight = ending[id] { return try await inFlight.value }
+        let task = Task { try await self.finishRecording(id: id, cancel: cancel) }
+        if audio?.id == id || screen?.id == id {
+            ending[id] = task
+            defer { ending[id] = nil }
+            return try await task.value
+        }
+        return try await task.value
+    }
+
+    private func finishRecording(id: String, cancel: Bool) async throws -> [String: Any] {
         if let rec = audio, rec.id == id {
             audio = nil
             let file = await rec.stop()
@@ -399,6 +414,18 @@ final class AudioRecording: NSObject, AVAudioRecorderDelegate {
         }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return file
+    }
+
+    /// The page that owned this recording is gone: stop the microphone and
+    /// throw the file away, all synchronously — the delayed, delegate-awaiting
+    /// stop() would deactivate the shared AVAudioSession up to two seconds
+    /// later, under whatever the NEXT page had just started.
+    func abandon() {
+        timer?.invalidate()
+        recorder.delegate = nil
+        recorder.stop()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        try? FileManager.default.removeItem(at: file)
     }
 
     private func finish() {

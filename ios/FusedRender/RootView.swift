@@ -107,6 +107,7 @@ struct PairView: View {
     @State private var pasted = ""
     @State private var problem: String?
     @State private var busy = false
+    @State private var pairTask: Task<Void, Never>?
     /// Bumped after a failed pairing so a fresh ScannerView starts scanning again.
     @State private var scanRun = 0
 
@@ -147,7 +148,8 @@ struct PairView: View {
             .padding()
             .navigationTitle("Pair with \(server.host)")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { pairTask?.cancel(); dismiss() } } }
+            .onDisappear { pairTask?.cancel() }
         }
     }
 
@@ -163,8 +165,9 @@ struct PairView: View {
         }
         problem = nil
         busy = true
-        Task {
+        pairTask = Task {
             let ok = await model.pair(with: url)
+            guard !Task.isCancelled else { return }
             busy = false
             if ok {
                 dismiss()

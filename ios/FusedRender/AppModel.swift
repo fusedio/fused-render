@@ -145,6 +145,10 @@ final class AppModel: ObservableObject {
             }
             server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
         }
+        // Cancelled while the CA was being fetched (the sheet's Cancel): do
+        // not connect behind the user's back. The token is only spent when
+        // the webview loads /pair, so backing out here leaves it usable.
+        if Task.isCancelled { return false }
         var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         pairURL.path = "/pair"
         pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
