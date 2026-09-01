@@ -1591,12 +1591,16 @@ def test_orphan_parts_outside_a_recipes_scope_are_swept_once_the_scope_succeeds(
     assert not os.path.exists(orphan), "the out-of-scope leftover was not swept"
 
 
-def test_a_cancelled_downloads_own_resume_state_is_never_swept(base, monkeypatch,
-                                                               tmp_path):
-    """A cancel must not trigger the sweep at all — the `.fusedpart` beside it
-    IS the resume state (AI-5i), not evidence of anything stale, even once it
-    is old enough that the sweep's own grace window would otherwise let it go.
-    No download succeeded, so nothing runs the sweep in the first place."""
+def test_a_cancel_never_triggers_the_sweep_itself(base, monkeypatch, tmp_path):
+    """A cancel must not trigger the sweep AT ALL, even once its own
+    `.fusedpart` — which IS the resume state, AI-5i — is old enough that the
+    sweep's grace window would otherwise let it go: `except Cancelled: raise`
+    skips `_clear_parts`'s fallback, and no download succeeded to trigger
+    `_sweep_orphan_parts` either. This is NOT a guarantee that a cancelled
+    download's resume state survives forever — a sibling scope's later
+    success still reaps it once it is stale enough, deliberately (see
+    `test_a_siblings_later_success_still_reaps_a_cancelled_downloads_resume_state`
+    below) — only that the cancelled attempt is never itself the trigger."""
     folder = tmp_path / "models--org--m"
     blobs = folder / "blobs"
     blobs.mkdir(parents=True)
@@ -1620,6 +1624,41 @@ def test_a_cancelled_downloads_own_resume_state_is_never_swept(base, monkeypatch
         base.download_snapshot("org/m")
 
     assert part.exists(), "a cancelled download's resume state was swept away"
+
+
+def test_a_siblings_later_success_still_reaps_a_cancelled_downloads_resume_state(
+        base, monkeypatch, tmp_path):
+    """The real guarantee is narrower than "a cancelled download's resume state
+    is never swept" — it holds only until some OTHER scope's download over the
+    same repo succeeds and the leftover ages past the grace window. There is
+    no signal on disk that tells a paused download's `.fusedpart` apart from
+    any other orphan (AI-5i's sidecar records offsets, not intent), so a
+    sibling success reaps it the same as it would any other leftover. That is
+    the accepted cost of `_sweep_orphan_parts` never leaving a card stuck —
+    see its docstring — not an oversight this test is pinning as a bug."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    cancelled_part = blobs / "cance1ed.fusedpart"
+    cancelled_part.write_bytes(b"paused at 80%")
+    stale = time.time() - base._PART_GRACE_SECONDS - 60
+    os.utime(str(cancelled_part), (stale, stale))
+
+    snapshot = folder / "snapshots" / "c0m"
+    snapshot.mkdir(parents=True)
+    blob = blobs / "e7ag"
+    blob.write_bytes(b"weights")
+    (snapshot / "model.safetensors").symlink_to(blob)
+    base._record_fetch(str(folder), "c0m", ["model.safetensors"], str(snapshot))
+
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(folder))
+    monkeypatch.setattr(base, "_cached_path", lambda *a, **k: str(snapshot))
+
+    assert base.download_snapshot("org/m") == str(snapshot)
+    assert not cancelled_part.exists(), (
+        "a sibling scope's success did not reap a stale, cancelled "
+        "download's resume state")
 
 
 @pytest.mark.parametrize("breaks", ["listing", "fetch"])

@@ -2893,18 +2893,32 @@ def _clear_parts(folder):
     ever resumes into a part file whose blob already exists.
 
     **Ours only, and immediate — the opposite of `_sweep_orphan_parts` on both
-    counts, deliberately.** hf's own `.incomplete` is left alone, because it may
-    be genuine resume state from an EARLIER call into this same fallback (hf
-    resumes one of those by seeking to its length); clearing it here would turn
-    a resumable hf download into a fresh multi-gigabyte one. And there is no
-    grace window: the segmented fetch that just failed is definitely not
-    writing into its own part file any more, so age tells us nothing a
-    conditional check would add, only a reason to leave freshly-abandoned bytes
-    behind for one grace period.
+    counts, deliberately.** hf's own `.incomplete` is left alone here regardless
+    of age. In the huggingface_hub actually installed (1.29.0 in this venv;
+    upstream PR #4228), every attempt writes to a name unique to that attempt —
+    `<blob>.<8 hex chars>.incomplete` — and `_download_to_tmp_and_move` unlinks
+    it itself, in a `finally`, on any ordinary failure; a leftover `.incomplete`
+    is therefore evidence of a hard kill or crash, not of a resumable transfer,
+    and even then nothing will ever seek into it by that exact random name
+    again. Whether an older or future hf ever resumes by seeking into a shared
+    name is not a guarantee this file can make for every version it might run
+    against, so it takes the conservative position either way and never removes
+    hf's own leftovers here. Their eventual removal is entirely
+    `_sweep_orphan_parts`'s job, on ITS terms (a grace window, and only after
+    some scope's download has actually succeeded) — see there for why that is
+    the right call despite the cost.
 
-    So the resume story is honest about its scope. It covers the app being
-    killed, quit or crashed — the case that motivated it (AI-5e) — and not a
-    fetch that failed its way into the fallback, which re-downloads.
+    There is no grace window of its own here for the same reason age would add
+    nothing to a same-process check: the segmented fetch that just failed is
+    definitely not writing into its own part file any more.
+
+    So the resume story this function is party to is honest about its scope.
+    It removes only what THIS failed attempt was writing, and defers to
+    `_sweep_orphan_parts` for everything else in the repo — including anything
+    an app kill, quit or crash left behind (AI-5e), which is why a fetch that
+    fails its way into the fallback re-downloads rather than resumes: the part
+    files that would have let it resume are exactly the ones this function just
+    removed.
     """
     for dirpath, _dirs, files in os.walk(folder or ""):
         for name in files:
@@ -3547,6 +3561,19 @@ def _sweep_orphan_parts(folder):
     writing. No etag-to-filename mapping is needed to tell the two apart, and
     none is possible offline: the sidecar records only version/etag/size/
     segments, and hf's `.incomplete` carries no sidecar at all.
+
+    **The trade-off, stated plainly.** "Some OTHER fetch" includes a
+    `Cancelled` one — a paused download IS an out-of-scope part file with a
+    stale mtime, and its whole reason to exist is to be resumed later (AI-5i).
+    Once it is old enough and a sibling scope over the same repo succeeds,
+    this removes it same as any other orphan, and that sibling's success
+    restarts the paused download from zero the next time it is resumed. That
+    is accepted, not overlooked: the alternative is a card that can read
+    "partial" forever because the one thing standing in the way is resume
+    state for a download nobody is coming back to finish, and there is no way
+    from here to tell those two cases apart offline. A successful download
+    over a repo clears every OTHER scope's leftover resume state in that
+    repo — deliberately, as the cost of never leaving a card stuck.
 
     This is the fix for the recipe-scoped GGUF case: an earlier, unscoped fetch
     of a repo that later gains a `keep`-limited recipe leaves part files for

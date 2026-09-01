@@ -1062,6 +1062,13 @@ def _refs_by_commit(repo_dir: str) -> dict[str, str]:
 #: pasted in — so the reading has to hold for repos this app never fetched.
 #: `test_ai_models_api.py` pins ours against the fetcher's own constant, so the
 #: two names cannot drift apart in silence.
+#:
+#: Deliberately NOT here: the sidecar's own `<etag>.fusedpart.json.tmp`
+#: (`worker_base._PART_MARKER` matches it, this does not). It adds no evidence
+#: this predicate lacks — it exists only in the narrow window `flush()` is
+#: writing it, or after a crash inside that window, and in both cases the
+#: `.fusedpart` file it is a sidecar FOR is still sitting right beside it and
+#: already trips this check on its own.
 _PART_SUFFIXES = (".fusedpart", ".incomplete")
 
 
@@ -1116,7 +1123,12 @@ def _unfinished_fetch(repo_dir: str) -> bool:
        A cancel does NOT go through either cleanup path —
        `except Cancelled: raise` skips the fallback, and no download succeeded
        to trigger a sweep — which is exactly why the bytes, and therefore this
-       evidence, are still here for a paused download to resume into.
+       evidence, are still here for a paused download to resume into. That
+       lasts only until some OTHER scope's download over the same repo
+       succeeds and the grace window passes: the sweep cannot tell a paused
+       download's resume state from any other orphan, and clears it too (see
+       `worker_base._sweep_orphan_parts`'s docstring for why that trade is
+       accepted rather than guarded against).
     2. **No snapshot directory at all.** A folder with blobs and nothing to open,
        which is the state hub search has always called `partial` and the state a
        cancel before the first file lands leaves behind.
