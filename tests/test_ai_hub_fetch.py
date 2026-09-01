@@ -1564,6 +1564,64 @@ def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
     assert left == [], f"our part files were left for hf to trip over: {left}"
 
 
+def test_orphan_parts_outside_a_recipes_scope_are_swept_once_the_scope_succeeds(
+        base, monkeypatch, tmp_path, payload):
+    """A recipe that only ever asks for a subset of a repo (`allow_patterns`)
+    leaves an earlier, wider fetch's part files behind for names it will never
+    ask for again. Once THIS scope's own segmented fetch completes, those
+    leftovers are provably out of scope — the fetch just proved every IN-scope
+    file is a finished blob — and get swept."""
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
+                        ("c0m", [("model.safetensors", len(payload))]))
+
+    orphan = os.path.join(folder, "blobs", "0ldetag.fusedpart")
+    os.makedirs(os.path.dirname(orphan), exist_ok=True)
+    with open(orphan, "wb") as handle:
+        handle.write(b"an earlier, wider fetch's leftovers")
+    stale = time.time() - base._PART_GRACE_SECONDS - 60
+    os.utime(orphan, (stale, stale))
+
+    base.download_snapshot("org/m", allow_patterns=["model.safetensors"])
+
+    assert state["log"], "the segmented route was never tried"
+    assert not os.path.exists(orphan), "the out-of-scope leftover was not swept"
+
+
+def test_a_cancelled_downloads_own_resume_state_is_never_swept(base, monkeypatch,
+                                                               tmp_path):
+    """A cancel must not trigger the sweep at all — the `.fusedpart` beside it
+    IS the resume state (AI-5i), not evidence of anything stale, even once it
+    is old enough that the sweep's own grace window would otherwise let it go.
+    No download succeeded, so nothing runs the sweep in the first place."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    part = blobs / "e7ag.fusedpart"
+    part.write_bytes(b"half")
+    stale = time.time() - base._PART_GRACE_SECONDS - 60
+    os.utime(str(part), (stale, stale))
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(folder))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
+                        ("c0m", [("model.safetensors", 10)]))
+
+    def cancelled(*args, **kwargs):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "_segmented_fetch", cancelled)
+
+    with pytest.raises(base.Cancelled):
+        base.download_snapshot("org/m")
+
+    assert part.exists(), "a cancelled download's resume state was swept away"
+
+
 @pytest.mark.parametrize("breaks", ["listing", "fetch"])
 def test_download_file_falls_back_like_the_snapshot_does(base, monkeypatch, tmp_path,
                                                          payload, breaks):

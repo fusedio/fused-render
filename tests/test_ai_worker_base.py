@@ -2363,6 +2363,124 @@ def test_a_part_file_for_an_UNRELATED_blob_does_not_disable_the_fast_path(
     assert hub.calls == [("snapshot", True)]
 
 
+# -- orphan part-file cleanup (`_sweep_orphan_parts`) --------------------------
+
+
+def _aged(path, seconds):
+    """Back-date a file's mtime so `_sweep_orphan_parts` reads it as older than
+    the grace window rather than as something still being written."""
+    then = time.time() - seconds
+    os.utime(str(path), (then, then))
+
+
+def test_sweep_removes_every_part_shape_once_it_is_old_enough(base, tmp_path):
+    """Ours (`.fusedpart` and its offsets sidecar) and both of hf's own
+    (`<etag>.incomplete` and `<etag>.<8 hex>.incomplete`) all count — a leftover
+    is a leftover regardless of which fetcher wrote it. A finished blob beside
+    them is left alone."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    ours = blobs / "e7ag.fusedpart"
+    ours.write_bytes(b"half")
+    sidecar = blobs / "e7ag.fusedpart.json"
+    sidecar.write_bytes(b"{}")
+    hf_old = blobs / "0ther.incomplete"
+    hf_old.write_bytes(b"half")
+    hf_new = blobs / "0ther.a1b2c3d4.incomplete"
+    hf_new.write_bytes(b"half")
+    finished = blobs / "f1n1shed"
+    finished.write_bytes(b"weights")
+    for path in (ours, sidecar, hf_old, hf_new, finished):
+        _aged(path, base._PART_GRACE_SECONDS + 60)
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 4
+    assert sorted(p.name for p in blobs.iterdir()) == ["f1n1shed"]
+
+
+def test_sweep_leaves_a_freshly_touched_part_file_alone(base, tmp_path):
+    """A LIVE download keeps rewriting its part file; the grace window is what
+    stops a concurrent fetch's genuinely in-flight resume state from being
+    swept out from under it — there is no other guard, since two fetches over
+    the same repo share nothing but the filesystem."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    live = blobs / "e7ag.fusedpart"
+    live.write_bytes(b"half")
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 0
+    assert live.exists()
+
+
+def test_sweep_on_a_never_fetched_folder_is_a_quiet_no_op(base, tmp_path):
+    assert base._sweep_orphan_parts(str(tmp_path / "never-fetched")) == 0
+    assert base._sweep_orphan_parts(None) == 0
+
+
+def test_a_failed_unlink_is_logged_rather_than_swallowed(base, tmp_path,
+                                                         monkeypatch, capsys):
+    """A cosmetic cleanup step must not go silent, and must not be the thing
+    that turns a successful download into a failed one either."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    part = blobs / "e7ag.fusedpart"
+    part.write_bytes(b"half")
+    _aged(part, base._PART_GRACE_SECONDS + 60)
+
+    def boom(path):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(base.os, "remove", boom)
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 0
+    assert part.exists()
+    err = capsys.readouterr().err
+    assert "e7ag.fusedpart" in err
+    assert "Permission denied" in err
+
+
+def test_download_snapshot_fast_path_sweeps_so_the_card_stops_reading_partial(
+        base, monkeypatch, tmp_path):
+    """The bug this feature exists to fix, pinned at the boundary the AI Models
+    card actually reads: `_cached_path` answers a hit with no network call, so
+    "Continue downloading" jumping to 100% and stopping changed nothing on
+    retry. Once the fast path sweeps too, the same repo `hub_cache
+    ._unfinished_fetch` called partial reads complete."""
+    from fused_render.ai import hub_cache
+
+    folder = tmp_path / "models--org--m"
+    (folder / "blobs").mkdir(parents=True)
+    commit = "c0m"
+    snapshot = folder / "snapshots" / commit
+    snapshot.mkdir(parents=True)
+    blob = folder / "blobs" / "e7ag"
+    blob.write_bytes(b"weights")
+    (snapshot / "model.safetensors").symlink_to(blob)
+    base._record_fetch(str(folder), commit, ["model.safetensors"], str(snapshot))
+
+    orphan = folder / "blobs" / "0ldetag.fusedpart"
+    orphan.write_bytes(b"an earlier, wider fetch's leftovers")
+    _aged(orphan, base._PART_GRACE_SECONDS + 60)
+
+    assert hub_cache._unfinished_fetch(str(folder)) is True
+
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(folder))
+    monkeypatch.setattr(base, "_cached_path", lambda *a, **k: str(snapshot))
+
+    assert base.download_snapshot("org/m") == str(snapshot)
+    assert not orphan.exists()
+    assert hub_cache._unfinished_fetch(str(folder)) is False
+
+
 def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
         base, monkeypatch, tmp_path):
     """The path comes from a call we did not make ourselves, so it is checked
