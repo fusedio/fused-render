@@ -106,12 +106,16 @@ struct PairView: View {
     let server: Server
     @State private var pasted = ""
     @State private var problem: String?
+    @State private var busy = false
+    /// Bumped after a failed pairing so a fresh ScannerView starts scanning again.
+    @State private var scanRun = 0
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
                 if ScannerView.isSupported {
                     ScannerView { code in accept(code) }
+                        .id(scanRun)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary))
                         .frame(maxHeight: 360)
@@ -130,11 +134,12 @@ struct PairView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .textFieldStyle(.roundedBorder)
-                    Button("Pair") { accept(pasted) }
+                    Button("Pair") { _ = accept(pasted) }
                         .buttonStyle(.borderedProminent)
-                        .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(busy || pasted.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                if let problem = problem ?? model.pairProblem {
+                if busy { ProgressView() }
+                if let problem {
                     Text(problem).font(.footnote).foregroundStyle(.red)
                 }
                 Spacer()
@@ -146,13 +151,29 @@ struct PairView: View {
         }
     }
 
-    private func accept(_ text: String) {
-        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
-              model.pair(with: url) else {
+    /// Returns whether the text looked like a pairing code (the scanner keeps
+    /// scanning past codes that are not). The sheet stays up until the pairing
+    /// settles, so a certificate mismatch is an error the user actually sees.
+    @discardableResult
+    private func accept(_ text: String) -> Bool {
+        guard AppModel.looksLikePairingCode(text),
+              let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             problem = "That is not a Fused pairing code."
-            return
+            return false
         }
-        dismiss()
+        problem = nil
+        busy = true
+        Task {
+            let ok = await model.pair(with: url)
+            busy = false
+            if ok {
+                dismiss()
+            } else {
+                problem = model.pairProblem ?? "Pairing failed."
+                scanRun += 1  // let the camera try again
+            }
+        }
+        return true
     }
 }
 

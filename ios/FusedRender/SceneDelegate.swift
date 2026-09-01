@@ -30,6 +30,19 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
             log.info("cold launch from quick action: \(url.absoluteString, privacy: .public)")
             Self.pending = url
         }
+        // A widget tap arrives as the fusedrender:// URL itself, not as a
+        // shortcut item — and once this class owns the scene, SwiftUI's
+        // onOpenURL no longer sees URL opens, so they must be forwarded here.
+        if let url = options.urlContexts.first?.url {
+            log.info("cold launch from url: \(url.absoluteString, privacy: .public)")
+            Self.pending = url
+        }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let url = URLContexts.first?.url else { return }
+        log.info("url open: \(url.absoluteString, privacy: .public)")
+        NotificationCenter.default.post(name: Self.openNotification, object: url)
     }
 
     func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem,

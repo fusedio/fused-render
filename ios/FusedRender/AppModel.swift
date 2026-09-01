@@ -104,6 +104,14 @@ final class AppModel: ObservableObject {
         current = server
     }
 
+    /// A quick syntactic look at a scanned/pasted string: is this a pairing
+    /// URL at all? The scanner uses it to decide whether to keep scanning.
+    static func looksLikePairingCode(_ text: String) -> Bool {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return comps.path == "/pair" && comps.queryItems?.contains { $0.name == "t" && !($0.value ?? "").isEmpty } == true
+    }
+
     /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`,
     /// plus `ca` (the CA fingerprint) and `s` (the https port) from a server
     /// that has https. With those, the CA is fetched over http, checked against
@@ -112,34 +120,38 @@ final class AppModel: ObservableObject {
     /// lives on the https origin. A fingerprint that does not check out ends
     /// the pairing: there is no silent fall back to http. A code without `ca`
     /// (a computer that has no https) pairs over http.
-    func pair(with url: URL) -> Bool {
+    /// Async so the pair sheet stays up until the CA fetch settles: a
+    /// fingerprint mismatch (or an unreachable computer) has to land as a
+    /// visible error, not on a view that was already dismissed.
+    func pair(with url: URL) async -> Bool {
         guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               comps.path == "/pair",
               let items = comps.queryItems,
               let token = items.first(where: { $0.name == "t" })?.value, !token.isEmpty,
               let host = comps.host, !host.isEmpty
-        else { return false }
+        else {
+            pairProblem = "That is not a Fused pairing code."
+            return false
+        }
         let httpPort = comps.port ?? 80
         let fingerprint = items.first(where: { $0.name == "ca" })?.value
         let httpsPort = items.first(where: { $0.name == "s" })?.value.flatMap(Int.init)
         pairProblem = nil
-        Task {
-            var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
-            if let fingerprint, let httpsPort {
-                guard let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) else {
-                    pairProblem = "The computer's certificate did not match this code. Try a fresh code from Preferences → Render local network."
-                    return
-                }
-                server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
+        var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
+        if let fingerprint, let httpsPort {
+            guard let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) else {
+                pairProblem = "The computer's certificate did not match this code. Try a fresh code from Preferences → Render local network."
+                return false
             }
-            var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
-            pairURL.path = "/pair"
-            pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
-            known.removeAll { $0.host == host }
-            remember(server)
-            pendingPairURL = pairURL.url
-            current = server
+            server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
         }
+        var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
+        pairURL.path = "/pair"
+        pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
+        known.removeAll { $0.host == host }
+        remember(server)
+        pendingPairURL = pairURL.url
+        current = server
         return true
     }
 

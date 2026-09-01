@@ -4,7 +4,9 @@ import SwiftUI
 import VisionKit
 
 struct ScannerView: UIViewControllerRepresentable {
-    let onCode: (String) -> Void
+    /// Returns whether the code was accepted; a rejected one (someone's Wi-Fi
+    /// QR, a URL that is not a pairing code) leaves the scanner running.
+    let onCode: (String) -> Bool
 
     static var isSupported: Bool {
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
@@ -33,17 +35,17 @@ struct ScannerView: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
 
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let onCode: (String) -> Void
+        let onCode: (String) -> Bool
         private var fired = false
-        init(onCode: @escaping (String) -> Void) { self.onCode = onCode }
+        init(onCode: @escaping (String) -> Bool) { self.onCode = onCode }
 
         func dataScanner(_ scanner: DataScannerViewController, didAdd added: [RecognizedItem], allItems: [RecognizedItem]) {
             guard !fired else { return }
             for item in added {
                 if case let .barcode(code) = item, let text = code.payloadStringValue {
+                    guard onCode(text) else { continue }  // not a pairing code: keep scanning
                     fired = true
                     scanner.stopScanning()
-                    onCode(text)
                     return
                 }
             }

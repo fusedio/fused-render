@@ -79,6 +79,10 @@ struct WebView: UIViewRepresentable {
         context.coordinator.titleObservation = web.observe(\.title, options: [.new]) { [controller] web, _ in
             Task { @MainActor in controller.title = web.title ?? "" }
         }
+        // Record a pairing URL as already-loaded here: updateUIView runs right
+        // after and would otherwise load the same /pair again — the token is
+        // single-use, so the second hit would land on "code expired".
+        context.coordinator.lastPending = pairURL
         web.load(URLRequest(url: pairURL ?? server.baseURL))
         return web
     }
@@ -92,6 +96,10 @@ struct WebView: UIViewRepresentable {
             // seen twice before the async clear lands.
             if context.coordinator.lastPending != pair {
                 context.coordinator.lastPending = pair
+                // The pending page IS this server's page (a deep link, or the
+                // pairing): mark the base as current too, or the next pass
+                // would see a stale baseURL and wipe the page with the grid.
+                context.coordinator.baseURL = server.baseURL
                 webLog.info("load pending \(pair.absoluteString, privacy: .public)")
                 web.load(URLRequest(url: pair))
             }
@@ -133,6 +141,13 @@ struct WebView: UIViewRepresentable {
                 completionHandler(.performDefaultHandling, nil)
                 return
             }
+            // Pin the private CA for the paired computer ONLY. Everything else
+            // a page loads (tile servers, fonts, APIs) keeps the system trust
+            // store — cancelling those broke every app that talks to the web.
+            guard challenge.protectionSpace.host == server.host else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
             if let ca = server.caDER, TLSTrust.accepts(trust, caDER: ca, host: challenge.protectionSpace.host) {
                 completionHandler(.useCredential, URLCredential(trust: trust))
             } else {
@@ -163,6 +178,9 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             controller.canGoBack = webView.canGoBack
+            // A new document: whatever the old page was recording has no owner
+            // any more — end it, or the microphone stays on with no way back.
+            bridge.abandonPage()
         }
 
         // target=_blank links open in the same view.

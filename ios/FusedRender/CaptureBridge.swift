@@ -29,6 +29,41 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
 
     private var audio: AudioRecording?
     private var screen: ScreenRecording?
+    /// Results of recordings that ended on their own (the maxSeconds cap):
+    /// the page's later stop() gets the finished file, like the desktop's
+    /// capture cache, instead of not_found.
+    private var finished: [String: [String: Any]] = [:]
+
+    /// The page that started a recording navigated away (or reloaded): nothing
+    /// can ever stop() it now, so end it and throw the file away rather than
+    /// leave the microphone (or ReplayKit) running with no owner.
+    func abandonPage() {
+        finished.removeAll()
+        if let rec = audio {
+            audio = nil
+            Task { try? FileManager.default.removeItem(at: await rec.stop()) }
+        }
+        if let rec = screen {
+            screen = nil
+            rec.disarm()
+            RPScreenRecorder.shared().stopRecording { _, _ in }
+        }
+    }
+
+    /// Desktop capture never runs unbounded: a 30-minute default, a 4-hour
+    /// ceiling. Same here, so a recording nobody stops still ends.
+    private static func cap(_ requested: Double?) -> Double {
+        min(requested ?? 1800, 14_400)
+    }
+
+    /// A caller path like the desktop resolves it (RH-1): absolute as-is,
+    /// relative against the page's own directory.
+    private static func resolvedPath(_ raw: String?, kind: String, ext: String, page: String?) -> String {
+        guard let raw, !raw.isEmpty else { return defaultPath(kind: kind, ext: ext, page: page) }
+        if raw.hasPrefix("/") || raw.hasPrefix("~") { return raw }
+        let dir = (page as NSString?)?.deletingLastPathComponent ?? ""
+        return dir.isEmpty ? raw : "\(dir)/\(raw)"
+    }
 
     // MARK: messages
 
@@ -119,14 +154,16 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         guard await requestMic() else {
             throw BridgeError("microphone access was not granted", type: "permission_denied")
         }
-        let path = (args["path"] as? String) ?? Self.defaultPath(kind: "audio", ext: "m4a", page: page)
-        let maxSeconds = (args["maxSeconds"] as? Double)
+        let path = Self.resolvedPath(args["path"] as? String, kind: "audio", ext: "m4a", page: page)
+        let maxSeconds = Self.cap(args["maxSeconds"] as? Double)
         let rec = try AudioRecording(maxSeconds: maxSeconds)
         rec.targetPath = path
-        audio = rec
         rec.onAutoStop = { [weak self] in Task { @MainActor in _ = try? await self?.end(id: rec.id, cancel: false) } }
         try rec.start()
-        return ["id": rec.id, "mode": "audio", "path": path, "maxSeconds": maxSeconds.map { $0 as Any } ?? NSNull(), "jobId": NSNull()]
+        // Claimed only once it is really recording — a failed start must not
+        // leave a ghost that refuses every later capture.
+        audio = rec
+        return ["id": rec.id, "mode": "audio", "path": path, "maxSeconds": maxSeconds, "jobId": NSNull()]
     }
 
     private func requestMic() async -> Bool {
@@ -145,7 +182,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         if audio != nil || screen != nil { throw BridgeError("a recording is already running; stop it first") }
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else { throw BridgeError("screen recording is not available on this device", type: "unavailable") }
-        let path = (args["path"] as? String) ?? Self.defaultPath(kind: "screen", ext: "mp4", page: page)
+        let path = Self.resolvedPath(args["path"] as? String, kind: "screen", ext: "mp4", page: page)
         let wantsMic: Bool = {
             if let a = args["audio"] as? String { return a == "mic" || a == "both" }
             return false
@@ -154,7 +191,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             throw BridgeError("microphone access was not granted", type: "permission_denied")
         }
         recorder.isMicrophoneEnabled = wantsMic
-        let rec = ScreenRecording(targetPath: path, maxSeconds: args["maxSeconds"] as? Double)
+        let rec = ScreenRecording(targetPath: path, maxSeconds: Self.cap(args["maxSeconds"] as? Double))
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             recorder.startRecording { error in
                 if let error { c.resume(throwing: BridgeError(error.localizedDescription)) } else { c.resume() }
@@ -163,7 +200,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         screen = rec
         rec.onAutoStop = { [weak self] in Task { @MainActor in _ = try? await self?.end(id: rec.id, cancel: false) } }
         rec.armTimer()
-        return ["id": rec.id, "mode": "screen", "path": path, "maxSeconds": rec.maxSeconds.map { $0 as Any } ?? NSNull(), "jobId": NSNull()]
+        return ["id": rec.id, "mode": "screen", "path": path, "maxSeconds": rec.maxSeconds, "jobId": NSNull()]
     }
 
     // MARK: stop / cancel
@@ -171,17 +208,33 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
     private func end(id: String, cancel: Bool) async throws -> [String: Any] {
         if let rec = audio, rec.id == id {
             audio = nil
-            let file = rec.stop()
+            let file = await rec.stop()
             if cancel { try? FileManager.default.removeItem(at: file); return ["state": "cancelled"] }
-            return try await upload(file: file, to: rec.targetPath, mime: "audio/mp4", state: "stopped", extra: ["seconds": rec.seconds])
+            let result = try await upload(file: file, to: rec.targetPath, mime: "audio/mp4", state: "stopped", extra: ["seconds": rec.seconds])
+            finished[id] = result
+            return result
         }
         if let rec = screen, rec.id == id {
             screen = nil
             rec.disarm()
-            let file = try await rec.stop()
+            let file: URL
+            do {
+                file = try await rec.stop()
+            } catch {
+                // ReplayKit may still be recording after a failed stop; drop
+                // the session rather than leave it orphaned and every later
+                // screen() refused.
+                RPScreenRecorder.shared().stopRecording { _, _ in }
+                throw error
+            }
             if cancel { try? FileManager.default.removeItem(at: file); return ["state": "cancelled"] }
-            return try await upload(file: file, to: rec.targetPath, mime: "video/mp4", state: "stopped", extra: ["seconds": rec.seconds])
+            let result = try await upload(file: file, to: rec.targetPath, mime: "video/mp4", state: "stopped", extra: ["seconds": rec.seconds])
+            finished[id] = result
+            return result
         }
+        // A recording the maxSeconds cap already ended: hand back its file,
+        // the way the desktop's stop() reads the capture cache.
+        if let done = finished.removeValue(forKey: id) { return done }
         throw BridgeError("no recording with that id is running", type: "not_found")
     }
 
@@ -189,7 +242,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
 
     private func screenshot(args: [String: Any], page: String?) async throws -> [String: Any] {
         guard let webView else { throw BridgeError("no page to capture") }
-        let path = (args["path"] as? String) ?? Self.defaultPath(kind: "screenshot", ext: "png", page: page)
+        let path = Self.resolvedPath(args["path"] as? String, kind: "screenshot", ext: "png", page: page)
         let image: UIImage = try await withCheckedThrowingContinuation { c in
             webView.takeSnapshot(with: nil) { image, error in
                 if let image { c.resume(returning: image) } else { c.resume(throwing: BridgeError(error?.localizedDescription ?? "snapshot failed")) }
@@ -294,18 +347,20 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
 
 // MARK: - recordings
 
+@MainActor
 final class AudioRecording: NSObject, AVAudioRecorderDelegate {
     let id = "ios-audio-" + UUID().uuidString.prefix(8)
-    let maxSeconds: Double?
+    let maxSeconds: Double
     var targetPath = ""
     var onAutoStop: (() -> Void)?
     private let recorder: AVAudioRecorder
     private let file: URL
     private var started = Date()
     private var timer: Timer?
+    private var finishCont: CheckedContinuation<Void, Never>?
     private(set) var seconds: Double = 0
 
-    init(maxSeconds: Double?) throws {
+    init(maxSeconds: Double) throws {
         self.maxSeconds = maxSeconds
         file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
         let session = AVAudioSession.sharedInstance()
@@ -324,39 +379,55 @@ final class AudioRecording: NSObject, AVAudioRecorderDelegate {
     func start() throws {
         guard recorder.record() else { throw BridgeError("the microphone did not start") }
         started = Date()
-        if let max = maxSeconds, max > 0 {
-            timer = Timer.scheduledTimer(withTimeInterval: max, repeats: false) { [weak self] _ in self?.onAutoStop?() }
+        timer = Timer.scheduledTimer(withTimeInterval: maxSeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.onAutoStop?() }
         }
     }
 
-    func stop() -> URL {
+    /// AVAudioRecorder.stop() returns before the .m4a is finalised; uploading
+    /// then can ship an empty or unplayable file. Wait for the delegate (with
+    /// a guard timeout — a delegate that never fires must not hang the stop).
+    func stop() async -> URL {
         timer?.invalidate()
         seconds = Date().timeIntervalSince(started)
-        recorder.stop()
+        if recorder.isRecording {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                finishCont = c
+                recorder.stop()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.finish() }
+            }
+        }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return file
+    }
+
+    private func finish() {
+        finishCont?.resume()
+        finishCont = nil
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor in self.finish() }
     }
 }
 
 final class ScreenRecording {
     let id = "ios-screen-" + UUID().uuidString.prefix(8)
     let targetPath: String
-    let maxSeconds: Double?
+    let maxSeconds: Double
     var onAutoStop: (() -> Void)?
     private var started = Date()
     private var timer: Timer?
     private(set) var seconds: Double = 0
 
-    init(targetPath: String, maxSeconds: Double?) {
+    init(targetPath: String, maxSeconds: Double) {
         self.targetPath = targetPath
         self.maxSeconds = maxSeconds
     }
 
     func armTimer() {
         started = Date()
-        if let max = maxSeconds, max > 0 {
-            timer = Timer.scheduledTimer(withTimeInterval: max, repeats: false) { [weak self] _ in self?.onAutoStop?() }
-        }
+        timer = Timer.scheduledTimer(withTimeInterval: maxSeconds, repeats: false) { [weak self] _ in self?.onAutoStop?() }
     }
 
     func disarm() { timer?.invalidate() }
