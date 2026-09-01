@@ -734,23 +734,25 @@ def _kv_cache_kwargs(llama_cpp):
     exact check have existed since llama.cpp's KV-quantization feature
     shipped), so pairing the two unconditionally is not a guess.
 
-    **Verified against the pin, not memory.** `llama-cpp-python==0.3.29`
-    (`llamacpp_text/pyproject.toml`) is not installed on this machine, so
-    every fact this function leans on was read from source rather than
-    recalled: `Llama.__init__` accepts `type_k: Optional[int] = None` and
-    `type_v: Optional[int] = None` ("KV cache data type for K/V (default:
-    f16)") and `flash_attn: bool = False` ("Use flash attention"), setting
-    `context_params.type_k`/`type_v` only when given and mapping
-    `flash_attn` to `LLAMA_FLASH_ATTN_TYPE_ENABLED`/`_DISABLED` — confirmed
-    against
+    **Verified against the pin.** `llama-cpp-python==0.3.29`
+    (`llamacpp_text/pyproject.toml`) is installed, and every fact this
+    function leans on holds against it: `Llama.__init__` accepts
+    `type_k: Optional[int] = None` and `type_v: Optional[int] = None` ("KV
+    cache data type for K/V (default: f16)") and `flash_attn: bool = False`
+    ("Use flash attention"), setting `context_params.type_k`/`type_v` only
+    when given and mapping `flash_attn` to
+    `LLAMA_FLASH_ATTN_TYPE_ENABLED`/`_DISABLED` — confirmed against
     https://github.com/abetlen/llama-cpp-python/blob/v0.3.29/llama_cpp/llama.py.
     The enum value comes from the same pin's `llama_cpp.py`
     (https://github.com/abetlen/llama-cpp-python/blob/v0.3.29/llama_cpp/llama_cpp.py):
-    `GGML_TYPE_Q8_0 = 8`. Read off the binding as `llama_cpp.GGML_TYPE_Q8_0`
-    rather than hardcoded, both so a future renumbering (it never has
-    happened) fails loudly instead of picking silently wrong, and so a
-    binding that dropped the constant answers `{}` here instead of raising
-    — see the caller for what that `{}` falls back to.
+    `GGML_TYPE_Q8_0 = 8`, and the installed package re-exports the same
+    value at `llama_cpp.GGML_TYPE_Q8_0` — a plain read, not the write the
+    `_Override` context manager above patches on the submodule instead.
+    Read off the binding rather than hardcoded, both so a future
+    renumbering (it never has happened) fails loudly instead of picking
+    silently wrong, and so a binding that dropped the constant answers `{}`
+    here instead of raising — see the caller for what that `{}` falls back
+    to.
 
     **Two builds, one pin, one fallback path.** `llamacpp_text/` and
     `llamacpp_text_vulkan/` share this exact version pin but link different

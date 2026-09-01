@@ -4988,6 +4988,77 @@ def test_an_explicit_ZERO_steps_or_guidance_is_CLAMPED_not_REPLACED(
     assert reply["guidance"] == 0.0     # honoured, not replaced with 4.0
 
 
+def test_a_fresh_render_defaults_to_the_curated_models_own_size(
+        client, fake_image_runner, monkeypatch):
+    """`segmind/tiny-sd` is 512x512-native and, as position 0 of a
+    smallest-first list, is also `catalog.default_for()` — what a
+    model-less `fused.ai.image()` loads. Its curated `defaults` names that
+    size, and a fresh (non-edit) render with no `width`/`height` of its own
+    must land on it rather than the generic 1024² meant for a model the
+    catalog says nothing about."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (512, 512)
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_size_still_wins_over_the_curated_default(
+        client, fake_image_runner, monkeypatch):
+    """A caller's own `width`/`height` overrides the curated hint exactly as
+    it overrides the plain 1024² default — this only changes what a caller
+    who said nothing gets."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "width": 768, "height": 768},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (768, 768)
+    _wait_job(started["jobId"])
+
+
+def test_a_fresh_render_of_an_UNCURATED_model_still_gets_1024(
+        client, fake_image_runner):
+    """A cached repo the user downloaded themselves has no row in
+    `catalog.SUGGESTIONS` at all — `catalog.entry_for` returns None for it,
+    and the route must keep the plain 1024² default rather than erroring or
+    guessing a size."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "model": "some/uncurated-repo"},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 1024)
+    _wait_job(started["jobId"])
+
+
+def test_an_edit_still_derives_its_size_from_the_base_image_not_the_curated_one(
+        client, fake_image_runner, monkeypatch, tmp_path):
+    """Decision 1 keeps winning for an edit even when the resolved model
+    carries a curated size: `image_path is not None` short-circuits the
+    curated-default branch entirely, exactly as it already short-circuits
+    the plain 1024² one."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image-small", "label": "Fake image (small)",
+         "size_gb": 0.1, "note": "", "defaults": {"width": 512, "height": 512}},
+    ])
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.png"
+    photo.write_bytes(_png_bytes(2000, 1000))
+
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "x", "image": "photo.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 512)
+    _wait_job(started["jobId"])
+
+
 def test_two_renders_are_two_rows_and_two_files(client, fake_image_runner):
     """One row per RENDER, not per model: a shared id would have the second
     overwrite the first's progress mid-flight."""

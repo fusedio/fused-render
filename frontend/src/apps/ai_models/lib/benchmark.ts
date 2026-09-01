@@ -65,8 +65,14 @@ export function workloadNote(capability: string, workload: AiBenchmarkWorkload |
     case "text-to-image":
       // `steps` is pinned in `params` like every other field here
       // (ai/benchmark.py) — every model renders at the same step count, which
-      // is what makes total render time comparable across models.
-      return `Renders a fixed ${p.width}×${p.height} prompt at ${p.steps} steps, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`;
+      // is what makes total render time comparable across models. A run
+      // recorded before that pinning (revision 1) has no `steps` in its
+      // `params` at all — each model contributed its own count instead — so
+      // the sentence says exactly that rather than naming a number the run
+      // never fixed.
+      return typeof p.steps === "number"
+        ? `Renders a fixed ${p.width}×${p.height} prompt at ${p.steps} steps, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`
+        : `Renders a fixed ${p.width}×${p.height} prompt at each model's own step count, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`;
     case "automatic-speech-recognition":
       return `Transcribes ${p.audioSeconds}s of a generated ${p.toneHz} Hz tone at ${p.sampleRate} Hz — ${provenance}.`;
     case "embeddings":

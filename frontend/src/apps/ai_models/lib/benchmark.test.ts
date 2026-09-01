@@ -1505,6 +1505,17 @@ describe("workloadNote", () => {
     expect(note).toContain("seed");
   });
 
+  it("says each model's own step count for a revision-1 record with no steps param", () => {
+    const note = workloadNote("text-to-image", {
+      name: "image-512-4-steps",
+      revision: 1,
+      params: { prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 },
+    });
+    expect(note).toContain("512");
+    expect(note).toContain("each model's own step count");
+    expect(note).not.toContain("undefined");
+  });
+
   it("names the duration, tone and sample rate for speech", () => {
     const note = workloadNote(
       "automatic-speech-recognition",

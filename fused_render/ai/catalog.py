@@ -622,7 +622,18 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # (they are absent for a model with no hint), so the rail reads
             # Quick 8 / Finer 24 / Max 28 — and SD1.5's own comfortable range
             # is up at that top end, one chip away.
-            "defaults": {"steps": 8},
+            #
+            # `width`/`height` name this checkpoint's native side, 512 —
+            # this is an ordinary SD1.5 UNet, not one of the klein rows
+            # trained for 1024², and rendering it at 1024² is the classic
+            # SD1.5-at-double-resolution failure: duplicated limbs and
+            # repeated composition rather than more detail. `/api/ai/image`
+            # (`ai_runtime.py`) reads this pair as the default RENDER size
+            # for a fresh (non-edit) request that named no size of its own
+            # — position 0 of this list is also `default_for()`, so a bare
+            # `fused.ai.image()` with no model named lands here and must
+            # not inherit the 1024² fallback meant for an uncurated repo.
+            "defaults": {"steps": 8, "width": 512, "height": 512},
         },
         {
             "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
@@ -1473,6 +1484,25 @@ def default_for(capability: str) -> str | None:
     """
     entries = for_capability(capability)
     return entries[0]["id"] if entries else None
+
+
+def entry_for(capability: str, model_id: str) -> dict | None:
+    """The curated row for `model_id` under `capability`'s resolved runner, or
+    None for a model this list does not name — a cached repo the user
+    downloaded themselves, most often.
+
+    Narrower than `for_capability` on purpose: a caller that already knows
+    which single model it resolved to (`/api/ai/image`'s `model`, after
+    `_model_of`/`default_for`) wants that one row's curated hints —
+    `defaults`'s render size and step count today — not the whole list to
+    scan itself. Returns None rather than a guessed row for anything the
+    curation does not cover, so a caller's own fallback stays the one that
+    fires for an uncurated model.
+    """
+    for entry in for_capability(capability):
+        if entry["id"] == model_id:
+            return entry
+    return None
 
 
 def all_suggested_ids() -> set[str]:

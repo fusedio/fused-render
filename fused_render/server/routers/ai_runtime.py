@@ -1507,11 +1507,25 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # Decision 1: an edit's default size comes from the BASE IMAGE, using the
     # prototype's own arithmetic (confirmed as written by the gate run). Any
     # explicit `width`/`height` still wins — this only changes the DEFAULT.
+    #
+    # A FRESH render (no `image`) instead defaults to the resolved model's own
+    # curated size where the catalog names one (`catalog.entry_for`'s
+    # `defaults`) — `segmind/tiny-sd` is 512x512-native and is also
+    # `default_for()`'s position-0 pick, so a model-less `fused.ai.image()`
+    # must not fall through to the generic 1024² meant for a model the
+    # catalog says nothing about. A model with no curated entry (a cached
+    # repo the user downloaded themselves) keeps the generic 1024.
     default_width = default_height = 1024
     if image_path is not None:
         edit_size = _edit_default_size(image_path)
         if edit_size is not None:
             default_width, default_height = edit_size
+    else:
+        entry = catalog.entry_for(registry.IMAGE_GENERATION, model)
+        entry_defaults = entry.get("defaults") if entry else None
+        if entry_defaults and "width" in entry_defaults and "height" in entry_defaults:
+            default_width = entry_defaults["width"]
+            default_height = entry_defaults["height"]
 
     # An edit's defaults are the PROTOTYPE's own (4 steps, guidance 1.0), not
     # the 28/4.0 shared between the generate paths of both image engines
