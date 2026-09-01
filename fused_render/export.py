@@ -378,7 +378,12 @@ def _glob_in_page(page_dir: str, pattern: str) -> list[str]:
     is still yielded (cheap) and rejected downstream by the caller's gauntlet, as before."""
     pat_segs = [s for s in pattern.replace(os.sep, "/").split("/") if s != ""]
     hits: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(page_dir, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(page_dir, followlinks=False):
+        # A page's folder now holds an in-tree `.venv` once it has been installed
+        # (D630): pruned so a broad `**/*.py` include can't sweep tens of
+        # thousands of site-packages files into the export, and so a narrow glob
+        # doesn't still pay a full venv traversal per pattern.
+        dirnames[:] = [d for d in dirnames if d != ".venv"]
         rel_dir = os.path.relpath(dirpath, page_dir).replace(os.sep, "/")
         for fn in filenames:
             rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
