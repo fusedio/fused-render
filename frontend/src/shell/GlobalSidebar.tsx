@@ -534,7 +534,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             trailing={
               // Beta while the surface (playground foremost) is still settling —
               // the chip skin is the shared one, the modifier only recolours it.
-              <Badge className="sidebar-beta-chip">Beta</Badge>
+              <Badge variant="secondary" className="sidebar-beta-chip">Beta</Badge>
             }
           />
         </div>
