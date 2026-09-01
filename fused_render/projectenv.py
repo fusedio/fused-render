@@ -758,7 +758,7 @@ def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
     # a private index declared only in `uv.toml` must be disclosed exactly
     # like one declared in `[tool.uv]` — leaving it out would let a folder
     # shipping `uv.toml` route every package through an attacker's index
-    # while the prompt still said "a one-time download."
+    # with no consent prompt at all.
     index_urls = _tool_uv_index_urls(uv)
     uv_toml = _load_uv_toml(project_dir)
     if isinstance(uv_toml, dict):

@@ -633,9 +633,11 @@ def test_an_unparseable_index_value_falls_back_without_leaking_credentials(home)
 def test_find_links_string_form_is_disclosed(home):
     """`find-links` is a project-wide download source uv honours in
     `[tool.uv]` exactly like `index-url` — a folder naming one there routes
-    every wheel-less package through it, and the prompt must say so instead
-    of rendering the no-op "a one-time download" detail shape 3 exists to
-    replace."""
+    every wheel-less package through it, and shape 3 must report it. Without
+    that report, `nonstandard_dependencies_of` sees nothing unusual about
+    the dependency itself, and an all-standard project installs with no
+    consent prompt at all — silently routing every wheel-less package
+    through the attacker's `find-links` host."""
     proj = _write_project(home / "proj", ["cowsay"])
     (proj / "pyproject.toml").write_text(
         (proj / "pyproject.toml").read_text(encoding="utf-8")
