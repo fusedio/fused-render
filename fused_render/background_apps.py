@@ -287,24 +287,25 @@ def interpreter_for(folder: str) -> str:
     """The interpreter a background app in *folder* runs on: that folder's OWN
     project venv python when it declares one AND the fused engine is
     effective, else this app's own `sys.executable`. Does not check the
-    interpreter exists; callers do (the 409 stance, PY-17).
+    interpreter exists; a caller that cares (`routers/background_apps.py`'s
+    `_resolve`) falls back to `sys.executable` itself rather than refuse to
+    start.
 
-    Deliberately does NOT reuse `projectenv.project_env_for`/`project_root_for`
-    the way the warm `/api/engine` worker does (routers/app_engine.py) — a
-    decision, not an oversight (D503, 2026-08-26 code review). Those walk
-    UPWARD from a `.py` FILE to find the enclosing project, which is correct
-    there: a script has no boundary of its own, so the nearest ancestor
-    `pyproject.toml` IS its project. A background app's FOLDER is already the
-    project boundary — it declares itself unambiguously via
-    `[tool.fused-render.app]` — so walking past it would silently adopt
-    whatever unrelated ancestor project happens to sit above it on disk
-    (measured: the shipped fixture, `tests/fixtures/background_app`, nested
-    inside this repo, resolved to the REPO'S OWN venv and 409'd because that
-    venv isn't in the project-venv store). `has_project_env(folder)` checks
+    Deliberately does NOT reuse `projectenv.project_env_for`/`project_root_for`,
+    which walk UPWARD from a `.py` FILE to find the enclosing project — a
+    decision, not an oversight (D503, 2026-08-26 code review). Walking upward
+    is correct for a bare script, which has no project boundary of its own,
+    so the nearest ancestor `pyproject.toml` IS its project. A background
+    app's FOLDER is already the project boundary — it declares itself
+    unambiguously via `[tool.fused-render.app]` — so walking past it would
+    silently adopt whatever unrelated ancestor project happens to sit above
+    it on disk (measured: the shipped fixture, `tests/fixtures/background_app`,
+    nested inside this repo, resolved to the repo's own venv, an interpreter
+    this app has no business running on). `has_project_env(folder)` checks
     ONLY the app's own manifest — a `[project]` table with at least one
     applicable dependency — so a manifest-only app (no deps of its own, like
-    the fixture) runs on `sys.executable` per PY-17, full stop, regardless of
-    what any ancestor folder declares."""
+    the fixture) runs on `sys.executable`, full stop, regardless of what any
+    ancestor folder declares."""
     from fused_render import projectenv
     from fused_render.shell import prefs as shell_prefs
 

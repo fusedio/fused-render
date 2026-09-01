@@ -4,13 +4,13 @@ manifest + autostart store), and `engine_host.ensure_background` for the
 actual bring-up.
 
 Every endpoint takes `html` — the page's own path — never a raw folder path,
-and resolves the app folder from it server-side exactly as `/api/run` /
-`/api/engine` resolve `py`: this adds no code-execution surface and no
-path-typed API to defend (the same stance `resolve_py` documents). The
-interpreter is chosen exactly as `routers/app_engine.py` chooses one for the
-warm `/api/engine` worker, including its 409 when the project venv is not
-built yet — building one inside a POST would block for minutes, so opening
-the page once (which builds it) is the precondition here too.
+and resolves the app folder from it server-side exactly as `/api/run`
+resolves `py`: this adds no code-execution surface and no path-typed API to
+defend (the same stance `resolve_py` documents). The interpreter is chosen by
+`background_apps.interpreter_for`, falling back to `sys.executable` when the
+project venv it would prefer is not built yet — the same fallback `/api/run`
+takes on the builtin engine, so a daemon always starts rather than blocking a
+POST for however long building a venv would take.
 
 Run state and autostart are two independent, orthogonal things (D511, code
 review that produced this module's current shape): `start`/`stop`/`restart`
@@ -28,6 +28,7 @@ updated alongside this router.
 """
 import asyncio
 import os
+import sys
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -63,11 +64,10 @@ def _folder_for(html) -> str | None:
 def _resolve(html) -> tuple[str, background_apps.Manifest, str, None] | tuple[None, None, None, JSONResponse]:
     """folder/manifest/interpreter for `html`, or a ready-to-return error.
 
-    Interpreter choice (background_apps.interpreter_for) mirrors
-    routers/app_engine.py:36-62 exactly — the same fused-vs-builtin dispatch
-    /api/engine uses for its warm worker — including the 409 when the project
-    venv is not built yet: opening the page once (or running it via
-    /api/run) installs it, this endpoint never builds one itself.
+    Interpreter choice (background_apps.interpreter_for) mirrors /api/run's
+    own fused-vs-builtin dispatch: `sys.executable` when the declared project
+    venv is not built yet, same as the builtin engine, rather than refusing
+    to start until the folder is opened once to build it.
     """
     folder = _folder_for(html)
     if folder is None:
@@ -79,10 +79,7 @@ def _resolve(html) -> tuple[str, background_apps.Manifest, str, None] | tuple[No
             "background manifest", status=404)
     interpreter = background_apps.interpreter_for(folder)
     if not os.path.isfile(interpreter):
-        return None, None, None, _error(
-            f"{os.path.basename(folder)} needs its project environment built "
-            "before its background app can start; open it once (or call "
-            "fused.runPython) to install it, then retry.", status=409)
+        interpreter = sys.executable
     return folder, manifest, interpreter, None
 
 

@@ -281,8 +281,7 @@ def test_interpreter_for_manifest_only_app_nested_in_a_dependency_declaring_pare
     # folder sitting inside some unrelated ancestor project must still run on
     # sys.executable, never silently inherit that ancestor's venv — the
     # exact bug the fixture app hit nested inside the fused-render repo
-    # itself (a 409, since that ancestor venv isn't in the project-venv
-    # store).
+    # itself, whose ancestor venv is not the one this app would ever want.
     parent = tmp_path / "parent"
     parent.mkdir()
     (parent / "pyproject.toml").write_text(
@@ -738,15 +737,32 @@ def test_api_start_requires_x_fused_header(client, tmp_path):
     assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_api_start_409_when_project_venv_not_built(client, tmp_path, monkeypatch):
+def test_api_start_falls_back_to_sys_executable_when_project_venv_not_built(
+        client, tmp_path, monkeypatch):
+    # No 409: a daemon whose declared interpreter is missing (project venv
+    # never built) still starts, on sys.executable, exactly like /api/run's
+    # builtin-engine fallback.
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
 
+    used = []
+    fake_child = engine_host.Child(
+        engine_id="bg_fallback", python=sys.executable,
+        daemon=str(folder / "daemon.py"), cache="c", version="v1",
+        kind="background", pid=5150)
+
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
+        used.append(python)
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
     resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
-    assert resp.status_code == 409
-    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
+    assert resp.status_code == 200, resp.text
+    assert used == [sys.executable]
 
 
 def test_api_autostart_sets_the_flag_without_starting_or_stopping_anything(
