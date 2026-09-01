@@ -1066,6 +1066,11 @@ class _Controller:
                 zc.register_service(info)
                 infos.append(info)
             self._zeroconf, self._infos, self._ip = zc, infos, ip
+            # Advertising is the only thing that sets `error` while the
+            # listener runs ("no network address found", a failed attempt) —
+            # a later success, e.g. status() re-advertising once Wi-Fi is
+            # back, is the recovery and must clear it.
+            self.error = None
         except Exception as e:  # noqa: BLE001 — advertising is best-effort
             logger.warning("lan: mDNS advertise failed: %s", e)
             self.error = f"mDNS advertise failed: {e}"
