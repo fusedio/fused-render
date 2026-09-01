@@ -1088,12 +1088,35 @@ def _unfinished_fetch(repo_dir: str) -> bool:
     So two facts, both of which are something that IS there:
 
     1. **A part file in `blobs/`.** Only an interrupted (or in-flight) fetch
-       leaves one: our own `finish()` renames the part over the blob and drops
-       its sidecar, hf does the same with `.incomplete`, and the one path that
-       abandons ours (`worker_base._clear_parts`, taken when a segmented fetch
-       falls back to hf) deletes them before handing the repo over. A cancel
-       does NOT go that way — `except Cancelled: raise` — which is exactly why
-       the bytes, and therefore this evidence, are still here.
+       leaves one — our own `finish()` renames the part over the blob and drops
+       its sidecar, hf does the same with `.incomplete` — and a live fetch keeps
+       rewriting it, so a part file's continued presence is either an in-flight
+       download or one nothing has finished cleaning up yet.
+
+       Two different things clean a part file up, on two different schedules,
+       and the distinction matters to why this predicate eventually stops
+       seeing a repo as partial rather than staying wrong forever.
+       `worker_base._clear_parts`, taken only when a segmented fetch gives up
+       and falls back to hf, drops OUR part files unconditionally and
+       immediately — hf is about to fetch those same names itself. Everything
+       else — a recipe whose `allow_patterns` permanently excludes a name an
+       earlier, wider fetch already left a part file for — is swept by
+       `worker_base._sweep_orphan_parts`, which runs after ANY scope's download
+       succeeds (the `_cached_path` fast path included, so a "Continue
+       downloading" retry that opens no connection still triggers it) and
+       removes any part file — ours or hf's — old enough (past
+       `_PART_GRACE_SECONDS`) that it cannot belong to the scope that just
+       finished. So a repo this predicate calls partial reads that way until
+       the NEXT download attempt of any scope over it succeeds and the
+       leftover part file has aged past the grace window — not forever, and not
+       on the first retry either, since a part file written moments before a
+       retry is presumed to be someone else's in-flight fetch rather than swept
+       out from under it.
+
+       A cancel does NOT go through either cleanup path —
+       `except Cancelled: raise` skips the fallback, and no download succeeded
+       to trigger a sweep — which is exactly why the bytes, and therefore this
+       evidence, are still here for a paused download to resume into.
     2. **No snapshot directory at all.** A folder with blobs and nothing to open,
        which is the state hub search has always called `partial` and the state a
        cancel before the first file lands leaves behind.
