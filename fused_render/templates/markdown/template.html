@@ -378,6 +378,12 @@
   }
   .lp-table th, .lp-table td { border: 1px solid var(--border); padding: 5px 11px; }
   .lp-table th { background: var(--bg-alt); text-align: left; }
+  /* A text cursor only on a writable table — a read-only note's table is as
+     inert as everything else in it, so no cell invites a click. */
+  .lp-table-live th, .lp-table-live td { cursor: text; }
+  /* One cell open as raw source in a focus ring while every other cell in
+     the table stays rendered. */
+  .lp-cell-edit { outline: 1px solid var(--accent); outline-offset: -1px; white-space: pre-wrap; }
   .lp-link { color: var(--accent); text-decoration: none; }
   .lp-link:hover { text-decoration: underline; }
 
@@ -1642,32 +1648,530 @@
       }, false);
     }
 
-    // A pipe table rendered as a table. Cell text is shown verbatim — inline
-    // markup inside a cell is not decorated, because a decoration cannot span
-    // into a widget's DOM. Clicking the table puts the caret in the source,
-    // which is where a cell is edited.
-    function tableWidget(source) {
-      return new DomWidget("tb:" + source, () => {
-        const rows = source.split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-          // The alignment row (`|---|:--:|`) is structure, not content.
-          .filter((line) => !(/^[\s|:-]+$/.test(line) && line.includes("-")))
-          .map((line) => line.replace(/^\|/, "").replace(/\|$/, "")
-            .split("|").map((cell) => cell.trim()));
-        const table = document.createElement("table");
-        table.className = "lp-table";
-        rows.forEach((cells, index) => {
-          const tr = document.createElement("tr");
-          for (const cell of cells) {
-            const td = document.createElement(index === 0 ? "th" : "td");
-            td.textContent = cell;
-            tr.appendChild(td);
+    // Carries a Tab/Shift-Tab across the rebuild that a committed cell edit's
+    // own dispatch causes: the widget's DOM is torn down and rebuilt before
+    // the caret can move into the neighbour cell, so the move is recorded
+    // here and replayed once the new build lands (see the end of
+    // `tableWidget`, below). One entry is enough — only one cell is ever open
+    // for editing at a time.
+    let pendingCellEdit = null;
+
+    // A deliberately narrow inline-markup renderer for table cells: a tree
+    // decoration addresses document positions, so it cannot reach into a
+    // widget's DOM, and a cell renders its own markup instead of going
+    // through `buildDecorations`. This is not a second markdown parser —
+    // syntax it does not recognize is left as literal text.
+    // The url alternative (g4) allows exactly one level of balanced parens —
+    // `((?:[^()\s]|\([^()\s]*\))*)` — so a Wikipedia-shaped destination like
+    // `Foo_(bar)` (SPEC.md MD-31b) matches instead of stopping at the inner
+    // `(`. This is NOT the prose link decorator's `\S*` (see the URL-group
+    // comment near `fenceLangAndBody`, above `buildDecorations`): that one is
+    // safe only because the grammar has already found the construct's true
+    // end and `\S*` merely backtracks to it. This renderer has no such
+    // bound — a bare greedy `\S*` over `[a](x)[b](y` would swallow all the
+    // way to the end of `y`, stealing a second link's destination, so the
+    // nesting has to be bounded explicitly instead. The extra parens above
+    // are non-capturing, so g4 is still the whole url and the `\6`/`\8`
+    // backreferences later in this alternation are unaffected.
+    const INLINE_SRC = [
+      "\\\\[\\s\\S]",                          // an escape — no group
+      "(`+)([\\s\\S]*?)\\1",                 // g1 fence, g2 code body
+      "!?\\[\\[[^\\]]*\\]\\]",               // [[wikilink]] / ![[embed]] — no group
+      "\\[([^\\]]*)\\]\\(((?:[^()\\s]|\\([^()\\s]*\\))*)\\)", // g3 label, g4 url
+      "~~(?=\\S)([\\s\\S]*?\\S)~~",          // g5
+      "(\\*\\*|__)(?=\\S)([\\s\\S]*?\\S)\\6",// g6 marker, g7 body
+      "(\\*|_)(?=\\S)([\\s\\S]*?\\S)\\8",    // g8 marker, g9 body
+      "<br\\s*/?>",                          // no group
+    ].join("|");
+    // The escape alternative is FIRST on purpose. Alternation is tried left
+    // to right at each position, so a backslash consumes the character after
+    // it as literal text before any construct can start on that character:
+    // `\*not italic\*` stays literal instead of rendering as emphasis with a
+    // stray backslash, and `\[not a link\](x)` does not become a clickable
+    // link the author escaped away. `unescapeInline` alone could not do this
+    // — it only ever ran on the plain runs BETWEEN matches, which is exactly
+    // what an escaped marker is not; the match here emits nothing and only
+    // moves the scan past the pair, leaving it inside such a run.
+
+    // `\|` is how a literal pipe survives inside a cell — `splitRow` (below)
+    // treats an escaped bar as text, not a column boundary — so the
+    // backslash is markup, not content, and is stripped here along with
+    // every other inline escape.
+    function unescapeInline(text) {
+      return text.replace(/\\([\\`*_~|[\]()<>#+.!-])/g, "$1");
+    }
+
+    // An emphasis body recurses back through `renderInline`, so
+    // `**bold `code`**` renders the code span inside the bold span. `spans`
+    // and `base` are threaded straight through to the recursive call — see
+    // `renderInline` below for what they mean — so a click inside a nested
+    // span still resolves to a source offset.
+    function inlineSpan(cls, body, spans, base) {
+      const span = document.createElement("span");
+      span.className = cls;
+      renderInline(body, span, spans, base);
+      return span;
+    }
+
+    // `spans` and `base` build a source map alongside the DOM, for the click
+    // handler below to resolve a rendered hit back to a RAW offset: `spans`
+    // is an array the caller collects into (append-only, so recursive calls
+    // share one array across the whole cell), and `base` is the source
+    // offset of `text` within that cell's raw string (0 for the top-level
+    // call). Every node this function appends gets an entry, `{node, from}`
+    // — `from` is `base + m.index` for a markup node (the click resolver
+    // needs the node's own start, not its body's) and `base + last` for a
+    // plain text run. A code span and a plain-label link add a second entry
+    // for their inner text node, since that text is a verbatim slice of the
+    // source and so resolves per character rather than to the construct's
+    // start. Both parameters are optional and default to
+    // "don't bother" (no `spans` array, `base` 0), so the existing 2-argument
+    // call sites (recursing into `<code>`'s siblings is never needed, since a
+    // code span's contents are never re-parsed) keep working unchanged.
+    //
+    // A NEW RegExp per call: emphasis recurses into this function for its own
+    // body text, and a shared `lastIndex` on a module-level regex would
+    // corrupt whichever call is in progress higher up the recursion.
+    function renderInline(text, parent, spans, base) {
+      base = base || 0;
+      const re = new RegExp(INLINE_SRC, "g");
+      let last = 0;
+      let m;
+      while ((m = re.exec(text))) {
+        // An escape is matched only to keep the character after it from
+        // starting a construct. Nothing is emitted for it and `last` does
+        // not move, so the pair stays part of the surrounding plain run and
+        // `unescapeInline` strips the backslash when that run is flushed —
+        // `a\|b` is one text node reading `a|b`, not three.
+        if (m[0][0] === "\\") continue;
+        if (m.index > last) {
+          const node = document.createTextNode(unescapeInline(text.slice(last, m.index)));
+          parent.appendChild(node);
+          if (spans) spans.push({ node, from: base + last });
+        }
+        last = re.lastIndex;
+        if (m[2] !== undefined) {
+          const code = document.createElement("code");
+          code.className = "lp-code";
+          // GFM strips one leading and one trailing space, but only as a
+          // matched pair, and only when the body is not all whitespace.
+          let body = m[2];
+          if (body.length > 1 && body[0] === " " && body[body.length - 1] === " " && body.trim() !== "") {
+            body = body.slice(1, -1);
           }
+          code.textContent = body;
+          parent.appendChild(code);
+          if (spans) {
+            spans.push({ node: code, from: base + m.index });
+            // The body is a verbatim slice of the source — `textContent`,
+            // never unescaped — so its text node maps character for
+            // character and earns an entry of its own. Without one the
+            // click resolver walks past it to the `<code>` element and
+            // every click inside a code span lands on the opening fence.
+            if (code.firstChild) {
+              spans.push({
+                node: code.firstChild,
+                from: base + m.index + m[1].length + (body === m[2] ? 0 : 1),
+              });
+            }
+          }
+        } else if (/^!?\[\[/.test(m[0])) {
+          const node = wikilinkWidget(m[0]).build();
+          parent.appendChild(node);
+          if (spans) spans.push({ node, from: base + m.index });
+        } else if (m[4] !== undefined) {
+          const a = document.createElement("a");
+          a.className = "lp-link";
+          a.textContent = unescapeInline(m[3]) || m[4];
+          applyLinkTarget(a, m[4]);
+          parent.appendChild(a);
+          if (spans) {
+            spans.push({ node: a, from: base + m.index });
+            // Only a label that came through unescaped and non-empty sits
+            // at a known source offset (one past the `[`); an unescaped or
+            // url-substituted label has no character-for-character mapping,
+            // and a click in it resolves to the link's own start instead.
+            if (a.firstChild && a.textContent === m[3]) {
+              spans.push({ node: a.firstChild, from: base + m.index + 1 });
+            }
+          }
+        } else if (m[5] !== undefined) {
+          // `base + m.index + 2`: past the opening `~~`, at the body's own
+          // source offset, so a click landing in the recursed text resolves
+          // to where that text actually starts, not to the strike marker.
+          parent.appendChild(inlineSpan("lp-strike", m[5], spans, base + m.index + 2));
+        } else if (m[7] !== undefined) {
+          // Underscore emphasis does not fire intraword: `snake_case_word`
+          // must stay literal. Asterisk emphasis has no such restriction.
+          if (m[6][0] === "_" && /\w/.test(text[m.index - 1] || "")) {
+            const node = document.createTextNode(m[0]);
+            parent.appendChild(node);
+            if (spans) spans.push({ node, from: base + m.index });
+          } else {
+            parent.appendChild(inlineSpan("lp-bold", m[7], spans, base + m.index + m[6].length));
+          }
+        } else if (m[9] !== undefined) {
+          if (m[8][0] === "_" && /\w/.test(text[m.index - 1] || "")) {
+            const node = document.createTextNode(m[0]);
+            parent.appendChild(node);
+            if (spans) spans.push({ node, from: base + m.index });
+          } else {
+            parent.appendChild(inlineSpan("lp-italic", m[9], spans, base + m.index + m[8].length));
+          }
+        } else {
+          const node = document.createElement("br");
+          parent.appendChild(node);
+          if (spans) spans.push({ node, from: base + m.index });
+        }
+      }
+      if (last < text.length) {
+        const node = document.createTextNode(unescapeInline(text.slice(last)));
+        parent.appendChild(node);
+        if (spans) spans.push({ node, from: base + last });
+      }
+      return parent;
+    }
+
+    // Column offsets into `line`, one per cell — what a committed cell edit
+    // writes through, so only one cell's range is replaced and the rest of
+    // the row's spacing is untouched. A `|` is a boundary except right after
+    // a `\`, which is how an escaped pipe survives as cell text. The leading
+    // bar is dropped when everything before it is blank, and the trailing
+    // bar when everything after it is blank — a row with no bars at all, or
+    // a lone `|`, falls out of the same logic without ever producing a
+    // `start > end` range.
+    // A table inside a blockquote carries `>` on every one of its lines.
+    // That marker is the container's, not the table's: split with it still
+    // in, the segment before the first bar is not blank, so it survives as a
+    // phantom first column whose cell text IS the quote marker — rendered as
+    // a column of `>`, and (once cells are editable) rewritable, which
+    // silently breaks the quote out from under the block. It also hides the
+    // delimiter row from `rowAlignment`, so the dashes show up as a data row.
+    // Returned as a length rather than stripped, so every offset `splitRow`
+    // hands back still indexes the real line and a commit writes in the
+    // right place.
+    function containerPrefix(line) {
+      const m = /^\s*(?:>\s*)+/.exec(line);
+      return m ? m[0].length : 0;
+    }
+
+    function splitRow(line) {
+      const prefix = containerPrefix(line);
+      const bars = [];
+      for (let i = prefix; i < line.length; i++) {
+        if (line[i] === "\\") { i++; continue; }
+        if (line[i] === "|") bars.push(i);
+      }
+      const bounds = [prefix - 1, ...bars, line.length];
+      const cells = [];
+      for (let i = 0; i < bounds.length - 1; i++) {
+        cells.push({ start: bounds[i] + 1, end: bounds[i + 1] });
+      }
+      if (cells.length && line.slice(cells[0].start, cells[0].end).trim() === "") {
+        cells.shift();
+      }
+      if (cells.length && line.slice(cells[cells.length - 1].start, cells[cells.length - 1].end).trim() === "") {
+        cells.pop();
+      }
+      return cells;
+    }
+
+    // The delimiter row (`| --- | :-: |`) is structure, not content: it sets
+    // per-column alignment and is never itself rendered as a table row. Null
+    // unless every cell is a bare dash run with optional colons.
+    function rowAlignment(line) {
+      const cells = splitRow(line);
+      if (!cells.length) return null;
+      const aligns = [];
+      for (const { start, end } of cells) {
+        const cell = line.slice(start, end).trim();
+        if (!/^:?-+:?$/.test(cell)) return null;
+        const left = cell.startsWith(":");
+        const right = cell.endsWith(":");
+        aligns.push(left && right ? "center" : right ? "right" : left ? "left" : "");
+      }
+      return aligns;
+    }
+
+    // A pipe table rendered as a table, with its own inline renderer (above)
+    // so `` `code` ``, links and emphasis show inside cells. Opaque: CM
+    // handles no events from inside the widget, so a click on a cell does not
+    // put the caret in the source, which would reveal the whole table as pipe
+    // markup. Editing instead happens through a `contenteditable` island scoped
+    // to one cell at a time — a DOM mutation confined to a widget's own root
+    // is invisible to CM's observer, and focusing that cell does not move the
+    // document selection either, so the rest of the table stays rendered
+    // while one cell shows raw source.
+    function tableWidget(source) {
+      return new DomWidget("tb:" + source, (editorView) => {
+        const lines = source.split("\n");
+        // The alignment row sits BELOW the header it aligns, so it is read in
+        // a pass of its own: the header's cells are built before the row loop
+        // would reach it, and a column whose body is right-aligned under a
+        // left-aligned heading is not what the delimiter row asked for.
+        const align = lines.reduce(
+          (found, line) => found || (line.trim() ? rowAlignment(line) : null), null);
+        const table = document.createElement("table");
+        table.className = "lp-table" + (writable ? " lp-table-live" : "");
+        let rowIndex = 0;
+        const order = [];
+
+        function renderCell(td, raw) {
+          td.textContent = "";
+          // A plain JS property, not a dataset entry: this holds live DOM
+          // nodes (the click handler's source map, resolved in `wireCell`
+          // below), and `dataset` only ever holds strings.
+          td._cellSpans = [];
+          if (raw) renderInline(raw, td, td._cellSpans, 0);
+          // A no-break space, not a plain one: an empty cell whose only
+          // content collapses has no box to aim a click at.
+          else td.appendChild(document.createTextNode("\u00a0"));
+        }
+
+        // Never an offset captured at build time — an edit above the table
+        // moves it, so the table's own position is re-resolved on every use,
+        // the same way `taskWidget` addresses its checkbox.
+        function cellRange(td) {
+          const tableStart = editorView.posAtDOM(table);
+          const lineNo = editorView.state.doc.lineAt(tableStart).number + Number(td.dataset.cellRow);
+          if (lineNo > editorView.state.doc.lines) return null;
+          const line = editorView.state.doc.line(lineNo);
+          const cells = splitRow(line.text);
+          const col = Number(td.dataset.cellCol);
+          if (col >= cells.length) return null;
+          const cell = cells[col];
+          return { from: line.from + cell.start, to: line.from + cell.end };
+        }
+
+        function placeCaret(el, offset) {
+          const node = el.firstChild || el;
+          const range = document.createRange();
+          if (node.nodeType === Node.TEXT_NODE) {
+            const len = node.nodeValue.length;
+            range.setStart(node, offset === undefined ? len : Math.max(0, Math.min(offset, len)));
+          } else {
+            range.setStart(node, 0);
+          }
+          range.collapse(true);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+
+        function beginEdit(td, offset) {
+          if (!writable || td.isContentEditable) return;
+          const range = cellRange(td);
+          if (!range) return;
+          const raw = editorView.state.sliceDoc(range.from, range.to).trim();
+          if (raw !== td.dataset.cellRaw) return; // the table moved out from under us
+          td.textContent = raw;
+          td.classList.add("lp-cell-edit");
+          // The setter RAISES `SyntaxError` on a value the engine does not
+          // know, rather than ignoring it — so an engine without
+          // `plaintext-only` would throw out of the click handler here,
+          // leaving the cell already wearing `lp-cell-edit` above but never
+          // editable, and with no way back. The catch is the fallback; the
+          // readback after it covers an engine that ignores the value
+          // instead of throwing.
+          try {
+            td.contentEditable = "plaintext-only";
+          } catch (e) {
+            td.contentEditable = "true";
+          }
+          if (td.contentEditable !== "plaintext-only") td.contentEditable = "true";
+          td.spellcheck = false;
+          td.focus();
+          placeCaret(td, offset === undefined ? undefined : Math.min(offset, raw.length));
+        }
+
+        // `next` is the index in `order` of the cell to open once this one
+        // is done with — a Tab's neighbour, or the cell a click landed in
+        // while this one was still open — or null to just close.
+        // `nextOffset` is where to put the caret in that cell, so a click
+        // arriving while another cell is open still opens at the character
+        // it landed on rather than at end-of-cell.
+        function finishEdit(td, commit, next, nextOffset) {
+          if (!td.isContentEditable) return;
+          const typed = td.innerText.replace(/\s+/g, " ").trim();
+          // Turned off and un-classed FIRST: the `blur` a subsequent focus
+          // move fires must be a no-op, not a second commit.
+          td.contentEditable = "false";
+          td.classList.remove("lp-cell-edit");
+          const range = cellRange(td);
+          // The same check `beginEdit` opens with, repeated here because a
+          // cell can stay open across a change it never saw: `reloadFromDisk`
+          // replaces the whole document, and nothing about that blurs the
+          // focused cell. `posAtDOM` does not fail for a detached table — it
+          // answers 0, or the document's end — so an unguarded commit would
+          // resolve some unrelated line and overwrite it with this cell's
+          // text. Falling through to the no-op branch re-renders the cell
+          // from the raw it still holds and dispatches nothing.
+          const current = range && editorView.state.sliceDoc(range.from, range.to).trim();
+          if (!commit || !range || current !== td.dataset.cellRaw
+              || typed === td.dataset.cellRaw) {
+            renderCell(td, td.dataset.cellRaw);
+            // Nothing was dispatched, so no rebuild is coming and the next
+            // cell is opened in the DOM that is already here.
+            if (next !== null && order[next]) beginEdit(order[next], nextOffset);
+            return;
+          }
+          const { from, to } = range;
+          // A bare pipe in the typed text would split the row; an already
+          // escaped one is left alone.
+          const text = " " + typed.replace(/\\?\|/g, "\\|") + " ";
+          if (next !== null) {
+            const tableStart = editorView.posAtDOM(table);
+            pendingCellEdit = {
+              source: source.slice(0, from - tableStart) + text + source.slice(to - tableStart),
+              index: next,
+              offset: nextOffset,
+            };
+          }
+          editorView.dispatch({ changes: { from, to, insert: text } });
+          // Consumed synchronously by the rebuild this dispatch triggers —
+          // clearing it here stops a stale entry from stealing focus later.
+          pendingCellEdit = null;
+          void save();
+        }
+
+        function wireCell(td) {
+          // A link inside a cell keeps working through the document-level
+          // delegated click handler — it must not be swallowed here.
+          td.addEventListener("mousedown", (event) => {
+            if (event.target.closest("a")) return;
+            // `stopPropagation` always: nothing outside the widget — CM's own
+            // pointer handling included — should react to a press inside it,
+            // open or not. `preventDefault` is conditional, though: for a
+            // cell that is NOT yet open it stops the browser from starting a
+            // native selection/caret in a widget that has no caret to place
+            // (that would-be selection is what `beginEdit` replaces with the
+            // deliberate `placeCaret` call once the island exists). Once the
+            // cell IS `contenteditable`, preventing default here would block
+            // the very thing that island exists for — the browser placing the
+            // caret and drag-selecting inside it — leaving only the arrow
+            // keys able to move the caret, so this branch lets the browser's
+            // ordinary mousedown behaviour run.
+            // Gated on `writable` as well: on a read-only note nothing ever
+            // opens, so suppressing the native selection would leave the
+            // press with no effect at all and make the table's text
+            // unselectable and uncopyable.
+            if (writable && !td.isContentEditable) event.preventDefault();
+            event.stopPropagation();
+          });
+          td.addEventListener("click", (event) => {
+            if (event.target.closest("a")) return;
+            // The click hit is measured in RENDERED text, but `beginEdit`
+            // places the result in the RAW source string, so counting
+            // rendered characters (as `td.textContent`) would land the caret
+            // at the wrong offset whenever the cell has any markup —
+            // resolved instead through `_cellSpans`, the source map
+            // `renderInline`/`renderCell` built alongside the DOM.
+            let offset = td.dataset.cellRaw.length;
+            try {
+              // Two spellings of the same question — Firefox answers only
+              // the second, every other engine only the first.
+              const hit = document.caretRangeFromPoint
+                ? document.caretRangeFromPoint(event.clientX, event.clientY)
+                : document.caretPositionFromPoint(event.clientX, event.clientY);
+              const hitOffset = hit && (hit.startOffset !== undefined ? hit.startOffset : hit.offset);
+              // Walk from the exact node the browser hit up to whichever
+              // ancestor `_cellSpans` recorded — a widget's inner DOM has no
+              // entry of its own, so a click inside one resolves through the
+              // recorded element a level up, to that construct's start.
+              // Stops at `td` itself: nothing above the cell's own children
+              // is this cell's source.
+              let resolved = null;
+              for (let node = hit && (hit.startContainer || hit.offsetNode);
+                   node && node !== td; node = node.parentNode) {
+                const entry = td._cellSpans.find((s) => s.node === node);
+                if (!entry) continue;
+                // A text node's offset is added to its recorded start — but
+                // that start is a RAW offset while the node's own text is
+                // UNESCAPED, so an escape (`\*` etc.) inside the run is two
+                // source characters collapsed to one rendered one. A click
+                // past an escape in a run that has one can therefore land up
+                // to one character off per escape — bounded and rare, unlike
+                // the whole-marker skew this replaces.
+                resolved = node.nodeType === Node.TEXT_NODE
+                  ? entry.from + Math.min(hitOffset || 0, (node.nodeValue || "").length)
+                  : entry.from;
+                break;
+              }
+              if (resolved !== null) offset = resolved;
+            } catch (e) {
+              // Fall back to end-of-source.
+            }
+            // A click straight from one open cell into another: the open
+            // cell commits first, and its dispatch rebuilds this whole table,
+            // so the clicked cell is opened by index on the OTHER side of that
+            // rebuild rather than in this now-doomed DOM.
+            const open = order.find((cell) => cell.isContentEditable);
+            if (open && open !== td) {
+              finishEdit(open, true, Number(td.dataset.cellIndex), offset);
+              return;
+            }
+            beginEdit(td, offset);
+          });
+          td.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+              finishEdit(td, false, null);
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              finishEdit(td, true, null);
+            } else if (event.key === "Tab") {
+              event.preventDefault();
+              finishEdit(td, true, Number(td.dataset.cellIndex) + (event.shiftKey ? -1 : 1));
+            }
+          });
+          td.addEventListener("blur", () => finishEdit(td, true, null));
+          // For browsers without `plaintext-only`, where a raw paste could
+          // otherwise drop rich markup into the cell.
+          td.addEventListener("paste", (event) => {
+            event.preventDefault();
+            const text = (event.clipboardData || window.clipboardData)
+              .getData("text/plain").replace(/\s+/g, " ");
+            document.execCommand("insertText", false, text);
+          });
+        }
+
+        lines.forEach((line, lineIdx) => {
+          if (!line.trim()) return;
+          if (rowAlignment(line) !== null) return;
+          const tr = document.createElement("tr");
+          splitRow(line).forEach((cell, col) => {
+            const td = document.createElement(rowIndex === 0 ? "th" : "td");
+            const raw = line.slice(cell.start, cell.end).trim();
+            // Namespaced as `cell*` (`data-cell-row` etc.), not the bare
+            // `line`/`col`/`raw`/`index` this cell's own code would otherwise
+            // reach for: the document-level delegated click handler already
+            // claims a bare `[data-line]` as an outline row, and a widget's
+            // internal bookkeeping must not answer to a selector it does not
+            // own.
+            td.dataset.cellRow = String(lineIdx);
+            td.dataset.cellCol = String(col);
+            td.dataset.cellRaw = raw;
+            td.dataset.cellIndex = String(order.length);
+            if (align && align[col]) td.style.textAlign = align[col];
+            renderCell(td, raw);
+            wireCell(td);
+            order.push(td);
+            tr.appendChild(td);
+          });
           table.appendChild(tr);
+          rowIndex++;
         });
+
+        // The build runs inside the dispatch a Tab-triggered commit caused,
+        // so the focus move onto the neighbour cell has to wait a frame.
+        if (pendingCellEdit && pendingCellEdit.source === source) {
+          const target = order[pendingCellEdit.index];
+          const offset = pendingCellEdit.offset;
+          pendingCellEdit = null;
+          if (target) requestAnimationFrame(() => beginEdit(target, offset));
+        }
+
         return table;
-      }, false);
+      }, true);
     }
 
     // A fence's language chip + copy button (6b.3/6b.4), anchored to the
