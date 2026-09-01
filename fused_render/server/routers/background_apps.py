@@ -8,9 +8,16 @@ and resolves the app folder from it server-side exactly as `/api/run`
 resolves `py`: this adds no code-execution surface and no path-typed API to
 defend (the same stance `resolve_py` documents). The interpreter is chosen by
 `background_apps.interpreter_for`, falling back to `sys.executable` when the
-project venv it would prefer is not built yet — the same fallback `/api/run`
-takes on the builtin engine, so a daemon always starts rather than blocking a
-POST for however long building a venv would take.
+project venv it would prefer is not built yet, so a daemon always starts
+rather than blocking a POST for however long building a venv would take
+(D631) — unlike `/api/run`'s fused-engine dispatch, which answers a missing
+venv with a structured `needs_install` response instead of ever substituting
+an interpreter that lacks the folder's declared packages. When the
+substituted `sys.executable` then can't run the daemon (it never has the
+folder's declared deps), `start`/`restart` report `background_apps.
+unbuilt_deps_reason`'s actionable message instead of the generic spawn
+failure, matching what `resurrect_autostart` already logs for the identical
+condition.
 
 Run state and autostart are two independent, orthogonal things (D511, code
 review that produced this module's current shape): `start`/`stop`/`restart`
@@ -61,26 +68,33 @@ def _folder_for(html) -> str | None:
     return os.path.realpath(os.path.dirname(os.path.abspath(html)))
 
 
-def _resolve(html) -> tuple[str, background_apps.Manifest, str, None] | tuple[None, None, None, JSONResponse]:
-    """folder/manifest/interpreter for `html`, or a ready-to-return error.
+def _resolve(html) -> (
+        tuple[str, background_apps.Manifest, str, str | None, None]
+        | tuple[None, None, None, None, JSONResponse]):
+    """folder/manifest/interpreter/unbuilt-deps-reason for `html`, or a
+    ready-to-return error.
 
-    Interpreter choice (background_apps.interpreter_for) mirrors /api/run's
-    own fused-vs-builtin dispatch: `sys.executable` when the declared project
-    venv is not built yet, same as the builtin engine, rather than refusing
-    to start until the folder is opened once to build it.
+    Interpreter choice (background_apps.interpreter_for) falls back to
+    `sys.executable` when the declared project venv is not built yet,
+    rather than refusing to start until the folder is opened once to build
+    it (D631). The fourth element is `background_apps.unbuilt_deps_reason`'s
+    verdict on that fallback — None when the interpreter didn't need one, or
+    an actionable reason for the caller to report if the fallback attempt
+    then fails.
     """
     folder = _folder_for(html)
     if folder is None:
-        return None, None, None, _error("request body must include 'html'")
+        return None, None, None, None, _error("request body must include 'html'")
     manifest = background_apps.load_manifest(folder)
     if manifest is None:
-        return None, None, None, _error(
+        return None, None, None, None, _error(
             f"{os.path.basename(folder)} has no [tool.fused-render.app] "
             "background manifest", status=404)
     interpreter = background_apps.interpreter_for(folder)
-    if not os.path.isfile(interpreter):
+    unbuilt_reason = background_apps.unbuilt_deps_reason(folder, interpreter)
+    if unbuilt_reason is not None:
         interpreter = sys.executable
-    return folder, manifest, interpreter, None
+    return folder, manifest, interpreter, unbuilt_reason, None
 
 
 @router.get("/api/apps/background/status")
@@ -111,7 +125,7 @@ async def api_background_start(body: dict = Body(...),
     autostart is the whole point of this split)."""
     if (guard := _require_fused(x_fused)) is not None:
         return guard
-    folder, manifest, interpreter, error = _resolve(body.get("html"))
+    folder, manifest, interpreter, unbuilt_reason, error = _resolve(body.get("html"))
     if error is not None:
         return error
     engine_id = background_apps.engine_id_for(folder)
@@ -127,8 +141,13 @@ async def api_background_start(body: dict = Body(...),
             daemon, background_apps.cache_dir_for(engine_id), version,
             folder, manifest.idle_timeout_s, module)
     except (engine_host.EngineError, OSError) as e:
+        # The sys.executable fallback above (D631) already tried; when it
+        # then fails, the folder's own unbuilt venv is the known, actionable
+        # cause — report that instead of ensure_background's generic spawn
+        # failure, which names no fix.
+        detail = unbuilt_reason if unbuilt_reason is not None else str(e)
         return _error(f"could not start {os.path.basename(folder)}'s "
-                      f"background app: {e}", status=502)
+                      f"background app: {detail}", status=502)
     return {"ok": True, "engine_id": engine_id, "pid": child.pid,
             "version": child.version}
 
@@ -180,7 +199,7 @@ async def api_background_restart(body: dict = Body(...),
     and version from scratch, same as `start`."""
     if (guard := _require_fused(x_fused)) is not None:
         return guard
-    folder, manifest, interpreter, error = _resolve(body.get("html"))
+    folder, manifest, interpreter, unbuilt_reason, error = _resolve(body.get("html"))
     if error is not None:
         return error
     engine_id = background_apps.engine_id_for(folder)
@@ -205,7 +224,11 @@ async def api_background_restart(body: dict = Body(...),
             child = await asyncio.to_thread(
                 engine_host.restart, engine_id, None, version=version)
     except (engine_host.EngineError, OSError) as e:
-        return _error(str(e), status=502)
+        # Same reasoning as `start`'s except-clause above: the fallback
+        # interpreter already tried, so a failure here is best explained by
+        # the folder's own unbuilt venv when that's what triggered it.
+        return _error(unbuilt_reason if unbuilt_reason is not None else str(e),
+                      status=502)
     return {"ok": True, "pid": child.pid, "version": child.version}
 
 

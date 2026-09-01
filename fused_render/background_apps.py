@@ -331,6 +331,26 @@ def interpreter_for(folder: str) -> str:
     return sys.executable
 
 
+def unbuilt_deps_reason(folder: str, interpreter: str) -> str | None:
+    """None when *interpreter* (the caller's own `interpreter_for(folder)`
+    answer) is ready to run; otherwise the actionable reason it is not --
+    `interpreter_for` chose that folder's own project venv python, but the
+    venv has not been built yet, so nothing at that path exists.
+
+    Shared by `resurrect_autostart` (which skips a folder in this state,
+    logging the reason and never attempting to start it) and
+    `routers/background_apps.py`'s `_resolve`/start+restart handlers (which
+    still ATTEMPT the start on `sys.executable`, per D631 -- a live request
+    never blocks pre-emptively on an unbuilt venv -- but report this same
+    reason if that attempt then fails), so the two paths describe the
+    identical condition identically even though they act on it differently."""
+    if os.path.isfile(interpreter):
+        return None
+    return (f"{os.path.basename(folder)} declares a project environment that "
+            "is not built yet -- open the app once to install it, then try "
+            "again")
+
+
 def bring_up_args(manifest: Manifest) -> tuple[str, str]:
     """The `(daemon, module)` pair `engine_host.ensure_background` needs for
     *manifest*: a `daemon =` manifest passes its own file with no module; a
@@ -387,10 +407,9 @@ def resurrect_autostart(shutdown_event=None) -> None:
                     folder)
                 continue
             interpreter = interpreter_for(folder)
-            if not os.path.isfile(interpreter):
-                logger.warning(
-                    "background app %s: project environment not built yet, "
-                    "skipping (open it once to install it)", folder)
+            reason = unbuilt_deps_reason(folder, interpreter)
+            if reason is not None:
+                logger.warning("background app %s: %s, skipping", folder, reason)
                 continue
             version = version_for(folder, interpreter)
             engine_id = engine_id_for(folder)

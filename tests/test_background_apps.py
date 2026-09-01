@@ -839,6 +839,33 @@ def test_api_start_falls_back_to_sys_executable_when_project_venv_not_built(
     assert used == [sys.executable]
 
 
+def test_api_start_reports_an_actionable_error_when_the_sys_executable_fallback_crashes(
+        client, tmp_path, monkeypatch):
+    # The fallback above (sys.executable, when the project's own venv isn't
+    # built) still gets a real attempt, per D631 -- never a pre-emptive 409.
+    # But when that attempt then fails, the folder's own missing venv is the
+    # actual, knowable cause: the 502 should say so instead of surfacing
+    # ensure_background's generic "exited before it started" text, which
+    # names no fix a user could act on.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for",
+                        lambda f: "/definitely/not/a/real/python")
+
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module=""):
+        raise engine_host.EngineError(
+            f"the {engine_id} engine exited before it started (code 1)")
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 502
+    message = resp.json()["error"]
+    assert "not built" in message
+    assert "exited before it started" not in message
+
+
 def test_api_autostart_sets_the_flag_without_starting_or_stopping_anything(
         client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
