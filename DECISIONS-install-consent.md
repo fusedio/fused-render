@@ -1258,3 +1258,36 @@ place and all seven failed (with the exact `PYTHON_BOOTSTRAP_KEY`-vs-venv-
 key mismatch shape) with the fix reverted.
 
 **Commit**: test-only fix, `tests/test_env_install.py`.
+
+## Round 8: merged `worktree-in-tree-venv` (PR #948) — project venvs move to `<project>/.venv`
+
+Merged `origin/worktree-in-tree-venv` (14 commits) into `install-consent`.
+`git merge-tree --write-tree` reported a clean tree — zero textual
+conflicts. HEAD is now `28b08d42`.
+
+Five files overlapped between the branches: `fused_render/envinstall.py`,
+`fused_render/_env_install_worker.py`, `fused_render/projectenv.py`,
+`tests/test_env_install.py`, `tests/test_projectenv.py`. The overlap is
+safe because #948 only moves where a venv is STORED — `venv_dir_for` now
+answers `<project_dir>/.venv` for the common writable case, falling back
+to `<home_dir()>/venvs/<key>` — while leaving `venv_key_for` as the venv's
+NAME, unchanged. That name is exactly the seam this branch is built on: it
+keys the install-progress directory, `/api/env/progress?key=`, the
+`sys:env-install:<key>` dock rows, and D214's `PYTHON_BOOTSTRAP_KEY`
+round, so none of that needed to change.
+
+The worker argv contract was the one place both branches actually touched
+the same interface. Confirmed coherent post-merge: 8 slots — `<key>
+<progress_dir> <project_dir> <venv_dir> <uv_cache_dir> <python_executable>
+<acquire_python> <allow_build>` — with `envinstall.py`'s producer and
+`_env_install_worker.py`'s `main()` consumer agreeing, #948's recomputed
+`venv_dir_for` at slot 3 and this branch's `allow_build` at slot 7
+coexisting without collision.
+
+**Verification.** `tests/test_env_install.py tests/test_projectenv.py
+tests/test_server_env_install.py tests/test_jobs_api.py -n 0
+-p no:randomly` → 391 passed, 1 skipped.
+
+PR #935's base was retargeted from `main` to `worktree-in-tree-venv`
+ahead of this merge, so its diff shows only its own ~4772-line delta
+across 16 files; GitHub auto-retargets it to `main` once #948 merges.
