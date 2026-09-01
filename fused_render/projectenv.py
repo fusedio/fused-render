@@ -1035,11 +1035,23 @@ def _source_is_deleted(source: str) -> bool:
 
 
 def gc() -> int:
-    """Delete venvs whose sidecar names a folder that no longer exists.
+    """Delete venvs whose sidecar names a folder that is gone, or that
+    `venv_dir_for` no longer agrees belongs in the home store.
 
-    Load-bearing, not housekeeping: keying on the path means moving or renaming
-    a project orphans its venv by design, so without this the store grows by one
-    full environment every rename. Returns the number removed.
+    Load-bearing, not housekeeping, for two separate reasons now:
+
+      * keying a home-store venv on the path means moving or renaming a project
+        orphans it by design, so without this the store grows by one full
+        environment every rename;
+      * the in-tree default (`venv_dir_for`) means a venv that was built back
+        when everything lived in the home store now has a project that
+        disagrees about where its venv belongs — the folder is writable, is
+        not in the package, and the escape hatch is not set, so every fresh
+        request for it gets `<project>/.venv` instead. The home-store copy is
+        then a directory nothing will ever read again. RELOCATED, in the
+        return value's log line, names this second case; the first stays GONE.
+
+    Returns the number removed either way.
 
     Two things are deliberately LEFT ALONE, both because this runs unattended at
     every server startup and a wrong deletion costs the user a full re-download:
@@ -1047,7 +1059,16 @@ def gc() -> int:
       * a venv with no readable sidecar — it may be an install in flight, and
         deleting one out from under a running worker is worse than leaking it;
       * a venv whose source is merely UNREACHABLE rather than deleted, e.g. on an
-        unplugged external drive. See `_source_is_deleted`.
+        unplugged external drive. See `_source_is_deleted`. This is also what
+        keeps the relocation arm safe: an unreachable folder fails the
+        writability probe (it cannot even be statted), so `venv_dir_for`
+        answers the home store for it too — the same directory this loop is
+        looking at — and it is therefore never read as "relocated". Reordering
+        this so relocation were checked before existence would delete a
+        multi-gigabyte venv the instant its volume is unplugged, which is
+        exactly the failure `_source_is_deleted` exists to prevent; a test
+        pins this (`test_gc_keeps_a_home_store_venv_whose_source_folder_is_
+        unreachable`).
 
     A manifest mirror (`<key>.src`) is reclaimed in two situations, and only
     those: with the venv it belongs to, and when there is NO `<key>` directory at
@@ -1103,7 +1124,19 @@ def gc() -> int:
         source = info.get("path")
         if not isinstance(source, str):
             continue
-        if not _source_is_deleted(_sidecar_source_dir(source)):
+        source_dir = _sidecar_source_dir(source)
+        if _source_is_deleted(source_dir):
+            reason = "source %s is gone" % source
+        elif os.path.isdir(source_dir) and venv_dir_for(source_dir) != venv:
+            # The source is alive and reachable, and policy points its venv
+            # somewhere else now — almost always `<source_dir>/.venv`, since
+            # a folder has to be writable and outside the package to have
+            # landed in the home store as a stray in the first place. Not
+            # reached for an unreachable source: `os.path.isdir` is False for
+            # those, same as the deleted case above, and reaching this branch
+            # at all already required `_source_is_deleted` to answer False.
+            reason = "relocated: %s now uses %s" % (source, venv_dir_for(source_dir))
+        else:
             continue
         try:
             shutil.rmtree(venv)
@@ -1116,6 +1149,6 @@ def gc() -> int:
         # KB, but it holds the lock that venv was built from — so it is reclaimed
         # WITH the venv and never on its own account.
         shutil.rmtree(venv + MIRROR_SUFFIX, ignore_errors=True)
-        logger.info("reclaimed venv %s (source %s is gone)", venv, source)
+        logger.info("reclaimed venv %s (%s)", venv, reason)
         removed += 1
     return removed
