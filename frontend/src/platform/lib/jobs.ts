@@ -407,10 +407,14 @@ export interface QueueCount {
 // computes it, and the queue rows still need it.
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
-// discover is a job STARTED by some other document (a page in another browser
-// tab, or a Python worker reporting straight to the API, which runs no JS and
-// so writes no ping). The ping cuts the usual latency of that discovery to
-// nothing; this floor is what covers the cases it can't reach.
+// discover is a job started with no ping behind it: one reported from another
+// same-origin document (a page in another browser tab), or one a server-side
+// process reports on its own with no browser ever POSTing anything (a
+// scheduled message's timer tick, `schedule.py`'s `_report` — runs no JS, so
+// writes no ping). A row a page's own JS causes — the env-install path
+// included, even though the row itself is created server-side inside
+// `envinstall.start()` — is pinged the moment the triggering POST resolves.
+// This floor is what covers the cases a ping can't reach.
 export const POLL_ACTIVE_MS = 1000;
 export const POLL_IDLE_MS = 5000;
 

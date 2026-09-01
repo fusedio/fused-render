@@ -2292,6 +2292,17 @@
           // `activeKey`). `hideInstall` still gets need.key — that is the entry
           // `ensureInstallRow` counted.
           if (data && typeof data.key === "string" && data.key) activeKey = data.key;
+          // Wake the jobs dock now, not before the POST: `envinstall.start()`
+          // creates the row SYNCHRONOUSLY, before this response comes back, so
+          // by the time this line runs the row is already there for the dock's
+          // resulting poll to find. A ping fired before the POST would have the
+          // dock poll, see nothing yet, and go back to sleep for a full idle
+          // interval — strictly worse than no ping. Covers every real start
+          // through this one call site: the plain first attempt, the
+          // `allow_build` "install anyway" retry, and each round of the D214
+          // two-round Python bootstrap (each round is its own `tryInstall` off
+          // its own key).
+          pingJobs();
           paint(data && data.progress);
           return poll();
         })
@@ -3338,9 +3349,12 @@
   // context EXCEPT the one that wrote — which is exactly the shape here (an
   // iframe writes, the shell listens), and the same mechanism the appearance
   // theme already converges through. Purely an optimisation: the shell polls
-  // /api/jobs regardless, so a browser that drops the event (or a Python worker
-  // reporting straight to the API, which runs no JS at all) is only slower to
-  // notice, never wrong. Must stay in sync with frontend's lib/jobs.ts.
+  // /api/jobs regardless, so a browser that drops the event is only slower to
+  // notice, never wrong. Called from `trackJob`'s `send()` for client-reported
+  // jobs, and from the env-install path's `tryInstall` (its row is created
+  // server-side, but the POST that triggers that is still this same-origin
+  // page's own JS, so it can ping just the same). Must stay in sync with
+  // frontend's lib/jobs.ts.
   const JOB_PING_KEY = "fused-render:jobs-ping";
 
   function pingJobs() {

@@ -31,6 +31,9 @@ def _declare(folder, deps='"pyproj"'):
 
 HEADERS = {"X-Fused": "1"}
 
+# Must match `JOB_PING_KEY` in both runtime.js and frontend/src/platform/lib/jobs.ts.
+JOB_PING_KEY_PY = "fused-render:jobs-ping"
+
 # Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
 # `requirements_venv_id`/`venv_key` — deliberately, so the loader's key is the
 # backend's key and not a re-derivation. That makes `fused` a real requirement
@@ -494,6 +497,29 @@ globalThis.document = {
     return this.head.children.find((c) => c.id === id) || null;
   },
 };
+// Records every key `pingJobs()` writes, so tests can assert the env-install
+// path wakes the jobs dock exactly when — and only when — a start actually
+// posts. A bare no-op stub would leave that half of the fix unchecked.
+globalThis.__localStorageWrites = [];
+globalThis.localStorage = {
+  setItem(key, value) { globalThis.__localStorageWrites.push(key); },
+  getItem() { return null; },
+  removeItem() {},
+};
+// `pingJobs`/`JOB_PING_KEY` (runtime.js:3344-3352) live well past both
+// `_loader_js`'s and `_loader_and_runpython_js`'s slices, so — the same
+// pattern Round 9 used for `IS_THUMBNAIL` — they're recreated here verbatim
+// rather than stubbed away, since the mechanism under test IS whether
+// `tryInstall` calls this. Shared here (rather than in `_RUNPYTHON_PRELUDE`)
+// because `tryInstall` itself is part of the narrower `_loader_js` slice too.
+var JOB_PING_KEY = "fused-render:jobs-ping";
+function pingJobs() {
+  try {
+    localStorage.setItem(JOB_PING_KEY, String(Date.now()));
+  } catch (e) {
+    /* private mode / disabled storage — the shell's poll still covers it */
+  }
+}
 """
 
 
@@ -723,6 +749,78 @@ runPython("a.py", {}, { key: "a" }).then(
         f"a preview must never ask the install-consent question, saw {result['prompts']}"
     )
     assert "declares dependencies that are not installed yet" in result["message"]
+
+
+def test_a_successful_install_start_pings_the_jobs_dock():
+    """The dock's own idle poll (`POLL_IDLE_MS`, frontend/src/platform/lib/
+    jobs.ts:415) can take up to 5s to discover a row nothing else nudges it
+    about. The row itself lands synchronously inside `envinstall.start()`,
+    well before `/api/env/install`'s response reaches this page, so pinging
+    once that response comes back (`tryInstall`, runtime.js) is guaranteed to
+    find the row already there — never a ping that finds nothing and costs a
+    full idle interval for no reason.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["installs"] == 1
+    assert result["pings"].count(JOB_PING_KEY_PY) == 1, (
+        f"a real install start must ping the jobs dock exactly once, saw {result['pings']}"
+    )
+
+
+def test_cancelling_the_confirm_never_pings_the_jobs_dock():
+    """Declining the consent question means `/api/env/install` is never
+    POSTed — nothing started, so nothing must wake the dock. A ping fired
+    here would have the dock poll, find no new row (there is none), and go
+    back to sleep for a full idle interval: strictly worse than no ping.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+(function clickCancelOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry) return setTimeout(clickCancelOnceAsked, 0);
+  entry.row.cancel._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0
+    assert result["pings"] == [], (
+        f"cancelling the confirm must never ping the jobs dock, saw {result['pings']}"
+    )
+
+
+def test_a_previewed_page_never_pings_the_jobs_dock():
+    """Bug A's gate (above) means a preview iframe never POSTs
+    `/api/env/install` at all, so it must never ping either — a picture of
+    the page must not wake the dock any more than it may start an install.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+IS_THUMBNAIL = true;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0
+    assert result["pings"] == [], (
+        f"a preview must never ping the jobs dock, saw {result['pings']}"
+    )
 
 
 def test_cancelling_the_confirm_makes_no_install_post_and_rejects():
