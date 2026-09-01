@@ -2180,14 +2180,15 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
  *  `GET /api/engines/running` reports it (D591). */
 export interface RunningEngine {
   engine_id: string;
-  /** "template" | "app" | "background" — which bring-up path owns it. Carried
-   *  so three similarly-named rows stay distinguishable in the panel. */
+  /** "template" | "background" — which bring-up path owns it. Carried so the
+   *  two rows stay distinguishable in the panel. */
   kind: string;
   pid: number;
   version: string;
   /** The declaring folder — `kind: "background"` only, "" otherwise. */
   folder: string;
-  /** The module a warm app worker serves — "" for the other kinds. */
+  /** The module a `main =` daemon serves — "" for a `daemon =` app or a
+   *  template daemon. */
   module: string;
 }
 

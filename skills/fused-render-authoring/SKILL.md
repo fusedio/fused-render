@@ -440,7 +440,7 @@ Every `fused.runPython` call runs `main()` in a fresh subprocess the server **ki
 
 Work that outlives one call needs to be *visible* once the user browses away, because the shell replaces your page's frame: report it to the download manager with `fused.trackJob`, from the detached worker as well as from the page. The strategies, the job API, and the worker-side reporter → **`fused-render-jobs`**.
 
-Nothing here holds state indefinitely — even `fused.engine(py)`, the warm variant of `runPython`, idle-retires its worker after 15 minutes. A folder that must keep running past that wants a resident daemon: **`fused-render-background-apps`**.
+Nothing here holds state indefinitely — `/api/run` never persists it. A folder that wants warm state opts into `[tool.fused-render.app]`: `main = "x.py"` gets a warm worker that's still reaped after `idle_timeout_s` (default 900s / 15 min), `daemon = "x.py"` gets its own resident daemon. See **`fused-render-background-apps`**.
 
 ## Pitfalls checklist
 

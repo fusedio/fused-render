@@ -23,6 +23,7 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 
 import {
   DownloadManagerView,
+  engineLabel,
   type EnginesSlot,
   type QueueSlot,
 } from "@platform/ui/DownloadManager";
@@ -991,6 +992,12 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(text(findAll(row, "dl-title")[0])).toBe("geotiff");
     expect(text(findAll(row, "dl-amount")[0])).toBe("background");
     expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop");
+  });
+
+  test("falls back to the module when a background engine has no folder recorded", () => {
+    expect(engineLabel(runningEngine({ kind: "background", module: "compute.py" }))).toBe(
+      "compute.py",
+    );
   });
 
   test("pressing Stop calls onStop with the engine id", async () => {

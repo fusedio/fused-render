@@ -1,36 +1,43 @@
 ---
 name: fused-render-background-apps
-description: Give a fused-render app folder a resident daemon the server supervises — exempt from idle-retire, opt-in autostart. Use when a folder must keep running after its page closes, hold a connection or native tray UI, or when a warm worker "keeps dying" after 15 minutes idle; covers [tool.fused-render.app] and fused.daemon.*.
+description: Give a fused-render app folder its own long-running daemon the server supervises — a `daemon =` HTTP surface (resident) or a `main =` warm worker (idle-reaped), opt-in autostart. Use when a folder must keep running after its page closes, hold a connection or native tray UI, or when a `main =` daemon "keeps dying" after 15 minutes idle; covers [tool.fused-render.app] and fused.daemon.*.
 ---
 
 # Background apps: a folder's own long-running daemon
 
-A background app is a **third** way a folder's Python runs alongside `/api/run` and the warm `/api/engine` worker — and picking the wrong one is the main mistake here. Read the table before writing anything.
+A background app is a **second** way a folder's Python runs alongside `/api/run` — and picking the wrong protocol within it is the main mistake here. Read the table before writing anything.
 
-| Path | Lifetime | State survives between calls? | Idle-retired? |
+| Path | Lifetime | State survives between calls? | Idle-reaped? |
 |---|---|---|---|
 | `/api/run` (`fused.runPython`) | Fresh subprocess **per call**, killed at a 60 s timeout | No — nothing persists | N/A, it's already gone |
-| Warm `/api/engine` worker | Persistent interpreter, spawned on first call | Yes — imports, globals, loaded models | **Yes, after 15 min idle** (`engine_host.APP_IDLE_RETIRE_S`) |
-| Background app | Resident daemon, spawned by `start()` and (only if opted in) at every server start | Yes — a whole separate process with its own lifecycle | **No** — that's the entire point |
+| Background app, `main =` protocol | The shipped worker, spawned on first call, warm | Yes — imports, globals, loaded models | **Yes, after `idle_timeout_s` idle** (default 900s / 15 min) |
+| Background app, `daemon =` protocol | Your own resident daemon, spawned by `start()` and (only if opted in) at every server start | Yes — a whole separate process with its own lifecycle | **No** by default — that's the point of writing your own daemon |
 
-Reach for a background app only when the warm worker's idle-retire is the actual problem: a websocket/poll server, something holding a device handle or a long-lived socket, a tray/menu-bar presence, or state that must survive an idle gap longer than 15 minutes. State that only needs to survive between two calls a few minutes apart already has the warm worker, which is zero-config — no manifest, no start step.
+Both protocols are declared in the same `[tool.fused-render.app]` manifest and share the whole rest of this skill — autostart, the preview guard, reinit, cross-platform tray work. Reach for `daemon =` only when `main =`'s idle-reap is the actual problem: a websocket/poll server, something holding a device handle or a long-lived socket, a tray/menu-bar presence, or state that must survive an idle gap longer than `idle_timeout_s`. State that only needs to survive between calls a few minutes apart already has `main =`, which needs no daemon script of your own — you write a plain `main(**params)`, the same shape `/api/run` calls.
 
 ## The manifest
 
-A folder opts in with a table in its own `pyproject.toml`:
+A folder opts in with a table in its own `pyproject.toml`, declaring exactly one of two protocol keys:
 
 ```toml
 [tool.fused-render.app]
-kind = "background"
-daemon = "daemon.py"   # a filename, resolved inside this folder
+daemon = "daemon.py"    # your own HTTP surface; resident by default (idle_timeout_s=0)
 ```
+
+```toml
+[tool.fused-render.app]
+main = "compute.py"     # the shipped worker calls main(**params); reaped after
+                        # idle_timeout_s idle seconds (default 900)
+```
+
+An optional `idle_timeout_s = <float>` overrides that protocol's default — `0` means resident/never-reaped, so a `main =` folder can opt into staying warm forever, and a `daemon =` folder can opt into idle retirement.
 
 `background_apps.load_manifest` reads this and **never raises** — a bad manifest reads as "no manifest" rather than reaching `engine_host` as an opaque `python <folder>` bring-up failure. It rejects, silently:
 
-- `kind` anything other than `"background"`, or the table missing entirely.
-- `daemon` missing, not a string, or empty.
-- `daemon` resolving **outside** the folder — `daemon = "../elsewhere.py"` or a symlink that escapes, realpath-checked (the same containment guard `registered_apps.py` uses).
-- `daemon` naming a **directory** (`daemon = "."` passes containment trivially — a folder is "inside" itself — so it needs its own `os.path.isfile` check).
+- Declaring **both** `daemon` and `main`, or **neither** — exactly one protocol key is required, never inferred.
+- The declared key's value missing, not a string, or empty.
+- The value resolving **outside** the folder — `daemon = "../elsewhere.py"` or a symlink that escapes, realpath-checked (the same containment guard `registered_apps.py` uses).
+- The value naming a **directory** (`daemon = "."` passes containment trivially — a folder is "inside" itself — so it needs its own `os.path.isfile` check).
 
 No error is surfaced for a rejected manifest short of the folder simply not offering a start option; check `GET /api/apps/background/status?html=<page>` if you're unsure yours parsed.
 
@@ -84,6 +91,7 @@ A tray "Quit" should call `stop()` here rather than a raw self-`terminate`/`exit
 await fused.daemon.start();                // spawn it now — does NOT touch autostart
 const st = await fused.daemon.status();     // {running, autostart, pid, version, engine_id}
 const res = await fused.daemon.call("/count", { hello: "world" }); // POST, proxied to the daemon
+const out = await fused.daemon.run({ hello: "world" }); // main = convenience: call("/call", params), envelope unwrapped
 await fused.daemon.stop();                  // kill it now — does NOT touch autostart
 await fused.daemon.restart();               // respawn — autostart-neutral too
 await fused.daemon.setAutostart(true);      // ONLY thing that persists "bring this back at launch"
@@ -97,7 +105,7 @@ const unsubscribe = fused.daemon.watch((s) => {
 
 The JS namespace is `daemon` while the HTTP endpoints (`/api/apps/background/*`) and Python modules say "background": "app" already means three other things here (an `fused-app`-tagged folder, the warm worker's `Child.kind`, the `/apps` hub), and `daemon` is the noun the manifest, the file and `engine_host` already use.
 
-Every method except `call` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to, the same `resolve_py` pattern `/api/run` uses, so there is no path-typed API to defend. `call(path, body)` reaches the daemon through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` and rejecting client-side if the app isn't known to be running — call `start()` first.
+Every method except `call`/`run` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to, the same `resolve_py` pattern `/api/run` uses, so there is no path-typed API to defend. `call(path, body)` reaches the daemon through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` and rejecting client-side if the app isn't known to be running — call `start()` first. `run(params)` is the `main =` convenience over the same proxy: `call("/call", params)` with the `{ok, result, error, stdout, resolved_py}` envelope unwrapped the way `runPython` unwraps `/api/run`'s.
 
 **Run state and autostart are two independent axes** (pinned by `test_api_start_calls_ensure_background_without_touching_autostart` and `test_api_autostart_sets_the_flag_without_starting_or_stopping_anything`):
 
@@ -171,7 +179,7 @@ autostartCheckbox.addEventListener("change", async () => {
 | `start()` / `restart()` | No — **refused in a preview thumbnail** | Spawns a daemon; a page render is not a reason to start one, or to bounce one the user may be mid-use of. |
 | `stop()` | No — **refused in a preview thumbnail** | Turning something the user has running *off* on a page render is exactly as surprising as turning it on. |
 | `setAutostart(bool)` | No — **refused in a preview thumbnail** | Persists a flag that survives a server restart. |
-| `call(path, body)` | Only if it is a genuine read — **refused in a preview thumbnail** | `engine_forward.py`'s heal-on-proxy path respawns a dead-but-registered child on *any* proxied call, so a preview calling `call()` against an app started elsewhere can resurrect its daemon exactly like `start()` would. Beyond the preview case, your own daemon may treat a route as "start work" — gate those routes behind an explicit control too. |
+| `call(path, body)` / `run(params)` | Only if it is a genuine read — **refused in a preview thumbnail** | `engine_forward.py`'s heal-on-proxy path respawns a dead-but-registered child on *any* proxied call, so a preview calling `call()`/`run()` against an app started elsewhere can resurrect its daemon exactly like `start()` would. Beyond the preview case, your own daemon may treat a route as "start work" — gate those routes behind an explicit control too. |
 
 ### How the guard rejects
 
@@ -243,19 +251,13 @@ Nothing below is checked by any code path; no test or manifest rule will catch i
 - Persisting daemon state safely across an unannounced kill, and not assuming it is the only instance the folder has spawned.
 - Echoing the real `--version` from `/ping` — defeat the staleness check and nothing complains; the daemon just quietly stops picking up its own updates.
 
-## The venv precondition, its 409, and where the daemon actually runs
+## Where the daemon actually runs
 
-`start()` (and `restart()`'s ensure-background fallback) return **409** when the folder's own project venv isn't built yet:
+`start()` (and `restart()`'s ensure-background fallback) never block on an unbuilt venv: when the folder's own project venv isn't built yet, `_resolve()` falls back to `sys.executable` and starts the daemon there anyway — the same fallback `/api/run`'s builtin engine takes. There is no 409 to handle; a daemon started this way just doesn't have the folder's own `[project]` dependencies importable until that venv exists.
 
-```json
-{"error": "<folder> needs its project environment built before its background app can start; open it once (or call fused.runPython) to install it, then retry.", "status": 409}
-```
+Server-startup autostart resurrection is stricter: `resurrect_autostart()` will **not** fall back — a folder opted into autostart whose project venv isn't built yet is logged and skipped entirely ("project environment not built yet, skipping (open it once to install it)"), and stays stopped until something else starts it. Open the folder once (or call `fused.runPython`) to install its venv before relying on autostart.
 
-Building a venv can take minutes and this endpoint won't do it inside a POST — open the page once, or call `fused.runPython`, then retry `start()`. Same stance `/api/engine`'s warm-worker dispatch takes.
-
-**The ordering trap specific to background apps:** the daemon runs on **the folder's own declared environment**, resolved from the folder itself — never from an ancestor project. `background_apps.interpreter_for` calls `projectenv.has_project_env(folder)` on the app's own folder only; it does **not** walk upward the way a plain `.py` script's resolution does. A folder declaring no `[project]` deps of its own runs its daemon on `sys.executable` (the app's bundled interpreter) whatever a parent directory declares, and `import fused_render` is **not** available there. Its `[project]` dependency list is also the **complete** list the daemon gets — nothing bundled is unioned in. Declare everything `daemon.py` imports, stdlib aside.
-
-(A background app nested deeper than `<fused_dir>/<tag>/<name>` may currently 409 forever on project-boundary resolution — a known bug being fixed elsewhere, not documented behavior. The rule above is what to build to.)
+**The ordering trap specific to background apps:** the daemon runs on **the folder's own declared environment**, resolved from the folder itself — never from an ancestor project. `background_apps.interpreter_for` calls `projectenv.has_project_env(folder)` on the app's own folder only; it does **not** walk upward the way a plain `.py` script's resolution does. A folder declaring no `[project]` deps of its own runs its daemon on `sys.executable` (the app's bundled interpreter) whatever a parent directory declares, and `import fused_render` is **not** available there. Its `[project]` dependency list is also the **complete** list the daemon gets — nothing bundled is unioned in. Declare everything the daemon (or `main =` script) imports, stdlib aside.
 
 ## Two things that do not work the way `/api/run` does
 
@@ -274,7 +276,7 @@ A daemon doing native desktop UI will not run unmodified on another platform, an
 
 - Publishing the status file AFTER `serve_forever()` → the parent's bootstrap poll never sees it in time, or sees a port not yet accepting connections. Publish right after `bind()`.
 - Calling `server.shutdown()` from inside the handler answering `/quit` → deadlocks `ThreadingHTTPServer`; shut down from a separate thread.
-- `fused.daemon.start()` on page load → spawns a daemon nobody asked for, and a display-only preview iframe runs that same load path. The runtime now refuses it (and `restart`/`call`/`stop`/`setAutostart`) inside a preview and throws a named error.
+- `fused.daemon.start()` on page load → spawns a daemon nobody asked for, and a display-only preview iframe runs that same load path. The runtime now refuses it (and `restart`/`call`/`run`/`stop`/`setAutostart`) inside a preview and throws a named error.
 - Assuming `start()` or `stop()` also changes whether the app comes back at the next launch → only `setAutostart(bool)` touches that flag.
 - `setAutostart(true)` from page load, or as a side effect of a "start it" click → it persists across restarts; give it its own control.
 - Ending the app from a tray control with a raw kill instead of `stop()` → skips the bookkeeping that keeps it from silently reviving on the next proxied call.
@@ -283,9 +285,10 @@ A daemon doing native desktop UI will not run unmodified on another platform, an
 - Assuming `import fused_ai` works in a daemon because it works in `/api/run` → it doesn't; bootstrap off `server.json` or copy the module in.
 - Expecting a daemon's descriptors to survive a restart the way a template's do → `reinit()`/`_replay` is never invoked for background apps.
 - Declaring a dependency somewhere other than the folder's own `[project]` table and expecting the daemon to get it → that table is the complete list.
-- Placing `daemon` outside the folder (`../daemon.py`) or naming a directory (`daemon = "."`) → silently rejected; the manifest reads as absent with no error surfaced.
-- Calling `start()` before the folder's venv is built → 409; open the page once (or `fused.runPython`) first.
-- Reaching for a background app when the warm worker's 15-minute idle-retire was never the problem → the manifest, start step and HTTP contract are all overhead a zero-config warm worker doesn't need.
+- Placing `daemon`/`main` outside the folder (`../daemon.py`) or naming a directory (`daemon = "."`) → silently rejected; the manifest reads as absent with no error surfaced.
+- Declaring both `daemon` and `main`, or neither → silently rejected; exactly one protocol key is required.
+- Relying on autostart before the folder's venv is built → `resurrect_autostart()` skips it and logs a warning; open the page once (or `fused.runPython`) first.
+- Reaching for `daemon =` when `main =`'s idle-reap was never the problem → the manifest, start step and HTTP contract are all overhead a plain `main =` folder doesn't need.
 - Writing a fourth tray/menu-bar implementation instead of reading `supervisor/tray.py` or `menubar_pin.py` first.
 - Touching AppKit state from the daemon's HTTP handler thread on macOS → hop with `PyObjCTools.AppHelper.callAfter`.
 

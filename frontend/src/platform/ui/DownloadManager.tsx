@@ -346,9 +346,10 @@ function Bar({ job }: { job: Job }) {
 // `RunningEngine[]` data plus the mutation callback.
 
 /** A useful NAME for an engine row, never the opaque id when something better
- *  exists: the folder's basename for a background app, the module for a warm
- *  app worker, and the id itself for a template engine. Pure and exported so
- *  it is testable without a render. */
+ *  exists: the folder's basename for a background app (`daemon =` or
+ *  `main =` alike), falling back to the module for a background app with no
+ *  folder recorded, and the id itself for a template engine. Pure and
+ *  exported so it is testable without a render. */
 export function engineLabel(engine: RunningEngine): string {
   if (engine.folder) {
     const parts = engine.folder.split(/[/\\]/).filter(Boolean);
