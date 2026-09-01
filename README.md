@@ -123,7 +123,7 @@ Any `.html` file can call it and bind the result to the URL:
 </script>
 ```
 
-That injected runtime is the whole API:
+Everything a page can do goes through `fused`:
 
 - `fused.runPython(pyPath, params)` and `fused.params` — call `main(**params)`
   and keep a string key/value store in sync with the URL, so a refresh or a
