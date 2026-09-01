@@ -468,6 +468,24 @@ def test_ensure_background_rejects_daemon_not_matching_its_own_folders_manifest(
             str(tmp_path / "cache"), "v1")
 
 
+def test_ensure_background_rejects_a_main_app_whose_module_is_not_the_manifests(
+    tmp_path
+):
+    # A `main =` manifest's DEFAULT_DAEMON exemption checks the daemon PATH
+    # (DEFAULT_DAEMON itself, outside every app folder) but must also check
+    # that the MODULE being served is the one this folder's manifest actually
+    # declares — otherwise any module path sails through validation as long
+    # as the folder merely declares SOME `main =`.
+    app = _make_app(tmp_path, "app", daemon=None, main="compute.py")
+    other_module = tmp_path / "elsewhere.py"
+    other_module.write_text("def main(**params):\n    return {}\n")
+    with pytest.raises(engine_host.EngineError):
+        engine_host.ensure_background(
+            "bg_wrongmodule", sys.executable, engine_host.DEFAULT_DAEMON,
+            str(tmp_path / "cache"), "v1", str(app),
+            module=str(other_module))
+
+
 def test_ensure_background_validates_against_the_callers_folder_not_dirname(tmp_path):
     # Regression: `_validate_background` used to re-derive the declaring
     # folder as `os.path.dirname(daemon)` instead of using the folder the

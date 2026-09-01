@@ -468,7 +468,7 @@ def ensure(engine_id: str, python: str, daemon: str, cache: str,
 
 
 def _validate_background(engine_id: str, python: str, daemon: str,
-                         folder: str = "") -> None:
+                         folder: str = "", module: str = "") -> None:
     """Same invariant-check stance as `_validate`/`_validate_interpreter`: the
     caller (the start/restart endpoints, the startup resurrection hook)
     already resolved `daemon` from the folder's own manifest, so this is not
@@ -503,9 +503,9 @@ def _validate_background(engine_id: str, python: str, daemon: str,
     so the folder-containment check above cannot apply to it. This is the
     one narrow exemption (mirroring `_validate`'s own templates-root
     allowlist): `daemon` is accepted here ONLY when it resolves to the exact
-    `DEFAULT_DAEMON` path AND the folder's own manifest declares a `main =`
-    — never "any path", which would turn this from an invariant check back
-    into a trust boundary."""
+    `DEFAULT_DAEMON` path AND `module` resolves to the exact file the
+    folder's own manifest declares as `main =` — never "any module", which
+    would turn this from an invariant check back into a trust boundary."""
     from fused_render import background_apps
 
     if not _ENGINE_ID.match(engine_id):
@@ -517,7 +517,8 @@ def _validate_background(engine_id: str, python: str, daemon: str,
     if manifest is not None:
         if manifest.daemon and os.path.realpath(manifest.daemon) == target:
             return
-        if (manifest.main and target == os.path.realpath(DEFAULT_DAEMON)):
+        if (manifest.main and target == os.path.realpath(DEFAULT_DAEMON)
+                and module and os.path.realpath(module) == os.path.realpath(manifest.main)):
             return
     raise EngineError(
         f"refusing to run {daemon!r}: not the declared daemon of its "
@@ -547,7 +548,7 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
     `_ensure_reaper`) so this child actually gets reaped. `module` is set
     only for a `main =` manifest (`daemon` is then `DEFAULT_DAEMON`), telling
     `_spawn` which file to pass as `--module`."""
-    _validate_background(engine_id, python, daemon, folder)
+    _validate_background(engine_id, python, daemon, folder, module)
     if idle_timeout_s > 0:
         _ensure_reaper()
     existing = _children.get(engine_id)
