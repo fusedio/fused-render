@@ -67,6 +67,7 @@ const BASE: Job = {
   updated_at: 0,
   finished_at: 0,
   stalled: false,
+  waiting_for: "",
 };
 
 
@@ -331,6 +332,63 @@ test("cancelled and done rows do NOT move — only failures did", () => {
   const done: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
   const tree = renderCard([done]);
   expect(findAll(tree, "dl-row")).toHaveLength(1);
+});
+
+// ----------------------------------------- the model-load merge (SPEC §36) —
+// a render waiting on a shared model load used to open a second row right
+// beside the load's own, both saying the same thing ("Waiting for
+// FLUX.2-klein-4B — Loading weights into memory……" next to "Loading weights
+// into memory…"). `_wait_ready` (fused_render/ai/supervisor.py) now mirrors
+// the load's own progress onto the waiter's row and marks it `waiting_for`;
+// `jobs.ts` `mergedRows` (applied in `DownloadManagerView`'s `jobs` computation)
+// is what makes the card actually draw one row instead of two.
+
+test("a waiter and the load it is blocked on render as ONE row, carrying the load's detail", () => {
+  const waiter: Job = {
+    ...BASE,
+    id: "sys:ai-image:x",
+    title: "a ginger cat in a hand-stitched astronaut suit",
+    model: "black-forest-labs/FLUX.2-klein-4B",
+    state: "running",
+    detail: "Loading weights into memory…",
+    done: null,
+    total: null,
+    waiting_for: "sys:ai-model:black-forest-labs--FLUX.2-klein-4B",
+  };
+  const load: Job = {
+    ...BASE,
+    id: "sys:ai-model:black-forest-labs--FLUX.2-klein-4B",
+    title: "black-forest-labs/FLUX.2-klein-4B",
+    model: "black-forest-labs/FLUX.2-klein-4B",
+    kind: "download",
+    state: "running",
+    detail: "Loading weights into memory…",
+    done: null,
+    total: null,
+  };
+  const tree = renderCard([waiter, load]);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(findAll(rows[0], "dl-title")[0])).toBe(waiter.title);
+  expect(text(findAll(rows[0], "dl-status")[0])).toBe("Loading weights into memory…");
+});
+
+test("once the waiter goes terminal, the load's row reappears — a stale waiting_for does not keep hiding it", () => {
+  // `error` is excluded from THIS card entirely (D586 — a failure moves to
+  // Notifications), so `cancelled` is what exercises "terminal, still drawn
+  // here" without that unrelated filter also removing the row. The pure-
+  // function case for a real failure (both rows visible, D266) is covered in
+  // jobs.test.ts, where `isFailure`'s D586 re-route is not in the way.
+  const waiter: Job = {
+    ...BASE,
+    id: "sys:ai-image:x",
+    title: "a ginger cat",
+    state: "cancelled",
+    waiting_for: "sys:ai-model:m",
+  };
+  const load: Job = { ...BASE, id: "sys:ai-model:m", title: "org/m", state: "running" };
+  const tree = renderCard([waiter, load]);
+  expect(findAll(tree, "dl-row")).toHaveLength(2);
 });
 
 // -------------------------------------------------- the collapse toggle (D562)

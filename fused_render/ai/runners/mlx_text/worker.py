@@ -715,6 +715,23 @@ def generate(body, write):
             _loaded["prompt_cache_state"] = cache_state
         cache_kwargs["prompt_cache_state"] = cache_state
 
+    # One frame BEFORE the first token, naming the phase that is otherwise
+    # silent: `stream_generate` below does not yield at all until prefill has
+    # finished, which for a long context is itself seconds of real work with
+    # nothing to show for it. How much work varies — a text turn that reuses
+    # the prompt cache above prefills only the new suffix, while an image turn
+    # or a diverged prefix pays a forward pass over the whole prompt — which
+    # is the other reason to announce the phase rather than leave the caller
+    # guessing from silence.
+    # `input_tokens` rides along so the caller can say how much it is
+    # chewing on; `None` on the image path (see the comment above) is
+    # forwarded as-is rather than guessed at. A type no existing NDJSON
+    # reader recognises (`server/ai.py`'s `_local_relay`, `fused_ai.py`'s
+    # `_parse_ndjson` loop, `benchmark.py`'s own `event.get("type")` switch)
+    # so every one of them falls through it harmlessly — this is additive to
+    # the wire format, not a new branch every reader has to grow.
+    write({"type": "prefill", "input_tokens": prompt_tokens})
+
     count = 0
     started = time.time()
     for response in stream_generate(model, processor, text, image=images or None,

@@ -37,6 +37,7 @@ from fused_render.server.routers import ai_runtime
 # "every test stubs the Hub" is not the same claim as "no test reaches the
 # network".
 from test_ai_hub_fetch import no_egress  # noqa: F401
+from _big_files import sparse_file
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -7370,15 +7371,18 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     started = _post_transcribe(client, path=recording).json()
     job = started["jobId"]
 
-    # Evict it exactly as the cap does, mid-load.
+    # Evict it exactly as the cap does, mid-load. `waiting_for`, not a
+    # "Waiting for" substring in `detail` any more — the merge (this change)
+    # makes `detail` the LOAD row's own line verbatim, and `waiting_for` is
+    # what actually names the wait now.
     deadline = time.monotonic() + 5
     row = None
     while time.monotonic() < deadline:
         row = _row_now(job)
-        if row and "Waiting for" in (row.get("detail") or ""):
+        if row and row.get("waiting_for"):
             break
         time.sleep(0.02)
-    assert row and "Waiting for" in (row.get("detail") or ""), row
+    assert row and row.get("waiting_for"), row
     with jobs._lock:
         jobs._jobs.pop(job, None)
 
@@ -7392,10 +7396,16 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     assert rebuilt is not None, "the wait could not rebuild its row"
     # STILL WAITING — so it was the wait's own tick that rebuilt it, not a
     # later reporter. That is what makes this test about `_wait_ready`.
-    assert "Waiting for" in (rebuilt.get("detail") or ""), rebuilt
+    assert rebuilt.get("waiting_for"), rebuilt
     assert rebuilt["title"] == os.path.basename(recording)
-    assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
-    _wait_job(job, timeout=40)
+    # `cancellable` survives the rebuild from `transcribe_row_fields`'s
+    # payload; `unit` does NOT stay "s" here — the merge (this change) mirrors
+    # the LOAD row's own unit ("", nothing byte-shaped reported yet at
+    # "Starting the model process…") for as long as the wait holds, and only
+    # restores the transcription's own "s" once the wait ends (below).
+    assert rebuilt["cancellable"] is True
+    final = _wait_job(job, timeout=40)
+    assert final["unit"] == "s"
 
 
 def _watcher_giveup_window_s():
@@ -9667,10 +9677,13 @@ def _text_repo(hub, repo_id, *, size=0):
 
     Safetensors, so a test using this needs the `safetensors_text_engine`
     fixture — see its docstring for why the ambient platform is not enough.
+
+    The weights file is sparse: `size` here exists to be read back as a
+    `size_gb`, and the scan that reads it sums `st_size`. See `_big_files`.
     """
     repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
                         config={"architectures": ["LlamaForCausalLM"]})
-    (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
+    sparse_file(repo / "snapshots" / "c0ffee" / "model.safetensors", size)
     return repo
 
 
@@ -10273,7 +10286,7 @@ def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 1.0
     blobs = repo / "blobs"
     blobs.mkdir(parents=True, exist_ok=True)
-    (blobs / "second-revision").write_bytes(b"x" * 2_000_000_000)
+    sparse_file(blobs / "second-revision", 2_000_000_000)
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 3.0
 
 

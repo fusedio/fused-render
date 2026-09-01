@@ -824,12 +824,7 @@ def reconnect_mount(m: dict) -> str | None:
                 pass  # "mount not found" once the kernel mount is gone — fine
     if port is not None:
         _stop_serve_for(port, m["remote"])
-    err = attach_mount(m)
-    # A manual reconnect that repairs a builtin must flip its readiness flag — only on success.
-    if err is None and m.get("builtin"):
-        from .automount import set_builtin_ready
-        set_builtin_ready(m["builtin"], True)
-    return err
+    return attach_mount(m)
 
 
 PROBE_TIMEOUT = 3.0
@@ -1193,9 +1188,6 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
         # Remote rejects writes (see mount_read_only); unflagged legacy
         # records read as rw, the pre-flag behavior.
         "read_only": bool(m.get("read_only")),
-        # Shipped-with-the-app mount (see ensure_builtin_mounts); the UI can
-        # treat it differently from a user-created mount (e.g. hide delete).
-        "builtin": bool(m.get("builtin")),
         # Why a Restart rclone would help (params drift / re-authed creds), or
         # None. Reuses the state just computed AND (on the get_mounts bulk path)
         # a cred_status probed off the serial path, so building a view never

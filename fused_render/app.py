@@ -323,6 +323,12 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     from fused_render import meta_migration
 
     meta_migration.run_once_in_background(start_dir)
+    # One-time migration: fold the per-app repos under <workspace>/local into
+    # the single shared repo at the tag root (D626; local_monorepo docstring
+    # carries the rules).
+    from fused_render import local_monorepo
+
+    local_monorepo.run_once_in_background(start_dir)
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
     # point, never create_app.

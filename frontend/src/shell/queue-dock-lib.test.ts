@@ -57,6 +57,7 @@ const job = (over: Partial<Job> = {}): Job =>
     cancellable: true,
     cancel_requested: false,
     stalled: false,
+    waiting_for: "",
     started_at: 0,
     updated_at: 0,
     finished_at: null,

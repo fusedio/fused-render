@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import (
@@ -89,6 +90,34 @@ _AI_SHORT_MODEL_IDS = {
 }
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
+# How often the remote-Claude activity row re-states itself while a call is in
+# flight — a DISPLAY heartbeat and nothing more, the same thing
+# `supervisor._QUEUE_TICK_S` is and for the same reason.
+#
+# The row is opened once and has nothing to report until the answer lands, but
+# `jobs.STALE_AFTER_S` (30s) turns any running row with no update in that long
+# into *"No longer reporting — the process running it stopped reporting"*:
+# dimmed, its ✕ withdrawn, a Dismiss offered instead. A Claude turn routinely
+# runs longer than 30s — `_AI_TIMEOUT_S` above allows ten minutes of it, and a
+# second call parked on `_AI_SESSION.lock` has not started at all — so without
+# this every slow call announced, truthfully as far as the registry could tell,
+# that nobody was reporting it, and then succeeded anyway. This is the rule
+# `runners/worker_base._heartbeat` states as a CONTRACT: progress whose natural
+# granularity is coarser than the stale window has to say "still here".
+#
+# Well under 30s so a busy loop or a slow machine still leaves margin, and no
+# faster than it needs to be: nothing reads these ticks but the clock.
+_REMOTE_TICK_S = 10.0
+# The row's detail line. Says only that this is remote — the model rides its
+# own field (`jobs.py` `Job.model`, a dimmed suffix JobRow draws after the
+# title), so the one thing this line is for is the fact a local row's detail
+# never states. Named rather than inlined because three sites now write it:
+# the opening report, and both sides of the queued swap in `run_once`.
+_REMOTE_ROW_DETAIL = "Claude — remote"
+# …and what it says while the call is parked behind `_AI_SESSION.lock` — work
+# that has not started, which "Claude — remote" alone would show as work in
+# progress. `supervisor._QUEUED_DETAIL`'s twin.
+_REMOTE_QUEUED_DETAIL = "Queued — another Claude call is in flight"
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
@@ -172,8 +201,8 @@ def _claude_seconds(data: dict) -> float | None:
 # until the next sign-in.
 #
 # IMPORTED, not written here. These used to be two literal tuples, and the app
-# held four such lists across this module, claude_config/lib.py, the learn
-# content's check_env.py and core_apps/sessions/analyze.py. Any directory
+# held four such lists across this module, claude_config/lib.py, and the
+# retired learn and sessions bundled content. Any directory
 # only some of them knew about was a directory where the app disagreed with
 # itself: a CLI in `~/.bun/bin` gave a working Preferences → Claude config tab
 # and an `ai_unavailable` from `fused.ai()` on the same machine. claude_health
@@ -825,6 +854,48 @@ def _history_problem(history) -> str | None:
     return None
 
 
+#: How often the prefill watchdog restates the row while it waits for the
+#: first token (`_local_relay`'s `_start_watchdog`). Comfortably under
+#: `jobs.STALE_AFTER_S` (30s) — a reporter's own poll cadence has to clear
+#: that bar by a wide margin or an ordinary slow prefill trips "stalled" on
+#: a row that is, in truth, still doing real work. A module constant rather
+#: than a literal so a test can shrink it instead of sleeping through 30s of
+#: real prefill.
+_TEXT_WATCHDOG_TICK_S = 10.0
+
+
+def _text_title(prompt: str, model: str) -> str:
+    """The row's title: the PROMPT's first line, not the model — the same
+    argument `_transcribe_title` makes for using the file name instead of
+    the model: the manager may show several of these rows at once, and the
+    prompt is what tells them apart, not which model is answering. Capped
+    shorter than a render's title (60, not 80): a chat prompt is
+    conversational text that wraps ugly past a phrase or two, where an
+    image prompt is already terse.
+    """
+    stripped = (prompt or "").strip()
+    first_line = stripped.splitlines()[0] if stripped else ""
+    return first_line[:60] or model
+
+
+def _text_prefill_detail(input_tokens) -> str:
+    """What the row's opening tick — and the watchdog behind it — say while
+    the worker is still reading the prompt: the phase between a resident
+    model accepting the request and its first generated token. Named the
+    way `_QUEUED_DETAIL` (supervisor.py) names any other wait a person can
+    see, and for the same reason a queued transcription's row does not
+    invent a percentage: prefill is one forward pass over the whole prompt,
+    not a series of steps with a fraction to report, so this says only that
+    it is under way. `input_tokens` is `None` whenever the worker cannot
+    count it (`mlx_text/worker.py`'s image path, by design — see that
+    module's own comment on `_prompt_tokens`), and the sentence has to read
+    correctly either way rather than print "None tokens".
+    """
+    if isinstance(input_tokens, int):
+        return f"Processing the prompt — {input_tokens} tokens…"
+    return "Processing the prompt…"
+
+
 def _local_usage(event: dict) -> dict:
     """The `usage` a local worker's terminal frame becomes.
 
@@ -899,7 +970,10 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # the caller is meant to watch it and ask again. Counting that beside a
         # timeout or a missing binary is how "3 failed" comes to mean "one
         # model is downloading", which is the conflation this rule exists to
-        # prevent: the number has to mean one thing.
+        # prevent: the number has to mean one thing. NO row opens here either
+        # (`text_row_fields`'s own docstring) — the load's own row already
+        # covers this wait, and a second row for it is exactly the doubling
+        # `_wait_ready`'s merge exists to remove elsewhere.
         return JSONResponse(
             {"ok": False, "error": {"type": "model_loading", "message": str(e),
                                     "jobId": e.job_id}},
@@ -907,11 +981,142 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     except supervisor.SupervisorError as e:
         return _ai_failed(model, "ai_unavailable", str(e), status=502)
 
+    # Past here the model was already resident and answered enough to begin
+    # generating — `first` came back with no exception — so THIS call earns
+    # its own Activity row (image/video/transcription already get one; text
+    # was the one kind that reported nowhere). Minted here, not inside
+    # `generate_text`: this relay is where the done-frame/error-demotion
+    # logic already lives for both the streaming and non-streaming shapes,
+    # and it is the caller that mints ids for the other kinds too
+    # (`image_job_id`, `transcribe_job_id`).
+    job = supervisor.text_job_id(uuid.uuid4().hex)
+    row = supervisor.text_row_fields(_text_title(prompt, model), model)
+
+    def tick(**over) -> None:
+        """One report, always restating the row's full identity — a row can
+        be REBUILT from scratch on any tick (`jobs._sweep` evicts the least
+        recently updated running row once `MAX_JOBS` bites), so a tick that
+        omitted `title`/`cancellable`/`unit` would recreate a row missing
+        them rather than update the one already showing. See
+        `transcribe_row_fields`'s docstring for the argument in full."""
+        supervisor._report(job, **row, **over)
+
+    # The opening detail names whichever phase `first` actually landed in.
+    # `mlx_text/worker.py` sends a `prefill` frame before its first token —
+    # naming the size of the prompt it is chewing on when it can count it —
+    # but `llama_text.py`'s runner has no such frame and starts straight on
+    # `chunk`; either way `first` is what walk() below yields as the loop's
+    # own first iteration, so nothing here is dropped, only DESCRIBED before
+    # the loop starts.
+    opening_detail = "Processing the prompt…"
+    if first is not None and first.get("type") == "prefill":
+        opening_detail = _text_prefill_detail(first.get("input_tokens"))
+    tick(state="running", done=None, total=None, detail=opening_detail)
+
+    # **The prefill watchdog.** `stream_generate` yields nothing at all until
+    # the whole prompt has been read — one forward pass, seconds of real
+    # work on a long context — and with no tick in that window the row would
+    # cross `jobs.STALE_AFTER_S` (30s) and read as "no longer reporting"
+    # about work that is genuinely still running. This is honest reporting,
+    # not a fake pulse: the stream is open and the worker has not errored,
+    # so restating "processing the prompt" on an interval is a true
+    # statement about live work, the same discipline `_wait_ready`'s merged
+    # tick and `_MeasurementRow`'s benchmark watcher already follow for
+    # their own long silent phases. Stopped the moment real progress
+    # arrives (the first `chunk`) or the call ends any other way — a daemon
+    # thread that outlived the request would keep ticking a row nothing is
+    # generating for any more.
+    stop_watchdog = threading.Event()
+
+    def _watchdog() -> None:
+        while not stop_watchdog.wait(_TEXT_WATCHDOG_TICK_S):
+            tick(state="running", done=None, total=None, detail=opening_detail)
+            # The ✕ is polled HERE as well as between chunks below, because
+            # prefill is precisely the window where it would otherwise sit
+            # inert: the row draws a cross from its very first tick
+            # (`cancellable=True`), and on a long context a minute can pass
+            # before the loop reaches its first chunk-boundary check. A cross
+            # that does nothing for a minute is a worse row than one with no
+            # cross at all — stopping a prompt that is still being READ has
+            # to stop it, not queue the cancel behind the first token of an
+            # answer nobody wants any more.
+            if supervisor._cancel_requested(job):
+                supervisor.cancel_generation()
+
+    watchdog = threading.Thread(target=_watchdog, daemon=True, name="ai-text-watchdog")
+    watchdog.start()
+    watchdog_stopped = False
+
+    def _stop_watchdog() -> None:
+        nonlocal watchdog_stopped
+        if not watchdog_stopped:
+            stop_watchdog.set()
+            watchdog.join(timeout=2.0)
+            watchdog_stopped = True
+
+    count = 0
+    reported_terminal = False
+
     def walk():
-        """The events, with the one already pulled off put back in front."""
-        if first is not None:
-            yield first
-        yield from events
+        """The events, with the one already pulled off put back in front —
+        and the row's own lifecycle folded in, so both the streaming and
+        non-streaming loops below drive it identically rather than each
+        reimplementing the same ticks.
+
+        Cancellation is cooperative, the same channel the benchmark tab's
+        own Stop button uses (`ai/benchmark.py`'s `_MeasurementRow._poll_
+        once`): a pressed ✕ is forwarded to `supervisor.cancel_generation`,
+        which POSTs `/cancel` to the resident worker — the worker's own
+        generation loop is what actually stops, replying with a `done`
+        frame carrying `cancelled: true` and the tokens it had made by then.
+        Checked between chunks, not on every event, because that is the
+        cadence real progress arrives on; a cold prefill has nothing to
+        check between.
+        """
+        nonlocal count, reported_terminal
+
+        def _all_events():
+            if first is not None:
+                yield first
+            yield from events
+
+        try:
+            for event in _all_events():
+                etype = event.get("type")
+                if etype == "chunk":
+                    _stop_watchdog()
+                    count += 1
+                    tick(state="running", done=count, total=None, detail="Generating…")
+                elif etype == "done":
+                    _stop_watchdog()
+                    reported_terminal = True
+                    if event.get("cancelled"):
+                        tick(state="cancelled", done=count, total=None,
+                             detail=f"Cancelled after {count} "
+                                    f"token{'' if count == 1 else 's'}")
+                    elif not event.get("ok", True):
+                        tick(state="error", done=count, total=None,
+                             message=str(event.get("error") or "generation failed"))
+                    else:
+                        tick(state="done", done=count, total=count,
+                             detail=f"Generated {count} token{'' if count == 1 else 's'}")
+                yield event
+                if etype == "chunk" and supervisor._cancel_requested(job):
+                    supervisor.cancel_generation()
+        finally:
+            # Every exit that is not a `done` frame — the client aborting a
+            # stream mid-generation (`GeneratorExit`, thrown here once this
+            # generator is garbage-collected out from under an abandoned
+            # response), a `SupervisorError` reading the socket, anything
+            # unforeseen — still has to leave the row in a TERMINAL state:
+            # a row stuck at "running" forever is the one failure this
+            # feature exists to avoid, worse than a row that says "error"
+            # for a call nobody was watching any more.
+            _stop_watchdog()
+            if not reported_terminal:
+                reported_terminal = True
+                tick(state="error", done=count, total=None,
+                     message="generation stopped before it finished")
 
     if not stream:
         text, usage = [], {}
@@ -1212,7 +1417,18 @@ async def _ai_relay(body: dict):
 
     def _report_remote(**fields) -> None:
         """One tick on the remote-Claude row, best-effort (never breaks the
-        call — same discipline as supervisor._report)."""
+        call — same discipline as supervisor._report).
+
+        Catches EVERYTHING, like every other reporter here
+        (`supervisor._report`, `schedule._report`, `claude_install._report`):
+        reporting is decoration, and a registry that refuses a write must not
+        cost the call its answer. The narrow `(JobError, ValueError)` this used
+        to catch was survivable while every caller was a one-shot on an exit
+        path; `_start_remote_beat` made it a LOOP, and there anything else
+        escaping kills the heartbeat for the rest of the call — whose symptom
+        is precisely the stalled row the heartbeat exists to prevent, with
+        nothing else to show for it.
+        """
         nonlocal _remote_job_closed
         if fields.get("state") in jobs.TERMINAL_STATES:
             if _remote_job_closed:
@@ -1220,7 +1436,7 @@ async def _ai_relay(body: dict):
             _remote_job_closed = True
         try:
             jobs.upsert({"id": _remote_job, **fields}, server=True)
-        except (jobs.JobError, ValueError):
+        except Exception:  # noqa: BLE001 — reporting is never authoritative
             pass
 
     def _open_remote_job() -> None:
@@ -1235,7 +1451,7 @@ async def _ai_relay(body: dict):
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
         _report_remote(title=title[:80], model=model, state="running", kind="task",
-                       cancellable=False, detail="Claude — remote")
+                       cancellable=False, detail=_REMOTE_ROW_DETAIL)
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
@@ -1247,6 +1463,44 @@ async def _ai_relay(body: dict):
         the local rows' deterministic `job_id_for(model)`."""
         _report_remote(state="done")  # dismiss() refuses a still-running row
         jobs.dismiss(_remote_job)
+
+    def _start_remote_beat():
+        """Start the row's display heartbeat; returns the task that runs it.
+
+        `_REMOTE_TICK_S` says why a row with nothing new to report still has
+        to report. This carries NO FIELDS, which is the whole design of it:
+        `jobs.upsert` applies only the keys present, so an id and nothing else
+        is precisely "still here" and is incapable of saying anything more —
+        it cannot move a bar, cannot overwrite the detail `run_once` sets
+        while this call is parked in the queue, and is not an *opening* report
+        (jobs.py reopens a dismissed or forgotten id only for a report that
+        states `running` outright), so it can never blink a closed row back
+        onto the screen. `schedule._report` documents the same fieldless call
+        for the same registry.
+
+        A tick after the outcome is already reported is impossible rather than
+        merely unlikely: `_remote_job_closed` is set by the terminal report
+        itself, and is re-read here after every sleep."""
+        async def beat() -> None:
+            while True:
+                await asyncio.sleep(_REMOTE_TICK_S)
+                if _remote_job_closed:
+                    return
+                _report_remote()
+
+        return asyncio.ensure_future(beat())
+
+    async def _stop_remote_beat(beat) -> None:
+        """Stop the heartbeat and await it, so the task cannot outlive the
+        request that owns the row. Not load-bearing for correctness — the
+        `_remote_job_closed` re-read above is what stops a late tick — but a
+        cancelled generator whose beat kept sleeping would be a task leaked
+        per abandoned stream."""
+        beat.cancel()
+        try:
+            await beat
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
@@ -1268,7 +1522,19 @@ async def _ai_relay(body: dict):
                 delivered = True
                 on_delta(text)
 
+        # Contended: this call has not begun, and a row reading exactly like
+        # one that is generating is the row lying by omission — the same fix
+        # supervisor's `_QUEUED_DETAIL` is for the transcription queue, at the
+        # one other place in the app that parks work behind a lock. Probed
+        # rather than acquired-non-blockingly because `asyncio.Lock` has no
+        # such acquire; a stale read only mis-labels a row for one tick, which
+        # is the whole stake of a detail line.
+        queued = _AI_SESSION.lock.locked()
+        if queued:
+            _report_remote(detail=_REMOTE_QUEUED_DETAIL)
         async with _AI_SESSION.lock:
+            if queued:
+                _report_remote(detail=_REMOTE_ROW_DETAIL)
             try:
                 proc = await _AI_SESSION.configure(model, system_prompt,
                                                    effort)
@@ -1303,6 +1569,7 @@ async def _ai_relay(body: dict):
 
     if not stream:
         _open_remote_job()
+        beat = _start_remote_beat()
         try:
             try:
                 data = await run_once()
@@ -1346,6 +1613,9 @@ async def _ai_relay(body: dict):
             _report_remote(state="error", message="internal error")
             raise
         finally:
+            # The heartbeat first, so nothing is still ticking a row this
+            # block is about to close.
+            await _stop_remote_beat(beat)
             # Belt-and-suspenders: anything that reaches here without one of
             # the terminal reports above closes the row as cancelled rather
             # than leaving it running forever. A no-op once a real terminal
@@ -1366,6 +1636,7 @@ async def _ai_relay(body: dict):
         # sync: no code path can create a row without something guaranteed
         # to run also being on the hook to close it.
         _open_remote_job()
+        beat = _start_remote_beat()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))
@@ -1433,6 +1704,7 @@ async def _ai_relay(body: dict):
             _report_remote(state="error", message="internal error")
             raise
         finally:
+            await _stop_remote_beat(beat)
             if not task.done():
                 # Client went away mid-stream: cancel AND await, so
                 # run_once's cancel branch (discard the now-mid-turn
