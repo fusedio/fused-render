@@ -201,7 +201,7 @@ def _uv_env(**overrides):
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None,
-           activity=None, bytes_done=None, bytes_total=None):
+           activity=None, bytes_done=None, bytes_total=None, needs_build=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
     # same file (envinstall._write) and two writers racing on one temp means the
     # first os.replace consumes the second's file, whose replace then fails.
@@ -219,13 +219,21 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
     # `python`/`create`/`done`/`error` stages, and `install` before uv has
     # printed its first `Downloading` line — leaves them `None`, which is
     # indistinguishable from the record this function wrote before they existed.
+    #
+    # `needs_build`: set only on the terminal `error` record of a `--no-build`
+    # refusal (see `_no_build_package`, below) — the bare package name uv
+    # refused to build from source, so `envinstall._mirror_into_jobs` can tell
+    # this apart from a genuine resolver failure, and `runtime.js` can offer
+    # the "Install anyway" retry off this field instead of re-parsing `error`'s
+    # text itself. `error` still carries uv's message verbatim (SPEC PY-18) —
+    # this is an ADDITIONAL field, not a replacement for it.
     path = os.path.join(progress_dir, "progress.json")
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": pct, "detail": detail, "done": done,
                    "error": error, "pid": os.getpid(), "ts": time.time(),
                    "activity": activity, "bytes_done": bytes_done,
-                   "bytes_total": bytes_total}, f)
+                   "bytes_total": bytes_total, "needs_build": needs_build}, f)
     os.replace(tmp, path)
 
 
@@ -1606,6 +1614,67 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
     return venv_python
 
 
+# The resolver's OWN wording for "this can only be satisfied by building from
+# source", raised by `_build` as a `RuntimeError` when `allow_build=False`
+# (the default) refuses uv permission to do so. Detected HERE, in the worker
+# that actually knows `--no-build` was passed, rather than by the client
+# regexing uv's stderr after the fact (that used to live in runtime.js's
+# `NO_BUILD_HINT` — moved here so there is one detector, not two that can
+# disagree). See `_build`'s own `--no-build` comment for why the flag exists;
+# the two wordings below are transcribed with their reasoning intact.
+#
+# Anchored on the hint line rather than the "Because … has no usable wheels"
+# line above it: the hint is the one sentence uv writes FOR THIS SITUATION
+# SPECIFICALLY (it names `--no-build` itself), where the other line's wording
+# changes shape between "all versions of X" and "X==1.2.3" depending on
+# whether the requirement carries a pin — one pattern to keep in sync with
+# uv's output instead of several.
+#
+# Verified against a real `uv sync --no-build` failure (uv 0.12.5):
+#   hint: Wheels are required for `uwsgi` because building from source is
+#   disabled for all packages (i.e., with `--no-build`)
+_NO_BUILD_HINT = re.compile(
+    r"hint: Wheels are required for `([^`]+)` because building from source is disabled")
+
+# The SAME refusal, in a different shape, when a `uv.lock` already exists.
+# `_NO_BUILD_HINT` matches only the RESOLUTION-time `hint:` line, which uv
+# prints while it is still resolving the dependency graph — but `_sync_root`
+# deliberately preserves `uv.lock` across builds, and a folder gains one just
+# by being run once. Once a lock exists, resolution succeeds against it and
+# the refusal happens later, at INSTALL time, with no hint line at all:
+#
+#   error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+#   can't be installed because it is marked as `--no-build` but has no
+#   binary distribution
+#
+# Verified against real uv 0.12.5 (`uv lock && uv sync --no-default-groups
+# --no-build --no-install-project`). The package name sits before the
+# `==version @ source` — `[^`=]+` stops at the first `=` so a name is never
+# captured with its pin attached.
+_NO_BUILD_DISTRIBUTION = re.compile(
+    r"Distribution `([^`=]+)==[^`]*` can't be installed because it is marked as `--no-build`")
+
+
+def _no_build_package(message):
+    """The bare package name uv refused to build from source, or None.
+
+    None both when `message` does not match either wording at all (a plain
+    resolver failure — a bad pin, no network, a genuinely nonexistent
+    package — must fall through to the ordinary error path unchanged, not be
+    swallowed into a retry prompt that names nothing) and when the caller
+    already allowed builds (checked by the caller, not here, since this
+    function only knows about text — `allow_build=True` should never even
+    have produced this failure, but a caller must not go looking for it).
+    """
+    if not isinstance(message, str):
+        return None
+    hint = _NO_BUILD_HINT.search(message)
+    if hint:
+        return hint[1]
+    dist = _NO_BUILD_DISTRIBUTION.search(message)
+    return dist[1] if dist else None
+
+
 def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
             python_executable=None, acquire_python=None, allow_build=False):
     os.makedirs(progress_dir, exist_ok=True)
@@ -1631,12 +1700,13 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
     finished = []
 
     def write(stage, pct, detail="", done=False, error=None,
-              activity=None, bytes_done=None, bytes_total=None):
+              activity=None, bytes_done=None, bytes_total=None, needs_build=None):
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
             _write(progress_dir, stage, pct, detail, done, error,
-                   activity=activity, bytes_done=bytes_done, bytes_total=bytes_total)
+                   activity=activity, bytes_done=bytes_done, bytes_total=bytes_total,
+                   needs_build=needs_build)
             # Latched only once the record is actually ON DISK. Latching before the
             # write would make a FAILED terminal write shut the file anyway, and the
             # `except` path's error record — the one carrying the reason — would
@@ -1752,7 +1822,15 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         # names the real problem (a platform with no wheel, a bad pin, no
         # network). Only the exception class is prefixed, so the page can tell a
         # resolver failure from a disk-quota RuntimeError.
-        write("error", 100, "", done=True, error=f"{type(e).__name__}: {e}")
+        message = f"{type(e).__name__}: {e}"
+        # `allow_build` gates the lookup, not just the field: this run already
+        # asked uv for permission to build from source, so an unrelated
+        # RuntimeError that happens to mention "--no-build" in passing (there
+        # is no such real case today, but the check costs nothing and removes
+        # the possibility) must never be misread as the refusal this run
+        # itself opted out of.
+        needs_build = _no_build_package(str(e)) if not allow_build else None
+        write("error", 100, "", done=True, error=message, needs_build=needs_build)
         raise
 
 

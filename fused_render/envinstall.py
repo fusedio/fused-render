@@ -1772,10 +1772,34 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
             if prog.get("bytes_total"):
                 fields["unit"] = "bytes"
             error = prog.get("error")
+            needs_build = prog.get("needs_build")
             finished = bool(prog.get("done"))
             if finished:
                 if error == _CANCELLED_ERROR:
                     fields["state"] = "cancelled"
+                elif needs_build:
+                    # Not a failure — a QUESTION on the page, awaiting the
+                    # user's "Install anyway" (runtime.js's
+                    # `confirmBuildRetry`). `error` still carries uv's raw
+                    # refusal text (`_env_install_worker.py`'s `install`,
+                    # SPEC PY-18), which is exactly the wrong thing to show
+                    # in a notification: a stack of jargon a non-expert
+                    # cannot act on, sitting in a RED row that (per
+                    # `jobs.py`'s `_sweep`) stays put until dismissed because
+                    # `error` rows are deliberately kept. `jobs.py`'s
+                    # `TERMINAL_STATES` has exactly three members
+                    # (`done`/`error`/`cancelled`) and none of them means
+                    # "stopped, waiting on you" — `cancelled` is the least
+                    # wrong of the three: it is terminal, it ages out
+                    # normally instead of sticking, and it reads as
+                    # "stopped" rather than "broken". If the user clicks
+                    # "Install anyway", the retry POSTs to the same key, so
+                    # `_claim`/`_spawn` reuse this same job id and the next
+                    # tick's `fields["state"] = "running"` flips the row
+                    # straight back — this branch is not the row's last
+                    # word, only its word while the question is open.
+                    fields["state"] = "cancelled"
+                    fields["message"] = f"waiting for your approval to compile {needs_build}"
                 elif error:
                     fields["state"] = "error"
                     fields["message"] = str(error)

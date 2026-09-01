@@ -914,6 +914,97 @@ def test_dismissing_the_dock_row_cancels_the_real_install(
 
 
 @requires_fused
+def test_a_needs_build_refusal_mirrors_as_cancelled_not_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The `--no-build` refusal (`_env_install_worker.py`'s `install`, which
+    sets `needs_build` alongside uv's verbatim `error`) is a QUESTION on the
+    page — `confirmBuildRetry`'s "Install anyway" — not a genuine resolver
+    failure. It must not reach the jobs dock as a sticky red `error` row
+    carrying uv's raw stderr; `jobs.py`'s three `TERMINAL_STATES` make
+    `cancelled` the least-wrong stand-in (terminal, ages out normally,
+    reads as "stopped" rather than "broken"), with a short plain-language
+    message naming the package instead of uv's text.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    raw_error = (
+        "RuntimeError: Failed to build the environment: error: Distribution "
+        "`foolib==1.2.3 @ registry+https://pypi.org/simple` can't be "
+        "installed because it is marked as `--no-build` but has no binary "
+        "distribution"
+    )
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": raw_error, "needs_build": "foolib",
+        "pid": os.getpid(), "ts": time.time(),
+    })
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] in jobs.TERMINAL_STATES and j)
+    assert row["state"] == "cancelled", row
+    assert row.get("message") == "waiting for your approval to compile foolib", row
+    assert "Distribution" not in (row.get("message") or ""), (
+        "uv's raw stderr must never reach the jobs-dock message"
+    )
+
+
+@requires_fused
+def test_a_needs_build_row_flips_back_to_running_on_the_retry(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`confirmBuildRetry`'s "Install anyway" re-POSTs to `/api/env/install`
+    naming the same project, which re-derives the SAME key and the SAME job
+    id (`sys:env-install:<key>`) — so the retry must genuinely restart the
+    row back to `running`, not leave the earlier "cancelled" row stuck.
+    The first mirror thread already exited (it returns the moment its
+    `progress(key)` reports `done`), so this only holds if `start()`'s claim
+    is takeable again after a finished install and the retry spawns a fresh
+    mirror thread under the identical id — exercised here via two real
+    `start()` calls, not by hand-writing progress records.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `foolib==1.2.3 @ registry+https://pypi.org/simple` "
+                 "can't be installed because it is marked as `--no-build` but has no "
+                 "binary distribution",
+        "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+
+    # "Install anyway" -> the retry POST, same project, allow_build=True.
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key, "the retry must reuse the same key"
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.RUNNING and j)
+    assert row["state"] == jobs.RUNNING
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+
+
+@requires_fused
 def test_a_joining_caller_starts_no_second_mirror_thread(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -3691,6 +3782,86 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     rec = _record(bad_dir)
     assert rec["done"] is True
     assert "no wheels for imagecodecs" in rec["error"]
+    assert rec.get("needs_build") is None, (
+        "a genuine resolver failure (a bad pin, no network, a nonexistent "
+        "package) must never be misread as a --no-build refusal"
+    )
+
+
+def test_needs_build_is_set_for_the_resolution_time_hint(tmp_path, monkeypatch):
+    """The worker, not the client, classifies the `--no-build` refusal: it is
+    the process that actually knows `--no-build` was passed. `_build` raises
+    a plain `RuntimeError` carrying uv's own resolution-time wording — the
+    `hint:` line — and `install`'s except block must add `needs_build` with
+    the BARE package name alongside the verbatim `error` text (SPEC PY-18
+    requires `error` stay untouched).
+    """
+    worker = _worker_module("_env_install_worker_needs_build_hint")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "foolib", rec
+    assert "hint: Wheels are required for `foolib`" in rec["error"], (
+        "error must still carry uv's verbatim text"
+    )
+
+
+def test_needs_build_is_set_for_the_install_time_distribution_wording(tmp_path, monkeypatch):
+    """The SAME refusal, in the shape uv uses once a `uv.lock` already exists
+    (resolution succeeds against the lock, and the refusal happens later, at
+    install time, with no `hint:` line at all). `needs_build` must carry the
+    bare name — no `==version` or ` @ source` attached.
+    """
+    worker = _worker_module("_env_install_worker_needs_build_dist")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple` "
+            "can't be installed because it is marked as `--no-build` but has no "
+            "binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "uwsgi", rec
+    assert "==2.0.31" in rec["error"], "error must still carry uv's verbatim text"
+
+
+def test_allow_build_true_never_sets_needs_build(tmp_path, monkeypatch):
+    """The retry itself (`allow_build=True`) must never loop back into another
+    build-retry prompt — even if `_build` somehow still raised text shaped
+    like the refusal, a run that already got explicit permission to build
+    must not have `needs_build` set for it.
+    """
+    worker = _worker_module("_env_install_worker_needs_build_allowed")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=True)
+    rec = _record(d)
+    assert rec.get("needs_build") is None, rec
 
 
 def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):
