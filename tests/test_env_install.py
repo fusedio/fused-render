@@ -2616,8 +2616,9 @@ def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch)
     zero dependencies of its own, and fails outright
     ("Distribution `x==0.1.0 @ editable+.` can't be installed because it is
     marked as `--no-build` but has no binary distribution") with wording that
-    does not match `NO_BUILD_HINT` in runtime.js, so no retry is ever offered
-    and the folder is permanently stuck. Verified against real uv 0.12.5.
+    does not match `_NO_BUILD_HINT` (`_env_install_worker.py`), so no retry is
+    ever offered and the folder is permanently stuck. Verified against real
+    uv 0.12.5.
 
     `--no-install-project` must ride along with `--no-build` to prevent this.
     The trade-off (a src-layout project's own package is no longer installed

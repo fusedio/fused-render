@@ -1047,6 +1047,13 @@ def test_a_no_wheel_failure_offers_install_anyway_and_retries_with_allow_build()
     instead of a silent source build; this is the retry it exists to make
     non-fatal.
 
+    Detection lives on the SERVER now (`_env_install_worker.py`'s `install`,
+    the process that actually knows `--no-build` was passed): the progress
+    record it writes carries a `needs_build` field naming the bare package,
+    and `runtime.js` reads that field directly rather than regexing `error`'s
+    text itself — `error` here is only what the page would show if the user
+    declined the retry, no longer what drives it.
+
     The harness's default auto-click (`__autoInstall`, see _JS_PRELUDE) only
     fires for a button whose `textContent === "Install"` — this retry's
     button reads "Install anyway", so it is deliberately NOT auto-approved,
@@ -1065,7 +1072,7 @@ globalThis.fetch = (url, opts) => {
     progressCalls += 1;
     if (progressCalls === 1) {
       return Promise.resolve({ json: () => Promise.resolve({ ok: true,
-        progress: { stage: "done", pct: 100, done: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
           error: "hint: Wheels are required for `foolib` because building " +
                  "from source is disabled for all packages (i.e., with `--no-build`)" } })});
     }
@@ -1099,19 +1106,21 @@ p.then(
 
 
 def test_a_locked_project_no_wheel_failure_also_offers_install_anyway():
-    """`NO_BUILD_HINT` matches only uv's RESOLUTION-time `hint:` line. Once a
-    `uv.lock` exists (`_sync_root` preserves it across builds, and a folder
-    gains one just by being run once), resolution succeeds against the lock
+    """The worker's install-time wording (`_NO_BUILD_DISTRIBUTION`, once a
+    `uv.lock` exists — `_sync_root` preserves it across builds, and a folder
+    gains one just by being run once — resolution succeeds against the lock
     and the refusal happens at INSTALL time instead, in a different shape
-    with no hint line at all:
+    with no hint line at all):
 
         error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
         can't be installed because it is marked as `--no-build` but has no
         binary distribution
 
-    Verified against real uv 0.12.5. Without a second alternative in the
-    regex, a locked project's build-from-source refusal would never surface
-    the retry prompt at all.
+    Verified against real uv 0.12.5. This is the second of the worker's two
+    detectors (`_env_install_worker.py`'s `_no_build_package`) — without it a
+    locked project's build-from-source refusal would never set `needs_build`,
+    and the client (which now only reads that field) would never offer the
+    retry prompt at all.
     """
     result = _run_loader("""
 const posts = [];
@@ -1126,7 +1135,7 @@ globalThis.fetch = (url, opts) => {
     progressCalls += 1;
     if (progressCalls === 1) {
       return Promise.resolve({ json: () => Promise.resolve({ ok: true,
-        progress: { stage: "done", pct: 100, done: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "uwsgi",
           error: "error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple` " +
                  "can't be installed because it is marked as `--no-build` but has no " +
                  "binary distribution" } })});
@@ -1154,6 +1163,145 @@ p.then(
         {"py": "a.py", "html": "a.html", "allow_build": False},
         {"py": "a.py", "html": "a.html", "allow_build": True},
     ], "a locked project's install-time refusal must also trigger the retry"
+
+
+def test_the_retry_prompt_is_driven_by_the_field_not_by_regexing_error():
+    """The client no longer parses uv's stderr at all — `needs_build` is the
+    ONLY signal `installEnv` looks at. An `error` string that would never
+    have matched either of the old client-side regexes (`NO_BUILD_HINT` /
+    `NO_BUILD_DISTRIBUTION`, both deleted) still has to trigger the retry as
+    long as `needs_build` is set, proving detection genuinely moved server-
+    side rather than merely being duplicated there.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "RuntimeError: Failed to build the environment for /proj" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "needs_build alone must be enough to trigger the retry"
+
+
+def test_an_unrelated_resolver_failure_never_offers_a_retry():
+    """A genuine resolver failure (a bad pin, no network, a nonexistent
+    package) never carries `needs_build` — the worker only sets it for
+    uv's own `--no-build` refusal. Without that field, `installEnv` must
+    fail outright rather than ever offering "Install anyway", and it must
+    never re-POST a second time.
+    """
+    result = _run_loader("""
+const posts = [];
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true,
+        error: "RuntimeError: No solution found when resolving dependencies: " +
+               "because nonexistentpkg was not found in the package registry" } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+installEnv({ key: "%(a)s", requirements: ["nonexistentpkg"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, type: e.type, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is False, result
+    assert result["type"] == "EnvInstallError"
+    assert result["posts"] == [{"py": "a.py", "html": "a.html", "allow_build": False}], (
+        "a genuine failure must never trigger a second, allow_build:true POST"
+    )
+
+
+def test_the_retry_prompt_names_the_app_not_jargon():
+    """Defect from real dogfooding: the old copy ("has no ready-to-use
+    package for this computer… trust <pkg>") never says which app wants the
+    dependency and leans on jargon a non-expert can't act on. The new copy
+    names the app (`need.name`, same fallback `confirmInstall` already uses)
+    and says what continuing costs.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+let promptTitle = null, promptDetail = null;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", name: "OpenWhisper", requirements: ["foolib"] },
+                      "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  promptTitle = row.title.textContent;
+  promptDetail = row.detail.textContent;
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts, promptTitle, promptDetail })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts,
+                                      promptTitle, promptDetail })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["promptTitle"] == "foolib has to be compiled on this computer", result
+    assert result["promptDetail"] == (
+        "OpenWhisper needs it, but there's no prebuilt version for this system. "
+        "Compiling runs code from foolib and can take several minutes or fail. "
+        "Only continue if you trust it."
+    ), result
 
 
 def test_cancelling_cancels_the_install_that_is_actually_running():

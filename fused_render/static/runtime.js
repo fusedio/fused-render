@@ -2155,67 +2155,34 @@
     );
   }
 
-  // The resolver's OWN wording for "this can only be satisfied by building
-  // from source", surfaced by uv's `--no-build` (the default `_build` now
-  // passes — see `_env_install_worker.py`). Anchored on the hint line rather
-  // than the "Because … has no usable wheels" line above it: the hint is the
-  // one sentence uv writes FOR THIS SITUATION SPECIFICALLY (it names
-  // `--no-build` itself), where the other line's wording changes shape
-  // between "all versions of X" and "X==1.2.3" depending on whether the
-  // requirement carries a pin — one pattern to keep in sync with uv's output
-  // instead of several.
-  //
-  // Verified against a real `uv sync --no-build` failure (uv 0.12.5):
-  //   hint: Wheels are required for `uwsgi` because building from source is
-  //   disabled for all packages (i.e., with `--no-build`)
-  //
-  // Returns the package name, or null when `message` is not this shape at
-  // all — a plain resolver failure (a bad version pin, no network, a genuinely
-  // nonexistent package) must fall through to the ordinary error path
-  // unchanged, not be swallowed into a retry prompt that names nothing.
-  const NO_BUILD_HINT = /hint: Wheels are required for `([^`]+)` because building from source is disabled/;
-
-  // The SAME refusal, in a different shape, when a `uv.lock` already exists.
-  // `NO_BUILD_HINT` matches only the RESOLUTION-time `hint:` line, which uv
-  // prints while it is still resolving the dependency graph — but
-  // `_sync_root` deliberately preserves `uv.lock` across builds, and a folder
-  // gains one just by being run once. Once a lock exists, resolution
-  // succeeds against it and the refusal happens later, at INSTALL time,
-  // with no hint line at all:
-  //
-  //   error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
-  //   can't be installed because it is marked as `--no-build` but has no
-  //   binary distribution
-  //
-  // Verified against real uv 0.12.5 (`uv lock && uv sync --no-default-groups
-  // --no-build --no-install-project`). The package name sits before the
-  // `==version @ source` — `[^`=]+` stops at the first `=` so a name is never
-  // captured with its pin attached.
-  const NO_BUILD_DISTRIBUTION =
-    /Distribution `([^`=]+)==[^`]*` can't be installed because it is marked as `--no-build`/;
-
-  function noBuildPackage(message) {
-    if (typeof message !== "string") return null;
-    const hint = message.match(NO_BUILD_HINT);
-    if (hint) return hint[1];
-    const dist = message.match(NO_BUILD_DISTRIBUTION);
-    return dist ? dist[1] : null;
-  }
-
-  // "`foolib` has no ready-to-use package for this computer." The one
-  // dependency Task 1's static classification cannot see coming — whether a
-  // plain `foo>=1.0` publishes a wheel is a fact about the index, not the
+  // "`foolib` has to be compiled on this computer." The one dependency
+  // Task 1's static classification cannot see coming — whether a plain
+  // `foo>=1.0` publishes a wheel is a fact about the index, not the
   // declaration — so it is caught here instead, at the resolver's own
   // failure, and named individually rather than folded into the earlier
   // question (which had already been answered by the time this exists to
   // ask). Declining leaves the ORIGINAL resolver error standing — nothing
   // about declining a build is itself a cancellation of the install.
-  function confirmBuildRetry(row, ui, pkg) {
+  //
+  // `pkg` comes from `needs_build` on the polled progress record — set by
+  // the worker (`_env_install_worker.py`'s `install`), the process that
+  // actually knows `--no-build` was passed and can tell this refusal apart
+  // from a genuine resolver failure. That used to be re-derived here, by
+  // regexing uv's stderr for either of its two wordings — two detectors
+  // that could disagree is exactly the defect this rewrite removes; there is
+  // one now, and it lives where the fact actually originates.
+  //
+  // `appName` is `need.name` (same fallback `confirmInstall` uses): a
+  // non-expert reading this dialog cannot act on "no ready-to-use package"
+  // sitting next to a bare package name, and nothing in the old copy said
+  // which app even wants the dependency or what continuing costs.
+  function confirmBuildRetry(row, ui, pkg, appName) {
     return askRow(
       row, ui,
-      pkg + " has no ready-to-use package for this computer.",
-      "Installing it anyway runs that package's own setup code to build it. " +
-        "Only do this if you trust " + pkg + ".",
+      pkg + " has to be compiled on this computer",
+      appName + " needs it, but there's no prebuilt version for this system. " +
+        "Compiling runs code from " + pkg + " and can take several minutes or fail. " +
+        "Only continue if you trust it.",
       "Install anyway"
     );
   }
@@ -2291,7 +2258,15 @@
             if (!prog.done) {
               return new Promise((r) => setTimeout(r, pollDelay())).then(step);
             }
-            if (prog.error) throw new Error(prog.error);
+            if (prog.error) {
+              const e = new Error(prog.error);
+              // Carried on the Error object rather than re-derived from its
+              // message: `needs_build` is the worker's own classification of
+              // this failure (`_env_install_worker.py`'s `install`), and the
+              // catch below reads it as-is instead of regexing `e.message`.
+              e.needsBuild = prog.needs_build || null;
+              throw e;
+            }
             return prog;
           });
       return step();
@@ -2335,10 +2310,11 @@
             // A resolver failure this run itself chose NOT to allow — never on
             // the retry attempt, or a package with a genuinely missing wheel
             // (not merely one this run refused to build) would loop forever
-            // offering the same question. `noBuildPackage` returns null for
+            // offering the same question. `needsBuild` (set on the Error
+            // above from the worker's own `needs_build` field) is null for
             // every other failure (bad pin, no network, a nonexistent name),
             // which falls straight through to the ordinary error below.
-            const pkg = !allowBuild && noBuildPackage(err.message);
+            const pkg = !allowBuild && err.needsBuild;
             if (pkg) {
               // The mid-install Cancel handler is unregistered for the
               // question's duration — same reasoning as the very first
@@ -2347,7 +2323,7 @@
               // would fire both it and this question's own Cancel off one
               // click.
               row.cancel.removeEventListener("click", onCancel);
-              return confirmBuildRetry(row, ui, pkg).then(
+              return confirmBuildRetry(row, ui, pkg, need.name || "the environment").then(
                 () => {
                   row.cancel.addEventListener("click", onCancel);
                   paintPreparing(row, need);
