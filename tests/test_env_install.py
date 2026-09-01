@@ -149,13 +149,22 @@ def test_the_venv_lives_in_the_project_by_default(tmp_path):
     assert venv == os.path.join(proj, ".venv")
 
 
-def test_a_folder_inside_the_package_still_uses_the_home_store(tmp_path):
+def test_an_in_package_runner_folder_still_uses_the_home_store(tmp_path):
     """MD-7 survives for exactly the case it was written for: a folder that
-    ships inside the installed `fused_render` package is read-only (the
-    AppImage squashfs mount, a Windows Program Files install), so its venv
-    still lives under our own home dir -- an in-folder `.venv` there would
-    also be destroyed by the release-time re-stage, costing a full
-    re-download of numpy/pyproj/imagecodecs on every upgrade.
+    ships INSIDE the installed `fused_render` package — an AI runner folder,
+    never staged anywhere, always read directly from the package tree — is
+    read-only in every shape the app actually ships (the AppImage squashfs
+    mount, a Windows `Program Files` install), so nothing can be written
+    there at all and its venv has to live under our own home dir instead
+    (D376).
+
+    A STAGED core template is a different folder with a different reason for
+    its placement: it is copied to a writable location
+    (`core_templates.core_templates_dir()`) and takes the ordinary in-tree
+    path like any other writable project —
+    `test_a_staged_core_template_resolves_to_an_in_tree_venv` pins that. This
+    test is deliberately a real runner folder rather than a synthetic staged
+    one, so the two cases cannot be conflated.
     """
     import fused_render
 
@@ -167,6 +176,27 @@ def test_a_folder_inside_the_package_still_uses_the_home_store(tmp_path):
     assert venv == projectenv.venv_dir_for(proj)
     assert venv.startswith(str(tmp_path / "home"))
     assert not venv.startswith(proj + os.sep)
+
+
+def test_a_staged_core_template_resolves_to_an_in_tree_venv(tmp_path, monkeypatch):
+    """A core template staged under `~/.fused-render/.core-templates/<name>`
+    is a writable folder like any other project (D630): it takes the ordinary
+    in-tree path, `<staged>/<name>/.venv`, rather than the home store. A
+    release-time re-stage wiping that `.venv` is an accepted cost — the uv
+    cache lives outside the staged tree, on the same filesystem, so the
+    rebuild is a hardlink relink rather than a re-download (D630) — and is
+    not a reason to route a staged template through the home store the way an
+    in-PACKAGE runner folder has to be
+    (`test_an_in_package_runner_folder_still_uses_the_home_store`).
+    """
+    core_dir = str(tmp_path / "home" / ".core-templates")
+    proj = os.path.join(core_dir, "geotiff")
+    os.makedirs(proj)
+
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
 
 
 def test_the_interpreter_handed_to_the_run_is_the_projects_own(tmp_path):

@@ -1471,14 +1471,18 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
                               the common in-tree case (`projectenv.venv_dir_for`
                               already answered `<project_dir>/.venv`) that happens
                               to be the same path uv would have picked on its own —
-                              worth setting anyway, because the two cases this
-                              worker cannot tell apart from here still need it: a
-                              core template's folder resolves to the home store
-                              (a release-time re-stage would destroy an in-tree
-                              `.venv` there and cost a full re-download of
-                              numpy/pyproj/imagecodecs on every upgrade), and a
-                              read-only in-package runner folder cannot hold one
-                              at all.
+                              worth setting anyway, because the one case this
+                              worker cannot tell apart from here still needs it: a
+                              read-only in-package runner folder cannot hold a
+                              `.venv` at all, so its build has to land in the home
+                              store instead (D376). A staged core template's
+                              folder is writable and takes the in-tree path like
+                              any other project; a release-time re-stage wipes its
+                              `.venv` along with the rest of the staged tree, and
+                              the rebuild is a hardlink relink from the uv cache
+                              (which lives outside the staged tree) rather than a
+                              re-download — an accepted cost, not a reason to
+                              route it through the home store (D630).
       UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
                               only when the caller asked for isolation
                               (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).
