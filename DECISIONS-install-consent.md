@@ -863,8 +863,67 @@ behaviour there is correct; only the doubles were behind.
   passed). One `test_env_install.py` thread-count race
   (`test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread`,
   added in Round 3) failed once under `pytest-xdist` parallelism and passed
-  twice in isolation immediately after — a pre-existing flake unrelated to
-  this round's changes (it asserts on `threading.enumerate()`, which is
-  process-global and can see another worker's leftover threads under
-  xdist), not a regression from this diff. Did not run the full suite —
-  left to the orchestrator, per the same `/tmp`-quota note as prior rounds.
+  twice in isolation immediately after, and was called an xdist flake here.
+  **That diagnosis was wrong — see Round 5.** It fails deterministically
+  with `-n 0` (no xdist at all) when the whole file runs, because
+  `threading.enumerate()` is process-global: other tests in the file leave
+  their own same-named mirror threads alive, and this test counted those
+  too. Did not run the full suite — left to the orchestrator, per the same
+  `/tmp`-quota note as prior rounds.
+
+## Round 5: three more review findings (stale caption, a broken test misdiagnosed as flaky, two stale comments)
+
+- **A successful retry's dock row kept the "waiting for your approval"
+  caption.** `_mirror_into_jobs`'s `needs_build` branch sets `message` to
+  the approval caption on the row it leaves `cancelled`. The "Install
+  anyway" retry's mirror thread reuses the SAME job id, and its opening
+  upsert set `title`/`kind`/`state`/`cancellable` but not `message` —
+  `jobs.upsert`'s `"message" in body` guard leaves an absent key untouched,
+  so the caption survived straight through to a `done` row. Fixed by adding
+  `"message": ""` to the opening upsert. Checked whether any other field the
+  opening upsert leaves out is stale for the same reason: no — `detail`,
+  `done`, `total`, and `unit` are all rewritten unconditionally from the
+  live `progress(key)` record on every tick of the loop below, regardless
+  of which branch is taken, so a fresh attempt's first tick overwrites them
+  within one poll interval. `message` is the only field this loop ever sets
+  conditionally (only inside the `needs_build`/`error` sub-branches of
+  `finished`) and never clears elsewhere, which is what let it go stale.
+  Added `test_a_successful_retry_clears_the_needs_build_row_caption`;
+  confirmed it fails without the fix (row still carries the old `message`
+  at `done`) and passes with it.
+
+- **`test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread` was
+  broken, not flaky — the Round 4 diagnosis above was wrong.** Its
+  `alive_mirrors()` filtered `threading.enumerate()` by thread name
+  (`env-install-jobs-mirror`), which is process-global: other tests in the
+  same file start their own mirror threads that are still alive (they exit
+  only once their own job reaches a terminal state on their own schedule)
+  when this test runs, so it was counting unrelated threads, not measuring
+  what its own name claims. Confirmed this deterministically —
+  `.venv/bin/python -m pytest tests/test_env_install.py -n 0 -q` (no xdist
+  at all) failed every time the whole file ran, never in isolation. Fixed
+  by snapshotting `threading.enumerate()`'s thread idents before the test
+  starts its own install, and filtering `alive_mirrors()` on that
+  difference instead of name alone. Regression check: inverted the
+  `_claim_token` equality check in `_mirror_into_jobs` (`==` instead of
+  `!=`) and reran the test alone — it failed immediately (`0 == 1`, the
+  first thread retiring itself on its very first tick), confirming the
+  fixed test still catches the supersession logic breaking. Reverted the
+  inversion before committing.
+
+- **Two comments misdescribed the security consequence of an undisclosed
+  index**, left over from Round 4's deletion of the disclosure-free
+  install-confirm prompt: `projectenv.py`'s shape-3 comment and a
+  `test_projectenv.py` docstring both said an undisclosed index would leave
+  "the prompt" saying "a one-time download" — but that prompt path no
+  longer exists, so the actual consequence is silent install with no
+  consent prompt at all, which is worse than a vague one. Rewrote both to
+  describe the code as it stands (no history references, per repo
+  convention). Left `engine.py:1132`/`:1138` alone — those are the
+  `needs_install` notice payload for the *is this dependency installed at
+  all* question, unrelated to shape 3's classifier, and still accurate.
+
+- Ran scoped: `tests/test_env_install.py tests/test_projectenv.py
+  tests/test_jobs_api.py tests/test_server_env_install.py` (362 passed) and
+  `tests/test_env_install.py -n 0 -q` (150 passed, 1 skipped). Did not run
+  the full suite.
