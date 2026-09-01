@@ -29,7 +29,7 @@
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 7px 10px;
 }
 
@@ -39,8 +39,12 @@ select.field-control {
 }
 
 .field-control:focus {
+  /* Canon retheme: focus is the lime signal — border takes the accent and a
+     faint accent wash rings it, the same one-signal grammar as the nav
+     marker and selection edge. */
   outline: none;
-  border-color: var(--fg-muted);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
 }
 
 .field-select-wrap {
@@ -85,7 +89,7 @@ select.field-control:has(option[value=""]:checked) {
   font: inherit;
   padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -112,7 +116,7 @@ select.field-control:has(option[value=""]:checked) {
 .error-banner {
   color: var(--error);
   border: 1px solid var(--error);
-  border-radius: 6px;
+  border-radius: 8px;
   background: rgba(var(--error-rgb), 0.07);
   padding: 8px 10px;
   white-space: pre-wrap;

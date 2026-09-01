@@ -100,7 +100,7 @@
   overflow: hidden;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   transition: border-color 120ms ease;
 }
 
@@ -117,7 +117,7 @@
 .canvas-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 /* Server-provided preview image filling the frame. */

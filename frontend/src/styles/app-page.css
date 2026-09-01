@@ -120,7 +120,7 @@
   min-height: 0;
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg);
 }
 
@@ -156,7 +156,7 @@
   min-height: 0;
   display: flex;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--bg);
 }
@@ -225,7 +225,7 @@
   height: 28px;
   padding: 0 8px 0 4px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--fg);
   font: inherit;

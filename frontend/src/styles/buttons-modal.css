@@ -16,7 +16,7 @@
   justify-content: center;
   gap: 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -38,23 +38,24 @@
   outline-offset: 2px;
 }
 
-/* Quiet primary: accent-tinted, not accent-filled — still the strongest button
-   in a footer, without the neon pop of a solid lime fill on the dark surface. */
-/* Neutral filled primary — reads strongest through contrast, not accent
-   (Akshil: accent buttons pop too much). Accent stays for focus/selection. */
+/* Accent-filled primary — the canon retheme (2026-09-01) makes the primary
+   action the ONE lime fill on any screen; --on-accent keeps the glyph legible
+   on the fill in both palettes and --accent-hover is its only hover step.
+   (Supersedes the earlier ink-filled primary: the approved comps render the
+   primary as a lime fill, and the surface brief records the call.) */
 .btn-primary,
 .deploy-body .btn-primary,
 .prefs-section .btn-primary {
-  background: var(--fg);
+  background: var(--accent);
   border-color: transparent;
-  color: var(--bg);
+  color: var(--on-accent);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled),
 .deploy-body .btn-primary:hover:not(:disabled),
 .prefs-section .btn-primary:hover:not(:disabled) {
-  background: var(--on-fg);
+  background: var(--accent-hover);
   border-color: transparent;
 }
 

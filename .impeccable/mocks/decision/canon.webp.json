@@ -1,0 +1,8 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer as the modern dev-tool category standard, executed at the highest craft. Near-black ground (#0a0a0b), off-white text (#fafafa), subtle borders (#27272a), soft 8px radii, one lime accent (#E5FF44) on the primary action and active nav item. Left sidebar with icon+label nav rows, slim top header with breadcrumb path and search field, main data table of files with clean typography and muted metadata, right split preview pane showing a parquet table preview. shadcn-grade polish: subtle hover states, perfect spacing rhythm, restrained shadows. Familiar, immaculate, indistinguishable from the best dev tools.",
+  "createdAt": "2026-09-01T10:56:28.268Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2",
+  "approved": true,
+  "approvalNote": "User: Split Workbench (A) for working views + Workspace Home (C) for home. Existing sidebar IA and per-screen content preserved verbatim — comp nav items are placeholders, not IA."
+}

@@ -1,23 +1,22 @@
 ---
 name: fused-render
-description: Local file explorer with renderable HTML views — a quiet, dark-first instrument panel for your own machine.
+description: Local file explorer for the whole machine — dev-tool canon played straight at Linear/Vercel/Raycast craft.
 colors:
-  fg: "#e8eaed"
-  fg-muted: "#9aa0a6"
-  border: "#2a2d33"
-  bg: "#131417"
-  bg-alt: "#1b1d21"
-  bg-panel: "#202329"
-  bg-popover: "#1c1e24"
-  sel: "#2b3a52"
-  accent: "#E5FF44"
-  accent-soft: "#c9d95e"
-  on-accent: "#10131a"
-  on-fg: "#ffffff"
-  error: "#ff6b6b"
-  success: "#3fb950"
-  warning: "#d29922"
-  activity: "#60a5fa"
+  fused-lime: "#E5FF44"
+  lime-hover: "#eeff70"
+  on-lime: "#10131a"
+  near-black-ground: "#0b0d10"
+  rail-black: "#08090b"
+  raised-graphite: "#121417"
+  panel-graphite: "#16181d"
+  hairline: "#26292e"
+  off-white-ink: "#f2f3f5"
+  cool-muted: "#8b9096"
+  selected-row-wash: "#262a15"
+  hover-row-wash: "#1a1d22"
+  signal-red: "#ff6b6b"
+  signal-green: "#3fb950"
+  signal-amber: "#d29922"
 typography:
   body:
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
@@ -31,159 +30,173 @@ typography:
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
     fontSize: "12px"
     fontWeight: 500
-  mono:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-    fontSize: "13px"
+  mono-metadata:
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
+    fontSize: "12px"
     fontWeight: 400
 rounded:
   sm: "4px"
-  md: "6px"
-  lg: "8px"
-  xl: "10px"
+  md: "8px"
+  lg: "12px"
   pill: "999px"
 components:
   button-base:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.fg}"
+    backgroundColor: "{colors.near-black-ground}"
+    textColor: "{colors.off-white-ink}"
     rounded: "{rounded.md}"
-    padding: "0 14px"
     height: "32px"
+    padding: "0 14px"
   button-primary:
-    backgroundColor: "{colors.fg}"
-    textColor: "{colors.bg}"
+    backgroundColor: "{colors.fused-lime}"
+    textColor: "{colors.on-lime}"
     rounded: "{rounded.md}"
+    height: "32px"
     padding: "0 14px"
-    height: "32px"
   button-primary-hover:
-    backgroundColor: "{colors.on-fg}"
-    textColor: "{colors.bg}"
+    backgroundColor: "{colors.lime-hover}"
+    textColor: "{colors.on-lime}"
   field-control:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.fg}"
+    backgroundColor: "{colors.near-black-ground}"
+    textColor: "{colors.off-white-ink}"
     rounded: "{rounded.md}"
     padding: "7px 10px"
-    height: "32px"
   sidebar-item:
-    textColor: "{colors.fg}"
-    rounded: "{rounded.lg}"
+    backgroundColor: "transparent"
+    textColor: "{colors.off-white-ink}"
+    rounded: "{rounded.md}"
     padding: "7px 10px"
+  listing-row-selected:
+    backgroundColor: "{colors.selected-row-wash}"
+    textColor: "{colors.off-white-ink}"
 ---
 
 # Design System: fused-render
 
+<!-- Recorded 2026-09-01 from the built canon retheme (frontend/src/styles/*).
+     Supersedes the pre-redesign DESIGN.md, which documented the retired
+     warm-graphite world. Dark `:root` is the normative palette; light values
+     live in tokens.css and the sidecar. -->
+
 ## Overview
 
-**Creative North Star: "The Instrument Panel"**
+**Creative North Star: "The Dev-Tool Canon, Played Straight"**
 
-fused-render is a dark cockpit for your own machine: quiet chrome, hairline seams, utility density, and one lime signal. The interface is confident and dark-first — the dark palette IS the app's identity, and light mode is a faithful, per-token translation of the same relationships, never a restyle. Every colour in the app comes from the token file; nothing is hardcoded in a rule (`tests/test_theme.py` enforces it).
+fused-render dresses the whole machine as a first-class developer product: the modern dev-tool canon (benchmarked against Linear, Vercel dashboard, Raycast — user-chosen, PRODUCT.md Brand Commitments) executed at full craft, with no irony and no smuggled quirk. The world is a deep near-black ground with a sidebar rail that recedes darker than the pane it borders, off-white ink, hairline borders, and exactly one loud voice: Fused Lime (#E5FF44), reserved for "you are here" and "do this".
 
-The system runs on semantic colour discipline: every hue means something. Status hues (`success`/`warning`/`error`) say what a thing means; `activity` blue says something is in flight; the file-icon and series palettes distinguish, never decorate. The Fused Lime accent is rare and earned — focus rings, selection, the occasional highlight — never a button fill or a large surface. Hierarchy is carried by contrast, spacing, and hairline borders, not by colour weight.
+Density is high and calm — dense tables, quiet chrome, translucent tint-washes instead of new grays. Every color on every surface is a CSS custom property defined in `frontend/src/styles/tokens.css`, dark-first with a full light counterpart; `tests/test_theme.py` enforces both halves of that contract.
 
 **Key Characteristics:**
-- Dark-first; light is a byte-faithful translation, not a second design
-- Quiet, precise, dense — 13–14px UI type, 32px controls, hairline borders
-- One accent (Fused Lime), used sparingly; neutral-filled primary buttons
-- Every colour is a named token with a defined role; semantic hues form a learned vocabulary
-- Flat-first: borders carry separation, shadows stay minimal and ambient
+- One lime signal per grammar: active nav marker, selection edge, focus ring, primary fill — nothing else.
+- Rail (#08090b) darker than page (#0b0d10) darker-side of raised (#121417): the pane is the lit surface.
+- Hairline #26292e borders carry structure; shadows are reserved for floating surfaces.
+- Measurements speak monospace, 12px, muted.
+- Three motion durations (80/150/200ms), one ease-out, shell-wide.
 
 ## Colors
 
-A near-black neutral ramp with one electric signal and a disciplined semantic vocabulary. Dark values are normative (`:root` default); every token has a light counterpart.
+A near-black neutral ladder with a single electric accent; light mode restates every token with the same relationships on white.
 
 ### Primary
-- **Fused Lime** (#E5FF44): the brand's one voice. Focus rings (`outline: 2px solid`), selection tints, required-field marks, rare highlights. In light mode it becomes a deep olive-lime (#5f7300) that clears 4.5:1 as text, border, and fill from one token.
-- **Lime Soft** (#c9d95e): the accent as readable body text on dark; hover-state text on cards.
+- **Fused Lime** (#E5FF44): the binding brand accent (PRODUCT.md, user-confirmed). Active-nav edge marker, selected-row edge + wash, focus rings, and the one primary-button fill per screen. Hover step **Lime Hover** (#eeff70); ink on a lime fill is **On-Lime** (#10131a). In the light palette the same token becomes a deep olive-lime (#5f7300, hover #4d5e00) because raw lime is unreadable as text/border on white — same role, contrast-corrected value.
+
+### Tertiary
+- **Signal set**: error #ff6b6b, success #3fb950, warning #d29922 (`--error/--success/--warning`), each with an `--*-rgb` triple for translucent washes. Six categorical series hues, file-type icon hues, and task-chip hues are all tokenized with light counterparts.
 
 ### Neutral
-- **Ink** (#e8eaed): primary text.
-- **Ink Muted** (#9aa0a6): secondary text, labels, hints, metadata chips.
-- **Page** (#131417): the app ground.
-- **Raised** (#1b1d21): bars, sidebars, alternate surfaces.
-- **Panel** (#202329) / **Popover** (#1c1e24): floating surfaces above Raised.
-- **Hairline** (#2a2d33): the app's border; separation is drawn, not shadowed.
-- **Selection** (#2b3a52): selected rows and ranges.
-
-### Semantic
-- **Error** (#ff6b6b), **Success** (#3fb950), **Warning** (#d29922): meaning, not decoration.
-- **Activity** (#60a5fa): things in flight — live pings, unread dots, run affordances. Deliberately not a status: it marks motion, not outcome.
-- Task-status vocabulary (`--status-*`), categorical chart series (`--series-1..6`), per-project calendar hues (`--task-c0..7`), and file-type icon hues (`--icon-*`) are fixed, hand-picked sets in `frontend/src/styles/tokens.css`; reuse them, never generate new hues.
+- **Near-Black Ground** (#0b0d10): the page (`--bg`). Light: #ffffff.
+- **Rail Black** (#08090b): the global sidebar's own ground (`--bg-rail`), one step darker than the page. Light: #eff0f3.
+- **Raised Graphite** (#121417): raised surfaces, row hover ancestry (`--bg-alt`). Light: #f5f6f8.
+- **Panel Graphite** (#16181d / #14161a): floating pickers, tooltips, popovers (`--bg-panel`/`--bg-popover`). Light: white, lifted by border + shadow instead.
+- **Hairline** (#26292e): every structural border (`--border`). Light: #e2e4e8.
+- **Off-White Ink** (#f2f3f5): body text (`--fg`). Light: #17181a.
+- **Cool Muted** (#8b9096): secondary text, labels, metadata (`--fg-muted`). Light: #676c73.
+- **Row Washes**: pre-composited opaque row fills — hover #1a1d22 (`--row-bg-hover`), selected #262a15 (`--row-bg-active`, the accent 0.13 wash over raised graphite).
 
 ### Named Rules
-**The One Signal Rule.** Fused Lime never fills a button or a large surface; it marks focus, selection, and the rare highlight. Primary actions read strongest through contrast (ink-filled), not accent.
-**The Token Rule.** Every colour comes from `tokens.css`. A hardcoded colour is a colour light mode cannot repaint.
-**The Scrim Exception.** Controls sitting on arbitrary pixels (images, maps, video) use the `--scrim-*` set — identical in both themes, white ink on dark wash — because the surface underneath is not ours.
+**The One-Lime-Signal Rule.** Fused Lime appears only as: the 2px active-nav inset marker, the selected-row wash + 2px first-cell inset, the focus treatment (accent border/outline + faint accent wash), and the single primary-button fill. It never decorates, never fills large areas, never colors prose.
+
+**The Token Rule.** No color literal exists outside the two palette blocks in `tokens.css`. Every rule paints with `var(--token)`; every dark token has a light counterpart (`tests/test_theme.py` enforces both).
+
+**The Rail-Recedes Rule.** The sidebar rail is always a step darker than the pane it borders (`--bg-rail` < `--bg` < `--bg-alt`), in both themes — the pane is the lit surface; later tuning must not invert the ordering.
 
 ## Typography
 
 **Body Font:** system sans (-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial)
-**Mono Font:** ui-monospace, SFMono-Regular, Menlo, Consolas
+**Label/Mono Font:** ui-monospace (SFMono-Regular, Menlo fallback) — metadata only
 
-**Character:** native, invisible, dense. Type never performs; paths, code, and data get the mono voice, everything else recedes into the OS.
+**Character:** invisible, OS-native, dense. The product's voice is the system's voice; only measurements switch registers into mono.
 
 ### Hierarchy
-- **Body** (400, 14px): the page default.
-- **Control** (400, 13px): buttons, fields, rows; sidebar items sit at 13.5px.
-- **Label** (500, 12px): field labels, hints, metadata — always in Ink Muted.
-- **Mono** (400, ~13px): file paths, code, sizes, technical values.
+- **Body** (400, 14px): default document size, set on `<body>`.
+- **Control** (400, 13px): buttons (`.btn`) and field controls (`.field-control`).
+- **Label** (500, 12px): field labels, hints, secondary rows — muted color.
+- **Mono metadata** (400, 12px, ui-monospace, `--fg-muted`, tabular-nums): file sizes and modified times (`td.size`, `td.mtime`).
 
 ### Named Rules
-**The No-Display Rule.** There is no display face. Headings differentiate by weight and spacing within the system stack; nothing is decorative.
+**The Mono-for-Measurement Rule.** Anything measured — bytes, timestamps — renders in ui-monospace, one size down (12px), muted, with tabular numerals. Prose and names never take mono; measurements never take the sans voice.
 
 ## Layout
 
-Utility density on an app-shell grid: a collapsible global sidebar rail, content panes, and full-height listings. Controls stand 32px tall; row padding runs 7px 10px; gaps step through 6/10/14px. Separation is drawn with 1px Hairline borders on surfaces, not with whitespace luxury — the app is an instrument, information-dense by intent. Motion uses three durations and one easing (`--dur-fast` 80ms hover, `--dur-med` 150ms overlays, `--dur-slow` 200ms panels; ease-out), all collapsing under `prefers-reduced-motion`.
+A fixed 100vh flex shell (`#app`): sidebar rail left, breadcrumb + search header, dense file table center, folder-scoped split preview right; the document itself never scrolls (`overscroll-behavior-y: none`). Rhythm is un-tokenized but consistent: 32px control height, 7-10px control padding (`.btn` 0 14px, `.field-control` 7px 10px, `.sidebar-item` 7px 10px), 9px 16px table cells, 12px 16px modal footers, 6-8px gaps. Narrow listings drop the mtime column below 460px and the size column below 300px via container queries rather than wrapping.
 
 ## Elevation & Depth
 
-Flat-first. Surfaces are flat at rest; borders carry separation. Depth exists only as quiet surface ordering (dark: page < lane < card via slightly lighter fills; light: white surfaces over a dimmed ground) plus minimal, ambient shadows from the `--shadow-*` alpha tokens — deeper alphas in dark (0.25–0.5) because a shadow on a dark ground must work harder, faint in light (0.1–0.18). Shadows never structure a screen.
+Depth is tonal and hairline-first: surfaces separate by ground step (`--bg-rail` < `--bg` < `--bg-alt` < `--bg-panel`) plus a #26292e border. Shadows exist only for genuinely floating surfaces (tooltips, popovers, lifted cards) and are tokenized (`--shadow-sm/md/lg`, `--shadow-ink*`), dark-tuned to deeper alphas, lighter in the light palette. The modal scrim (`--scrim`) stays dark in both modes.
+
+### Shadow Vocabulary
+- **Popover lift** (`0 4px 14px var(--shadow-sm)`): tooltips, hint panels.
+- **Card hover lift** (`0 4px 18px var(--shadow-sm)` + 1px rise): app cards on hover.
 
 ### Named Rules
-**The Drawn-Edge Rule.** If two surfaces must read as separate, give them a Hairline border or an ordered fill — never a heavier shadow.
+**The Tonal-First Rule.** Resting surfaces separate by ground step and hairline, never by shadow; a shadow means the surface floats above the page.
 
 ## Shapes
 
-Small-radius rectangles throughout: 6px is the workhorse (buttons, fields, thumbnails), 8px for sidebar rows and larger containers, 10–12px for panels and modals, 4px for chips and small elements, 999px pills for counts and status dots. No sharp-corner or super-ellipse experiments; the form language is uniform and quiet.
+Quiet, small radii. The working scale: **4px** (inline code chips, small badges), **8px** (the default — buttons, fields, rows, cards, popovers), **12px** (large cards/panels), **999px/50%** (pills and dots). Signals are drawn as 2px *inset box-shadows*, not borders, so text never shifts between states; colored borders stay 1px (error cards, focus borders).
 
 ## Components
 
 ### Buttons
-- **Shape:** gently rounded (6px), 32px tall, 0 14px padding, 13px type.
-- **Base:** Page fill, Hairline border, Ink text.
-- **Primary:** ink-filled (background `--fg`, text `--bg`, weight 600) — strongest through contrast, not accent. Hover steps to `--on-fg` (pure white in dark).
-- **Focus:** 2px Fused Lime outline, 2px offset — the one place the accent is guaranteed.
-- **Disabled:** 0.5 opacity. **Press:** shared 1px translateY nudge on icon-shaped buttons.
+- **Shape:** gently rounded (8px), 32px tall, 13px text, 0 14px padding.
+- **Base (`.btn`):** page ground, hairline border, ink text.
+- **Primary (`.btn-primary`):** the one lime fill — Fused Lime background, transparent border, On-Lime (#10131a) 600-weight text; hover steps to #eeff70. One per screen.
+- **Secondary:** transparent, hairline border; hover brightens border to `--fg-muted`, no fill change.
+- **Danger / Danger-text:** error-tinted wash + error border / borderless error text.
+- **Focus:** `outline: 2px solid var(--accent); outline-offset: 2px` on `:focus-visible`. Disabled: opacity 0.5 only.
 
 ### Inputs / Fields
-- **Style:** Page fill, Hairline border, 6px radius, 7px 10px padding, 32px tall, 13px type.
-- **Label:** 12px/500 Ink Muted above, 6px gap; required mark in accent.
-- **Focus:** border shifts to Ink Muted — quiet, no glow.
-- **Select:** de-nativized with an inline muted-chevron SVG.
+- **Style:** page-ground fill, hairline border, 8px radius, 13px text, 32px tall; 12px muted 500-weight label above with 6px gap; custom muted-gray SVG chevron on selects.
+- **Focus:** the lime signal — border takes `--accent` plus a `0 0 0 3px rgba(var(--accent-rgb), 0.15)` wash ring; no outline.
+- **Error:** full 1px `--error` border + 0.07 error wash card (`.error-banner`).
 
-### Cards / Containers
-- **Corner Style:** 6px thumbnails, 10–12px panels.
-- **Background:** Raised or ordered board fills (`--tasks-lane-bg` / `--tasks-card-bg`).
-- **Border:** Hairline always; hover tints the border toward accent (`color-mix` ~55%).
-- **Shadow Strategy:** minimal, ambient only (see Elevation).
+### Navigation (sidebar)
+- **Style:** rows on the Rail Black ground, 8px radius, 7px 10px padding, 10px icon gap; icons at 0.85 opacity.
+- **Hover / Active:** a 0.06 tint wash; the active row additionally wears the lime marker — `inset 2px 0 0 var(--accent)` — the canon "you are here".
 
-### Navigation (Global Sidebar)
-- **Rows:** 8px radius, 7px 10px padding, 13.5px type, 10px icon gap.
-- **States:** colour-only transitions at `--dur-fast`; active rows use pre-composited row fills (`--row-bg-hover` / `--row-bg-active`), never translucent washes on stretched-link rows.
+### Listing rows (signature)
+- **Rest:** 9px 16px cells, hairline bottom border, no text selection.
+- **Hover:** `--bg-alt`; **selected:** opaque `--row-bg-active` wash plus a 2px lime inset on the first cell — the same one-signal grammar as the nav marker. Drop targets extend the lime insets to top/bottom edges. New rows flash a 1.5s accent-wash fade.
+- **Metadata cells:** the mono-for-measurement voice, right-aligned tabular size column.
 
-### Signature: The Listing Row
-The app's atom: full-width rows in tables and lists, hover repaint at 80ms, selection in `--sel`, file-type icon in its fixed hue, metadata in Ink Muted mono. A plain press's release opens; a modified press selects (FS-5/D460) — design never adds a second press model.
+### Cards (app preview)
+- **Thumb well:** 16/10 box on a designed ground — a faint dot grid (`radial-gradient(rgba(var(--tint),0.1) 1px, transparent 1px)` at 14px pitch over `--bg`) so an empty card reads as an intentional canvas, not a void; hairline top border; skeleton shimmer while loading.
+- **Hover:** border warms toward `--fg-muted`, soft shadow, 1px rise.
+
+### Motion (applies to all of the above)
+Three durations, one ease, defined once in base.css: `--dur-fast` 80ms (hover/press color), `--dur-med` 150ms (overlays, toasts, menus), `--dur-slow` 200ms (panels, sidebar collapse, FLIP reorders); `--ease-out`. Press feedback is one shared 1px translateY nudge on button-shaped controls only. `prefers-reduced-motion` collapses all of it.
 
 ## Do's and Don'ts
 
 ### Do:
-- **Do** take every colour from `tokens.css`; add a token (with a light counterpart) before adding a colour.
-- **Do** keep controls at 32px, radius at 6px, and UI type at 13–14px.
-- **Do** use `--activity` for in-flight/unread signals and the status hues for outcomes; keep hue meanings stable.
-- **Do** carry hierarchy with contrast and Hairline borders; keep primary buttons ink-filled.
-- **Do** pick one of the three motion durations; never invent a new number.
+- **Do** paint every color with a `var(--token)` from tokens.css and give any new dark token a light counterpart.
+- **Do** draw selection/active edges as 2px inset box-shadows in Fused Lime, never as borders that shift text.
+- **Do** keep the rail darker than the pane in any new surface ordering (`--bg-rail` < `--bg` < `--bg-alt`).
+- **Do** set measurements (sizes, timestamps, counts) in ui-monospace 12px muted with tabular-nums.
+- **Do** pick transitions from the three tokens (80/150/200ms, ease-out); one primary lime fill per screen.
 
 ### Don't:
-- **Don't** fill buttons or large surfaces with Fused Lime — accent everywhere is the confirmed anti-reference; accent is for focus and selection.
-- **Don't** import generic SaaS decoration: gradient heroes, glassmorphism, decorative card shadows.
-- **Don't** play terminal cosplay: no scanlines, phosphor glow, or faux-CRT styling — developer-native means quiet, not themed.
-- **Don't** hardcode a colour, restyle dark mode, or give a dark token no light counterpart.
-- **Don't** use heavier shadows to separate surfaces; draw the edge instead.
+- **Don't** hardcode a color literal outside the two palette blocks in tokens.css (test-enforced).
+- **Don't** use Fused Lime for decoration, prose, large fills, or more than the four sanctioned signals.
+- **Don't** use raw #E5FF44 as text or border in the light theme — the light `--accent` is the contrast-corrected olive-lime.
+- **Don't** add shadows to resting surfaces; hairline + ground step carry structure.
+- **Don't** invent new grays — layer `rgba(var(--tint), …)` washes over existing grounds instead.

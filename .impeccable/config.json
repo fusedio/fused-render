@@ -1,0 +1,38 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-color",
+        "value": "#0b0d10",
+        "createdAt": "2026-09-01T11:13:57.978Z",
+        "reason": "pre-paint boot placeholder in index.html mirrors --bg/--fg-muted token values; must be literal (paints before CSS); new canon palette lands in DESIGN.md at finish"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#8b9096",
+        "createdAt": "2026-09-01T11:13:58.030Z",
+        "reason": "pre-paint boot placeholder in index.html mirrors --bg/--fg-muted token values; must be literal (paints before CSS); new canon palette lands in DESIGN.md at finish"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#676c73",
+        "createdAt": "2026-09-01T11:13:58.083Z",
+        "reason": "pre-paint boot placeholder in index.html mirrors --bg/--fg-muted token values; must be literal (paints before CSS); new canon palette lands in DESIGN.md at finish"
+      },
+      {
+        "rule": "bounce-easing",
+        "value": "crumb-spring",
+        "createdAt": "2026-09-01T11:21:50.688Z",
+        "reason": "name-match false positive: keyframe named 'spring' but runs ease-out; it is an inset box-shadow arming pulse, not elastic motion"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#ffffff",
+        "createdAt": "2026-09-01T11:30:14.967Z",
+        "reason": "pre-paint boot placeholder light ground in index.html; equals light --bg token; must be literal (paints before CSS)"
+      }
+    ]
+  }
+}

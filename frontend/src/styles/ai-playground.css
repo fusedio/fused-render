@@ -203,7 +203,7 @@
   gap: 2px;
   padding: 15px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--pg-card-bg);
   color: var(--fg);
   font: inherit;
@@ -607,7 +607,7 @@
   height: 26px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1119,7 +1119,7 @@
 .pg-attach img {
   width: 28px;
   height: 28px;
-  border-radius: 5px;
+  border-radius: 4px;
   object-fit: cover;
   /* A checker-free flat ground: a transparent PNG over the composer's own fill
      would read as part of the box rather than as a picture in it. */
@@ -1131,7 +1131,7 @@
   width: 22px;
   height: 22px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: var(--fg-muted);
   font-size: 12px;
@@ -1185,7 +1185,7 @@
   background: transparent;
   cursor: zoom-in;
   line-height: 0;
-  border-radius: 5px;
+  border-radius: 4px;
 }
 
 .pg-attach-open:hover img {
@@ -1523,7 +1523,7 @@
   height: 26px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -2016,7 +2016,7 @@
   flex-wrap: wrap;
   gap: 10px 16px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 10px 14px;
   background: var(--bg-alt);
 }
@@ -2192,7 +2192,7 @@
   flex: none;
   width: 40px;
   height: 40px;
-  border-radius: 5px;
+  border-radius: 4px;
   object-fit: cover;
   background: var(--bg-subtle);
 }

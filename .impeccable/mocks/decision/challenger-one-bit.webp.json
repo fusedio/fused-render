@@ -1,0 +1,6 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer rendered as an early-Macintosh one-bit desktop, faithfully. Pure black and white only. Ordered stipple dither patterns standing in for every gray. A window with classic one-pixel black chrome: title bar with fine horizontal lines reading 'fused-render — ~/data', close box left. Inside: file listing in bold pixel caps and small pixel labels, 32px two-color pixel icons for folders and files, one selected row inverted to solid black with marching-ants dotted border. Desktop plane behind with a 50% dither ground. Crisp integer-scale pixels, no anti-aliasing, no color anywhere. Charming, exact, museum-grade recreation of the one-bit desktop carrying a modern file browser's density.",
+  "createdAt": "2026-09-01T10:56:19.367Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2"
+}

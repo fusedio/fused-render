@@ -1,29 +1,44 @@
 /* Appearance — System / Light / Dark (SPEC §30, D134).
  *
  * Every colour in this file comes from a token below; nothing is hardcoded in
- * a rule any more, because a hardcoded colour is a colour light mode cannot
- * repaint (tests/test_theme.py enforces that). The dark block IS the app's
- * historical appearance, value for value — this change adds a light palette,
- * it does not restyle dark.
+ * a rule (tests/test_theme.py enforces that). The dark block is the app's
+ * home identity; light redefines every token to the same relationships on
+ * white.
+ *
+ * 2026-09-01 — the canon retheme. The palette moved from the historical
+ * #131417 warm-graphite world to the approved canon world
+ * (.impeccable/mocks/decision/canon.webp + comp-c-workspace-home.webp,
+ * .impeccable/surfaces/frontend-src.md): a deeper near-black ground, a
+ * sidebar rail DARKER than the pane it borders (the incumbent ordering was
+ * the reverse), off-white ink, hairline borders one step quieter, and Fused
+ * Lime promoted from focus-only to the active-nav marker, selection edge and
+ * the primary button fill. Token NAMES are unchanged so the 26k lines of
+ * rules keep resolving; two tokens are new: --bg-rail (the sidebar's own
+ * ground, because "rail darker than pane" is an ordering no reuse of
+ * --bg/--bg-alt could state) and --accent-hover (the lime fill's hover step,
+ * needed once .btn-primary became accent-filled).
  *
  * `data-theme` is stamped on <html> by the pre-paint bootstrap in index.html
- * and kept current by lib/theme.ts. Dark is the `:root` default so a document
- * with no attribute at all still renders as it always did.
+ * and kept current by lib/theme.ts. Dark is the `:root` default.
  *
  * The `--*-rgb`/`--tint` tokens are bare "r, g, b" triples, substituted
- * textually into `rgba(var(--tint), .06)`: the many translucent washes in this
- * file assumed a dark backdrop (white over dark), and in light mode the same
- * wash has to be black over light. That flip is what `--tint` is for.
+ * textually into `rgba(var(--tint), .06)` washes; --tint flips white/black
+ * with the theme so the washes read on both grounds.
  */
 :root {
   color-scheme: dark;
-  --fg: #e8eaed;
-  --fg-muted: #9aa0a6;
-  --border: #2a2d33;
-  --bg: #131417;
-  --bg-alt: #1b1d21;
-  --sel: #2b3a52;
+  --fg: #f2f3f5;
+  --fg-muted: #8b9096;
+  --border: #26292e;
+  --bg: #0b0d10;
+  --bg-alt: #121417;
+  /* The global sidebar's ground: a step DARKER than --bg, per the approved
+     comps — the pane is the lit surface, the rail recedes. */
+  --bg-rail: #08090b;
+  --sel: #22304a;
   --accent: #E5FF44;
+  /* The lime fill's hover: one step brighter, same hue. */
+  --accent-hover: #eeff70;
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
@@ -32,108 +47,56 @@
   --tint: 255, 255, 255;
   --accent-rgb: 229, 255, 68;
   --error-rgb: 255, 107, 107;
-  --fg-muted-rgb: 154, 160, 166;
-  /* --warning's triple, for the trouble card's wash (SPEC §42): those failures
-     are caveats rather than crashes — the app is running, something beside it
-     is not — so they are tinted with the warning hue rather than with the
-     neutral --tint every other wash uses. */
+  --fg-muted-rgb: 139, 144, 150;
+  /* --warning's triple, for the trouble card's wash (SPEC §42). */
   --warning-rgb: 210, 153, 34;
 
-  /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
-     dark page but as dirt against a light one, hence the light overrides. */
-  /* -- the ink shadcn's shadow scale is drawn in (styles/tailwind.css) -------
-     Tailwind ships whole box-shadow VALUES (geometry and colour in one token)
-     and this app's own `--shadow-*` are bare colours its rules position
-     themselves. The two vocabularies collide on the same four names, so
-     `tailwind.css` re-declares Tailwind's set on `[data-slot]`; what it must
-     not do is hardcode the colour, which is how the shadcn subtree ended up
-     wearing LIGHT-mode shadows on the dark page. These three alphas are that
-     colour, per palette — deeper here for the same reason `--shadow-md` is
-     0.4 in dark and 0.14 in light: a shadow on a dark ground has to work
-     harder to read as lift. */
-  --shadow-ink-soft: rgba(0, 0, 0, 0.2);
-  --shadow-ink: rgba(0, 0, 0, 0.4);
-  --shadow-ink-deep: rgba(0, 0, 0, 0.6);
-  --shadow-sm: rgba(0, 0, 0, 0.25);
-  --shadow-md: rgba(0, 0, 0, 0.4);
-  --shadow-lg: rgba(0, 0, 0, 0.5);
-  --scrim: rgba(0, 0, 0, 0.55); /* modal backdrop — stays dark in both modes */
+  /* Elevation. Dark-tuned: shadows on a near-black ground work harder,
+     hence the deeper alphas; light overrides below. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.25);
+  --shadow-ink: rgba(0, 0, 0, 0.45);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.65);
+  --shadow-sm: rgba(0, 0, 0, 0.3);
+  --shadow-md: rgba(0, 0, 0, 0.45);
+  --shadow-lg: rgba(0, 0, 0, 0.55);
+  --scrim: rgba(0, 0, 0, 0.6); /* modal backdrop — stays dark in both modes */
 
-  /* Surfaces floating above --bg-alt: the bookmark tooltip and icon/template
-     pickers (--bg-panel), the tour popover (--bg-popover). */
-  --bg-panel: #202329;
-  --bg-popover: #1c1e24;
+  /* Surfaces floating above --bg-alt: pickers/tooltips (--bg-panel), the
+     tour popover (--bg-popover). */
+  --bg-panel: #16181d;
+  --bg-popover: #14161a;
   /* Opaque row fills, pre-composited: a stretched-link row can't stack a
      translucent wash over its own background, so the flat result is a token. */
-  --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
-  --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+  --row-bg-hover: #1a1d22; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #262a15; /* --bg-alt under the accent 0.13 wash */
 
-  /* Status-bar item states (D576, matching VS Code's own
-     `statusBarItem.hoverBackground` / `statusBarItem.activeBackground`).
-     ALPHA OVERLAYS, not opaque mixes like the two `--row-bg-*` above: a
-     status-bar item is a full-height rectangle sitting directly on the bar,
-     and an overlay reads correctly whatever the bar is painted, which is why
-     VS Code specifies them this way. Active is deliberately well clear of
-     hover — an open panel has to be tellable from a pointer merely passing
-     over its neighbour, all the more so since a panel can now auto-open with
-     the user having touched nothing (D574). */
-  --status-item-hover: rgba(255, 255, 255, 0.12);
-  --status-item-active: rgba(255, 255, 255, 0.18);
+  /* Status-bar item states (D576; alpha overlays, matching VS Code's own
+     statusBarItem tokens — an overlay reads over any bar paint). */
+  --status-item-hover: rgba(255, 255, 255, 0.1);
+  --status-item-active: rgba(255, 255, 255, 0.16);
 
-  /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
-     One model, at two ends of one question: this machine HAS it, or it does
-     not. Declared per palette rather than as a `color-mix` against --fg-muted
-     and --bg, because a mix states a DIRECTION and the two themes need
-     different distances along it — the dark values below are the mixes they
-     replace, to the byte; the light ones are not (see the light block). */
-  --am-surface-have: #24262b;
-  --am-surface-none: #17191d;
+  /* -- the AI models grid's have / not-have axis (ai-models.css) ---------- */
+  --am-surface-have: #1b1e24;
+  --am-surface-none: #0e1013;
 
-  /* Quiet control chrome — the bars' two bordered controls (the labelled mode
-     trigger and .bar-ctl-bordered). These are TOKENS
-     rather than an alpha spelled into the rules because the SAME alpha reads
-     differently by theme: `rgba(var(--fg-muted-rgb), 0.35)` over the light
-     bar is a hairline a touch darker than --border, and over the dark bar it
-     is 30 luminance steps LIGHTER than --border — the two controls glowed as
-     lit pills on a dark toolbar while looking correct on a light one. The
-     light values below are exactly what those rules resolved to before this
-     group existed; only dark moves.
-     The dark border sits a step above --border (the app's hairline) — present
-     as chrome, never brighter than the ink around it — and the fills are a
-     whisper of --tint rather than a plate. */
+  /* Quiet control chrome — the bars' two bordered controls. Tokens because
+     the same alpha reads differently by theme (see git history). */
   --ctl-quiet-bg: rgba(var(--tint), 0.04);
   --ctl-quiet-bg-hover: rgba(var(--tint), 0.08);
-  --ctl-quiet-border: #343840;
-  /* Hover lands roughly where the RESTING border used to be, so the state
-     change is still legible without the idle control shouting. */
-  --ctl-quiet-border-hover: #4b505a;
-  /* The bordered mode trigger's fill. Transparent in dark: --bg under a
-     --bg-alt bar cut a darker plate out of the toolbar, and between that well
-     and its lighter ring the quietest control in the app read as a chip. The
-     hairline alone is enough to say "this one is a menu". */
+  --ctl-quiet-border: #2e3238;
+  --ctl-quiet-border-hover: #464b53;
   --ctl-plate-bg: transparent;
 
   --on-accent: #10131a; /* text/glyph on an --accent fill */
-  --on-fg: #ffffff; /* .btn-primary hover: one step further from --bg than --fg */
-  --accent-soft: #c9d95e; /* the accent as readable body text */
+  --on-fg: #ffffff; /* one step further from --bg than --fg */
+  --accent-soft: #cede5e; /* the accent as readable body text */
   --success-bright: #3fca6b; /* live/signed-in dots */
   --success-soft: #86d786;
   --warning-soft: #dfb054;
   --warning-strong: #e0a33e;
 
-  /* Categorical series colours, for a chart that plots several things at once
-     (the AI Models Benchmark tab's one line per model, AI-14). The first
-     palette here that is not a STATUS: --success/--warning/--error say what
-     something means, and a chart line means nothing but "this one, not that
-     one". So these are chosen for hue separation at hairline width rather than
-     for sentiment — blue/orange before red/green, so the two commonest lines
-     stay distinguishable under the commonest colour-vision deficiencies — and
-     a consumer must never read meaning into which index a series got.
-
-     Six is the count, and it is a judgement rather than a limit of the palette:
-     past about six a reader stops matching a line to a legend by colour, so a
-     seventh series is better served by reusing a hue (the legend still names
-     it) than by a hue nobody can tell from its neighbour. */
+  /* Categorical series colours (AI-14): hue separation at hairline width,
+     never sentiment; blue/orange lead for CVD safety; six max. */
   --series-1: #6aa8ff;
   --series-2: #e0a33e;
   --series-3: #3fca6b;
@@ -142,117 +105,54 @@
   --series-6: #ff8f8f;
 
   /* Full-page failure card (.status-message.error). */
-  --error-page-bg: rgba(30, 5, 5, 0.9);
+  --error-page-bg: rgba(26, 6, 6, 0.9);
   --error-page-border: #c0392b;
   --error-page-fg: #ffdede;
 
   /* Tour popover chrome (driver.js overrides). */
-  --tour-fg: #e8e8e8;
-  --tour-desc: #b4b6bd;
-  --tour-dim: #7c7f88;
+  --tour-fg: #eceef0;
+  --tour-desc: #aeb2b9;
+  --tour-dim: #767b84;
   --tour-next-hover: #d8f238;
 
-  /* Board ground and board card (shell/ScheduleTaskViews.tsx). Two tokens
-     rather than reusing --bg-alt/--bg-panel because the Board needs a
-     RELATIONSHIP the general surfaces do not state: the lane is a quiet
-     ground and the card is the only lit thing standing on it, so the three
-     surfaces have to be ORDERED — page < lane < card in dark, card above lane
-     in light — and a later tuning of --bg-panel (a popover token, owned by
-     other screens) must not be able to invert that by accident.
+  /* Board ground and board card (shell/ScheduleTaskViews.tsx): page < lane
+     < card, an ordering later tuning of --bg-panel must not invert. */
+  --tasks-lane-bg: #0e1013;
+  --tasks-card-bg: #17191c;
 
-     Dark: the lane sits a whisper above --bg (#131417 → #16181b), enough to
-     say "column" without becoming a slab, and the card lands at #1e2023.
-     That second value is the one that moved on 2026-08-18: the card used to
-     be --bg-panel (#202329), whose blue channel runs nine steps above its red
-     and read as GREY over a near-black page (Akshil, comparing against the
-     flow app, whose cards are a black-tinted charcoal). #1e2023 keeps the
-     same lift off the ground and spends far less of it on blue, so the card
-     reads as dark charcoal over black rather than as a grey plate.
-
-     Light: the card stays white — it lifts by hairline and shadow, the way
-     every other light surface in this file does — and the lane goes a step
-     DARKER than the page so the same ordering survives the flip. */
-  --tasks-lane-bg: #16181b;
-  --tasks-card-bg: #1e2023;
-
-  /* Task status hues — the Schedule page's tree/board/calendar rings
-     (shell/ScheduleTaskViews.tsx, ported from the flow app's task board). Own
-     tokens rather than --accent/--success/--warning because these five are a
-     VOCABULARY: a reader learns the ring hues once and then reads any row by its
-     ring, which only holds if they keep their relative weights in both themes.
-     Dark values first, as everywhere here; light darkens each to the same weight
-     against white.
-     Two of the five moved on 2026-08-17 (Akshil):
-     * Upcoming is GREY. It was blue, which is the loudest thing on a page whose
-       whole point is what is happening now — a lane of "nothing has happened
-       yet" was out-shouting In Progress. It borrows --fg-muted outright rather
-       than a grey of its own: the row's id and folder chips are already that
-       colour, so Upcoming recedes into its own row's metadata, which is exactly
-       what "not started" should look like. Restated in the light block only
-       because test_theme.py requires every dark token to have a light value —
-       the value is deliberately the same expression, not a second grey.
-     * Archive is a DUSTY ROSE, because Upcoming took the grey and two lanes
-       cannot share a hue. It was a muted violet for a day and that failed on the
-       one thing it had to do: at 16px, beside Upcoming's actual grey, a
-       low-chroma violet reads as barely-tinted grey rather than as a colour —
-       "quite similar" (Akshil, 2026-08-17). The lesson is about temperature, not
-       about that particular violet: at the low saturation this lane needs, COOL
-       hues are the ones that collapse into neutral, and a warm hue at the same
-       chroma still announces itself as a colour. So the replacement is warm.
-       Rose rather than the other two warm candidates because of where the live
-       lanes already sit: a rose keeps its blue channel well clear of its green,
-       which is what stops it reading as Failed's red (where those two are
-       equal), whereas a dull bronze reads as a dimmer In Progress and a muted
-       teal sits between Done's green and --activity's blue and reads as a dimmer
-       Done. Rose is the one direction with no live lane already in it, and it is
-       nowhere near yellow, green or blue. The pair is --icon-image's rose,
-       already tuned in this file for the same weight in both themes, so the
-       palette gains a role rather than a colour. */
+  /* Task status hues — a learned five-ring vocabulary (Schedule/Tasks). */
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
 
-  /* The Playground sidebar's model-card fills. A step DARKER than the usual
-     raised surface, which no single wash can do in both themes (--tint
-     lightens in dark and darkens in light), so each palette names its own
-     pre-composited pair rather than the stylesheet naming a literal. */
-  --pg-card-bg: #16181c;
-  --pg-card-bg-hover: #1d2025;
+  /* Playground sidebar model-card fills: a step darker than the usual
+     raised surface, pre-composited per palette. */
+  --pg-card-bg: #0f1114;
+  --pg-card-bg-hover: #16191d;
   --status-done: #4ade80;
   --status-failed: #f87171;
   --status-archived: #cd93b6;
 
-  /* The blue Upcoming used to own, which outlived it: it was never really the
-     status hue, it was the page's ACTIVITY hue, and three things still need it —
-     the live ping on a turn in flight, the unread dot on a message row, and the
-     Run now / drag-to-run affordance that puts a task into flight. Naming it for
-     that is what let Upcoming go grey without repainting any of the three. */
+  /* The page's ACTIVITY hue: live pings, unread dots, run affordances —
+     motion, never outcome. */
   --activity: #60a5fa;
 
-  /* File-type icon hues (FileIcons.tsx). Tuned bright for a dark listing;
-     the light palette darkens each one to the same relative weight. */
+  /* File-type icon hues (FileIcons.tsx). Bright for the dark listing;
+     light darkens each to the same relative weight. */
   --icon-folder: #9fb1d2;
   --icon-code: #7fb2a6;
   --icon-data: #a898cb;
   --icon-json: #c3a96b;
   --icon-html: #c9d95e;
   --icon-image: #cd93b6;
-  --icon-doc: #9aa0a6;
+  --icon-doc: #8b9096;
   --icon-media: #d0939b;
   --icon-geo: #88bf95;
   --icon-archive: #baa386;
   --icon-db: #82abbf;
-  --icon-file: #868c93;
+  --icon-file: #7f858c;
 
-  /* Task chip hues — the Calendar's per-PROJECT colour (shell/ScheduleCalendar.tsx,
-     indexed by schedule-lib.taskColour, which hashes the task's folder). Eight,
-     hand-picked and evenly spread around the wheel, because the calendar's whole
-     read depends on "same folder, same colour": five days of a daily task must
-     land as ONE thing, two tasks out of one repo must land as that repo, and two
-     unrelated projects in the same hour must not. A generated hsl() would give
-     that too, and would also give hues that fight the theme in one mode or the
-     other — so the palette is picked, not computed. Dark values first; light
-     deepens each to the same weight against white, where they are read as a
-     bar and a tint rather than as bright fills. */
+  /* Task chip hues — the Calendar's per-PROJECT colour, hand-picked and
+     evenly spread so "same folder, same colour" survives both themes. */
   --task-c0: #60a5fa;
   --task-c1: #2dd4bf;
   --task-c2: #4ade80;
@@ -260,48 +160,38 @@
   --task-c4: #fbbf24;
   --task-c5: #fb923c;
   --task-c6: #f472b6;
-  /* THE SCRIM SET, and the one set that is deliberately identical in both
-     palettes: these paint controls that sit on ARBITRARY PIXELS — a generated
-     image, a photo, a map tile — where the surface underneath is not ours and
-     the app's theme says nothing about it. White-on-dark-wash is legible over
-     anything; a token that flipped with the theme would put light ink on a
-     light photo half the time. Named tokens rather than literals so the rule
-     "every colour comes from the palette" stays a rule with no exceptions to
-     remember (they are what test_theme.py checks for). */
+  /* THE SCRIM SET — controls over arbitrary pixels (images, maps, video).
+     Deliberately identical in both palettes: white-on-dark-wash is legible
+     over anything; tokens so the no-literals rule stays absolute. */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
   --scrim-border: rgba(255, 255, 255, 0.25);
   --scrim-border-hover: rgba(255, 255, 255, 0.5);
-  /* The lightbox: a veil over the whole viewport, the picture lifted off it,
-     and a glass chip for the ✕. The veil is heavier than --scrim (a modal
-     dims the page; this one has to make a photograph the only thing in the
-     room), and the lift stays at full strength in light mode where
-     --shadow-lg would go nearly invisible against the veil. */
   --scrim-veil: rgba(0, 0, 0, 0.72);
   --scrim-lift: rgba(0, 0, 0, 0.5);
   --scrim-chip-bg: rgba(255, 255, 255, 0.12);
   --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
-  /* Behind a <video>, filling whatever the frame's aspect ratio does not.
-     Black in both modes because it reads as the letterbox of the picture
-     rather than a surface of the page. */
   --scrim-letterbox: #000000;
   --task-c7: #a78bfa;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --fg: #1f2023;
-  --fg-muted: #61656c;
-  --border: #d8dade;
+  --fg: #17181a;
+  --fg-muted: #676c73;
+  --border: #e2e4e8;
   --bg: #ffffff;
-  --bg-alt: #f4f5f7;
+  --bg-alt: #f5f6f8;
+  /* Rail: a step darker than the page, preserving the dark ordering's
+     "rail recedes, pane leads" on white. */
+  --bg-rail: #eff0f3;
   --sel: #cfe0f7;
-  /* The brand lime is unreadable as text on white and near-invisible as a
-     hairline, so light mode uses a deep olive-lime of the same hue: it clears
-     4.5:1 against both --bg and white, so it works as text, border, fill and
-     wash from the one token — no second accent needed. */
+  /* The brand lime is unreadable as text on white, so light mode uses a
+     deep olive-lime of the same hue: clears 4.5:1 against --bg as text,
+     border, fill and wash from the one token. */
   --accent: #5f7300;
+  --accent-hover: #4d5e00;
   --error: #c62828;
   --success: #1a7f37;
   --warning: #8f6a10;
@@ -309,45 +199,36 @@
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
   --error-rgb: 198, 40, 40;
-  --fg-muted-rgb: 97, 101, 108;
+  --fg-muted-rgb: 103, 108, 115;
   --warning-rgb: 143, 106, 16;
 
-  /* Tailwind's own published alphas, which are written for a white page — see
-     the dark block for what these are and why they are a token at all. */
+  /* Tailwind's own published alphas, written for a white page. */
   --shadow-ink-soft: rgba(0, 0, 0, 0.05);
   --shadow-ink: rgba(0, 0, 0, 0.1);
   --shadow-ink-deep: rgba(0, 0, 0, 0.25);
-  --shadow-sm: rgba(0, 0, 0, 0.1);
-  --shadow-md: rgba(0, 0, 0, 0.14);
-  --shadow-lg: rgba(0, 0, 0, 0.18);
+  --shadow-sm: rgba(0, 0, 0, 0.08);
+  --shadow-md: rgba(0, 0, 0, 0.12);
+  --shadow-lg: rgba(0, 0, 0, 0.16);
   --scrim: rgba(0, 0, 0, 0.4);
 
-  /* Floating surfaces lift by going *lighter* than --bg-alt here, i.e. all the
-     way to --bg; their existing borders + shadow carry the separation. */
+  /* Floating surfaces lift by going lighter than --bg-alt, all the way to
+     --bg; borders + shadow carry the separation. */
   --bg-panel: #ffffff;
   --bg-popover: #ffffff;
-  --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
-  --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+  --row-bg-hover: #eceef1; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #e9ecdc; /* --bg-alt under the accent 0.13 wash */
 
-  /* Black-alpha here, not white — the same inversion VS Code applies to these
-     two tokens in a light theme. A white overlay on a light bar is invisible. */
-  --status-item-hover: rgba(0, 0, 0, 0.1);
-  --status-item-active: rgba(0, 0, 0, 0.16);
+  /* Black-alpha here, not white — a white overlay on a light bar is
+     invisible (VS Code applies the same inversion). */
+  --status-item-hover: rgba(0, 0, 0, 0.08);
+  --status-item-active: rgba(0, 0, 0, 0.14);
 
-  /* The same axis, and the reason it is a token at all. The mix these replace
-     was 14% of --fg-muted over --bg-alt, which on this palette is a warm
-     #dcdde0 — darker and greyer than the page, so a downloaded model read as a
-     DISABLED card rather than a present one, and the axis ran the wrong way
-     against a white page. Here "present" goes the other direction: `have` sits
-     just off the card's own --bg-alt, and `none` recedes to nearly the page
-     white. Both stay lighter than --border (#d8dade), so a card's own outline
-     still reads at either end. */
+  /* have/none axis: "present" sits just off the card's --bg-alt, "none"
+     recedes toward page white; both lighter than --border. */
   --am-surface-have: #eceef2;
   --am-surface-none: #fbfbfc;
 
-  /* Quiet control chrome (see the dark block). These four are the values the
-     component rules carried inline before the group existed, so light mode is
-     unchanged to the byte — this whole group exists for dark. */
+  /* Quiet control chrome. */
   --ctl-quiet-bg: rgba(var(--fg-muted-rgb), 0.08);
   --ctl-quiet-bg-hover: rgba(var(--fg-muted-rgb), 0.16);
   --ctl-quiet-border: rgba(var(--fg-muted-rgb), 0.35);
@@ -362,10 +243,8 @@
   --warning-soft: #8a6410;
   --warning-strong: #9a6a10;
 
-  /* The same six hues, darkened to clear contrast against white as a 2px
-     hairline and as a 10px legend label. Same hue ORDER, so a chart does not
-     re-colour its lines when the theme flips — a reader who learned "the blue
-     one is the 4-bit model" keeps that. */
+  /* Same six hues darkened for white; same hue ORDER so charts keep their
+     legend mapping across the theme flip. */
   --series-1: #1f5fbf;
   --series-2: #8a5a00;
   --series-3: #1a7f37;
@@ -377,29 +256,26 @@
   --error-page-border: #c0392b;
   --error-page-fg: #7f1d1d;
 
-  --tour-fg: #1f2023;
+  --tour-fg: #17181a;
   --tour-desc: #4a4e55;
   --tour-dim: #6f747c;
   --tour-next-hover: #4e5f00;
 
-  /* Board ground and board card (see the dark block for why these are their
-     own pair). The card is white and lifts by hairline + shadow; the lane is
-     a step darker than the page, which is what keeps "card above lane" true
-     in a palette where the page itself is the lightest thing available. */
+  /* Board: white card lifts by hairline + shadow; lane a step darker than
+     the page so "card above lane" survives the flip. */
   --tasks-lane-bg: #eef0f2;
   --tasks-card-bg: #ffffff;
 
-  /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
-     expression, restated because the light palette must redefine every token. */
+  /* Upcoming tracks --fg-muted in both themes; restated because the light
+     palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
   --pg-card-bg: #eaebee;
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;
   --status-failed: #dc2626;
-  /* The rose deepened for white (see the dark block). Still warm, still low
-     enough in chroma to stay quiet, and its blue channel still stands well above
-     its green so it cannot be mistaken for the red above it. */
+  /* Warm dusty rose, deepened for white; blue channel well above green so
+     it never reads as Failed's red. */
   --status-archived: #9c4d78;
 
   --activity: #2563eb;
@@ -410,7 +286,7 @@
   --icon-json: #8a6d1f;
   --icon-html: #6f7c14;
   --icon-image: #9c4d78;
-  --icon-doc: #61656c;
+  --icon-doc: #676c73;
   --icon-media: #a34a56;
   --icon-geo: #2f7d47;
   --icon-archive: #806341;
@@ -425,8 +301,8 @@
   --task-c5: #c2410c;
   --task-c6: #be185d;
   --task-c7: #6d28d9;
-  /* Identical to the dark palette on purpose — see the scrim set above. The
-     surface under these is a photograph, not the page. */
+  /* Identical to the dark palette on purpose — the surface under these is
+     a photograph, not the page. */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
@@ -438,4 +314,3 @@
   --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
   --scrim-letterbox: #000000;
 }
-

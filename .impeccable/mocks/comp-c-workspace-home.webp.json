@@ -1,0 +1,8 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer as the modern dev-tool category standard at highest craft, Raycast/Vercel warmth. Near-black ground (#0a0a0b), off-white text (#fafafa), subtle borders (#27272a), soft 10px radii, lime accent (#E5FF44) on active states only. Layout variation — WORKSPACE HOME: wide left sidebar with labeled nav sections (Explorer, Apps, Tasks, Schedule, AI Models) and pinned folders; main area a home dashboard: greeting header 'Your machine', a row of recent-file cards with small preview thumbnails, below it two columns — 'Current apps' list with status dots and 'Activity' feed with quiet timestamps. Cards float on slightly raised surfaces with hairline borders and soft shadows. Generous but purposeful spacing, Vercel-dashboard polish, Raycast crispness.",
+  "createdAt": "2026-09-01T11:00:00.380Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2",
+  "approved": true,
+  "approvalNote": "User: Split Workbench (A) for working views + Workspace Home (C) for home. Existing sidebar IA and per-screen content preserved verbatim — comp nav items are placeholders, not IA."
+}

@@ -13,7 +13,7 @@
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 7px 10px;
 }
 
@@ -51,7 +51,7 @@
   margin: 12px 0;
   padding: 14px 16px;
   border: 1px solid rgba(var(--warning-rgb), 0.5);
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(var(--warning-rgb), 0.06);
   color: var(--fg);
   font-size: 13px;
@@ -87,7 +87,7 @@
   overflow: auto;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   white-space: pre-wrap;
@@ -124,7 +124,7 @@
   color: var(--fg);
   background: var(--ctl-quiet-bg);
   border: 1px solid var(--ctl-quiet-border);
-  border-radius: 6px;
+  border-radius: 8px;
   text-decoration: none;
   cursor: pointer;
 }
@@ -179,7 +179,7 @@
   margin: 0 0 20px;
   padding: 14px 16px;
   border: 1px solid rgba(var(--warning-rgb), 0.5);
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(var(--warning-rgb), 0.06);
   color: var(--fg);
   font-size: 13px;
@@ -224,7 +224,7 @@
   color: var(--fg);
   background: var(--ctl-quiet-bg);
   border: 1px solid var(--ctl-quiet-border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -249,7 +249,7 @@
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .claude-health-close:hover {
@@ -317,7 +317,7 @@
   font: inherit;
   font-weight: 600;
   padding: 5px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid transparent;
   background: var(--accent);
   color: var(--on-accent);
@@ -397,7 +397,7 @@
   padding: 8px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   line-height: 1.5;
@@ -425,7 +425,7 @@
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .claude-health-doctor-problem {

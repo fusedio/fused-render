@@ -5,7 +5,9 @@
   width: 232px;
   display: flex;
   flex-direction: column;
-  background: var(--bg-alt);
+  /* Canon retheme: the rail sits a step DARKER than the pane it borders
+     (--bg-rail < --bg), the ordering both approved comps draw. */
+  background: var(--bg-rail);
   border-right: 1px solid var(--border);
   overflow-y: auto;
   /* Collapsing squeezes the rows before the subtree swaps; without this the
@@ -285,6 +287,16 @@ a.sidebar-rail-btn {
 .sidebar-item:hover,
 .sidebar-item.active {
   background: rgba(var(--tint), 0.06);
+}
+
+/* The lime edge marker — the canon world's "you are here". Drawn as an inset
+   box-shadow rather than a border-left so the row's text never shifts by the
+   marker's width between states (craft-floor forbids >1px colored borders;
+   this is a 2px signal, not a container border, and only the active row
+   wears it). */
+.sidebar-item.active {
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--fg);
 }
 
 .sidebar-item .icon {
@@ -890,7 +902,7 @@ a.bookmark-name::after {
   max-width: 340px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 8px 24px var(--shadow-lg);
   padding: 10px 12px;
   font-size: 12px;
@@ -983,7 +995,7 @@ a.bookmark-name::after {
   width: 264px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 8px 24px var(--shadow-lg);
   padding: 8px;
 }
@@ -1002,7 +1014,7 @@ a.bookmark-name::after {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 4px 8px;
 }
 
@@ -1017,7 +1029,7 @@ a.bookmark-name::after {
   font-size: 11.5px;
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg-muted);
   cursor: pointer;
   padding: 4px 8px;
@@ -1052,7 +1064,7 @@ a.bookmark-name::after {
   line-height: 1;
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   padding: 5px 0;
   text-align: center;
@@ -1089,7 +1101,7 @@ a.bookmark-name::after {
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: rgba(var(--tint), 0.07);
   color: var(--fg);
   font-size: 12px;
@@ -1136,7 +1148,7 @@ a.bookmark-name::after {
   align-self: flex-start;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--accent);
   color: var(--bg);
   font-size: 12px;

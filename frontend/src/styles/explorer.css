@@ -71,7 +71,7 @@
      glyph used to make, so shrinking the star cost no hit area. */
   padding: 5px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -243,7 +243,7 @@
   text-decoration: none;
   cursor: pointer;
   padding: 2px 4px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 /* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
@@ -292,7 +292,7 @@
   content: "";
   position: absolute;
   inset: var(--crumb-hit) 0;
-  border-radius: 6px;
+  border-radius: 8px;
   pointer-events: none;
 }
 
@@ -322,7 +322,7 @@
    highlight, it is a fill. */
 .path-crumb.spring-armed::before {
   background: rgba(var(--accent-rgb), 0.16);
-  animation: crumb-spring 0.7s linear;
+  animation: crumb-spring 0.7s var(--ease-out);
 }
 
 @keyframes crumb-spring {
@@ -467,7 +467,7 @@
   height: 28px;
   padding: 0 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   font: inherit;
   font-size: 12px;
@@ -724,7 +724,7 @@
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   font: inherit;
   font-size: 12.5px;
@@ -808,7 +808,7 @@
   white-space: nowrap;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg-muted);
   cursor: pointer;
@@ -1144,7 +1144,7 @@
   font: inherit;
   padding: 6px 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -1705,7 +1705,7 @@ table.listing-table tr.skel-row:hover {
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px 10px;
 }
 
@@ -1770,10 +1770,18 @@ table.listing-table th.col-size,
 table.listing-table td.size {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  /* Canon retheme: measurements speak mono, a size down and muted — the
+     metadata voice both approved comps set. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 table.listing-table td.mtime {
   font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* Enough for "1023.9 KB" and "12/31/25, 11:59 PM" plus the 16px cell padding
@@ -1829,7 +1837,7 @@ table.listing-table .listing-head-menu {
   height: 22px;
   padding: 0;
   border: none;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1944,8 +1952,15 @@ table.listing-table tr.row:hover {
    selection stays visible while the cursor is elsewhere; full opacity so a
    selected .ignored row is still readable. */
 table.listing-table tr.row.selected {
-  background: var(--sel);
+  /* Canon retheme: selection is the lime-washed row fill plus the same 2px
+     lime edge marker the active nav row wears — one "you are here" grammar
+     across the shell. The edge rides the first CELL's inset (like the copy
+     bar below) so it survives hover and never moves the text. */
+  background: var(--row-bg-active);
   opacity: 1;
+}
+table.listing-table tr.row.selected > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 /* A row whose entry is on the in-app clipboard as a CUT: dimmed until it's
@@ -2066,7 +2081,7 @@ body.fs-dragging.fs-drag-refused * {
   max-width: 260px;
   padding: 5px 10px;
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg-panel);
   color: var(--fg);
   font-size: 12px;

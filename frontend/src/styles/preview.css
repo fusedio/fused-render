@@ -67,7 +67,7 @@
   font: inherit;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg);
   text-decoration: none;
@@ -382,7 +382,7 @@ html.side-reopening iframe {
   margin: 24px;
   padding: 20px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg-alt);
   max-width: 480px;
 }
@@ -464,7 +464,7 @@ html.side-reopening iframe {
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 12px;
   cursor: pointer;
 }
@@ -484,7 +484,7 @@ html.side-reopening iframe {
 .status-message.error {
   background: var(--error-page-bg);
   border: 2px solid var(--error-page-border);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 14px 16px;
   color: var(--error-page-fg);
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -886,7 +886,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   padding: 4px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   box-shadow: 0 4px 16px var(--shadow-md);
 }
 

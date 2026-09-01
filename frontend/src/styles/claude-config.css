@@ -135,7 +135,7 @@
   white-space: nowrap;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -761,7 +761,7 @@
   display: inline-flex;
   flex: 0 0 auto;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -853,7 +853,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg-muted);
 }
 
@@ -879,7 +879,7 @@
   text-align: left;
   padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: inherit;
   cursor: pointer;
@@ -916,7 +916,7 @@
   margin-top: 10px;
   padding: 5px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   font: inherit;
   font-size: 12px;
@@ -1528,7 +1528,7 @@
   height: 26px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1716,7 +1716,7 @@
   font-size: 12px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;

@@ -1,0 +1,6 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer styled as a Braun/Dieter-Rams matte instrument. Near-black matte plate ground (#1a1b1d), warm gray engraved-style labels (#d9dadc), recessed panel surfaces a step darker, machined hairline seams (#4a4d52), one electric lime signal lamp (#E5FF44) lit beside the active item — lime used nowhere else. Layout: left sidebar as a switch bank — rows of flat rectangular toggles with engraved mono caps labels (EXPLORER, TASKS, SCHEDULE, MODELS); main area a recessed plate holding a file listing with clean grotesk filenames and mono metadata; top a slim machined header rail with the product name 'fused-render' set small like a nameplate. Physical calm, functional, zero decoration, precise 8px rhythm, matte not glossy, no gradients, no glow, no photos. The restraint of a 1970s Braun hi-fi translated to a dense modern file browser.",
+  "createdAt": "2026-09-01T10:56:12.884Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2"
+}

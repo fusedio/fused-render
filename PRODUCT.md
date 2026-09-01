@@ -42,7 +42,9 @@ Two claims, held equally (user-confirmed):
 ## Brand Commitments
 
 - Name and identity tied to **Fused** (fused.io) — keep naming, voice, and brand association consistent with the parent brand.
-- Beyond that tie, nothing else is binding yet: the visual world remains open (user-confirmed). Current shell tokens are evidence, not law.
+- **Fused Lime (#E5FF44) is the binding brand accent** (user-confirmed, 2026-09-01).
+- **Standing visual preference: the category standard, played straight** — modern dev-tool canon executed at full craft, benchmarked against Linear, Vercel dashboard, and Raycast (user chose canon over conceptual directions, 2026-09-01). No irony, no smuggled quirk.
+- Dark + light themes are contractual: every color a token with a light counterpart (`tests/test_theme.py`). Current shell tokens are evidence, not law.
 
 ## Evidence on Hand
 

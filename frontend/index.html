@@ -83,7 +83,7 @@
        is here for the same reason, one step earlier still: it is what the
        browser's own default surfaces (and any document that never sets a
        background) resolve against. */
-    html { color-scheme: dark; background: #131417; }
+    html { color-scheme: dark; background: #0b0d10; }
     html[data-theme="light"] { color-scheme: light; background: #ffffff; }
     body { margin: 0; background: inherit; }
     /* Hidden for now (Akshil, 2026-08-28): the pulsing "fused" wordmark is
@@ -97,10 +97,10 @@
       justify-content: center;
       font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       letter-spacing: 0.04em;
-      color: #9aa0a6;
+      color: #8b9096;
       animation: boot-pulse 1.4s ease-in-out infinite;
     }
-    html[data-theme="light"] #boot { color: #61656c; }
+    html[data-theme="light"] #boot { color: #676c73; }
     @keyframes boot-pulse { 50% { opacity: 0.45; } }
     @media (prefers-reduced-motion: reduce) {
       #boot { animation: none; opacity: 0.7; }
@@ -108,6 +108,23 @@
   </style>
 </head>
 <body>
+  <!--
+  THESIS: fused-render as the dev-tool canon played straight at Linear/Vercel/Raycast
+  craft; refuses the incumbent's ad-hoc per-page styling — one component system.
+  OWN-WORLD: near-black #0b0d10 ground, sidebar darker than pane; off-white ink,
+  hairline #26292e borders, 8px radii; Fused Lime #E5FF44 as active-nav marker,
+  selection edge, primary-button fill; mono for paths/metadata. Light theme is the
+  same relationships on white.
+  STORY: a developer opens their machine and reads it like a first-class product:
+  dense tables, calm chrome, one lime signal saying "here".
+  FIRST VIEWPORT: labeled sidebar (existing IA verbatim) left; breadcrumb+search
+  header; file table center; split preview right (canon comp). Home alone wears
+  workspace-home: recents, current apps, activity (comp C).
+  FORM: canon (standing exit), user-chosen; seed b74962de.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the
+  finish review, the verdict, DESIGN.md, and every shipping raster carrying its
+  provenance.
+  -->
   <div id="root"><div id="boot"></div></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>

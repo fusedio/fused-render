@@ -4,120 +4,112 @@
   "title": "Design System: fused-render",
   "extensions": {
     "colorMeta": {
-      "accent": { "role": "primary", "displayName": "Fused Lime", "canonical": "#E5FF44", "tonalRamp": ["#252b00", "#3a4400", "#4f5d00", "#5f7300", "#8ba315", "#b8d42e", "#E5FF44", "#f4ffa3"] },
-      "accent-soft": { "role": "primary", "displayName": "Lime Soft", "canonical": "#c9d95e" },
-      "fg": { "role": "neutral", "displayName": "Ink", "canonical": "#e8eaed", "tonalRamp": ["#131417", "#1b1d21", "#2a2d33", "#4a4e55", "#61656c", "#9aa0a6", "#c4c7cc", "#e8eaed"] },
-      "fg-muted": { "role": "neutral", "displayName": "Ink Muted", "canonical": "#9aa0a6" },
-      "bg": { "role": "neutral", "displayName": "Page", "canonical": "#131417" },
-      "bg-alt": { "role": "neutral", "displayName": "Raised", "canonical": "#1b1d21" },
-      "bg-panel": { "role": "neutral", "displayName": "Panel", "canonical": "#202329" },
-      "border": { "role": "neutral", "displayName": "Hairline", "canonical": "#2a2d33" },
-      "sel": { "role": "neutral", "displayName": "Selection", "canonical": "#2b3a52" },
-      "error": { "role": "semantic", "displayName": "Error", "canonical": "#ff6b6b" },
-      "success": { "role": "semantic", "displayName": "Success", "canonical": "#3fb950" },
-      "warning": { "role": "semantic", "displayName": "Warning", "canonical": "#d29922" },
-      "activity": { "role": "semantic", "displayName": "Activity", "canonical": "#60a5fa" }
+      "fused-lime": { "role": "primary", "displayName": "Fused Lime", "canonical": "#E5FF44", "lightCounterpart": "#5f7300", "tonalRamp": ["oklch(20% 0.09 112)", "oklch(32% 0.12 112)", "oklch(45% 0.15 112)", "oklch(58% 0.18 112)", "oklch(70% 0.2 112)", "oklch(82% 0.21 112)", "oklch(92% 0.22 112)", "oklch(97% 0.12 112)"] },
+      "near-black-ground": { "role": "neutral", "displayName": "Near-Black Ground", "canonical": "#0b0d10", "lightCounterpart": "#ffffff", "tonalRamp": ["#08090b", "#0b0d10", "#121417", "#26292e", "#464b53", "#8b9096", "#c8ccd1", "#f2f3f5"] },
+      "rail-black": { "role": "neutral", "displayName": "Rail Black", "canonical": "#08090b", "lightCounterpart": "#eff0f3" },
+      "raised-graphite": { "role": "neutral", "displayName": "Raised Graphite", "canonical": "#121417", "lightCounterpart": "#f5f6f8" },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "#26292e", "lightCounterpart": "#e2e4e8" },
+      "off-white-ink": { "role": "neutral", "displayName": "Off-White Ink", "canonical": "#f2f3f5", "lightCounterpart": "#17181a" },
+      "cool-muted": { "role": "neutral", "displayName": "Cool Muted", "canonical": "#8b9096", "lightCounterpart": "#676c73" },
+      "selected-row-wash": { "role": "primary", "displayName": "Selected Row Wash", "canonical": "#262a15", "lightCounterpart": "#e9ecdc" }
     },
     "typographyMeta": {
-      "body": { "displayName": "Body", "purpose": "Page default, 14px system sans." },
-      "control": { "displayName": "Control", "purpose": "Buttons, fields, rows — 13px; sidebar 13.5px." },
-      "label": { "displayName": "Label", "purpose": "Field labels, hints, metadata — 12px/500, Ink Muted." },
-      "mono": { "displayName": "Mono", "purpose": "Paths, code, sizes, technical values." }
+      "body": { "displayName": "Body", "purpose": "Default 14px system sans on <body>." },
+      "control": { "displayName": "Control", "purpose": "13px for buttons and field controls." },
+      "label": { "displayName": "Label", "purpose": "12px 500-weight muted field labels and hints." },
+      "mono-metadata": { "displayName": "Mono Metadata", "purpose": "Measurements only: sizes, timestamps — ui-monospace 12px muted, tabular-nums." }
     },
     "shadows": [
-      { "name": "shadow-sm", "value": "rgba(0,0,0,0.25)", "purpose": "Ambient ink for small lifts (dark); 0.1 in light." },
-      { "name": "shadow-md", "value": "rgba(0,0,0,0.4)", "purpose": "Ambient ink for panels (dark); 0.14 in light." },
-      { "name": "shadow-lg", "value": "rgba(0,0,0,0.5)", "purpose": "Ambient ink for overlays (dark); 0.18 in light." },
-      { "name": "scrim", "value": "rgba(0,0,0,0.55)", "purpose": "Modal backdrop, dark in both themes." }
+      { "name": "popover-lift", "value": "0 4px 14px var(--shadow-sm, rgba(0,0,0,0.3))", "purpose": "Tooltips, hint panels, floating pickers." },
+      { "name": "card-hover-lift", "value": "0 4px 18px var(--shadow-sm, rgba(0,0,0,0.3))", "purpose": "App-card hover, with a 1px translateY rise." }
     ],
     "motion": [
       { "name": "dur-fast", "value": "80ms", "purpose": "Hover / press colour changes." },
       { "name": "dur-med", "value": "150ms", "purpose": "Overlays, toasts, fades, context menus." },
       { "name": "dur-slow", "value": "200ms", "purpose": "Panels, slide-overs, sidebar collapse, FLIP reorders." },
-      { "name": "ease-out", "value": "ease-out", "purpose": "The one easing; all durations collapse under prefers-reduced-motion." }
-    ],
-    "breakpoints": []
+      { "name": "ease-out", "value": "ease-out", "purpose": "The shell's single easing." }
+    ]
   },
   "components": [
     {
       "name": "Base Button",
       "kind": "button",
       "refersTo": "button-base",
-      "description": "Default action: page fill, hairline border, ink text.",
-      "html": "<button class=\"ds-btn\">Cancel</button>",
-      "css": ".ds-btn { font-size: 13px; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border, #2a2d33); border-radius: 6px; background: var(--bg, #131417); color: var(--fg, #e8eaed); cursor: pointer; white-space: nowrap; transition: background-color 80ms ease-out, border-color 80ms ease-out; } .ds-btn:hover { background: var(--row-bg-hover, #26282c); } .ds-btn:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; } .ds-btn:active { transform: translateY(1px); }"
+      "description": "Neutral action: page ground, hairline border, 32px tall.",
+      "html": "<button class=\"ds-btn\">Open folder</button>",
+      "css": ".ds-btn { font: 400 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--border, #26292e); border-radius: 8px; background: var(--bg, #0b0d10); color: var(--fg, #f2f3f5); cursor: pointer; white-space: nowrap; transition: background-color 80ms ease-out, color 80ms ease-out, border-color 80ms ease-out; } .ds-btn:hover:not(:disabled) { border-color: var(--fg-muted, #8b9096); } .ds-btn:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; } .ds-btn:disabled { opacity: 0.5; cursor: default; }"
     },
     {
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "Strongest through contrast, never accent: ink-filled.",
-      "html": "<button class=\"ds-btn-primary\">Save</button>",
-      "css": ".ds-btn-primary { font-size: 13px; font-weight: 600; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 6px; background: var(--fg, #e8eaed); color: var(--bg, #131417); cursor: pointer; transition: background-color 80ms ease-out; } .ds-btn-primary:hover { background: var(--on-fg, #ffffff); } .ds-btn-primary:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; }"
+      "description": "The one lime fill per screen — Fused Lime with dark ink.",
+      "html": "<button class=\"ds-btn-primary\">Deploy</button>",
+      "css": ".ds-btn-primary { font: 600 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent; border-radius: 8px; background: var(--accent, #E5FF44); color: var(--on-accent, #10131a); cursor: pointer; white-space: nowrap; transition: background-color 80ms ease-out; } .ds-btn-primary:hover:not(:disabled) { background: var(--accent-hover, #eeff70); } .ds-btn-primary:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.5; cursor: default; }"
     },
     {
       "name": "Field",
       "kind": "input",
       "refersTo": "field-control",
-      "description": "Label + control: quiet focus, no glow.",
-      "html": "<div class=\"ds-field\"><label class=\"ds-field-label\">Folder <span class=\"ds-req\">*</span></label><input class=\"ds-field-control\" placeholder=\"~/data\" /></div>",
-      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; } .ds-field-label { font-size: 12px; font-weight: 500; color: var(--fg-muted, #9aa0a6); } .ds-req { color: var(--accent, #E5FF44); } .ds-field-control { font-size: 13px; color: var(--fg, #e8eaed); background: var(--bg, #131417); border: 1px solid var(--border, #2a2d33); border-radius: 6px; padding: 7px 10px; height: 32px; } .ds-field-control:focus { outline: none; border-color: var(--fg-muted, #9aa0a6); } .ds-field-control::placeholder { color: var(--fg-muted, #9aa0a6); }"
+      "description": "Labeled text field; focus is the lime signal — accent border plus a faint accent wash ring.",
+      "html": "<div class=\"ds-field\"><label class=\"ds-field-label\">Folder name</label><input class=\"ds-field-control\" placeholder=\"my-project\" /></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; } .ds-field-label { font-size: 12px; font-weight: 500; color: var(--fg-muted, #8b9096); } .ds-field-control { font: 400 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 32px; color: var(--fg, #f2f3f5); background: var(--bg, #0b0d10); border: 1px solid var(--border, #26292e); border-radius: 8px; padding: 7px 10px; } .ds-field-control:focus { outline: none; border-color: var(--accent, #E5FF44); box-shadow: 0 0 0 3px rgba(229, 255, 68, 0.15); } .ds-field-control::placeholder { color: var(--fg-muted, #8b9096); }"
     },
     {
       "name": "Sidebar Item",
       "kind": "nav",
       "refersTo": "sidebar-item",
-      "description": "Global sidebar row; colour-only 80ms transitions.",
-      "html": "<a class=\"ds-sidebar-item\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z\"/></svg>Explorer</a>",
-      "css": ".ds-sidebar-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; color: var(--fg, #e8eaed); text-decoration: none; cursor: pointer; font-size: 13.5px; transition: background-color 80ms ease-out, color 80ms ease-out; } .ds-sidebar-item:hover { background: var(--row-bg-hover, #26282c); } .ds-sidebar-item:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; }"
+      "description": "Nav row on the rail; the active row wears the 2px lime inset edge marker.",
+      "html": "<nav class=\"ds-sidebar\"><a class=\"ds-sidebar-item\" href=\"#\">Explorer</a><a class=\"ds-sidebar-item ds-active\" href=\"#\">Apps</a><a class=\"ds-sidebar-item\" href=\"#\">Tasks</a></nav>",
+      "css": ".ds-sidebar { display: flex; flex-direction: column; gap: 2px; padding: 8px; width: 200px; background: var(--bg-rail, #08090b); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; } .ds-sidebar-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--fg, #f2f3f5); text-decoration: none; cursor: pointer; transition: background-color 80ms ease-out, color 80ms ease-out; } .ds-sidebar-item:hover { background: rgba(255, 255, 255, 0.06); } .ds-sidebar-item.ds-active { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--accent, #E5FF44); } .ds-sidebar-item:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 1px; }"
     },
     {
       "name": "Listing Row",
       "kind": "custom",
-      "refersTo": "sidebar-item",
-      "description": "The app's atom: file row with typed icon hue and mono metadata.",
-      "html": "<div class=\"ds-row\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"var(--icon-data, #a898cb)\" stroke-width=\"1.5\"><rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 6h11M6 6v7.5\"/></svg><span class=\"ds-row-name\">metrics.parquet</span><span class=\"ds-row-meta\">4.2 MB</span></div>",
-      "css": ".ds-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; color: var(--fg, #e8eaed); font-size: 13px; cursor: pointer; transition: background-color 80ms ease-out; } .ds-row:hover { background: var(--row-bg-hover, #26282c); } .ds-row-name { flex: 1; } .ds-row-meta { color: var(--fg-muted, #9aa0a6); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }"
+      "refersTo": "listing-row-selected",
+      "description": "Dense file-table row: hover lifts to raised graphite; selected takes the accent wash plus a 2px lime first-cell inset. Metadata speaks mono.",
+      "html": "<table class=\"ds-listing\"><tr class=\"ds-row\"><td class=\"ds-name\">notes.md</td><td class=\"ds-size\">4.2 KB</td><td class=\"ds-mtime\">08/30/26, 2:14 PM</td></tr><tr class=\"ds-row ds-selected\"><td class=\"ds-name\">data.parquet</td><td class=\"ds-size\">1.4 MB</td><td class=\"ds-mtime\">09/01/26, 9:03 AM</td></tr></table>",
+      "css": ".ds-listing { border-collapse: collapse; width: 100%; background: var(--bg, #0b0d10); font: 400 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--fg, #f2f3f5); } .ds-listing td { padding: 9px 16px; border-bottom: 1px solid var(--border, #26292e); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ds-row { cursor: pointer; user-select: none; transition: background-color 80ms ease-out; } .ds-row:hover { background: var(--bg-alt, #121417); } .ds-row.ds-selected { background: var(--row-bg-active, #262a15); } .ds-row.ds-selected > td:first-child { box-shadow: inset 2px 0 0 var(--accent, #E5FF44); } .ds-size { text-align: right; font-variant-numeric: tabular-nums; } .ds-size, .ds-mtime { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--fg-muted, #8b9096); }"
     },
     {
-      "name": "Card Thumb",
+      "name": "App Card Thumb",
       "kind": "card",
-      "refersTo": "button-base",
-      "description": "Thumbnail card: hairline only; hover tints border toward accent.",
-      "html": "<button class=\"ds-card\"><span class=\"ds-card-thumb\"></span><span class=\"ds-card-name\">weather-view.html</span></button>",
-      "css": ".ds-card { display: flex; flex-direction: column; gap: 10px; width: 200px; padding: 0; background: none; border: none; cursor: pointer; text-align: left; color: var(--fg, #e8eaed); font-size: 13px; } .ds-card-thumb { aspect-ratio: 16/9; background: var(--bg-alt, #1b1d21); border: 1px solid var(--border, #2a2d33); border-radius: 6px; transition: border-color 120ms ease; } .ds-card:hover .ds-card-thumb { border-color: color-mix(in srgb, var(--accent, #E5FF44) 55%, var(--border, #2a2d33)); } .ds-card:hover .ds-card-name { color: var(--accent-soft, #c9d95e); }"
+      "refersTo": "app-pcard-thumb",
+      "description": "16/10 preview well on a designed dot-grid ground, so an empty card reads intentional; hover lifts 1px with a soft shadow.",
+      "html": "<div class=\"ds-pcard\"><div class=\"ds-pcard-thumb\"></div><div class=\"ds-pcard-title\">weather.html</div></div>",
+      "css": ".ds-pcard { width: 240px; border: 1px solid var(--border, #26292e); border-radius: 12px; background: var(--bg-alt, #121417); overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; transition: border-color 80ms ease-out, transform 80ms ease-out, box-shadow 80ms ease-out; } .ds-pcard:hover { border-color: var(--fg-muted, #8b9096); box-shadow: 0 4px 18px var(--shadow-sm, rgba(0, 0, 0, 0.3)); transform: translateY(-1px); } .ds-pcard-thumb { aspect-ratio: 16 / 10; background: radial-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px) 0 0 / 14px 14px, var(--bg, #0b0d10); border-bottom: 1px solid var(--border, #26292e); } .ds-pcard-title { padding: 10px 12px; font-size: 13px; color: var(--fg, #f2f3f5); }"
     }
   ],
   "narrative": {
-    "northStar": "The Instrument Panel",
-    "overview": "fused-render is a dark cockpit for your own machine: quiet chrome, hairline seams, utility density, and one lime signal. The interface is confident and dark-first — the dark palette IS the app's identity, and light mode is a faithful, per-token translation of the same relationships, never a restyle. The system runs on semantic colour discipline: every hue means something. The Fused Lime accent is rare and earned — focus rings, selection, the occasional highlight — never a button fill or a large surface. Hierarchy is carried by contrast, spacing, and hairline borders, not by colour weight.",
+    "northStar": "The Dev-Tool Canon, Played Straight",
+    "overview": "fused-render dresses the whole machine as a first-class developer product: the modern dev-tool canon (benchmarked against Linear, Vercel dashboard, Raycast — user-chosen) executed at full craft, with no irony and no smuggled quirk. The world is a deep near-black ground with a sidebar rail that recedes darker than the pane it borders, off-white ink, hairline borders, and exactly one loud voice: Fused Lime (#E5FF44), reserved for \"you are here\" and \"do this\". Density is high and calm — dense tables, quiet chrome, translucent tint-washes instead of new grays. Every color on every surface is a CSS custom property defined in frontend/src/styles/tokens.css, dark-first with a full light counterpart; tests/test_theme.py enforces both halves of that contract.",
     "keyCharacteristics": [
-      "Dark-first; light is a byte-faithful translation, not a second design",
-      "Quiet, precise, dense — 13–14px UI type, 32px controls, hairline borders",
-      "One accent (Fused Lime), used sparingly; neutral-filled primary buttons",
-      "Every colour is a named token with a defined role; semantic hues form a learned vocabulary",
-      "Flat-first: borders carry separation, shadows stay minimal and ambient"
+      "One lime signal per grammar: active nav marker, selection edge, focus ring, primary fill — nothing else.",
+      "Rail (#08090b) darker than page (#0b0d10) darker-side of raised (#121417): the pane is the lit surface.",
+      "Hairline #26292e borders carry structure; shadows are reserved for floating surfaces.",
+      "Measurements speak monospace, 12px, muted.",
+      "Three motion durations (80/150/200ms), one ease-out, shell-wide."
     ],
     "rules": [
-      { "name": "The One Signal Rule", "body": "Fused Lime never fills a button or a large surface; it marks focus, selection, and the rare highlight. Primary actions read strongest through contrast (ink-filled), not accent.", "section": "colors" },
-      { "name": "The Token Rule", "body": "Every colour comes from tokens.css. A hardcoded colour is a colour light mode cannot repaint.", "section": "colors" },
-      { "name": "The Scrim Exception", "body": "Controls sitting on arbitrary pixels (images, maps, video) use the --scrim-* set — identical in both themes, white ink on dark wash — because the surface underneath is not ours.", "section": "colors" },
-      { "name": "The No-Display Rule", "body": "There is no display face. Headings differentiate by weight and spacing within the system stack; nothing is decorative.", "section": "typography" },
-      { "name": "The Drawn-Edge Rule", "body": "If two surfaces must read as separate, give them a Hairline border or an ordered fill — never a heavier shadow.", "section": "elevation" }
+      { "name": "The One-Lime-Signal Rule", "body": "Fused Lime appears only as: the 2px active-nav inset marker, the selected-row wash + 2px first-cell inset, the focus treatment (accent border/outline + faint accent wash), and the single primary-button fill. It never decorates, never fills large areas, never colors prose.", "section": "colors" },
+      { "name": "The Token Rule", "body": "No color literal exists outside the two palette blocks in tokens.css. Every rule paints with var(--token); every dark token has a light counterpart (tests/test_theme.py enforces both).", "section": "colors" },
+      { "name": "The Rail-Recedes Rule", "body": "The sidebar rail is always a step darker than the pane it borders (--bg-rail < --bg < --bg-alt), in both themes — the pane is the lit surface; later tuning must not invert the ordering.", "section": "colors" },
+      { "name": "The Mono-for-Measurement Rule", "body": "Anything measured — bytes, timestamps — renders in ui-monospace, one size down (12px), muted, with tabular numerals. Prose and names never take mono; measurements never take the sans voice.", "section": "typography" },
+      { "name": "The Tonal-First Rule", "body": "Resting surfaces separate by ground step and hairline, never by shadow; a shadow means the surface floats above the page.", "section": "elevation" }
     ],
     "dos": [
-      "Do take every colour from tokens.css; add a token (with a light counterpart) before adding a colour.",
-      "Do keep controls at 32px, radius at 6px, and UI type at 13–14px.",
-      "Do use --activity for in-flight/unread signals and the status hues for outcomes; keep hue meanings stable.",
-      "Do carry hierarchy with contrast and Hairline borders; keep primary buttons ink-filled.",
-      "Do pick one of the three motion durations; never invent a new number."
+      "Do paint every color with a var(--token) from tokens.css and give any new dark token a light counterpart.",
+      "Do draw selection/active edges as 2px inset box-shadows in Fused Lime, never as borders that shift text.",
+      "Do keep the rail darker than the pane in any new surface ordering (--bg-rail < --bg < --bg-alt).",
+      "Do set measurements (sizes, timestamps, counts) in ui-monospace 12px muted with tabular-nums.",
+      "Do pick transitions from the three tokens (80/150/200ms, ease-out); one primary lime fill per screen."
     ],
     "donts": [
-      "Don't fill buttons or large surfaces with Fused Lime — accent everywhere is the confirmed anti-reference; accent is for focus and selection.",
-      "Don't import generic SaaS decoration: gradient heroes, glassmorphism, decorative card shadows.",
-      "Don't play terminal cosplay: no scanlines, phosphor glow, or faux-CRT styling — developer-native means quiet, not themed.",
-      "Don't hardcode a colour, restyle dark mode, or give a dark token no light counterpart.",
-      "Don't use heavier shadows to separate surfaces; draw the edge instead."
+      "Don't hardcode a color literal outside the two palette blocks in tokens.css (test-enforced).",
+      "Don't use Fused Lime for decoration, prose, large fills, or more than the four sanctioned signals.",
+      "Don't use raw #E5FF44 as text or border in the light theme — the light --accent is the contrast-corrected olive-lime.",
+      "Don't add shadows to resting surfaces; hairline + ground step carry structure.",
+      "Don't invent new grays — layer rgba(var(--tint), …) washes over existing grounds instead."
     ]
   }
 }

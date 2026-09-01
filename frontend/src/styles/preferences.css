@@ -24,7 +24,7 @@
   align-items: center;
   gap: 4px;
   padding: 8px 4px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   border: none;
   font: inherit;
@@ -518,7 +518,7 @@
   max-height: max(440px, calc(100dvh - 11rem));
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 .fh-results li + li {
@@ -864,7 +864,7 @@
 .fhb-card .fh-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
@@ -885,7 +885,7 @@
   aspect-ratio: 16 / 10;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -939,7 +939,7 @@
   /* The base --bg (a step darker than the card's --bg-alt) so the sheets —
      lifted toward --fg below — read clearly against the well they sit in. */
   background: var(--bg);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -1107,7 +1107,7 @@
   font-size: 12px;
   color: var(--fg-muted);
   background: rgba(var(--tint), 0.04);
-  border-radius: 10px;
+  border-radius: 12px;
   text-align: center;
 }
 
@@ -1170,7 +1170,7 @@
   background: var(--bg-popover);
   color: var(--tour-fg);
   border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 8px 30px var(--shadow-lg);
 }
 
@@ -1213,7 +1213,7 @@
   background: transparent;
   color: var(--tour-desc);
   border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 6px;
+  border-radius: 8px;
   text-shadow: none;
 }
 
@@ -1325,7 +1325,7 @@
   font: inherit;
   padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -1362,7 +1362,7 @@
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   resize: vertical;
 }
 
@@ -1382,7 +1382,7 @@
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 7px 10px;
 }
 
@@ -1407,7 +1407,7 @@
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
-  border-radius: 6px;
+  border-radius: 8px;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 1.5;
@@ -1426,7 +1426,7 @@
   max-height: 420px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .index-query-results table {

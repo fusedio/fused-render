@@ -411,7 +411,7 @@
   aspect-ratio: 16 / 10;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
 }
 

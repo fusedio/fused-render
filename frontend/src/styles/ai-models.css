@@ -167,7 +167,7 @@
   align-items: flex-start;
   gap: 6px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -1093,7 +1093,7 @@
   display: inline-flex;
   margin-right: 4px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -1181,7 +1181,7 @@
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 /* The platform's own clear button, removed. It empties the TEXT and leaves the
@@ -1248,7 +1248,7 @@
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -1816,7 +1816,7 @@
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -2250,7 +2250,7 @@
   color: var(--fg);
   background: var(--ctl-quiet-bg);
   border: 1px solid var(--ctl-quiet-border);
-  border-radius: 5px;
+  border-radius: 4px;
 }
 
 .am-usage-rate:focus-visible {
@@ -2352,7 +2352,7 @@
   padding: 16px 20px 20px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 /* The border-bottom rule `.am-section-head` normally draws would sit oddly
@@ -2661,7 +2661,7 @@
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--fg);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -2753,7 +2753,7 @@
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   /* No `cursor`/focus ring here any more — those are conditional on
      `.expandable` (below) and on the row's own focusable descendant
      respectively. This is a plain container: BenchmarkTab.tsx puts NO
@@ -3081,7 +3081,7 @@ button.am-bench-model:focus-visible {
   margin-top: -6px;
   border: 1px solid var(--accent);
   border-top: none;
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 8px 8px;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 

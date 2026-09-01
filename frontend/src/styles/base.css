@@ -139,7 +139,7 @@ iframe {
   color: var(--fg);
   background: var(--bg-popover);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   box-shadow: 0 4px 14px var(--shadow-sm);
   pointer-events: none;
   /* Hidden by DISPLAY rather than opacity: an invisible panel that still has a

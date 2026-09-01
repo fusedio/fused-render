@@ -235,7 +235,7 @@
 .schedule-form-seg {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -883,7 +883,7 @@
   height: 24px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1044,7 +1044,7 @@
   min-width: 0;
   padding: 4px 6px;
   border: none;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: var(--fg);
   font: inherit;
@@ -1400,7 +1400,7 @@
   /* Same elevation as every other trigger-anchored panel (see .schedule-pop). */
   background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
   animation: schedule-pop-in 0.1s ease-out;
@@ -1534,7 +1534,7 @@
      with no edges, read as text (audit 2026-08-16). The accent still takes
      over on :focus and --error on .is-invalid, below. */
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -1625,7 +1625,7 @@ input.schedule-when-field {
      dropdown — goes higher (audit 2026-08-16). */
   background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 8px 24px var(--shadow-sm);
   padding: 10px;
   /* 100ms is the whole budget: these open on a click the user already
@@ -1714,7 +1714,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   align-self: stretch;
   width: 100%;
@@ -1919,7 +1919,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   align-self: stretch;
   width: 100%;
@@ -1962,7 +1962,7 @@ input.schedule-when-field {
   padding: 14px 16px 16px;
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 12px 40px var(--shadow-lg);
   animation: schedule-explorer-in 0.18s ease-out;
 }
@@ -1997,7 +1997,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   appearance: textfield;
   -moz-appearance: textfield;
 }
@@ -2150,7 +2150,7 @@ input.schedule-when-field {
      high elevation (audit 2026-08-16). */
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 12px 40px var(--shadow-lg);
   animation: schedule-explorer-in 0.18s ease-out;
 }
@@ -2206,7 +2206,7 @@ input.schedule-when-field {
   flex-direction: column;
   gap: 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg);
   padding: 10px;
 }
@@ -2269,7 +2269,7 @@ input.schedule-when-field {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: 4px;
   cursor: pointer;
   max-width: 160px;
   overflow: hidden;
@@ -2342,7 +2342,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px 8px;
   cursor: pointer;
 }
@@ -2472,7 +2472,7 @@ input.schedule-when-field {
   font-size: 11px;
   line-height: 1;
   padding: 3px 6px;
-  border-radius: 5px;
+  border-radius: 4px;
   background: color-mix(in srgb, currentColor 14%, transparent);
   color: inherit;
   opacity: 0.85;
@@ -2700,7 +2700,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: var(--bg-popover);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 4px;
   box-shadow: 0 2px 8px var(--shadow-sm);
   opacity: 0;
   visibility: hidden;
@@ -2863,7 +2863,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   align-self: center;
   transition: border-color 0.08s ease, background-color 0.08s ease;
@@ -2924,7 +2924,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.08s ease;
 }
@@ -3074,7 +3074,7 @@ input.schedule-when-field {
   color: var(--fg-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.08s ease, color 0.08s ease;
 }
@@ -3148,7 +3148,7 @@ input.schedule-when-field {
   color: var(--fg);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.08s ease;
 }
@@ -3538,7 +3538,7 @@ input.schedule-when-field {
   color: var(--fg-muted);
   background: transparent;
   border: 1px dashed var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: color 0.08s ease, border-color 0.08s ease;
 }

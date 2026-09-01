@@ -880,7 +880,7 @@ button.tasks-caret,
   color: var(--fg-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
@@ -1588,7 +1588,7 @@ button.tasks-caret,
 .tasks-run-hint {
   margin: 0 0 2px;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--activity) 14%, transparent);
   color: var(--activity);
   font-size: 11px;
@@ -1729,7 +1729,7 @@ button.tasks-caret,
      the check has no way to tell a filter chip from a message row. Same result,
      and the guard it protects stays exact. */
   border-width: 1px 1px 1px 0;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 8px 8px 0;
   cursor: pointer;
   transition: color 0.08s ease, background-color 0.08s ease;
 }

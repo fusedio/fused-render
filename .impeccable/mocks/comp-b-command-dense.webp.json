@@ -1,0 +1,6 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer as the modern dev-tool category standard at highest craft, Linear-grade density. Near-black ground (#0a0a0b), off-white text (#fafafa), subtle borders (#27272a), soft radii, lime accent (#E5FF44) only on active nav item and selection. Layout variation — COMMAND-DENSE: slim icon-only left rail (not wide sidebar), a prominent command bar at top center with '⌘K Search files, run views…' placeholder, below it a dense full-width file table with tight 32px rows, columns name/size/modified/kind, muted mono metadata, inline file-type icons in muted hues, one row selected with lime left-edge marker. Bottom status bar with path breadcrumb and item count. No preview pane — the table owns the viewport. Keyboard-first, dense, immaculate spacing rhythm, Linear-level discipline.",
+  "createdAt": "2026-09-01T10:59:52.478Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2"
+}

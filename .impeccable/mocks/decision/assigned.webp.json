@@ -1,0 +1,6 @@
+{
+  "prompt": "Desktop web app UI, full first viewport, landscape 16:10. 'fused-render' — a local file explorer styled as a living NASA/IBM-era engineering document. Dark graphite ground (#141518), chalk-white text (#e9eaec), hairline rules (#33363c), electric lime (#E5FF44) used ONLY as rare marker-pen highlight on focus and live state. Layout: top title block like an engineering drawing header — project name 'fused-render', path '~/data/climate', file count '128 ITEMS', sort field, all in small mono caps in ruled cells. Left: narrow sidebar of numbered clause labels (01 EXPLORER, 02 TASKS, 03 SCHEDULE, 04 MODELS) separated by hairlines. Main: file listing as a measured data sheet on a visible column grid — filename in clean grotesk, size and date in monospace, each row ruled by hairline; one row selected with a lime marker stroke in the margin; small drawn state glyphs (cross = done, punched corner = unavailable). Bottom: thin status bar as a drawing footer with revision number and clause references 'FS-5 / D460'. Quantities drawn as measured bars where length is value. Dense, disciplined, ruled everywhere, every block framed and captioned in tiny mono caps. No neon glow, no gradients, no photos. Print-standard rigor, screen-native execution.",
+  "createdAt": "2026-09-01T10:56:14.185Z",
+  "tool": "generate-image.mjs",
+  "model": "gpt-image-2"
+}
