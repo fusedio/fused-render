@@ -39,6 +39,10 @@ export interface CurrentApp {
   path: string;
   /** The folder name — the row's label. */
   name: string;
+  /** The page to run (canonical path), or null when the folder has none —
+   *  the context menu's "Open app", the same target as the app page's own
+   *  "Open app" button. */
+  entry: string | null;
   /** `linked` for a registry folder outside the workspace, else `workspace`. */
   kind: "workspace" | "linked";
   /** The folder is still on disk. A missing one still lists — removing it is
@@ -47,6 +51,9 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
+  /** A task under it finished with something unread — the row wears the green
+   *  dot (unless running: yellow outranks green, the Tasks row's own rule). */
+  unread: boolean;
   /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
    *  null — the glyph slot falls back to the generic mark. */
   iconUrl: string | null;
@@ -65,14 +72,18 @@ export function isUnderDir(project: string, dir: string): boolean {
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
+  unreadProjects: Iterable<string> = [],
 ): CurrentApp[] {
   const live = [...runningProjects];
+  const fresh = [...unreadProjects];
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
+    entry: e.entry,
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
+    unread: fresh.some((p) => isUnderDir(p, e.path)),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
 }
@@ -80,10 +91,11 @@ export function currentApps(
 /** api.ts `appIconUrl` restated (raw file + mtime cache key) — that module is
  *  not importable here for the same DOM-free reason as the codec above. */
 function iconUrlFor(icon: string, mtime?: number | null): string {
+  // The FULL float mtime as the cache key, not the floored second: picking a
+  // new icon twice inside one second must still change the URL, or the row
+  // keeps serving the browser's cached previous emoji (Bugbot, 2026-08-31).
   return (
-    "/api/fs/raw?path=" +
-    encodeURIComponent(icon) +
-    (mtime ? "&v=" + Math.floor(mtime) : "")
+    "/api/fs/raw?path=" + encodeURIComponent(icon) + (mtime ? "&v=" + mtime : "")
   );
 }
 

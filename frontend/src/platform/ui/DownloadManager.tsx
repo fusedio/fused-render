@@ -2,6 +2,24 @@
 // piece of work in progress: the long-running operations any page reported (SPEC
 // §36, D244) and the scheduled messages about to run or running now.
 //
+// STATUS-BAR MERGE, THEN A PARTIAL REVERT: this chip absorbed the two other
+// PERSISTENT-status chips that used to sit beside it — Models
+// (shell/ModelsDock.tsx) and Engines (shell/EnginesDock.tsx), both deleted at
+// the time. A follow-up revision then split Models back out into its own chip
+// (shell/ModelsDock.tsx again, resurrected) because the user relies on that
+// chip's own filled/outlined dot to know whether the machine is holding any
+// model weights, and a dot shared with jobs/engines answered a different
+// question. Engines stayed merged here — nothing comparable was ever asked of
+// its own indicator. So this panel draws up to TWO labelled sections in order
+// — Running (everything below, unchanged), then Background tasks (engine
+// rows) — a section only when it has rows, a heading only when 2+ sections
+// are present at once. See `EnginesSlot` below for why the row rendering
+// could move into platform (it only needs `platform/lib/api` types) while the
+// poller that FEEDS it stayed in shell (`shell/ActivityDock.tsx`, the sole
+// caller of this component). The chip's own `StatusDot` still answers a
+// narrower question than "does this chip have anything to show": see
+// `runningCount`, below, for why a running engine alone leaves it unfilled.
+//
 // It exists because that work used to be invisible the moment you looked away
 // from it: a page pulling an 8GB model drew its own bar inside itself, and the
 // shell tears a page's frame down on every navigation, so browsing to another
@@ -29,15 +47,27 @@
 // card owns everything shared — the plate, the one header, the one count, the one
 // scrolling list, the collapse, and Clear.
 //
-// THE FOLD TAKES THE JOB ROWS ONLY, and that is deliberate (jobs.ts `rowsShown`
-// holds the rule and the full argument). The collapse is a persisted preference,
-// so it was set against the card as it used to be — a download history worth
-// folding away — and once the queue arrived in the same card, folding the list
-// took the only cancel a queued message or a live turn has with it. A card
-// somebody collapsed weeks ago then left scheduled work arriving with nothing to
-// stop it. The queue's rows therefore stay on screen whatever the fold says; the
-// job rows are the half that folds; and nothing here rewrites the stored
-// preference, because the user set it on purpose.
+// EVERYTHING FOLDS NOW (D562, user call 2026-08-27, reversing D558/D559's
+// exemptions): collapsing hides the queue's rows exactly like the job rows,
+// with no kind of row pinned outside it. That used to be deliberately
+// asymmetric — the queue's rows and a live scheduled run's stand-in job row
+// were exempt, because folding away a queued message's or a live turn's only
+// ✕ left a card collapsed weeks ago with scheduled work arriving and nothing
+// on screen to stop it. The user's rule is that there is no such thing as a
+// "non-foldable card", full stop.
+//
+// COLLAPSED IS NOW A CHIP, NOT A SHORT CARD (D563, status bar redesign, user
+// call: "the collapsed notification is also taking too much space... it is
+// impossible to use the claude template with it"). `.dl-toggle` — the
+// category name, its count (D573), the aggregate percentage — is the WHOLE
+// of what renders while collapsed; `queue?.cancelAll` and `queue?.note`, along with
+// Clear and every row, render only inside the panel that opens when the
+// card is expanded, and so no longer survive a collapse the way D562's own
+// paragraph here used to promise. That reachability requirement is gone on
+// purpose, not merely forgotten: the chip's whole point is to cost the page
+// nothing but one summary line, and a button on it would be a second thing
+// competing for that line's very little room. Nothing here rewrites the
+// stored preference; it is only ever changed by the user pressing the chip.
 //
 // WHICH HALF OWNS A RUN IS TOLD, NOT GUESSED (`queue.drawn`, jobs.ts `jobRows`).
 // One row per unit of work needs the two halves to agree on who is drawing what, and
@@ -48,8 +78,8 @@
 // The slot now carries the entry ids its rows cover; this half drops exactly those
 // and draws the rest itself, which for a live run is a row with the same title, the
 // same status line and the same ✕, only without the Explorer link that needs shell.
-// `foldedJobRows` keeps that stand-in row through the fold, for the same reason the
-// queue's own rows go through it.
+// This stand-in row folds like any other now (D562) — collapsed, it is not on
+// screen at all any more (D563's chip carries no row, and no button either).
 //
 // AND IT IS TOLD ABOUT A RUN, NOT ABOUT A STATE: a drawn run is dropped here whether
 // its job is running or finished. The exemption terminal rows used to have was an
@@ -62,10 +92,18 @@
 // row against it (queue-dock-lib `openRows`): the handover is a render apart instead
 // of a poll apart, and it does not depend on the queue endpoint answering at all.
 //
-// Placement and stacking still belong to NotificationHost: this component
-// positions nothing. It sits ABOVE the server card and BELOW the toasts, because
-// those are the three lifetimes in the column — a toast is seconds, work in
-// progress is minutes, the server card outlives the session.
+// PLACEMENT MOVED (D563): this card used to sit in NotificationHost's fixed,
+// floating column with the toasts and the server card, ABOVE the server card
+// and BELOW the toasts by lifetime (a toast is seconds, work in progress is
+// minutes, the server card outlives the session) — but a FIXED column
+// overlays page content even collapsed, which is what made a page like the
+// Claude template unusable under it. It is handed to `StatusBar` now instead,
+// mounted inside `#main` where it RESERVES layout space rather than floating
+// over it; the toasts and `ServerStatusBanner` are unaffected and
+// stay in NotificationHost's column, since none of them are long-lived
+// enough to be worth a permanently reserved strip. This component still
+// positions nothing itself — `StatusBar` owns the chip's place in the bar,
+// and this file's own CSS classes own the panel floating above it.
 //
 // Cancel is a REQUEST, not a kill, for a JOB row (jobs.py `request_cancel`): the
 // shell has no idea what the work is or which process is doing it, so the ✕ sets
@@ -73,44 +111,52 @@
 // says "Cancelling…" until the work actually stops, rather than lying about it. A
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import StatusDot from "@platform/ui/StatusDot";
+import { useExclusiveSection } from "@platform/lib/exclusiveSection";
+import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   cancelJob,
+  clearableCount,
   clearFinishedJobs,
   dismissJob,
   fetchJobs,
-  foldedJobRows,
   isRunning,
   jobAmount,
   jobFraction,
   jobRows,
+  inFlightJobs,
+  mergedRows,
+  jobsAfterClear,
   jobStatusLine,
-  jobsSummary,
-  overallFraction,
   pollInterval,
-  rowsShown,
   JOB_PING_KEY,
   SCHEDULE_JOB_PREFIX,
   type Job,
   type QueueCount,
 } from "@platform/lib/jobs";
 import { repoName } from "@platform/lib/format";
-const COLLAPSED_KEY = "fused-render:jobs-collapsed";
-
-function loadCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_KEY) === "1";
-  } catch {
-    return false; // private mode / disabled storage — expanded is the honest default
-  }
-}
-
-function saveCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
-  } catch {
-    /* best-effort, like every other persisted chrome flag */
-  }
-}
+import type { RunningEngine } from "@platform/lib/api";
+// NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
+// popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
+// plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
+// unread — a key that is written and never read is worse than no key, because
+// the next reader assumes it means something.
+//
+// WHY: a `.dl-panel` floats above the page and is dismissed by an outside
+// pointer-down or Escape. That is popover behaviour, and a popover that
+// restores itself across reloads covers the page on every navigation. "Open"
+// is a statement about this moment, not a preference worth remembering. The
+// user's own report was not the auto-open path at all — D587's `neverOpen` was
+// intact — it was a stored `"0"` from having clicked Models open earlier,
+// faithfully restored on every load since, which is indistinguishable from a
+// bug from where they sit. This also makes D582's arbiter trivial instead of
+// arbitrary (nothing wants to be open at mount) and finally makes "never auto
+// open" hold on EVERY path rather than all but one.
+//
+// The transient `autoOpen`/`autoClose` overrides are untouched; opening is an
+// explicit click within the session. Any key left on a real machine from an
+// earlier build is inert and needs no migration — nothing reads it.
 
 // Poll /api/jobs, adapting the cadence to whether anything is live, and poll
 // IMMEDIATELY when another same-origin document says it just reported.
@@ -120,11 +166,17 @@ function saveCollapsed(collapsed: boolean): void {
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
 function useJobs(): {
+  /** Has /api/jobs answered once? `jobs` starts `[]` and stays `[]` on an idle
+   *  machine, so the list cannot tell "not asked yet" from "genuinely
+   *  nothing" — the distinction `useAutoExpandOnNew` needs to avoid reading
+   *  pre-existing jobs as arrivals on load (D574 bug 2). */
+  settled: boolean;
   jobs: Job[];
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -184,6 +236,7 @@ function useJobs(): {
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
+        setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           scheduleFor(snapshot.jobs);
@@ -242,7 +295,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, refresh, patch };
+  return { jobs, settled, refresh, patch };
 }
 
 function Bar({ job }: { job: Job }) {
@@ -278,6 +331,81 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
+// ---- Engine rows (status-bar merge) ----------------------------------------
+// FORMERLY shell/EnginesDock.tsx, its own chip/panel. The status-bar
+// consolidation collapsed Engines and Jobs into one "Activity" chip (see
+// DownloadManagerView's own header for the section layout), so the row
+// rendering moved here, alongside the job rows it now shares a panel with.
+// (Models made the same trip during the merge and then made it back: see
+// this file's own header comment and `shell/ModelsDock.tsx`.) This is legal
+// under `check-boundaries.mjs`: these rows only need `RunningEngine`
+// (platform/lib/api, which platform already owns) and the mutation call
+// `stopEngine` (also platform/lib/api) — nothing shell-only. Only the DATA
+// SOURCE for them — the running-engines poll — is shell-only, and it stays in
+// `shell/ActivityDock.tsx`, which hands this component plain
+// `RunningEngine[]` data plus the mutation callback.
+
+/** A useful NAME for an engine row, never the opaque id when something better
+ *  exists: the folder's basename for a background app, the module for a warm
+ *  app worker, and the id itself for a template engine. Pure and exported so
+ *  it is testable without a render. */
+export function engineLabel(engine: RunningEngine): string {
+  if (engine.folder) {
+    const parts = engine.folder.split(/[/\\]/).filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1];
+  }
+  return engine.module || engine.engine_id;
+}
+
+function EngineRow({
+  engine,
+  onStop,
+}: {
+  engine: RunningEngine;
+  onStop: (engineId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const stop = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onStop(engine.engine_id);
+    } catch {
+      setFailure("Could not stop — check your connection and retry.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dl-row">
+      <div className="dl-row-head">
+        <span className="dl-title dl-title-id" title={engine.folder || engine.engine_id}>
+          {engineLabel(engine)}
+        </span>
+        <span className="dl-amount">{engine.kind}</span>
+        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
+          {busy ? "Stopping…" : "Stop"}
+        </button>
+      </div>
+      {failure && <div className="dl-status">{failure}</div>}
+    </div>
+  );
+}
+
+/** The `engines` slot (status-bar merge): plain data plus the one mutation
+ *  the row needs, handed in by `shell/ActivityDock.tsx` (the only place the
+ *  poll lives). Ids are for occupancy only (`alsoDrawn` below, in the merged
+ *  panel's auto-expand wiring) — an engine arriving must never itself pop the
+ *  panel open (D587's rule, now shared by the merged chip: only Running/job
+ *  arrivals announce). */
+export interface EnginesSlot {
+  engines: RunningEngine[];
+  onStop: (engineId: string) => Promise<void>;
+}
+
 // Exported for jobrow.test.tsx only — every other caller goes through
 // DownloadManager itself. react-test-renderer (the hook-harness.ts pattern)
 // is the only thing in this suite that can render a component with no DOM,
@@ -286,21 +414,72 @@ export function JobRow({
   job,
   onChanged,
   onPatch,
+  cancelFn = cancelJob,
+  dismissFn = dismissJob,
 }: {
   job: Job;
   onChanged: () => void;
   onPatch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** Test seam only (D572's own failure-path test uses it) — every real
+   *  caller gets the real `cancelJob`/`dismissJob` (@platform/lib/jobs) by
+   *  default. Injectable rather than mocked so a rejected-request test does
+   *  not need a process-wide `mock.module` on `@platform/lib/jobs` (this
+   *  file's own header comment already tells that contamination story for
+   *  `@platform/lib/api`, which this module itself calls into). */
+  cancelFn?: (id: string) => Promise<Job>;
+  dismissFn?: (id: string) => Promise<{ dismissed: string }>;
 }) {
   const [busy, setBusy] = useState(false);
+  // A REJECTED cancel/dismiss must say so, not vanish (D572, user: "the
+  // cancel button also doesn't seem to be doing anything?" — a 404, a 500 or
+  // an offline server all left the empty `catch` below discarding the
+  // failure with no toast, no console entry, no state change and no label
+  // move, so the click produced literally nothing observable). Same posture
+  // D566 already set for this exact situation in the Models panel's own
+  // Unload ("must not fail silently") — a row-scoped `.dl-status` line, not
+  // a toast, since the row is already the thing the user is looking at.
+  // `onPatch`/`onChanged()`'s "the refresh is the source of truth" framing
+  // (below) is still correct for the SUCCESS path and for an ordinary race —
+  // the server is authoritative about whether the work actually stopped —
+  // it was only ever wrong for a request that never landed at all.
+  const [failure, setFailure] = useState<string | null>(null);
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
   const status = jobStatusLine(job);
+  // THE PROGRESS FACTS TOGETHER, dot-joined (D598, user: "why isn't the step
+  // count next to denoising?"). `0 / 4` is a progress fact, so it belongs with
+  // the other progress facts rather than up beside the title, where it was a
+  // number with no context while the status line carried context with no
+  // number. The line already speaks this idiom — it rendered `Denoising · ~4s
+  // left` before this round — so `Denoising · 0/4` reads as one sentence.
+  //
+  // COMPOSED, NOT CONCATENATED BEHIND THE OLD GUARD: `amount` and `status` are
+  // independently present or absent. A download row can carry `4.2 GB / 10 GB`
+  // with NO phase text, and a task row a phase with no amount, so the old
+  // `(failure ?? status) &&` gate would have silently dropped a download row's
+  // byte counts entirely — a straight regression, and worse than what this
+  // fixes. Hence: render whenever ANY part exists, and join only the parts
+  // that do.
+  //
+  // A FAILURE TAKES THE LINE OVER and gets NO amount appended (the precedence
+  // the comment below has always stated): it is about the button the user just
+  // pressed, and " · 0/4" after "Could not cancel" would read as progress on
+  // the failure itself.
+  // `??` once, not twice: `join` returns "" rather than null for an empty
+  // list, so a second `??` would be dead — the `&&` at the render site is what
+  // handles the all-absent case.
+  const statusLine = failure ?? [status, amount].filter(Boolean).join(" · ");
 
-  // One ✕ with two meanings, because they are the same intent at two points in
-  // a job's life: stop this / take it off my screen. A running job that its
-  // reporter never marked cancellable has no ✕ at all rather than a dead one —
-  // the flag would be set and nothing would ever read it.
+  // Two controls, one meaning each — because "stop this" and "take it off my
+  // screen" read as the same gesture when both hide behind an identical ✕, and
+  // that is exactly the confusion users hit: sometimes the cross cancels,
+  // sometimes it dismisses, with nothing but a tooltip to tell them apart. A
+  // running, cancellable row now gets a text `Cancel`; the ✕ glyph is reserved
+  // for dismiss and means only that, everywhere in the notification stack. A
+  // running job that its reporter never marked cancellable has no control at
+  // all rather than a dead one — the flag would be set and nothing would ever
+  // read it.
   //
   // A STALLED row dismisses rather than cancels: there is nobody left to hear a
   // cancel request, and the row is the app admitting it has stopped knowing —
@@ -308,20 +487,36 @@ export function JobRow({
   const canCancel = running && job.cancellable && !job.cancel_requested && !job.stalled;
   const canDismiss = !running || job.stalled;
 
-  const act = async () => {
+  const cancel = async () => {
     setBusy(true);
+    setFailure(null);
     try {
-      if (canCancel) {
-        await cancelJob(job.id);
-        // The row stays — the work has not stopped — but the label has to move
-        // to "Cancelling…" now, or the ✕ reads as having done nothing.
-        onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
-      } else {
-        await dismissJob(job.id);
-        onPatch((js) => js.filter((j) => j.id !== job.id));
-      }
+      await cancelFn(job.id);
+      // The row stays — the work has not stopped — but the label has to move
+      // to "Cancelling…" now, or the button reads as having done nothing.
+      onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
     } catch {
-      /* nothing applied locally — the refresh below is the source of truth */
+      // The request never landed — a 404 against a job id the server never
+      // heard of, a 500, an offline server. `onPatch` above did NOT run, so
+      // there is nothing for the refresh to correct; without this the button
+      // just goes quiet, which reads as broken because it is.
+      setFailure("Could not cancel — check your connection and retry.");
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  const dismiss = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await dismissFn(job.id);
+      onPatch((js) => js.filter((j) => j.id !== job.id));
+    } catch {
+      // Same class of problem as `cancel` above: a rejected request left the
+      // row exactly as it was with nothing said about why.
+      setFailure("Could not dismiss — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -329,12 +524,12 @@ export function JobRow({
   };
 
   // Belt-and-braces, not the mechanism: `DownloadManager`'s `isVanishedOnSuccess`
-  // is what actually keeps a vanished job out of the header count, the fold and
+  // is what actually keeps a vanished job out of the header count, the rows and
   // the empty-card gate — this is a cheap second guard for any caller that
   // renders a `JobRow` directly (this file's own test does). Schedule-aware
   // for the same reason that filter is: a scheduled run's own outcome row
-  // (`sys:schedule:*`) is DELIBERATELY drawn through one closing frame
-  // (jobs.ts `foldedJobRows`), so this must not blanket-hide every "done" job.
+  // (`sys:schedule:*`) is DELIBERATELY drawn as a real row rather than vanishing
+  // on success, so this must not blanket-hide every "done" job.
   if (job.state === "done" && !job.id.startsWith(SCHEDULE_JOB_PREFIX)) return null;
 
   return (
@@ -343,39 +538,61 @@ export function JobRow({
         <span className="dl-title" title={job.page || undefined}>
           {job.title}
         </span>
-        {/* Suppressed when it just repeats the title (`_start_resident`/`load`
-            set both `title` and `model` to the same model id) — otherwise a
-            model-load row would draw the model name twice. */}
-        {job.model && job.model !== job.title && (
-          // The MODEL name only, not the whole `owner/model` repo id. The owner
-          // is the same for every row a given model ever draws, so it spent the
-          // head's scarcest resource on the one part that never distinguishes
-          // anything — and `.dl-model` is `flex: 0 0 auto` (notifications.css),
-          // so the space it took came out of `.dl-title`, ellipsizing the user's
-          // actual prompt down to a few characters. Full id stays on hover,
-          // since shortening makes two owners' same-named models identical.
-          <span className="dl-model" title={job.model}>
-            {repoName(job.model)}
-          </span>
-        )}
-        {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
-        {(canCancel || canDismiss) && (
+        {canCancel && (
+          <button
+            className="dl-row-cancel"
+            onClick={cancel}
+            disabled={busy}
+            title="Cancel"
+            aria-label={`Cancel ${job.title}`}
+          >
+            Cancel
+          </button>
+        )}
+        {canDismiss && (
           <button
             className="dl-x"
-            onClick={act}
+            onClick={dismiss}
             disabled={busy}
-            title={canCancel ? "Cancel" : "Dismiss"}
-            aria-label={canCancel ? `Cancel ${job.title}` : `Dismiss ${job.title}`}
+            title="Dismiss"
+            aria-label={`Dismiss ${job.title}`}
           >
             ✕
           </button>
         )}
       </div>
+      {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
+          the jobs card. why are we truncating stuff instead of placing things
+          elsewhere?"). It used to be a suffix on the head line, competing with
+          the title for one line's width under D571's shrink ladder — which is
+          how a running FLUX row rendered `update picture to be ghibli st…` then
+          a lone `F…`: a field minced to one character plus an ellipsis, which
+          conveys nothing while still costing width. `jobs.ts`'s own comment
+          already calls this a redundant restatement whenever the title names
+          the model, so it is the field that should be RELEGATED rather than the
+          one that should be minced. Off the head line it gets the panel's full
+          width and needs no shrink factor at all.
+          Suppressed when it just repeats the title (`_start_resident`/`load`
+          set both `title` and `model` to the same model id) — otherwise a
+          model-load row would draw the model name twice. The MODEL name only,
+          not the whole `owner/model` repo id: the owner is identical for every
+          row a given model ever draws. Full id stays on hover, since shortening
+          makes two owners' same-named models identical. */}
+      {job.model && job.model !== job.title && (
+        <div className="dl-model" title={job.model}>
+          {repoName(job.model)}
+        </div>
+      )}
       <Bar job={job} />
-      {status && <div className="dl-status">{status}</div>}
+      {/* A local action's own failure takes this line over the job's
+          ordinary status sentence — it is more urgent and it is about the
+          very button the user just pressed. `status` (the server's report)
+          comes back once a later poll succeeds or the row's own next action
+          clears `failure`. */}
+      {statusLine && <div className="dl-status">{statusLine}</div>}
     </div>
   );
 }
@@ -420,17 +637,32 @@ export interface QueueSlot extends QueueCount {
    *  half is. It also spares the queue half a second forever-poll of the same
    *  endpoint, which is what it did before. */
   onJobs?: (jobs: Job[]) => void;
-  /** Cancel all, when the shell has 2+ genuinely withdrawable rows. */
+  /** "Cancel queued" — a pre-decided node now, not a function of `collapsed`
+   *  (D563, status bar redesign: this only ever renders inside the expanded
+   *  panel, since the collapsed chip carries no controls at all, so there is
+   *  no longer a folded-but-reachable state for a threshold to answer). 2+
+   *  genuinely withdrawable rows, since a single row's own cancel control is
+   *  the same action with a better name on it and is right there on screen.
+   *  `showCancelAll` (queue-dock-lib.ts) owns the actual number — it used to
+   *  take `collapsed` too (D562) and drop the threshold to one row for a
+   *  card that stayed on screen folded; that call site is gone along with
+   *  the promise it was answering. */
   cancelAll?: ReactNode;
-  /** What a cancel actually did, including the half that was refused. */
+  /** What a cancel actually did, including the half that was refused. Like
+   *  `cancelAll`, only ever shown inside the expanded panel now (D563) — a
+   *  refusal that happened while the card was open stays reachable until the
+   *  user re-collapses or presses again, same as before; it just no longer
+   *  survives a collapse it didn't cause. */
   note?: ReactNode;
 }
 
 // A successful job vanishes from this card entirely (PR #785 follow-up) —
 // EXCEPT a scheduled run's own outcome row (`sys:schedule:*`), which
-// deliberately survives one closing frame once folded (jobs.ts
-// `foldedJobRows`'s own reversal: "a run appears, works, and vanishes
-// mid-sentence" is the bug that exists to prevent). Everything else that
+// deliberately survives as a real row until `jobs.py`'s own retention sweeps
+// it (Akshil, 2026-08-21: "a run appears, works, and vanishes mid-sentence"
+// is the bug this reversal exists to prevent — a collapsed card used to show
+// the run thinking and then simply lose the row at the verdict, with no
+// surface ever saying it had finished). Everything else that
 // reaches `state: "done"` — an image/video/transcription render, a model
 // load, a benchmark row — has nothing to say once it has succeeded, so it
 // must not draw at all: not a row, not a header count, not a Clear button
@@ -456,16 +688,38 @@ function isVanishedOnSuccess(job: Job): boolean {
 // global `mock.module` on it does not scope to one file).
 export function DownloadManagerView({
   reported,
+  ready,
+  initialCollapsed,
   queue,
+  engines,
   refresh,
   patch,
 }: {
   reported: Job[];
+  /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
+   *  gets `true`: sections ALWAYS start collapsed now (D603), unconditionally,
+   *  with no stored preference to consult. KEPT rather than deleted with the
+   *  persistence, because it is now the ONLY way to mount a section already
+   *  open, and ~20 tests here are about what an OPEN panel contains rather than
+   *  about the default. Injectable rather than stubbed through
+   *  `globalThis.localStorage` for the reason this file documents at length for
+   *  `mock.module`: a process-wide replacement has contaminated unrelated
+   *  suites here before. */
+  initialCollapsed?: boolean;
+  /** Has the first /api/jobs read landed (autoExpand.ts's `ready`)? Optional
+   *  so a test mounting this view with a fixed list keeps the old behaviour. */
+  ready?: boolean;
   queue?: QueueSlot;
+  /** The Background tasks section (formerly EnginesDock's own chip). Optional
+   *  and data-only — see `EnginesSlot`'s own doc. */
+  engines?: EnginesSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
+  // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
+  // host, not just the panel, is what counts as "inside".
+  const hostRef = useRef<HTMLDivElement | null>(null);
   // Hand this poll's snapshot back to the queue half, so the run it is drawing is
   // retired against the same evidence this half is acting on rather than against a
   // read six seconds behind it (`QueueSlot.onJobs`, queue-dock-lib `openRows`). In an
@@ -494,116 +748,309 @@ export function DownloadManagerView({
   // nothing visible inside it (the bug this comment used to leave standing:
   // `JobRow` alone returning null for a "done" job left every one of those
   // still counting it).
-  const jobs = jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j));
+  // `inFlightJobs` — FAILURES ARE NOT DRAWN HERE ANY MORE (D586, user: "maybe
+  // we can have a flow like running activities are shown in jobs and after
+  // done, a completed message goes to notifications?"). An `error` row is not
+  // work in progress, which is what this section claims to be, so it moves to
+  // Notifications; `done`/`cancelled` are untouched and keep their existing
+  // vanish-on-success and TTL behaviour. Applied HERE, upstream of every
+  // derived number below — the count, `clearableCount`, the idle predicate,
+  // the fold — so none of them can disagree about what this section holds
+  // (the likeliest bug in this change was a count that still included
+  // failures).
+  //
+  // `mergedRows` runs FIRST, on the full `reported` snapshot rather than on
+  // its filtered output — it needs the REFERENCING row (the waiter,
+  // `waiting_for`-tagged) still present to decide whether the row it names is
+  // hidden, and `jobRows`/`isVanishedOnSuccess` never remove that row on
+  // their own. This is what collapses a render waiting on a shared model
+  // load and the load's own row into the one row the manager actually draws
+  // (SPEC §36; jobs.ts `mergedRows` has the full reasoning).
+  const jobs = inFlightJobs(
+    jobRows(mergedRows(reported), queue?.drawn).filter((j) => !isVanishedOnSuccess(j)),
+  );
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
 
-  // Nothing to say — render nothing at all, no chrome. The card is a picture of
-  // what is happening now, so an empty one is not an empty state with a header
-  // reading "nothing queued", it is no card. Both halves have to be empty: a
-  // queue row with no jobs is still work in progress worth a card.
-  if (jobs.length === 0 && queued === 0) return null;
+  // Signals a genuinely new job id since the card was last collapsed —
+  // lib/autoExpand.ts `useAutoExpandOnNew`'s own doc has the full reasoning,
+  // including why this no longer FORCES the panel open (code review finding
+  // #4: it used to, and popping a floating panel over the page the user is
+  // looking at, unprompted, is the exact complaint this whole redesign
+  // exists to fix). Called unconditionally, before the idle branch below,
+  // same as every other hook in this component (rules of hooks: what a
+  // render calls, not whether it later draws the idle state).
+  //
+  // BOTH ROW SOURCES DECIDE WHEN THIS PANEL IS EMPTY, only the job rows decide
+  // when it OPENS (code review 2026-08-28, finding 1). This panel draws the
+  // scheduled queue's rows above its job rows, and the hook used to be handed
+  // the job ids alone — so with one live scheduled message plus one download,
+  // the download finishing took the list to `[]` and FORCE-CLOSED the panel
+  // over the queue rows still rendered inside it, including a live turn's only
+  // ✕. `queue.drawn` is exactly the entry ids those rows cover (it comes off
+  // the same array they are rendered from, so the two cannot disagree), so it
+  // goes in as `alsoDrawn`: it holds the panel open, and it does not open it.
+  //
+  // PREFIXED PER SOURCE because the hook's two lists are merged into one seen
+  // set, and a collision there would swallow a real arrival. A scheduled run's
+  // job id (`sys:schedule:<entry id>`) literally embeds the entry id these
+  // queue rows are keyed by, so this is a live overlap rather than a
+  // theoretical one.
+  // ENGINE ROWS COUNT FOR OCCUPANCY, NEVER ANNOUNCE (status-bar merge): they
+  // ride in as `alsoDrawn` beside the queue's own entry ids, exactly like
+  // `queue.drawn` already did — an engine coming up is a state readout the
+  // same way it was in its own now-deleted chip (D587's "never auto-opens"
+  // rule), so only a job arrival may set `ids` here.
+  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
+    jobs.map((j) => `job:${j.id}`),
+    collapsed,
+    ready,
+    {
+      alsoDrawn: [
+        ...(queue?.drawn ?? []).map((id) => `queue:${id}`),
+        ...(engines?.engines ?? []).map((e) => `engine:${e.engine_id}`),
+      ],
+    },
+  );
+  // OPEN is the persisted preference OR a transient auto-open (D574) — never
+  // `collapsed` alone from here down, and the auto-open half is deliberately
+  // not written back to localStorage (autoExpand.ts's own header on why that
+  // write, not the opening, was D567's actual defect).
+  // The saved preference, overridden in EITHER direction by whichever
+  // transient flag is standing (D580 adds the closing half; the two are
+  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
+  // not two independent booleans). `autoClose` is tested first because a
+  // drained list beats a stale auto-open that the same drain is retiring.
+  const open = autoClose ? false : !collapsed || autoOpen;
 
-  const overall = overallFraction(jobs);
-  // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
-  // the rule and says why. Short version: the collapse is a persisted preference
-  // set against a growing download history, and once the queue moved into this
-  // card, folding the list took the only cancel a queued message or a live turn
-  // has with it. So the queue's rows stay whatever the fold says, and the job rows
-  // are the half that folds.
-  const shown = rowsShown(collapsed, count);
-  // The job rows this card is DRAWING: all of them open, and folded only the ones
-  // the fold must not take — a live scheduled run standing in for a queue row that
-  // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
-  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
-  // What "Clear" would actually take — which includes stalled rows, since those
-  // are dismissible too. Counting only finished ones hid the button in exactly
-  // the case a user most wants it: a column of rows nobody is reporting on.
-  const clearable = jobs.filter((j) => !isRunning(j) || j.stalled).length;
+  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
+  // section, and only transiently — see `exclusiveSection.ts` on why the
+  // arbiter must not touch the saved preference.
+  useExclusiveSection("activity", open, forceClose);
 
+  // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
+  // used to describe): the bar's sections are always on screen, this one
+  // included, so "nothing happening" draws an IDLE chip — same button, same
+  // hover wash, muted text (D573 retires the separate unpressable `.dl-idle`
+  // span this used to render; see `.is-idle` below) — rather than vanishing.
+  //
+  // EVERYTHING THIS CHIP CAN SHOW decides idle/muting (status-bar merge): a
+  // running engine alone is no longer nothing, now that this chip shows it
+  // too. `runningCount` below is a narrower question — is there WORK — and
+  // stays scoped to jobs/queue only.
+  const engineCount = engines?.engines.length ?? 0;
+  const idle = jobs.length === 0 && queued === 0 && engineCount === 0;
+
+  // What "Clear" would actually take — TERMINAL rows only, mirroring the
+  // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
+  // used to count here too; that silently orphaned live work behind the
+  // button (`clearableCount`'s own doc has the full argument) — the button
+  // hiding in that case is a far smaller cost than the AI job it used to
+  // quietly abandon, and the per-row ✕ stays reachable for a stalled row
+  // someone wants gone right now.
+  const clearable = clearableCount(jobs);
+  // THE FAILURE TINT IS GONE FROM THIS CHIP (D586). It used to colour the chip
+  // `--error` when everything was terminal and something had failed — but
+  // failures no longer appear in this section at all, so the condition could
+  // never fire again and keeping it would have been dead code pretending to be
+  // a state. The tint moved WITH the rows, to the Notifications chip
+  // (RepoUpdatesDock.tsx), which is now the section that actually holds them.
+
+  // ONE unified toggle for a chip whose visible state may be the SAVED
+  // preference or either transient override (D580). It acts on what the user
+  // SEES — `wantOpen = !open` — then writes the preference only if the
+  // preference is what disagrees. That is what keeps D574's rule intact
+  // without a special case for it: dismissing an auto-OPENED panel (or
+  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
+  // the outcome, so clearing the override is the whole of the work and
+  // nothing is persisted. A click on a chip whose state came from the
+  // preference itself still flips and saves it, exactly as before.
   const toggle = () => {
-    setCollapsed((was) => {
-      saveCollapsed(!was);
-      return !was;
-    });
+    const wantOpen = !open;
+    acknowledge();
+    if (collapsed === wantOpen) setCollapsed(!wantOpen);
   };
+
+  // Backgrounding the panel (outside pointer-down, Escape). A hand-opened
+  // panel persists the close, same as clicking the chip would; an auto-opened
+  // one only drops the transient flag.
+  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
+  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
+  // click on a SIBLING CHIP is outside it, so the persisting version turned
+  // "the user opened Models" into `jobs-collapsed = "1"` plus
+  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
+  // preference became write-only — the exact "the app decided, not the user"
+  // failure the D567 guard exists to prevent, arriving through the dismiss
+  // path instead of through `forceClose`. So this now IS `forceClose`: the
+  // panel goes away, and what the user last chose is left alone.
+  const close = forceClose;
+  useDismissOnOutside(hostRef, open, close);
 
   const clear = async () => {
     try {
       await clearFinishedJobs();
-      // Mirrors the server's rule (jobs.py `clear_finished`): everything that
-      // is not still being reported on.
-      patch((js) => js.filter((j) => isRunning(j) && !j.stalled));
+      // Mirrors the server's rule (jobs.py `clear_finished`, D558): every
+      // running row survives, stalled included — see `clearableCount`'s doc.
+      patch((js) => jobsAfterClear(js));
     } catch {
       /* nothing applied locally — the refresh below is the source of truth */
     }
     refresh();
   };
 
+  // THE DOT ANSWERS "IS THERE WORK RIGHT NOW", NOT "IS THERE ANYTHING TO SHOW"
+  // (status-bar merge, brief's own rule): jobs running or queued fill it; a
+  // running engine — persistent STATE, not work in progress — does not, even
+  // though the panel still shows it when opened and the chip is not muted for
+  // having it (see `idle`, above, which DOES count it). A machine running a
+  // background engine and no jobs therefore draws an active, clickable
+  // "Activity" chip with an outlined (unfilled) dot.
+  const runningCount = jobs.length + queued;
+
   return (
-    <div className="dl-host">
-      <div className="dl-head">
-        <button
-          className="dl-toggle"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show details" : "Hide details"}
-        >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌄
-          </span>
-          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
-        </button>
-        {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
-        {/* Two actions, and they are not the same one twice: Cancel all withdraws
-            messages that have not gone yet (the shell's, and only when 2+ rows
-            genuinely can be), Clear dismisses rows for work that has ENDED. So a
-            terminal row is clearable without a live one being touched. */}
-        {queue?.cancelAll}
-        {clearable > 0 && (
-          <button className="dl-clear" onClick={clear} title="Dismiss finished">
-            Clear
-          </button>
-        )}
-      </div>
-      {/* Collapsed still shows the overall bar: folding the job rows away should
-          hide the detail, not the fact that something is running. With nothing
-          running there is no bar — a sweep under a header reading "2 finished"
-          would animate work that is over. */}
-      {collapsed && jobs.some(isRunning) && (
-        <div className="dl-bar">
-          <div
-            className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}
-            data-indeterminate={overall === null ? "1" : undefined}
-            style={overall === null ? undefined : { width: `${overall * 100}%` }}
-          />
+    <div className="dl-host" ref={hostRef}>
+      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
+          doesn't belong to the status bar. lets follow vscode/cursor for
+          inspiration" — a status-bar item there is a label you click, not a
+          disclosure triangle; hover is the only affordance, at rest and
+          idle alike). `.is-idle` is the ONE remaining signal that this
+          section has nothing in it — muted text, same clickable chip,
+          same hover wash — now that the idle SENTENCE ("No jobs", D579) has
+          moved into the panel below rather than living in the chip. */}
+      <button
+        className={"dl-toggle" + (idle ? " is-idle" : "")}
+        onClick={toggle}
+        aria-expanded={open}
+        title={open ? "Hide activity" : "Show activity"}
+      >
+        {/* `Activity` (status-bar merge): this chip is no longer only jobs —
+            it now also carries the running engines that used to be their own
+            chip beside it, so `Jobs` (D579's own word for the narrower set)
+            no longer names everything it shows. `Activity` was rejected back
+            then for being the vaguest of three labels over a chip that was
+            ONLY jobs; it is the right word again now that the chip covers
+            both. (Models made this same trip during the merge and then split
+            back out into its own chip — `shell/ModelsDock.tsx` — so it is not
+            one of the things "Activity" has to cover any more.) */}
+        {/* The label, and the bar's one shared indicator beside it (D588,
+            D590). `StatusDot` must stay a DIRECT child of this button — that
+            is what centres it (its own header has the argument). It answers
+            "is there work right now" — see `runningCount`, above — not "is
+            there anything to show", which is `idle`'s question. */}
+        <span className="dl-summary">Activity</span>
+        <StatusDot
+          on={runningCount > 0}
+          label={runningCount > 0 ? "jobs running" : "no jobs running"}
+        />
+      </button>
+      {/* The panel — floats ABOVE the status bar (notifications.css), anchored
+          to this chip, and exists only while expanded: opening it IS collapsed
+          turning false, there is no separate "peek" state. Collapsed shows NO
+          panel at all (D562's "no exemption" carried forward into D563) — not
+          a shorter one, an absent one, so `queue?.cancelAll` and `queue?.note`
+          do NOT survive a collapse any more. UNLIKE round 3, the panel now
+          opens on an IDLE section too (D573) — that is the one thing that
+          changed here: an idle section used to skip the panel outright
+          ("no panel behind it worth opening"); now the idle SENTENCE lives
+          inside it, because the chip itself no longer has room to say it. */}
+      {open && (
+        <div className="dl-panel">
+          {idle ? (
+            <div className="dl-panel-empty">No activity</div>
+          ) : (
+            <>
+              {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
+                  Running (the old Jobs chip's own content, unchanged) and
+                  Background tasks (the old Engines chip). A section renders
+                  only when it has rows, and the heading itself only when 2+
+                  sections are present at once — a single section carrying a
+                  header nobody needed to disambiguate is the redundant-label
+                  problem the brief calls out; see `.dl-section-head` in
+                  notifications.css. (A third section, Models, lived here
+                  during the status-bar merge and moved back out into its own
+                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
+              {(() => {
+                const runningVisible = jobs.length > 0 || queued > 0;
+                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
+                const showHeadings = sectionCount > 1;
+                return (
+                  <>
+                    {runningVisible && (
+                      <div className="dl-section">
+                        {showHeadings && <div className="dl-section-head">Running</div>}
+                        {/* ONE list, in lifecycle order: the queue's rows first
+                            (running, then starting, then waiting) and the job
+                            rows under them, which is where the same run lands
+                            once its turn has ended. A scheduled message
+                            therefore moves down this list rather than jumping
+                            between two cards. */}
+                        <div className="dl-rows">
+                          {queue?.rows}
+                          {jobs.map((job) => (
+                            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                          ))}
+                        </div>
+                        {queue?.note}
+                        {/* A FOOTER, NOT A HEADER (D602, user: "notification UI
+                            is messed up"). Still omitted outright when neither
+                            child has anything to offer (code review finding
+                            #3), and plurality-gated on Clear (D604): a lone
+                            terminal row's own ✕ already does what Clear would.
+                            `queue-dock-lib.ts`'s `showCancelAll` requires the
+                            same two-row threshold for the identical reason. */}
+                        {(queue?.cancelAll || clearable > 1) && (
+                          <div className="dl-head">
+                            {/* Two actions, and they are not the same one
+                                twice: Cancel queued withdraws messages that
+                                have not gone yet, Clear dismisses rows for
+                                work that has ENDED. */}
+                            {queue?.cancelAll}
+                            {clearable > 1 && (
+                              <button className="dl-clear" onClick={clear} title="Dismiss finished">
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {engineCount > 0 && (
+                      <div className="dl-section">
+                        {showHeadings && <div className="dl-section-head">Background tasks</div>}
+                        <div className="dl-rows">
+                          {engines!.engines.map((e) => (
+                            <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          )}
         </div>
       )}
-      {/* ONE list, in lifecycle order: the queue's rows first (running, then
-          starting, then waiting) and the job rows under them, which is where the
-          same run lands once its turn has ended. A scheduled message therefore
-          moves down this list rather than jumping between two cards.
-          Folded, the same list holds the queue's rows alone — `is-folded` caps it
-          shorter, so the fold still buys a small card even with a dozen entries
-          past due after a wake. Cancel all keeps its 2+ threshold precisely
-          because of this: for a single row the row's own ✕ is reachable either
-          way, and it is the same action with a better name on it. */}
-      {(shown.queue || listed.length > 0) && (
-        <div className={"dl-rows" + (shown.jobs ? "" : " is-folded")}>
-          {queue?.rows}
-          {listed.map((job) => (
-            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-          ))}
-        </div>
-      )}
-      {/* Below the rows and OUTSIDE the collapse: it answers Cancel all, which is
-          in the header and pressable while the list is folded away. */}
-      {queue?.note}
     </div>
   );
 }
 
-export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
-  const { jobs: reported, refresh, patch } = useJobs();
-  return <DownloadManagerView reported={reported} queue={queue} refresh={refresh} patch={patch} />;
+export default function DownloadManager({
+  queue,
+  engines,
+}: {
+  queue?: QueueSlot;
+  engines?: EnginesSlot;
+}) {
+  const { jobs: reported, settled, refresh, patch } = useJobs();
+  return (
+    <DownloadManagerView
+      reported={reported}
+      ready={settled}
+      queue={queue}
+      engines={engines}
+      refresh={refresh}
+      patch={patch}
+    />
+  );
 }

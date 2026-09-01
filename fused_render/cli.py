@@ -141,11 +141,17 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render import meta_migration
 
     meta_migration.run_once_in_background(fused_ws)
+    # One-time migration: fold the per-app repos under <workspace>/local into
+    # the single shared repo at the tag root (D626; local_monorepo docstring
+    # carries the rules).
+    from fused_render import local_monorepo
+
+    local_monorepo.run_once_in_background(fused_ws)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community
 
-    community.refresh_in_background()
+    community.ensure_showcase_in_background()
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read rather than a login-shell spawn.
     # Same placement rule as the showcase refresh above: an entry point, never

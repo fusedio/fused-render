@@ -17,7 +17,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** The scrollable row, with its own "there is more" affordance.
  *
- *  Exact thirds took away the old signal — a card half in view — so the row has
+ *  Exact fractions took away the old signal — a card half in view — so the row has
  *  to SAY it scrolls. Each arrow exists only while there is content on its side
  *  (measured overflow, never a width threshold), floats over the row's edge so
  *  appearing and disappearing move no layout, and a click slides by one card so
@@ -39,15 +39,29 @@ export function Carousel({ children }: { children: ReactNode }) {
     setCanNext(row.scrollLeft + row.clientWidth < row.scrollWidth - 1);
   };
 
+  // Marks the row `is-scrolling` for the scrollbar thumb (ai-models.css) to
+  // key off, cleared 800ms after the last scroll event. A `:hover` reveal
+  // used to do this job, but the carousel IS the row — hovering any card in
+  // an overflowing capability painted the thumb and held it painted for as
+  // long as the pointer stayed anywhere in the row, which read as the bar
+  // popping in and out at random rather than announcing an actual scroll.
   useEffect(() => {
     const row = rowRef.current;
     if (!row) return;
-    row.addEventListener("scroll", measure, { passive: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = () => {
+      measure();
+      row.classList.add("is-scrolling");
+      clearTimeout(timer);
+      timer = setTimeout(() => row.classList.remove("is-scrolling"), 800);
+    };
+    row.addEventListener("scroll", onScroll, { passive: true });
     const ro = new ResizeObserver(measure);
     ro.observe(row);
     return () => {
-      row.removeEventListener("scroll", measure);
+      row.removeEventListener("scroll", onScroll);
       ro.disconnect();
+      clearTimeout(timer);
     };
   }, []);
   useEffect(measure);
@@ -64,7 +78,9 @@ export function Carousel({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="am-carousel-wrap">
+    <div
+      className={`am-carousel-wrap${canPrev ? " has-prev" : ""}${canNext ? " has-next" : ""}`}
+    >
       {canPrev && (
         <button
           type="button"

@@ -8,10 +8,10 @@ Three endpoints, same on-disk source (~/.claude/projects/<encoded-cwd>/*.jsonl):
   orders candidates by transcript mtime first, then opens at most one transcript
   per project directory and stops as soon as Home's single row is full.
 * ``GET /api/claude-sessions/summaries`` — one row per *session*, for the
-  React shell's Schedule page. Mirrors the bundled sessions inbox app
-  (core_apps/sessions/sessions/sessions.py + core_apps/sessions/inbox.py):
-  same 45s "running" rule, same housekeeping-aware activity read, same
-  session_names.json / triage.json overlays.
+  React shell's Schedule page. The rules came from the retired bundled
+  sessions inbox app this router replaced: same 45s "running" rule, same
+  housekeeping-aware activity read, same session_names.json / triage.json
+  overlays.
 
 GET /api/claude-sessions — Claude Code project folders, for the Explorer
 homepage's "Claude sessions" tab.
@@ -20,9 +20,7 @@ Scans transcripts at ~/.claude/projects/<encoded-cwd>/*.jsonl (Claude Code's
 own on-disk session store) and groups them by the REAL project folder: the
 `cwd` field recorded inside each transcript, not the encoded directory name.
 That encoding is lossy — Claude Code turns every path separator AND every
-literal hyphen in the original path into "-" (core_apps/sessions/sessions.py's
-_decode_project_dir has the same caveat, and doesn't trust its own decode for
-this reason either) — so a project path containing a hyphen would decode to
+literal hyphen in the original path into "-" — so a project path containing a hyphen would decode to
 garbage. Reading `cwd` back out of the transcript is the only reliable way to
 recover the folder.
 
@@ -56,11 +54,11 @@ router = APIRouter()
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
-# Mutable session state (custom names, triage) — written by the bundled
-# sessions inbox app, read here. Mirrors shell/storage.home_dir()'s
-# FUSED_RENDER_HOME override, and deliberately skips branch nesting so the
-# state is shared across branches (same posture as community.py and
-# core_apps/sessions). The json paths are derived from this inside the
+# Mutable session state (custom names, triage). The retired bundled sessions
+# inbox app wrote these files too, so existing state carries over. Mirrors
+# shell/storage.home_dir()'s FUSED_RENDER_HOME override, and deliberately
+# skips branch nesting so the state is shared across branches (same posture
+# as community.py). The json paths are derived from this inside the
 # loaders rather than at import, so overriding STATE_DIR redirects both.
 STATE_DIR = os.path.join(
     os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render"),
@@ -418,8 +416,8 @@ def _summarize(path: str, now: float, names: dict, triage: dict) -> dict | None:
     running = (now - activity) < _RUNNING_WINDOW_SEC
     last_active = last or datetime.fromtimestamp(stat.st_mtime, timezone.utc)
 
-    # THE IN-PROGRESS LANE IS DERIVED, NOT RECORDED — the same rule as the Inbox
-    # this module mirrors (core_apps/sessions/inbox.py). "Something is running in
+    # THE IN-PROGRESS LANE IS DERIVED, NOT RECORDED — the same rule as the
+    # retired Inbox this module replaced. "Something is running in
     # this conversation" is a fact about the present, so it outranks the record:
     # a session filed as done or archived and then resumed belongs in In Progress,
     # and one that finished while nothing was watching drops back to whatever the
@@ -543,8 +541,8 @@ class TriagePatch(BaseModel):
 
 @router.post("/api/claude-sessions/triage")
 def api_claude_session_triage(patch: TriagePatch):
-    """Set a session's triage status — the write half of the Inbox's own
-    set_triage.py (core_apps/sessions), duplicated here because the shell's
+    """Set a session's triage status — the write half of the retired Inbox's
+    own set_triage.py, kept here because the shell's
     Board drags cards between the same three columns the Inbox uses. Same
     file, same locking, same merge semantics: only `status` changes, and the
     record's other keys (note, tags, read) survive untouched.

@@ -62,6 +62,7 @@ Actions:
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
+import io
 import json
 import os
 import re
@@ -959,6 +960,65 @@ def _wire_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _attach_dirs(raw: str) -> list:
+    """The directories THIS message's attachments live in, as the page reported
+    them — one `Read(//dir/**)` rule each on the spawn line (`extra_read_dirs`).
+
+    Why the page decides and not this module: the attachment list is the page's
+    own state (`shotAttached`), it is per MESSAGE, and by the time `start` runs
+    the paths are already inside the composed message where nothing can tell an
+    attachment path from a path the user happened to type. So it is sent
+    explicitly, as a JSON array of strings, on the same call as the message.
+
+    VALIDATED HERE ANYWAY, because a grant is a grant: the parameter crosses the
+    bridge as a plain string and this is the last place before it becomes a
+    permission rule. Only absolute paths to directories that exist survive,
+    deduplicated, and a filesystem ROOT is refused outright: `Read(///**)` is the
+    whole disk, which is exactly the blanket rule this feature's own test asserts
+    is never emitted.
+
+    There is NO COUNT LIMIT (D617). A `_ATTACH_DIRS_MAX` of 4 used to sit here to
+    keep the spawn line bounded, mirroring the page's own attachment cap; both
+    are gone. A drop of thirty rows out of one folder was always ONE rule (they
+    dedupe), and the pathological case — thirty rows out of thirty folders — is a
+    long argv string, not an unsafe one, on a local tool the user drove by hand.
+    Refusing the grant only cost them a permission card per attachment.
+
+    Anything unparseable is an empty list, never an error. A refused grant costs
+    the user one permission card; a refused SEND costs them their message.
+    """
+    if not raw:
+        return []
+    try:
+        vals = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(vals, list):
+        return []
+    out = []
+    for v in vals:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        path = v.strip()
+        if not os.path.isabs(path) or not os.path.isdir(path):
+            continue
+        wired = _wire_path(os.path.normpath(path))
+        # A root ("/", "C:/") has no parent to scope to — the rule would be the
+        # whole disk. Also drops the shots dir if the page ever names it, since
+        # its rule is unconditional.
+        # Asked of the OS, not of the spelling: `os.path.dirname` of a root IS
+        # the root on every platform ("/" and "C:\\" alike), where a string
+        # strip of "C:/" left "C" and let the whole drive through on Windows.
+        normed = os.path.normpath(path)
+        if os.path.dirname(normed) == normed:
+            continue
+        if wired == _wire_path(SHOTS):
+            continue
+        if wired not in out:
+            out.append(wired)
+    return out
+
+
 def _read_rule(path: str) -> str:
     """A `Read(...)` permission rule scoped to everything under `path`.
 
@@ -1074,6 +1134,217 @@ def _shots_dir() -> dict:
     # `_wire_path`, not the raw join: this string is what the page joins crop
     # names onto, and it has to be spelled the way the Read rule spells it.
     return {"dir": _wire_path(SHOTS)}
+
+
+# The longest edge a transcoded picture is given, and the byte budget it has to
+# land under. Both numbers are the PAGE's, deliberately: SHOT_VIEW_EDGE (1600) is
+# what a capture of the whole pane is capped at and what the page's own downscale
+# targets, and SHOT_ATTACH_MAX_BYTES (4 MB) is the downscale trigger it measures a picture
+# against — a conversion that came back bigger or sharper than the app's own
+# screenshots would be a second, quieter rule for the same thing.
+SHOT_PNG_EDGE = 1600
+SHOT_PNG_MAX_BYTES = 4 * 1024 * 1024
+# What a PNG that missed the budget is re-tried as. Quality before resolution,
+# same order as the page's encoder ladder: 1600px of a photo at q60 still answers
+# every question the agent has of it, where 800px of it may not.
+SHOT_JPEG_QUALITY = (90, 80, 70, 60)
+# `sips` is a one-shot converter on a file the user just handed us; 20s is long
+# enough for a 50 MP HEIC and short enough that a wedged binary does not hold the
+# composer.
+SHOT_SIPS_TIMEOUT = 20
+
+
+def _in_shots(target: str) -> bool:
+    """Whether `target` is a path INSIDE the shots directory.
+
+    The same four-step containment `_in_canvases_root` documents (abspath,
+    realpath, normcase, commonpath) and for the same four reasons — most sharply
+    realpath here, because SHOTS lives under the macOS temp dir where `/var` and
+    `/private/var` name one directory, so a string prefix would reject every real
+    path the page sends. A path that cannot be resolved is treated as OUTSIDE.
+
+    This is the whole authorisation for the transcode: the action reads bytes off
+    disk and writes a sibling next to them, and the only place either is allowed
+    to happen is the directory the page already uploads into and the pruner
+    already owns."""
+    if not target:
+        return False
+    try:
+        root = os.path.normcase(os.path.realpath(os.path.abspath(SHOTS)))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        return path != root and os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        return False
+
+
+def _sips_to_png(path: str) -> str | None:
+    """A macOS-only second opinion on bytes Pillow refused: `sips` through
+    ImageIO, which decodes what the OS itself can — HEIC/HEIF above all, and the
+    raw camera formats too.
+
+    It exists because HEIC is the DEFAULT camera format on every iPhone and the
+    one format both halves of this feature are blind to: no browser engine here
+    decodes it, and Pillow needs `pillow-heif`, which is a compiled wheel we do
+    not ship. Shelling out to a binary that is present on every macOS install
+    costs nothing at rest and turns "this attachment is useless" into a PNG.
+
+    Returns the temp file's path, or None for anything at all going wrong — a
+    missing binary, a non-zero exit, a timeout, a format ImageIO does not know.
+    The caller reports the ORIGINAL Pillow failure in that case, which is the
+    honest one: sips is the fallback, not the diagnosis."""
+    if sys.platform != "darwin" or not os.path.exists("/usr/bin/sips"):
+        return None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="conv-", suffix=".png", dir=SHOTS)
+        os.close(fd)
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/sips", "-s", "format", "png", path, "--out", tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=SHOT_SIPS_TIMEOUT, check=False)
+        if proc.returncode == 0 and os.path.getsize(tmp) > 0:
+            return tmp
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return None
+
+
+def _image_to_png(path: str) -> dict:
+    """Transcode one picture in the shots directory into a PNG (or JPEG) beside
+    it, and hand the page the copy's path and size.
+
+    WHY THIS EXISTS AT ALL. D613 made an image this browser cannot decode travel
+    as bytes with a note instead of a broken thumbnail, on the grounds that "the
+    AGENT may well know a format this browser does not". For the two formats
+    users actually drop — TIFF off a scanner or a GIS export, HEIC off an iPhone
+    — that turned out to be false: the Read tool cannot open either, so the
+    attachment was a path to bytes nobody in the conversation could look at. The
+    page could see it was undecodable; it just had nowhere to send it. This is
+    that somewhere, and it is on the python side because that is where Pillow and
+    the OS's own decoders are.
+
+    IT WRITES A SIBLING AND DELETES NOTHING. The original stays: it is what the
+    user actually attached, the page may still want its byte count, and the
+    pruner (30d/1000 files) already owns everything in this directory — a second
+    deletion policy for a second file in the same directory would be the only
+    thing here that could lose a user's picture early.
+
+    PNG FIRST, JPEG ONLY IF PNG MISSES THE BUDGET. A screenshot, a scan and a
+    diagram are the common TIFFs and all three are exactly what PNG is good at
+    (and what JPEG's ringing ruins); a 12 MP photo is the common HEIC and is
+    where a lossless 1600px re-encode blows past 4 MB. So the format follows the
+    content instead of the extension, decided by measuring rather than guessing.
+
+    NEVER RAISES. Every failure is `{"error": ...}` — the page's whole answer to
+    one is to keep the bytes-plus-glyph attachment it already had, so an
+    exception crossing the bridge would cost the user the attachment to report a
+    problem with the attachment."""
+    try:
+        if not path or not os.path.isabs(path):
+            return {"error": "not an absolute path"}
+        if not _in_shots(path):
+            # The page only ever asks about a file it just uploaded here. Anything
+            # else is a bug or a caller that should not be reading the disk
+            # through this action, and both get the same one sentence.
+            return {"error": "not inside the attachments directory"}
+        if not os.path.isfile(path):
+            return {"error": "no such file"}
+        try:
+            from PIL import Image
+        except ImportError:
+            return {"error": "pillow is not installed"}
+
+        tmp = None
+        try:
+            try:
+                img = Image.open(path)
+                img.load()
+            except Exception as first:
+                # HEIC without pillow-heif lands here, which is the common case
+                # rather than the exotic one — hence the OS decoder below.
+                tmp = _sips_to_png(path)
+                if tmp is None:
+                    return {"error": "could not decode: %s" % first}
+                img = Image.open(tmp)
+                img.load()
+            # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
+            # one frame the user means by "the picture", and it is the first.
+            try:
+                if getattr(img, "n_frames", 1) > 1:
+                    img.seek(0)
+            except Exception:
+                pass
+            source_w, source_h = img.size
+            if not source_w or not source_h:
+                return {"error": "the picture has no pixels"}
+            # Alpha is kept where it exists (a diagram with a transparent
+            # background reads wrong flattened onto black) and dropped where it
+            # does not — CMYK, 16-bit grey and palette all have to leave their
+            # own mode either way, since PNG will not take some of them and the
+            # agent's reader would not thank us for the rest.
+            if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info):
+                img = img.convert("RGBA")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            if max(source_w, source_h) > SHOT_PNG_EDGE:
+                img.thumbnail((SHOT_PNG_EDGE, SHOT_PNG_EDGE), Image.LANCZOS)
+            width, height = img.size
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            data, ext = buf.getvalue(), ".png"
+            if len(data) > SHOT_PNG_MAX_BYTES:
+                flat = img
+                if flat.mode != "RGB":
+                    # JPEG has no alpha. White rather than black because these
+                    # are documents and screenshots far more often than they are
+                    # neon on dark.
+                    bg = Image.new("RGB", flat.size, (255, 255, 255))
+                    bg.paste(flat, mask=flat.split()[-1])
+                    flat = bg
+                for q in SHOT_JPEG_QUALITY:
+                    jbuf = io.BytesIO()
+                    flat.save(jbuf, format="JPEG", quality=q, optimize=True,
+                              progressive=True)
+                    data, ext = jbuf.getvalue(), ".jpg"
+                    if len(data) <= SHOT_PNG_MAX_BYTES:
+                        break
+                # Past the ladder it goes out anyway: an oversize picture the
+                # agent CAN read beats a perfectly sized one it cannot, and the
+                # page reports the size it got.
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        base = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(SHOTS, base + ext)
+        # 0600 on the create itself, like `_open_private`: the directory is
+        # already 0700, and a converted picture of someone's screen or camera
+        # roll should never be briefly wider than the original was.
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+            raise
+        return {"path": _wire_path(out), "width": width, "height": height,
+                "bytes": len(data), "source_w": source_w, "source_h": source_h}
+    except Exception as e:
+        return {"error": "could not convert: %s" % e}
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
@@ -2019,18 +2290,34 @@ def _commit_turn(file: str, message: str) -> None:
     and the app's CLAUDE.md instructs claude to commit its own work in small
     chunks as it goes — when it did, the tree is clean and this is a no-op.
     This sweep only catches the turns where that instruction was not honoured,
-    so no turn's work is ever left outside history. Hard-scoped: a
-    target outside an app dir, or an app dir without a `.git`, commits nothing
-    — this template also chats about files in arbitrary folders, and silently
-    committing into a user's real repository is the one wrong move.
+    so no turn's work is ever left outside history. Hard-scoped, mirroring
+    app_git._repo_scope (D166 — keep the two in step): an app heading its OWN
+    `.git` (unmigrated, or migration-skipped) commits there; otherwise an app
+    directly under a `<workspace>/local` that IS a repo commits into that
+    shared repo, PATHSPEC-SCOPED to its folder — a bare `add -A` is whole-tree
+    since git 2.0 and would sweep a concurrent session's work on a sibling app
+    into this commit. A target outside an app dir, or one resolving to no repo
+    we own, commits nothing — this template also chats about files in
+    arbitrary folders, and silently committing into a user's real repository
+    is the one wrong move.
 
     Best-effort throughout: no git, index.lock contention, nothing staged —
     all mean "no commit", never a poll error. Identity rides per-invocation
     (`-c user.*`) so a machine with no git config still commits, and `git -C`
     replaces cwd= to keep Popen on the posix_spawn path (see apps.py)."""
     app_dir = _app_dir_for(file)
-    if not app_dir or not os.path.isdir(os.path.join(app_dir, ".git")):
+    if not app_dir:
         return
+    if os.path.isdir(os.path.join(app_dir, ".git")):
+        repo_dir, spec = app_dir, "."
+    else:
+        local = os.path.join(_workspace_dir(), "local")
+        if not (os.path.dirname(app_dir) == local
+                and os.path.isdir(os.path.join(local, ".git"))):
+            return
+        # :(literal) — folder names may carry pathspec magic (*, ?, […],
+        # a leading :); mirrors app_git._pathspec.
+        repo_dir, spec = local, ":(literal)" + os.path.basename(app_dir)
     subject = " ".join((message or "").split())
     subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
         if subject else "Claude turn"
@@ -2041,7 +2328,7 @@ def _commit_turn(file: str, message: str) -> None:
         # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
         import shutil
         return subprocess.run(
-            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", repo_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
@@ -2058,7 +2345,7 @@ def _commit_turn(file: str, message: str) -> None:
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
-        exclude = os.path.join(app_dir, ".git", "info", "exclude")
+        exclude = os.path.join(repo_dir, ".git", "info", "exclude")
         if os.path.isdir(os.path.dirname(exclude)):
             try:
                 with open(exclude, encoding="utf-8") as fh:
@@ -2071,11 +2358,11 @@ def _commit_turn(file: str, message: str) -> None:
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
                     fh.write("\n".join(missing) + "\n")
-        if git("add", "-A").returncode != 0:
+        if git("add", "-A", "--", spec).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet").returncode == 0:
-            return  # nothing to commit (turn changed no files)
-        git("commit", "-q", "-m", subject)
+        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+            return  # nothing to commit (turn changed no files under this app)
+        git("commit", "-q", "-m", subject, "--", spec)
     except Exception:
         pass
 
@@ -2758,6 +3045,37 @@ def _segments_from_rows(rows: list) -> list:
     return out
 
 
+def _tool_detail(name, inp) -> str:
+    """The one short thing worth saying about a tool call on the status line.
+
+    Bash carries its own `description` (the model writes one per call); the
+    file tools name a file; Task/Agent describe the job. Anything else is just
+    its name. Kept to one line and ~80 chars — this rides inside "(47s · …)".
+    """
+    if not isinstance(inp, dict):
+        return ""
+    name = str(name or "")
+    if name == "Bash":
+        d = inp.get("description") or ""
+        if not d:
+            d = str(inp.get("command") or "").strip().splitlines()[:1]
+            d = d[0] if d else ""
+    elif name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+        d = os.path.basename(str(inp.get("file_path") or inp.get("notebook_path") or ""))
+    elif name in ("Task", "Agent"):
+        d = inp.get("description") or inp.get("subagent_type") or ""
+    elif name in ("Grep", "Glob"):
+        d = inp.get("pattern") or ""
+    elif name == "Skill":
+        d = inp.get("skill") or ""
+    elif name in ("WebFetch", "WebSearch"):
+        d = inp.get("url") or inp.get("query") or ""
+    else:
+        d = ""
+    d = " ".join(str(d).split())
+    return d if len(d) <= 80 else d[:77] + "…"
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -2829,6 +3147,25 @@ def _poll(run_id: str, file: str = "") -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
+    # thing the CLI already writes to out.jsonl and the page used to ignore, so
+    # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
+    # a 40 KB Write streaming its input, a slow Stop hook — sat under a frozen
+    # "Thinking… (47s)" that was indistinguishable from a hang (Akshil,
+    # 2026-08-28). See `_activity` for the wire shape.
+    # Tools in flight, BY ID and in start order. One assistant message can
+    # carry several tool_use blocks (parallel calls); their results come back
+    # as separate `user` rows, so "a result arrived" is not "the tool phase is
+    # over" — only the LAST open call's result is (Bugbot, PR #908). The line
+    # shows the most recently started call that has not returned.
+    tools_open = {}        # tool_use id -> {"id", "name", "detail"}
+    tool_input_bytes = 0   # input_json_delta bytes streamed for the newest block
+    tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
+    thinking_tokens = 0    # CLI's running estimate for the message in flight
+    hooks_open = {}        # hook_id -> hook_name, started and not yet responded
+    bg_tasks = {}          # task_id -> description, started and not yet finished
+    agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
+    after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
     # the loop is done. Collected rather than parsed a second time: the file is
     # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
@@ -2870,16 +3207,84 @@ def _poll(run_id: str, file: str = "") -> dict:
             was_retrying, retry = retry, None
         else:
             was_retrying = None
+        # A subagent's rows come through the same stream tagged with the id of
+        # the Task/Agent call that spawned them (SDK contract; not yet seen in a
+        # local run, so counted rather than rendered). They must not move the
+        # main line's phase — the parent is still "running Agent".
+        if row.get("parent_tool_use_id"):
+            agent_rows += 1
+            continue
+        if t in ("stream_event", "assistant"):
+            after_tool = False
         if t == "system":
             new_session = row.get("session_id", new_session)
-            if row.get("subtype") == "api_retry":
+            sub = row.get("subtype")
+            if sub == "api_retry":
                 info = _retry_info(row)
                 if info is not None:
                     retry = info
                     retry_total += 1
                     retry_status = info["status"]
+            elif sub == "status":
+                # `{"status": "requesting"}` is the CLI saying the request is
+                # out and no token is back yet — the one gap the stream itself
+                # cannot describe, and the most common "what is it doing".
+                if row.get("status") == "requesting":
+                    phase = "requesting"
+                    after_tool = False
+            elif sub == "thinking_tokens":
+                est = row.get("estimated_tokens")
+                if isinstance(est, (int, float)):
+                    thinking_tokens = max(thinking_tokens, int(est))
+            elif sub == "hook_started" and row.get("hook_id"):
+                hooks_open[row["hook_id"]] = str(row.get("hook_name") or "hook")
+            elif sub == "hook_response":
+                hooks_open.pop(row.get("hook_id"), None)
+            elif sub == "task_started" and row.get("task_id"):
+                bg_tasks[row["task_id"]] = str(row.get("description") or "")
+            elif sub == "task_notification":
+                bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "task_updated":
+                if (row.get("patch") or {}).get("status") in (
+                        "completed", "killed", "failed", "stopped"):
+                    bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "background_tasks_changed":
+                # Authoritative list when the CLI sends one.
+                tasks = row.get("tasks")
+                if isinstance(tasks, list):
+                    bg_tasks = {
+                        str(x.get("task_id")): str(x.get("description") or "")
+                        for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
+            for blk in (row.get("message") or {}).get("content") or []:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use" \
+                        and blk.get("id"):
+                    tool_inputs[blk["id"]] = blk.get("input") or {}
+                    if blk["id"] in tools_open:
+                        tools_open[blk["id"]]["detail"] = _tool_detail(
+                            blk.get("name"), tool_inputs[blk["id"]])
+        elif t == "user":
+            # The tool's result went back in. From here until `status:
+            # requesting` (or the next delta) the run is packing the result
+            # into the next request — brief, but "Working" with no tool open
+            # was the lie this used to tell.
+            content = (row.get("message") or {}).get("content")
+            results = [b for b in (content if isinstance(content, list) else [])
+                       if isinstance(b, dict) and b.get("type") == "tool_result"]
+            for b in results:
+                # Close the call this result answers. An id we never saw
+                # opened (older CLI, or a result whose start row was lost)
+                # falls back to closing the oldest open call, so a missing id
+                # can never leave a finished tool on the line forever.
+                tid = b.get("tool_use_id")
+                if tid in tools_open:
+                    del tools_open[tid]
+                elif tools_open:
+                    del tools_open[next(iter(tools_open))]
+            if results and not tools_open:
+                tool_input_bytes = 0
+                after_tool = True
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -2893,6 +3298,10 @@ def _poll(run_id: str, file: str = "") -> dict:
                     phase = "composing"
                 elif delta.get("type") == "thinking_delta":
                     phase = "thinking"
+                elif delta.get("type") == "input_json_delta":
+                    tool_input_bytes += len(delta.get("partial_json") or "")
+            elif et == "message_start":
+                thinking_tokens = 0
             elif et == "message_delta":
                 usage = ev.get("usage") or {}
                 tokens_current = usage.get("output_tokens", tokens_current)
@@ -2903,9 +3312,15 @@ def _poll(run_id: str, file: str = "") -> dict:
                 # break their texts concatenate mid-word ("orange.After").
                 pending_sep = bool(text_parts)
             elif et == "content_block_start":
-                block = (ev.get("content_block") or {}).get("type")
+                cb = ev.get("content_block") or {}
+                block = cb.get("type")
                 if block == "tool_use":
                     phase = "tooling"
+                    tid = cb.get("id") or ""
+                    tools_open[tid] = {
+                        "id": tid, "name": str(cb.get("name") or "tool"),
+                        "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
+                    tool_input_bytes = 0
         elif t == "result":
             saw_result = True
             idle = True
@@ -2922,6 +3337,10 @@ def _poll(run_id: str, file: str = "") -> dict:
     # indistinguishable from a hang, which is what an overload used to look like.
     if retry is not None:
         phase = "retrying"
+    elif after_tool and phase == "tooling" and not tools_open:
+        # Result in, nothing back yet, no `status` row (older CLI): the honest
+        # word is still "sending", not "Working" over a tool that has finished.
+        phase = "requesting"
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
@@ -3069,6 +3488,15 @@ def _poll(run_id: str, file: str = "") -> dict:
             # schedule.py) left this page reporting the kill as a crash. See
             # `_cancel`, which writes the marker.
             "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            "activity": {
+                "tool": next(reversed(tools_open.values())) if tools_open else None,
+                "tools_open": len(tools_open),
+                "tool_input_bytes": tool_input_bytes if tools_open else 0,
+                "thinking_tokens": thinking_tokens if phase == "thinking" else 0,
+                "hook": next(reversed(hooks_open.values())) if hooks_open else "",
+                "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
+                "agent_rows": agent_rows,
+            },
             "segments": _segments_from_rows(parsed)}
 
 
@@ -3832,7 +4260,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "", custom: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "",
+         read_dirs: str = "", path: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3843,7 +4272,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # API, which has no page — and only then does `_start` ask disk. "0" is a
         # real no, so it must not be read as absence.
         return _start(file, message, session_id, model, effort, permission_mode,
-                      has_pane=None if has_pane == "" else has_pane != "0")
+                      has_pane=None if has_pane == "" else has_pane != "0",
+                      extra_read_dirs=_attach_dirs(read_dirs))
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -3908,6 +4338,13 @@ def main(action: str = "start", file: str = "", message: str = "",
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.
         return _shots_dir()
+    if action == "image_to_png":
+        # A picture the page uploaded but cannot DECODE (tiff, heic). Asked for
+        # right after the upload, so the chip can show a thumbnail and — the real
+        # point — so the agent's `Read` gets a format it can open. `path` is the
+        # file the page just wrote, and `_image_to_png` re-checks that it is
+        # inside SHOTS before touching it.
+        return _image_to_png(path)
     if action == "terminal_command":
         return _terminal_command(file, session_id)
     if action == "cancel":

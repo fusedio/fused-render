@@ -6,9 +6,8 @@
 // invites a prompt. The app folder gets created, the session fails, and the
 // TroubleCard explains it well — but the user has already typed a brief and
 // watched a folder appear before learning that the thing the app is built around
-// was never set up. `/api/config` had the right doctrine all along: it publishes
-// `sessions_mount_ready` so a link into a bundled mount renders only when it works,
-// "so it's never a dead link". This is that gate for everything Claude-dependent.
+// was never set up. The doctrine: a surface renders only when it works, "so
+// it's never a dead link". This is that gate for everything Claude-dependent.
 //
 // **It is not a wizard and not a gate.** The file explorer is completely useful
 // without Claude Code, and nothing here blocks it: the strip is a row above the
@@ -20,14 +19,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  cancelClaudeLogin,
   getClaudeHealth,
   getClaudeInstall,
+  getClaudeLogin,
+  linkClaudePath,
   refreshClaudeHealth,
   runClaudeDoctor,
   startClaudeInstall,
+  startClaudeLogin,
   type ClaudeDoctor,
   type ClaudeHealth,
   type ClaudeInstallStatus,
+  type ClaudeLoginStatus,
 } from "@platform/lib/api";
 import {
   claudeIssues,
@@ -85,6 +89,12 @@ function CopyCommand({ command }: { command: string }) {
     what reads as live rather than by cost. */
 const INSTALL_POLL_MS = 1200;
 
+/** How often to ask whether the browser sign-in has finished. Slower than the
+    install poll on purpose: nothing changes here until a person has finished
+    with a browser window, so a faster tick would only spend requests watching
+    someone read a consent screen. */
+const LOGIN_POLL_MS = 2000;
+
 /** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
  *  scroll box rather than summarised: the whole reason to surface either is
  *  that the exact string is what a user can search for and what an issue needs.
@@ -128,17 +138,25 @@ function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
 function IssueRow({
   issue,
   install,
+  login,
   doctor,
   onAct,
+  onCancelLogin,
   busy,
   actionError,
+  doneNote,
 }: {
   issue: ClaudeIssue;
   install: ClaudeInstallStatus | null;
+  login: ClaudeLoginStatus | null;
   doctor: ClaudeDoctor | null;
   onAct: (issue: ClaudeIssue) => void;
+  onCancelLogin: () => void;
   busy: boolean;
   actionError: string | null;
+  /** A sentence about a fix that already worked — the PATH line landed, and
+      the part the user still has to know is that only NEW terminals see it. */
+  doneNote?: string | null;
 }) {
   // The install record belongs to whichever issue asked for it — a running
   // install is about `missing`, a running update about `outdated` — so a row
@@ -149,7 +167,16 @@ function IssueRow({
   const mine = Boolean(install && issue.action && install.action === issue.action.kind);
   const running = Boolean(mine && install!.state === "running");
   const failed = Boolean(mine && install!.state === "error");
-  const finished = Boolean(mine && install!.state === "done");
+  // `doneNote` is the inline action's way of saying it worked — link-path runs
+  // in a single request and never goes through the install record.
+  const finished = Boolean(mine && install!.state === "done") || Boolean(doneNote);
+
+  // The sign-in is tracked in its own record, for the reason it has its own
+  // endpoints: it waits on a person rather than running to completion, so a
+  // "Working…" that cannot be called off would be the app telling the user to
+  // wait for something only they can finish.
+  const signingIn = Boolean(issue.action?.kind === "login" && login?.in_flight);
+  const loginError = issue.action?.kind === "login" ? login?.error ?? null : null;
 
   return (
     <li className="claude-health-issue">
@@ -162,10 +189,23 @@ function IssueRow({
             type="button"
             className="claude-health-action"
             onClick={() => onAct(issue)}
-            disabled={busy || running}
+            disabled={busy || running || signingIn}
           >
-            {running ? "Working…" : finished ? "Done" : issue.action.label}
+            {running || signingIn
+              ? "Working…"
+              : finished
+                ? "Done"
+                : issue.action.label}
           </button>
+          {signingIn && (
+            <button
+              type="button"
+              className="claude-health-action claude-health-action-quiet"
+              onClick={onCancelLogin}
+            >
+              Cancel
+            </button>
+          )}
           {/* What will actually run, before it runs. Piping a remote script
               into a shell on someone's behalf is a thing to disclose, not to
               do quietly behind a friendly label. */}
@@ -180,6 +220,18 @@ function IssueRow({
           {install!.detail || "Working…"}
         </p>
       )}
+      {signingIn && (
+        <p className="claude-health-progress" role="status">
+          Finish signing in with the browser window that just opened.
+        </p>
+      )}
+      {/* The child's own diagnosis. `Login failed: Request failed with status
+          code 400` is the loopback exchange rejecting the code, and it is the
+          only diagnosis on offer — the server derives this one line and keeps
+          the rest of the output in memory. */}
+      {loginError && !signingIn && (
+        <p className="claude-health-error">{loginError}</p>
+      )}
       {failed && (
         <OutputBlock
           label={install!.error || "It didn't work"}
@@ -187,6 +239,11 @@ function IssueRow({
         />
       )}
       {actionError && <p className="claude-health-error">{actionError}</p>}
+      {doneNote && (
+        <p className="claude-health-progress" role="status">
+          {doneNote}
+        </p>
+      )}
       {doctor && <DoctorReport doctor={doctor} />}
 
       {/* Still a command to copy, even where a button exists: a user on a
@@ -228,11 +285,22 @@ export function ClaudeHealthStrip() {
   // already holding would be the same do-our-work-for-us failure the shell
   // adoption exists to avoid.
   const [doctor, setDoctor] = useState<ClaudeDoctor | null>(null);
+  // The browser sign-in record, polled only while one is open. Its own state
+  // rather than a branch of `install`, because it is its own endpoint for its
+  // own reason: this one waits on a person and can be called off.
+  const [login, setLogin] = useState<ClaudeLoginStatus | null>(null);
   // A REFUSAL, shown verbatim. The one that matters is the 409 from an update
   // that would no-op: its text names the command that would actually work, and
   // rewording it would throw that away.
   const [actionError, setActionError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
+  // The PATH line landed. Held HERE rather than refreshing the snapshot away,
+  // because the row's last job is a sentence the user still needs: only NEW
+  // terminal windows read the rc file, and closing the strip the instant the
+  // button worked would leave an already-open terminal saying "command not
+  // found" with no explanation on screen. The server's cache is refreshed, so
+  // the next natural re-check (focus, navigation) retires the row.
+  const [linkedNote, setLinkedNote] = useState<string | null>(null);
 
   const load = useCallback((force: boolean) => {
     lastCheck.current = Date.now();
@@ -287,6 +355,22 @@ export function ClaudeHealthStrip() {
     );
   }, []);
 
+  // The same recovery for a sign-in, and it matters more: the browser window is
+  // in front of the user RIGHT NOW, so a remounted strip that showed "Sign in"
+  // again would invite a second press that can only earn a 409 for a window
+  // already open. Only an in-flight record is adopted; a finished one belongs to
+  // an attempt whose outcome the health snapshot already reflects.
+  useEffect(() => {
+    getClaudeLogin().then(
+      (rec) => {
+        if (rec.in_flight) setLogin(rec);
+      },
+      () => {
+        /* A recovery, not a prerequisite. */
+      },
+    );
+  }, []);
+
   // POLL ONLY WHILE SOMETHING IS RUNNING. An install outlives this component —
   // the user can navigate away and the download manager keeps showing it — so
   // the poll is tied to the record's state, not to the component's lifetime.
@@ -313,6 +397,32 @@ export function ClaudeHealthStrip() {
     };
   }, [install?.state, load]);
 
+  // POLL ONLY WHILE A SIGN-IN IS OPEN. The end of one is not a message the
+  // server can push, and it is not the child's exit code either: the CLI writes
+  // a credential this app never sees, so the only authority on whether it worked
+  // is `claude auth status`. When the record stops being in flight, re-probe —
+  // and let the strip close itself on the answer rather than on a guess.
+  useEffect(() => {
+    if (!login?.in_flight) return;
+    let alive = true;
+    const timer = window.setInterval(() => {
+      getClaudeLogin().then(
+        (next) => {
+          if (!alive) return;
+          setLogin(next);
+          if (!next.in_flight) load(true);
+        },
+        () => {
+          /* A failed poll is not a failed sign-in — keep what we last knew. */
+        },
+      );
+    }, LOGIN_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [login?.in_flight, load]);
+
   const act = useCallback(
     (issue: ClaudeIssue) => {
       if (!issue.action) return;
@@ -333,6 +443,41 @@ export function ClaudeHealthStrip() {
         });
         return;
       }
+      if (issue.action.kind === "link-path") {
+        linkClaudePath().then(
+          (res) => {
+            done();
+            setLinkedNote(
+              `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
+                "opened from now on will find `claude` — one that is already " +
+                "open needs a new tab or window.",
+            );
+          },
+          (e) => {
+            done();
+            // The server's own refusal — "this shell's profile isn't one the
+            // app can safely edit", or the write error verbatim.
+            setActionError(String(e?.message || e));
+          },
+        );
+        return;
+      }
+      if (issue.action.kind === "login") {
+        startClaudeLogin().then(
+          (rec) => {
+            done();
+            setLogin(rec);
+          },
+          (e) => {
+            done();
+            // The server's own words. A 409 here means a browser window is
+            // already open and waiting — which is the thing the user needs to
+            // know, and a reworded "please wait" would hide it.
+            setActionError(String(e?.message || e));
+          },
+        );
+        return;
+      }
       startClaudeInstall(issue.action.kind).then(
         (rec) => {
           done();
@@ -348,6 +493,16 @@ export function ClaudeHealthStrip() {
     },
     [],
   );
+
+  // Calling off a sign-in. The server settles the record before answering, so
+  // what comes back is already not in flight and the poll stops on its own.
+  const cancelLogin = useCallback(() => {
+    setActionError(null);
+    cancelClaudeLogin().then(
+      (rec) => setLogin(rec),
+      () => setLogin(null),
+    );
+  }, []);
 
   const issues = claudeIssues(health);
   const showing = loaded && issues.length > 0 && !isDismissed(issues);
@@ -423,12 +578,15 @@ export function ClaudeHealthStrip() {
             key={issue.id}
             issue={issue}
             install={install}
+            login={login}
             // The report belongs to the row that can act on it, and only the
             // broken-install row can.
             doctor={issue.id === "broken" ? doctor : null}
             onAct={act}
+            onCancelLogin={cancelLogin}
             busy={acting}
             actionError={issue.action ? actionError : null}
+            doneNote={issue.id === "not-on-path" ? linkedNote : null}
           />
         ))}
       </ul>

@@ -37,6 +37,7 @@ from fused_render.server.routers import ai_runtime
 # "every test stubs the Hub" is not the same claim as "no test reaches the
 # network".
 from test_ai_hub_fetch import no_egress  # noqa: F401
+from _big_files import sparse_file
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -2733,6 +2734,314 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
+def test_os_footprint_probe_returns_a_plausible_figure_or_none():
+    """D597: the live figure's probe. Deliberately does NOT pin a byte count —
+    it varies per machine and per moment — only that it answers with something
+    usable and that it TRACKS real memory, which is the property RSS failed at
+    (172 MB of RSS against 23 GB of Metal buffers on a live FLUX worker).
+
+    Loaded by path because `worker_base` is a runner-side module that normally
+    executes inside a runner venv, not as part of the server package's import
+    graph.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe"] = wb
+    spec.loader.exec_module(wb)
+
+    first = wb.os_footprint_bytes()
+    # Either a real positive reading or None where no counter exists — never 0,
+    # which a UI would render as "holding nothing".
+    assert first is None or first > 0
+
+    if first is None:
+        return  # no counter on this platform; nothing further to assert
+
+    # THE PROPERTY THAT MATTERS: it must move with genuinely dirtied memory.
+    # A probe that reports a constant (or that misses a whole allocator pool,
+    # which is exactly what RSS does here) would satisfy the check above and
+    # still be useless.
+    blob = bytearray(64 * 1024 * 1024)
+    for i in range(0, len(blob), 4096):
+        blob[i] = 1
+    after = wb.os_footprint_bytes()
+    assert after is not None
+    assert after > first, f"probe did not track a 64 MiB allocation: {first} -> {after}"
+    del blob
+
+
+def test_os_footprint_is_never_below_the_resident_size():
+    """CODE REVIEW 2026-08-28, FINDING 3 — the mmap-heavy shape.
+
+    `phys_footprint` EXCLUDES clean file-backed pages, which `resident_size`
+    counts, so the footprint alone is the SMALLER of the two for any runner that
+    maps its weights read-only (GGUF/llama.cpp, torch with `mmap=True`).
+    Measured in a plain interpreter with no framework loaded at all:
+    `resident_size` 19.2 MB against `phys_footprint` 9.3 MB — so this is not an
+    exotic case, it is the default one.
+
+    Reporting the footprint alone rendered the model row as
+    `8.2 GB now (1.1 GB held)` — a pair that reads as a contradiction — and
+    painted the status bar's colour band off the smaller of the two numbers,
+    the exact false-comfort signal the band exists to prevent. The probe now
+    returns `max(footprint, resident)`, so "held" can never come back below
+    "now". Asserted against the kernel's OWN `resident_size` where the counter
+    exists, so the test cannot pass by measuring the same thing twice.
+    """
+    import importlib.util
+    import struct
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe_floor", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe_floor"] = wb
+    spec.loader.exec_module(wb)
+
+    if sys.platform != "darwin":
+        pytest.skip("task_vm_info's resident_size is the darwin path only")
+
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.mach_task_self.restype = ctypes.c_uint32
+    buf = (ctypes.c_uint8 * 1024)()
+    count = ctypes.c_uint32(1024 // 4)
+    rc = libc.task_info(
+        ctypes.c_uint32(libc.mach_task_self()),
+        ctypes.c_int(wb._TASK_VM_INFO),
+        ctypes.byref(buf),
+        ctypes.byref(count),
+    )
+    assert rc == 0, "the premise: this machine has task_vm_info"
+    raw = bytes(buf)
+    resident = struct.unpack_from("<Q", raw, wb._RESIDENT_SIZE_OFFSET)[0]
+    footprint = struct.unpack_from("<Q", raw, wb._PHYS_FOOTPRINT_OFFSET)[0]
+    assert resident > 0 and footprint > 0
+
+    held = wb.os_footprint_bytes()
+    assert held is not None
+    # A tolerance rather than equality: the probe takes its own reading a moment
+    # after this one, and an interpreter allocates between the two. The claim
+    # under test is that it is not the SMALLER counter — the gap it must clear
+    # is the size of a model file, so 2 MiB of slack cannot hide it.
+    assert held >= min(resident, footprint), "the probe must never report below either counter"
+    assert held + 2 * 1024 * 1024 >= resident, (
+        f"os_footprint_bytes() {held} came back under resident_size {resident} — "
+        "the mmap-heavy shape is back"
+    )
+
+
+def test_os_footprint_falls_back_cleanly_when_no_counter_exists(monkeypatch):
+    """The non-macOS path, and any darwin failure: RSS, or None — never a raise
+    and never a guess. Forced by claiming a platform with no `task_info`, which
+    is what every non-Apple runner genuinely is."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe_fallback", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe_fallback"] = wb
+    spec.loader.exec_module(wb)
+
+    monkeypatch.setattr(wb.sys, "platform", "linux")
+    value = wb.os_footprint_bytes()
+    # psutil is absent from the server venv (AI-2), so this legitimately
+    # resolves to None here; where psutil IS present it must be a real RSS.
+    assert value is None or value > 0
+
+
+def test_describe_carries_the_os_footprint_without_coercing_null(
+        fake_runner, monkeypatch):
+    """D597: the new field rides through `describe` (and therefore
+    `/api/ai/runtime`) beside `residentBytes` rather than replacing it, and a
+    missing reading stays NULL — zero would render as "holding nothing" in the
+    one column whose job is to explain memory pressure the user can see.
+
+    The fake runner reports no `os_footprint_bytes`, which is exactly the
+    "runner too old / probe unavailable" case.
+    """
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert "osFootprintBytes" in row
+    assert row["osFootprintBytes"] is None
+    # ...and the field it sits BESIDE is untouched, which is the whole point of
+    # this being additive: `residentBytes` still feeds `fit.py`'s measured rung.
+    assert row["residentBytes"] == 1234
+
+
+# The populated path is covered by
+# `test_refresh_memory_propagates_a_growing_os_footprint` above, which asserts
+# the same thing through the REAL path. The version that used to live here set
+# `worker.os_footprint_bytes` directly and then called `describe()` — a premise
+# D599 invalidated: `describe()` calls `refresh_memory()`, which now re-reads
+# the field from `/health` on every request, so a directly-assigned value is
+# correctly overwritten by what the worker actually reports. That the old test
+# passed BEFORE the fix and fails after it is the point — it was asserting the
+# frozen-value behaviour that was the bug.
+
+
+def test_describe_carries_the_machine_ceiling_once_not_per_row(fake_runner):
+    """D594: the denominator the status bar colours against is a per-machine
+    constant, so it rides at the TOP LEVEL rather than being repeated on every
+    loaded row."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    described = supervisor.describe()
+
+    assert "memoryCeilingBytes" in described
+    ceiling = described["memoryCeilingBytes"]
+    # Either a real positive reading or None where the machine cannot be read —
+    # never 0, which would be a denominator that silently divides wrong.
+    assert ceiling is None or ceiling > 0
+    assert "memoryCeilingBytes" not in described["loaded"][0]
+
+
+def test_describe_reports_a_footprint_and_its_basis_per_loaded_model(
+        fake_runner, tmp_path, monkeypatch):
+    """D594: each row carries what the model COSTS plus which rung of
+    `fit.footprint_bytes`' ladder answered — the same vocabulary
+    `AiFitVerdict` established, so the status bar and the fit badge cannot
+    disagree about the same model.
+
+    Driven through the real measured path (`refresh_memory` is the one writer
+    for the footprint store, SPEC AI-16a) rather than by stubbing
+    `footprint_bytes`, so this pins the WIRING and not a mock.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    supervisor.refresh_memory()
+
+    row = supervisor.describe()["loaded"][0]
+
+    # The PEAK (9999), not the instantaneous RSS (1234) — those are different
+    # numbers on purpose, and the row now reports both in their own fields:
+    # peak as the cost, RSS as the live reading.
+    assert row["footprintBytes"] == 9999
+    assert row["footprintBasis"] == "measured"
+    assert row["residentBytes"] == 1234
+
+
+def test_an_unmeasured_model_reports_null_not_zero(fake_runner, monkeypatch):
+    """THE NULL-NOT-ZERO RULE, which the whole payload follows and which this
+    field needs most: a model with nothing measured and nothing declared has NO
+    cost figure. Zero would be a lie the page would happily colour green, so
+    the row must say null and let it fall back to RSS alone, uncoloured.
+
+    `footprint_bytes` is stubbed to its own documented "nothing to report"
+    answer rather than the store being left empty: the ladder has THREE rungs
+    and a catalog entry can satisfy the lower two, so an empty store does not
+    reliably produce a null (it did not — the fixture's peak came back through
+    the measured rung). Stubbing the ladder's ANSWER is what isolates the
+    contract this test is about, which is that `describe` passes a null
+    through as null instead of coercing it.
+    """
+    from fused_render.ai import fit
+
+    monkeypatch.setattr(fit, "footprint_bytes", lambda *a, **kw: (None, None))
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["footprintBytes"] is None
+    assert row["footprintBasis"] is None
+    # ...and the live RSS is still there, which is what the row falls back to.
+    assert row["residentBytes"] == 1234
+
+
+def _ready_worker():
+    """A ready worker in the table. Its `_health` is then put under the test's
+    control by the callers below.
+
+    `_health` is the seam because the defect these tests exist for lived in
+    `refresh_memory`'s own body, not in any runner: the field was read in the
+    LOAD loop and nowhere else, so nothing that only exercised loading could
+    see it. Driving `_health` directly is what lets a test assert what happens
+    on the polls that come AFTER ready.
+    """
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    return _wait_ready("org/small")
+
+
+def test_refresh_memory_propagates_a_growing_os_footprint(fake_runner, tmp_path, monkeypatch):
+    """D599, THE DEFECT: `os_footprint_bytes` was assigned only in the load
+    loop, which exits the moment the worker reaches `ready`. So the value froze
+    at whatever the last load-time poll saw — before MLX had faulted in its
+    Metal buffers — and every later poll left it untouched. Live, that showed
+    436 MB against a real `phys_footprint` of 24 GB.
+
+    The number MUST be able to grow after load, which is the whole reason the
+    field exists, so this asserts a post-ready INCREASE rather than merely that
+    the field is populated — the load path already populated it, and that is
+    exactly why the omission was invisible.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 456_967_248  # the frozen load-time reading
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready",
+        "resident_bytes": 1_918_320_888,
+        "peak_resident_bytes": 12_912_055_206,
+        "os_footprint_bytes": 24_000_000_000,
+    })
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes == 24_000_000_000
+    assert supervisor.describe()["loaded"][0]["osFootprintBytes"] == 24_000_000_000
+
+    # ADDITIVE ONLY: the durable "measured" store still gets the PEAK, never
+    # the OS footprint — that store feeds `fit.py`'s measured rung, and a 24 GB
+    # figure landing there would re-verdict every model the user has run.
+    from fused_render.ai import footprints
+    assert footprints.read(registry.TEXT_GENERATION, "org/small") == 12_912_055_206
+
+
+def test_refresh_memory_clears_the_os_footprint_when_the_worker_has_no_counter(
+        fake_runner, tmp_path, monkeypatch):
+    """A worker that ANSWERS and reports no counter (the non-Darwin fallback)
+    must clear the cell, not leave a stale number beside a live one. Prefer
+    showing nothing over showing something old — this field claims to describe
+    RIGHT NOW."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 24_000_000_000
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready", "resident_bytes": 1234, "os_footprint_bytes": None,
+    })
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes is None
+    # ...and the fields that legitimately persist are untouched by that rule.
+    assert worker.resident_bytes == 1234
+
+
+def test_a_failed_poll_leaves_the_last_os_footprint_standing(
+        fake_runner, tmp_path, monkeypatch):
+    """The OTHER half, and why this is not simply "always assign": a poll that
+    failed outright tells us nothing about the worker, so the last known figure
+    stands rather than the cell blinking empty on one dropped request. `health`
+    falsy is the transient case; `health` present with a null field is the
+    definite one above."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 24_000_000_000
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: None)
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes == 24_000_000_000
+
+
 def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
     """SPEC AI-16a, D497: the ONE writer for the measured-footprint store is
     `supervisor.refresh_memory`, re-reading `/health` on the same cadence the
@@ -3060,6 +3369,51 @@ def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
                                last_activity=last_activity, in_flight=in_flight)
     monkeypatch.setitem(supervisor._workers, capability, worker)
     return worker
+
+
+class _ExitedProc:
+    """A Popen whose process has already died — `poll()` answers its exit code."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+def test_a_ready_worker_whose_process_died_is_dropped_on_the_next_request(monkeypatch):
+    """The 502-forever bug. A worker that died while idle — a native SIGSEGV, a
+    memory kill — stayed in the table as `ready`, so every request was proxied
+    to a dead port and answered `the model process did not answer`, and
+    nothing ever respawned it. `ready_worker` now polls the process it is
+    about to hand out: gone means dropped, so this request gets
+    `ModelNotReady` (a fresh load) instead of a 502."""
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(-11)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is None
+    assert registry.TEXT_GENERATION not in supervisor._workers
+    assert worker.state == "error"
+    assert "gone" in worker.error
+
+
+def test_a_ready_worker_with_a_live_process_is_still_served(monkeypatch):
+    """The other half: `poll()` returning None is alive, and the worker is
+    handed out exactly as before. The engine-match check below it is untouched,
+    so a fake runner code must resolve to nothing rather than to a mismatch."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    worker.proc = _ExitedProc(None)
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
+
+
+def test_a_ready_worker_with_no_process_handle_is_not_judged(monkeypatch):
+    """A worker planted without a Popen (every fixture in this file, an adopted
+    process) cannot be polled, and "cannot tell" must not read as "gone" on
+    the request path — the reaper's poll keeps its own stricter rule."""
+    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
+    assert worker.proc is None
+    assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
 
 
 def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
@@ -4471,6 +4825,33 @@ def test_the_SKILL_names_the_image_FIELD_TOO_when_an_edit_is_asked_for(
         headers={"X-Fused": "1"}).json()
     assert "image" in started
     section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert "image" in section
+    _wait_job(started["jobId"])
+
+
+def test_the_SKILL_names_every_field_a_video_resolves_with(client, fake_video_runner):
+    """Same drift guard as the image route's own version of this test, over
+    `/api/ai/video`'s reply."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url"}
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
+def test_the_SKILL_names_the_video_image_FIELD_TOO_when_a_reference_is_given(
+        client, fake_video_runner, base_photo):
+    """Same drift guard as the image route's own version, over the reply a
+    conditioned render resolves with — `image` only ever appears there, so a
+    plain text-to-video POST would never catch the skill going stale about
+    it."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "x", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert "image" in started
+    section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
     assert "image" in section
     _wait_job(started["jobId"])
 
@@ -6022,6 +6403,157 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
     assert os.path.isfile(started["path"])
 
 
+# -- a reference image (I2V) -----------------------------------------------------
+# One image, a single string, conditioning at frame 0 with strength 1.0 — the
+# same scope decision `/api/ai/image`'s own `image` option made for editing,
+# restated for video. `_resolve_reference_image` is the shared helper both
+# routes call; these tests exercise it through `/api/ai/video`, the same way
+# the block above exercises `_edit_default_size` through `/api/ai/image`.
+
+
+def test_video_rejects_an_image_array(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ["a.png", "b.png"]},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_rejects_an_empty_image_string(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ""},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+
+
+def test_video_reference_image_needs_a_file_that_exists(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "/nope/nowhere.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "no such file" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_refuses_a_relative_image_with_no_base(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'image' must be absolute" in response.json()["error"]
+
+
+def test_video_resolves_a_relative_image_against_base(
+        client, fake_video_runner, base_photo):
+    """RH-1, same as `/api/ai/image`'s own version of this test: a relative
+    `image` resolves against the directory of `base`."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_video_absolute_image_ignores_base(client, fake_video_runner, base_photo):
+    _page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": photo},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_a_plain_text_to_video_request_has_no_image_key(client, fake_video_runner):
+    """A caller that never mentioned `image` sees no trace of it in the
+    reply — the byte-identical-to-today's-call promise, restated at the
+    route's own boundary."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert "image" not in started
+    _wait_job(started["jobId"])
+
+
+def test_video_canvas_derives_from_the_reference_image(
+        client, fake_video_runner, base_photo):
+    """`base_photo` is 2000x1000 (2:1) — fitted (without upscaling) to the
+    engine's own longer default side (`max(704, 480) == 704`), landing at
+    704x352, then snapped DOWN to the 64-multiple grid `snap_output_
+    dimensions(..., two_stage=True)` uses: 704 (already a multiple of 64)
+    x 320 (352 snapped down from 352 to 320)."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 320)
+    assert started["width"] % 64 == 0 and started["height"] % 64 == 0
+    _wait_job(started["jobId"])
+
+
+def test_a_small_reference_can_come_back_square(client, fake_video_runner, tmp_path):
+    """`_video_default_size`'s own docstring: the 64-multiple step pairs with
+    the SAME 256 floor `_edit_default_size` uses at 16, so aspect collapses
+    far more readily here — not only on an extreme ratio. A 300x200 (3:2)
+    reference is smaller than the engine's own 704 target on both axes (no
+    downscale happens), and each axis then floors independently: `max(256,
+    300 // 64 * 64) == 256`, `max(256, 200 // 64 * 64) == 256`. This pins
+    that as deliberate rather than incidental — see D621."""
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "small.png"
+    photo.write_bytes(_png_bytes(300, 200))
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "small.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (256, 256)
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_width_still_wins_over_the_derived_default(
+        client, fake_video_runner, base_photo):
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "width": 512},
+        headers={"X-Fused": "1"}).json()
+    # Height still comes from the reference image; only width was named.
+    assert (started["width"], started["height"]) == (512, 320)
+    _wait_job(started["jobId"])
+
+
+def test_an_unreadable_reference_falls_back_to_the_engines_own_default(
+        client, fake_video_runner, tmp_path):
+    """A file that exists, is a regular file, but is not one of the three
+    formats `_image_pixel_size` understands — the derived-default lookup
+    fails toward None, and the render still goes ahead at the ENGINE's own
+    default canvas rather than refusing the request outright."""
+    junk = tmp_path / "not-really-a-photo.png"
+    junk.write_bytes(b"this is not image data")
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": str(junk)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 480)
+    _wait_job(started["jobId"])
+
+
+def test_the_video_bridge_base_option_reaches_the_route(
+        client, fake_video_runner, base_photo):
+    """`base` is bridge-injected, not caller-facing (mirrors `_IMAGE_SERVER_
+    OPTIONS`'s own asymmetry) — this exercises it through the SERVER side,
+    since `base` alone with no `image` is a legitimate call the bridge
+    itself would make on every video render once `runtime.js` injects it."""
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "base": page},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
 # -- transcription (SPEC §40) ---------------------------------------------------
 # Job-backed like an image and for the same reason — a 90-minute recording is
 # not a chat turn — with one addition: the transcript is a FILE, so the work
@@ -6766,15 +7298,18 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     started = _post_transcribe(client, path=recording).json()
     job = started["jobId"]
 
-    # Evict it exactly as the cap does, mid-load.
+    # Evict it exactly as the cap does, mid-load. `waiting_for`, not a
+    # "Waiting for" substring in `detail` any more — the merge (this change)
+    # makes `detail` the LOAD row's own line verbatim, and `waiting_for` is
+    # what actually names the wait now.
     deadline = time.monotonic() + 5
     row = None
     while time.monotonic() < deadline:
         row = _row_now(job)
-        if row and "Waiting for" in (row.get("detail") or ""):
+        if row and row.get("waiting_for"):
             break
         time.sleep(0.02)
-    assert row and "Waiting for" in (row.get("detail") or ""), row
+    assert row and row.get("waiting_for"), row
     with jobs._lock:
         jobs._jobs.pop(job, None)
 
@@ -6788,10 +7323,16 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     assert rebuilt is not None, "the wait could not rebuild its row"
     # STILL WAITING — so it was the wait's own tick that rebuilt it, not a
     # later reporter. That is what makes this test about `_wait_ready`.
-    assert "Waiting for" in (rebuilt.get("detail") or ""), rebuilt
+    assert rebuilt.get("waiting_for"), rebuilt
     assert rebuilt["title"] == os.path.basename(recording)
-    assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
-    _wait_job(job, timeout=40)
+    # `cancellable` survives the rebuild from `transcribe_row_fields`'s
+    # payload; `unit` does NOT stay "s" here — the merge (this change) mirrors
+    # the LOAD row's own unit ("", nothing byte-shaped reported yet at
+    # "Starting the model process…") for as long as the wait holds, and only
+    # restores the transcription's own "s" once the wait ends (below).
+    assert rebuilt["cancellable"] is True
+    final = _wait_job(job, timeout=40)
+    assert final["unit"] == "s"
 
 
 def _watcher_giveup_window_s():
@@ -6845,13 +7386,15 @@ def test_a_LIVE_transcription_row_is_never_absent_at_all():
 
     # Every removal path was walked against a row of this exact shape and none
     # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
-    # is far inside `STALE_DROP_S`), `dismiss` and `clear_finished` (both refuse
-    # a RUNNING row that is not stalled). ONE remote path survives — a tick
-    # thread starved past `STALE_AFTER_S` makes the row dismissible, and a user
-    # looking at "no longer reporting" may well dismiss it — and the rebuild on
-    # detection heals that, because `_transcribe_row` carries the `title` and
-    # `state: "running"` that reopen a forgotten id. So the poll cadence is the
-    # backstop's latency, and it still has to beat the watcher.
+    # is far inside `STALE_DROP_S`), `clear_finished` (refuses every RUNNING
+    # row unconditionally, stalled included — D558) and `dismiss` (refuses a
+    # RUNNING row that is not stalled). ONE remote path survives — a tick
+    # thread starved past `STALE_AFTER_S` makes the row dismissible one at a
+    # time, and a user looking at "no longer reporting" may well dismiss it —
+    # and the rebuild on detection heals that, because `_transcribe_row`
+    # carries the `title` and `state: "running"` that reopen a forgotten id.
+    # So the poll cadence is the backstop's latency, and it still has to beat
+    # the watcher.
     window = _watcher_giveup_window_s()
     assert supervisor._QUEUE_POLL_S < window / 2, (
         f"a dismissed-while-stalled row takes {supervisor._QUEUE_POLL_S}s to come "
@@ -7575,6 +8118,11 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert match, "could not find aiVideo's whitelist array in runtime.js"
     js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
     assert js_keys == sorted(ai_runtime._VIDEO_OPTIONS)
+    # Same asymmetry as `_IMAGE_SERVER_OPTIONS` (D413): `base` is
+    # bridge-injected, so it must NOT be in the caller-facing set the bridge
+    # validates against, and must be in the wider server set.
+    assert "base" not in ai_runtime._VIDEO_OPTIONS
+    assert "base" in ai_runtime._VIDEO_SERVER_OPTIONS
 
 
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
@@ -9056,10 +9604,13 @@ def _text_repo(hub, repo_id, *, size=0):
 
     Safetensors, so a test using this needs the `safetensors_text_engine`
     fixture — see its docstring for why the ambient platform is not enough.
+
+    The weights file is sparse: `size` here exists to be read back as a
+    `size_gb`, and the scan that reads it sums `st_size`. See `_big_files`.
     """
     repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
                         config={"architectures": ["LlamaForCausalLM"]})
-    (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
+    sparse_file(repo / "snapshots" / "c0ffee" / "model.safetensors", size)
     return repo
 
 
@@ -9662,7 +10213,7 @@ def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 1.0
     blobs = repo / "blobs"
     blobs.mkdir(parents=True, exist_ok=True)
-    (blobs / "second-revision").write_bytes(b"x" * 2_000_000_000)
+    sparse_file(blobs / "second-revision", 2_000_000_000)
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 3.0
 
 
@@ -9905,6 +10456,54 @@ def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
 
     monkeypatch.delenv("FUSED_MODEL_MIRROR")
     assert "FUSED_MODEL_MIRROR" not in supervisor._child_env("t", _suggested_id())
+
+
+def test_on_macos_a_worker_is_spawned_in_the_posix_spawn_shape(monkeypatch):
+    """The fork-crash fix. CPython uses `posix_spawn` only for a Popen with no
+    `cwd`, `close_fds=False` and no `start_new_session`; anything else forks,
+    and a forked child runs the server's atfork handlers — which is how a
+    resident PROJ killed every worker with `code -11` and an empty stderr.
+    The directory travels in the environment instead."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"close_fds": False}
+    assert env[supervisor.WORKER_CWD_ENV] == "/runners/x"
+
+
+def test_elsewhere_a_worker_keeps_its_own_session_and_cwd(monkeypatch):
+    """Off macOS the shape is unchanged: `cwd` on the Popen, descriptors
+    closed, and the platform's own new-session/new-group flag — which is
+    `SPAWN_KWARGS` itself, so this reads the constant rather than naming
+    `start_new_session`: on a Windows runner that key is `creationflags`."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = {}
+    kwargs = supervisor._spawn_kwargs("/runners/x", env)
+    assert kwargs == {"cwd": "/runners/x", "close_fds": True, **supervisor.SPAWN_KWARGS}
+    assert supervisor.WORKER_CWD_ENV not in env
+
+
+def test_no_spawn_site_bypasses_the_spawn_shape_helper():
+    """Both Popen sites go through `_spawn_kwargs`, and neither passes `cwd`,
+    `close_fds` or the session flag directly — the arguments that silently
+    turn `posix_spawn` back into `fork()`. Checked on the source, because a
+    keyword added to one call is exactly the regression nobody would notice
+    until a geo page had rendered on someone's Mac."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(supervisor))
+    popens = [node for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.Popen"]
+    assert len(popens) >= 2, f"{len(popens)} Popen sites, expected the two worker spawns"
+    forbidden = {"cwd", "close_fds", "start_new_session", "preexec_fn"}
+    for call in popens:
+        names = {kw.arg for kw in call.keywords if kw.arg is not None}
+        starred = [ast.unparse(kw.value) for kw in call.keywords if kw.arg is None]
+        assert not names & forbidden, (
+            f"Popen at line {call.lineno} sets {names & forbidden} directly — "
+            f"route it through _spawn_kwargs")
+        assert any(x.startswith("_spawn_kwargs(") for x in starred), (
+            f"Popen at line {call.lineno} does not spread _spawn_kwargs(...)")
 
 
 def test_neither_spawn_site_forgets_the_model(monkeypatch):

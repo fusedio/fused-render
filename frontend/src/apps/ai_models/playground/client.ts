@@ -353,9 +353,12 @@ export function startImage(request: ImageRequest): Promise<ImageStarted> {
 
 // -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
 
-/** `ImageRequest`'s twin, minus `guidance` (H3 is CFG-distilled and takes no
- *  such parameter) and plus `frames`. Closed the same way, for the same
- *  reason: `_reject_unknown` refuses any other key. */
+/** `ImageRequest`'s twin, minus `guidance` (the engine is CFG-distilled and
+ *  takes no such parameter) and plus `frames`. Closed the same way, for the
+ *  same reason: `_reject_unknown` refuses any other key. `image`: one
+ *  reference image, conditioning at frame 0 with strength 1.0 — the same
+ *  single-image scope `ImageRequest.image` already uses for an edit
+ *  (SPEC AI-15, restating AI-9f). */
 export interface VideoRequest {
   prompt: string;
   model?: string;
@@ -364,12 +367,21 @@ export interface VideoRequest {
   frames?: number;
   steps?: number;
   seed?: number;
+  /** An absolute path to a reference image to condition on (frame 0,
+   *  strength 1.0 — AI-15). `AiCatalogCapability.videoTraits.supportsImage`
+   *  is the server's own answer to whether the resolved engine honours it.
+   *  Absolute, same reason `ImageRequest.image`'s own comment gives: the
+   *  shell is not a page and has no `?path=` to resolve a relative one
+   *  against. */
+  image?: string;
 }
 
 /** The reply echoes the SETTLED request — width/height snapped and shrunk to
- *  fit the canvas ceiling, `frames` rounded to h3's own grid, `steps`
- *  clamped, `seed` invented — never what was asked. No `previewPath`: there
- *  is no live preview in this build. */
+ *  fit the canvas ceiling (derived from `image`'s own aspect ratio when one
+ *  was sent), `frames` rounded to the engine's own grid, `steps` clamped,
+ *  `seed` invented — never what was asked. No `previewPath`: there is no
+ *  live preview in this build. `image` is present only when the request
+ *  carried one, echoing the resolved absolute path. */
 export interface VideoStarted {
   jobId: string;
   path: string;
@@ -380,6 +392,7 @@ export interface VideoStarted {
   frames: number;
   steps: number;
   seed: number;
+  image?: string;
 }
 
 export function startVideo(request: VideoRequest): Promise<VideoStarted> {

@@ -166,11 +166,23 @@ interface IconPickerProps {
   onPick: (icon: string) => void;
   onRemove: () => void;
   onClose: () => void;
+  /** Selector for THIS picker's own trigger glyphs — an outside mousedown on
+   *  one of them is left to the host's click handler (the toggle), everything
+   *  else closes. Each host must scope it to its own glyphs: two sections
+   *  sharing a loose selector leave each other's pickers open (Bugbot,
+   *  2026-08-31). Defaults to the Bookmarks section's glyphs. */
+  toggleSelector?: string;
 }
 
 const GRID_COLS = 8;
 
-export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPickerProps) {
+export default function IconPicker({
+  anchor,
+  onPick,
+  onRemove,
+  onClose,
+  toggleSelector = ".bookmark-glyph:not(.folder-glyph):not(.current-app-glyph)",
+}: IconPickerProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const baseId = useId();
@@ -192,9 +204,11 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (rootRef.current && rootRef.current.contains(target)) return;
-      // Glyph clicks are the toggle — let the sidebar's click handler decide
-      // (closing here would make it reopen the picker immediately after).
-      if (target.closest(".bookmark-glyph:not(.folder-glyph)")) return;
+      // Clicks on this picker's own trigger glyphs are the toggle — let the
+      // host's click handler decide (closing here would make it reopen the
+      // picker immediately after). Anything else — another section's glyphs
+      // included — closes.
+      if (target.closest(toggleSelector)) return;
       onClose();
     };
     // Capture phase + stopPropagation so Escape closes only the picker — a
@@ -219,7 +233,7 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("scroll", onScroll, true);
     };
-  }, [onClose]);
+  }, [onClose, toggleSelector]);
 
   // Keep the popover on-screen: it opens below the glyph, flips above when it
   // would overflow the bottom edge.

@@ -69,6 +69,25 @@ def _call(server, path, body=None, token="secret", method=None):
     return urllib.request.urlopen(request, timeout=5)
 
 
+def _settle(base):
+    """Block until the server-side request handler has FULLY finished —
+    including its `finally` — after a `_call(...)` the test already read the
+    response of.
+
+    A client that has received its response has no guarantee the SERVER
+    thread has finished running code AFTER it wrote those bytes: the network
+    is the only synchronisation point, and `_single`/`_stream` still have
+    their `finally` (arming or clearing the release timer) to run once
+    `self._json`/the last `write` returns. `GENERATE_LOCK` is held for the
+    whole handler, finally included, so acquiring and immediately releasing
+    it here is a barrier for exactly that gap — needed by every test in the
+    idle-release section below that inspects `base._release_timer` or
+    `manual_timers` right after a `_call(...).close()`.
+    """
+    with base.GENERATE_LOCK:
+        pass
+
+
 # -- the auth header ------------------------------------------------------------
 
 
@@ -659,6 +678,335 @@ def test_a_streaming_generates_writes_also_stay_off_the_connection_thread(base):
         server.shutdown()
 
 
+# -- releasing the allocator cache on a 30s IDLE TIMER (D597) -------------------
+#
+# `serve(release=...)` is the third optional hook beside `memory=`/`peak_
+# memory=` — an ACTION, not a measurement. Motivating numbers are on
+# `_release`'s docstring: a FLUX.2-Klein-4B-4bit render needs ~24 GB at its
+# peak but MLX never hands the idle pool back to the OS on its own, so the
+# status bar kept reading "1.7 GB now (21 GB held)" long after the render
+# finished.
+#
+# It does NOT fire in the request's own `finally` — this change's first cut
+# did that, and re-faulting a 24 GB working set on every single call would
+# make a burst of five renders pay that cost five times. Instead each completed
+# execution arms a `_RELEASE_IDLE_S`-second timer; a new execution inside
+# that window cancels the pending one and arms a fresh one, so only a
+# genuinely idle worker ever actually clears. These tests set `base._release`
+# directly (mirroring how `_measure_peak` is set on `base` above) because
+# `_serve` here calls `build_server` directly, the same seam `serve()` itself
+# assigns through — and they swap in `_ManualTimer` below for
+# `worker_base._new_timer` so the 30s window is crossed by calling `.fire()`,
+# never by sleeping.
+
+
+class _ManualTimer:
+    """Stands in for `threading.Timer`, fired by hand instead of by a real
+    30-second wait. `_arm_release_timer` calls `worker_base._new_timer(...)`
+    — a local indirection to `threading.Timer` that exists FOR this seam —
+    rather than `threading.Timer` directly: patching the real stdlib class
+    would affect every `threading.Timer` created ANYWHERE in the process for
+    the duration of the test, including by daemon threads leaked from an
+    earlier test in the same xdist worker (a real cross-file flake shape in
+    this repo, not a hypothetical one), silently turning them into timers
+    that are never scheduled and never fire. Patching `base._new_timer`
+    instead only ever affects timers `_arm_release_timer` itself creates, in
+    THIS one fresh module.
+
+    `cancel()` matches real `Timer` semantics: a cancelled timer's function
+    never runs, even if `.fire()` is called on it afterwards — which is what
+    lets a test tell "the pending release was deferred" from "it fired
+    anyway" without needing two clocks in flight at once.
+    """
+
+    instances = []
+
+    def __init__(self, interval, function, args=()):
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.daemon = None
+        self.cancelled = False
+        self.started = False
+        _ManualTimer.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        if self.started and not self.cancelled:
+            self.function(*self.args)
+
+
+@pytest.fixture()
+def manual_timers(base, monkeypatch):
+    """Every `_ManualTimer` `_arm_release_timer` creates during this test, in
+    order — `instances[-1]` is always the CURRENTLY pending one."""
+    _ManualTimer.instances = []
+    monkeypatch.setattr(base, "_new_timer", _ManualTimer)
+    return _ManualTimer.instances
+
+
+def test_a_completed_generate_arms_a_daemon_timer_for_the_idle_window(base, manual_timers):
+    """Armed with the named constant, not a bare literal, and marked daemon
+    so a pending release is never what keeps the worker process alive at
+    exit — `os._exit(0)` in `/quit` does not wait on it, and neither would a
+    normal interpreter shutdown."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: None
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert len(manual_timers) == 1
+        assert manual_timers[0].interval == base._RELEASE_IDLE_S
+        assert manual_timers[0].daemon is True
+        assert manual_timers[0].started is True
+    finally:
+        server.shutdown()
+
+
+def test_release_fires_after_the_idle_window_with_no_further_execution(base, manual_timers):
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert calls == []  # not yet — only arming happens synchronously
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
+def test_a_second_execution_inside_the_window_defers_the_pending_release(base, manual_timers):
+    """The core of the redesign: a burst of renders must not clear between
+    each one. The FIRST timer is cancelled outright rather than left to fire
+    later — `fire()`'d directly here to prove it really is inert, not just
+    superseded."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        first_timer = manual_timers[-1]
+        assert not first_timer.cancelled
+
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert first_timer.cancelled, "a second execution must cancel the first timer"
+        assert len(manual_timers) == 2, "the second execution must arm its own timer"
+
+        first_timer.fire()  # inert: cancelled timers never call their function
+        assert calls == []
+
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
+def test_a_stale_timer_that_already_escaped_cancel_still_checks_its_token(base, manual_timers):
+    """Belt-and-braces beside `cancel()`: the window between a real `Timer`'s
+    wait elapsing and its callback actually acquiring `GENERATE_LOCK` is where
+    a rearm can land AFTER `cancel()` was already too late to help. Exercised
+    directly here — `_ManualTimer.fire()` alone cannot reach this branch,
+    since it always honours `cancelled` — by calling `_fire_release` with a
+    token this test manufactures as already stale."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        stale_token = base._release_generation
+        _call(server, "/generate", {}).close()  # bumps _release_generation past stale_token
+        _settle(base)
+        base._fire_release(stale_token)
+        assert calls == [], "a stale token must not clear the cache out from under a newer run"
+    finally:
+        server.shutdown()
+
+
+def test_a_streaming_execution_counts_as_active_for_its_whole_duration(base, manual_timers):
+    """The timer must only be armed once the STREAM ENDS, not once it starts
+    — a long token stream or transcription is exactly the case this matters
+    for, since `GENERATE_LOCK` is held throughout and arming happens in
+    `_stream`'s `finally`, after `run_on_generate_thread` returns."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: None
+    started = threading.Event()
+    finish = threading.Event()
+
+    def generate(body, write):
+        started.set()
+        finish.wait(timeout=5)
+        write({"type": "done", "ok": True})
+
+    server = _serve(base, generate, streaming=True)
+    try:
+        caller = threading.Thread(
+            target=lambda: _call(server, "/generate", {}).read())
+        caller.start()
+        assert started.wait(timeout=5)
+        # Mid-stream: nothing has been armed yet, because the execution has
+        # not finished — this is the assertion a per-call design could not
+        # make at all, since there IS no "mid-call" for it.
+        assert manual_timers == []
+        finish.set()
+        caller.join(timeout=5)
+        _settle(base)
+        assert len(manual_timers) == 1, "the timer arms once the stream actually ends"
+    finally:
+        finish.set()
+        server.shutdown()
+
+
+def test_no_release_hook_is_a_silent_no_op(base, manual_timers):
+    """Every runner that never calls `serve(release=...)` — `llamacpp_text`,
+    `faster_whisper`, `onnx_embed` and its shells — leaves `_release` at its
+    default `None`. Nothing is ever armed for them, and `/generate` behaves
+    exactly as it did before this hook existed."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    assert base._release is None
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with _call(server, "/generate", {}) as response:
+            assert json.loads(response.read())["ok"] is True
+        _settle(base)
+        assert manual_timers == []
+    finally:
+        server.shutdown()
+
+
+def test_a_raising_release_does_not_crash_the_timer_or_break_the_next_execution(base, manual_timers):
+    """The response this timer eventually fires for is long gone by the time
+    it runs — there is nobody left to hand a 500 to — so a `release` that
+    throws must be swallowed, and must not leave the timer machinery wedged
+    for the NEXT execution."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def boom():
+        raise RuntimeError("mlx.core has no attribute 'clear_cache'")
+
+    base._release = boom
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert base._release_timer is None
+
+        # And a subsequent execution still arms cleanly.
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert len(manual_timers) == 2
+    finally:
+        server.shutdown()
+
+
+def test_release_runs_on_the_generate_thread_not_the_connection_thread(base, manual_timers):
+    """Routed through `run_on_generate_thread` like `generate` itself: the
+    hook this exists for is `mx.clear_cache()`, an MLX call, and that
+    function's docstring is the whole reason no MLX call is made from a
+    thread other than the one dedicated to them — a fired timer runs on yet
+    another thread of its own, no different in kind."""
+    generate_threads = []
+    release_threads = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def generate(body):
+        generate_threads.append(threading.current_thread())
+        return {}
+
+    base._release = lambda: release_threads.append(threading.current_thread())
+    server = _serve(base, generate)
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert release_threads == generate_threads
+        assert release_threads[0] is not threading.current_thread()
+    finally:
+        server.shutdown()
+
+
+def test_a_fired_release_cannot_run_while_a_generation_holds_the_lock(base, manual_timers):
+    """The safety-critical half of `_fire_release` that nothing above actually
+    exercises: acquiring `GENERATE_LOCK` FIRST is what makes firing mid-render
+    impossible, not just an assumption. `GENERATE_LOCK` is held here directly
+    from this thread, standing in for "a generation is in flight" without the
+    generation-token machinery (a real second execution would also CANCEL and
+    supersede this timer once it finishes, which is a different behaviour —
+    covered by `test_a_second_execution_inside_the_window_defers_the_pending_
+    release` above — and would make "does it fire" ambiguous here for the
+    wrong reason)."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        timer = manual_timers[-1]
+    finally:
+        server.shutdown()
+
+    base.GENERATE_LOCK.acquire()
+    try:
+        firer = threading.Thread(target=timer.fire)
+        firer.start()
+        firer.join(timeout=0.2)
+        assert firer.is_alive(), (
+            "the release ran while GENERATE_LOCK was held by an in-flight "
+            "generation — the whole point of acquiring it first")
+        assert calls == []
+    finally:
+        base.GENERATE_LOCK.release()
+    firer.join(timeout=5)
+    assert not firer.is_alive()
+    assert calls == ["released"], (
+        "the pending release must still run once the lock is free again"
+    )
+
+
+def test_serve_wires_release_into_the_module_global(base, monkeypatch, tmp_path):
+    """`serve(release=...)` has to actually reach the module global that
+    `_arm_release_timer` reads — the same wiring `memory=`/`peak_memory=`
+    already get, pinned by `test_serve_wires_peak_memory_into_the_peak_probe`
+    above."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    sentinel = lambda: None  # noqa: E731 - identity is what's under test
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, release=sentinel,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._release is sentinel
+
+
 # -- reporting ------------------------------------------------------------------
 
 
@@ -755,6 +1103,34 @@ def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base,
     # is feeding must not go backwards with it.
     assert base.resident_bytes() == 2_000
     assert base._rss_peak == 5_000
+
+
+def test_serve_moves_into_the_directory_the_supervisor_names(base, monkeypatch, tmp_path):
+    """The posix_spawn half of the fork-crash fix (`supervisor._spawn_kwargs`):
+    with no `cwd=` on the Popen, the worker has to `chdir` itself, before
+    anything else in `serve` — a runner that opens a file by a relative path
+    must already be home. `setsid` is stubbed: under pytest this process leads
+    a session already, and the point here is the directory."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+    calls = []
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    monkeypatch.setattr(base.os, "setsid", lambda: calls.append("setsid"), raising=False)
+    home = tmp_path / "runner_home"
+    home.mkdir()
+    monkeypatch.setenv(base.WORKER_CWD_ENV, str(home))
+    before = os.getcwd()
+    try:
+        base.serve(download=lambda m: None, load=lambda m, f: None,
+                  generate=lambda body: {},
+                  argv=["--model", "org/m", "--status", str(tmp_path / "status.json")])
+        assert os.path.realpath(os.getcwd()) == os.path.realpath(str(home))
+        assert calls == ["setsid"]
+    finally:
+        os.chdir(before)
 
 
 def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path):
@@ -1243,6 +1619,52 @@ def test_every_MLX_runner_supplies_a_true_peak_probe():
         assert "peak_memory=peak_memory" in source, (
             f"{code} does not pass its peak probe to serve(), so /health "
             "reports no peak_resident_bytes at all"
+        )
+
+
+def test_every_runner_with_a_reclaimable_allocator_wires_the_idle_release():
+    """D597/the idle-release feature: every runner whose backend actually
+    exposes a cache-release call wires it to `serve(release=...)`, so
+    `worker_base._arm_release_timer` has something to arm after every one of
+    their executions. Source again, for the same reason as the peak-probe
+    test above — mlx and a GPU-built torch do not import on this CI host.
+
+    The strings checked below are CODE, not prose: every one of these
+    `release()` docstrings also mentions `mx.clear_cache()`/`empty_cache()`
+    in its own explanation of what it does, so a naive `"clear_cache" in
+    source` (an earlier version of this test) would keep passing even with
+    the actual call deleted from the function body — a guard that cannot
+    fail is not a guard. `getattr(mx, "clear_cache", None)` and
+    `torch.{mps,cuda}.empty_cache()` are each the exact statement `release()`
+    executes, and each appears in these files exactly once, in the body, not
+    in a docstring — verified by hand: deleting the real call and re-running
+    this test does turn it red.
+
+    `llamacpp_text`, `faster_whisper` and `onnx_embed` are deliberately
+    absent from this list — see the comment beside each of their own
+    `worker_base.serve(...)` calls for why each one has nothing here to
+    release."""
+    from fused_render.ai import registry
+
+    for code, clear_calls in (
+        ("mlx-text", ('getattr(mx, "clear_cache", None)',)),
+        ("mflux-image", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-whisper", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-embed", ('getattr(mx, "clear_cache", None)',)),
+        ("ltx-video", ('getattr(mx, "clear_cache", None)',)),
+        ("diffusers-image", ("torch.mps.empty_cache()", "torch.cuda.empty_cache()")),
+    ):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = _runner_source(runner)
+        assert "def release(" in source, f"{code} has no release hook"
+        for clear_call in clear_calls:
+            assert clear_call in source, (
+                f"{code}'s release() does not actually call {clear_call!r}"
+            )
+        assert "release=release" in source, (
+            f"{code} does not pass its release hook to serve(), so an idle "
+            "worker here never hands its allocator pool back"
         )
 
 
@@ -1941,6 +2363,157 @@ def test_a_part_file_for_an_UNRELATED_blob_does_not_disable_the_fast_path(
     assert hub.calls == [("snapshot", True)]
 
 
+# -- orphan part-file cleanup (`_sweep_orphan_parts`) --------------------------
+
+
+def _aged(path, seconds):
+    """Back-date a file's mtime so `_sweep_orphan_parts` reads it as older than
+    the grace window rather than as something still being written."""
+    then = time.time() - seconds
+    os.utime(str(path), (then, then))
+
+
+def test_the_grace_window_clears_the_longest_a_fetch_can_stall(base):
+    """`_PART_GRACE_SECONDS` has to outlast `THROTTLE_TOTAL_MAX_S` — the most
+    wall clock a live segment can spend parked on a 429 without a single byte
+    reaching its part file, `_note_throttle` rather than the mtime being the
+    only sign it is still alive — and with real headroom, or the sweep can
+    delete a file a throttled fetch is still going to write into. Pinned so a
+    future edit that lets either constant drift back below the other fails
+    loudly here rather than as a corrupted multi-gigabyte download in the
+    field."""
+    assert base._PART_GRACE_SECONDS > base.THROTTLE_TOTAL_MAX_S
+    assert base._PART_GRACE_SECONDS - base.THROTTLE_TOTAL_MAX_S >= 120
+
+
+def test_sweep_removes_every_part_shape_once_it_is_old_enough(base, tmp_path):
+    """Ours (`.fusedpart`, its offsets sidecar, and the sidecar's own crashed
+    `.tmp`) and both of hf's own (`<etag>.incomplete` and
+    `<etag>.<8 hex>.incomplete`) all count — a leftover is a leftover
+    regardless of which fetcher wrote it. A finished blob beside them is left
+    alone."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    ours = blobs / "e7ag.fusedpart"
+    ours.write_bytes(b"half")
+    sidecar = blobs / "e7ag.fusedpart.json"
+    sidecar.write_bytes(b"{}")
+    sidecar_tmp = blobs / "e7ag.fusedpart.json.tmp"
+    sidecar_tmp.write_bytes(b"{")
+    hf_old = blobs / "0ther.incomplete"
+    hf_old.write_bytes(b"half")
+    hf_new = blobs / "0ther.a1b2c3d4.incomplete"
+    hf_new.write_bytes(b"half")
+    finished = blobs / "f1n1shed"
+    finished.write_bytes(b"weights")
+    for path in (ours, sidecar, sidecar_tmp, hf_old, hf_new, finished):
+        _aged(path, base._PART_GRACE_SECONDS + 60)
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 5
+    assert sorted(p.name for p in blobs.iterdir()) == ["f1n1shed"]
+
+
+def test_sweep_leaves_a_freshly_touched_part_file_alone(base, tmp_path):
+    """A LIVE download keeps rewriting its part file; the grace window is what
+    stops a concurrent fetch's genuinely in-flight resume state from being
+    swept out from under it — there is no other guard, since two fetches over
+    the same repo share nothing but the filesystem."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    live = blobs / "e7ag.fusedpart"
+    live.write_bytes(b"half")
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 0
+    assert live.exists()
+
+
+def test_sweep_on_a_never_fetched_folder_is_a_quiet_no_op(base, tmp_path):
+    assert base._sweep_orphan_parts(str(tmp_path / "never-fetched")) == 0
+
+
+def test_sweep_on_a_falsy_folder_never_scans_a_relative_path(base, monkeypatch):
+    """`repo_folder` returns `None` when `huggingface_hub` cannot be imported
+    (see its docstring). `None or ""` joined with `"blobs"` is the RELATIVE
+    path `"blobs"`, not a no-op — `os.scandir` would resolve it against this
+    process's CWD, unlinking anything part-shaped it happens to find in a
+    `./blobs` there. Proven by making `scandir` explode if it is ever reached
+    at all, rather than trusting that no such directory exists in the pytest
+    CWD — the way this guard's absence used to pass by accident."""
+    def explodes(path):
+        raise AssertionError(
+            f"_sweep_orphan_parts scanned {path!r} for a falsy folder")
+
+    monkeypatch.setattr(base.os, "scandir", explodes)
+
+    assert base._sweep_orphan_parts(None) == 0
+    assert base._sweep_orphan_parts("") == 0
+
+
+def test_a_failed_unlink_is_logged_rather_than_swallowed(base, tmp_path,
+                                                         monkeypatch, capsys):
+    """A cosmetic cleanup step must not go silent, and must not be the thing
+    that turns a successful download into a failed one either."""
+    folder = tmp_path / "models--org--m"
+    blobs = folder / "blobs"
+    blobs.mkdir(parents=True)
+    part = blobs / "e7ag.fusedpart"
+    part.write_bytes(b"half")
+    _aged(part, base._PART_GRACE_SECONDS + 60)
+
+    def boom(path):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(base.os, "remove", boom)
+
+    removed = base._sweep_orphan_parts(str(folder))
+
+    assert removed == 0
+    assert part.exists()
+    err = capsys.readouterr().err
+    assert "e7ag.fusedpart" in err
+    assert "Permission denied" in err
+
+
+def test_download_snapshot_fast_path_sweeps_so_the_card_stops_reading_partial(
+        base, monkeypatch, tmp_path):
+    """The bug this feature exists to fix, pinned at the boundary the AI Models
+    card actually reads: `_cached_path` answers a hit with no network call, so
+    "Continue downloading" jumping to 100% and stopping changed nothing on
+    retry. Once the fast path sweeps too, the same repo `hub_cache
+    ._unfinished_fetch` called partial reads complete."""
+    from fused_render.ai import hub_cache
+
+    folder = tmp_path / "models--org--m"
+    (folder / "blobs").mkdir(parents=True)
+    commit = "c0m"
+    snapshot = folder / "snapshots" / commit
+    snapshot.mkdir(parents=True)
+    blob = folder / "blobs" / "e7ag"
+    blob.write_bytes(b"weights")
+    (snapshot / "model.safetensors").symlink_to(blob)
+    base._record_fetch(str(folder), commit, ["model.safetensors"], str(snapshot))
+
+    orphan = folder / "blobs" / "0ldetag.fusedpart"
+    orphan.write_bytes(b"an earlier, wider fetch's leftovers")
+    _aged(orphan, base._PART_GRACE_SECONDS + 60)
+
+    assert hub_cache._unfinished_fetch(str(folder)) is True
+
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(folder))
+    monkeypatch.setattr(base, "_cached_path", lambda *a, **k: str(snapshot))
+
+    assert base.download_snapshot("org/m") == str(snapshot)
+    assert not orphan.exists()
+    assert hub_cache._unfinished_fetch(str(folder)) is False
+
+
 def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
         base, monkeypatch, tmp_path):
     """The path comes from a call we did not make ourselves, so it is checked
@@ -2033,6 +2606,31 @@ def test_download_snapshots_fallback_wires_a_byte_counter_through(
     base.download_snapshot("u/x")
 
     assert len(seen_bars) == 1, "the fallback did not pass its own tqdm_class through"
+
+
+def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch,
+                                                                tmp_path):
+    """An unrecognised keyword argument routes straight to `hub()` — same branch
+    `files is None`/`not sha` takes, which is exactly the state a failed
+    `_repo_files` listing leaves. `download_file`'s equivalent branch already
+    sweeps (SPEC AI-5l); this pins that `download_snapshot`'s does too, or a
+    repo whose caller passes an extra kwarg stays "partial" forever no matter
+    how many times hf completes it underneath."""
+    folder = _cache_folder(tmp_path)
+    orphan = folder / "blobs" / "0ldetag.fusedpart"
+    orphan.write_bytes(b"an earlier fetch's leftovers")
+    stale = time.time() - base._PART_GRACE_SECONDS - 60
+    os.utime(str(orphan), (stale, stale))
+
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x", revision="abc123") == snapshot
+    assert not orphan.exists(), "the kwargs fallback did not sweep orphan parts"
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(

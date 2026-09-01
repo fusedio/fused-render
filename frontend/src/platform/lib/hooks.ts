@@ -193,19 +193,6 @@ export function useFavicon(href: string | null): void {
   }, [href]);
 }
 
-// The builtin-mount readiness hook lived here: a bounded /api/config poll that
-// answered "is the bundled zip mount attached and browsable yet", seeded from
-// the boot-time config snapshot because the one-shot fetch (main.tsx) lands
-// well before the server's background automount thread finishes attaching. It
-// gated the sidebar's App Basics entry so it was never a dead link. Both
-// consumers are gone — the Claude Config app stopped being a mount when it
-// became native React over its own server bridge, the Sessions inbox page was
-// deleted on 2026-08-18 (Tasks supersedes it), and the learn content left the
-// app for the community catalog. `sessions_mount_ready` still ships on
-// /api/config for the next surface that links into a bundled mount; git
-// history has the poll if one needs it back.
-
-
 // Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and
 // dragged width, shared so every owner of the frame agrees on the layout.
 export function useSidebarState(): SidebarState {

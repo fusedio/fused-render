@@ -289,7 +289,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
 def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
     """D548 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
     boilerplate commit never sees it — assert both halves: the layout is there,
-    and the `.gitignore` git init just wrote already excludes it."""
+    and the shared repo's root `.gitignore` (D626) already excludes it."""
     monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
@@ -298,7 +298,7 @@ def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeyp
     assert (dest / ".fused" / "cache").is_dir()
     meta = json.loads((dest / ".fused" / "meta.json").read_text())
     assert meta["app_dir"] == os.path.abspath(str(dest))
-    assert ".fused/" in (dest / ".gitignore").read_text()
+    assert ".fused/" in (workspace / "local" / ".gitignore").read_text()
 
 
 def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):
@@ -1129,6 +1129,33 @@ def test_a_render_referred_by_a_preview_records_nothing(client, workspace, recen
     )
     assert r.status_code == 200
     assert _opened_at(client, "sine") is not None
+
+
+def test_a_noopen_render_records_nothing(client, workspace, recents_home):
+    # `_noopen=1` is the explorer companion pane's own stamp (D622): unlike
+    # `_preview=1`, it says NOTHING about whether this render is a thumbnail —
+    # only that it must not count as an app open. Same recording suppression,
+    # a separate reason.
+    d = _app_dir(workspace, "sine")
+    r = client.get("/render",
+                   params={"path": str(d / "index.html"), "_noopen": "1"})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+
+
+def test_a_render_referred_by_noopen_records_nothing(client, workspace, recents_home):
+    # An app framed inside the companion pane's own left preview (two levels
+    # under the companion document) must not be recorded as opened either —
+    # that inheritance is the whole point of `_noopen`, not a side effect of
+    # `_preview`.
+    d = _app_dir(workspace, "sine")
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/render?path=%2Fw%2Ftutorial.html&_noopen=1"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
 
 
 def test_rendering_an_unmarked_page_records_nothing(client, workspace, tmp_path, recents_home):

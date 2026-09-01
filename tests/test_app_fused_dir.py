@@ -73,23 +73,322 @@ def test_ensure_completes_a_half_made_folder(app):
 
 # ------------------------------------------------------- meta.json as a witness
 
-def test_a_moved_app_keeps_its_recorded_path(app, caplog):
-    """THE decision (D548): the recorded `app_dir` is evidence that the folder
-    moved, so `ensure` reports it and leaves it. Rewriting on sight would erase
-    the divergence in the same moment an app could act on it."""
+@pytest.fixture()
+def claude_store(tmp_path, monkeypatch):
+    """A private ~/.claude/{projects,sessions} — `ensure` on a moved app
+    relocates transcripts, and the suite must never touch the real store."""
+    from fused_render import claude_session_move as csm
+
+    projects = tmp_path / "claude" / "projects"
+    sessions = tmp_path / "claude" / "sessions"
+    projects.mkdir(parents=True)
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(csm, "PROJECTS_DIR", str(projects))
+    monkeypatch.setattr(csm, "SESSIONS_DIR", str(sessions))
+    return projects, sessions
+
+
+def _absent_root() -> str:
+    """An absolute path that does not exist, on POSIX **and** on Windows.
+
+    `os.path.join(os.sep, "somewhere", ...)` is not enough. On Windows that is
+    `\\somewhere\\else\\demo` — drive-RELATIVE: `ntpath.isabs` says True, but
+    `splitdrive` returns no drive, so `os.path.abspath` prepends the current
+    drive and the string CHANGES. Every path function under test abspaths its
+    input (`claude_session_move.munge`, `_under`, `_path_rewrites`;
+    `workspace_migration._remap` documents that it requires it), so a fixture
+    seeded with the un-drived spelling never matches what production searches
+    for: the transcript's `cwd` is left unrewritten, and the assertions that
+    follow it fail — on Windows only.
+
+    Calling `abspath` here is what makes the fixture and production agree, and
+    is the same thing `test_file_history.py` does for its own absent path.
+    """
+    return os.path.abspath(os.path.join(os.sep, "somewhere", "else", "demo"))
+
+
+def test_the_absent_root_fixture_is_absolute_on_every_platform():
+    """The guard for the Windows-only breakage this file had.
+
+    `abspath(p) == p` is the contract every path function under test relies on,
+    and `os.path.isabs` is NOT that contract: on Windows it answers True for the
+    drive-relative `\\somewhere\\else\\demo`, which `abspath` then rewrites by
+    prepending a drive. A fixture whose spelling changes under `abspath` can
+    never match what production searches for — which is why these tests passed
+    on POSIX and failed on Windows. Assert the fixed point, not `isabs`.
+    """
+    root = _absent_root()
+    assert os.path.abspath(root) == root      # the load-bearing one
+    assert os.path.isabs(root)
+    assert not os.path.exists(root)           # still absent, or it is not a move
+
+
+def _transcript(projects, cwd, sid, extra_line=None):
+    from fused_render.claude_session_move import munge
+
+    bucket = projects / munge(cwd)
+    bucket.mkdir(exist_ok=True)
+    import urllib.parse
+
+    # The leading app-state block is how the claude template knows which pane
+    # a chat was opened on: `entry` plain, `url` percent-encoded.
+    state = ('<live-app-state>App state {"entry": "%s", "url": "/render?_file=%s"}'
+             "</live-app-state>hi"
+             % (os.path.join(cwd, "index.html"),
+                urllib.parse.quote(os.path.join(cwd, "index.html"), safe="")))
+    lines = [
+        json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
+        json.dumps({"type": "user", "cwd": cwd, "message": {"content": state}}),
+        json.dumps({"type": "assistant", "cwd": cwd, "message": {"content": "ok"}}),
+    ]
+    if extra_line is not None:
+        # Mid-file, not last: a half-written LAST line on a fresh transcript is
+        # session_liveness's own "turn in flight" signal, and would hold it.
+        lines.insert(1, extra_line)
+    (bucket / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
+    (bucket / sid / "tool-results").mkdir(parents=True)
+    (bucket / sid / "tool-results" / "x.txt").write_text("r")
+    return bucket
+
+
+def test_a_copied_app_keeps_its_recorded_path(app, caplog, claude_store):
+    """The witness half of D548: the recorded folder still exists, so this is
+    a copy — the sessions belong to the original and the record is left as
+    evidence for the app to act on."""
     app_fused_dir.ensure(str(app))
     meta_file = app / ".fused" / "meta.json"
+    original = app.parent / "original"
+    original.mkdir()
     stale = json.loads(meta_file.read_text())
-    stale["app_dir"] = os.path.join(os.sep, "somewhere", "else", "demo")
+    stale["app_dir"] = str(original)
     meta_file.write_text(json.dumps(stale))
 
     with caplog.at_level("INFO", logger="fused_render.app_fused_dir"):
         assert app_fused_dir.ensure(str(app)) is True
 
-    assert json.loads(meta_file.read_text())["app_dir"] == stale["app_dir"]
-    assert app_fused_dir.recorded_app_dir(str(app)) == stale["app_dir"]
-    assert "moved or copied" in caplog.text
-    assert stale["app_dir"] in caplog.text
+    assert json.loads(meta_file.read_text())["app_dir"] == str(original)
+    assert "a copy, not a move" in caplog.text
+
+
+def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_store):
+    """The move half: the recorded folder is gone, so every transcript whose
+    own cwd was the old path or under it goes to the bucket for the new path,
+    cwd repointed, side dir along — and only then is `app_dir` fixed, with
+    the move kept in `migrations`."""
+    from fused_render.claude_session_move import munge
+
+    projects, _ = claude_store
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    old = _absent_root()
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta["custom"] = "kept"
+    meta_file.write_text(json.dumps(meta))
+
+    _transcript(projects, old, "aaaa-1", extra_line="not json {")
+    _transcript(projects, os.path.join(old, "sub", "deeper"), "bbbb-2")
+    # A sibling whose bucket name shares the prefix — NOT under the old root.
+    sibling = _transcript(projects, old + "-old", "cccc-3")
+    # Another cwd colliding into the same bucket as `old` (munge is lossy).
+    collide = old.replace(os.sep + "demo", ".demo")
+    bucket = projects / munge(old)
+    (bucket / "dddd-4.jsonl").write_text(json.dumps({"type": "user", "cwd": collide}) + "\n")
+    (bucket / "memory").mkdir()
+    (bucket / "memory" / "MEMORY.md").write_text("# m")
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    new_root = os.path.abspath(str(app))
+    dst = projects / munge(new_root)
+    moved = (dst / "aaaa-1.jsonl").read_text().splitlines()
+    assert moved[0] == json.dumps({"type": "permission-mode", "permissionMode": "auto"})
+    assert moved[1] == "not json {"
+    assert json.loads(moved[2])["cwd"] == new_root
+    assert (dst / "aaaa-1" / "tool-results" / "x.txt").read_text() == "r"
+    # The pane identity moved too — both spellings, nothing left of the old.
+    # Spelled as the FILE holds them, not as `os.path.join` returns them: these
+    # paths sit inside JSON strings, so on Windows their separators are escaped
+    # and the single-backslash form never appears in the raw bytes at all (the
+    # assertion could not pass there, however correct the rewrite).
+    # `json.dumps(p)[1:-1]` is precisely the spelling
+    # `claude_session_move._path_rewrites` rewrites, and is a no-op on POSIX.
+    import urllib.parse
+    body = (dst / "aaaa-1.jsonl").read_text()
+    entry = os.path.join(new_root, "index.html")
+    assert json.dumps(entry)[1:-1] in body
+    assert urllib.parse.quote(entry, safe="") in body
+    # The escaped spelling is the one that was there to remove — plain `old`
+    # never appears on Windows, so asserting it alone is vacuous there.
+    assert json.dumps(old)[1:-1] not in body
+    sub = projects / munge(os.path.join(new_root, "sub", "deeper"))
+    assert json.loads((sub / "bbbb-2.jsonl").read_text().splitlines()[1])["cwd"] == \
+        os.path.join(new_root, "sub", "deeper")
+    assert not (bucket / "aaaa-1.jsonl").exists()
+    assert (sibling / "cccc-3.jsonl").exists()
+    assert (bucket / "dddd-4.jsonl").exists()      # the collider stays
+    assert (bucket / "memory" / "MEMORY.md").exists()  # bucket not emptied → memory stays
+
+    fixed = json.loads(meta_file.read_text())
+    assert fixed["app_dir"] == new_root
+    assert fixed["custom"] == "kept"
+    assert fixed["created_at"] == meta["created_at"]
+    assert fixed["migrations"][0]["from"] == old
+    assert fixed["migrations"][0]["to"] == new_root
+    assert fixed["migrations"][0]["sessions"] == 2
+
+
+def test_a_live_session_holds_the_move_back(app, claude_store):
+    """A running session's transcript is being appended to; moving it would
+    split the conversation. It stays, and so does the stale record — the next
+    open retries."""
+    projects, sessions = claude_store
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    old = _absent_root()
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta_file.write_text(json.dumps(meta))
+    _transcript(projects, old, "live-1")
+    (sessions / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": "live-1", "cwd": old}))
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    from fused_render.claude_session_move import munge
+    assert (projects / munge(old) / "live-1.jsonl").exists()
+    m = json.loads(meta_file.read_text())
+    assert m["app_dir"] == old
+    assert m["migrations"][0]["pending"] == ["live-1"]
+
+
+def test_a_move_re_roots_bookmarks_and_app_stores(app, claude_store, tmp_path, monkeypatch):
+    """The stores that name the old path by absolute path (bookmarks, the
+    desk, the registered registry) or by workspace-relative key (app_recents)
+    all follow the move; entries about OTHER apps are untouched."""
+    home = tmp_path / "fused-home"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    from fused_render.shell.seed import fused_dir
+    old = os.path.join(fused_dir(), "local", "demo-viz")
+    new_root = os.path.abspath(str(app))  # tmp_path/Fused/local/demo
+
+    # The shell's own encoder, not a hand-rolled one: `old.lstrip("/")` and
+    # `.split("/")` assume forward slashes, so on Windows the whole backslashed
+    # path became ONE segment and `quote` turned it into
+    # `C%3A%5CUsers%5C...%5Cdemo-viz` — a spelling `_remap_url` cannot decode,
+    # so the bookmark was never re-rooted and only this test noticed.
+    # `view_url_path` canonicalises first, which is the form bookmarks.json
+    # actually holds on every platform.
+    from fused_render._view_url_codec import view_url_path
+
+    enc_url = view_url_path(os.path.join(old, "index.html"))
+    (home / "bookmarks.json").write_text(json.dumps([
+        {"name": "mine", "url": enc_url + "?sel=index.html"},
+        {"name": "other", "url": "/explorer/view/Users/x/other/app.html"},
+    ]))
+    (home / "current_apps.json").write_text(json.dumps(
+        {"apps": [{"path": old, "addedAt": "t"}], "seen": []}))
+    (home / "registered_apps.json").write_text(json.dumps(
+        {"entries": [{"path": old, "openedAt": "t"}]}))
+    (home / "app_recents.json").write_text(json.dumps(
+        {"entries": [{"path": "local/demo-viz", "openedAt": "t"},
+                     {"path": "local/keep", "openedAt": "t"}]}))
+
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta_file.write_text(json.dumps(meta))
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    marks = json.loads((home / "bookmarks.json").read_text())
+    assert "demo-viz" not in marks[0]["url"] and "demo" in marks[0]["url"]
+    assert marks[1]["url"] == "/explorer/view/Users/x/other/app.html"
+    desk = json.loads((home / "current_apps.json").read_text())
+    assert desk["apps"][0]["path"] == new_root.replace(os.sep, "/")
+    reg = json.loads((home / "registered_apps.json").read_text())
+    assert reg["entries"][0]["path"] == new_root
+    rec = json.loads((home / "app_recents.json").read_text())
+    assert {e["path"] for e in rec["entries"]} == {"local/demo", "local/keep"}
+
+
+def test_a_rename_the_munge_cannot_see_rewrites_in_place(app, claude_store):
+    """`de_mo` -> `de-mo` lands in the SAME bucket: src is dst. The file
+    stays and only its cwd lines move — it must not be mistaken for an
+    already-carried copy and left pointing at the missing folder."""
+    from fused_render.claude_session_move import munge
+
+    projects, _ = claude_store
+    app_fused_dir.ensure(str(app))
+    old = os.path.join(os.path.dirname(str(app)), "de_mo")
+    new_dir = app.parent / "de-mo"
+    app.rename(new_dir)
+    meta = json.loads((new_dir / ".fused" / "meta.json").read_text())
+    meta["app_dir"] = old
+    (new_dir / ".fused" / "meta.json").write_text(json.dumps(meta))
+    assert munge(old) == munge(str(new_dir))
+    _transcript(projects, old, "same-1")
+
+    assert app_fused_dir.ensure(str(new_dir)) is True
+
+    lines = (projects / munge(old) / "same-1.jsonl").read_text().splitlines()
+    assert json.loads(lines[1])["cwd"] == os.path.abspath(str(new_dir))
+    assert (projects / munge(old) / "same-1" / "tool-results" / "x.txt").exists()
+    fixed = json.loads((new_dir / ".fused" / "meta.json").read_text())
+    assert fixed["app_dir"] == os.path.abspath(str(new_dir))
+    assert fixed["migrations"][0]["sessions"] == 1
+
+
+def test_a_second_move_before_the_live_session_ends_loses_nothing(app, claude_store):
+    """Hop 1 carries the idle transcript but a live one holds the record at
+    the origin. Hop 2 (folder moved again) must look at hop 1's destination
+    too, or the transcript already carried there is never found again."""
+    from fused_render.claude_session_move import munge
+
+    projects, sessions = claude_store
+    app_fused_dir.ensure(str(app))
+    old = _absent_root()
+    meta = json.loads((app / ".fused" / "meta.json").read_text())
+    meta["app_dir"] = old
+    (app / ".fused" / "meta.json").write_text(json.dumps(meta))
+    _transcript(projects, old, "idle-1")
+    _transcript(projects, old, "live-2")
+    (sessions / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": "live-2"}))
+
+    assert app_fused_dir.ensure(str(app)) is True   # hop 1: incomplete
+    assert app_fused_dir.ensure(str(app)) is True   # every render re-opens; one hop, not two
+    mid = os.path.abspath(str(app))
+    assert (projects / munge(mid) / "idle-1.jsonl").exists()
+    m = json.loads((app / ".fused" / "meta.json").read_text())
+    assert m["app_dir"] == old
+    assert len(m["migrations"]) == 1
+    assert m["migrations"][0]["pending"] == ["live-2"]
+    assert m["migrations"][0]["sessions"] == 1
+
+    # A COPY of the half-moved app must not steal the sessions hop 1 carried.
+    import shutil
+    copy = app.parent / "copy"
+    shutil.copytree(app, copy)
+    assert app_fused_dir.ensure(str(copy)) is True
+    assert (projects / munge(mid) / "idle-1.jsonl").exists()
+    assert not (projects / munge(str(copy))).exists()
+    shutil.rmtree(copy)
+
+    (sessions / "1.json").unlink()                 # session ends...
+    final = app.parent / "final"
+    app.rename(final)                              # ...and the folder moves again
+    assert app_fused_dir.ensure(str(final)) is True
+
+    dst = projects / munge(str(final))
+    assert (dst / "idle-1.jsonl").exists()
+    assert (dst / "live-2.jsonl").exists()
+    assert json.loads((dst / "idle-1.jsonl").read_text().splitlines()[1])["cwd"] == str(final)
+    m = json.loads((final / ".fused" / "meta.json").read_text())
+    assert m["app_dir"] == str(final)
+    assert all("pending" not in e for e in m["migrations"])
+    assert len(m["migrations"]) == 2
 
 
 def test_recorded_app_dir_matches_when_the_app_has_not_moved(app):

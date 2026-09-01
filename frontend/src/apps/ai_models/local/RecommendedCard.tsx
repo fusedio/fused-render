@@ -85,9 +85,13 @@ function ModelCard({
    *  NUMBER and so the one thing about these states a stylesheet cannot know. */
   style?: Record<string, string>;
   /** The card's own hover, where there is one thing to say about the whole of
-   *  it. Rendered as a title rather than as text because these cards sit in a
-   *  scrolling row: a sentence per card would set every card's height from the
-   *  longest one in the section. */
+   *  it. Rendered as a `data-hint` rather than as text because these cards sit
+   *  in a scrolling row: a sentence per card would set every card's height
+   *  from the longest one in the section. `data-hint`, not a native `title`,
+   *  so it doesn't double up with a child control's own hint — the app's one
+   *  tooltip system (`hints.ts`) walks up ancestors and lets the nearest
+   *  `data-hint` win, where two native titles on the same point would both
+   *  fire and show the browser's tooltip on top of the app's. */
   hoverNote?: string;
   /** For the one card that has to know whether it is on screen (see
    *  `HubResultCard`'s lazy size). */
@@ -119,7 +123,7 @@ function ModelCard({
     <div
       className={`cc-mdcard am-card ${variant}`}
       style={style}
-      title={hoverNote}
+      data-hint={hoverNote}
       ref={cardRef}
     >
       <div className="cc-mdcard-head">
@@ -333,7 +337,7 @@ export function RecommendedCard({
                filled the disk with weights nothing here reads would be the
                page contradicting its own card. */
             disabled={!runner?.available}
-            title={
+            data-hint={
               runner?.available
                 ? `Download ${model.id}${
                     size === null ? "" : ` (${size.approx ? "~" : ""}${size.text})`
@@ -539,7 +543,7 @@ export function HubResultCard({
       badges={
         <>
           {disk.state === "downloaded" && !busy && (
-            <span className="am-suggest-have" title={`${model.id} is already on this machine`}>
+            <span className="am-suggest-have" data-hint={`${model.id} is already on this machine`}>
               ✓ downloaded
             </span>
           )}
@@ -548,7 +552,7 @@ export function HubResultCard({
               and left a Download button beside it that would 403. Here the gate
               decides the action too — see the footer. */}
           {gate && (
-            <span className="am-card-gate" title={gate.title}>
+            <span className="am-card-gate" data-hint={gate.title}>
               {gate.pill}
             </span>
           )}
@@ -602,7 +606,7 @@ export function HubResultCard({
                 // path drops the mode, so a middle-click would land on the
                 // folder listing rather than the model card.
                 href={urlForFsPath(disk.path, "?_mode=model_card")}
-                title={`Explore ${model.id} here — ${disk.path}`}
+                data-hint={`Explore ${model.id} here — ${disk.path}`}
                 onClick={(e) => {
                   if (
                     e.defaultPrevented ||
@@ -630,7 +634,7 @@ export function HubResultCard({
                 href={model.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={gate.title}
+                data-hint={gate.title}
               >
                 {gate.action}
               </a>
@@ -648,7 +652,7 @@ export function HubResultCard({
                   type="button"
                   className="am-card-power"
                   disabled={!loadable}
-                  title={
+                  data-hint={
                     !loadable
                       ? `${model.id} cannot be loaded here: ${runner?.reason ?? "unavailable"}.`
                       : disk.state === "partial"

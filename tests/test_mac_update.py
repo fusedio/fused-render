@@ -174,7 +174,7 @@ def test_brew_available_carries_manual_command(monkeypatch):
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     status = manager.check()
     assert status["state"] == "available"
-    assert status["manual_command"] == "brew upgrade --cask fused-render"
+    assert status["manual_command"] == "brew update && brew upgrade --cask fused-render"
 
 
 def test_dmg_available_has_no_manual_command(monkeypatch):

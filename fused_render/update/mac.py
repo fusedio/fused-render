@@ -9,10 +9,14 @@ Two methods, decided once per process:
 - "brew": the running bundle is Homebrew-managed. The app never runs brew
   itself — swapping the bundle behind brew's back would desync its
   bookkeeping (Caskroom metadata, `brew list`) permanently. Instead the
-  "available" state carries `manual_command` (`brew upgrade --cask
-  fused-render`) for the user to run in a terminal; POST /api/update/install
-  is a no-op. The next check() tick reads the bundle on disk and flips to
-  "installed" once the user's upgrade lands.
+  "available" state carries `manual_command` (`brew update && brew upgrade
+  --cask fused-render`) for the user to run in a terminal; POST
+  /api/update/install is a no-op. The `brew update` is required: the tap's
+  cask (fusedio/homebrew-tap) has no livecheck, so Homebrew only learns of a
+  version bump after refreshing its local clone of the tap — otherwise
+  `brew upgrade` reads the stale cached cask and reports nothing to do. The
+  next check() tick reads the bundle on disk and flips to "installed" once
+  the user's upgrade lands.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
@@ -51,7 +55,7 @@ CASK_NAME = "fused-render"
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
-BREW_COMMAND = f"brew upgrade --cask {CASK_NAME}"
+BREW_COMMAND = f"brew update && brew upgrade --cask {CASK_NAME}"
 _DOWNLOAD_PREFIX = "FusedRender-"
 _DOWNLOAD_SUFFIX = ".dmg"
 # Keep a margin over the DMG itself: the download and the staged .app copy

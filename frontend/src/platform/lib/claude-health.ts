@@ -20,7 +20,8 @@ export interface ClaudeIssue {
   /** Stable id — the dismissal signature is built from these, so renaming one
       un-dismisses it for everybody. Worth it when the MEANING changed; never
       do it for wording. */
-  id: "missing" | "unusable-override" | "outdated" | "signed-out" | "broken";
+  id: "missing" | "unusable-override" | "outdated" | "signed-out" | "broken"
+    | "not-on-path";
   /** The one-line statement. Says what is true, not what is polite. */
   title: string;
   /** What to do about it, in a sentence. */
@@ -36,7 +37,10 @@ export interface ClaudeIssue {
    *  and its absence is meaningful: `unusable-override` has no action because
    *  the value lives in a shell profile we cannot edit, and offering a button
    *  that silently does nothing is worse than the sentence it replaced. */
-  action?: { kind: "install" | "update" | "doctor"; label: string };
+  action?: {
+    kind: "install" | "update" | "doctor" | "login" | "link-path";
+    label: string;
+  };
 }
 
 /** `claude update`, the fix for an install that is merely old. Not in
@@ -186,8 +190,44 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     issues.push({
       id: "signed-out",
       title: "Claude Code isn't signed in",
-      detail: "Open a terminal, run `claude`, type /login and finish signing in.",
+      // NOT "run `claude`, type /login" any more. That was the only route
+      // through the TUI door, but `claude auth login` opens the browser itself
+      // and finishes on its own loopback callback — so this is a button, and
+      // the code never comes anywhere near the app. The sentence describes what
+      // pressing it does, because a browser window about to appear over the app
+      // is a thing to announce first.
+      detail: "Sign in with your browser — Claude Code opens the page and "
+        + "finishes on its own.",
       helpKind: "login",
+      action: { kind: "login", label: "Sign in" },
+    });
+  }
+
+  // ONLY ON AN EXPLICIT `false` — a login-shell probe that came back empty.
+  // `null` is unknown (Windows, an override, an old server) and unknown never
+  // produces advice, the same rule as `signed_in` above. This is the quietest
+  // issue here because nothing in the APP is wrong: the installer created the
+  // binary and the app adopted it, but the installer never edits an rc file —
+  // and the one warning it prints about that is suppressed by the augmented
+  // PATH the app runs it under. Without this row, the terminal is the only
+  // place the user finds out, as `command not found`.
+  if (health.on_shell_path === false) {
+    issues.push({
+      id: "not-on-path",
+      title: "Claude Code works in this app, but not in your terminal yet",
+      detail:
+        "The install finished and Fused Render is already using it. Your " +
+        "terminal looks in a different set of places, so `claude` there says " +
+        "command not found until its folder is added to your shell's PATH.",
+      helpKind: "notfound",
+      // The server's exact line — shown beside the button, so what the user is
+      // told will run and what runs are the same sentence. Absent (fish, or a
+      // binary outside the home directory) there is no button either, and the
+      // row is a plain notice with the help link.
+      command: health.path_fix_command ?? undefined,
+      action: health.path_fix_command
+        ? { kind: "link-path", label: "Add to PATH for me" }
+        : undefined,
     });
   }
 

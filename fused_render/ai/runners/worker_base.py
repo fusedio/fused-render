@@ -73,6 +73,7 @@ STATE = {
     "detail": "",
     "error": "",
     "resident_bytes": None,
+    "os_footprint_bytes": None,
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
@@ -173,6 +174,143 @@ def run_on_generate_thread(fn, *args, **kwargs):
     if ok:
         return payload
     raise payload
+
+
+#: How long a worker sits with NO new execution before it hands its allocator
+#: pool back to the OS (`_release`, `_arm_release_timer`, `_fire_release`
+#: below). A deliberate, named constant rather than a literal 30 scattered
+#: across the file — see those functions' docstrings for the mechanism.
+#:
+#: Chosen to match `supervisor._REAPER_TICK_S` (also 30.0) in spirit, not by
+#: coincidence: both exist because 30s is short enough that "idle" means
+#: something a user would recognise, and this timer is that reaper's much
+#: cheaper, purely in-process cousin. The reaper polls every 30s whether a
+#: worker has been unused for `prefs.effective_ai_idle_unload_minutes()` (10
+#: minutes by default) and, past that, KILLS THE PROCESS — losing the loaded
+#: weights entirely, the next request pays a full reload. This timer fires
+#: once, 30 SECONDS after the worker's own last execution, and only hands
+#: back the allocator's idle pool — the model stays resident and the next
+#: request is exactly as fast as this one, it just re-faults the working set
+#: from the pool it now has to grow again. Two different costs at two very
+#: different timescales, not one mechanism with two names.
+_RELEASE_IDLE_S = 30.0
+
+#: Guards `_release_timer`/`_release_generation` together, so arming a new
+#: timer and a just-fired old one checking whether it is still current can
+#: never interleave into a wrong answer.
+_release_lock = threading.Lock()
+
+#: The pending idle-release timer, or `None` between executions. Always
+#: `threading.Timer` in production; tests substitute a manually-fired stand-in
+#: (see `tests/test_ai_worker_base.py`) rather than sleeping 30 real seconds.
+_release_timer = None
+
+#: Bumped every time a timer is (re)armed. A fired timer compares the token it
+#: was armed with against this before calling `_release` — belt-and-braces
+#: alongside `Timer.cancel()` itself, for the window between a timer's wait
+#: elapsing and its callback actually running, during which a new execution
+#: could already have rearmed (see `_fire_release`).
+_release_generation = 0
+
+#: The constructor `_arm_release_timer` calls to make its timer — a LOCAL
+#: seam, not `threading.Timer` used directly. A test that wants a manually-
+#: fired stand-in only has to monkeypatch THIS name, rather than
+#: `threading.Timer` itself — patching the real stdlib class would affect
+#: every `threading.Timer` created anywhere in the process for the duration
+#: of the test, including by daemon threads left running from an earlier
+#: test in the same worker, which is exactly the kind of cross-test flake
+#: this module's own generate-thread singleton (`_GENERATE_TASKS`) already
+#: has to be careful never to become an instance of.
+_new_timer = threading.Timer
+
+
+def _arm_release_timer():
+    """(Re)start the `_RELEASE_IDLE_S` idle timer — called once after every
+    completed execution, success, `Cancelled`, or any other exception alike,
+    since a render that already allocated its peak can still be the one the
+    user pressed Stop on.
+
+    Cancels whatever timer a PRIOR execution left pending first: a burst of
+    renders must not pay the re-fault cost of clearing and re-growing the
+    allocator pool between each one — only the LAST execution in a burst gets
+    to start the clock, which is the whole reason this is a timer and not an
+    unconditional `finally`-call (the first cut of this change, before an
+    idle timer replaced it). Correctness in the race between "the old
+    timer's wait already elapsed" and "cancel just ran" is `_fire_release`'s
+    job, via the generation token.
+
+    A no-op when no `release` hook was supplied (`serve(release=...)` never
+    called) — see `_release`'s own docstring for exactly which runners that
+    is and why (six wired, several deliberately not); this docstring used to
+    keep its own, shorter list and it drifted out of date the moment
+    `mlx_text` was wired in, which is why it no longer tries to repeat it.
+    """
+    global _release_timer, _release_generation
+    if _release is None:
+        return
+    with _release_lock:
+        if _release_timer is not None:
+            # A `Timer` whose wait already elapsed and is mid-callback cannot
+            # be stopped by `cancel()` — that race is exactly why
+            # `_fire_release` re-checks its token under this same lock rather
+            # than trusting cancellation alone.
+            _release_timer.cancel()
+        _release_generation += 1
+        token = _release_generation
+        timer = _new_timer(_RELEASE_IDLE_S, _fire_release, args=(token,))
+        # Daemon: a pending release must never be what keeps the worker
+        # process alive. `serve_forever()`'s own thread and `os._exit(0)` in
+        # `/quit` are both how this process actually ends, and neither should
+        # have to know this timer exists in order to exit cleanly.
+        timer.daemon = True
+        _release_timer = timer
+    timer.start()
+
+
+def _fire_release(token):
+    """The idle timer's callback: reclaim the allocator pool, but only if
+    nothing has run since `token` was handed out.
+
+    `GENERATE_LOCK` FIRST, generation check second: acquiring the same lock
+    `_single`/`_stream` hold for the whole request guarantees this can never
+    run WHILE a generation is in flight (mid-render is the one moment this
+    must never fire — see `_arm_release_timer`), and once acquired, a
+    generation that started and finished entirely inside this timer's 30s
+    wait has already rearmed with a NEWER token by the time that lock frees
+    up — so the check below catches it even though `cancel()` came too late
+    to stop this callback from being scheduled at all.
+
+    Routed through `run_on_generate_thread`, same as `generate` itself: the
+    hook this exists for is `mx.clear_cache()`, an MLX allocator call, and
+    that function's docstring is the whole reason no MLX call is ever made
+    from a thread other than the one dedicated to them — a `Timer` callback
+    runs on yet another thread of its own, no different in kind from a
+    `ThreadingTCPServer` connection thread in that respect.
+
+    Never raises past this function. A `release` that throws must be a
+    no-op — there is no request waiting on this timer to fail loudly at, and
+    a broken reclaim must not take the timer thread down with it. Still
+    LOGGED, though (`traceback.print_exc`, `_single`'s own pattern for an
+    error nobody is waiting on): a release that fails on every idle window
+    forever is otherwise invisible except as the footprint number this whole
+    feature exists to move never actually moving, and that is exactly the
+    silent-regression shape code review caught once already (a torch build
+    where the MPS branch always raised and quietly took the CUDA branch down
+    with it — see `torch_image.release`). The worker's own stderr lands in
+    `$TMPDIR/fused-render-<pid>.log`, where a broken reclaim is now visible.
+    """
+    global _release_timer
+    with GENERATE_LOCK:
+        with _release_lock:
+            if token != _release_generation:
+                # Superseded: a later execution already rearmed a fresher
+                # timer, which owns clearing the cache from here.
+                return
+            _release_timer = None
+        try:
+            run_on_generate_thread(_release)
+        except Exception:  # noqa: BLE001 - logged below, then swallowed: see docstring
+            traceback.print_exc(file=sys.stderr)
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 
@@ -551,13 +689,80 @@ _measure_peak = None
 #: difference is carried outward to a reader.
 _rss_peak = None
 
+#: A runner's own "give it back to the OS" hook, when it has one. Set by
+#: `serve(release=...)` — the third optional hook beside `_measure`/`_measure_
+#: peak` above. Never called directly from a request: `_arm_release_timer`
+#: starts a `_RELEASE_IDLE_S` clock after every execution, and `_fire_release`
+#: is what actually calls this, once that clock runs out with nothing new
+#: having started.
+#:
+#: Why this exists: a live FLUX.2-Klein-4B-4bit render through `mflux-image`
+#: needed ~24.12 GB at its peak (`mx.get_peak_memory()`, the `_measure_peak`
+#: probe) but settles at 1.7 GB RSS once it is done — and yet the status bar
+#: kept showing "1.7 GB now (21 GB held)" (`os_footprint_bytes()`, D597) long
+#: after the render finished. MLX frees those buffers back to its OWN pool,
+#: never to the OS, and only reclaims the pool once it exceeds `mx.set_cache_
+#: limit`'s default — 1.5x the recommended working set, ~38.7 GB on the 34.4
+#: GB machine this was measured on, i.e. ABOVE physical RAM, so that condition
+#: can never fire on its own. `mx.clear_cache()` is the other side of that:
+#: hand the idle pool back once nothing has asked for it in a while.
+#:
+#: Why an IDLE TIMER rather than an unconditional call in `_single`/`_stream`'s
+#: `finally` (the first cut of this feature): a 24 GB working set is not free
+#: to re-fault, and clearing right after every execution makes a burst of five
+#: renders pay that cost five times over. Waiting `_RELEASE_IDLE_S` after the
+#: LAST execution keeps a burst at full allocator speed and still releases the
+#: moment the user actually walks away — see `_arm_release_timer` and
+#: `_fire_release` for the mechanism, which lives entirely in this process
+#: (no supervisor RPC, no new route: the worker already knows when its own
+#: last execution ended).
+#:
+#: Wired into all five MLX runners (`mflux_image`, `ltx_video`, `mlx_text`,
+#: `mlx_embed`, `mlx_whisper`) and the shared `torch_image` runner (MPS/CUDA).
+#: An idle timer changes the earlier per-call exclusion's arithmetic: it does
+#: not fire mid-loop, so a bulk run of embeds or a token stream is never
+#: interrupted by it, and the machine this was measured on can hold a speech
+#: model (whisper-large-v3, 3.66 GB measured) and a text model resident in
+#: SEPARATE PROCESSES at once — the supervisor keeps one worker per
+#: capability — each with its own idle pool, so the small-model case stacks
+#: rather than disappearing into rounding.
+#:
+#: Still nothing to wire for `llamacpp_text`/`llamacpp_text*` (a fixed KV
+#: context allocated up front, weights mmap'd — there is no reclaimable
+#: cache), `faster_whisper` (its CTranslate2 backend exposes no cache-release
+#: API), or `onnx_embed`/its cuda/directml/rocm shells (the arena is
+#: session-scoped `SessionOptions` config decided at session creation, not
+#: something a per-idle clear can touch).
+#:
+#: This only RECLAIMS memory after a run finishes — it must never be reached
+#: for by anything trying to lower the PEAK a render needs (tiled decode,
+#: `mx.eval()` boundaries, `set_cache_limit`/`set_memory_limit`): those are
+#: separate, unapproved changes to what an execution costs, not to what it
+#: leaves behind.
+_release = None
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
 
-    RSS by default: on Apple Silicon the GPU pool IS system memory, so it is the
-    honest single number and there is no separate VRAM figure to reconcile it
-    with. A runner that can do better supplies `memory=` to `serve()`, and the
+    RSS by default. **THE OLD JUSTIFICATION HERE WAS WRONG AND IS WORTH STATING
+    PLAINLY** (D597): it said "on Apple Silicon the GPU pool IS system memory,
+    so it is the honest single number and there is no separate VRAM figure to
+    reconcile it with". The premise is true — unified memory — but the
+    conclusion does not follow, because the pool is not in RSS. Measured on a
+    live MLX FLUX worker: 172 MB of RSS against 23 GB of dirty
+    `IOAccelerator (graphics)` regions, which are charged to the task's
+    `phys_footprint` and never appear in `resident_size`. So RSS is a FLOOR
+    here, not an honest total, and `os_footprint_bytes()` below is what answers
+    "what is this process actually holding" — as a LOWER BOUND, since neither
+    counter it can read is a superset of the other (see its own docstring).
+    This function's RETURN VALUE is deliberately unchanged all the same: it
+    feeds `peak_resident_bytes` -> `footprints.py` -> `fit.py`'s "measured"
+    rung, so redefining it would silently re-verdict every model the user has
+    ever run (easy -> tight, tight -> no). Whether a "measured" footprint
+    should include the allocator pool is a real question and not this change's
+    to answer.
+    A runner that can do better supplies `memory=` to `serve()`, and the
     LARGER of the two wins — both are real measurements and neither is a
     superset (RSS includes the interpreter and framework; a framework allocator
     includes buffers that may not be faulted into RSS yet), so the cost is at
@@ -589,6 +794,113 @@ def resident_bytes():
     if isinstance(rss, int) and rss > 0:
         _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
+
+
+#: macOS `TASK_VM_INFO`, and the byte offset of `phys_footprint` inside
+#: `task_vm_info_data_t`. VERIFIED EMPIRICALLY rather than counted off a header:
+#: `resident_size` at offset 16 matches `ps -o rss` exactly, and dirtying 500 MiB
+#: of anonymous memory moved offset 144 by 524.6 MB and offset 152 by nothing.
+#: The kernel reports how many `natural_t`s it filled, so a generous buffer is
+#: safe across OS revisions (this field arrived in "rev1" and every supported
+#: macOS fills well past it).
+_TASK_VM_INFO = 22
+_RESIDENT_SIZE_OFFSET = 16
+_PHYS_FOOTPRINT_OFFSET = 144
+
+
+def os_footprint_bytes():
+    """A LOWER BOUND on what this process is holding RIGHT NOW, or None (D597).
+
+    **`max(phys_footprint, resident_size)`, NOT `phys_footprint` alone** — code
+    review 2026-08-28, finding 3, which corrected a claim this docstring and
+    `ModelsDock.tsx`'s `MemoryCell` both used to make: that RSS is a strict
+    subset of the footprint. It is not. `phys_footprint` deliberately EXCLUDES
+    clean file-backed pages, and those are counted in `resident_size`. Measured
+    here, in a plain interpreter with no framework loaded: `resident_size`
+    19.2 MB against `phys_footprint` 9.3 MB. So for any runner that maps its
+    weights read-only — GGUF/llama.cpp, torch with `mmap=True` — the footprint
+    is the SMALLER of the two by roughly the size of the model file, and
+    reporting it alone rendered a row as `8.2 GB now (1.1 GB held)`: a visible
+    contradiction, with the status bar's colour band painted off the smaller
+    number while the machine held the larger.
+
+    NEITHER COUNTER IS THE TOTAL, which is why `max` rather than a choice
+    between them: RSS misses the Metal pool (measured on a live MLX FLUX
+    worker: 172 MB of RSS against 24 GB of `phys_footprint`, 23 GB of it dirty
+    `IOAccelerator` regions), and the footprint misses clean file pages. Their
+    max is a strictly better lower bound than either, and it restores the one
+    invariant the UI pair depends on — "held" can never read as less than
+    "now". A true total would need to add the disjoint parts, which needs a
+    region-by-region walk this probe deliberately does not do; hence "lower
+    bound" in the first line rather than "what it holds".
+
+    STILL THE NUMBER ACTIVITY MONITOR SHOWS in the case that motivated it: on
+    an MLX worker `phys_footprint` dominates by three orders of magnitude, so
+    the max IS the footprint and a user watching their system monitor sees the
+    figure this reports. The correction only ever raises the answer, and only
+    where RSS is the bigger of the two.
+
+    NOT `resident_bytes()`, and not a redefinition of it — see that function's
+    own docstring for why its value is frozen. This is additive, and it does
+    not feed `peak_resident_bytes` -> `footprints.py` -> `fit.py`, so no
+    model's "measured" verdict moves because of it.
+
+    NOT `get_active_memory()` either, which is what the framework has handed
+    out of its pool. After a render finishes MLX returns buffers to its own
+    pool but NOT to the OS, so active collapses while the process still holds
+    the memory. That exclusion is deliberate and correct for a COST figure
+    (`mflux_image/worker.py`'s own comment, and D310 measured a ~23.6 GB pool
+    against ~14.1 GB active) because it keeps runners comparable — torch
+    reports what it allocated, not the driver's reservation. It simply does not
+    apply to a live reading.
+
+    STDLIB ONLY on darwin, via `ctypes` — no psutil, whose `memory_full_info()`
+    does not expose `phys_footprint`. Both figures come out of the SAME
+    `task_vm_info` read (offsets 16 and 144), so they describe the same instant
+    and the max cannot be taken across two moments. Falls back to psutil's RSS
+    wherever no such counter exists (every non-macOS platform, and any darwin
+    failure above), and to None if even that is unavailable: never a guess, the
+    same rule the other two probes follow.
+    """
+    footprint = None
+    resident = None
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            import ctypes.util
+            import struct
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            libc.mach_task_self.restype = ctypes.c_uint32
+            size = 1024
+            buf = (ctypes.c_uint8 * size)()
+            count = ctypes.c_uint32(size // 4)
+            rc = libc.task_info(
+                ctypes.c_uint32(libc.mach_task_self()),
+                ctypes.c_int(_TASK_VM_INFO),
+                ctypes.byref(buf),
+                ctypes.byref(count),
+            )
+            filled = count.value * 4
+            raw = bytes(buf)
+            if rc == 0 and filled >= _PHYS_FOOTPRINT_OFFSET + 8:
+                footprint = struct.unpack_from("<Q", raw, _PHYS_FOOTPRINT_OFFSET)[0]
+            if rc == 0 and filled >= _RESIDENT_SIZE_OFFSET + 8:
+                resident = struct.unpack_from("<Q", raw, _RESIDENT_SIZE_OFFSET)[0]
+        except Exception:  # noqa: BLE001 - a memory probe must never break /health
+            footprint = resident = None
+    if resident is None:
+        # Every other platform, and any darwin failure above. On a machine with
+        # no separate GPU pool hiding outside RSS this is exactly what this
+        # function would have reported anyway.
+        try:
+            import psutil
+
+            resident = int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:  # noqa: BLE001 - psutil raises its own family
+            resident = None
+    candidates = [n for n in (footprint, resident) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
 
 
@@ -2571,7 +2883,8 @@ def _write_ref(folder, ref, commit):
 
 
 def _clear_parts(folder):
-    """Drop our partial files before handing the repo back to huggingface_hub.
+    """Drop OUR partial files, unconditionally, before handing the repo back to
+    huggingface_hub.
 
     Not because hf would misread them — the suffix exists precisely so it never
     sees them — but because hf is about to fetch those same files ITSELF. Kept,
@@ -2579,9 +2892,33 @@ def _clear_parts(folder):
     and then sit in the hub cache forever beside the blob hf finished: nothing
     ever resumes into a part file whose blob already exists.
 
-    So the resume story is honest about its scope. It covers the app being
-    killed, quit or crashed — the case that motivated it (AI-5e) — and not a
-    fetch that failed its way into the fallback, which re-downloads.
+    **Ours only, and immediate — the opposite of `_sweep_orphan_parts` on both
+    counts, deliberately.** hf's own `.incomplete` is left alone here regardless
+    of age. In the huggingface_hub actually installed (1.29.0 in this venv;
+    upstream PR #4228), every attempt writes to a name unique to that attempt —
+    `<blob>.<8 hex chars>.incomplete` — and `_download_to_tmp_and_move` unlinks
+    it itself, in a `finally`, on any ordinary failure; a leftover `.incomplete`
+    is therefore evidence of a hard kill or crash, not of a resumable transfer,
+    and even then nothing will ever seek into it by that exact random name
+    again. Whether an older or future hf ever resumes by seeking into a shared
+    name is not a guarantee this file can make for every version it might run
+    against, so it takes the conservative position either way and never removes
+    hf's own leftovers here. Their eventual removal is entirely
+    `_sweep_orphan_parts`'s job, on ITS terms (a grace window, and only after
+    some scope's download has actually succeeded) — see there for why that is
+    the right call despite the cost.
+
+    There is no grace window of its own here for the same reason age would add
+    nothing to a same-process check: the segmented fetch that just failed is
+    definitely not writing into its own part file any more.
+
+    So the resume story this function is party to is honest about its scope.
+    It removes only what THIS failed attempt was writing, and defers to
+    `_sweep_orphan_parts` for everything else in the repo — including anything
+    an app kill, quit or crash left behind (AI-5e), which is why a fetch that
+    fails its way into the fallback re-downloads rather than resumes: the part
+    files that would have let it resume are exactly the ones this function just
+    removed.
     """
     for dirpath, _dirs, files in os.walk(folder or ""):
         for name in files:
@@ -3178,6 +3515,124 @@ _NOT_CACHED = (OSError, ImportError)
 #: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
 _HF_PART_SUFFIX = ".incomplete"
 
+#: Every part-file SHAPE a fetch can leave beside a blob: ours — `.fusedpart`,
+#: its offsets sidecar, and the sidecar's own `.tmp` (`_FileFetch.flush` writes
+#: `<sidecar>.tmp` and `os.replace`s it over the sidecar; a crash between those
+#: two steps leaves the `.tmp` behind with nothing else ever removing it) — and
+#: hf's own `.incomplete`, unanchored on any prefix so it matches whether or
+#: not the installed hf version infixes a per-attempt random name before the
+#: suffix (`<etag>.incomplete` and `<etag>.<8 hex chars>.incomplete` both end
+#: in `.incomplete`, so one alternative covers both; there is no shape here
+#: that a narrower pattern would be catching that this one misses).
+_PART_MARKER = re.compile(
+    r"(?:" + re.escape(PART_SUFFIX) + r"(?:\.json(?:\.tmp)?)?"
+    r"|" + re.escape(_HF_PART_SUFFIX) + r")$")
+
+#: How long `_sweep_orphan_parts` leaves a part file alone before it will treat
+#: it as dead weight, expressed against this module's own worst case rather
+#: than as an independent guess: `_Throttle.wait` (see `THROTTLE_TOTAL_MAX_S`)
+#: can park a segment on a 429 for up to that long without a single byte
+#: reaching the part file or its sidecar, and `_note_throttle` — not the
+#: mtime — is the only sign that fetch is still alive. So the grace window has
+#: to clear the stall ceiling with real headroom, not merely match the flush
+#: cadence: five extra minutes on top of the ten-minute ceiling is enormous
+#: against `FLUSH_EVERY_S` (one second) for anything actually moving bytes,
+#: and nothing at all against how long a card has been stuck reading
+#: "partial". Defined as an offset from `THROTTLE_TOTAL_MAX_S` rather than a
+#: second bare number so the two cannot drift back below each other in a
+#: future edit to either constant; `test_the_grace_window_clears_the_longest_a_fetch_can_stall`
+#: pins the relationship.
+_PART_GRACE_SECONDS = THROTTLE_TOTAL_MAX_S + 300
+
+
+def _sweep_orphan_parts(folder):
+    """Remove every part file in `<folder>/blobs/` old enough to be provably
+    dead, and return how many were removed.
+
+    **The invariant this leans on.** Call this only after a download for some
+    SCOPE has succeeded — a full snapshot, one recipe's `allow_patterns`, one
+    named file, whether that success came off the network or off
+    `_cached_path`/`_cached_file` confirming the scope was already on disk. At
+    that moment every file the scope covers is a complete blob, by definition:
+    the fetch that just returned wrote it, or the cache check would not have
+    answered a hit. So a part file still sitting in `blobs/` cannot belong to
+    anything this download cared about — it is resume state for a file some
+    OTHER fetch, wider or narrower, earlier or concurrent-but-abandoned, was
+    writing. No etag-to-filename mapping is needed to tell the two apart, and
+    none is possible offline: the sidecar records only version/etag/size/
+    segments, and hf's `.incomplete` carries no sidecar at all.
+
+    **The trade-off, stated plainly.** "Some OTHER fetch" includes a
+    `Cancelled` one — a paused download IS an out-of-scope part file with a
+    stale mtime, and its whole reason to exist is to be resumed later (AI-5i).
+    Once it is old enough and a sibling scope over the same repo succeeds,
+    this removes it same as any other orphan, and that sibling's success
+    restarts the paused download from zero the next time it is resumed. That
+    is accepted, not overlooked: the alternative is a card that can read
+    "partial" forever because the one thing standing in the way is resume
+    state for a download nobody is coming back to finish, and there is no way
+    from here to tell those two cases apart offline. A successful download
+    over a repo clears every OTHER scope's leftover resume state in that
+    repo — deliberately, as the cost of never leaving a card stuck.
+
+    This is the fix for the recipe-scoped GGUF case: an earlier, unscoped fetch
+    of a repo that later gains a `keep`-limited recipe leaves part files for
+    the files the recipe now permanently excludes, and nothing scoped to the
+    recipe ever looks at those names again to clean them up. Calling this after
+    that scope's own success — the `_cached_path` fast path included, since a
+    resume-button retry that changes nothing on the wire is exactly a repeat of
+    that same success — removes them, and `hub_cache._unfinished_fetch` stops
+    reading the repo as partial.
+
+    **Only `blobs/`, never a full walk.** Every part file this module writes
+    sits beside the blob it is filling (`_FileFetch.part`/`.sidecar`), and hf's
+    `.incomplete` markers live in the same directory — nothing in this cache
+    layout ever puts one anywhere else.
+
+    **The grace window is the only guard against sweeping a file that is still
+    being written.** There is no per-repo lock or in-flight registry here to
+    consult instead: two fetches over the same repo — different recipe scopes,
+    say — are two independent processes sharing nothing but the filesystem, so
+    freshness is the only signal available. See `_PART_GRACE_SECONDS`.
+
+    Never raises. A failed unlink is logged and skipped rather than swallowed —
+    a cosmetic cleanup step must not be the thing that turns a successful
+    download into a failed one, but it must not go silent either.
+
+    `folder` is `None` when `repo_folder` could not import
+    `huggingface_hub` (see its docstring) — checked explicitly, the same way
+    `bytes_on_disk` does, rather than folded into `os.path.join` with a `""`
+    fallback: `os.path.join("", "blobs")` is the RELATIVE path `"blobs"`, not
+    a no-op, and `os.scandir` would resolve it against this process's CWD —
+    unlinking anything part-shaped it happens to find in a `./blobs` there.
+    """
+    if not folder:
+        return 0
+    removed = 0
+    try:
+        entries = list(os.scandir(os.path.join(folder, "blobs")))
+    except OSError:
+        return removed
+    now = time.time()
+    for entry in entries:
+        if not _PART_MARKER.search(entry.name):
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < _PART_GRACE_SECONDS:
+            continue
+        try:
+            os.remove(entry.path)
+        except OSError as error:
+            sys.stderr.write(
+                f"[fused] could not remove orphan part file {entry.path}: "
+                f"{error.__class__.__name__}: {error}\n")
+            continue
+        removed += 1
+    return removed
+
 
 def _settled(path):
     """Whether the file at `path` is finished rather than mid-download.
@@ -3560,6 +4015,12 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         cached = _cached_path(model_id, local, allow=allow_patterns,
                               ignore=ignore_patterns)
         if cached:
+            # The most important call site of all: pressing "Continue
+            # downloading" on a repo whose recipe scope is already fully on
+            # disk lands exactly here, with zero connections opened. Without
+            # this the card stays "partial" forever no matter how many times
+            # the button is pressed — see `_sweep_orphan_parts`.
+            _sweep_orphan_parts(repo_folder(model_id))
             return cached
 
         # Our own mirror, for a suggested model, BEFORE the Hub is consulted at
@@ -3570,6 +4031,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # manifest describes the whole repo at one commit and nothing else.
         mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
         if mirrored:
+            _sweep_orphan_parts(repo_folder(model_id))
             return mirrored
 
     # ONE listing, serving the bar's total, the list to fetch AND the revision
@@ -3624,7 +4086,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # revision, a local dir — and a fetch that quietly ignored one would
         # download the wrong thing. Ours honours exactly the two it knows about.
         # A listing with no sha is the same problem: nothing to pin to.
-        return hub()
+        #
+        # `files is None`/`not sha` is exactly the state a failed `_repo_files`
+        # listing above leaves — the same flaky-network case most likely to
+        # have left an orphan part file behind on an earlier attempt. Swept
+        # here too, same as every other successful return in this function,
+        # or a repo whose listing keeps failing stays "partial" forever no
+        # matter how many times hf itself completes it underneath.
+        result = hub()
+        _sweep_orphan_parts(repo_folder(model_id))
+        return result
     names = [name for name, _size in files]
     try:
         fetched = fetch_with_progress(
@@ -3643,6 +4114,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # will not look up.
         _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
                       allow=allow_patterns, ignore=ignore_patterns)
+        _sweep_orphan_parts(repo_folder(model_id))
         return fetched
     fell_back = hub(revision=sha)
     # Same rule as above, and the same reason it is checked rather than assumed:
@@ -3654,6 +4126,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     # what keeps a repo that ever fell back from being cold forever.
     _record_fetch(repo_folder(model_id), _commit_of(fell_back), names, fell_back,
                   allow=allow_patterns, ignore=ignore_patterns)
+    _sweep_orphan_parts(repo_folder(model_id))
     return fell_back
 
 
@@ -3846,6 +4319,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     # download — see `_cached_file`.
     cached = _cached_file(repo_id, filename)
     if cached:
+        # Same rule as `download_snapshot`'s fast path — see
+        # `_sweep_orphan_parts` — one file wide: a "Continue downloading" retry
+        # on a GGUF quantization already on disk lands here with no connection
+        # opened, and has to be the moment any of this repo's other, out-of-
+        # scope leftovers get cleared too.
+        _sweep_orphan_parts(repo_folder(repo_id))
         return cached
 
     detail = detail or f"Fetching {filename}…"
@@ -3858,6 +4337,7 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     # so `_mirror_snapshot` never sees a suggested text model on those platforms.
     mirrored = _mirror_file(repo_id, filename, detail=detail, job=job, row=row)
     if mirrored:
+        _sweep_orphan_parts(repo_folder(repo_id))
         return mirrored
 
     # One listing here too, for the revision as much as for the total: a GGUF
@@ -3885,9 +4365,11 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
             total=total, detail=detail, job=job, row=row, counter=ticker)
 
     if not sha:
-        return hub()
+        result = hub()
+        _sweep_orphan_parts(repo_folder(repo_id))
+        return result
     try:
-        return fetch_with_progress(
+        fetched = fetch_with_progress(
             repo_id,
             lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
                                  filename),
@@ -3896,7 +4378,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
         _fallback(repo_id, error)
-    return hub()
+    else:
+        _sweep_orphan_parts(repo_folder(repo_id))
+        return fetched
+    result = hub()
+    _sweep_orphan_parts(repo_folder(repo_id))
+    return result
 
 
 # -------------------------------------------------------------------- bring-up
@@ -4077,6 +4564,9 @@ def _handler(generate, streaming):
                     # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
                     health["peak_resident_bytes"] = peak_resident_bytes()
+                    # The OS's own "right now" figure (D597), additive beside
+                    # the two above — see `os_footprint_bytes`.
+                    health["os_footprint_bytes"] = os_footprint_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -4140,6 +4630,13 @@ def _handler(generate, streaming):
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     traceback.print_exc(file=sys.stderr)
                     self._json({"ok": False, "error": describe_failure(e)})
+                finally:
+                    # Arms the idle-release timer on every outcome, not just
+                    # success: a cancelled or failed generation can still have
+                    # allocated its peak before it stopped, and this only
+                    # STARTS the clock — it does not clear anything itself.
+                    # See `_arm_release_timer`.
+                    _arm_release_timer()
 
         def _stream(self, body):
             """NDJSON, chunked. `{"type":"chunk"}` lines closed by
@@ -4170,6 +4667,13 @@ def _handler(generate, streaming):
                     write({"type": "done", "ok": False,
                            "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
+                finally:
+                    # Same reasoning as `_single`'s finally — and note WHERE
+                    # this sits: after `run_on_generate_thread` has RETURNED,
+                    # i.e. after the whole token stream or transcription has
+                    # finished, not after its first chunk. The idle clock only
+                    # starts once the worker is actually idle again.
+                    _arm_release_timer()
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
 
@@ -4188,8 +4692,45 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
+#: Where the supervisor wants this worker to run from, when it could not pass
+#: `cwd=` to Popen. Mirrors `supervisor.WORKER_CWD_ENV` — spelled here too because
+#: this module is imported from the runner's own interpreter, where
+#: `fused_render` is not importable.
+WORKER_CWD_ENV = "FUSED_AI_WORKER_CWD"
+
+
+def _adopt_spawn_shape():
+    """Do for ourselves the two things a `fork()`-based spawn used to do.
+
+    On macOS the supervisor starts workers with `posix_spawn` (see
+    `supervisor._spawn_kwargs` for the crash that forced it), and CPython only
+    takes that path for a Popen with no `cwd` and no `start_new_session`. So
+    the working directory arrives in an environment variable, and the worker
+    makes itself a session leader — which is what `_kill_tree`'s `killpg`
+    keys on, so an unload still takes the whole tree down.
+
+    Both are best-effort. A missing directory is the supervisor's fact to
+    report (the runner folder it named does not exist), not this worker's to
+    die on before it can say anything; and `setsid` fails with EPERM when the
+    process already leads a session, which is exactly the case on the
+    platforms that still spawn with `start_new_session=True`.
+    """
+    cwd = os.environ.get(WORKER_CWD_ENV)
+    if cwd:
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+    setsid = getattr(os, "setsid", None)
+    if setsid is not None:
+        try:
+            setsid()
+        except OSError:
+            pass
+
+
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
-         argv=None):
+         release=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
@@ -4199,11 +4740,19 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     `peak_memory` is `memory`'s sibling (SPEC AI-8c, D497) — a runner that can
     answer "what did this cost at its WORST", not just "right now". See
     `peak_resident_bytes` for what a runner without one gets instead.
-    """
-    global JOB_ID, _measure, _measure_peak
 
+    `release` is a third, independent optional hook: not a measurement but an
+    action, armed to run `_RELEASE_IDLE_S` after the worker's last execution
+    (win, loss, or cancel alike) if nothing new has started by then — see
+    `_release`, `_arm_release_timer` and `_fire_release` for the mechanism and
+    why only some runners pass one.
+    """
+    global JOB_ID, _measure, _measure_peak, _release
+
+    _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
+    _release = release
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

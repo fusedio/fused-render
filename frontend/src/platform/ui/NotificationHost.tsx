@@ -1,6 +1,6 @@
-// The single notification surface: one fixed, bottom-right column holding
-// every transient toast (lib/toast), the download manager, and the
-// server-health card pinned at its foot. Mounted once by App.
+// The floating notification column: one fixed, bottom-right stack holding
+// every transient toast (lib/toast), the FDA nudge and the server-health
+// card. Mounted once by App, alongside `StatusBar` (platform/ui/StatusBar.tsx).
 //
 // It replaced three competing surfaces — a bottom-centre global toast stack, a
 // per-pane toast each of Listing and Preview positioned and expired itself,
@@ -14,47 +14,30 @@
 // them: it is the one entry that outlives any toast, so it must not shuffle as
 // toasts come and go. Styling is .notif-host in shell.css.
 //
-// The column is ordered by LIFETIME, which is why the activity card (SPEC §36)
-// sits between the toasts and the server card: a toast is seconds, work in
-// progress is minutes, the server card outlives the session. Anything long-lived
-// must be below anything short-lived, or a job's rows would shift under the
-// pointer every time an unrelated "Path copied" arrived and expired.
-//
-// That is ONE entry in the column, not two. The scheduled-message queue used to
-// take a card of its own directly above the manager and it is now folded into it
-// (see DownloadManager's header): same corner, same plate, same kind of thing, so
-// two headers over one lifecycle was the bug.
+// TWO ENTRIES USED TO LIVE HERE AND DO NOT ANY MORE (D563, status bar
+// redesign, user call: "the collapsed notification is also taking too much
+// space... it is impossible to use the claude template with it"): the
+// activity card (SPEC §36, work in progress — jobs and the scheduled queue)
+// and the repo-updates card (SPEC §36, a repo behind its remote's default
+// branch). Both are LONG-LIVED — minutes to indefinitely — and this column is
+// FIXED, so even collapsed their header sat on top of whatever page was under
+// it. `StatusBar` hosts them now, inside `#main`, where collapsing them
+// actually gives the page its space back rather than merely shrinking a card
+// still floating over it. What stays here — toasts, `ServerStatusBanner` —
+// is either seconds-long or exceptional enough that
+// overlaying the page is the right call for it: see `StatusBar`'s own header
+// comment for the two long-lived cards' reasoning, which used to live here.
 //
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
-// not the window's. Only the top-level document shows the server card and the
-// download manager (an embed would otherwise render one per pane, all saying
-// the same thing — and the job list is global, so every copy would be
-// identical).
-import type { ReactNode } from "react";
-import Toast from "@platform/ui/Toast";
-import DownloadManager from "@platform/ui/DownloadManager";
-import FdaCard from "@platform/ui/FdaCard";
+// not the window's. Only the top-level document shows the server card (an
+// embed would otherwise render one per pane, all saying the same thing).
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
+import Toast from "@platform/ui/Toast";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
 
-// `activity` is the ONE work-in-progress card, handed in rather than imported
-// because of the layering: its queue rows have to offer "Open in Explorer", the
-// one answer to which lives in shell/schedule-lib (explorerUrl), and platform may
-// not import shell (frontend/scripts/check-boundaries.mjs). So the shell composes
-// the card (shell/QueueDock.tsx wraps DownloadManager with its queue slot) and
-// this file keeps owning where the one entry sits.
-//
-// Omitted, the bare download manager stands in its place: platform is not made to
-// depend on a shell that may not be there, and a host mounted without a scheduler
-// above it still shows the jobs pages report — INCLUDING a live scheduled run, which
-// is the case a bare mount used to lose. The card dropped every running scheduled job
-// on the assumption that a queue row above was drawing it, and with no queue slot
-// filled there was none, so the run had no row and no stop. It is told which runs the
-// slot covers now (DownloadManager's `QueueSlot.drawn`), and told nothing means it
-// draws them itself.
-export default function NotificationHost({ activity }: { activity?: ReactNode }) {
+export default function NotificationHost() {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -73,11 +56,6 @@ export default function NotificationHost({ activity }: { activity?: ReactNode })
           />
         </div>
       ))}
-      {!IS_EMBED && (activity ?? <DownloadManager />)}
-      {/* Full Disk Access nudge (macOS packaged app only): longer-lived than a
-          toast or a job — once granted or dismissed it never comes back — so it
-          sits just above the one entry that outlives the session. */}
-      {!IS_EMBED && <FdaCard />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

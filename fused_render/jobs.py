@@ -255,6 +255,20 @@ class Job:
     # is exempt from the sweep that reads it — a per-state exception here
     # would buy nothing and cost a second code path to reason about.
     first_read_at: float | None = None
+    # The id of another row this row is currently blocked on, or "" for the
+    # ordinary case. Set by `ai/supervisor._wait_ready` while an image/video
+    # render's row is waiting on a shared model load: the manager hides
+    # whichever row this field names for as long as THAT row is running, so a
+    # single wait for one model shows as ONE row instead of two saying the
+    # same thing (SPEC §36 — one row per unit of work; D586's sibling case in
+    # jobs.ts `jobRows` is the scheduled-run precedent for the same rule).
+    # SERVER-ONLY (see `upsert`'s `server` gate below): this field HIDES a
+    # row, so a page allowed to set it could blank a live download's only row
+    # by falsely claiming to be waiting on it. Cleared the instant the wait
+    # ends (ready, error, evicted, cancelled, or timed out) so a load that
+    # THEN fails is not left invisible — D266's guarantee that both rows can
+    # show a real failure only holds if the merge does not outlive the wait.
+    waiting_for: str = ""
 
 
 _lock = threading.Lock()
@@ -407,6 +421,15 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
                                      "total_scope", job.total_scope)
         if "cancellable" in body:
             job.cancellable = bool(body.get("cancellable"))
+        if "waiting_for" in body and server:
+            # Silently dropped for a page report (no `server=True`) rather
+            # than rejected — see the field's own comment on `Job` for why a
+            # page is not allowed to set it at all. A falsy value (the normal
+            # tick, and the wait-ended report) clears it; a real value is run
+            # through `clean_id` so it stays a legal id and not a string that
+            # would break the manager's lookup silently.
+            value = body.get("waiting_for")
+            job.waiting_for = clean_id(value) if value else ""
         if page:
             job.page = _text(page, PAGE_MAX)
 
@@ -481,11 +504,32 @@ def dismiss(job_id: str, *, now: float | None = None) -> bool:
 
 
 def clear_finished(*, now: float | None = None) -> int:
-    """Dismiss every finished (or stalled) record at once. Returns how many."""
+    """Dismiss every TERMINAL record at once (the bulk "Clear" button).
+    Returns how many.
+
+    Used to also take `is_stalled(...)` rows — the SAME set `dismiss` (above)
+    accepts one at a time — which meant Clear silently orphaned live work.
+    `is_stalled` only means "no report in `STALE_AFTER_S`" (30s); a job can be
+    genuinely `RUNNING` and merely quiet for that long — a slow model load, a
+    generation between report ticks, a throttled background tab — and the
+    work itself does not stop when its row does: `ai/supervisor._cancel_state`
+    returns None for a missing row, and `_is_cancelled` reads None as "not
+    cancelled". The row is gone, though, and `fused.watchJob` gives up after
+    a few consecutive misses and reports the work as stopped — so a user
+    reads Clear as having cancelled their AI job, while the real process
+    keeps running with nothing on screen reporting it, which is precisely
+    the failure this whole feature exists to prevent, reached through its
+    own Clear button.
+
+    The per-row ✕ (`dismiss`) is deliberately NOT changed: closing one
+    specific stalled row is a choice by a user who usually knows what it
+    was (see that function's own docstring) — only the BULK sweep, which
+    cannot know that about any of the rows it takes, is wrong to extend to
+    a row that may still be doing real work.
+    """
     now = time.time() if now is None else now
     with _lock:
-        gone = [j.id for j in _jobs.values()
-                if j.state != RUNNING or is_stalled(j, now)]
+        gone = [j.id for j in _jobs.values() if j.state != RUNNING]
         for job_id in gone:
             _forget(job_id, now)
         return len(gone)

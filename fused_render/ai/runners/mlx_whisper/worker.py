@@ -341,6 +341,30 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim. `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST
+    transcription if nothing new started in the meantime, not per call — a
+    bulk batch of short recordings never triggers it mid-batch, only genuine
+    idleness does. See `worker_base._release`'s docstring for the measured
+    numbers (this machine's own recorded footprint has whisper-large-v3 at
+    3.66 GB) and why one resident whisper worker's idle pool matters even
+    though a single transcription is short: the supervisor keeps ONE worker
+    PER CAPABILITY, so this process can sit loaded alongside a text or image
+    worker for as long as the session runs, each holding its own pool.
+
+    `getattr` because a real but older mlx wheel, or this repo's stubbed
+    `mlx.core` in tests, may not have `clear_cache` at all — absence is a
+    no-op, matching every other MLX runner's guard.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------- audio, no ffmpeg
 
 
@@ -1559,4 +1583,5 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, peak_memory=peak_memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory,
+                      release=release)

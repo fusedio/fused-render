@@ -13,9 +13,8 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
-  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
-  // every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts) — every mount lives at
+  // `${mounts_root}/<name>`.
   mounts_root: string;
   // Where shell code may write scratch files — bytes the app made and can
   // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
@@ -26,22 +25,16 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
-  // Whether the builtin sessions mount record exists yet — a surface linking
-  // into it renders only when this is true, so it's never a dead link
-  // (unpackaged dev run with no zip, or the brief window before startup's
-  // background automount thread has upserted the record).
-  sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
-  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
-  // on the packaged mac app when the probe is conclusive. FdaCard renders
-  // off this; absent means render nothing and stop watching. `relevant`
-  // flips when this session first reads under a TCC-protected folder — the
-  // moment the Allow prompts start, which is the only moment the card is
-  // worth showing.
-  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
+  // Full Disk Access state (fused_render/shell/fda.py) — present only on the
+  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
+  // absent means render nothing and stop watching. `denied` flips when this
+  // session hits a PermissionError on an fs route — the moment the warning
+  // is worth showing; dismissing clears it server-side until the next one.
+  fda?: { granted: boolean; denied: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -241,6 +234,16 @@ export interface ClaudeHealth {
   /** `claude doctor`'s own report, when it was run. Only measured while
       something already looks wrong — a healthy machine never pays for it. */
   doctor: ClaudeDoctor | null;
+  /** Whether a TERMINAL can find `claude`, as opposed to this app. The native
+      installer never edits an rc file, so the app can be fully working while
+      `claude` in a terminal says "command not found". Only an explicit `false`
+      — a login-shell probe that came back empty — may show the fix; `null`
+      means unknown or not ours to say (Windows, an override). */
+  on_shell_path: boolean | null;
+  /** The exact rc-append line the one-click fix runs, shown before it runs.
+      null when there is nothing safe to offer (fish, Windows, a binary outside
+      the home directory). */
+  path_fix_command: string | null;
   checked_at: number;
 }
 
@@ -289,6 +292,47 @@ export function startClaudeInstall(
 
 export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
   return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** Append the PATH line to the user's shell profile — the fix for a CLI the
+    app can see and the terminal cannot. Rejects with the server's sentence
+    when it refuses (a shell it cannot safely edit, an unwritable rc file). */
+export function linkClaudePath(): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson("/api/claude/link-path", {});
+}
+
+/** A browser sign-in, as the server holds it.
+
+    There is no `output` here, unlike the install record. The child's lines carry
+    the authorize URL's `state` and `code_challenge`, so the server keeps its
+    tail in memory and surfaces only the one derived sentence in `error`. */
+export interface ClaudeLoginStatus {
+  in_flight: boolean;
+  started_at: number | null;
+  /** The child's own diagnosis when a sign-in ended without signing in. */
+  error: string | null;
+}
+
+/** Start a browser sign-in. The CLI opens the page and completes on its own
+    loopback callback — no code is pasted, and none reaches the app. Rejects with
+    the server's sentence when one is already waiting. */
+export function startClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>("/api/claude/login", {});
+}
+
+export function getClaudeLogin(): Promise<ClaudeLoginStatus> {
+  return getJson<ClaudeLoginStatus>("/api/claude/login");
+}
+
+export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boolean }> {
+  return postJson<ClaudeLoginStatus & { canceled: boolean }>(
+    "/api/claude/login/cancel", {});
 }
 
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
@@ -813,11 +857,36 @@ export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
   return p;
 }
 
-// One task-attachment image in, its stored path out (POST /api/schedule/shot).
-// The path is what scheduleMessage's `images` carries; the bytes live under
-// the server's task-shots dir, where the scheduled run is pre-allowed to Read.
-export function uploadTaskShot(dataUrl: string): Promise<{ path: string }> {
-  return postJson<{ path: string }>("/api/schedule/shot", { data: dataUrl });
+// One task attachment in, its stored path out (POST /api/schedule/shot). The
+// path is what scheduleMessage's `images` carries; the bytes live under the
+// server's task-shots dir, where the scheduled run is pre-allowed to Read.
+//
+// MULTIPART, not the data-URL JSON this was until 2026-08-28 (D618): the card
+// takes ANY file at ANY size now, and base64 is a 33% tax paid twice on a 40 MB
+// log. The browser sets the multipart boundary Content-Type, so we must NOT set
+// it ourselves; X-Fused still forces the write guard (see importTemplates).
+//
+// `kind` is the server's answer and may DISAGREE with what the client guessed:
+// a `.tif` goes up as bytes no browser draws and comes back as a PNG the chip
+// can show, at the converted path.
+export interface TaskShotUpload {
+  path: string;
+  kind: "image" | "file";
+  width?: number;
+  height?: number;
+}
+
+export async function uploadTaskShot(file: File): Promise<TaskShotUpload> {
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  const res = await fetch("/api/schedule/shot", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as TaskShotUpload;
 }
 
 export function rawUrl(fsPath: string): string {
@@ -1412,10 +1481,6 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Sessions, D123/D227) that the
-  // server re-creates on every startup — the API rejects deleting it, so the
-  // Mounts view hides Delete for it too (unmount still works).
-  builtin: boolean;
   // Why restarting the rclone daemon would help this mount, else null:
   //  - "params" = the mount is live but its running options no longer match the
   //    record (e.g. read_only flipped) — a restart re-mounts to apply them.
@@ -2099,6 +2164,37 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
   return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
 }
 
+/** One live engine child (server/engine_host.py `Child`), as
+ *  `GET /api/engines/running` reports it (D591). */
+export interface RunningEngine {
+  engine_id: string;
+  /** "template" | "app" | "background" — which bring-up path owns it. Carried
+   *  so three similarly-named rows stay distinguishable in the panel. */
+  kind: string;
+  pid: number;
+  version: string;
+  /** The declaring folder — `kind: "background"` only, "" otherwise. */
+  folder: string;
+  /** The module a warm app worker serves — "" for the other kinds. */
+  module: string;
+}
+
+/** Every engine daemon running right now — the status bar's Engines section.
+ *  Read-only and unguarded, like `getBackgroundAppsRunning` above: the server
+ *  snapshots a dict it already holds and polls one `Popen` per child, so there
+ *  is no walk and no spawn behind this. */
+export function getRunningEngines(): Promise<{ engines: RunningEngine[] }> {
+  return getJson<{ engines: RunningEngine[] }>("/api/engines/running");
+}
+
+/** Stop one engine child. Recoverable for all three kinds — a template engine
+ *  respawns on the next `ensure`, a warm app worker on its next call, and a
+ *  background daemon going down is the documented "quit this app" action —
+ *  which is why the panel offers it as a plain button (D591). */
+export function stopEngine(engineId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/api/engines/${encodeURIComponent(engineId)}/stop`, {});
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
@@ -2167,7 +2263,37 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
 /** The URL to draw an app icon from: the raw file, with its mtime as a cache
  *  key so an edited icon.svg shows up without a hard reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
-  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
+  // Full float mtime, not the floored second — a same-second replacement of
+  // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
+  return rawUrl(icon) + (mtime ? "&v=" + mtime : "");
+}
+
+/** Write (or replace) the app folder's `icon.svg` — the Projects row glyph
+ *  and the tab favicon. `svg` is a complete standalone document; the sidebar's
+ *  icon picker wraps the chosen emoji in one. */
+export async function setAppIcon(
+  path: string,
+  svg: string,
+): Promise<{ path: string; replaced: boolean }> {
+  const r = await fetch("/api/apps/icon", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ path, svg }),
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
+}
+
+/** Delete the app folder's `icon.svg` — back to the generic mark. */
+export async function removeAppIcon(
+  path: string,
+): Promise<{ removed: boolean }> {
+  const r = await fetch(`/api/apps/icon?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
@@ -2182,6 +2308,41 @@ export async function removeCurrentApp(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** Rename the app's FOLDER on disk. The server settles the move the same way
+ *  an out-of-band move is settled: stores repointed, Claude sessions carried
+ *  along. Answers the new canonical path. */
+export function renameCurrentApp(
+  path: string,
+  name: string,
+): Promise<{ ok: boolean; path: string }> {
+  return postJson<{ ok: boolean; path: string }>("/api/current-apps/rename", {
+    path,
+    name,
+  });
+}
+
+/** Mark every message of every task under the app's folder read — clears the
+ *  row's unread dot in one gesture. */
+export function readCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; marked: number; tasks: number }> {
+  return postJson<{ ok: boolean; marked: number; tasks: number }>(
+    "/api/current-apps/read",
+    { path },
+  );
+}
+
+/** Archive every task under the app's folder — the ✕'s task half without its
+ *  desk half: the row stays. */
+export function archiveCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; archived: number; cancelled: number }> {
+  return postJson<{ ok: boolean; archived: number; cancelled: number }>(
+    "/api/current-apps/archive",
+    { path },
+  );
 }
 
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
@@ -2996,8 +3157,37 @@ export interface AiLoadedModel {
   state: string;
   detail: string | null;
   error: string | null;
-  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  /** RSS of the worker process (`worker_base.resident_bytes`, so a runner's own
+   *  framework probe can raise it above the kernel's RSS). Not the model's size
+   *  — see SPEC AI-8. It LEADS a status-bar model row since D600: `1.7 GB now
+   *  (24 GB held)`. */
   residentBytes: number | null;
+  /** A LOWER BOUND on what the worker process is holding RIGHT NOW —
+   *  `max(phys_footprint, resident_size)` on macOS, RSS elsewhere (D597, and
+   *  `worker_base.os_footprint_bytes`, whose docstring owns the argument).
+   *  Neither counter is a superset of the other: the Metal pool is charged to
+   *  `phys_footprint` and never appears in RSS (a live FLUX worker read 172 MB
+   *  of RSS against 23 GB of dirty IOAccelerator regions), while
+   *  `phys_footprint` excludes clean file-backed pages that RSS counts, so an
+   *  mmap-heavy runner has the SMALLER footprint of the two. The status-bar row
+   *  applies the same max again against `residentBytes` above, and omits the
+   *  parenthetical when the two coincide. Null where no counter could be read at
+   *  all — which must stay null, since a row cannot invent a held figure. */
+  osFootprintBytes: number | null;
+  /** What this model actually COSTS on this machine, in bytes — the primary
+   *  figure on a status-bar row, colour-coded against
+   *  `AiRuntime.memoryCeilingBytes` (D594). Straight from
+   *  `fused_render/ai/fit.footprint_bytes`, so it is the SAME ladder and the
+   *  same number the AI Models page's fit badge shows, never a second
+   *  estimate. NULL when nothing is measured and nothing is declared — in
+   *  which case the row falls back to `residentBytes` alone, uncoloured,
+   *  rather than colouring a guess or printing 0. */
+  footprintBytes: number | null;
+  /** Which rung of the ladder answered — the SAME vocabulary `AiFitVerdict`
+   *  established (SPEC AI-16, AI-16c, D497), deliberately reused rather than
+   *  reinvented: "measured" is stated as fact, "declared" and "download" are
+   *  hedges. Null exactly when `footprintBytes` is. */
+  footprintBasis: "measured" | "declared" | "download" | null;
   /** "cuda" | "mps" | "cpu" — where the weights actually landed, as the worker
    *  reported it. Null from a runner that does not say. The page shows it
    *  because a model answering at a few words a second on a CPU is working
@@ -3030,6 +3220,13 @@ export interface AiRuntime {
   loaded: AiLoadedModel[];
   downloading: AiDownload[];
   totalResidentBytes: number | null;
+  /** What a model has to fit under on THIS machine, in bytes — the Apple
+   *  Silicon wired limit where it applies, total physical RAM otherwise, and
+   *  NULL when neither can be read (D594). Carried once, not per row, because
+   *  it is a per-machine constant. Null is not zero: with no ceiling there is
+   *  nothing to colour a footprint against, and the row shows its figure
+   *  uncoloured rather than assuming a denominator. */
+  memoryCeilingBytes: number | null;
 }
 
 export function getAiRuntime(): Promise<AiRuntime> {
@@ -3280,6 +3477,10 @@ export interface AiCatalogCapability {
     defaultWidth: number;
     defaultHeight: number;
     defaultSteps: number;
+    /** Whether the resolved engine accepts a reference image at all
+     *  (`registry.VideoTraits.supports_image`, SPEC AI-15) — so the
+     *  Playground cannot offer a control the render will not honour. */
+    supportsImage: boolean;
   } | null;
 }
 
@@ -3685,6 +3886,17 @@ export interface RecurrenceRule {
   count?: number; // total occurrences; exclusive with until
 }
 
+// One attachment on a scheduled task, as the store holds it. `path` is a
+// task-shots resident (the server refuses anything else); `name` is the user's
+// own filename; `kind` is the chat's own two-way split — a thumbnail or a 📄,
+// a picture viewer or a template preview — and never the browser-only "pane"
+// and "overview" kinds, which need a screen somebody was looking at.
+export interface TaskAttachment {
+  path: string;
+  name: string;
+  kind: "image" | "file";
+}
+
 export interface ScheduledMessage {
   id: string;
   target: string;
@@ -3693,6 +3905,12 @@ export interface ScheduledMessage {
   // Task-shot paths attached in the New task form (server: schedule.shots_dir()).
   // Read back so an edit — which is cancel + re-create — can re-state them.
   images?: string[];
+  // The same attachments carrying the two things a path does not: the filename
+  // the user recognises (a stored path is a minted timestamp) and the kind the
+  // browser settled at attach time (a `.tif` was transcoded, so its extension
+  // lies). The server derives this for an entry stored before the field existed,
+  // so it is only ever absent on a response from an older build.
+  attachments?: TaskAttachment[];
   session_id: string;
   // WHERE `session_id` came from: true only when the server LEARNED it (a
   // repeating template's first run reported the session it opened, and that id
@@ -3821,10 +4039,17 @@ export function scheduleMessage(body: {
   // A no-op where there is nothing to move — a task whose session exists is
   // numbered on the session id, and that key is untouched by an edit.
   replaces?: string;
-  // Paths returned by uploadTaskShot, at most 4. The server refuses anything
-  // not living under its own task-shots dir, so this can only name images this
-  // form itself uploaded.
+  // Paths returned by uploadTaskShot — any file type, any count (D618). The
+  // server refuses anything not living under its own task-shots dir, so this
+  // can only name files this form itself uploaded. Still spelled `images`
+  // because every stored entry spells it that way.
   images?: string[];
+  // The same uploads with `name` and `kind` (D619). What the FIRED RUN needs:
+  // its message carries the claude page's own `<pane-shot>` block, and that
+  // block's receipt rows show a thumbnail or 📄 plus the file's name — neither
+  // of which a minted path can supply. Sent alongside `images`, never instead
+  // of it, so an entry keeps the shape every existing reader expects.
+  attachments?: TaskAttachment[];
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

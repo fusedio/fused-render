@@ -1,7 +1,7 @@
-// The rules for the queue's rows in the one bottom-right activity card, kept pure
+// The rules for the queue's rows in the one status-bar activity card, kept pure
 // so they can be tested without a DOM — the same split platform/lib/schedule-toast.ts
 // makes against scheduleEvents.ts: what a row SAYS lives here, the polling and the
-// pixels live in QueueDock.tsx, and the card around it is DownloadManager's.
+// pixels live in ActivityDock.tsx, and the card around it is DownloadManager's.
 //
 // The rule that matters most is not in this file, and that is the point: WHAT
 // COUNTS AS QUEUED is the server's answer (`GET /api/schedule/queue` = past due
@@ -97,11 +97,11 @@ export function openRows(rows: QueueRow[], jobs: Job[]): QueueRow[] {
 /**
  * Did a scheduled run END between these two job snapshots?
  *
- * Asked of every consecutive pair the card hands up (QueueDock's onJobs), and it
+ * Asked of every consecutive pair the card hands up (ActivityDock's onJobs), and it
  * is the trigger for the whole cross-surface sync: the job registry is about a
  * second behind the turn, so the moment a `sys:schedule:*` job stops running is
  * the moment this corner knows what the Tasks page will not learn from its own
- * 20-second poll for most of a minute. QueueDock pokes the shared tasks store on
+ * 20-second poll for most of a minute. ActivityDock pokes the shared tasks store on
  * a true answer (tasksPulse.pokeTasks), so the row and the popover flip together.
  *
  * "Ended" is running-then-not: a terminal state, or gone from the snapshot
@@ -239,11 +239,22 @@ export function withdrawableCount(rows: QueueRow[]): number {
   return rows.filter((r) => rowCancelKind(r) === "queued").length;
 }
 
-/** Whether the card shows Cancel all. Two or more withdrawable rows, because for
- *  a single one the row's own ✕ is the same action with a better name on it — and
- *  a card holding only live or claimed work shows nothing, since "all" would be
- *  a button for zero messages. The threshold lives here, next to the count, so
- *  the two cannot drift apart in the component. */
+/** Whether the card shows Cancel queued. Two or more withdrawable rows,
+ *  because for a single one the row's own ✕ — right there on screen — is
+ *  the same action with a better name on it; a card holding only live or
+ *  claimed work shows nothing either way, since "queued" would be a button
+ *  for zero messages.
+ *
+ *  No longer a function of `collapsed` (status bar redesign, D563): this
+ *  button now renders only inside the card's expanded panel — the chip that
+ *  stands in for it while collapsed carries no controls at all (spec: chip
+ *  is the summary line, the percentage, and the chevron, nothing else) — so
+ *  there is no longer a folded-but-visible state for it to answer. D562's
+ *  reasoning ("collapsing hides every row, so the button is the only thing
+ *  left that can withdraw a lone one") assumed the header — and this button
+ *  with it — stayed on screen while the card was folded; the bar's chip
+ *  replaces the header for that state instead, so the assumption, and the
+ *  threshold it justified, no longer apply. */
 export function showCancelAll(rows: QueueRow[]): boolean {
-  return withdrawableCount(rows) > 1;
+  return withdrawableCount(rows) >= 2;
 }

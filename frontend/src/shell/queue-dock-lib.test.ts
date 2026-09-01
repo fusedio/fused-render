@@ -1,4 +1,4 @@
-// The rules for the queue's rows in the one bottom-right activity card — the one
+// The rules for the queue's rows in the one status-bar activity card — the one
 // global surface for work that is about to run or running now. Everything that
 // could be got subtly wrong here is about WHICH work that is: past due only, one
 // row per entry, one row per unit of work across BOTH halves of the card, and a
@@ -6,10 +6,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ScheduledMessage } from "@platform/lib/api";
 import {
-  foldedJobRows,
   jobRows,
-  jobsSummary,
-  rowsShown,
   SCHEDULE_JOB_PREFIX,
   type Job,
 } from "@platform/lib/jobs";
@@ -60,6 +57,7 @@ const job = (over: Partial<Job> = {}): Job =>
     cancellable: true,
     cancel_requested: false,
     stalled: false,
+    waiting_for: "",
     started_at: 0,
     updated_at: 0,
     finished_at: null,
@@ -193,91 +191,27 @@ describe("queueCount", () => {
   });
 });
 
-describe("one card, one count", () => {
-  // The header the merged card prints. Its counts come from the queue's rows and
-  // its job rows together, because there is one list and one header over it.
-  it("says queued, not running, when nothing has actually begun", () => {
-    const waiting = queueCount(queueRows([], [], [entry({ id: "c" }), entry({ id: "d" })]));
-    expect(jobsSummary([], waiting)).toBe("2 queued");
-    expect(jobsSummary([], { waiting: 1, running: 0 })).toBe("1 queued");
-  });
+// `jobsSummary`'s "one card, one count" block is DELETED with the function
+// itself (code review finding 8): nothing has rendered that sentence since the
+// chip became a label plus one circle. `queueCount` keeps its own tests above —
+// the card still computes it, and the queue rows still need it.
 
-  it("names the running and the waiting halves separately in a mix", () => {
-    const mixed = queueCount(queueRows([entry({ id: "a", state: "sent" })], [], [entry({ id: "c" })]));
-    // One live turn + one running download are underway; the past-due message is
-    // not. Adding all three into "3 running" claimed the queue had already begun
-    // — the same lie the pure-queue case above exists to avoid.
-    expect(jobsSummary([job({ id: "d", kind: "download" })], mixed)).toBe("2 running · 1 queued");
-  });
-
-  it("keeps 'downloading' for a card whose work really is only downloads", () => {
-    const jobs = [job({ id: "d", kind: "download" })];
-    expect(jobsSummary(jobs, { waiting: 0, running: 0 })).toBe("1 downloading");
-    // one scheduled message alongside it and the noun has to generalise
-    expect(jobsSummary(jobs, { waiting: 1, running: 0 })).toBe("1 running · 1 queued");
-  });
-
-  it("describes what finished only when nothing is happening at all", () => {
-    const done = [job({ id: "a", state: "done" }), job({ id: "b", state: "done" })];
-    expect(jobsSummary(done, { waiting: 0, running: 0 })).toBe("2 finished");
-    // a queued message outranks the finished rows: it is the news
-    expect(jobsSummary(done, { waiting: 1, running: 0 })).toBe("1 queued");
-  });
-});
-
-describe("the fold hides detail, never a control", () => {
-  // The collapse is a PERSISTED preference, and it was set against the card as it
-  // used to be: a download history worth folding away. Merging the queue into that
-  // card put every queue row behind the same fold — and a queue row's ✕ is the only
-  // cancel a queued message or a live turn has, so a card folded weeks ago left
-  // scheduled work arriving with no reachable way to stop it. The rule that fixes
-  // it is jobs.ts `rowsShown`, and these are the cases it has to get right.
-  it("keeps a single queued row on screen while the card is folded — with its ✕", () => {
-    // The sharpest case: ONE waiting message, so Cancel all is (rightly) not
-    // offered — the row's own ✕ is the same action with a better name on it. That
-    // ✕ is therefore the only cancel in the card, and folding must not eat it.
-    const rows = queueRows([], [], [entry({ id: "c" })]);
-    expect(showCancelAll(rows)).toBe(false);
-    expect(rowsShown(true, queueCount(rows))).toEqual({ queue: true, jobs: false });
-    expect(rowCancelKind(rows[0])).toBe("queued");
-  });
-
-  it("keeps a live turn's stop reachable while folded", () => {
-    // Not a queued row at all — a running process, whose ✕ is the job registry's
-    // cancelJob("sys:schedule:<id>"). Cancel all never covers it (it withdraws
-    // messages that have not gone), so the row is the only way to stop it.
-    const rows = queueRows([entry({ id: "a", state: "sent" })], [], []);
-    expect(rowsShown(true, queueCount(rows))).toEqual({ queue: true, jobs: false });
-    expect(rowCancelKind(rows[0])).toBe("job");
-  });
-
-  it("still offers a claimed row nothing at all, folded or open", () => {
-    // Reachability is not "a button everywhere": the server refuses `sending`
-    // every time, so this row shows the spinner and says why, in both states.
-    const rows = queueRows([], [entry({ id: "b", state: "sending" })], []);
-    const count = queueCount(rows);
-    expect([rowsShown(true, count).queue, rowsShown(false, count).queue]).toEqual([true, true]);
-    expect(rowCancelKind(rows[0])).toBe("none");
-    expect(roleText(rows[0], "")).toBe("Starting… · too late to cancel");
-  });
-
-  it("folds the job rows away — which is what the preference was set for", () => {
-    // A downloads-only card, collapsed, is exactly what it always was: no list,
-    // just the header and its overall bar. Open, the job rows are back.
-    const nothingQueued = { waiting: 0, running: 0 };
-    expect(rowsShown(true, nothingQueued)).toEqual({ queue: false, jobs: false });
-    expect(rowsShown(false, nothingQueued)).toEqual({ queue: false, jobs: true });
-    // and a folded card with queue work shows the queue half only
-    expect(rowsShown(true, { waiting: 1, running: 2 })).toEqual({ queue: true, jobs: false });
-  });
-});
+// The fold used to keep the queue rows and a live stand-in job row on screen
+// regardless of `collapsed` (jobs.ts `rowsShown`, deleted) — the user rejected
+// the whole idea of a partially-foldable card (D562, 2026-08-27): "everything
+// is foldable, even for the job cards." Collapsed now hides every row, no
+// exceptions. Reachability while collapsed moved to the status bar's chip
+// instead (D563) — not to the header, and not to `showCancelAll`'s threshold,
+// which used to drop to one row for exactly this reason and no longer does
+// (see that function's own doc): the chip carries no controls, so there is
+// nothing left for a lowered threshold to reach.
 
 // ---------------------------------------------------- one row, never two, never none
 
 /**
  * The ONE list as the card would actually draw it, for one moment in time: the queue
  * half's rows (`q:<entry id>`) followed by the job rows it draws beside them
- * (`j:<job id>`). Mirrors QueueDock and DownloadManager exactly — the same calls in
+ * (`j:<job id>`). Mirrors ActivityDock and DownloadManager exactly — the same calls in
  * the same order — because the property under test is about the two halves TOGETHER,
  * and neither half alone can be wrong or right about it.
  *
@@ -296,12 +230,11 @@ function shownRows(
 ): string[] {
   const open = openRows(rows, queueJobs);
   const jobs = jobRows(reported, drawnIds(open));
-  const shown = rowsShown(collapsed, queueCount(open));
-  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
-  return [
-    ...(shown.queue ? open.map((r) => `q:${r.entry.id}`) : []),
-    ...listed.map((j) => `j:${j.id}`),
-  ];
+  // Collapsed hides every row now (D562, 2026-08-27) — no per-kind exemption
+  // left to compute, so this is `!collapsed` guarding the whole list rather
+  // than `rowsShown`/`foldedJobRows` deciding a kind at a time.
+  if (collapsed) return [];
+  return [...open.map((r) => `q:${r.entry.id}`), ...jobs.map((j) => `j:${j.id}`)];
 }
 
 const LIVE_JOB = `${SCHEDULE_JOB_PREFIX}e1`;
@@ -330,7 +263,7 @@ describe("jobRows: which half owns a scheduled run", () => {
   });
 
   it("keeps the run when the card is mounted BARE, with no queue slot at all", () => {
-    // Same outcome by construction rather than by failure: NotificationHost falls
+    // Same outcome by construction rather than by failure: StatusBar falls
     // back to a plain <DownloadManager /> when no shell composed one, so nothing
     // fills the slot. Told nothing means "draw it yourself".
     expect(jobRows([liveJob()]).map((j) => j.id)).toEqual([LIVE_JOB]);
@@ -472,18 +405,11 @@ describe("one scheduled run, one row, at every step of its life", () => {
     // Inside the window: the queue half has not seen the terminal job yet (`[liveJob()]`
     // is its older snapshot), so it still owns the run and draws it — once.
     expect(shownRows(live, ended, false, [liveJob()])).toEqual(["q:e1"]);
-    expect(shownRows(live, ended, true, [liveJob()])).toEqual(["q:e1"]);
     // The instant it sees the same snapshot this half is acting on — one render later,
     // not one poll later — it retires its row and the outcome row is the one. Note the
     // QUEUE READ is still stale here (`live` still lists the entry): the handover does
     // not wait on it, so a failing queue endpoint cannot strand the outcome.
     expect(shownRows(live, ended)).toEqual([`j:${LIVE_JOB}`]);
-    // and folded it is the SAME one row: the outcome of unattended work is the
-    // one report the fold may not take (foldedJobRows, 2026-08-21), because a
-    // collapsed card that showed the run thinking and then dropped the row told
-    // the story backwards. One row, never two — which is this test's property,
-    // and it is untouched by which half owns it.
-    expect(shownRows(live, ended, true)).toEqual([`j:${LIVE_JOB}`]);
   });
 
   it("draws one row in the MIRROR image — the queue says gone, the job says running", () => {
@@ -491,50 +417,46 @@ describe("one scheduled run, one row, at every step of its life", () => {
     // writes the entry's `turn` verdict BEFORE reporting the job terminal, and
     // /api/schedule/queue calls live exactly "sent with no turn" — so an entry leaves
     // the queue lists while its job row is still `running`, every single run. It is
-    // also what a failed queue read looks like. Either way the job half owns it: one
-    // row, with the ✕ that really stops the process, through the fold as well.
+    // also what a failed queue read looks like. Either way the job half owns it.
     expect(shownRows([], [liveJob()])).toEqual([`j:${LIVE_JOB}`]);
-    expect(shownRows([], [liveJob()], true)).toEqual([`j:${LIVE_JOB}`]);
     // and the reverse skew of the same moment — this half's snapshot still says live
     // while the queue read has already dropped the entry — is the same one row.
     expect(shownRows([], [liveJob()], false, [])).toEqual([`j:${LIVE_JOB}`]);
   });
 
-  it("never draws the same run twice — every step, healthy or degraded, folded or not", () => {
+  it("never draws the same run twice, at any step healthy or degraded — and never draws it at all while collapsed", () => {
     // The other failure mode, and the one the old unconditional drop was protecting
-    // against. Every moment the pair of halves can actually be in, times both fold
-    // states: exactly one row for this run, never two and never zero.
-    // `inFlight` — does this run's row survive the FOLD. Work still going always
-    // does (its ✕ is the only stop), and since 2026-08-21 so does its OUTCOME:
-    // the closing frame is the one report a collapsed card may not swallow, and
-    // it retires itself in FINISHED_TTL_S. So every step here is `true`, and what
-    // the property still holds everywhere is the half that matters — exactly one
-    // row for this run, never two and never zero.
-    // The fifth field is the QUEUE half's job snapshot when it differs from this
+    // against. Every moment the pair of halves can actually be in: exactly one row
+    // for this run, never two and never zero, WHILE EXPANDED. Collapsed (D562,
+    // 2026-08-27), the row count is always zero regardless of which half currently
+    // owns the run — ownership decides WHICH single row would show; the fold now
+    // decides only whether any row shows at all, and that answer no longer depends
+    // on ownership state.
+    // The fourth field is the QUEUE half's job snapshot when it differs from this
     // half's — the transition window, where the two halves disagree about whether the
     // run is over and the duplicate used to appear.
     const ended = liveJob({ state: "done", detail: "finished" });
-    const steps: Array<[string, QueueRow[], Job[], boolean, Job[]?]> = [
-      ["queued", queued, [], true],
-      ["sending", sending, [], true],
-      ["live", live, [liveJob()], true],
-      ["finished", [], [ended], true],
+    const steps: Array<[string, QueueRow[], Job[], Job[]?]> = [
+      ["queued", queued, []],
+      ["sending", sending, []],
+      ["live", live, [liveJob()]],
+      ["finished", [], [ended]],
       // the in-flight moment with the queue read failing
-      ["live, no queue read", [], [liveJob()], true],
+      ["live, no queue read", [], [liveJob()]],
       // and a stale running row against a queue row in each earlier tense, which is
       // what a re-queued entry (run-now, resend) looks like mid-transition
-      ["queued, stale job row", queued, [liveJob()], true],
-      ["sending, stale job row", sending, [liveJob()], true],
+      ["queued, stale job row", queued, [liveJob()]],
+      ["sending, stale job row", sending, [liveJob()]],
       // THE TRANSITION WINDOW, both ways round. The job half knows the turn ended and
       // the queue half is a snapshot behind (the queue row is the one row); then it
       // catches up while its READ is still stale (the outcome row is the one row).
-      ["ended, queue half behind", live, [ended], true, [liveJob()]],
-      ["ended, queue read still stale", live, [ended], true],
+      ["ended, queue half behind", live, [ended], [liveJob()]],
+      ["ended, queue read still stale", live, [ended]],
       // the mirror image: the entry has left every queue list — which is what the
       // server does first, every run — while the job row is still running
-      ["still running, entry already gone", [], [liveJob()], true, []],
+      ["still running, entry already gone", [], [liveJob()], []],
     ];
-    for (const [what, rows, reported, inFlight, queueJobs] of steps) {
+    for (const [what, rows, reported, queueJobs] of steps) {
       // Paired with the label so a failure names the step rather than the number.
       expect([what, shownRows(rows, reported, false, queueJobs ?? reported).length]).toEqual([
         what,
@@ -542,58 +464,19 @@ describe("one scheduled run, one row, at every step of its life", () => {
       ]);
       expect([what, shownRows(rows, reported, true, queueJobs ?? reported).length]).toEqual([
         what,
-        inFlight ? 1 : 0,
+        0,
       ]);
     }
   });
 
-  it("keeps the stop reachable while the card is FOLDED, in both halves", () => {
-    // The fold is a persisted preference set against a download history. A queue row
-    // goes through it (rowsShown), and so must the job row standing in for one when
-    // the queue read failed — otherwise the hole reopens for anyone whose card has
-    // been collapsed since before any of this existed.
-    expect(shownRows(live, [liveJob()], true)).toEqual(["q:e1"]);
-    expect(shownRows([], [liveJob()], true)).toEqual([`j:${LIVE_JOB}`]);
-  });
-
-  it("lets a scheduled run's OUTCOME through the fold, but not a download", () => {
-    // A collapsed card used to show the run thinking and then simply lose the
-    // row at the verdict — the story told backwards, with no surface ever
-    // saying it finished (Akshil, 2026-08-21). The outcome of unattended work
-    // is the one report the fold may not take; a download's row is work the
-    // user started themselves and is one expand away, exactly what the
-    // preference was set to fold. `done` retires itself in 30s (FINISHED_TTL_S).
-    const history = [
-      job({ id: "sys:ai-model:repo", kind: "download" }),
-      liveJob({ state: "done" }),
-    ];
-    expect(foldedJobRows(history).map((j) => j.id)).toEqual([LIVE_JOB]);
-    expect(shownRows([], history, true)).toEqual([`j:${LIVE_JOB}`]);
-    expect(shownRows([], history, false)).toEqual(["j:sys:ai-model:repo", `j:${LIVE_JOB}`]);
-  });
-
-  it("keeps an ERROR row behind the fold — it is kept until dismissed", () => {
-    // The asymmetry is deliberate. done/cancelled are swept after
-    // FINISHED_TTL_S, so the fold gains one closing frame and gives it back;
-    // an error row is kept until someone dismisses it (jobs.py `_sweep`), so
-    // piercing the fold with one would defeat the collapse preference for as
-    // long as it sat there. The card's header already says a run failed.
-    expect(foldedJobRows([liveJob({ state: "error" })])).toEqual([]);
-  });
-
-  it("lets a run the user STOPPED through the fold, like any other outcome", () => {
-    expect(foldedJobRows([liveJob({ state: "cancelled" })]).map((j) => j.id)).toEqual([
-      LIVE_JOB,
-    ]);
-  });
-
-  it("counts the stand-in row in the one header, and leaves no empty card", () => {
-    // The count comes off the same two numbers as the rows. With the queue read
-    // failing, the run is a job row — so the header must say "1 running" from the
-    // job side rather than falling through to "0 finished" and drawing a card with
-    // no rows in it. Nothing anywhere ⇒ nothing at all, exactly as before.
-    const failed = jobRows([liveJob()], drawnIds([]));
-    expect(jobsSummary(failed, queueCount([]))).toBe("1 running");
+  it("leaves the stand-in row as a real row, and leaves no empty card", () => {
+    // With the queue read failing, the run has to be a JOB row — one row
+    // somewhere rather than none anywhere. The old version of this also asserted
+    // `jobsSummary` said "1 running" instead of falling through to
+    // "0 finished"; that function is deleted (code review finding 8) and the
+    // chip carries no sentence at all now, so what remains to pin is the rows.
+    // Nothing anywhere ⇒ nothing at all, exactly as before.
+    expect(jobRows([liveJob()], drawnIds([])).length).toBe(1);
     expect(shownRows([], []).length).toBe(0);
     expect(jobRows([], drawnIds([]))).toEqual([]);
   });
@@ -604,7 +487,7 @@ describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
   // job snapshot (~1s behind the turn) and the Tasks page's own poll (20s, plus
   // the server's liveness window on top). "If finished in one, finished in the
   // other" (Akshil, 2026-08-19) — so the running→terminal flip detected here is
-  // what QueueDock pokes the shared tasks store with (tasksPulse.pokeTasks).
+  // what ActivityDock pokes the shared tasks store with (tasksPulse.pokeTasks).
   const running = () => job({ id: `${SCHEDULE_JOB_PREFIX}e1` });
 
   it("fires on a run flipping running → terminal", () => {
@@ -656,7 +539,7 @@ describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
 describe("the live row's shimmer", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs");
   const { join } = require("node:path") as typeof import("node:path");
-  const DOCK = readFileSync(join(import.meta.dir, "QueueDock.tsx"), "utf8");
+  const DOCK = readFileSync(join(import.meta.dir, "ActivityDock.tsx"), "utf8");
   const CSS = readFileSync(
     join(import.meta.dir, "../styles/notifications.css"),
     "utf8",

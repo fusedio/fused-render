@@ -409,6 +409,32 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim. `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST embed call
+    if nothing new started in the meantime, not per call — an idle timer never
+    fires mid-batch, so the bulk loop this runner is actually used for (many
+    embeds in a row) is never the thing that trips it.
+
+    Matters here for the same stacking reason as `mlx_whisper.worker.release`:
+    the supervisor keeps ONE resident worker per capability, and this
+    machine's own recorded footprints put a vision embed model
+    (siglip2-so400m) at 5.68 GB — a pool that size sitting idle in its own
+    process, beside whatever text or image worker is also loaded, is exactly
+    the stacking this feature is for, not just the single-render case.
+
+    `getattr` because a real but older mlx wheel, or this repo's stubbed
+    `mlx.core` in tests, may not have `clear_cache` at all — absence is a
+    no-op, matching every other MLX runner's guard.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ embedding
 
 
@@ -562,7 +588,8 @@ def main():
     this engine installs — unlike `onnx_embed`, which has four, one per
     execution provider."""
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, peak_memory=peak_memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory,
+                      release=release)
 
 
 if __name__ == "__main__":

@@ -108,6 +108,15 @@ class _FakeStdout:
     async def readline(self):
         if self._proc._out:
             return self._proc._out.pop(0).encode("utf-8") + b"\n"
+        if self._proc._delayed is not None:
+            # A SLOW turn: answered, but not yet. Held here rather than in
+            # `_respond` because that one is synchronous — this is the only
+            # place in the fake that can spend wall-clock the way a real
+            # model does.
+            await asyncio.sleep(self._proc.turn_delay)
+            self._proc._out.extend(self._proc._delayed)
+            self._proc._delayed = None
+            return self._proc._out.pop(0).encode("utf-8") + b"\n"
         if self._proc.hang:  # alive but silent (reconfig answered; turn not)
             await asyncio.sleep(3600)
         self._proc.returncode = self._proc.exit_code  # EOF: process is done
@@ -131,7 +140,7 @@ class _FakeProc:
 
     def __init__(self, lines=None, exit_code=0, stderr=b"", hang=False,
                  stdin_broken=False, returncode=None, control_error=None,
-                 clear_silent=False, turns=None):
+                 clear_silent=False, turns=None, turn_delay=0.0):
         # `turns`: list of line-batches, one per user turn (a persistent
         # process answers many). `lines` is the single-turn shorthand.
         if turns is None:
@@ -141,6 +150,11 @@ class _FakeProc:
         self.exit_code = exit_code
         self.stderr_bytes = stderr
         self.hang = hang
+        # Seconds a real user turn takes to come back — the fake's only way to
+        # be SLOW rather than dead, which is what the activity row's heartbeat
+        # has to be tested against.
+        self.turn_delay = turn_delay
+        self._delayed = None         # a turn's lines, waiting out `turn_delay`
         self.stdin_broken = stdin_broken
         self.returncode = returncode  # None = alive
         self.control_error = control_error  # subtype -> error message
@@ -175,7 +189,11 @@ class _FakeProc:
             # a real user turn: play the next scripted batch (a hung process
             # answers reconfiguration but never the turn)
             if self._turns and not self.hang:
-                self._out.extend(self._turns.pop(0))
+                batch = self._turns.pop(0)
+                if self.turn_delay:
+                    self._delayed = batch
+                else:
+                    self._out.extend(batch)
             return
         if msg.get("type") == "control_request":
             subtype = msg.get("request", {}).get("subtype")
@@ -320,7 +338,7 @@ def test_is_local_model_recognises_both_id_shapes(model, expected):
 
 # -- remote-Claude job-row notification -------------------------------------
 #
-# The bottom-right activity card (DownloadManager.tsx) is driven purely by
+# The status bar's activity card (DownloadManager.tsx, D563) is driven purely by
 # `GET /api/jobs`, which reads `fused_render/jobs.py`'s in-memory registry.
 # Before this, only the local-model path (`supervisor._report`) ever wrote a
 # row — a page calling fused.ai() against remote Claude produced NOTHING
@@ -478,6 +496,166 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
     assert jobs.list_jobs() == []  # this path never touches jobs.py itself
+
+
+# -- the row's heartbeat ----------------------------------------------------
+#
+# The bug these pin: the row was opened ONCE and then never touched again until
+# the answer landed, and `jobs.is_stalled` calls a running row with no update in
+# `STALE_AFTER_S` (30s) stalled — which the manager draws dimmed, with its ✕
+# withdrawn, saying "No longer reporting — the process running it stopped
+# reporting". `_AI_TIMEOUT_S` allows a ten-MINUTE turn, so every Claude call
+# slower than half a minute told the user it had been abandoned and then
+# returned a perfectly good answer. Nothing was wrong but the reporting.
+#
+# Driven with the timers scaled down (a tick well inside a short stale window)
+# rather than by waiting out the real 30s.
+
+
+def _tight_timers(monkeypatch, stale=0.4, tick=0.02, timeout=2.0):
+    """The real ratio — a heartbeat comfortably inside the stale window —
+    at a hundredth of the wall-clock. Returns nothing; every knob is a
+    module global read at call time."""
+    monkeypatch.setattr(_server_ai, "_REMOTE_TICK_S", tick)
+    monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", timeout)
+    monkeypatch.setattr(jobs, "STALE_AFTER_S", stale)
+
+
+async def _watch_row(relay, every=0.05):
+    """Sample the running remote row while `relay` is in flight.
+
+    Returns every record seen, so a test can assert about the row DURING the
+    call — the window the old code got wrong and every existing test in this
+    file (which only ever looks at the settled row) could not see.
+    """
+    seen = []
+    while not relay.done():
+        await asyncio.sleep(every)
+        seen.extend(j for j in jobs.list_jobs() if j["state"] == "running")
+    return seen
+
+
+def test_a_slow_call_does_not_report_itself_as_no_longer_reporting(monkeypatch):
+    """The user-visible bug, end to end: a call that outruns the stale window
+    and then SUCCEEDS. The row must never once claim nobody is reporting it."""
+    _cli_ok(monkeypatch, turn_delay=1.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        relay = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "hello"}))
+        seen = await _watch_row(relay)
+        return seen, await relay
+
+    seen, resp = asyncio.run(go())
+    assert _data(resp)["ok"] is True          # the call itself was fine...
+    assert len(seen) > 2, "the call ended too fast to have observed its row"
+    assert not any(row["stalled"] for row in seen), \
+        "the row said 'No longer reporting' about a call that was running fine"
+
+
+def test_a_slow_STREAMING_call_does_not_report_itself_as_stalled(monkeypatch):
+    """Same rule on the NDJSON path, which has its own copy of the row's
+    lifecycle (its own open, its own `finally`) and so its own way to lose the
+    heartbeat."""
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]),
+            turn_delay=1.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        resp = await _server_ai._ai_relay({"prompt": "hello", "stream": True})
+        frames = []
+
+        async def drain():
+            async for chunk in resp.body_iterator:
+                frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+
+        pump = asyncio.ensure_future(drain())
+        seen = await _watch_row(pump)
+        await pump
+        return seen, frames
+
+    seen, frames = asyncio.run(go())
+    assert frames[-1]["ok"] is True
+    assert len(seen) > 2, "the call ended too fast to have observed its row"
+    assert not any(row["stalled"] for row in seen)
+
+
+def test_the_heartbeat_stops_when_the_call_does(monkeypatch):
+    """A beat that outlived its request would be a task leaked per call, and
+    would keep stamping a row the request has already closed. Checked on the
+    ERRORED path, because that is the one outcome that leaves a row behind to
+    watch (a success dismisses its row outright)."""
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _tight_timers(monkeypatch)
+
+    async def go():
+        await _server_ai._ai_relay({"prompt": "hello"})
+        settled = jobs.list_jobs()[0]["updated_at"]
+        await asyncio.sleep(0.2)             # ~10 ticks at the scaled cadence
+        return settled, jobs.list_jobs()[0]["updated_at"]
+
+    settled, later = asyncio.run(go())
+    assert later == settled, "something was still ticking a closed row"
+
+
+def test_a_beat_that_raises_keeps_beating_and_never_breaks_the_call(monkeypatch):
+    """Reporting is decoration — and the heartbeat is a LOOP of it.
+
+    `_report_remote` used to catch only `(JobError, ValueError)`, which was
+    survivable while every caller was a one-shot on an exit path. As a loop it
+    is not: anything else escaping would end the beat for the rest of the call,
+    and the symptom would be the stalled row this whole feature exists to
+    prevent — with nothing else to show for it. Every other reporter in the app
+    (`supervisor._report`, `schedule._report`, `claude_install._report`)
+    catches broadly for exactly this reason.
+
+    Driven with the registry throwing on the FIELDLESS ticks only, so the row
+    still opens and still closes: what is under test is the beat surviving, not
+    a registry that is down altogether.
+    """
+    _cli_ok(monkeypatch, turn_delay=0.5)
+    _tight_timers(monkeypatch)
+    real = jobs.upsert
+    beats = []
+
+    def upsert(body, **kwargs):
+        if set(body) == {"id"}:      # a heartbeat and nothing else
+            beats.append(1)
+            raise RuntimeError("the registry threw something unexpected")
+        return real(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", upsert)
+
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True, "a failed report cost the call its answer"
+    assert len(beats) > 1, "the beat stopped at the first exception"
+
+
+def test_a_call_waiting_its_turn_says_so_rather_than_looking_busy(monkeypatch):
+    """Calls serialize on `_AI_SESSION.lock` (one instance, reconfigured per
+    request), and a queued one used to show the identical "Claude — remote"
+    row as the call actually generating — so two rows claimed to be running
+    while one of them had not started. It is also the row most likely to
+    outrun the stale window, since its wait is the other call's whole turn."""
+    _cli_ok(monkeypatch, turn_delay=1.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        first = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "one"}))
+        await asyncio.sleep(0.1)             # let it take the lock
+        second = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "two"}))
+        seen = await _watch_row(second)
+        await asyncio.gather(first, second)
+        return seen
+
+    seen = asyncio.run(go())
+    queued = [row for row in seen if row["title"] == "two"]
+    assert queued, "the second call never opened a row"
+    assert queued[0]["detail"] == _server_ai._REMOTE_QUEUED_DETAIL
+    # ...and it goes back to the ordinary detail once it is really running,
+    # rather than saying "queued" for the rest of its life.
+    assert queued[-1]["detail"] == _server_ai._REMOTE_ROW_DETAIL
+    assert not any(row["stalled"] for row in queued)
 
 
 # -- happy path -----------------------------------------------------------------
@@ -1248,8 +1426,8 @@ def test_posix_candidates_are_the_documented_install_locations():
     """The three canonical locations, canonical-first — and nothing hand-written.
 
     This used to pin the tuple exactly, which is what let the list here drift
-    from the three OTHER lists the app kept (claude_config/lib.py, the learn
-    content's check_env.py, core_apps/sessions/analyze.py): each was
+    from the OTHER lists the app kept (claude_config/lib.py, the retired
+    learn and sessions bundled content): each was
     correct against its own test and none agreed with the others, so a CLI in
     `~/.bun/bin` was found by the Claude-config tab and not by fused.ai. The
     union lives in claude_health now; the identity assertion is what keeps this

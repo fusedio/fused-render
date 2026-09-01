@@ -9,10 +9,8 @@ can be told *before* a prompt has been typed:
   * is it new enough for the flag set `server/ai.py:_ai_cmd` spawns it with
   * is it signed in
 
-`/api/config` already establishes the pattern: it publishes
-`sessions_mount_ready` so a link into a bundled mount renders only when it
-works, "so it's never a dead link". Claude Code had no equivalent, so every
-Claude-dependent surface rendered
+The pattern is "tell the surface up front, so it's never a dead link".
+Claude Code had no equivalent, so every Claude-dependent surface rendered
 as available and found out otherwise on click.
 
 **This module is the one place in the package that names an install directory.**
@@ -33,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -69,8 +68,8 @@ BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # the *user* PATH afterwards stays invisible until the next sign-in.
 #
 # This is the UNION of the four lists that used to exist independently across
-# server/ai.py, claude_config/lib.py, the learn content's check_env.py and
-# core_apps/sessions/analyze.py. A directory only one of them knew about was a
+# server/ai.py, claude_config/lib.py, and the retired learn and sessions
+# bundled content. A directory only one of them knew about was a
 # directory where the app disagreed with itself.
 #
 # Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to be
@@ -496,6 +495,229 @@ def install_command() -> str:
     return INSTALL_COMMAND_WINDOWS if os.name == "nt" else INSTALL_COMMAND_POSIX
 
 
+# --- the terminal's PATH, as opposed to ours ----------------------------------
+#
+# The app finding the CLI and the user's terminal finding it are different facts,
+# and the native installer is why they diverge: `claude install` creates
+# ~/.local/bin/claude and then only PRINTS the shell-profile line — it never
+# edits an rc file. Worse, when the app runs the installer it does so with
+# `augmented_path()` (claude_install._child_env), which already contains
+# ~/.local/bin, so the installer sees the directory "on PATH" and prints no
+# warning at all. The one messenger the user had is silenced by our own
+# environment prep. So the app measures the fact itself and owns the repair.
+
+#: Which rc file the PATH line belongs in, by shell. bash on macOS gets the
+#: login-shell startup file it ALREADY reads (the first existing of
+#: ~/.bash_profile, ~/.bash_login, ~/.profile — Terminal.app opens login
+#: shells), and ~/.bashrc everywhere else; zsh gets $ZDOTDIR/.zshrc when
+#: ZDOTDIR is set, plain ~/.zshrc otherwise. fish is deliberately absent: its
+#: syntax is not `export`, and appending a bash line to fish config would
+#: break the shell we were trying to fix — a fish user gets the fact reported
+#: with no command.
+def _shell_rc() -> Optional[str]:
+    shell = os.path.basename(os.environ.get("SHELL") or "")
+    if shell == "zsh" or shell == "":
+        if not (shell or sys.platform == "darwin"):
+            return None
+        # zsh is the macOS default; an unset SHELL on darwin still means zsh in
+        # every terminal the user will actually open. zsh reads $ZDOTDIR/.zshrc
+        # when ZDOTDIR is set — writing ~/.zshrc then would land in a file zsh
+        # never sources, and the button would report a success that fixed
+        # nothing.
+        zdotdir = os.environ.get("ZDOTDIR") or _zsh_zdotdir()
+        if zdotdir == _ZDOTDIR_UNSAFE or (zdotdir and not os.path.isabs(zdotdir)):
+            # Set, but not to a path we can safely write. ~/.zshrc is NOT a
+            # fallback here — zsh will not read it — so no rc is offered.
+            return None
+        if zdotdir:
+            return _home_relative(os.path.join(zdotdir, ".zshrc"))
+        return "~/.zshrc"
+    if shell == "bash":
+        if sys.platform != "darwin":
+            return "~/.bashrc"
+        # macOS Terminal opens login shells, and login bash reads only the
+        # FIRST of ~/.bash_profile, ~/.bash_login, ~/.profile that exists.
+        # Creating ~/.bash_profile on a machine that lives off ~/.profile
+        # would shadow the user's whole profile to add one line — so append to
+        # the file bash already reads, and only default to ~/.bash_profile
+        # when none of the three exists yet.
+        for cand in ("~/.bash_profile", "~/.bash_login", "~/.profile"):
+            if os.path.exists(os.path.expanduser(cand)):
+                return cand
+        return "~/.bash_profile"
+    return None
+
+
+#: `_zsh_zdotdir` answer for "ZDOTDIR is set but not to a path we can safely
+#: write" — distinct from None (unset / probe could not run), because the two
+#: demand opposite reactions: unset falls back to ~/.zshrc, unsafe must NOT,
+#: or the fix would append to a file zsh never reads and report success.
+_ZDOTDIR_UNSAFE = "\0unsafe"
+
+
+def _zsh_zdotdir() -> Optional[str]:
+    """ZDOTDIR as zsh itself resolves it.
+
+    None when unset or the probe could not run; `_ZDOTDIR_UNSAFE` when zsh
+    reported a value that is not an absolute path — set-but-weird means no rc
+    file is safe to offer, not that ~/.zshrc is.
+
+    The app's own environment is not enough to ask: users set ZDOTDIR in
+    ~/.zshenv, and a Finder/Dock launch never sources that file — so the
+    variable is absent from our process exactly on the machines where it
+    matters, and trusting os.environ alone would append to a ~/.zshrc that
+    zsh never reads while reporting success. Even a NON-login, non-interactive
+    zsh sources /etc/zshenv and ~/.zshenv, so a bare `zsh -c` answers with the
+    user's real value at minimal spawn cost. Only called on the rare paths
+    that already spawn shells (the strip's fix + button press), never on
+    routine health reads.
+    """
+    zsh = shutil.which("zsh") or ("/bin/zsh" if executable("/bin/zsh") else None)
+    if not zsh:
+        return None
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH")}
+    # ~/.zshenv runs before our print and may write to stdout itself, so raw
+    # stdout is not the answer: a marker separates whatever the profile said
+    # from the value we asked for.
+    marker = "__FUSED_ZDOTDIR__:"
+    try:
+        out = subprocess.run(
+            [zsh, "-c", f'print -r -- "{marker}$ZDOTDIR"'],
+            capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
+            **SUBPROCESS_KWARGS,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in reversed((out or "").splitlines()):
+        if line.startswith(marker):
+            value = line[len(marker):].strip()
+            if not value:
+                return None  # genuinely unset
+            # An absolute value is trusted even when the directory does not
+            # exist yet: zsh will still read $ZDOTDIR/.zshrc there, so that is
+            # where the line belongs — writing ~/.zshrc instead would be the
+            # exact bug this probe exists to prevent. A relative or otherwise
+            # odd value is set-but-unwritable: refuse rather than guess.
+            return value if os.path.isabs(value) else _ZDOTDIR_UNSAFE
+    return None
+
+
+def _home_relative(path: str) -> str:
+    """`path` spelled with a `~/` prefix when it lives under $HOME.
+
+    The rc path is both shown to the user and re-expanded with expanduser(),
+    so the tilde form is preferred; a path outside home comes back absolute,
+    which expanduser() passes through untouched.
+    """
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def _shell_quote_rc(rc: str) -> str:
+    """`rc` quoted for the shell command shown next to the button.
+
+    shlex.quote does the real work (spaces are not the only metacharacter a
+    ZDOTDIR can carry), with one exception it cannot know about: a leading
+    `~/` must stay OUTSIDE the quotes — a quoted tilde is a literal tilde, so
+    `'~/x y'` would name a directory called `~` instead of the file the
+    one-click fix edits. shlex.quote leaves a plain `.zshrc` untouched, so
+    `~/.zshrc` still renders bare.
+    """
+    if rc.startswith("~/"):
+        return "~/" + shlex.quote(rc[2:])
+    return shlex.quote(rc)
+
+
+def path_fix(path: str) -> Optional[dict]:
+    """The command that puts `path`'s directory on the terminal's PATH, or None.
+
+    None when there is nothing safe to offer: Windows (install.ps1 edits the
+    user PATH itself), a shell we cannot write a correct line for (fish), or a
+    directory outside the user's home (a system dir missing from PATH is a
+    machine configuration problem, not something to append over).
+
+    `$HOME`-relative on purpose, in both the line and what the user sees: the
+    literal expansion would bake a username into a dotfile that may be synced
+    between machines.
+    """
+    if os.name == "nt":
+        return None
+    rc = _shell_rc()
+    if not rc:
+        return None
+    home = os.path.expanduser("~")
+    bindir = os.path.dirname(os.path.abspath(path))
+    if not (bindir == home or bindir.startswith(home + os.sep)):
+        return None
+    rel = "$HOME" + bindir[len(home):]
+    line = f'export PATH="{rel}:$PATH"'
+    # THE SHOWN COMMAND AND THE BUTTON MUST DO THE SAME THING — every step of
+    # it. add_to_shell_path creates a missing rc directory before appending
+    # (a ZDOTDIR need not exist yet for zsh to read $ZDOTDIR/.zshrc there),
+    # so a user who copies the command instead of pressing the button needs
+    # the same mkdir, or their paste fails on the very machines the ZDOTDIR
+    # handling exists for. Elided when the directory is already there — for
+    # ~/.zshrc that would be `mkdir -p ~`, noise that teaches nothing.
+    command = f"echo {shlex.quote(line)} >> {_shell_quote_rc(rc)}"
+    rc_dir = os.path.dirname(rc)
+    if rc_dir and not os.path.isdir(os.path.dirname(os.path.expanduser(rc))):
+        command = f"mkdir -p {_shell_quote_rc(rc_dir)} && {command}"
+    return {
+        "rc_file": rc,
+        "line": line,
+        "command": command,
+    }
+
+
+def add_to_shell_path() -> dict:
+    """Append the PATH line to the user's shell rc — the strip's one-click fix.
+
+    Idempotent by DIRECTORY, not by line: any mention of the bin directory in
+    the rc file means the user (or a previous press) already handled it, and a
+    second identical line would be clutter that outlives the button.
+
+    Returns `{ok, rc_file, line}` or `{ok: False, error}` — the error text is
+    shown verbatim, so it is written as a sentence.
+    """
+    path, _source = resolve(allow_shell=False)
+    if not path or not executable(path):
+        return {"ok": False, "error": "there is no Claude Code on this machine "
+                                      "to put on the PATH — install it first"}
+    fix = path_fix(path)
+    if not fix:
+        return {"ok": False, "error": "this shell's profile isn't one the app "
+                                      "can safely edit — add the directory to "
+                                      "your PATH by hand"}
+    rc_path = os.path.expanduser(fix["rc_file"])
+    bindir = os.path.dirname(os.path.abspath(path))
+    rel = "$HOME" + bindir[len(os.path.expanduser("~")):]
+    try:
+        # A ZDOTDIR that zsh reads from may not exist yet as a directory; zsh
+        # does not need it to for $ZDOTDIR/.zshrc to be the file it will read.
+        os.makedirs(os.path.dirname(rc_path) or ".", exist_ok=True)
+        existing = ""
+        if os.path.exists(rc_path):
+            with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        if bindir in existing or rel in existing:
+            return {"ok": True, "rc_file": fix["rc_file"], "line": fix["line"],
+                    "already": True}
+        # EXACTLY the line the strip showed next to the button — same doctrine
+        # as install_argv: what the user is told will run and what runs are the
+        # same sentence. No banner comment, no extra blank line beyond the one
+        # that keeps the append off the end of an unterminated last line.
+        with open(rc_path, "a", encoding="utf-8") as f:
+            lead = "" if (not existing or existing.endswith("\n")) else "\n"
+            f.write(f"{lead}{fix['line']}\n")
+    except OSError as exc:
+        return {"ok": False, "error": f"could not write {fix['rc_file']}: {exc}"}
+    return {"ok": True, "rc_file": fix["rc_file"], "line": fix["line"],
+            "already": False}
+
+
 #: Install methods where `claude update` genuinely updates something, and the
 #: ones where it is a documented no-op.
 #:
@@ -699,7 +921,7 @@ _LOCK = threading.Lock()
 #: answer `null` on macOS by rule, and every one of those snapshots would keep
 #: being served to the fixed code — the strip staying silent on a signed-out
 #: machine because a stale file said the question was unanswerable.
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4
 
 #: How long a snapshot may be served before it is re-measured.
 #:
@@ -832,6 +1054,29 @@ def _measure(allow_shell: bool = True) -> dict:
     doctor = _doctor(path) if (usable and (broken or outdated)) else None
     method = install_method(path, doctor)
     plan = update_plan(method)
+
+    # DOES THE USER'S TERMINAL SEE IT — a separate fact from `found`, because
+    # the native installer never edits an rc file (it only prints the PATH line,
+    # and claude_install's augmented PATH suppresses even that). Decided by
+    # `source` where source already answers it, and by one login-shell probe
+    # where it does not:
+    #   * "path"  — the PATH we inherited has it; a terminal's PATH is a
+    #     superset of that in practice. True.
+    #   * "shell" — the login shell itself found it. True by definition.
+    #   * "candidate" — we found it only because we knew where to look. Ask the
+    #     login shell; silence means the terminal really cannot see it. The
+    #     probe costs a second or two and runs only on exactly the machines
+    #     where the answer might be False.
+    #   * "override" / Windows / not found — None: unknown or not ours to say
+    #     (install.ps1 edits the user PATH itself).
+    on_shell_path: Optional[bool] = None
+    if usable and os.name != "nt":
+        if source in ("path", "shell"):
+            on_shell_path = True
+        elif source == "candidate" and allow_shell:
+            on_shell_path = _shell_probe() is not None
+    fix = path_fix(path) if (usable and on_shell_path is False) else None
+
     return {
         "found": usable,
         "path": path,
@@ -861,6 +1106,15 @@ def _measure(allow_shell: bool = True) -> dict:
         "update_manager": plan["manager"],
         "update_blocked_reason": plan["reason"],
         "doctor": doctor,
+        # True / False / None-for-unknown: can a TERMINAL find `claude`, as
+        # opposed to this app. False is the only value the strip acts on, and
+        # it is only ever set on the strength of a login-shell probe that came
+        # back empty — never inferred from where WE found the binary.
+        "on_shell_path": on_shell_path,
+        # The exact line the one-click fix will run, shown before it runs.
+        # None whenever there is nothing safe to offer (fish, Windows, a
+        # binary outside the home directory).
+        "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),
         "fingerprint": _fingerprint(path),
     }
@@ -934,7 +1188,7 @@ def warm_in_background() -> None:
     """Fill the cache off the request path, so the first GET is a disk read.
 
     Called from the server entry points, never from create_app — the same rule
-    community.refresh_in_background follows, and for the same reason: importing
+    community.ensure_showcase_in_background follows, and for the same reason: importing
     the server in a test must not spawn the user's login shell.
 
     Failures are swallowed. A cold cache costs the first request its probe; a

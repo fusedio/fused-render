@@ -111,6 +111,38 @@ def test_total_scope_rejects_anything_outside_the_closed_set(client):
     assert res.status_code == 400
 
 
+def test_waiting_for_round_trips_on_a_server_upsert():
+    """`waiting_for` is how `_wait_ready` merges a caller's row onto the model
+    load it is blocked on (SPEC §36) — a server report naming another row's id
+    must reach the listing verbatim, and clearing it (an empty value on the
+    report that ends the wait) must reach the listing as "", not linger."""
+    jobs.upsert({"id": "a", "title": "a cat", "waiting_for": "sys:ai-model:x"},
+                server=True)
+    row = jobs.list_jobs()[0]
+    assert row["waiting_for"] == "sys:ai-model:x"
+
+    jobs.upsert({"id": "a", "waiting_for": ""}, server=True)
+    row = jobs.list_jobs()[0]
+    assert row["waiting_for"] == ""
+
+
+def test_a_page_owned_report_cannot_set_waiting_for(client):
+    """A page could otherwise blank a live download's only row by falsely
+    claiming to be waiting on it — see `Job.waiting_for`'s own comment. The
+    field is silently dropped rather than rejected, same as `owner`."""
+    report(client, id="a", title="a cat", waiting_for="sys:ai-model:x")
+    assert listing(client)[0]["waiting_for"] == ""
+
+
+def test_waiting_for_rejects_an_illegal_id():
+    """The value still has to be a legal id — see `clean_id` — so a page (or a
+    bug in the server-side reporter) cannot smuggle something the manager's
+    lookup would choke on."""
+    with pytest.raises(jobs.JobError):
+        jobs.upsert({"id": "a", "title": "a cat", "waiting_for": "not a legal id"},
+                    server=True)
+
+
 def test_model_is_its_own_field_separate_from_title_and_detail(client):
     """The model must reach the client as its OWN value, not folded into
     `title` or `detail` — the UI dims it as a distinct element on the title
@@ -305,6 +337,44 @@ def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
     res = client.post("/api/jobs/clear", headers={"X-Fused": "1"})
     assert res.json() == {"cleared": 2}
     assert [r["id"] for r in listing(client)] == ["run"]
+
+
+def test_clear_does_not_sweep_a_stalled_but_still_running_row():
+    """`clear_finished` used to take any record where `state != RUNNING` OR
+    `is_stalled(...)` — so a Clear press swept a RUNNING job whose reporter
+    had merely gone quiet for `STALE_AFTER_S`, which a long model load, a
+    slow generation between report ticks, or a throttled background tab all
+    satisfy. The work itself does not stop (`ai/supervisor._cancel_state`
+    returns None, read as "not cancelled", for a missing row) — only the
+    RECORD of it does, and the page's `fused.watchJob` reads a missing row
+    as work that stopped, telling the user their AI job was cancelled by a
+    button that never touched it. `clear_finished` now takes terminal
+    records only; a stalled row is still reachable one at a time through its
+    own ✕ (`dismiss`, unchanged — see `test_a_stalled_row_can_be_dismissed`
+    above), by a user who usually knows what that row was."""
+    jobs.upsert({"id": "stalled", "title": "long load", "state": "running"}, now=1000.0)
+    jobs.upsert({"id": "done", "title": "finished", "state": "done"}, now=1000.0)
+    at = 1000.0 + jobs.STALE_AFTER_S + 1
+    assert jobs.list_jobs(now=at)[0]["id"] in ("stalled", "done")  # sanity: both present
+    assert any(r["stalled"] for r in jobs.list_jobs(now=at) if r["id"] == "stalled")
+
+    cleared = jobs.clear_finished(now=at)
+
+    assert cleared == 1
+    remaining = [r["id"] for r in jobs.list_jobs(now=at)]
+    assert remaining == ["stalled"]
+
+
+def test_dismiss_still_takes_one_stalled_row_at_a_time():
+    """The per-row ✕ stays exactly as permissive as before — only the BULK
+    sweep (`clear_finished`) changed. A user closing one specific stalled row
+    usually knows what it was; a bulk Clear does not know what any of its
+    rows are."""
+    jobs.upsert({"id": "stalled", "title": "long load", "state": "running"}, now=1000.0)
+    at = 1000.0 + jobs.STALE_AFTER_S + 1
+
+    assert jobs.dismiss("stalled", now=at) is True
+    assert jobs.list_jobs(now=at) == []
 
 
 # ---------------------------------------------------------------- the sweeper

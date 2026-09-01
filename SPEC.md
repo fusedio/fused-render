@@ -83,7 +83,7 @@ The listing may show the selected entry's preview beside the list — Finder's l
 
 - **FS-9** **THE PANE IS NOT A CHOICE AND NOT A MEASUREMENT — a `Listing` that has a pane has one, at every width** (D282). The whole of "is there a pane" is *which* `Listing` this is: not a frozen-tree snapshot, not a panel pane. Those are facts about the SURFACE, and each is the host-side question a measurement could never answer: a snapshot's listing and a panel pane's are both top-level listings handed a column by someone else, and both were wide enough to pass any threshold while being exactly the cases that must not split. *A third flag used to stand here too — not an embedded one (the pane's own `_listing` mode, which embedded a second, real `Listing` inside this one's pane so a selected folder could be peeked at without navigating in) — no-nesting guard against exactly that. D460 deleted the entire selection-driven pane that mode belonged to, so there is no second `Listing` left for this one to be nested inside, and the `embedded` prop is deleted along with it rather than kept as a guard against a nesting that can no longer happen.* **There is no width GATE and no visibility threshold anywhere in this path.** *A container measurement does exist again (D283) — the split container is observed so the companion's SHARE can step to 50% on a small one (FS-12) — and it decides how wide the pane is, never whether there is one. The distinction is the whole of FS-9: presence is a property of the surface, proportion is a property of the room.* *This retires `PANE_SPLIT_MIN_W` (700 px, measured on the split container) and everything that hung off it, on the owner's instruction to remove the breakpoint logic outright — the same instruction that flattened the width to one share (FS-12). **The consequence is stated rather than hedged, and it has two regimes.** Down to about **285 px** of container — the pane's 220 px floor, the 5 px divider and the list's 60 px floor (FS-12) — a narrow window shows a narrow listing beside a floored pane instead of the whole listing, and the way out is `_side=off` (FS-10), the same control it is on a wide one. **Below that the split OVERFLOWS HORIZONTALLY**: the floors no longer fit, `.listing-split` is a plain flex row with no `overflow` rule, and nothing clamps the RENDERED fraction — only the drag is clamped (`dragPaneFrac` refuses a container under 280 px, which is a rule about recording a choice, not about painting one). The old gate made this unreachable by refusing to split at all under 700 px. *Whether it stays reachable is deliberately left open: clamping the rendered fraction, or withholding the pane under the floor sum, is a width condition of exactly the kind this decision removed, so it is the owner's call rather than a fix to slip in beside it. Reachable in practice only in a very narrow embed or a heavily zoomed window.* The gate existed to answer "is a half-width listing beside a half-width preview still worth reading" — a judgement the app was making on the user's behalf, and the answer it is now allowed to make for itself.* *Before the gate there was a **Default OFF** clause and everything that hung off it. The pane used to be opt-in per folder, and that one bit lived in three places that had to agree — a toggle button, a sticky `?preview=true` URL param carried across directory navigation, and a `pane=0` view-state key so a folder remembered being closed. Three writers for one bit, and the bit was almost always a proxy for a question the layout can answer itself.*
 - **FS-10** **THE SURFACE DECIDES WHETHER THERE CAN BE A PANE; the user decides what it shows and whether it is up.** The surface half is FS-9's three flags and nothing else — no width in it, so nothing to re-decide on a resize and nothing that can disagree with what is on screen. *A resize does re-decide the pane's SHARE (FS-12's 1000 px step, D283); it can never re-decide its existence.* The *user's* half is **`_side` on the folder URL** (`listing/pane-side.ts`): which of the pane's **three modes** it is showing — **Claude** (the chat, `chat_only=1`, about the OPEN FOLDER), **Git** (the folder's working tree) and **MCP** (its tools), *or* `_side=off`, that the user has shut it. **`preview` is not one of the three a user can choose** (D285), and since D460 it is not "the selected row's own default view" even as the neither-companion fallback it still is — the pane stopped reading the selection at all, so every mode's subject, including the fallback's, is this same open folder. **An ABSENT `_side` means OPEN at `preview`**: the pane is not an extra beside a complete view, it is the folder view's other half, and every folder URL, bookmark and recent predates the param. *This clause used to add "deliberately the opposite of the file preview's sidebar, where absent means closed". **It is no longer the opposite — the file sidebar reads an absent `_side` as OPEN too, and `off` as shut, exactly as this pane does** (D326, §21's LSN-12): the file half's rule made the sidebar's presence a stored PREFERENCE, which the per-file session sidecar then replayed forever. `_side` is one vocabulary across both surfaces now, so a param carried between them means the same thing in either direction; what still differs is only what "the first mode on offer" resolves to, since a folder and a file offer different things.* `pane.on && sideState.open` is therefore the pane on screen, and an unknown value (a stale `_side` carried in from a file view) falls back silently, as an unknown `_mode` does — **to the first mode on offer, which is not always `preview`**: this folder's companions have no Preview at all (FS-11, D285, D460), so there the absent-or-unknown param resolves onward to Claude. An explicit choice that this target cannot offer is left in the URL untouched, so hopping out of a repository and back in does not silently reset the pane. There is still no separate mode, no `_mode` value and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (precisely the distinction the `preview` template got wrong). The pane's **header strip** is present in every pane state (loading skeleton, the neither-companion fallback hint), and it is the PANE's bar rather than the row's: the way out of the column at its left end, the three-mode pill at its right (`SideChrome`, the one component both this pane and the file preview's sidebar render). *This used to also carry the previewed row's identity between the two, back when there was a previewed row to carry (FS-11's old text); since D460 there is not, and the strip is exactly these two controls and nothing else.* **Closing and reopening is ONE AFFORDANCE IN TWO PLACES, chosen by state:** closing is the chevron in that header, on the seam the column collapses toward; reopening cannot live there, since a shut column hosts nothing, so that half is a mode-icon button in the listing's **search row** — the folder's own chrome, beside the folder's own search box — rendered *only* while the pane is shut, wearing the icon of the mode that would come back. Both on screen at once is two buttons for one bit of state a few pixels apart across a divider, which reads as a rendering fault rather than as a choice. *This clause used to specify the toggle as **one affordance in two places, chosen by state**: an icon-only "Hide preview" as the first item of the pane's header strip (on the seam it collapses toward), and a labelled glyph + "Preview" button in the listing's search row for reopening, the two never coexisting. **What was deleted is the TOGGLE, not that shape.** An on/off button for a bit the layout can answer itself went with `?preview=true`; the two-place, chosen-by-state affordance above is a **mode** control — it says which of the three would return, which is a question no measurement answers — and it keeps the rule that killed the old one, **closing needs a way back**, because its reopening half renders exactly while the pane is down. The **drag-to-close gesture** stays deleted: a divider dragged to the right edge shut the pane with no reopen affordance in that era, so it stayed shut until the window was resized. The drag now just holds at the pane's floor, which is what the clamp already did all the way to the edge.*
-- **FS-11** **NOTHING IN THE PANE IS SELECTION-DRIVEN ANY MORE** (D460, superseding this bullet's entire earlier history). All three modes — `claude`, `git`, `mcp` — are about the OPEN FOLDER, always; the fallback the pane falls into when neither `claude` nor `git`/`mcp` is offered (a mount-backed folder) renders a plain folder-scoped hint, not a selected row's template. There is therefore nothing left to settle or debounce: the pane's key, its subject and its `_file` target are all a function of `(mode, folder)` alone, and none of the three changes when the listing's selection moves. *This bullet used to describe a `preview` mode that rendered whatever row was currently selected, following the lead once it had settled (`listing/pane-settle.ts`'s 250 ms debounce, guarding against one `agent.py` spawn per held arrow key) — the whole machine D280's "a selected FOLDER is previewed as a folder", D281's "the selected row's own default view" and D284's "nothing selected previews the folder itself" built up over three decisions. D460 deleted the READING, not merely refined it: a single click now opens a row instead of merely selecting it (FS-5/FS-15), which was only safe to do once nothing downstream — including this pane — still needed a click to leave a row selected-but-unopened in order to preview it. `useSettledLead`/`listing/pane-settle.ts` are deleted along with their only caller.*
+- **FS-11** **NOTHING IN THE PANE IS SELECTION-DRIVEN ANY MORE** (D460, superseding this bullet's entire earlier history). All three modes — `claude`, `git`, `mcp` — are about the OPEN FOLDER, always; the fallback the pane falls into when neither `claude` nor `git`/`mcp` is offered (a mount-backed folder) renders a plain folder-scoped hint, not a selected row's template. There is therefore nothing left to settle or debounce: the pane's key, its subject and its `_file` target are all a function of `(mode, folder)` alone, and none of the three changes when the listing's selection moves. *This bullet used to describe a `preview` mode that rendered whatever row was currently selected, following the lead once it had settled (`listing/pane-settle.ts`'s 250 ms debounce, guarding against one `agent.py` spawn per held arrow key) — the whole machine D280's "a selected FOLDER is previewed as a folder", D281's "the selected row's own default view" and D284's "nothing selected previews the folder itself" built up over three decisions. D460 deleted the READING, not merely refined it: a single click now opens a row instead of merely selecting it (FS-5/FS-15), which was only safe to do once nothing downstream — including this pane — still needed a click to leave a row selected-but-unopened in order to preview it. `useSettledLead`/`listing/pane-settle.ts` are deleted along with their only caller.* **The pane's iframe carries `_noopen=1`, not `_preview=1`** (D622): it is a fully interactive surface, not a thumbnail, and `_preview=1` would have marked it (and everything it frames, `#leftframe` included) `IS_THUMBNAIL` for `runtime.js` — silently disabling `fused.daemon.*` inside a pane the user types in. `_noopen=1` asks `GET /render` for only the one thing this call site wants: do not record this render as an app open (D301).
   - **there is no per-subject branching left to list.** Until D460 this bullet continued as four sub-cases — a **file** → its default template in an iframe, a **directory** → no `preview` and a fall-through to `claude`, a directory's **`_listing`** mode → the real shell `Listing` component embedded, **nothing selected** → the chat about the folder via `paneSideTarget`'s null-row fallback — because the pane's target USED TO be a question with four possible answers. It no longer is: `claude`/`git`/`mcp` all read `folder` and nothing else (`listing/pane-side.ts` has no `paneSideTarget`/`isFolderBoundSide` any more — deleted, not merely defaulted), so there is nothing left to branch on. The one case that still renders differently is the **neither-companion fallback** — a mount-backed folder, both gates refusing — which shows a plain folder-scoped hint rather than any row's template; it is not reached by a row selection either, only by what the folder itself offers. The embedded `_listing` peek is gone with the rest of this: no selection state ever mounts a nested `Listing` in this pane any more, and the `embedded` prop that existed for it has no caller left (`Listing.tsx`).
 - **FS-12** **Draggable divider** between list and pane. **The split is a FRACTION of the split container, not a pixel width** — state is `{ on, frac }`, rendered as a percentage `flex-basis`, defaulting to **`PANE_DEFAULT_FRAC = 0.3`, which is the file view's sidebar share imported by name** (`COMPANION_FRAC`, `lib/side-width.ts`): after D280/D281 a folder's pane holds the same companion the file view's sidebar holds, so **one number serves both** and neither surface spells it (D282 — the owner's "they are the same concept now"). Two literals are how they came to differ. A proportion is what the user actually chose ("about a third of the window to the list"), and it is the only form of the answer that stays right when the window resizes: the previous model resolved a measured half into pixels at mount and then never rescaled, so a pane sized on a wide monitor became the whole view on a laptop. A percentage also needs **no measurement** — it is correct before the first paint, whatever the container turns out to be — so the measuring layout effect and its unmeasurable-container fallback (`PANE_FALLBACK_W = 420`) are both gone. **The pixel floors remain, and they are where the pixels live now:** the drag runs the cursor's distance from the container's right edge through `clampSharedPaneWidth` (`listing/pane-math.ts`) — pane ≥ 220 px, list ≥ 60 px, and (see below) a maximum SHARE too — and the RENDERED fraction is `clamped ÷ container width`. **Since D460 what gets STORED is the clamped PIXEL width itself, in the same shared module variable the file view's sidebar drags** (`lib/side-store.ts`) — a drag on either surface is visible on the other for the rest of the session. Reading it back re-derives the fraction against THIS container and THIS pane's own floors (`paneFracFromSharedWidth`), never the file sidebar's wider ones, so sharing the number does not mean sharing the floor.
 
@@ -275,6 +275,14 @@ const { text, model, usage } = await fused.ai(prompt, {
   old process-per-call design bought.
   **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
   page that calls it (§18.2) — gate with `fused.env === "local"` instead.
+  **Visible while it runs**: each call opens one server-owned row in the status
+  bar's Activity section (§36), titled with the prompt and detailed "Claude —
+  remote" so remote work is tellable from a local model's, dropped the moment
+  the call succeeds. It is not cancellable (nothing in the relay polls the flag,
+  and a ✕ that does nothing is worse than none), it says when it is waiting its
+  turn behind another call rather than looking busy, and it heartbeats for as
+  long as the call runs (AI-5h) — without which any call slower than
+  `STALE_AFTER_S` reported itself as no longer being reported.
 
 ### 4.2 `runPython(path, params)`
 
@@ -473,7 +481,7 @@ const page = await fused.runPython("./reader.py",
 - **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Comment on preview"** outbound and **"Back to chat"** on the return (D239; the verb was "Annotate" until D298 relabelled the whole feature "Comment" in the UI, ids and params unchanged), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
 - **PT-16** **The chat template's contract: one gate, TWO pane shapes plus a no-pane case, and a system prompt that cannot disagree with the pane (D237, revised by D239).** `templates/claude/` is the single chat mode (PT-14). Because it is bound to two kinds of target it branches on kind in exactly two places — the left pane and the prompt — and both read the **same** predicate, `shared/app_entry.entry_html`, so what the prompt claims is beside the chat is what is beside the chat. *This clause said "three pane shapes" until D239: the third shape — fused-render's own file browser framed for a folder with no app entry — is **removed**, and an ordinary folder now gets a full-width chat with no pane at all. The predicate and the two-places rule are unchanged; what changed is that one of the two answers is "there is nothing beside the chat", and the prompt says nothing about a pane there because there is none.*
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows — so the gate exists for **one** refusal: a **mount-backed** path (`shared/appenv.is_mount_backed`). The bytes under the mounts dir arrive over FUSE and an agent turned loose there rewrites the remote tree, the same reason every peer gate refuses those paths (MD-11). This is a **capability deliberately removed** relative to the deleted plain chat template, which shipped no `condition.py` at all and therefore did offer a chat over an rclone/NFS mount. **Rejected:** deleting the gate outright now that everything else about it is always-true — an always-true gate would be worth removing, a gate that still says no to remote mounts is not.
-  - **The left pane, TWO shapes and a no-pane case (D239).** A **file** → the file in its OWN default template: `GET /api/fs/stat` for the target, drop `conditional` entries (their verdict lives behind `/api/fs/conditions` and is deliberately not fetched — an unresolved gate reads as "not offered") and drop the chat mode itself (a pane framing the chat again is a mirror, not a preview), then frame `/render?path=<that template>&_file=<file>` — or the file itself when the entry is the `_render` sentinel. That is the shell's own `defaultTemplate` rule (PT-8) reused rather than a per-extension table inside the chat, which would drift from the registry on the next rebinding and ignore a user override (§16); and it is a **default, not a lock** — the pane-local `leftmode` param (PT-15) selects any other offerable entry from that same stat payload, unknown values falling back silently as in PT-9. **The picker sits on the pane it controls, at the RIGHT-HAND end of it:** in the split layout it is a row across the top of the LEFT column, not a control in the chat pane's strip across the divider — and it is pushed to that row's far end (`margin-left: auto`, scoped to `#leftbar`), because the bar exists to carry this one control and a lone control hard against the left edge reads as a LABEL for the pane rather than as a switch on it. It is a **listbox, not a `<select>`**, and the reason is the ICON: its rows show each template's own `icon.svg` beside the mode name, exactly as the shell's mode menu does (`templateModeIcon`), and an `<option>` renders text in every engine. The icon needs no new server plumbing — stat's `templates` entries already carry the icon's absolute path (PT-11), `/api/fs/raw` serves it, and it is drawn as a mask filled with `currentColor` so one flat glyph follows the row's ink in both themes; a template with no `icon.svg` (and the `_render` sentinel) falls back to the shell's own lettered box. The rows are real `<button>`s inside a `role="listbox"` popup under an `aria-haspopup` trigger — the idiom the `reader` template's voice menu already uses here — so focus, Enter and Space stay the platform's job and only the arrows and Escape are the template's — the same grammar the explorer's own preview pane follows (FS-10). Below the 800px breakpoint there is no persistent left column to hang a bar on, so the *same* element moves back into the shared `#anntools` strip, the one row both narrow views keep; crossing the breakpoint relocates it live, with no reload and no effect on `leftmode` itself. It is hidden entirely when the target offers fewer than two views. An **app folder** (an entry page resolves) → that entry page, via `/render`. **The entry rule is `index.html`, else the FIRST top-level `.html` in name order** (`shared/app_entry.entry_html`, `sorted` so two consumers cannot land on different pages). It used to call several pages without an `index.html` *ambiguous* and resolve to None, which meant every consumer dead-ended on such a folder — this pane drew nothing, the `app` mode drew "no entry page", and a materialised snapshot of one showed that notice instead of the app at that commit. Owner call on the user's own wording ("for multiple html files, just pick the first one"): a deterministic first page is one click from any of the others once the folder is open, and None was one click from nowhere. The consequence here is that a folder with several pages and no index now HAS a pane (and the `app_state` tool with it) where it previously had none. Everything the pane implies rides on those two and nothing else: the annotation layer (§17), the 800px collapse (PT-15) and the `app_state` tool (below). A folder with **no** app entry → **no pane at all**: no `#leftframe`, no `#divider`, no view toggle, no annotate affordance, and the conversation owns the full width. *What this overturns.* D237 framed **`/explorer/embed/<dir>?preview=false&modechip=false`** there — the chrome-free navigable shell (LM-4/D39), a real file browser beside the chat — and it was chosen as the fix for code that used to `throw` (`no app entry…`, a permanent error panel beside a working chat). It fixed the throw and left the real problem untouched: **nothing flowed back from that pane.** The template has no `postMessage` and no message listener, so selecting a file in the browser attached nothing, fed nothing to the composer and changed no agent context; annotate was hard-disabled over it by construction (no element of a file listing is a thing a pin could mean anything about); and the `leftmode` picker was inert for it, since neither directory branch populates `paneEntries`. So it was half the width of a folder chat spent on a view that reported to nobody, for a question the agent's ordinary file tools already answer. **Deliberately given up:** the `state.url` backchannel — embed navigation rewrote the iframe's path, so `app_state` could tell the agent which folder or file the user had walked into. It was the one signal that did flow back, and it goes with the pane. **Both embed params go too, and they go differently:** `modechip=false` loses its only producer in the codebase, so its plumbing is **removed from its consumer** as well (`Preview.tsx` no longer reads it and the corner chip has no opt-out) — a URL param no caller can produce is a branch nothing can test, and if another template ever frames an embed of its own counterpart's target the opt-out returns with that caller; `preview=false` was kept at the time, because the listing wrote it for itself when the user closed the pane (`listing/pane.ts`), and it has since gone the same way — the pane lost its toggle (first to a measurement of the split container, then to nothing at all — D282 deleted the measurement too, so a Listing that has a pane simply has one), and with the toggle went the only writer of that param. What the param MEANT survives it: a framed listing still may not open a pane of its own, and that rule now rides on `snapshot=1` (PT-14 above), the flag the one remaining framer already writes. With the folder embed gone, `/embed` is **no longer used as a pane by any template**, so D235's rejection of it for a FILE target stands unqualified. *The no-pane case is a designed ABSENCE, not a missing element, and the difference is load-bearing.* Shipping the markup without `#leftframe` cannot work: the frame's `load` hook is wired at top level, so with no element to wire that statement throws a `TypeError` and aborts **every declaration after it** — the agent poll loop, the annotate switch, the composer wiring — and the boot `catch` cannot report it either, because its own first statement removes that same missing element, so the throw lands inside the catch and neither the error panel nor `pushAppLog` runs. A blank page with a working-looking composer. So the markup ships the column exactly as it does for a file, every declaration initialises against it, and `enterNoPane()` takes it away **afterwards** — ordering that is guaranteed rather than hoped for, since the template is one `<script>` and the loader reaches that branch only after `await`ing a fetch. Three subtrees are removed (`#left`, `#divider`, and `#anntools` — which is a child of `#chat`, so it survives removing the column and would otherwise sit there as an empty bordered row of controls for a pane that is not there). One `noPane` flag then short-circuits `applySplit`, `applyNarrowView`, `renderAnn` and `annSetMode`, so nothing writes to a detached node or to a param describing a layout this target does not have. **Stale params are ignored SILENTLY and never stripped:** `split`, `paneview`, `leftmode`, `annmode` and `annotations` left on a folder URL by an old bookmark open a full-screen chat with no error — the same forgiving posture PT-9 takes for an unknown `_mode` — and rewriting them would break that bookmark's round trip for the day the folder grows an `index.html` and gets its pane back. **Also enforced, not documented:** `appEntry` (the only field in the app-state payload that distinguishes the user's real app from our own UI) is never set on this path, and the "pane unreadable" sentence no longer names "no app entry" among its causes, because that condition now produces no pane and therefore no tool to ask. **The composer's screenshot BUTTON (D285), which is the second version of this control.** Both composers carry `#viewshot` / `#hviewshot`, a camera pill that **captures on click**: one picture of the entire visible pane (`shotCapturePane`, caps `SHOT_VIEW_EDGE` 1600 / `SHOT_VIEW_BYTES` 900 KB, uploaded into the same shots directory the crops use) which then hangs above the composer as a **chip with a thumbnail**, in the same row as the annotation chips and removable with the same ✕. On send it rides the message as the `<pane-shot>` block (`paneShotBlock`, `composeOutgoing`'s fourth argument), placed after the app-state block and before the annotations — an order that is now a READING order for the model rather than a constraint on the readers, because the annotation block has a tag of its own (`<annotations>`, holding one markdown stanza per pin — so all three strips are position-independent). It used to be a hard constraint: `stripAnnBlock` matched only a position-zero preamble, so anything wedged in front of the notes silently no-opped that strip and leaked raw JSON into the transcript as the user's own words. The first version was a per-message **toggle**, and it was deleted — "it doesn't make sense": what went out was a picture nobody had seen, of a moment nobody chose, behind a switch that had to be noticed, armed and re-armed every turn, and the capture ran during the send where a failure could only degrade silently. Capturing on click answers each of those in turn — the picture is visible before it goes, the moment is the user's, a failure becomes a chip that says so, and nobody who does not press the button pays a rasterise, an encode or a file. **Seeing the picture (D286), the pass that followed the first user test — which shipped the feature and failed the user: "not obvious that it took a screenshot", "no way to preview it before sending", "not intuitive".** Four answers, all in the template. (1) A **shutter flash** — a white sheet over the photographed pane, 340ms, opacity-only, appended to `annHl.parentNode` (our `#leftview` split, the injected shadow root hosted) and animated with the Web Animations API rather than from either stylesheet; it fires on the click, BEFORE the capture, and cannot reach the capture because `cloneNode` does not clone a shadow tree. The chip's own entrance animation is the second half, for the eye that has already moved to the composer. (2) A **viewer** (`#shotview`): every thumbnail this template draws — the pending chip's and every sent turn's — is a real `<button>` built by one `shotThumbBtn`, and opens the picture full size with the path, the `viewNote` caveat that had ridden the wire since D208 with nowhere to be said, Discard (offered only while the shot is still `paneShot`, by identity) and Close; Escape leads the `escapeAction` precedence because it is modal. Clicking the picture swaps fitted ⇄ natural size with the box scrolling, because `position: fixed` is the TEMPLATE's viewport and in the sidebar that is a ~440px column a 1600px capture fits into at ~330px. (3) A **sent turn keeps its picture**: one `shotReceipt` builds the row for a live send and for a restored one, and `paneShotIn` reads `{view, viewNote}` back out of the `<pane-shot>` block so a reopened session renders the shot from `fused.rawUrl(path)` → `/api/fs/raw` (verified end-to-end), with a pruned temp file saying so in words rather than showing a broken-image glyph. (4) **Discoverability**: the button moved from among the three dropdowns (where it read as a fourth setting) to the seat beside Send, the glyph became a camera rather than a framed landscape, and the tooltip became one verb-first sentence. Shipped with it, because the same wire was leaking one surface over: **`sessionTitle`** — the chat list named conversations "<pane-shot> The user attached a pi…" and "The user annotated 1 element in the l…", since a session preview is the head of a message that BEGINS with a machine-written block and is truncated before the closing tag any strip matches on. **Visibility follows `annCapable()`**, the annotate switch's own question, so the buttons are hidden where the host shows nothing marked and removed outright by `enterNoPane`; the narrow chat view hides the BUTTON (a view showing no preview offers no features of the preview) and keeps the CHIP (it is chat content, about to be sent). **What was already there and was reused rather than reinvented:** the whole capture machinery (`shotPane`, `shotEncode`, the shots directory and its one `Read(//<shots>/**)` grant) is SHARED with the annotation crops (§17); and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` never left, because sessions on disk carry those blocks and a restored transcript must show what the user typed rather than a screenful of JSON — so the button rewrote an existing wire format instead of inventing a second one. Reading an old wire format is a permanent obligation; writing one again is a choice this control made deliberately. **A capture that is actually a picture of the screen (D287), and the two ways it was not.** *Scroll.* `cloneNode` copies attributes and `scrollTop`/`scrollLeft` are PROPERTIES, so the clone of a scrolled page was a clone of that page at the top; `shotPane` compensated only for `win.scrollX/Y`, which covers a document that scrolls itself and no app in this repo, all of which scroll an inner `overflow: auto` box. `shotInlineStyles` now records `{clone, x, y}` for every scrolled element as it walks (the same guarded descent that already pairs a live node with its clone — a second walk would pair by index and land one element's offset on another), never for the root (`src` is `<body>`, whose scroll IS the window's), and `shotApplyScroll` puts each box back by prepending `transform: translate(-x, -y)` to each CHILD's inline style — expressible in markup, which is all the serialized SVG carries, layout-neutral so a flex scroller is not rearranged, composed with (never replacing) any transform the walk already wrote, and skipped for `position: sticky`/`fixed` children, which do not move with a scroll. *Images.* An `<svg>` loaded through an `<img>` renders with external resource loading disabled at every origin, so every `<img src="http…">` in the clone drew as a broken glyph — including one served by our own `/api/fs/raw`. `shotInlineImages` fetches each distinct URL (from `img.currentSrc` and from every `url(…)` in the clone's inline styles, which is where the computed `background-image` already sits) and rewrites it to a `data:` URL, capped at `SHOT_IMG_MAX` 30 distinct URLs and re-encoded through a canvas past `SHOT_IMG_MAX_BYTES` 256 KB; the style walk now stops `SHOT_IMG_MS` 1500 ms before the capture's deadline so the fetches have a tail. A cross-origin URL with no CORS headers falls back to drawing the already-loaded element into a canvas; a genuine failure becomes a dashed "image not captured" box the size of the picture (a broken glyph reads as a bug in the page being photographed, and removing the element would redraw the layout around a hole the screen did not have) and is counted into `shotImageNote` — a caveat that rides the pane shot AND every crop, and that is deliberately not one of `shotPaneNote`'s `incomplete` causes, because it is BOUNDED and visible where those are unbounded. `<picture><source>` and the `srcset`/`sizes` attributes are dropped so nothing re-resolves over the rewritten `src`. Order inside `shotPane` is load-bearing: styles → images → `shotRasterise` (whose own data:-URL `<img>`s would otherwise be paired against the source's real images) → scroll (so a canvas swapped for an `<img>` moves with its box). The annotation crops inherit both fixes, being cuts out of that one bitmap. **Pictures the user already HAS (D287): paste and drag-and-drop.** Both textareas take a `paste`, and `#chat` takes a drag (four listeners, all gated on `dataTransfer.types` containing `Files`, with a COUNTED `dropping` class because dragenter/dragleave fire per child element); any image in either is uploaded through the existing `fused.uploadFile` into the SAME shots directory — already the one path `--allowed-tools` pre-approves a `Read` of, already pruned, already served back by `/api/fs/raw` — and becomes a chip beside the camera's. `preventDefault` fires only once a picture has actually been found, so an ordinary text paste still reaches the box. Caps: `SHOT_ATTACH_MAX` 4 pictures per message, `SHOT_ATTACH_MAX_BYTES` 4 MB each; over either, the file still becomes a chip carrying the reason, in the `{view: null, viewNote}` shape a failed capture already wears. `paneShot` is now `shotAttached`, a LIST of `{kind, view, viewNote, thumb, name}` — one list because the chip, the viewer, the ✕, the receipt, the wire block and the restore treat both kinds identically and `kind` decides only the words, with the pane keeping ONE seat inside it (a second camera click replaces it, D285's rule intact). The `<pane-shot>` payload is now always a JSON ARRAY carrying `kind` per entry, so the model can tell a picture of this pane from a photo the user brought in; `paneShotIn` reads that AND the bare object every older session holds, returning a one-element list either way, and `MARKER_IMG` ("🖼 images") joins `MARKER_ANN`/`MARKER_VIEW` in the `MARKERS` set for a wordless send of pasted pictures aloneREMOVED (owner call): the composer's whole-pane screenshot pill.** Both composers carried a per-message toggle (`#viewshot`, `#hviewshot`) that attached one picture of the entire visible pane to the next send, as its own `<pane-shot>` wire block with its own caps and its own receipt row. It is gone — "it doesn't make sense": the question it answered ("the whole layout is wrong") is one the agent can ask about by reading the page, and the cost was a per-send rasterise, encode and uploaded file behind a toggle a user had to notice, arm and re-arm. **What stays, and why the difference matters:** the capture machinery itself (`shotPane`, `shotEncode`, the shots directory) is SHARED with the annotation crops (§17), which are the user's own act of pointing at something, so none of it moves; and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` stay although nothing writes one any more, because sessions already on disk carry those blocks and a restored transcript must still show what the user typed rather than a screenful of JSON. Reading an old wire format is a permanent obligation; being able to write it is not. **Rejected:** the `throw` (an error panel for the ordinary case of a folder that is not an app); keeping the embed as a read-only browser (it is the reporting-to-nobody problem, restated as a feature); and hiding the column with CSS while leaving it in the document (the elements would stay live, `shotPane` would still rasterise them and the removed controls would still be focusable — a hidden pane is a pane).
+  - **The left pane, TWO shapes and a no-pane case (D239).** A **file** → the file in its OWN default template: `GET /api/fs/stat` for the target, drop `conditional` entries (their verdict lives behind `/api/fs/conditions` and is deliberately not fetched — an unresolved gate reads as "not offered") and drop the chat mode itself (a pane framing the chat again is a mirror, not a preview), then frame `/render?path=<that template>&_file=<file>` — or the file itself when the entry is the `_render` sentinel. That is the shell's own `defaultTemplate` rule (PT-8) reused rather than a per-extension table inside the chat, which would drift from the registry on the next rebinding and ignore a user override (§16); and it is a **default, not a lock** — the pane-local `leftmode` param (PT-15) selects any other offerable entry from that same stat payload, unknown values falling back silently as in PT-9. **The picker sits on the pane it controls, at the RIGHT-HAND end of it:** in the split layout it is a row across the top of the LEFT column, not a control in the chat pane's strip across the divider — and it is pushed to that row's far end (`margin-left: auto`, scoped to `#leftbar`), because the bar exists to carry this one control and a lone control hard against the left edge reads as a LABEL for the pane rather than as a switch on it. It is a **listbox, not a `<select>`**, and the reason is the ICON: its rows show each template's own `icon.svg` beside the mode name, exactly as the shell's mode menu does (`templateModeIcon`), and an `<option>` renders text in every engine. The icon needs no new server plumbing — stat's `templates` entries already carry the icon's absolute path (PT-11), `/api/fs/raw` serves it, and it is drawn as a mask filled with `currentColor` so one flat glyph follows the row's ink in both themes; a template with no `icon.svg` (and the `_render` sentinel) falls back to the shell's own lettered box. The rows are real `<button>`s inside a `role="listbox"` popup under an `aria-haspopup` trigger — the idiom the `reader` template's voice menu already uses here — so focus, Enter and Space stay the platform's job and only the arrows and Escape are the template's — the same grammar the explorer's own preview pane follows (FS-10). Below the 800px breakpoint there is no persistent left column to hang a bar on, so the *same* element moves back into the shared `#anntools` strip, the one row both narrow views keep; crossing the breakpoint relocates it live, with no reload and no effect on `leftmode` itself. It is hidden entirely when the target offers fewer than two views. An **app folder** (an entry page resolves) → that entry page, via `/render`. **The entry rule is `index.html`, else the FIRST top-level `.html` in name order** (`shared/app_entry.entry_html`, `sorted` so two consumers cannot land on different pages). It used to call several pages without an `index.html` *ambiguous* and resolve to None, which meant every consumer dead-ended on such a folder — this pane drew nothing, the `app` mode drew "no entry page", and a materialised snapshot of one showed that notice instead of the app at that commit. Owner call on the user's own wording ("for multiple html files, just pick the first one"): a deterministic first page is one click from any of the others once the folder is open, and None was one click from nowhere. The consequence here is that a folder with several pages and no index now HAS a pane (and the `app_state` tool with it) where it previously had none. Everything the pane implies rides on those two and nothing else: the annotation layer (§17), the 800px collapse (PT-15) and the `app_state` tool (below). A folder with **no** app entry → **no pane at all**: no `#leftframe`, no `#divider`, no view toggle, no annotate affordance, and the conversation owns the full width. *What this overturns.* D237 framed **`/explorer/embed/<dir>?preview=false&modechip=false`** there — the chrome-free navigable shell (LM-4/D39), a real file browser beside the chat — and it was chosen as the fix for code that used to `throw` (`no app entry…`, a permanent error panel beside a working chat). It fixed the throw and left the real problem untouched: **nothing flowed back from that pane.** The template has no `postMessage` and no message listener, so selecting a file in the browser attached nothing, fed nothing to the composer and changed no agent context; annotate was hard-disabled over it by construction (no element of a file listing is a thing a pin could mean anything about); and the `leftmode` picker was inert for it, since neither directory branch populates `paneEntries`. So it was half the width of a folder chat spent on a view that reported to nobody, for a question the agent's ordinary file tools already answer. **Deliberately given up:** the `state.url` backchannel — embed navigation rewrote the iframe's path, so `app_state` could tell the agent which folder or file the user had walked into. It was the one signal that did flow back, and it goes with the pane. **Both embed params go too, and they go differently:** `modechip=false` loses its only producer in the codebase, so its plumbing is **removed from its consumer** as well (`Preview.tsx` no longer reads it and the corner chip has no opt-out) — a URL param no caller can produce is a branch nothing can test, and if another template ever frames an embed of its own counterpart's target the opt-out returns with that caller; `preview=false` was kept at the time, because the listing wrote it for itself when the user closed the pane (`listing/pane.ts`), and it has since gone the same way — the pane lost its toggle (first to a measurement of the split container, then to nothing at all — D282 deleted the measurement too, so a Listing that has a pane simply has one), and with the toggle went the only writer of that param. What the param MEANT survives it: a framed listing still may not open a pane of its own, and that rule now rides on `snapshot=1` (PT-14 above), the flag the one remaining framer already writes. With the folder embed gone, `/embed` is **no longer used as a pane by any template**, so D235's rejection of it for a FILE target stands unqualified. *The no-pane case is a designed ABSENCE, not a missing element, and the difference is load-bearing.* Shipping the markup without `#leftframe` cannot work: the frame's `load` hook is wired at top level, so with no element to wire that statement throws a `TypeError` and aborts **every declaration after it** — the agent poll loop, the annotate switch, the composer wiring — and the boot `catch` cannot report it either, because its own first statement removes that same missing element, so the throw lands inside the catch and neither the error panel nor `pushAppLog` runs. A blank page with a working-looking composer. So the markup ships the column exactly as it does for a file, every declaration initialises against it, and `enterNoPane()` takes it away **afterwards** — ordering that is guaranteed rather than hoped for, since the template is one `<script>` and the loader reaches that branch only after `await`ing a fetch. Three subtrees are removed (`#left`, `#divider`, and `#anntools` — which is a child of `#chat`, so it survives removing the column and would otherwise sit there as an empty bordered row of controls for a pane that is not there). One `noPane` flag then short-circuits `applySplit`, `applyNarrowView`, `renderAnn` and `annSetMode`, so nothing writes to a detached node or to a param describing a layout this target does not have. **Stale params are ignored SILENTLY and never stripped:** `split`, `paneview`, `leftmode`, `annmode` and `annotations` left on a folder URL by an old bookmark open a full-screen chat with no error — the same forgiving posture PT-9 takes for an unknown `_mode` — and rewriting them would break that bookmark's round trip for the day the folder grows an `index.html` and gets its pane back. **Also enforced, not documented:** `appEntry` (the only field in the app-state payload that distinguishes the user's real app from our own UI) is never set on this path, and the "pane unreadable" sentence no longer names "no app entry" among its causes, because that condition now produces no pane and therefore no tool to ask. **The composer's screenshot BUTTON (D285), which is the second version of this control.** ONE `#viewshot` button, a camera that **captures on click** — it sat beside Send in both composers until D621 moved it into the `#anncta` strip between Comment and Record, since it acts on the pane like they do and the strip is the one row the home card and the chat both keep (hidden while a mode is armed, like the mic; gated by `annPollTarget` / `enterNoPane` exactly as they are): one picture of the entire visible pane (`shotCapturePane`, caps `SHOT_VIEW_EDGE` 1600 / `SHOT_VIEW_BYTES` 900 KB, uploaded into the same shots directory the crops use) which then hangs above the composer as a **chip with a thumbnail**, in the same row as the annotation chips and removable with the same ✕. On send it rides the message as the `<pane-shot>` block (`paneShotBlock`, `composeOutgoing`'s fourth argument), placed after the app-state block and before the annotations — an order that is now a READING order for the model rather than a constraint on the readers, because the annotation block has a tag of its own (`<annotations>`, holding one markdown stanza per pin — so all three strips are position-independent). It used to be a hard constraint: `stripAnnBlock` matched only a position-zero preamble, so anything wedged in front of the notes silently no-opped that strip and leaked raw JSON into the transcript as the user's own words. The first version was a per-message **toggle**, and it was deleted — "it doesn't make sense": what went out was a picture nobody had seen, of a moment nobody chose, behind a switch that had to be noticed, armed and re-armed every turn, and the capture ran during the send where a failure could only degrade silently. Capturing on click answers each of those in turn — the picture is visible before it goes, the moment is the user's, a failure becomes a chip that says so, and nobody who does not press the button pays a rasterise, an encode or a file. **Seeing the picture (D286), the pass that followed the first user test — which shipped the feature and failed the user: "not obvious that it took a screenshot", "no way to preview it before sending", "not intuitive".** Four answers, all in the template. (1) A **shutter flash** — a white sheet over the photographed pane, 340ms, opacity-only, appended to `annHl.parentNode` (our `#leftview` split, the injected shadow root hosted) and animated with the Web Animations API rather than from either stylesheet; it fires on the click, BEFORE the capture, and cannot reach the capture because `cloneNode` does not clone a shadow tree. The chip's own entrance animation is the second half, for the eye that has already moved to the composer. (2) A **viewer** (`#shotview`): every thumbnail this template draws — the pending chip's and every sent turn's — is a real `<button>` built by one `shotThumbBtn`, and opens the picture full size with the path, the `viewNote` caveat that had ridden the wire since D208 with nowhere to be said, Discard (offered only while the shot is still `paneShot`, by identity) and Close; Escape leads the `escapeAction` precedence because it is modal. Clicking the picture swaps fitted ⇄ natural size with the box scrolling, because `position: fixed` is the TEMPLATE's viewport and in the sidebar that is a ~440px column a 1600px capture fits into at ~330px. (3) A **sent turn keeps its picture**: one `shotReceipt` builds the row for a live send and for a restored one, and `paneShotIn` reads `{view, viewNote}` back out of the `<pane-shot>` block so a reopened session renders the shot from `fused.rawUrl(path)` → `/api/fs/raw` (verified end-to-end), with a pruned temp file saying so in words rather than showing a broken-image glyph. (4) **Discoverability**: the button moved from among the three dropdowns (where it read as a fourth setting) to the seat beside Send, the glyph became a camera rather than a framed landscape, and the tooltip became one verb-first sentence. Shipped with it, because the same wire was leaking one surface over: **`sessionTitle`** — the chat list named conversations "<pane-shot> The user attached a pi…" and "The user annotated 1 element in the l…", since a session preview is the head of a message that BEGINS with a machine-written block and is truncated before the closing tag any strip matches on. **Visibility follows `annCapable()`**, the annotate switch's own question, so the buttons are hidden where the host shows nothing marked and removed outright by `enterNoPane`; the narrow chat view hides the BUTTON (a view showing no preview offers no features of the preview) and keeps the CHIP (it is chat content, about to be sent). **The pixels come off the SCREEN first (D621):** `shotPane` — the one rasteriser every capture shares (the button, the send-time overview, the crops) — now tries `shotNativePane` before anything else: the frame's content box in screen units (a pointer-learned top-viewport origin walked up through `frameElement` offsets, the same arithmetic as the shell's `appShot.ts`) to `POST /api/capture/shot-region`, the §45 still, with our own pin layer, ring and flash hidden for the two frames the shot takes and the shell's `data-capture-shooting` hook stamped on the frame's document. No share prompt, any browser, and WebGL maps are real pixels rather than a blank region with a caveat. Every refusal — a 409 (remembered as `shotNativeOff`, also set from the `sources().screenshot` probe), a 400 for a rect off the display, a hidden or too-small frame, a cross-origin ancestor, an unreachable server — is a `null` that falls through to the two paths that were there before: the getDisplayMedia tab share for a cross-origin pane (whose arm-time pre-warm now runs only when the native still is off) and the clone-and-rasterise for a readable one. **What was already there and was reused rather than reinvented:** the whole capture machinery (`shotPane`, `shotEncode`, the shots directory and its one `Read(//<shots>/**)` grant) is SHARED with the annotation crops (§17); and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` never left, because sessions on disk carry those blocks and a restored transcript must show what the user typed rather than a screenful of JSON — so the button rewrote an existing wire format instead of inventing a second one. Reading an old wire format is a permanent obligation; writing one again is a choice this control made deliberately. **A capture that is actually a picture of the screen (D287), and the two ways it was not.** *Scroll.* `cloneNode` copies attributes and `scrollTop`/`scrollLeft` are PROPERTIES, so the clone of a scrolled page was a clone of that page at the top; `shotPane` compensated only for `win.scrollX/Y`, which covers a document that scrolls itself and no app in this repo, all of which scroll an inner `overflow: auto` box. `shotInlineStyles` now records `{clone, x, y}` for every scrolled element as it walks (the same guarded descent that already pairs a live node with its clone — a second walk would pair by index and land one element's offset on another), never for the root (`src` is `<body>`, whose scroll IS the window's), and `shotApplyScroll` puts each box back by prepending `transform: translate(-x, -y)` to each CHILD's inline style — expressible in markup, which is all the serialized SVG carries, layout-neutral so a flex scroller is not rearranged, composed with (never replacing) any transform the walk already wrote, and skipped for `position: sticky`/`fixed` children, which do not move with a scroll. *Images.* An `<svg>` loaded through an `<img>` renders with external resource loading disabled at every origin, so every `<img src="http…">` in the clone drew as a broken glyph — including one served by our own `/api/fs/raw`. `shotInlineImages` fetches each distinct URL (from `img.currentSrc` and from every `url(…)` in the clone's inline styles, which is where the computed `background-image` already sits) and rewrites it to a `data:` URL, capped at `SHOT_IMG_MAX` 30 distinct URLs and re-encoded through a canvas past `SHOT_IMG_MAX_BYTES` 256 KB; the style walk now stops `SHOT_IMG_MS` 1500 ms before the capture's deadline so the fetches have a tail. A cross-origin URL with no CORS headers falls back to drawing the already-loaded element into a canvas; a genuine failure becomes a dashed "image not captured" box the size of the picture (a broken glyph reads as a bug in the page being photographed, and removing the element would redraw the layout around a hole the screen did not have) and is counted into `shotImageNote` — a caveat that rides the pane shot AND every crop, and that is deliberately not one of `shotPaneNote`'s `incomplete` causes, because it is BOUNDED and visible where those are unbounded. `<picture><source>` and the `srcset`/`sizes` attributes are dropped so nothing re-resolves over the rewritten `src`. Order inside `shotPane` is load-bearing: styles → images → `shotRasterise` (whose own data:-URL `<img>`s would otherwise be paired against the source's real images) → scroll (so a canvas swapped for an `<img>` moves with its box). The annotation crops inherit both fixes, being cuts out of that one bitmap. **Pictures the user already HAS (D287): paste and drag-and-drop — ANY file type since D612.** Both textareas take a `paste`, and `#chat` takes a drag (four listeners, all gated on `shotDragHasAttachment`: `dataTransfer.types` containing `Files` **or** `application/x-fused-path`, with a COUNTED `dropping` class because dragenter/dragleave fire per child element); anything in either is uploaded through the existing `fused.uploadFile` into the SAME shots directory — already the one path `--allowed-tools` pre-approves a `Read` of, already pruned, already served back by `/api/fs/raw` — and becomes a chip beside the camera's. `preventDefault` fires only once a picture has actually been found, so an ordinary text paste still reaches the box. Caps: **NONE, since D617** — no count cap and no byte cap. `SHOT_ATTACH_MAX` (4 per message) went the way D615's 25 MB did: every file in a paste or a drop attaches, sequentially, each with its own chip, and there is no overflow chip left because there is nothing for it to stand in for. One byte number survives, `SHOT_ATTACH_MAX_BYTES` 4 MB, and it is a **downscale trigger** for a picture (below) rather than a limit on anything: an 8 MB PNG shows nothing its 4 MB self does not, so it is resized. The 25 MB `SHOT_ATTACH_MAX_FILE_BYTES` that governed everything else (D612) is gone, along with `shotCapFor`: a log's, a dump's or a parquet's extra bytes ARE the content, and the ceiling protected nothing that was not already protected — the shots directory prunes itself (12h/200 files), the agent's `Read` truncates a long file at its own end, and `/api/fs/upload` enforces no size limit of its own. **Over the picture cap is a DOWNSCALE, not a refusal (D613):** every image's decodability is probed (`shotPixels` — `createImageBitmap`, then an `<img>` decode), and one whose pixels are readable is re-encoded through `shotEncode`'s own ladder at `SHOT_VIEW_EDGE` (1600px, the same edge a whole-pane capture is capped at) and uploaded as that copy — original `name`, extension from `shotExt` of the new blob, a `viewNote` saying what was done, a thumbnail of what actually went. An image this engine cannot decode (.tiff, .heic) has no downscale available and so travels WHOLE, with a `size` and NO thumbnail — answering, since D615, to no cap either. **An image this engine cannot decode (.tiff, .heic) is TRANSCODED BY THE SERVER (D614):** after the raw upload the page calls `agent.py`'s new `image_to_png` action, which re-checks the path is inside SHOTS (`_in_shots` — abspath/realpath/normcase/commonpath, so `shots-evil` is refused), decodes with Pillow (first frame of a multi-frame TIFF, mode coerced to RGB/RGBA) and on macOS falls back to `/usr/bin/sips -s format png` (20 s timeout) for the HEIC Pillow cannot open without `pillow-heif`, caps the longest edge at `SHOT_PNG_EDGE` (1600, the page's own `SHOT_VIEW_EDGE`) and writes a SIBLING `.png` beside the original — a JPEG quality ladder 90→60 `.jpg` where the PNG misses `SHOT_PNG_MAX_BYTES` (4 MB) — returning `{path, width, height, bytes, source_w, source_h}` or `{error}`, never raising. On success the attachment becomes an ordinary picture: `view` is the CONVERTED path (that is what the agent Reads), `thumb` is that file through `fused.rawUrl` (a URL a reload survives), no `size`, and a `viewNote` naming both formats and both pixel sizes. On failure it keeps the bytes-and-a-glyph shape above and the note says the agent probably cannot read the format either. Nothing is deleted — the original is what the user attached and the pruner already owns the directory. Exactly ONE thing still refuses — an upload that failed — and it becomes a chip in the `{view: null, viewNote, why}` shape a failed capture already wears, `why` being one short clause the chip and the receipt print INLINE (`shotFailLabel`: "no file — could not be saved") instead of hiding it in a `title`. Wherever there is a picture to show, the 🖼/📄 glyph is not drawn: a picture or a glyph, never both. `paneShot` is now `shotAttached`, a LIST of `{kind, view, viewNote, thumb?, name?, size?}` — one list because the chip, the viewer, the ✕, the receipt, the wire block and the restore treat both kinds identically and `kind` decides only the words, with the pane keeping ONE seat inside it (a second camera click replaces it, D285's rule intact). The `<pane-shot>` payload is now always a JSON ARRAY carrying `kind` per entry, so the model can tell a picture of this pane from a photo the user brought in; `paneShotIn` reads that AND the bare object every older session holds, returning a one-element list either way, and `MARKER_IMG` ("🖼 images") joins `MARKER_ANN`/`MARKER_VIEW` in the `MARKERS` set for a wordless send of pasted pictures alone — with `MARKER_FILE` ("📄 files") beside it since D612, for the send that carried a spreadsheet and no picture at all. **The fourth `kind`, and the one attachment that is NOT a copy (D612).** `shotIsImage` no longer GATES the attachment — only which cap applies, whether a thumbnail is made, and which word the wire uses: a non-picture rides the identical pipeline as `kind: "file"`, keeps its own extension (and none when it has none), carries its `size`, wears a doc glyph that is itself the button into the viewer (no thumbnail, and the viewer drops its `<img>` for a name/path/size line). **AND THE VIEWER PREVIEWS IT IN ITS OWN TEMPLATE (D616):** the glyph is what the chip and the receipt show — always, for every file — and the CLICK is what renders the thing. `shotViewOpen` asks `GET /api/fs/stat` for the attachment and takes the left pane's own decision about it through the left pane's own two functions (`paneOfferable`: drop the `conditional` entries and the chat mode, first one wins; then `paneSrcFor`), frames `/render?path=<that template>&_file=<the attachment>` — never `/embed`, which serves the React shell and nests the target one iframe deeper — with the shell's own display-only stamps (`_preview=1`, `_nofocus=1`) and its `THUMB_SEAL` sandbox (`allow-scripts allow-same-origin`, `allow=""`, `tabindex=-1`) mirrored into the vanilla-JS markup. The frame fills the same footprint the picture gets, a "loading preview…" line stands until its `load` fires (a folder venv's first render takes seconds), and EVERY close — scrim, Close, Discard, Escape — runs `shotViewUnframe`, which writes `src` back to `about:blank`: a template is a running document, and one left mounted behind a hidden modal keeps its warm worker and its polling alive for a preview nobody is looking at. No template for the extension, or a copy the pruner has deleted, is a `null` and the viewer is exactly what it was before this existed. An IMAGE keeps the picture viewer (a template is a worse view of pixels than the pixels), a refusal has no path to frame, and there is no iframe in a chip or a receipt at all — a composer holding a dropped folder would otherwise boot a template per file to draw icon-sized pictures nobody can read, and gets a `<pane-shot>` sentence saying it is not a picture at all, is read as TEXT, and will not parse if it is a binary format. A drop that carries `application/x-fused-path` (an absolute path per line) is preferred over `files` and attaches the REAL path with NO upload — the user already has that file, the agent is likely to EDIT it next, and a copy in a 12-hour-pruned directory cannot survive that; the page then sends `read_dirs` (a JSON array, the dirnames of its real-path attachments minus the shots dir) on the same `start` call as the message, and `agent.py`'s `_attach_dirs` validates it — absolute, existing, non-root, deduplicated, and since D617 UNCOUNTED (`_ATTACH_DIRS_MAX` is gone: the dirnames dedupe, so a multi-row drop out of one folder was always one rule) — into one `_read_rule` each on the spawn line beside the standing shots-dir rule. Per TURN, because the spawn is per turn. **No fused-render surface produces that payload yet:** the explorer's row drag is pointer-driven with no `dataTransfer` at all (FS-*), so the internal-drop half is a contract the chat honours and nothing currently exercisesREMOVED (owner call): the composer's whole-pane screenshot pill.** Both composers carried a per-message toggle (`#viewshot`, `#hviewshot`) that attached one picture of the entire visible pane to the next send, as its own `<pane-shot>` wire block with its own caps and its own receipt row. It is gone — "it doesn't make sense": the question it answered ("the whole layout is wrong") is one the agent can ask about by reading the page, and the cost was a per-send rasterise, encode and uploaded file behind a toggle a user had to notice, arm and re-arm. **What stays, and why the difference matters:** the capture machinery itself (`shotPane`, `shotEncode`, the shots directory) is SHARED with the annotation crops (§17), which are the user's own act of pointing at something, so none of it moves; and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` stay although nothing writes one any more, because sessions already on disk carry those blocks and a restored transcript must still show what the user typed rather than a screenful of JSON. Reading an old wire format is a permanent obligation; being able to write it is not. **Rejected:** the `throw` (an error panel for the ordinary case of a folder that is not an app); keeping the embed as a read-only browser (it is the reporting-to-nobody problem, restated as a feature); and hiding the column with CSS while leaving it in the document (the elements would stay live, `shotPane` would still rasterise them and the removed controls would still be focusable — a hidden pane is a pane).
   - **The system prompt** (`_split_system_prompt`) has a shape per pane shape, and is decided **per run, never cached**, so a folder being scaffolded into starts being described as a project the moment it becomes one. An **app folder** keeps the project wording (its HTML is an app fused-render serves through the `runPython` bridge; naming fused-render here rather than leaving it to the user's own `CLAUDE.md`, which we do not own — the D216 reliability argument). A **file** says whose page the pane is and that the viewer is never to be edited. An **ordinary folder** gets the folder-scoping instruction and **nothing about a pane** (D239): the paragraph that used to be here described fused-render's own file browser beside the chat and warned that `app_state` "reports the **browser**, not the folder", and it went with the pane it described — a prompt that tells the model what the user can see beside the conversation, when there is nothing beside the conversation, is a false claim about the screen. The **composer's placeholder** names the same three kinds and is set from the same resolution the pane already performs (stat's `is_dir`, then whether an entry html resolves) — *"Ask Claude about this **project** / **folder** / **file**…"*, with the markup shipping the kind-free *"Ask Claude…"* until stat answers; it was hardcoded to "this project", which was the wrong noun for an ordinary folder and for all 47 file keys, and the rule is the prompt's rule: the UI does not claim a kind the target does not have. That rule is **general, not just the placeholder's** — the footnote under the composer and the annotation block's own preamble both said "project" unconditionally too, so every piece of chrome that names the target reads one writer, and a test asserts no kind noun is hardcoded in the markup. The **app_state disclosure** rides the two shapes that HAVE a pane, for D235's reason (an un-announced tool is a tool that never gets called) — and only those two, since the ordinary folder is not offered the tool at all. Saying "this is a fused-render project" over `~/Downloads` is rejected as a lie that costs something — it invites the agent to hunt for a bridge that is not there and to read a folder of PDFs as a codebase.
   - **The tool roster varies by target kind (D239).** `mcp__fused_approvals__app_state` reads the page beside the chat; a target with no pane has no such page, so the tool is **not offered** there — absent from `tools/list`, absent from the dispatch, and absent from the spawn line's pre-allowance. One switch decides all of it, and it is the **channel's own existence**: `agent.py` spawns `permission_server.py` with the app-state directory only when `_has_pane` (the same `entry_html` predicate), and the server keys both its roster and its dispatch on having that directory. A roster that could vary independently of the channel would advertise a tool the server cannot serve. **Rejected:** offering it and answering with an explanatory error — the model would call it after every edit and spend the 20-second app-state timeout discovering the same thing once per turn; and offering it and answering instantly with "there is no pane" — a tool whose only possible answer is that it does not apply is a tool that should not be in the list. The `Read` rule for the screenshot directory stays unconditional, because it is a rule about a directory and not a claim that this target can annotate.
 - **PT-17** **A template never spends a history entry on a value the URL already MEANS, and the guard that decides sits at ONE funnel per template rather than at each call site (D271, D272; generalises PT-15's `annmode`).** **PR-3's gesture gate cannot catch these**, because the gate is read when the write LANDS and not when boot started: a boot path continuing behind an `await` is already post-gesture, so a click anywhere during engine warm-up — the Browse button, the explorer row that chose this file — opens the gate before the seed arrives. **Absent is a value:** a missing param means its default, so writing the default over it is a no-op the runtime's byte comparison cannot see (`set(k, '')` on an absent key appends `k=`), which is what `{default: d}` (PR-3) exists to declare. An audit of **65 `fused.params.set()` call sites across 20 templates** found 39 genuine navigations — left alone, since a working Back is the whole point — and 19 writes that cost an entry for nothing, in six shapes worth recognising: a **re-entrant boot path reached through a gesture** (`latex`'s `startWorkspace` re-running the boot block on Home ▸ open project; `slides`' `openLibrary` ▸ File ▸ New blank deck); an **async callback a click started** (`latex`'s clean compile collapsing an already-collapsed drawer); a **multi-param write whose UNCHANGED half fires first**, takes the push, and leaves the real write to merely coalesce (`las`/`vector`/`pmtiles` writing `dir` before `file` when the file is picked from the folder already being browsed; `xlsx` `offset` before `sheet`; `slides` `slide` before `mode`); a **sweep rewriting every field on every submit** (`api`'s Execute); a **control clamped at its limit** (`pyramid` re-analysing an unchanged path; `pano` comparing the raw param instead of the read-back value, so a drag ending at the default wrote over an absent param); and a **write loop** (`zip`'s `params.onChange` → `openPreview` → `writeLocation`, writing the same pair straight back). The always-live controls D272 closed — a Reset that is not disabled when there is nothing to reset, a Load button over a box seeded from the resolved path, a "back to the list" that is live on a list you never left — are the same rule at the other end of the visit. **The guard goes at the funnel** because a check per call site is a check the next call site forgets — and a key the view leaves OUT of its own repaint comparison (a draft written per keystroke, like `git`'s `msg`) must never push at all, because Back across that entry clears the param while the repaint short-circuits and the stale text stays on screen. **A write's history cost is judged from the state it CAN be reached in, not the state it is normally reached in:** `git` clears `ask` at the end of every mutation and the confirmation has almost always cleared it already, so the no-op guard hides the cost — but `ask` is in the URL precisely so a pending question survives a refresh, and a page reloaded with `?ask=…` arrives with the question live and the entry pristine, so any action clicked from there clears it for real, post-gesture and post-`await`, and takes the push. `history` is outside the audit on the owner's instruction; `git` was too while its rewrite was in flight, and the reworked file has since been reviewed (D271).
@@ -2721,51 +2729,39 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   or where it points. The folder mode calls it as `../markdown/graph.py`
   (`/api/run` resolves a relative `py` against the page's directory) rather
   than shipping a second copy.
-- **MD-1a** **Read-only and editing are a MODE, and the mode is writability
-  only — never appearance.** The same Live Preview decorations over the same
-  document, with CM's two read-only facets on or off
-  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`) — which are
-  *exactly* the facets the unwritable-file path already used, so **a read-only
-  file's locked buffer and read-only mode are one mechanism, not two**. There is
-  no different typography, no restyled surface and emphatically no second render
-  pipeline; that was removed deliberately (MD-1/D158) and does not come back to
-  serve a mode. With `editable=false` there is no caret, so nothing reveals and
-  the document reads as fully rendered — that *is* the reading view, obtained
-  without a second pipeline. The reveal is additionally suppressed by one guard
-  in `selectedLines`, because a browser text selection inside a non-editable view
-  still reaches the state's selection and would un-render whatever was swiped
-  over; the guard makes the mode deterministic rather than dependent on that.
-  **A note opens READ-ONLY** (owner call 2026-07-31, reversing the earlier
-  Obsidian-matching "editing is the default"): opening a file in an explorer is a
-  read, and on the always-editable surface a stray keystroke on a note you opened
-  to look at rewrites it — editing is one click away and, once asked for, stays
-  in the URL. It also makes the view a better annotate stage (§17): the framed
-  document takes no edits and reveals no markers under the reviewer's clicks.
-  The preference lives in `fused.params` under
-  `edit` (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh
-  and travels in a shared URL; an absent param is read-only, and only an explicit
-  `"1"` grants editing. `aria-pressed` on the corner button therefore tracks
-  **editing** — the non-default state, so the accent marks the surface you can
-  change — while the glyph names the current mode (padlock read-only, pencil
-  editing). It is layered **on top of** the file's real
-  writability and can never override it: for a genuinely unwritable file (MD-15)
-  the toggle is *disabled* with a title saying why. Switching to read-only
-  flushes pending edits first (`await save()`), for the same reason navigation
-  does (MD-16). The control is a second 26px button in the same corner cluster as
-  the sidebar toggle — not a toolbar row, which MD-2a still forbids — and
-  switching rebuilds the view (`editable` is chosen at construction), which is
-  invisible because `buildEditor` carries the caret and the scroll position
-  across.
-- **MD-2a** **No toolbar.** The shell's own breadcrumb already names the open
-  file, and Obsidian shows no save state, no dirty indicator and no mode
-  buttons — which left the bar holding nothing. What survived it went where it
-  belongs: the read-only badge floats (the shared `ro-badge.js` idiom), a save
-  *failure* floats as a pill and is invisible when there is nothing to say, and
-  the reload-or-keep banner (MD-17) takes a row only while a conflict is
-  unresolved. The only persistent chrome is a top-right cluster of two 26px
-  buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
-  The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
-  the graph together, and its accessible name says so.
+- **MD-1a** **There is no mode. A writable note is editable, full stop** (D620,
+  reversing D186). `writable` — read off the shell's persisted `stat.writable`
+  (MD-15) — is the ONLY editability gate; `edit`/`editWanted()`/`editing()`/
+  `applyEditMode`/`#toggle-edit` are deleted outright, not merely hidden. A
+  genuinely unwritable file (a snapshot, a read-only file) still opens locked,
+  through the SAME mechanism it always used — CM's two read-only facets
+  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`), the
+  shared read-only badge — so removing the mode cost nothing there: the locked
+  buffer was always its own path, not a state the mode toggle shared. There is
+  no different typography, no restyled surface and no second render pipeline
+  either way (MD-1/D158). `selectedLines` still gates reveal on `writable`
+  alone, for the reason it always did — a browser text selection inside a
+  non-editable view still reaches the state's selection and would un-render
+  whatever was swiped over. **The trade this reverses:** D186 put a note behind
+  a read-only-by-default lock because the surface autosaves 2s after the last
+  keystroke with no save button, so a stray keystroke on a note opened only to
+  look at it would silently rewrite it — that risk has not gone away, it is
+  now accepted, by owner call, in exchange for one editable surface with no
+  mode chrome at all.
+- **MD-2a** **No toolbar, and no floating corner cluster at all** (D620
+  follow-up — this reverses the cluster's own earlier design). The shell's own
+  breadcrumb already names the open file, and Obsidian shows no save state, no
+  dirty indicator and no mode buttons — which left a corner cluster holding
+  nothing of its own once the read/write mode (MD-1a) was removed and the
+  sidebar toggle followed it into the panel it controls (MD-19a/MD-19b): a
+  floating button belongs to neither the panel it opens nor the document it
+  sits on top of, and it visibly overlapped BOTH — the panel's own head when
+  open, the document's corner when closed. What survived the corner
+  altogether went where it belongs: the read-only badge floats (the shared
+  `ro-badge.js` idiom), a save *failure* floats as a pill and is invisible
+  when there is nothing to say, and the reload-or-keep banner (MD-17) takes a
+  row only while a conflict is unresolved. There is no other persistent
+  floating chrome in this view.
 - **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code",
   "claude", "reader"]` — `markdown` now supersedes `code` for
   notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
@@ -3174,59 +3170,180 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   reach because it cannot span into a widget's DOM (clicking the table shows the
   source, which is where a cell is edited). Paste-or-drop of an image *was*
   listed here as blocked on a binary write; it is now built (MD-23).
-- **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
-  Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
-  document, which a full-height editor has no room for. Backlinks scroll in the
-  upper section; the graph canvas and its depth control sit below.
-  One toggle opens both: they answer the same question about the open note. The
-  panel is **resizable** by dragging a thin handle on its left edge (15rem to
-  45rem, arrow keys on the focused handle too), and the width is persisted in
-  **`localStorage`, deliberately not in params**: params are the state a shared
-  URL should reproduce (MD-20), and how wide someone dragged their panel is
-  window furniture that a link must not carry. Each resize `nudge()`s the canvas,
-  which is a fixed-size bitmap and does not otherwise learn that its box moved.
-- **MD-19b** **The outline is the sidebar's TOP section, and it reads the live
-  document** (D190). The open note's headings get a nested, click-to-scroll list —
-  the navigation aid a long note needs, which the panel had headings for
-  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is a **section of
-  the one right sidebar**, not a panel and not a second toggle: MD-19a allows
-  exactly one right sidebar behind one 26px toggle and MD-2a forbids the toolbar
-  row a second control would want. It sits **above** backlinks because the
-  ordering is by subject rather than by size — the outline is about the note in
-  front of you, backlinks and the graph are about the rest of the vault, so the
-  section describing the open document is nearest it, as in Obsidian. Being first
-  it is also the section that clears the floating corner cluster. Sized like the
-  backlinks list (content-sized, scrolling, capped) so neither list can starve
-  the canvas.
-  **It reads `view.state.doc`, never the payload.** `notes.headings` re-parses
-  only on save (MD-9), so a payload-fed outline would lag every heading typed by
-  up to one autosave interval, and a stale outline sends you to the wrong place —
-  worse than none. Reading the document is the same move MD-4b already makes.
-  **No timer**: the editor's existing `docChanged` listener is the only trigger,
-  and this template stays poll-free (MD-17). The heading scan mirrors graph.py's
-  `_mask_code` — frontmatter and fenced code masked, ATX only — so a
-  `# not a heading` inside a fenced block is as absent here as it is from every
-  other heading surface. Mirroring it includes the case that bites while typing:
-  an **unclosed** `---` is not frontmatter (`_frontmatter_span` returns no span,
-  and MD-18a's decoration scan finds the end before it dims anything), so the
-  closer is found before any line is skipped. A standing "in frontmatter" flag
-  emptied the whole outline from the keystroke that opened the block to the one
-  that closed it, while the other two surfaces kept those headings — caught in
-  review. Indentation is **nesting depth over the levels present**, and the
-  `[[#` popup calls the same function rather than a matching copy (MD-14), since
-  a note that starts at `##` or skips a level is where two copies diverge. Not the syntax tree, tempting though it is: it is parsed
-  only as far as CM has got, so a long note would silently lose its tail
-  headings. Rows scroll by **line**, not by heading text (they were built from
-  that line; matching by text hands the second `## Notes` to the first one), and
-  MD-4b's caret rule lives in the one `scrollToLine` both paths call. Indent is by
-  **nesting depth over the levels present**, so a note that starts at `##` is not
-  an indented note. **No state, therefore no param** (MD-20 carries what a shared
-  URL must reproduce; a section that is always drawn with its panel has nothing
-  to carry), and an unchanged heading list is not redrawn — which is what keeps
+- **MD-19a** **Backlinks and the graph are one right sidebar** — not a footer
+  under the document, which a full-height editor has no room for. Backlinks
+  scroll in the upper section; the graph section sits below and is
+  **conditional** (MD-19c). The outline is no longer part of this panel
+  (D620) — see MD-19b.
+  **Its toggle lives IN the panel's own head row, not in a floating corner
+  button** (owner: "the icon placement for the right sidebar is bad… follow a
+  structure similar to the left one" — reversing the corner cluster this
+  panel's toggle used to sit in, MD-2a). A floating button belonged to
+  neither the panel nor the document: open, it sat on top of the panel's own
+  BACKLINKS head; closed, it sat on top of the document's corner. The head
+  row and its collapse control are **the same CSS classes the outline rail
+  uses** (`.panel-head`, `.panel-collapse-btn`, `.panel-reopen-btn` — see
+  MD-19b), mirrored rather than duplicated: identical DOM order (label,
+  optional count, a flex spacer, the button), and one modifier class
+  (`.mirror`, `order: -1` on the button alone) is the entire difference
+  between the rail's button landing at ITS inner (right) edge and this
+  panel's at ITS inner (left) edge — both always nearest the document, never
+  floating over it, with the LABEL staying at the reading (left) edge in
+  both, matching every left-aligned line below it in the panel. (`mirror`'s
+  first draft reversed the whole row with `flex-direction: row-reverse`,
+  which flipped the label too, pushing "BACKLINKS" to the panel's outer edge
+  — wrong on both counts a mirror is supposed to respect: text does not
+  mirror, and it disagreed with the panel's own left-aligned content below
+  it.) Collapsed, the same **26px edge-chip button** the rail uses reappears
+  at this panel's outer edge (top-right), sharing `.panel-reopen-btn` with
+  only a `.right` vs `.left` modifier telling them apart.
+  **The head carries a count, unlike the rail's** (MD-19b) — set apart as its
+  own pill (`.panel-count`), never bare text after the label, because a
+  number immediately following a noun reads as an ORDINAL ("backlinks #3")
+  and not a quantity. Genuinely informative here, unlike on the outline: how
+  many notes link here is a fact about the rest of the vault the visible list
+  does not fully show (it can be capped or scrolled), where the outline's
+  count would only restate what the eye already sees in a list that is never
+  capped.
+  Backlinks and the graph still answer one question about the rest of the
+  vault, so one control still opens both. The panel is **18rem by default**
+  (down from an original 21rem — owner: "the 2 sidebars are taking a lot of
+  space", with a 15rem rail alongside leaving barely more than the
+  document's own 46rem cap for the document itself) and **resizable** by
+  dragging a thin handle on its left edge (15rem to 45rem, arrow keys on the
+  focused handle too, drag RANGE unchanged — only the default moved), and the
+  width is persisted in **`localStorage`, deliberately not in params**:
+  params are the state a shared URL should reproduce (MD-20), and how wide
+  someone dragged their panel is window furniture that a link must not
+  carry. Each resize `nudge()`s the canvas, which is a fixed-size bitmap and
+  does not otherwise learn that its box moved. Both this default and the
+  rail's (MD-19b) are additionally subject to the document's COMFORT target
+  (MD-19d), which shrinks either panel toward its MIN before the document's
+  measure is allowed to fall below it.
+- **MD-19b** **The outline is a LEFT RAIL in the page** (`#outline-rail`),
+  open by default, and it reads the live document (D190, moved off the right
+  sidebar by D620). The open note's headings get a nested, click-to-scroll
+  list — the navigation aid a long note needs, which the page had headings for
+  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is **no longer a
+  section of the right sidebar**: MD-19a's one-toggle rule now governs only
+  backlinks and the graph, because a note's own structure is not the same
+  subject as the rest of the vault, and because it always exists — unlike
+  backlinks or the graph, which can be legitimately absent (MD-19c) — so it
+  earns permanent chrome instead of chrome behind a toggle (§2 of the redesign
+  plan: "chrome appears only when its subject exists", and a note's structure
+  always does).
+  **State is a param, `outline`, exactly like `graph` and `depth`** (MD-20):
+  absent means **open** (the default — a reversal of the old "no state,
+  therefore no param" rule, which held only because the section used to be
+  undrawable without its parent panel open), and only an explicit `"0"`
+  closes it, so a shared URL still reproduces what you see. Width is
+  **12rem by default** (down from an original 15rem — its rows already
+  ellipsise well before 15rem, "The freeze mechanism: Godot…", so the extra
+  3rem was buying wider TRUNCATED labels, not full ones), **resizable
+  12rem–30rem by dragging its right edge** (drag range unchanged — the
+  default now equals the range's own floor), persisted in `localStorage`
+  under `fused-md-outline-width` and clamped so it cannot squeeze the
+  document below the same floor the right panel's own clamp protects —
+  window furniture, not shareable state, for the same reason MD-19a's width
+  is not a param. Collapsed, a 26px `.panel-reopen-btn`
+  reopens it at the page's left edge — shared with the right panel's own
+  collapsed button (MD-19a), which is identical but for a `.right` modifier.
+  **The head carries no count** (owner: "what is outline 1? how can you even
+  have multiple outlines?"): a bare numeral straight after a label reads as
+  an ORDINAL, not a quantity, and a heading count is also information the
+  reader already has — the outline is never capped or scrolled out of view,
+  so counting it tells the eye nothing it did not already report. Obsidian
+  shows no count on its outline for the same reason. The right panel's
+  BACKLINKS head does carry one (MD-19a), because that count answers a
+  question the visible list cannot always answer itself.
+  **The signature element: a 2px accent bar** on the row for the heading
+  currently at the top of the viewport, the one accent-coloured thing in the
+  rail. Driven off the editor's own **scroll and update events, never a
+  timer** — the same poll-free discipline MD-17 already holds this template
+  to (`view.scrollDOM`'s native `scroll` event, plus the existing `docChanged`/
+  `selectionSet` triggers). It is computed from `view.lineBlockAt` against
+  each drawn heading's line, not from a second measurement pass.
+  Everything else about how it reads the document is unchanged from before the
+  move: **it reads `view.state.doc`, never the payload.** `notes.headings`
+  re-parses only on save (MD-9), so a payload-fed outline would lag every
+  heading typed by up to one autosave interval, and a stale outline sends you
+  to the wrong place — worse than none. Reading the document is the same move
+  MD-4b already makes. The heading scan mirrors graph.py's `_mask_code` —
+  frontmatter and fenced code masked, ATX only — so a `# not a heading` inside
+  a fenced block is as absent here as it is from every other heading surface,
+  including the case that bites while typing: an **unclosed** `---` is not
+  frontmatter (`_frontmatter_span` returns no span, and MD-18a's decoration
+  scan finds the end before it dims anything), so the closer is found before
+  any line is skipped. Indentation is **nesting depth over the levels
+  present**, and the `[[#` popup calls the same function rather than a
+  matching copy (MD-14), since a note that starts at `##` or skips a level is
+  where two copies diverge. Not the syntax tree, tempting though it is: it is
+  parsed only as far as CM has got, so a long note would silently lose its
+  tail headings. Rows scroll by **line**, not by heading text (they were
+  built from that line; matching by text hands the second `## Notes` to the
+  first one), and MD-4b's caret rule lives in the one `scrollToLine` both
+  paths call. An unchanged heading list is not redrawn, which is what keeps
   the list's own scroll position while you type inside a heading. Empty says
-  so, in the backlinks list's voice. Fully functional read-only (MD-1a): an
-  outline is a reading affordance first, its rows are buttons outside the editor
-  on the one delegated click handler, and a scroll is not an edit.
+  "No headings yet." — the same voice as the backlinks empty state. Fully
+  functional on an unwritable file (MD-1a): an outline is a reading affordance
+  first, its rows are buttons outside the editor on the one delegated click
+  handler, and a scroll is not an edit.
+- **MD-19c** **The graph section is conditional: drawn only when the note has
+  a link.** At least one outbound link this scan resolved, or at least one
+  backlink — otherwise the section is **absent**, not an empty canvas and not
+  a "no links" placeholder (D620). An empty graph would tell an orphan note's
+  reader the same fact the backlinks list above it already told them, a
+  second time, with a canvas. On the **no-scan** path (a mount, a refused
+  root) the section is absent too, and the backlinks notice directly above it
+  already says why in graph.py's own words — MD-11a's distinction ("nobody
+  looked" is not "there is nothing") belongs to one surface, not two.
+- **MD-19d** **The two panels are clamped TOGETHER against the document, in
+  two layers, both spent by `layoutPanels`** (owner, two rounds: "the right
+  sidebar looks... squeeze[s] the document" then "the 2 sidebars are taking a
+  lot of space" — the first round only ever compared each panel's OWN
+  min/max against the room left over; it never asked what the document
+  itself needed).
+  1. **The hard floor, 20rem.** Below this the document is unreadable —
+     word-per-line wrapping — so it is the non-negotiable minimum: each
+     panel is measured against it and, past its own MIN, **closes outright**
+     rather than render a sliver narrower than its floor. The right panel
+     yields first and furthest (owner's call: the rail is open by default),
+     presentational only — `style.display` set directly, beating both the
+     `.on` class and the `hidden` attribute on specificity without touching
+     either, so the panel a param says should be open reappears exactly as
+     the user left it the moment there is room again.
+  2. **The comfort target, 35rem** (the middle of the owner's suggested
+     34–36rem), spent BEFORE the hard floor and never closing a panel —
+     only shrinking one toward its own MIN. This is the ordinary case, not
+     the catastrophic one: two panels comfortably inside their own
+     minimums can still leave the document a measure nobody would call
+     comfortable, which the hard floor alone cannot see (it only asks "is
+     this readable at all", not "is this pleasant"). The RIGHT panel gives
+     ground first here too, same order as the hard floor.
+  **Free on a wide window, costly only in the middle.** The document is
+  capped at 46rem (MD-18a's measure), so once `room` clears both panels'
+  defaults plus the 35rem comfort target plus that cap, the panels are
+  spending only space the document was never going to render prose into —
+  margin either way. The two-layer clamp only ever engages in the band
+  between "wide enough that chrome is free" and "the hard floor", which is
+  deliberately where a note gets read beside an open chat panel — the case
+  the owner was looking at both times.
+  **The stored preference (`desiredRailPx`/`desiredSidePx`) is written ONLY
+  from the user's own drag or arrow-key gesture, expressed as the size being
+  asked for — never read back out of `getBoundingClientRect()`.** That
+  distinction is a real invariant this template has broken three separate
+  times on this branch (a layout-driven close writing `graph=0` into the URL
+  param; `#side-reopen` shipping `hidden` backwards; and a grip drag/arrow-key
+  resize basing its next value on the panel's CURRENT RENDERED box, which can
+  be narrower than the desire right now — comfort-clamped or hard-floored —
+  without the desire having changed, so nudging the grip while clamped
+  silently adopted the clamp's number as the new stored preference). Stated
+  once, here, as the rule: a persisted preference (`localStorage`, a
+  `fused.params` write, an element's default visibility) may only ever be
+  written from a genuine user gesture's own intent, never from a
+  presentation-only measurement (`getBoundingClientRect`, `style.display`,
+  `style.width`) — `layoutPanels` reads intent and computes presentation,
+  and nothing may read that computed presentation back into a stored intent.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
@@ -3292,9 +3409,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   the resting field washes out in proportion to edges-per-node; the focus
   note's own edges hold a step above the field, and hover is what makes any
   individual link fully legible again.
-- **MD-20** **Graph state is params.** Panel open and depth live in
-  `fused.params`, so a graph view is refresh-proof and **URL-shareable** — which
-  Obsidian's is not. Nodes are notes and per-**name** ghosts (five notes linking
+- **MD-20** **Graph state is params — and so is the outline rail's.** Panel
+  open and depth live in `fused.params`, so a graph view is refresh-proof and
+  **URL-shareable** — which Obsidian's is not. The outline rail follows the
+  same rule (MD-19b) under `outline`: absent is open, `"0"` closes it, the
+  same absent-means-default-on convention `graph` and `depth` already used.
+  **`edit` is gone** (D620): there is no mode left for a param to carry, and
+  no read/write state to reproduce in a shared URL any more — a writable note
+  is simply editable wherever it is opened. Nodes are notes and per-**name** ghosts (five notes linking
   `[[Roadmap]]` share the node they are all asking for) and nothing else; an
   embedded picture is deliberately **not** a node, or a vault of screenshots
   would drown the graph. A focused graph BFSes out `depth` hops
@@ -3484,6 +3606,187 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   - **The bottom side stays small.** Markdown's own blank separator line is
     already a full line-height of space; these rules add what markdown cannot
     express — the space *above* a heading, and the gap around a block.
+- **MD-27** **The image lightbox** (D620). Clicking a rendered `<img
+  class="lp-img">` (`imageWidget`, not video — a native player already owns
+  clicks there) opens a full-screen overlay: dim backdrop, image fitted to the
+  viewport, `Escape` or a backdrop click to close, `←`/`→` to step through the
+  note's other images. The widget becomes **opaque** for an image specifically
+  (`ignoreEvent` returns true), a change from its previous click-to-edit
+  posture, so the click neither moves the caret nor counts as an edit.
+  **Navigation walks the SOURCE, not the DOM.** CodeMirror only renders the
+  current viewport, so a `document.querySelectorAll(".lp-img")` at open time
+  would silently omit every image outside it on a long note; `collectDocImages`
+  instead regex-scans `view.state.doc.toString()` for `![alt](src)` in document
+  order and resolves each the same way `imageWidget` does. The clicked image
+  is re-found in that list by its own **source position** (the `Image` node's
+  `from`, threaded through as `imageWidget`'s third argument), not by URL or
+  alt text, since either can repeat. Alt text, when present, sits bottom-left
+  as the caption. `![[embed]]` images are not indexed for prev/next — only the
+  plain `![alt](src)` form the regex scan can see without a link scan.
+  **A modal that leaves the surface behind it live is not modal**, so opening
+  it moves DOM focus into the overlay (the close button) and back to the
+  editor on close — this is what actually stops keys from reaching an
+  ALWAYS-EDITABLE document (MD-1a) underneath, since the browser only routes
+  keydown to whatever is currently focused. The overlay's `keydown` listener
+  is additionally registered in the CAPTURE phase (not bubble) and calls
+  `stopPropagation()` on every key while open, whether or not the lightbox
+  itself uses it — defense in depth on top of the focus move, not a
+  substitute for it: a bubble-phase listener fires strictly AFTER CM's own
+  contentDOM handlers, too late to stop an edit or a keymap collision that
+  already happened. `Tab` cycles among the overlay's own controls
+  (`lightboxFocusables`) rather than leaking focus back into the page.
+- **MD-28** **Fenced code gets real per-language highlighting, in both
+  themes, as a block** (D620). Three changes:
+  1. **Per-language tokens.** `CM.markdown({ codeLanguages })` had never been
+     wired to anything, so a fence got flat colour from whichever markdown
+     theme was active. `codeLanguages` is now a small function
+     (`codeLanguageFor`) mapping a fence's info string — plus the usual
+     aliases (`js`/`ts`/`jsx`/`tsx`/`py`/`sh`/`bash`/`zsh`/`yml`) — to one of
+     the languages already bundled (python, javascript, json, yaml, html,
+     css, shell, toml); an unmapped language gets no highlighting but keeps
+     its chip and copy button.
+  2. **Light mode gets its own `HighlightStyle`.** `oneDark` (dark mode only)
+     ships its own token colours; light mode had none, so its fences stayed
+     flat grey. `lightCodeHighlight` is built from this view's OWN theme
+     tokens — `--accent`/`--fg`/`--fg-muted`/`--ghost`/`--error`, no new
+     colour literals — with weight and slant carrying some of what a fuller
+     palette would in colour (keywords/numbers accent+bold, comments ghost+
+     italic, strings/punctuation fg-muted). This is the one change that
+     needed the vendored bundle rebuilt: `HighlightStyle`, `syntaxHighlighting`
+     and `tags` (from `@lezer/highlight` — there is no way to define a
+     `HighlightStyle` without a tag namespace, so this was added alongside
+     the two named exports) were not previously re-exported from
+     `scripts/vendor-codemirror/entry.js` (MD-13).
+  3. **A block, not striped lines.** `.lp-fence-line` already tinted every
+     line; it now also carries a left/right border, with the opening and
+     closing lines carrying the top/bottom border and the rounded corners —
+     since the lines sit flush with no gap, the borders read as one panel.
+     The opening line (`position: relative`) anchors a small floating toolbar
+     (`.lp-fence-chip`, a `Decoration.widget` at that line's end): the fence's
+     language, uppercase and muted in the chrome register (§2 of the redesign
+     plan — 11px, `letter-spacing: 0.08em`), and a **copy button** that
+     appears on hovering that corner and copies the fenced body (markers
+     stripped) via `navigator.clipboard`. The widget's reuse KEY includes a
+     snippet of the body (language + length + first 40 characters) so a
+     typical edit invalidates it and rebuilds the DOM — but the key is a
+     hash, not a guarantee, and CM reuses the OLD DOM (and whatever closure
+     it captured) whenever two builds collide on it, which is not rare: any
+     edit past character 40 that leaves the length unchanged, or editing a
+     LATER fence in the same note, collides. **So the click handler does not
+     close over a body string at all** — it re-derives the CURRENT fence at
+     click time from the widget's own live position (`enclosingFence` +
+     `fenceLangAndBody`, the same idiom `taskWidget` already uses via
+     `posAtDOM` to find its own current position), which is correct
+     regardless of whether the key happened to collide, and self-heals even
+     when content ABOVE the fence shifts every absolute offset without
+     touching the fence's own text.
+- **MD-29** **The selection format bubble** (D620). A floating bar appears
+  above a non-empty editor selection — bold, italic, strikethrough, inline
+  code, link, and "Turn into" (MD-30) — flipping below the selection when
+  there is no room above, and dismissing when the selection empties, on
+  `Escape`, on scroll, or on blur. **Positioned by hand from
+  `view.coordsAtPos`**, not through `CM.showTooltip`/`Tooltip` — neither is
+  bundled, and adding them was explicitly out of scope for this build, to
+  keep the tooltip machinery out of the vendored bundle rebuild MD-28 already
+  needed. **Every button calls the command that already exists** —
+  `toggleWrap`/`insertLink`, the same path the keyboard shortcuts use — so
+  there is no second definition of what bold means; a mark already applied on
+  the selection shows its button pressed, using the identical pre/post
+  wrap-detection `toggleWrap` itself uses to decide whether to unwrap. Absent
+  entirely on an unwritable file (MD-1a/MD-15) — chrome for an action that is
+  not available. **Bold/italic/strike are rendered as real TYPE** (`B` at
+  `font-weight: 700`, `I` in `font-style: italic`, `S` with
+  `text-decoration: line-through`), not traced SVG letterforms — a hollow
+  outline `B` does not read as bold at 14–16px, and the control demonstrating
+  its own effect is self-describing in a way an icon cannot be. Link keeps an
+  SVG (it has no letterform), and inline code gets a small chip in the
+  `.lp-code` idiom around the backtick pair that produces it, for the same
+  reason — the control looks like its result, not an abstract shape.
+- **MD-30** **Line and block conversion: two doors, one command set** (D620).
+  `convertLines(kind)` turns every line the selection touches (or the
+  caret's line, with no selection) into `kind` — heading 1–3, quote, bullet
+  list, numbered list, task, code (which fences the whole range as one
+  block rather than prefixing each line), or plain text — by stripping any
+  existing block-level prefix first (`BLOCK_STRIP_RE`) so "Turn into Quote"
+  on a bulleted line replaces the bullet instead of stacking `- > `.
+  - **"Turn into"**, in the selection format bubble (MD-29), is the
+    RETROACTIVE door: it converts lines that already have content.
+  - **`/` at the start of an empty line** is the INSERTION door: a fourth
+    source (`slashMenuCompletions`) in the same `CM.autocompletion({
+    override })` call the `[[` popup already uses (MD-14) — no new
+    completion plumbing. It offers the same block types as "Turn into" plus
+    three pure insertions "Turn into" cannot express on already-typed text
+    (table, divider, callout — the last inserting `> [!note] ` as a plain
+    blockquote, not a new parsed/rendered callout block, which stays out of
+    scope; §8 backlog item 4). Both doors read from one shared list,
+    `BLOCK_TYPES`, so the menu and the bubble cannot describe two different
+    sets of block types.
+  What this makes unnecessary: Live Preview already turns `# ` into a
+  rendered heading the instant it is typed (MD-18a) — the only gap was ever
+  the RETROACTIVE direction, which neither Obsidian nor Typora has a native
+  command for either.
+- **MD-31** **Every link activates through explicit JS, never through a
+  native anchor click — a consequence of D620 the plan did not anticipate.**
+  Before D620, a note opened read-only by default (`EditorView.editable.of
+  (false)`), and clicking a native `<a>` inside a NON-editable CM view
+  activates it natively — ordinary browser behaviour. A writable note is now
+  always editable (MD-1a), which makes the surface `contenteditable`, and
+  inside `contenteditable` a click on an anchor never follows it: the browser
+  places the caret there instead. That is standard `contenteditable`
+  behaviour, not a CodeMirror quirk, and it silently killed every link that
+  relied on native `href` activation — while a vault-relative link kept
+  working, because `markdownLinkWidget` already gives it `data-path` and the
+  one delegated `document` click handler (MD-3/MD-4a) opens it in JS
+  regardless of what contenteditable does with the click.
+  So the same delegated handler now owns activation for the two link shapes
+  that used to rely on the browser: `markdownLinkWidget`'s external/
+  absolute/mailto/bare-`#anchor` branch, and `pushUrl`'s bare-autolink mark
+  (MD-24) — both carry `.lp-link`, matched as `a.lp-link[href]` after the
+  existing `data-path`/`data-anchor`/`data-create` checks. **The two shapes
+  are NOT treated identically**, because they are not the same kind of
+  decoration: `markdownLinkWidget` replaces `[label](url)` with an OPAQUE
+  widget (`ignoreEvent` true), so the caret can never land there regardless —
+  a plain click opens it, exactly like a vault-relative link always has.
+  `pushUrl`'s bare URL is a MARK over live, editable prose — the caret
+  legitimately belongs there — so a plain click keeps editing and only
+  Ctrl/Cmd-click (or middle-click, via a matching `auxclick` listener, since
+  middle-click never fires a `click` event at all) opens it; `.lp-bare-link`
+  is the class the click handler keys off to tell the two apart. Opening
+  itself goes through `window.open(url, "_blank", "noopener")` — the same
+  idiom `claude/template.html`'s artifact rows already use for an outbound
+  link from inside one of this app's iframes, not a new mechanism — except a
+  bare `#anchor`, which scrolls within the note instead (`scrollToAnchorHash`,
+  a GitHub-style SLUG match, exact text tried first, distinct from
+  `scrollToHeading`'s exact-text-only match for `[[#Heading]]` and
+  `?heading=`, which must not be loosened by this).
+- **MD-31a** **A nested image-in-link (`[![alt](img)](url)`, GitHub's own
+  badge/shield pattern) renders as ONE clickable image, asked of the TREE —
+  not a smarter regex.** The plain-link regex's label group (`[^\]]*`)
+  cannot see this shape at all: the label content is `![alt](img)`, which
+  itself contains `]`, so the whole outer `Link` fell through undecorated
+  and stayed visible as raw markup whether or not the caret was on it — a
+  pre-existing bug (unrelated to D620) the redesign did not introduce but
+  did make more visible. Growing the regex into a bracket-balancer would be
+  exactly the "is this code?" reimplementation trap that has bitten the link
+  layer twice before (MD-3): the tree already knows an outer `Link` whose
+  `getChild("Image")` starts immediately after its own opening mark is this
+  shape, and that check cannot mistake a `[[wikilink]]` for one — a
+  wikilink's double brackets wrap a single Link or Image node directly, never
+  a genuine Image nested inside a Link. Built as `linkedImageWidget`, sharing
+  `applyLinkTarget` (the link-target rule) and `resolveMediaSrc` (the image-
+  source rule) with the plain link and image widgets rather than copying
+  either — the image does NOT open the lightbox here, since a badge's whole
+  point is that clicking it goes to `url`, exactly what GitHub itself
+  renders.
+- **MD-31b** **A link destination may contain a balanced paren (a Wikipedia
+  URL is the classic case, `Foo_(bar)`), and every regex that captures one
+  now says `\S*` rather than a `()`-excluding character class** — the URL
+  group in the plain-link decorator, in the nested-badge decorator, and in
+  `enclosingLinkTarget` (⌘K's link-edit lookup). The grammar has already
+  found the construct's true end; greedy `\S*` backtracking exactly one
+  character for the trailing `\)$` recovers the whole destination correctly
+  either way, without needing to balance parens by hand. Also pre-existing,
+  also unrelated to D620.
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 
@@ -3518,6 +3821,16 @@ this page, scoped by the same pathspec the working-tree lists use, and its
 `overview` read carries it (`log.py`'s `history` flag defaults to True and the
 view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
+
+**The community showcase clone (`~/Fused/showcase`) is a repo like any
+other from here** (D550-D552). It used to be managed on the app's behalf —
+fetched and fast-forwarded on every server start — and is not any more:
+`fused_render/community.py` clones it once, if missing, and never touches it
+again. There is also no second, INSTALLED copy any more (`~/Fused/local/
+<slug>`); an app opened from the showcase IS the copy, edited in place. Both
+changes make the showcase an ordinary git work tree with an ordinary
+`origin`, which is precisely what GT-20 below needs to be true for its
+"every app opened" check to say anything useful about it.
 
 - **GT-1** An ordinary view template (`fused_render/templates/git/`) —
   `template.html`, `log.py` (the reader), `ops.py` (the mutations),
@@ -4203,6 +4516,58 @@ caller that wants the log on purpose.
   only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
   targets never reach any of it: `_locate` refuses a mount in both modules and the
   gate never offers the view (GT-4 / MD-11).
+
+- **GT-20** **A repo the user opens an app in gets a passive "origin has
+  moved" notice, opt-in from outside this view (D550-D553).** Every app open
+  through `GET /render` (D301's own definition of "this app is being
+  opened") triggers a throttled check — per repo ROOT, not per app, so
+  several apps in one repo cost one fetch — of whether the remote's default
+  branch has moved: fetch that ONE ref, count `HEAD..origin/<default>`.
+  Never on a timer, never at server start, never from a plain directory
+  listing (`/api/fs/list`'s own hook, `note_folder_opened`, is gated on the
+  unrelated file-indexing preference and fires once per LISTING; borrowing it
+  would put a git notification behind an unrelated switch). Silence on an
+  unreachable remote is deliberate — a background check that nagged about a
+  misconfigured remote would be worse than one that says nothing, and this
+  view remains where a fetch error is visible. A mount-backed repo is refused
+  before any subprocess, the same rule GT-4 states for this view's own reads
+  and writes.
+
+  **The check and its two mutations live server-side, in a NEW module
+  (`fused_render/git_upstream.py`), not in `ops.py`.** `ops.py` is reached
+  only as `fused.runPython("./ops.py")` from inside THIS view's own iframe
+  (GT-1) — the activity card (§36) that shows the result has no route to it.
+  So the server-side module MIRRORS `ops.py`'s git plumbing and mount refusal
+  (GT-1's own reason: a template exec'd standalone must not be imported).
+  `update`/`switch` each check `status --porcelain` FIRST and refuse a dirty
+  tree with a structured reason the card renders, matching GT-16's
+  confirmation rule for the same class of act. A third mutation, `rebase` —
+  replaying the current branch onto the default, offered as a secondary
+  action alongside Switch — was part of this card for one release and then
+  removed outright (D555 amendment, user call: "the rebase button is scary,
+  let's just remove it"), rather than left reachable only from a stale
+  client. `ops.py`'s own `_pull` refusal, which briefly pointed at that
+  button, points at a terminal again instead (GT-15).
+
+  **The action offered is BRANCH-shaped, not count-shaped, and never
+  rewrites the user's own commits.** On the repo's default branch:
+  **Update**, the row's only action — an `--ff-only` pull, which can never
+  conflict, matching this view's own `pull` (GT-15). Off the default
+  branch: **Switch**, the row's only action there — a plain `git checkout
+  <default_branch>`, which never touches a single commit on the branch the
+  user is on and so can only refuse, never conflict, matching this view's
+  own `branch_checkout` (GT-1's neighbour). Switch is preferred over ever
+  offering to rewrite the user's branch because this whole feature exists to
+  nudge a repo toward its default branch without ever putting the user's own
+  work at risk; after a successful switch the repo is very likely behind
+  again (that is why Switch was offered), so the row reappearing with
+  Update once the check re-runs is intended, not a bug. A refusal
+  (most commonly `dirty`) offers **Fix with Claude** (§36), which navigates
+  to the repo and hands a Claude-capable surface there the same class of
+  prompt GT-19's operation-error case builds — the error, the branch,
+  ahead/behind, the dirty flag, the repo root — but through a staged
+  cross-navigation ask rather than `window._fusedAskClaude`, because no
+  surface for that repo may be mounted yet.
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
@@ -5048,22 +5413,50 @@ stop it short of quitting the app.
   1.5s is ~160 records describing nothing that happened, and they would spend
   the rate budget the calls they annotate need.
 - **BG-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
-  the list as one card in the shared bottom-right notification stack (§3),
-  between the toasts and the server card — the column is ordered by lifetime
-  (seconds / minutes / the session), so nothing long-lived shifts under the
-  pointer when a short-lived neighbour expires. Top-level document only
-  (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
-  N times. Hidden entirely when there are no records.
+  as the Activity section in the status bar (`platform/ui/StatusBar.tsx`,
+  D563), inside `#main` beside the Models and repo-updates sections. Top-level
+  document only (`!IS_EMBED`): the list is global, so a copy per pane would say
+  the same thing N times. ALWAYS PRESENT (D565, superseding the "hidden when
+  there are no records" rule this used to state): nothing running and nothing
+  queued draws the IDLE state (`.dl-idle`, "No activity" — D569; "Idle" alone
+  named no subject) instead of vanishing — the bar's three sections are a
+  fixed readout now, not a notification stack that disappears when quiet.
+
+  **The collapse hides EVERY row, no exemption** (D562, user call
+  2026-08-27: "everything is foldable, even for the job cards"). It used to
+  be a PARTIAL fold — the queue's rows and a live scheduled run's stand-in
+  job row stayed on screen regardless of `collapsed`, because folding either
+  away took the only cancel a queued message or a live turn has with it, and
+  a card collapsed weeks ago left that work arriving with nothing on screen
+  to stop it. D562 first moved reachability to the header — `queue.cancelAll`
+  became a function of `collapsed`, dropping its threshold from 2+
+  withdrawable rows to 1+ once folded. **Superseded by D563** (status bar
+  redesign), and then stripped further: collapsed is now a CHIP with no
+  controls at all, and by D588/D590 no readout either — the label `Jobs` plus
+  ONE circle, outlined when the section holds nothing and filled when it holds
+  anything (user: "no count. just a circle outlined or filled"). The chevron
+  went in D573, the aggregate percentage (`dl-pct`) in D581, the count in
+  D588/D590. So there is no folded-but-visible header left for a control to
+  answer, and `queue.cancelAll` is a plain pre-decided node again, rendered
+  only inside the panel that opens on expand. The fold hides every detail
+  INCLUDING how much is happening; the filled circle says only that something
+  is, and the panel is where the rest lives.
 - **BG-11** **Indeterminate is a first-class state.** A running job with no
   `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
   never a bar parked at an invented percentage: parking is what makes live work
   read as frozen (the install loader's D213 lesson). Under
   `prefers-reduced-motion` the sweep is replaced by a dimmed full-width bar
   rather than left as a stub the blanket rule stopped mid-travel.
-- **BG-12** **Overall progress averages the running jobs**, it does not sum
-  their bytes: a sum lets one 8GB download swallow a 40MB one, so the header bar
-  would sit still while a whole other job ran start to finish. Any running job
-  with no numbers makes the overall bar indeterminate rather than optimistic.
+- **BG-12** **There is no aggregate progress figure.** `jobs.ts::overallFraction`
+  and the collapsed header bar it fed are DELETED (D581). They used to AVERAGE
+  the running jobs rather than sum their bytes — a sum lets one 8GB download
+  swallow a 40MB one, so the bar sat still while a whole other job ran start to
+  finish — and a running job with no numbers made the aggregate indeterminate
+  rather than optimistic. That reasoning was sound and is kept here only to say
+  why nobody should reintroduce the average either: the status-bar chip carries
+  no number at all now (BG-10), so there is nothing left for an aggregate to
+  render into. PER-ROW progress is untouched — each `.dl-row` keeps its own bar,
+  including BG-11's indeterminate state, inside the expanded panel.
 - **BG-13** **Poll cadence** is 1s while anything runs, 5s otherwise, and paused
   while the document is hidden. A same-origin `localStorage` ping
   (`fused-render:jobs-ping`, written by the runtime on every report and heard
@@ -5081,6 +5474,151 @@ stop it short of quitting the app.
   written against it needs no hosted-only branch. **This is an obligation on a
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
+- **BG-15** **Repo updates (GT-20) are their own sibling notification card**
+  (D550-D553, revised D555-D557, D563, D565) — one row per repo with a known
+  upstream update, in the Updates section `StatusBar` places beside Models
+  and the jobs/queue Activity section, inside `#main` (D563 — no longer
+  `NotificationHost`'s fixed bottom-right column, whose overlay of page
+  content even while collapsed is what the status bar redesign exists to
+  fix). ALWAYS PRESENT (D565): no repo behind draws the IDLE state
+  (`.dl-idle`, "No updates" — D569) rather than returning null, matching the
+  other two sections. **This supersedes the original shape**, where the rows were
+  a second named slot
+  (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
+  That placement broke the jobs card in four ways at once, discovered
+  together: with zero jobs and zero queue but one repo row, the header fell
+  through to a job-count sentence and read **"0 finished"**; the jobs card's
+  collapse toggle did nothing (repo rows were exempt from the fold and there
+  were no job rows left to fold); Clear disappeared (its count was jobs
+  only); and there was no way to dismiss a repo row at all — all four the
+  same root cause, a second kind of row wedged inside a header, a fold and a
+  Clear button that were never built to know about it. Giving it its own
+  card fixes the class of bug rather than patching each symptom: the jobs
+  card's empty-card gate, header and Clear now only ever reason about jobs
+  and the queue again.
+
+  **This card's own fold takes EVERY row** — and, since D562 (user call,
+  2026-08-27: "everything is foldable, even for the job cards"), so does the
+  jobs card's. The two used to differ: the jobs card pinned the queue's rows
+  and a live-run stand-in outside its collapse (BG-10), on the reasoning
+  that folding away a queued message's or a live turn's only ✕ left a card
+  collapsed weeks ago with scheduled work arriving and nothing on screen to
+  stop it. That reasoning did not disappear — it moved, twice. D562 first
+  moved it into the header, dropping `queue.cancelAll`'s threshold from 2+
+  withdrawable rows to 1+ once collapsed. D563's status bar redesign then
+  retired that move rather than carrying it forward: collapsed is now a
+  CHIP with no controls and no readout — the label `Notifications` plus one
+  circle, outlined or filled (D588/D590; the chevron went in D573, the
+  percentage in D581, the count in D588) — so there is no folded-but-visible
+  header left for a lowered threshold to reach, and `queue.cancelAll`/Clear/
+  every row now render only inside the panel that opens on expand. A repo row
+  has no in-flight message a fold could strand mid-turn, so this card needed
+  neither move: the filled circle says something is waiting, and every row
+  carries its own dismiss control once the panel is open.
+
+  **Dismissing a row is scoped to the repo's POSITION, not to the clock
+  (D556, corrected by D584 review finding 3).** A row stays hidden for as
+  long as its `branch@behind` signature is unchanged
+  (`repo-updates-lib.ts::repoDismissSignature`), and reappears exactly when
+  the claim it makes changes: new upstream commits arrive, or the user checks
+  out something else. `RepoStatus` carries no HEAD sha, so `behind` is the
+  closest honest proxy for "upstream moved", and it needs no server change.
+
+  **The original `checked_at` rule was a BUG, and this is the record of why
+  so nobody reimplements it.** It said a row stays hidden while
+  `dismissed[root] >= repo.checked_at` and returns once the server's own
+  throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces a newer one.
+  But `check_repo` stamps a fresh `checked_at` on EVERY throttled recheck
+  whether or not anything moved — so a dismissed row came back every five
+  minutes on its own, and because leaving `visible` also drops it from
+  `trackSeenIds`' seen set, the return read as a genuine arrival and (since
+  D574) POPPED THE PANEL OPEN over whatever the user was doing. For anyone on
+  a long-lived feature branch, permanently behind, dismissal was durably
+  useless. No server-side dismissal state is needed under either rule; the
+  signature is simply the field that actually answers the question. The
+  dismissed map
+  is held at MODULE level in `RepoUpdatesDock.tsx`, not component state, so
+  a remount (switching panes or panels) does not forget it; a full page
+  reload resurrecting a dismissed row inside the throttle window is an
+  accepted, deliberate trade against reaching for `localStorage` for
+  something this ephemeral.
+
+  **Rejected: generalising `DownloadManager`'s `QueueSlot` to N slots.**
+  Giving repo updates their own top-level card is the smaller change now
+  that the card no longer needs the rows to share its ONE plate at all — see
+  GT-20 for why Switch, never a history-rewriting action, is this card's
+  off-default action (D555). **Rejected: modeling a repo row on the job
+  registry.**
+  `fused_render/jobs.py` models `queued → running → finished`, a progress
+  fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
+  an action fits none of those, and `clearFinishedJobs` would sweep it the
+  moment it next ran. `shell/RepoUpdatesDock.tsx` therefore polls its own
+  endpoint (`GET /api/git-upstream`) the same way `QueueDock.tsx` polls its
+  own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
+  `StatusBar`'s separate `repoUpdates` prop (D563 — `NotificationHost`'s,
+  before the status bar redesign) rather than a slot on `DownloadManager`.
+- **BG-16** **The status bar's third section, Models (D566,
+  `shell/ModelsDock.tsx`), reads what is resident right now and what it
+  costs — `GET /api/ai/runtime`, the same shared poll (`apps/ai_models/lib/
+  aiRuntime.ts` `useAiRuntime`) `GlobalSidebar`'s own resident-model dot
+  already reads, so this section opens no second connection to the
+  server.** Idle: "No models loaded". Active: plain text, no label prefix —
+  `2 models · 18 GB` — the chip's whole vocabulary once there is a value to
+  show. **SUPERSEDED for the chip by D588-D590 and D589**: every status-bar
+  chip is now a bare label plus one circle (outlined = nothing here, filled =
+  something here), with no count and no aggregate size anywhere — the
+  `2 models · 18 GB` phrasing above is history. The aggregate went because it
+  summed `residentBytes`, which is worker-process RSS and explicitly "not the
+  model's size" (user: "the memory gb next to the models isn't even
+  accurate").
+  **THE PER-ROW MEMORY FIGURES (D594)**, which are the honest version of what
+  that aggregate was reaching for: each row shows the model's real COST as its
+  primary, colour-coded figure with the live RSS in parentheses beside it —
+  `9.2 GB (8.4 GB)`. The cost is `fit.footprint_bytes`, so it is the SAME
+  precedence ladder (measured > declared > download) and the same number the
+  AI Models page's fit badge shows, and the row carries `footprintBasis` in
+  `AiFitVerdict`'s existing vocabulary so a measured figure can be stated as
+  fact and the other two hedged. The ordering is deliberate: the primary
+  answers "what does this model cost me", the parenthetical answers "what is
+  it holding this instant" — reversed, the figure already agreed to be
+  inaccurate would sit in the position of authority. Colour is three steps
+  against `AiRuntime.memoryCeilingBytes` (carried once per payload, a
+  per-machine constant: the Apple Silicon WIRED limit where it applies, total
+  RAM otherwise, null when neither reads) reusing the easy/tight/no bands and
+  the existing `--success`/`--warning`/`--error` tokens; only `no` — the model
+  genuinely EXCEEDING the ceiling — gets the error colour, since a large model
+  that fits is not an error. NULL IS NOT ZERO: a model with nothing measured
+  and nothing declared has no primary figure and falls back to RSS alone,
+  uncoloured, rather than colouring a guess or printing 0.
+  The panel is a QUICK-INFO POPOVER, never a management console (user
+  call, cutting an earlier gauge/progress-bar draft: "we don't need a gauge
+  if too complicated. just a quick info upon clicking which we have a list
+  of loaded models we can unload"): one row per resident model — its name
+  (owner trimmed, full id on hover, `repoName()`), its memory figures above,
+  an Unload button — no proportional fill, no RAM-fraction indicator.
+  Unload (`POST /api/ai/runtime/unload`, the D3 `X-Fused`-guarded mutation
+  that already existed for the AI Models page) carries no confirmation —
+  the action is recoverable by loading again — but the row reflects being
+  in flight ("Unloading…", disabled) and a failure says so inline rather
+  than doing nothing visible; a success publishes the response's fresh
+  runtime snapshot back through `aiRuntime.ts`'s shared store so every
+  reader updates on the click rather than the next poll tick. Ordered
+  LEFTMOST of the three sections: Models is PERSISTENT status, true the
+  instant anything is resident, where Activity and Updates are TRANSIENT
+  work that appears and resolves (BG-10's own lifetime-ordering principle,
+  restated for what is always true versus what is currently happening).
+
+  **Every section's chip carries a quiet `.dl-new-dot` for an
+  unacknowledged arrival while collapsed, never a forced expansion
+  (D567).** `lib/autoExpand.ts`'s `useAutoExpandOnNew` used to call
+  `setCollapsed(false)` (and persist it) the instant a new id showed up —
+  code review finding #4 caught that this recreated the exact complaint
+  the status-bar redesign exists to fix: a background job popping a
+  floating panel over whatever page the user had open, uninvited, and
+  surviving a reload because the forced expansion was written to
+  `localStorage`. The hook now only answers whether something arrived
+  unacknowledged; opening the panel — the user's own click, for any
+  reason — is what clears it.
 
 ---
 
@@ -6069,6 +6607,28 @@ an AI Models page that could say what was on disk but not what was *running*.
   it, because `stop` cannot reach a beat already inside its POST and that tick
   would land after the work finished, flipping a row the supervisor had just
   marked done back to running.
+
+  **The `/api/ai` RELAY is a reporter too, and was the last one that was not.**
+  Its remote-Claude row (§36's server-owned twin of a local generation's) opened
+  once and then said nothing until the answer landed, so every Claude turn
+  slower than half a minute — and RH-11's timeout allows TEN MINUTES of them —
+  announced that the process running it had stopped reporting, dimmed itself and
+  withdrew its ✕, and then returned a perfectly good completion. Nothing was
+  wrong but the reporting, which is the exact failure this rule names. Its
+  heartbeat carries **no fields at all**, which is the fieldless-upsert form of
+  "re-send the last payload": `jobs.upsert` applies only the keys PRESENT, so an
+  id alone stamps `updated_at` and is structurally incapable of moving a bar, of
+  overwriting the detail, or of being read as the opening report that would
+  reopen a row the user dismissed or the sweep forgot. A tick after the outcome
+  is impossible rather than merely unlikely — the beat re-reads the same
+  `_remote_job_closed` flag the terminal report sets, so cancelling the beat is
+  hygiene against a leaked task rather than the thing keeping the row honest.
+  The same row now describes the WAIT, too: RH-11 serializes calls through one
+  shared CLI process, so a call parked behind another has not started, and says
+  so rather than drawing the identical row as the call that is generating —
+  `supervisor`'s `_QUEUED_DETAIL` rule at the one other place this app queues
+  work behind a lock, and the row most exposed to the stale window in the first
+  place, since its wait is the other call's whole turn.
 - **AI-5i** **The weights are fetched on several connections, and an interrupted
   fetch resumes.** `snapshot_download` opens one connection per file and one file
   at a time, so a model whose bytes are a single 4.6GB shard downloaded at
@@ -8404,29 +8964,31 @@ an AI Models page that could say what was on disk but not what was *running*.
     `_memory_and_device` reads the live worker, and `supervisor.unload`'s own
     exception is logged and swallowed so a failed teardown cannot mask a
     measurement's real error.
-- **AI-15** **A fifth capability, `text-to-video`, and the first with no
-  "everywhere" runner.** `fused.ai.video({prompt, ...})` renders text to a
-  short mp4 WITH AUDIO through LTX-2.3, on `ltx-2-mlx` — a pure-MLX,
-  MIT-licensed port whose `DistilledPipeline` reads MLX safetensors directly,
-  so the `ltx-video` runner loads a model into its own interpreter the same
-  way `mflux-image` does. `POST /api/ai/video` mirrors `/api/ai/image` —
-  job-backed, server-decided path and seed — minus `guidance` (the engine is
+- **AI-15** **A fifth capability, `text-to-video` — and, since D621, optionally
+  IMAGE-to-video too — the first capability with no "everywhere" runner.**
+  `fused.ai.video({prompt, image, ...})` renders a short mp4 WITH AUDIO
+  through LTX-2.3, on `ltx-2-mlx` — a pure-MLX, MIT-licensed port whose
+  `DistilledPipeline` reads MLX safetensors directly, so the `ltx-video`
+  runner loads a model into its own interpreter the same way `mflux-image`
+  does. `POST /api/ai/video` mirrors `/api/ai/image` — job-backed,
+  server-decided path and seed — minus `guidance` (the engine is
   CFG-distilled and takes no such parameter, so one is refused as an unknown
   option rather than silently accepted) and minus a live preview (none exists
   in this cut), plus `frames`: the engine's valid grid is `1 + 8n` (its VAE's
   temporal compression is 8, the grid its own upstream CLI defaults to), so a
   requested count is rounded UP to the next grid point rather than merely
   clamped. **The request SHAPE is the resolved runner's own fact, not the
-  route's** — `registry.VideoTraits` carries the frame grid, canvas default
-  and step default per runner (`704×480` at 8 steps here), and
-  `catalog.describe`'s `videoTraits` hands the identical numbers to the
-  Playground's sliders so a control cannot show a value the render will not
-  use. The shared rails around them — `n` in [1, 21], steps in [2, 50], a
-  32-multiple canvas up to 768×1344 pixels — are the APP's choices, held
-  across every engine. **No fallback exists anywhere else**: the engine is
-  MLX, so off Apple Silicon `catalog()` reports `default: null` for this
-  capability for the first time, and every call answers 409 with the reason
-  rather than ever reaching a render.
+  route's** — `registry.VideoTraits` carries the frame grid, canvas default,
+  step default and (D621) whether the engine accepts a reference image at all
+  per runner (`704×480` at 8 steps here), and `catalog.describe`'s
+  `videoTraits` hands the identical numbers to the Playground's sliders so a
+  control cannot show a value the render will not use. The shared rails
+  around them — `n` in [1, 21], steps in [2, 50], a 32-multiple canvas up to
+  768×1344 pixels — are the APP's choices, held across every engine. **No
+  fallback exists anywhere else**: the engine is MLX, so off Apple Silicon
+  `catalog()` reports `default: null` for this capability for the first time,
+  and every call answers 409 with the reason rather than ever reaching a
+  render.
 - **AI-15a** **Two repos are fetched, not one, and both are reported
   downloads.** `DistilledPipeline` needs the LTX weights AND a Gemma-3 text
   encoder it does not ship, so `download` fetches
@@ -8469,6 +9031,40 @@ an AI Models page that could say what was on disk but not what was *running*.
   already fetched its 144GB; and `/api/ai/video`'s cross-engine refusal is
   kept as deliberately unreachable code, generic over runners, so a second
   video engine's arrival does not have to remember to add it back.
+- **AI-15c** **`image` (D621): one reference image, conditioning at frame 0
+  with strength 1.0 — the same single-string scope AI-9f already made for
+  `/api/ai/image`'s own `image`, restated here rather than generalized. No
+  `images` list, no per-image frame index or strength: `DistilledPipeline`'s
+  own `generate_two_stage` builds real I2V conditioning at both stages for
+  the ONE image it is given, and a multi-anchor surface is unverified on this
+  app's hardware, not merely unimplemented. Path resolution — page-relative
+  to `base`, existence, is-a-file — runs through `_resolve_reference_image`
+  in `ai_runtime.py`, the same function `/api/ai/image`'s `image` calls,
+  rather than a third hand-rolled copy of `/api/ai/transcribe`'s own `path`
+  rule; the two routes' error text differs only in which bridge function it
+  names. `/api/ai/video` accepts `base` for the first time as of this
+  entry — video had no page-relative path to resolve before `image` needed
+  one — injected by `runtime.js`'s `aiVideo` from the page's own `?path=`
+  exactly as `aiImage` already does. **The default canvas derives from the
+  reference's own aspect ratio, snapped to a multiple of 64** rather than the
+  32-multiple grid the rest of this route enforces (AI-15's own shared
+  rails): the engine's two-stage pipeline re-derives its own output size via
+  `snap_output_dimensions(..., two_stage=True)`, coarser than the app's
+  ordinary video snap, and a default that stopped at 32 could be silently
+  re-snapped by the engine to a size the reply never claimed. An explicit
+  `width`/`height` in the body still wins over the derived default, and a
+  reference this app's own PNG/WebP/JPEG header reader cannot parse falls
+  back to the engine's own tuned canvas silently rather than failing the
+  render — the same "convenience default, not a validation" rule AI-9f's
+  `_edit_default_size` already states for the image route.
+  `registry.VideoTraits.supports_image` is the ENGINE fact this all sits on
+  (`ltx-video`'s row: `True`), carried to the Playground through
+  `catalog.py`'s `videoTraits` payload as `supportsImage` so its
+  reference-image control cannot appear for an engine that would refuse it.
+  **Unexercised in this build**: the CRF round-trip through `imageio-ffmpeg`
+  (`worker.py:271-312`'s PATH plumbing exists for exactly this) has never
+  actually run end to end, and neither has a real conditioned render on
+  Apple Silicon hardware — both need a live check this PR could not perform.
 - **AI-16** **"Will this fit?" is answered over a FOOTPRINT — what the model
   costs RESIDENT — never over a download size, and the answer carries the basis
   it was reached on** (D497, TARGET). `ai_runtime._fit_verdict` is handed
@@ -9478,6 +10074,73 @@ world from one the user typed.
   continuation, not a cliff. Cancelling a template cascades to its pending
   occurrence; cancelling just the occurrence means "skip this one" and the
   schedule continues.
+- **SCH-17** **A task can have FILES attached — any type, any size, any number**
+  (`NewJobModal.tsx`, `POST /api/schedule/shot`, `schedule._images`,
+  `_attachments_block`; D618). The entry points are a PASTE on either text field
+  and a DROP anywhere on the write block — there is no picker button, because
+  those two are the gestures this card is used with and a dashed ＋ square
+  standing in the chip row was chrome for the user who makes neither. Each file
+  is uploaded once, MULTIPART behind the D3 `X-Fused` guard, into
+  `<home>/task-shots`; the server MINTS the name (a UTC stamp plus 4 random
+  bytes) and borrows only a sanitised extension from the client — the MIME map
+  first, the filename second, lowercased and alphanumeric-only, since that
+  string is appended to a path about to be opened and it is what decides which
+  template a preview later frames. The answer is `{path, kind, width?,
+  height?}`. **No caps and no type gate:** `IMAGES_MAX` (4 per task) and the
+  endpoint's 4 MB byte ceiling are gone from both sides, for the reasons PT-16
+  gives for the chat's own — the directory prunes itself, `Read` truncates at
+  the agent's end, and the upload path enforces no limit of its own. 4 MB
+  survives as a DOWNSCALE TRIGGER only. **A picture the browser cannot draw
+  (`.tif`, `.heic`, `.psd`, a raw camera file) and any image over 4 MB are
+  transcoded SERVER-SIDE** through `fused_render/server/image_convert.py` — the
+  ladder `agent.py`'s `image_to_png` holds for the chat (Pillow, `/usr/bin/sips`
+  on macOS for what Pillow refuses, first frame of a multi-frame TIFF, longest
+  edge 1600, PNG then a JPEG quality ladder past 4 MB), lifted into one module
+  so the edge and the budget have a single home — and the CONVERTED `-view.png`
+  path is what comes back, the original kept beside it under the same pruner.
+  Server-side rather than in a canvas on the card because the two cases are one
+  call from python and two code paths in the browser, one of which cannot exist:
+  a canvas cannot resize bytes it cannot decode. A failed conversion costs the
+  conversion and never the attachment. **The chip is a thumbnail for a picture
+  and a 📄 glyph plus a 12ch-clipped filename for anything else** — the same
+  footprint, the same ✕ on the corner, thumbnail XOR glyph — and the CLICK
+  opens the viewer: a picture as it always did (fitted, then natural size with
+  the box scrolling), a file in its OWN template, exactly as the chat's
+  attachment viewer does (PT-16/D616). `GET /api/fs/stat` on the attachment,
+  the first entry that is neither `conditional` nor the chat mode, then a sealed
+  `/render?path=<template>&_file=<file>&_preview=1&_nofocus=1` iframe — the
+  `THUMB_SEAL` sandbox and the two display-only stamps IMPORTED from the shell's
+  own modules rather than mirrored, this being TSX and not a vendored template.
+  "loading preview…" stands until the frame's own `load`; Close, Escape and the
+  scrim all clear the viewer, and because the frame is a conditional render that
+  clearing IS the unmount — a template is a running document. No template for
+  the extension, or a copy the pruner has deleted, is a `null` and the dialog is
+  the name and the path. **On the wire the key is still `images`** and still
+  validated to paths under `shots_dir()` by realpath containment (a symlink
+  under the dir cannot smuggle a target out of it), because every stored entry
+  spells it that way; what changed is that it holds any file and has no count
+  bound. **Beside it rides `attachments`, the same paths carrying `name` and
+  `kind`** — the filename the user recognises (a stored path is a minted stamp)
+  and the kind the browser settled (a transcoded `.tif` is a picture whose
+  extension lies) — validated by the same containment, stored on the entry,
+  copied onto every occurrence, and derived from `images` for any entry or
+  client that has only paths. Either field alone is enough.
+  **The fired run's message carries the claude page's own `<pane-shot>` block**
+  (`schedule._attachments_block`, D619), one explanatory sentence then the JSON
+  array `[{kind, view, name, viewNote: ""}]`, composed BETWEEN the
+  `<live-app-state>` block and the user's words in `composeOutgoing`'s order —
+  so opening the task's chat renders the attachments as RECEIPT ROWS (a
+  thumbnail, or 📄 and the filename, both opening the viewer) exactly as the
+  chat's own do, instead of the raw path list the plain-text tail used to leave
+  in the user's turn. The tag and the payload shape are duplicated in
+  `schedule.py` rather than imported (PY-15) and pinned by a parity test that
+  reads `PANE_SHOT_TAG` out of `template.html`; `pane-shot` was already in every
+  machinery strip list, so no row title and no bubble shows the block. The
+  standing pre-allowed `Read` of the directory (SCH-2's `extra_read_dirs`) is
+  unchanged, so a repeat re-reads its attachments on every run with no bytes in
+  the store — and it is granted for the SPAWN only: a follow-up turn typed into
+  that chat carries its own `read_dirs`, so a re-read asked for later is carded
+  like any other Read outside the project.
 
 ## 42. When Something Around the App Is Broken (D328)
 
@@ -9805,8 +10468,10 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   through `appfile._slug` (no separator, dot or drive letter survives it,
   shared with the extract cache key); an empty name falls back to the FILE
   STEM, not a shared `app` literal, so two unnamed app files do not collide on
-  one folder. Plain files — no `git init`, unlike the showcase Clone, which
-  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  one folder. Plain files — no repo of its own (D626: `local/` is one shared
+  repo; the clone lands untracked and the first turn commit about it adopts
+  it), and no upstream to diff against, unlike the showcase Clone.
+  Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
 
@@ -10345,6 +11010,31 @@ background apps are the third.
   running). `engine_host.background_running_folders()` enumerates the
   in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
+- **The status bar's Engines section (D591).** Two routes on
+  `server/routers/engines.py` let the user see and stop what is running,
+  across ALL THREE child kinds rather than background apps only:
+  - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
+    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
+    (`kind="background"` only) and `module` (warm app workers only) so a row
+    can be labelled without guessing each kind's conventions. Read-only and
+    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
+    this router's proxied GETs. The work is
+    `engine_host.running_engines()`, which keeps the same lock discipline
+    `background_running_folders` established — snapshot under `_lock`,
+    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
+    lock or the private `_children` dict.
+  - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
+    like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
+    executing side. Calls `engine_host.stop`, which is idempotent (it pops
+    with a default), so a stale row clicked after the engine already exited
+    is a no-op rather than an error. NOT a destructive route: a `template`
+    engine respawns on the next `ensure`, a warm `app` worker on its next
+    call (and is idle-reaped on a timer regardless, `APP_IDLE_RETIRE_S`), and
+    a `background` daemon going down is exactly the documented "quit this app
+    right now" action. Deliberately NOT routed through
+    `POST /api/apps/background/stop`, which takes an `html` PAGE path and
+    derives the folder with a `dirname()` — handing it a folder resolves to
+    the folder's PARENT — and which covers `kind="background"` only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
@@ -10484,7 +11174,8 @@ the rules around it.
 <app>/.fused/
     data/       state the app owns and cannot rebuild
     cache/      derived bytes the app can rebuild — deletable at any time
-    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>"}
+    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>",
+                 "migrations": [{"from", "to", "at", "sessions"}, ...]}  # after a move
 ```
 
 - **`data` vs `cache` is a promise, not a naming preference.** Everything under
@@ -10510,9 +11201,43 @@ the rules around it.
   against it: a mismatch means the folder was moved or copied since its state
   was created — the one fact an app cannot otherwise learn about itself, and
   exactly when a path-keyed cache entry or an absolute path stored in `data/`
-  has gone stale. `ensure` therefore NEVER rewrites the field (rewriting on
-  sight erases the evidence); it logs at INFO and leaves it. What a move MEANS
-  is the app's call — a photo index repoints, a scratchpad does not care.
+  has gone stale. A COPY — the recorded folder still exists — is left exactly
+  as found: `ensure` logs at INFO and rewrites nothing, and what it means is
+  the app's call (a photo index repoints, a scratchpad does not care). A MOVE
+  — the recorded folder is gone — is settled by the server
+  (`fused_render/claude_session_move.py`): every Claude transcript whose own
+  `cwd` line is the old path or a directory under it is carried from its
+  `~/.claude/projects/<munged cwd>/` bucket to the bucket for the matching path
+  under the new root, every spelling of the old path repointed — `cwd`
+  fields, the leading `<live-app-state>` block's plain `entry` and
+  percent-encoded `_file=` url (a file-scoped session's pane identity, which
+  is what lists it under its file and what "open" navigates to), tool
+  records — and the `<id>/` side dir along with it, so the Tasks list,
+  "continue in terminal" and `--resume` all find the conversations at the
+  new home. Membership is decided per transcript by
+  its recorded `cwd`, never by bucket name — the munge is lossy and
+  `-A-app-` also prefixes the sibling `/A/app-old`. A transcript whose session
+  is live (a pid-checked `~/.claude/sessions/` entry, or a turn in flight per
+  `session_liveness`) stays put and the relocate reports incomplete; one that
+  already exists at the destination (a copy-on-resume got there first) is left
+  to the destination. Only a complete relocate repoints `app_dir`, appending
+  `{"from", "to", "at", "sessions"}` to a `migrations` list so the evidence is
+  kept rather than erased; the server's own stores that name the old path —
+  bookmarks, shell recents, scheduled targets, the menu-bar pin (all via
+  `workspace_migration.rewrite_absolute_paths`, the D337 rewriters handed an
+  app's roots instead of the workspace's), plus `current_apps.json`,
+  `registered_apps.json` and the workspace-relative `app_recents.json`
+  (`fused_render/app_state_move.py`) — are re-rooted on the same open,
+  idempotently, an app moved out of the workspace dropping its
+  `app_recents` key (the registered store owns it from there); an
+  incomplete one leaves `app_dir` at the origin
+  but still appends the hop with its `pending` ids, so if the folder moves
+  AGAIN before the live session ends the next relocate searches that
+  intermediate path too, and the transcripts already carried there are not
+  lost. A rename the munge cannot see (`my_app` → `my-app`, same bucket)
+  rewrites the transcript's `cwd` lines in place. Not carried: `~/.claude.json`'s `projects` map (the CLI
+  owns it), `history.jsonl`, and the session-id-keyed `file-history/` and
+  `todos/`.
 - **A `.fused/meta.json` that exists but does not parse is left alone.** It is
   a user-writable file in the user's folder; overwriting it would destroy
   whatever they (or a future version) put there, and nothing here needs it.

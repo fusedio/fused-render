@@ -15,7 +15,12 @@ import { EditorState, StateField, StateEffect, RangeSet } from "@codemirror/stat
 // markdown grammar what a range IS, and the completion API for the `[[` popup.
 import { WidgetType, ViewPlugin, MatchDecorator, keymap } from "@codemirror/view";
 import { EditorSelection, RangeSetBuilder, Prec } from "@codemirror/state";
-import { syntaxTree } from "@codemirror/language";
+import { syntaxTree, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+// MD-18a/6b: `tags` is what a HighlightStyle's rules are keyed on — there is
+// no way to define one without it, even though only HighlightStyle and
+// syntaxHighlighting were the named gap. Needed for the light-mode fence
+// HighlightStyle built from this view's own tokens (oneDark ships its own).
+import { tags } from "@lezer/highlight";
 // `acceptCompletion` because Tab has to take the open completion before it
 // indents (MD-18): CM's own completionKeymap binds only Enter to it.
 import { autocompletion, acceptCompletion } from "@codemirror/autocomplete";
@@ -60,6 +65,9 @@ export {
   RangeSetBuilder,
   Prec,
   syntaxTree,
+  HighlightStyle,
+  syntaxHighlighting,
+  tags,
   autocompletion,
   acceptCompletion,
   indentMore,

@@ -46,6 +46,11 @@ function healthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
     update_manager: null,
     update_blocked_reason: null,
     doctor: null,
+    // `null` is what a healthy source: "path" machine reports only on Windows;
+    // on POSIX it is `true` — but `null` is the never-produces-advice value,
+    // so the baseline stays the quiet one and a test opts into `false`.
+    on_shell_path: null,
+    path_fix_command: null,
     checked_at: 1_700_000_000,
     ...over,
   };
@@ -343,6 +348,24 @@ test("the install command comes from the server, so Windows gets the Windows one
   expect(issueById(win, "missing")?.command).toBe("irm https://claude.ai/install.ps1 | iex");
   const mac = healthy({ found: false, source: null });
   expect(issueById(mac, "missing")?.command).toBe(CLAUDE_INSTALL_COMMAND);
+});
+
+test("a signed-out CLI offers to sign itself in, through the browser", () => {
+  // The row that was a sentence for longest, because `/login` is a TUI slash
+  // command. `claude auth login` is the other door: it opens the browser and
+  // finishes on its own loopback callback, so this is a button now.
+  const issue = issueById(healthy({ signed_in: false }), "signed-out");
+  expect(issue?.action).toEqual({ kind: "login", label: "Sign in" });
+});
+
+test("the signed-out row no longer sends anyone to a terminal", () => {
+  // The advice it replaced was "open a terminal, run `claude`, type /login".
+  // Leaving that text beside a button that does the whole thing would be the
+  // app telling the user to go and do the work it just did.
+  const issue = issueById(healthy({ signed_in: false }), "signed-out");
+  expect(issue?.detail).not.toContain("/login");
+  expect(issue?.detail).not.toContain("terminal");
+  expect(issue?.command).toBeUndefined();
 });
 
 test("a dead override still offers no button — we cannot edit a shell profile", () => {

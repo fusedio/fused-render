@@ -615,6 +615,41 @@ def background_running_folders() -> set[str]:
     return {c.folder for c in children if c.folder and _alive(c)}
 
 
+def running_engines() -> list[dict]:
+    """Every currently-live child, as plain dicts — what
+    `GET /api/engines/running` reports so the status bar can list what is
+    running and offer a Stop per engine (D591).
+
+    Modelled on `background_running_folders` above, and for the same reasons:
+    the list is taken UNDER `_lock` and `_alive()` is called OUTSIDE it, so a
+    `Popen.poll()` per child never happens while the lock is held. Everything
+    is already in memory, so this is a dict snapshot plus one poll per child —
+    no folder walk, no toml read.
+
+    A helper HERE rather than the router reaching into `_children`: the router
+    must not touch this module's lock or its private dict (the same boundary
+    `background_running_folders` exists to keep).
+
+    `folder` and `module` are reported as-is — `folder` is set for
+    `kind="background"` only and `module` for warm app workers only, so the
+    caller can label a row without having to guess the kind's conventions.
+    """
+    with _lock:
+        children = list(_children.values())
+    return [
+        {
+            "engine_id": c.engine_id,
+            "kind": c.kind,
+            "pid": c.pid,
+            "version": c.version,
+            "folder": c.folder,
+            "module": c.module,
+        }
+        for c in children
+        if _alive(c)
+    ]
+
+
 #: Set once the first bring-up starts the (daemon) idle sweeper thread.
 _reaper_started = threading.Event()
 

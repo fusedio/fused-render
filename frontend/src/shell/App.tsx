@@ -15,6 +15,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { Job } from "@platform/lib/jobs";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -48,7 +49,10 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
-import QueueDock from "@shell/QueueDock";
+import StatusBar from "@platform/ui/StatusBar";
+import ModelsDock from "@shell/ModelsDock";
+import ActivityDock from "@shell/ActivityDock";
+import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -457,6 +461,16 @@ function ClaudeConfigView() {
 
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
+
+  // FAILED JOBS, ON THEIR WAY FROM Activity TO Notifications (D586). `ActivityDock`
+  // already receives `DownloadManager`'s full jobs snapshot on every poll and
+  // forwards just the `error` rows here; `RepoUpdatesDock` draws them beside
+  // its repo rows. This lives in `App` because it is the only place both
+  // sections are in scope — `StatusBar` deliberately takes them as opaque
+  // `ReactNode`s and must not learn what its children are. `ActivityDock` only
+  // calls up when the error-id SET changes, so this does not re-render the
+  // shell on every poll.
+  const [failedJobs, setFailedJobs] = useState<Job[]>([]);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -972,12 +986,40 @@ export default function App({ config }: { config: Config }) {
   return (
     <div id="app">
       {!IS_EMBED && sidebar}
-      <div id="main">{main}</div>
-      {/* ONE work-in-progress card in the notification column, not two: QueueDock
-          is the shell's wrapper around the platform activity card (it fills that
-          card's queue slot), handed in from here rather than imported there
-          because it speaks explorerUrl, which lives in this layer. */}
-      <NotificationHost activity={<QueueDock />} />
+      <div id="main">
+        {main}
+        {/* Three sections, not three surfaces: ModelsDock is the shell's
+            wrapper around Models' own chip (it speaks apps/ai_models/lib's
+            shared runtime poll, which platform may not import). ActivityDock
+            is the shell's wrapper around the platform activity card (it
+            fills that card's queue/engines slots), handed in from here
+            rather than imported there because it speaks explorerUrl
+            (shell/schedule-lib) and platform/lib/api's engine poll — the
+            latter platform already owns, but it is grouped with the queue
+            poll in one shell composer rather than split across a shell file
+            and a platform file for one poll (`shell/ActivityDock.tsx`'s own
+            header has the fuller argument). RepoUpdatesDock is its own
+            sibling section (SPEC §36), handed in the same way and for the
+            same reason: it speaks explorer/lib's staged-Claude-ask store.
+            Inside `#main` (D563, not NotificationHost's fixed column) and
+            behind the same `!IS_EMBED` guard as the sidebar, so a pane in
+            panel/tab mode does not grow its own bar. */}
+        {!IS_EMBED && (
+          <StatusBar
+            models={<ModelsDock />}
+            /* D586: failures are re-routed from Activity to Notifications, and
+               this is the one place both sections are in scope. Plain prop
+               wiring on purpose — the alternative was a shared store, which
+               would be a new subsystem for a list that one section already
+               polls and the other only reads. */
+            activity={<ActivityDock onFailed={setFailedJobs} />}
+            repoUpdates={
+              <RepoUpdatesDock failed={failedJobs} onFailedPatch={setFailedJobs} />
+            }
+          />
+        )}
+      </div>
+      <NotificationHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

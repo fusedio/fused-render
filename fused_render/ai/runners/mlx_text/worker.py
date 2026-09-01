@@ -344,6 +344,35 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim. `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST generation
+    if nothing new started in the meantime, not per call: a chat exchanged in
+    a burst of turns, or a page issuing many short completions in a row, keeps
+    the allocator at full speed throughout — only a run of `_RELEASE_IDLE_S`
+    seconds with no new `/generate` at all actually clears it.
+
+    Matters for the same stacking reason as `mlx_whisper.worker.release` and
+    `mlx_embed.worker.release`: the supervisor keeps one resident worker PER
+    CAPABILITY, so a text model sits in its own process next to whatever
+    image, speech or embed worker is also loaded, each with its own idle
+    pool — this is the runner most likely to be resident continuously through
+    a whole session, which is exactly the case an idle-only release exists
+    for, as against the per-call design this change's first cut used and
+    would have thrashed a fast chat loop.
+
+    `getattr` because a real but older mlx wheel, or this repo's stubbed
+    `mlx.core` in tests, may not have `clear_cache` at all — absence is a
+    no-op, matching every other MLX runner's guard.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -582,6 +611,19 @@ def generate(body, write):
     # wrong.
     prompt_tokens = None if images else _prompt_tokens(processor, text)
 
+    # One frame BEFORE the first token, naming the phase that is otherwise
+    # silent: `stream_generate` below does not yield at all until prefill —
+    # one forward pass over the WHOLE prompt — has finished, which for a long
+    # context is itself seconds of real work with nothing to show for it.
+    # `input_tokens` rides along so the caller can say how much it is
+    # chewing on; `None` on the image path (see the comment above) is
+    # forwarded as-is rather than guessed at. A type no existing NDJSON
+    # reader recognises (`server/ai.py`'s `_local_relay`, `fused_ai.py`'s
+    # `_parse_ndjson` loop, `benchmark.py`'s own `event.get("type")` switch)
+    # so every one of them falls through it harmlessly — this is additive to
+    # the wire format, not a new branch every reader has to grow.
+    write({"type": "prefill", "input_tokens": prompt_tokens})
+
     count = 0
     started = time.time()
     for response in stream_generate(model, processor, text, image=images or None,
@@ -601,4 +643,5 @@ def generate(body, write):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=True, memory=memory, peak_memory=peak_memory)
+                      streaming=True, memory=memory, peak_memory=peak_memory,
+                      release=release)

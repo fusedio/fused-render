@@ -68,6 +68,18 @@
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
 
+  /* Status-bar item states (D576, matching VS Code's own
+     `statusBarItem.hoverBackground` / `statusBarItem.activeBackground`).
+     ALPHA OVERLAYS, not opaque mixes like the two `--row-bg-*` above: a
+     status-bar item is a full-height rectangle sitting directly on the bar,
+     and an overlay reads correctly whatever the bar is painted, which is why
+     VS Code specifies them this way. Active is deliberately well clear of
+     hover — an open panel has to be tellable from a pointer merely passing
+     over its neighbour, all the more so since a panel can now auto-open with
+     the user having touched nothing (D574). */
+  --status-item-hover: rgba(255, 255, 255, 0.12);
+  --status-item-active: rgba(255, 255, 255, 0.18);
+
   /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
      One model, at two ends of one question: this machine HAS it, or it does
      not. Declared per palette rather than as a `color-mix` against --fg-muted
@@ -316,6 +328,11 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  /* Black-alpha here, not white — the same inversion VS Code applies to these
+     two tokens in a light theme. A white overlay on a light bar is invisible. */
+  --status-item-hover: rgba(0, 0, 0, 0.1);
+  --status-item-active: rgba(0, 0, 0, 0.16);
 
   /* The same axis, and the reason it is a token at all. The mix these replace
      was 14% of --fg-muted over --bg-alt, which on this palette is a warm

@@ -47,6 +47,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -123,6 +124,11 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+#: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
+#: completions from the same resident model are two pieces of work with two
+#: answers, and a shared id would have the second overwrite the first's row
+#: mid-stream.
+TEXT_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-text:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -234,6 +240,13 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: What the OS says the worker process is holding RIGHT NOW — macOS
+    #: `phys_footprint`, i.e. the number Activity Monitor shows, RSS elsewhere
+    #: (D597, `worker_base.os_footprint_bytes`). ADDITIVE beside
+    #: `resident_bytes`: that field feeds `peak_resident_bytes` ->
+    #: `footprints.py` -> `fit.py`'s "measured" rung, and redefining it would
+    #: re-verdict every model the user has ever run.
+    os_footprint_bytes: int | None = None
     #: The high-water mark of what this model has cost, as the runner
     #: reported it (SPEC AI-8c, D497) — `worker_base.peak_resident_bytes()`,
     #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
@@ -454,6 +467,55 @@ SPAWN_KWARGS = (
     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     if os.name == "nt" else {"start_new_session": True}
 )
+
+#: The worker's working directory, when the spawn cannot pass `cwd=` — see
+#: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
+WORKER_CWD_ENV = "FUSED_AI_WORKER_CWD"
+
+
+def _spawn_kwargs(cwd: str, env: dict) -> dict:
+    """The Popen keyword arguments for a worker — and the ONE place the
+    fork-versus-posix_spawn decision lives, because on macOS it decides whether
+    a worker can start at all.
+
+    **On macOS, workers are started with `posix_spawn`, never `fork()`.**
+    CPython picks `posix_spawn` only for a narrow Popen shape (3.12
+    `subprocess._execute_child`: no `cwd`, `close_fds=False`, no
+    `start_new_session`, no `preexec_fn`, every redirected fd above 2), and
+    falls back to `fork()` + `exec()` the moment any of those is set. The old
+    shape here set three of them, so every worker was forked — and a forked
+    child runs the parent's `pthread_atfork` child handlers before it ever
+    reaches `exec()`.
+
+    That is what killed the embeddings worker on a fresh machine, with
+    `the worker exited before it started (code -11)` and an EMPTY stderr:
+    the crash report shows the child dying in `do_fork_exec → fork →
+    _pthread_atfork_child_handlers → osgeo::proj::io::SQLiteHandleCache →
+    sqlite3Close → sqlite3_log → os_log_type_enabled → SIGSEGV`. PROJ (loaded
+    into THIS server process through pyproj/shapely the moment any geo page
+    renders) registers an atfork handler that closes its SQLite handles in
+    the child, SQLite logs while doing so, and `os_log` after `fork()` is the
+    documented macOS hazard. Nothing about the worker, its venv or MLX was at
+    fault — the same worker started fine from a shell, and the same server
+    could not start ANY worker once PROJ was resident. Reproduced exactly with
+    a deliberately crashing atfork handler: the fork shape dies -11 every
+    time, the `posix_spawn` shape never does.
+
+    `posix_spawn` runs no atfork handlers, so the worker gets its own process
+    with none of the parent's native state in the way. The two things the old
+    shape did for the child — `cwd` and a fresh session/process group for
+    `_kill_tree`'s `killpg` — the worker now does for itself, first thing in
+    `worker_base.serve`: `chdir` to `WORKER_CWD_ENV` and `os.setsid()`.
+    `close_fds=False` leaks only descriptors marked inheritable, which since
+    Python 3.4 (PEP 446) is none of this server's by default.
+
+    Linux and Windows keep the previous shape: glibc's fork is not where this
+    hazard lives, and Windows never forks.
+    """
+    if sys.platform == "darwin":
+        env[WORKER_CWD_ENV] = cwd
+        return {"close_fds": False}
+    return {"cwd": cwd, "close_fds": True, **SPAWN_KWARGS}
 
 #: Windows has no SIGKILL. Read through getattr so merely IMPORTING this module
 #: does not fail there — the image runner is cross-platform, so this code really
@@ -789,15 +851,14 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
+    env = _child_env(worker.token, worker.model, worker.capability)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
-        cwd=runner.folder,
-        env=_child_env(worker.token, worker.model, worker.capability),
-        close_fds=True,
-        **SPAWN_KWARGS,
+        env=env,
+        **_spawn_kwargs(runner.folder, env),
     )
     worker.pid = proc.pid
     worker.proc = proc
@@ -884,7 +945,25 @@ def _failure_text(e: BaseException) -> str:
     return f"{e.__class__.__name__}: {e}".strip().rstrip(":")
 
 
-def _cancel_state(job: str) -> bool | None:
+def _job_record(job_id: str, records: list[dict] | None = None) -> dict | None:
+    """One row from the registry, by id, or None.
+
+    Pass an already-fetched `records` list when the caller needs MORE than one
+    id out of the same instant — `_wait_ready`'s merged tick looks up both the
+    caller's own row (for `_cancel_state`, below) and the load's row (for the
+    progress it mirrors) once per 0.5s tick, and a second `jobs.list_jobs()`
+    call would mean a second `_sweep` and a second lock acquisition for
+    information the first call already produced. Omit it (the common case,
+    every OTHER caller of `_cancel_state`) and this fetches its own — see that
+    function's own docstring for why the fetch is `mark_read=False`.
+    """
+    for record in (jobs.list_jobs() if records is None else records):
+        if record["id"] == job_id:
+            return record
+    return None
+
+
+def _cancel_state(job: str, records: list[dict] | None = None) -> bool | None:
     """Was the ✕ pressed — or is there no row to ask?
 
     Three answers, not two, because "no row" is not "no". A row can be EVICTED
@@ -897,17 +976,16 @@ def _cancel_state(job: str) -> bool | None:
     Callers that can act on the distinction take the tri-state; the rest keep
     the boolean below, whose behaviour is unchanged.
 
-    Deliberately calls `jobs.list_jobs()` with its default `mark_read=False`:
-    this is a poll of our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole
-    duration of every model load), not a person looking at the corner, and
-    marking a terminal row read here would start its retention clock from a
-    poll nobody ever saw — see `list_jobs`'s own docstring, which names this
-    exact function as the reason `mark_read` defaults to False.
+    Deliberately calls `jobs.list_jobs()` (via `_job_record`, unless `records`
+    is already given) with its default `mark_read=False`: this is a poll of
+    our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole duration of every
+    model load), not a person looking at the corner, and marking a terminal
+    row read here would start its retention clock from a poll nobody ever saw
+    — see `list_jobs`'s own docstring, which names this exact function as the
+    reason `mark_read` defaults to False.
     """
-    for record in jobs.list_jobs():
-        if record["id"] == job:
-            return bool(record.get("cancel_requested"))
-    return None
+    record = _job_record(job, records)
+    return None if record is None else bool(record.get("cancel_requested"))
 
 
 def _cancel_requested(job: str) -> bool:
@@ -1078,6 +1156,9 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                footprint = health.get("os_footprint_bytes")
+                worker.os_footprint_bytes = (
+                    footprint if isinstance(footprint, int) else None)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
@@ -1165,11 +1246,12 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         python = _ensure_venv(runner, stub, job)
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
+        env = _child_env(stub.token, model)
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
-            cwd=runner.folder, env=_child_env(stub.token, model), close_fds=True,
-            **SPAWN_KWARGS,
+            env=env,
+            **_spawn_kwargs(runner.folder, env),
         )
         stub.pid = proc.pid
         stub.proc = proc
@@ -1500,6 +1582,35 @@ def _transcribe_title(request: dict, model: str) -> str:
 def transcribe_job_id(uid: str) -> str:
     """The download-manager row for one transcription. See `image_job_id`."""
     return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_job_id(uid: str) -> str:
+    """The download-manager row for one text completion. See `image_job_id`."""
+    return TEXT_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def text_row_fields(title: str, model: str = "") -> dict:
+    """Everything a report must carry for a text-generation row to survive
+    being REBUILT — see `transcribe_row_fields`'s docstring for the full
+    argument (a row can be recreated from scratch on any tick, so every
+    reporter restates its identity rather than a mutable field somewhere
+    holding it).
+
+    Driven from `server/ai.py`'s `_local_relay`, not from this module: that
+    is the caller that already turns a done-frame/error/cancellation into a
+    verdict for both the streaming and non-streaming shapes, and it is the
+    one that mints ids for the other kinds too (`image_job_id`,
+    `transcribe_job_id`). `generate_text` itself stays fail-fast with no job
+    of its own — see its own docstring — so there is nothing here shaped
+    like `_transcribe_row`'s in-progress variant; the caller builds its own
+    opening/tick/terminal payloads directly off this one.
+
+    `unit="tokens"`: the row counts chunks emitted, not bytes or seconds —
+    unlike a transcription's `"s"` or a download's `"bytes"`, the useful
+    number here is how much has been said so far.
+    """
+    return {"title": title, "model": model, "kind": "task", "cancellable": True,
+            "unit": "tokens"}
 
 
 def start_transcribe(model: str, request: dict, job: str) -> None:
@@ -2053,6 +2164,40 @@ def busy_reason(model: str) -> str | None:
     return None
 
 
+def _drop_gone(worker: Worker) -> None:
+    """Forget a worker whose PROCESS has exited: an `error` row that says so,
+    and an empty slot the next request fills with a fresh load.
+
+    Shared by `refresh_memory()` (the sidebar's poll, which decides with
+    `_alive`) and `ready_worker()` (every generation request, which decides
+    with the stricter `_exited`) so the two agree on what "gone" leaves behind.
+    """
+    worker.state = "error"
+    worker.error = "the model process is gone"
+    with _lock:
+        if _workers.get(worker.capability) is worker:
+            del _workers[worker.capability]
+
+
+def _exited(worker: Worker) -> bool:
+    """True only when the worker's process has DEFINITELY exited: a Popen is
+    attached and `poll()` answered a real exit code.
+
+    Stricter than `not _alive(worker)` on purpose, because this is asked on the
+    request path. `_alive` reads a missing handle as dead — right for the
+    reaper, which is tidying a table — but here "cannot tell" must not cost a
+    caller its model: a worker planted without a Popen (every fixture in the
+    tests, an adopted process) has nothing to poll, and a test double whose
+    `poll()` returns a stand-in object is not reporting an exit code. Only an
+    `int` is.
+    """
+    proc = worker.proc
+    if proc is None:
+        return False
+    code = proc.poll()
+    return isinstance(code, int) and not isinstance(code, bool)
+
+
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     """The resident, READY worker for a capability — what generation needs.
 
@@ -2082,6 +2227,18 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
             return None
         if model is not None and worker.model != model:
             return None
+    # **The 502-forever check.** A worker that died while idle — a SIGSEGV out
+    # of a native library, a memory kill — used to stay in the table as `ready`,
+    # so every request was proxied to a dead port and answered `the model
+    # process did not answer`, indefinitely: nothing re-checked the process, so
+    # nothing respawned it until an unload or the idle reaper cleared the slot.
+    # Measured at 46 seconds of 502s on a photo-search app before its caller
+    # gave up, against a ~10s respawn once somebody notices. Polling here turns
+    # that first failed request into the `ModelNotReady` callers already wait
+    # on. Outside `_lock`, like the resolution below: `poll()` is a syscall.
+    if _exited(worker):
+        _drop_gone(worker)
+        return None
     resolved = registry.for_capability(capability)
     if resolved is not None and resolved.code != worker.runner_code:
         evict_stale_engines()
@@ -2189,54 +2346,125 @@ def _wait_ready(model: str, capability: str, job: str,
     memory. So the wait is part of the job rather than a second failure the
     caller has to orchestrate around.
 
-    The load reports to its OWN row (`sys:ai-model:<repo>`, with the download's
-    byte counts); this row says only that the image is waiting on it. Two rows,
-    two truths, and the manager shows both — but BOTH rows have to be able to
-    say the same failure, which is what `_start_resident` returning the record
-    is for (D266).
+    **The rows are MERGED while the wait lasts, not doubled.** The load still
+    reports to its OWN row (`sys:ai-model:<repo>`, with the download's byte
+    counts) — the AI Models page joins repo cards onto exactly that id, so it
+    still has to exist and still has to be truthful even when nobody is
+    waiting on it. But two rows both saying "waiting for FLUX to load" is the
+    same fact told twice under different titles (SPEC §36 — one row per unit
+    of work), so for as long as this wait holds, the CALLER's row mirrors the
+    load row's own `detail`/`done`/`total`/`unit`/`total_scope` verbatim and
+    sets `waiting_for` to the load's job id — a client-side filter
+    (`jobs.ts` `mergedRows`) then hides the load row while `waiting_for`
+    names it and it is still running, so the manager draws one row instead of
+    two. The load row is never deleted or hidden on the SERVER: hiding it here
+    instead would break that join.
+
+    Deliberate non-goal: cancelling the MERGED row does not cancel the shared
+    load. A render's ✕ stopping THIS wait must not stop a load another
+    waiter (or the AI Models page's own download) may depend on — cancelling
+    the merged row only ends this waiter, and the load's row simply
+    reappears, with its own ✕, once nothing else is `waiting_for` it.
+
+    The merge is cleared on EVERY exit from the wait — ready, error, evicted,
+    cancelled, or timed out (the `finally` below) — because if the LOAD then
+    fails, the load row must not still be hidden: D266's promise that both
+    rows can show a real failure only holds for as long as the merge does not
+    outlive the wait it describes. Two rows for two failures is right; two
+    rows for one wait is not. The clearing tick restores the caller's own
+    `unit` (`(row or {}).get("unit", "")` — the image/video opening report
+    uses `unit=""`, a queued transcription's `transcribe_row_fields` pins
+    `"s"`) and clears `done`/`total`, but deliberately leaves `detail` alone:
+    a flash of blank detail between this tick and the caller's next one is
+    worse than one stale line for a moment.
+
+    Both rows have to be able to say the same failure regardless of the merge,
+    which is what `_start_resident` returning the record is for (D266).
     """
     started, pending = _start_resident(model, capability)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
     unreadable = False
-    while time.monotonic() < deadline:
-        worker = ready_worker(capability, model)
-        if worker is not None:
-            return worker
-        # Every read in ONE critical section, because `_bring_up`'s failure path
-        # writes them in one: it stamps the error on the record AND drops the
-        # record from the table without releasing the lock between. Read apart,
-        # a waiter could catch the table already emptied and the error not yet
-        # written, and report a phantom eviction for a load that failed with a
-        # real message — the bug this ordering exists to make impossible.
-        with _lock:
-            state, error, detail = pending.state, pending.error, pending.detail
-            evicted = _workers.get(capability) is not pending
-        if state == "error":
-            raise SupervisorError(error or "the model failed to load")
-        if evicted:
-            # Genuinely taken away rather than broken: another model claimed the
-            # capability, or an unload landed. The record we hold never errored,
-            # so there is no better answer than what happened to it.
-            raise SupervisorError(f"{model} was unloaded before it could be used")
-        cancel = _cancel_state(job)
-        if cancel:
-            raise SupervisorError("cancelled")
-        if cancel is None and not unreadable:
-            # No row to ask. Said once rather than every half-second, and NOT
-            # treated as a cancel: a cold load is minutes of legitimate work
-            # and aborting it on capacity pressure would be a worse failure
-            # than the one this guards. The tick below rebuilds the row when
-            # the caller gave us its identity, so the blind window is one
-            # iteration rather than the whole download.
-            unreadable = True
-            logger.warning(
-                "job row %s is gone while waiting for %s; a cancel requested "
-                "now cannot be read until the row is rebuilt", job, model)
-        _report(job, **(row or {}), **({"state": "running"} if row else {}),
-                detail=f"Waiting for {model} — {detail or state}…")
-        time.sleep(0.5)
-    raise SupervisorError(
-        f"{model} did not finish loading in time (watch {started['jobId']})")
+    try:
+        while time.monotonic() < deadline:
+            worker = ready_worker(capability, model)
+            if worker is not None:
+                return worker
+            # Every read in ONE critical section, because `_bring_up`'s failure
+            # path writes them in one: it stamps the error on the record AND
+            # drops the record from the table without releasing the lock
+            # between. Read apart, a waiter could catch the table already
+            # emptied and the error not yet written, and report a phantom
+            # eviction for a load that failed with a real message — the bug
+            # this ordering exists to make impossible.
+            with _lock:
+                state, error, detail = pending.state, pending.error, pending.detail
+                evicted = _workers.get(capability) is not pending
+            if state == "error":
+                raise SupervisorError(error or "the model failed to load")
+            if evicted:
+                # Genuinely taken away rather than broken: another model claimed
+                # the capability, or an unload landed. The record we hold never
+                # errored, so there is no better answer than what happened to it.
+                raise SupervisorError(f"{model} was unloaded before it could be used")
+            # ONE `jobs.list_jobs()` scan answers both lookups this tick needs
+            # (see `_job_record`'s own doc) — the caller's row, for the cancel
+            # check, and the load's row, for the progress this tick mirrors
+            # onto it.
+            records = jobs.list_jobs()
+            cancel = _cancel_state(job, records)
+            if cancel:
+                raise SupervisorError("cancelled")
+            if cancel is None and not unreadable:
+                # No row to ask. Said once rather than every half-second, and NOT
+                # treated as a cancel: a cold load is minutes of legitimate work
+                # and aborting it on capacity pressure would be a worse failure
+                # than the one this guards. The tick below rebuilds the row when
+                # the caller gave us its identity, so the blind window is one
+                # iteration rather than the whole download.
+                unreadable = True
+                logger.warning(
+                    "job row %s is gone while waiting for %s; a cancel requested "
+                    "now cannot be read until the row is rebuilt", job, model)
+            load_row = _job_record(started["jobId"], records)
+            # Built as a dict, not chained `**` unpacks, because the mirrored
+            # keys (`unit` in particular) can already be present in `row`
+            # (`transcribe_row_fields` pins `unit: "s"`) — a literal keyword
+            # after `**row` for the same name is a `TypeError`, not an
+            # override. Assignment order here IS the override: `row`'s
+            # identity first, the mirrored progress after, so a caller row
+            # that pins its own `unit` still shows the load's bytes while
+            # this wait holds.
+            tick = {**(row or {})}
+            if row:
+                tick["state"] = "running"
+            if load_row is not None:
+                # Verbatim — no "Waiting for <model> — " prefix and no extra
+                # "…" appended. The model already renders as a dimmed suffix
+                # via the `model` field, and the load's own detail already
+                # ends in its own ellipsis; concatenating either doubled it.
+                tick["detail"] = load_row["detail"] if load_row.get("detail") else (detail or state)
+                tick["done"] = load_row.get("done")
+                tick["total"] = load_row.get("total")
+                tick["unit"] = load_row.get("unit")
+                tick["total_scope"] = load_row.get("total_scope")
+            else:
+                # Best-effort: a missing load row (evicted between the check
+                # above and here, or simply never read back yet) just means no
+                # mirrored progress THIS tick, never an exception.
+                tick["detail"] = detail or state
+            tick["waiting_for"] = started["jobId"]
+            _report(job, **tick)
+            time.sleep(0.5)
+        raise SupervisorError(
+            f"{model} did not finish loading in time (watch {started['jobId']})")
+    finally:
+        # Every exit path — the `return` above, every `raise` above, and the
+        # timeout `raise` at the end of the loop — passes through here, which
+        # is the whole point: the merge must not outlive the wait it
+        # describes (see the docstring's D266 paragraph).
+        final = {**(row or {}), "waiting_for": "", "done": None, "total": None,
+                 "unit": (row or {}).get("unit", "")}
+        _report(job, **final)
 
 
 def video_job_id(uid: str) -> str:
@@ -2494,15 +2722,34 @@ def refresh_memory() -> None:
             continue
         if not _alive(worker):
             # The one thing the supervisor knows better than the worker does.
-            worker.state = "error"
-            worker.error = "the model process is gone"
-            with _lock:
-                if _workers.get(worker.capability) is worker:
-                    del _workers[worker.capability]
+            _drop_gone(worker)
             continue
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):
             worker.resident_bytes = health["resident_bytes"]
+        # THE LIVE OS FOOTPRINT HAS TO BE RE-READ HERE (D599). It was assigned
+        # only in the LOAD loop, which exits the moment the worker reaches
+        # `ready` — so the value froze at whatever the last load-time poll saw,
+        # before MLX had faulted in its Metal buffers. Measured on a live FLUX
+        # worker: the row showed 436 MB against a real `phys_footprint` of
+        # 24 GB, and 436 MB was a genuine reading of a worker that had not yet
+        # allocated its GPU pool. This is the ONE function that keeps polling a
+        # ready worker, so a figure that changes after load has to be read
+        # here or it is never read again.
+        #
+        # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
+        # the two `isinstance`-gated fields around it. Those two feed
+        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
+        # holding the last known number through a failed poll is right. This
+        # one is display-only and describes RIGHT NOW, so a worker that
+        # answers "I have no such counter" (the non-Darwin fallback) must
+        # clear the cell rather than leave a stale number standing next to a
+        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
+        # the previous value alone, which is the transient case.
+        if health:
+            footprint_now = health.get("os_footprint_bytes")
+            worker.os_footprint_bytes = (
+                footprint_now if isinstance(footprint_now, int) else None)
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this
@@ -2573,6 +2820,11 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # The OS's "right now" figure (D597) — what a user's system
+                # monitor shows, which `residentBytes` does NOT on Apple
+                # Silicon (Metal buffers are charged to `phys_footprint`, not
+                # RSS). Null where no counter could be read; never coerced.
+                "osFootprintBytes": w.os_footprint_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.
@@ -2606,12 +2858,59 @@ def describe() -> dict:
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
     total = sum(row["residentBytes"] or 0 for row in loaded)
+    # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
+    # (D594). `residentBytes` above is the worker process's RSS — real, but
+    # "not the model's size" (its own field comment says so), which is why the
+    # summed version was removed from the status-bar chip. The honest per-model
+    # figure is `fit.footprint_bytes`, which already owns the whole precedence
+    # ladder (measured > declared > download) and reports WHICH rung answered.
+    # Reused rather than re-derived: a second ladder here would drift from the
+    # AI Models page's fit badge, which speaks this exact vocabulary.
+    #
+    # ONE `load_store()` for the whole response, passed into every call — the
+    # store is a disk read plus a machine-identity check, and doing it per row
+    # is the cost `footprint_bytes`' own `footprint_store` parameter exists to
+    # avoid (SPEC AI-16).
+    store = footprints.load_store()
+    for row in loaded:
+        footprint, basis = fit.footprint_bytes(
+            row["capability"], row["model"], footprint_store=store)
+        # NULL IS NOT ZERO: a model with nothing measured and nothing declared
+        # has NO cost figure, and the page must fall back to RSS alone rather
+        # than colour a guess or print 0.
+        row["footprintBytes"] = footprint
+        row["footprintBasis"] = basis
     return {
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
         "totalResidentBytes": total or None,
+        # THE DENOMINATOR, once per payload rather than per row — it is a
+        # per-machine constant. The WIRED limit where it applies, not raw total
+        # RAM: on Apple Silicon that is the real ceiling a model has to fit
+        # under (`fit._DEFAULT_WIRED_FRACTION`), and colouring against total
+        # RAM would call a model comfortable while it is about to swap. Total
+        # RAM is the fallback off Darwin, and None when neither can be read —
+        # in which case there is no ceiling to colour against and the page
+        # shows the figure uncoloured.
+        "memoryCeilingBytes": _memory_ceiling_bytes(),
     }
+
+
+def _memory_ceiling_bytes() -> float | None:
+    """What a model has to fit under on this machine, in bytes, or None.
+
+    The wired limit first (`fit._wired_limit_bytes` — Apple Silicon's hard
+    ceiling, which is what actually bounds a model there), then total physical
+    RAM, then nothing. Both rungs come from `fit`, so this adds no new
+    measurement of its own — it only chooses between two numbers `fit` already
+    computes, and returns None rather than a guess when neither is readable.
+    """
+    ram_gb = fit.machine_ram_gb()
+    if ram_gb is None:
+        return None
+    wired = fit._wired_limit_bytes(ram_gb)
+    return wired if wired is not None else ram_gb * fit.GB_BYTES
 
 
 def reset() -> None:

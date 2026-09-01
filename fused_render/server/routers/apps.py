@@ -352,6 +352,85 @@ def api_app_icon(path: str):
     return found or {"icon": None}
 
 
+# A generated emoji glyph is a few hundred bytes; a hand-drawn one a few KB.
+# 64 KiB is headroom, not a target.
+_ICON_MAX_BYTES = 64 * 1024
+
+
+@router.post("/api/apps/icon")
+def api_app_set_icon(
+    path: str = Body(default="", embed=True),
+    svg: str = Body(default="", embed=True),
+    x_fused: str | None = Header(default=None),
+):
+    """Write (or replace) the app's ``icon.svg`` — the Projects row glyph and
+    the tab favicon (`current_apps.app_icon`). The sidebar's icon picker posts
+    here: the row hands over its folder path and the emoji the user picked,
+    wrapped client-side in a small standalone svg. Ownership is the same rule
+    the GET applies (`current_apps.app_dir_for`), so anything the row can show
+    an icon for can take one, linked apps included. The svg lands via a
+    sibling temp file and ``os.replace`` — the preview.png posture — so an
+    interrupted write never leaves a truncated file the favicon would serve.
+    """
+    from fused_render import current_apps
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    folder = current_apps.app_dir_for(path)
+    if folder is None:
+        return _error("not an app folder", status=404)
+    body = svg.strip() if isinstance(svg, str) else ""
+    if not (body.startswith("<svg") or body.startswith("<?xml")):
+        return _error("icon must be an svg document")
+    if len(body.encode("utf-8")) > _ICON_MAX_BYTES:
+        return _error("icon is larger than 64 KiB")
+    target = os.path.join(folder, current_apps.ICON_NAME)
+    replaced = os.path.isfile(target)
+    tmp = os.path.join(folder, f".{current_apps.ICON_NAME}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, target)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"could not write icon.svg: {exc.strerror or exc}", status=500)
+    return {"path": target, "replaced": replaced}
+
+
+@router.delete("/api/apps/icon")
+def api_app_remove_icon(
+    path: str,
+    x_fused: str | None = Header(default=None),
+):
+    """Delete the app's ``icon.svg`` — the picker's "Remove", back to the
+    generic mark. A folder without the file is already there: ``removed``
+    false, not an error."""
+    from fused_render import current_apps
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    folder = current_apps.app_dir_for(path)
+    if folder is None:
+        return _error("not an app folder", status=404)
+    target = os.path.join(folder, current_apps.ICON_NAME)
+    try:
+        os.unlink(target)
+    except FileNotFoundError:
+        return {"removed": False}
+    except OSError as exc:
+        return _error(f"could not remove icon.svg: {exc.strerror or exc}", status=500)
+    return {"removed": True}
+
+
 @router.get("/api/apps/entry")
 def api_app_entry(path: str):
     """The folder's app entry (its first tagged top-level page — the one rule,
@@ -703,10 +782,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         return _error(f"failed to create app {name!r}: {exc}")
 
     # The `.fused/` state folder, before git rather than after: `init_repo`'s
-    # first commit is "the untouched starter", and `.fused/` is not starter
-    # content — creating it first means the freshly written `.gitignore` is
-    # already excluding it when `add -A` runs, instead of the boilerplate
-    # commit capturing an empty `data/`/`cache/` pair that later has to be
+    # boilerplate commit is "the untouched starter", and `.fused/` is not
+    # starter content — creating it first means the shared repo's root
+    # `.gitignore` (written by `ensure_local_repo`, D626) is already excluding
+    # it when the scoped `add -A` runs, instead of the boilerplate commit
+    # capturing an empty `data/`/`cache/` pair that later has to be
     # untracked. (The starter kit itself cannot carry the folder: git does not
     # store empty directories, so a copytree of the packaged kit would produce
     # nothing.) Opening the app would create it anyway (`record_app_open`);
@@ -727,10 +807,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     export_skill_plugin_env()
 
-    # Version control from birth: every new app is a git repo whose first
-    # commit is the untouched starter, BEFORE any session runs — so the
-    # scaffolding turn's work diffs against the boilerplate, not nothing.
-    # Best-effort (no git on the machine still gets a working app).
+    # Version control from birth: every new app lands in the shared `local`
+    # repo (D626) as one scoped boilerplate commit — the untouched starter,
+    # BEFORE any session runs — so the scaffolding turn's work diffs against
+    # the boilerplate, not nothing. Best-effort (no git on the machine still
+    # gets a working app).
     from fused_render import app_git
 
     app_git.init_repo(dest)

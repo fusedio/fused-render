@@ -89,6 +89,37 @@ async def api_claude_install_status():
     return claude_install.status()
 
 
+@router.post("/api/claude/link-path")
+async def api_claude_link_path(x_fused: str | None = Header(default=None)):
+    """Append the PATH line to the user's shell rc — the fix for a CLI the app
+    can see and the terminal cannot.
+
+    Exists because the installer never edits an rc file, and its printed advice
+    is suppressed by the app's own augmented PATH (see claude_health.path_fix).
+    Guarded: it writes to a shell profile, which a blind cross-origin POST has
+    no business touching. The health cache is re-measured on success so the
+    strip closes on the next read instead of repeating advice just taken.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    def _run():
+        result = claude_health.add_to_shell_path()
+        if result.get("ok"):
+            try:
+                claude_health.summary_refreshed()
+            except Exception:  # noqa: BLE001 - the write, not the re-probe, is the fix
+                logger.warning("PATH line written but the health re-probe failed")
+        return result
+
+    result = await run_in_threadpool(_run)
+    if not result.get("ok"):
+        return _error(result.get("error") or "could not update the shell profile",
+                      status=409)
+    return result
+
+
 @router.post("/api/claude/doctor")
 async def api_claude_doctor(x_fused: str | None = Header(default=None)):
     """`claude doctor` on demand — the answer to "the install is broken".
@@ -121,3 +152,57 @@ async def api_claude_doctor(x_fused: str | None = Header(default=None)):
         return {"ok": True, "doctor": report, "path": path}
 
     return await run_in_threadpool(_run)
+
+
+# --- signing in ---------------------------------------------------------------
+#
+# The third repair, and the one that needed a second door rather than more code:
+# `/login` is a TUI slash command, but `claude auth login` opens the browser and
+# completes on its own loopback callback, so the app can start a real sign-in
+# without ever handling an OAuth code. See fused_render/claude_login.py.
+#
+# These are separate endpoints rather than a third `/api/claude/install` action
+# because this one waits on a person: it needs a cancel, and it must not occupy
+# the install slot while a browser window sits open.
+
+
+@router.post("/api/claude/login")
+async def api_claude_login(x_fused: str | None = Header(default=None)):
+    """Start a browser sign-in, and return the opening record.
+
+    The X-Fused guard, like its neighbours: this spawns a process AND opens a
+    browser window on the user's desktop, which is not something a blind
+    cross-origin POST may do.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    try:
+        return await run_in_threadpool(claude_login.start)
+    except claude_login.LoginError as e:
+        # A refusal with a sentence the strip shows as-is — "a sign-in is
+        # already waiting in your browser" is the whole value of the 409, since
+        # the window the user needs is already open behind the app.
+        return _error(str(e), status=409)
+
+
+@router.get("/api/claude/login")
+async def api_claude_login_status():
+    """The current sign-in record. A read — no guard, no spawn."""
+    from fused_render import claude_login
+
+    return claude_login.status()
+
+
+@router.post("/api/claude/login/cancel")
+async def api_claude_login_cancel(x_fused: str | None = Header(default=None)):
+    """Stop a sign-in the user gave up on. Idempotent, and guarded because it
+    signals a process."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    return await run_in_threadpool(claude_login.cancel)

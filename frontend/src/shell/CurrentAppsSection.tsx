@@ -25,14 +25,23 @@ import React, {
   useState,
 } from "react";
 import {
+  archiveCurrentAppTasks,
   getCurrentApps,
+  readCurrentAppTasks,
+  removeAppIcon,
   removeCurrentApp,
+  renameCurrentApp,
+  setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
-import { navigateUrl } from "@platform/lib/router";
+import IconPicker from "@platform/ui/IconPicker";
+import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { pushToast } from "@platform/lib/toast";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { opensElsewhere } from "@shell/tasks-lib";
+import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   appPageTabFromSearch,
@@ -52,6 +61,22 @@ import {
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
+
+/** The picked emoji as a standalone icon.svg document — square viewBox, no
+ *  fixed size, transparent ground (a colour emoji carries its own colours, so
+ *  it reads on both themes; see skills/fused-render-app-icon). The same file
+ *  a hand-authored icon.svg would be, just generated. */
+function emojiIconSvg(emoji: string): string {
+  const safe = emoji
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<text x="32" y="32" text-anchor="middle" dominant-baseline="central" ' +
+    `font-size="52">${safe}</text></svg>`
+  );
+}
 
 // The section fold, "1" when hidden — the Bookmarks section's own key pattern.
 export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
@@ -173,11 +198,15 @@ function CurrentAppRow({
   active,
   drag,
   onRemoved,
+  onGlyphClick,
+  onMenu,
 }: {
   app: CurrentApp;
   active: boolean;
   drag: RowDragProps;
   onRemoved: () => void;
+  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
+  onMenu: (e: React.MouseEvent, app: CurrentApp) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
@@ -226,13 +255,26 @@ function CurrentAppRow({
         "bookmark-row current-app-row" +
         (active ? " active" : "") +
         (app.exists ? "" : " is-missing") +
-        (app.running ? " is-running" : "")
+        (app.running ? " is-running" : "") +
+        (app.unread && !app.running ? " is-unread" : "")
       }
       title={tip}
       draggable
+      onContextMenu={(e) => onMenu(e, app)}
       {...drag}
     >
-      <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
+      {/* The glyph is the icon picker's toggle — the Bookmarks pattern
+          (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
+          disk as the folder's icon.svg rather than in the bookmarks tree. */}
+      {/* `current-app-icon-toggle` marks the glyphs that toggle THIS
+          section's picker — the selector the IconPicker below whitelists.
+          The "+ New app" glyph deliberately lacks it, so a click there
+          closes an open picker instead of leaving it under the modal. */}
+      <span
+        className="bookmark-glyph current-app-glyph current-app-icon-toggle"
+        title="Change icon"
+        onClick={(e) => onGlyphClick(e, app.path)}
+      >
         {app.iconUrl ? (
           // The app's own icon.svg in the generic mark's slot, drawn as is —
           // the author's colours, no mask or tint (owner, 2026-08-27). Not
@@ -245,7 +287,20 @@ function CurrentAppRow({
             draggable={false}
           />
         ) : (
-          "▣"
+          // The brand's four-point star (the app icon's sparkle) as the
+          // generic mark, on currentColor so it follows the glyph's tokens
+          // (muted at rest, accent on the active row) — the SidebarFrame
+          // cube's own posture.
+          <svg
+            className="current-app-star"
+            width="12"
+            height="12"
+            viewBox="0 0 64 64"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
+          </svg>
         )}
       </span>
       <a
@@ -265,11 +320,23 @@ function CurrentAppRow({
           aria-hidden="true"
         />
       )}
+      {/* The unread dot: a task under this app finished and has not been read —
+          the Tasks row's green, worn per app, in the running dot's own slot
+          after the name (owner, 2026-08-31). Yellow outranks green (one dot per
+          row, the Tasks rule), so it hides while anything runs; it clears when
+          the task is read, since it draws the raw doneUnread state, not a
+          visit-stamped one. */}
+      {app.unread && !app.running && (
+        <span
+          className="sidebar-rail-dot is-unread current-app-unread"
+          aria-hidden="true"
+        />
+      )}
       <span className="bookmark-actions">
         <button
           className="icon-btn delete-btn current-app-archive"
-          title="Remove from current apps (archives its tasks)"
-          aria-label={`Remove ${app.name} from current apps and archive its tasks`}
+          title="Hide from projects (archives its tasks)"
+          aria-label={`Hide ${app.name} from projects and archive its tasks`}
           disabled={busy}
           onClick={onRemove}
         >
@@ -297,20 +364,27 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => r.status === "in_progress").map((r) => r.project || ""),
     [rows],
   );
+  // The projects with a finished-and-unread task — the raw doneUnread state
+  // the Tasks row's count chip reads, not the visit-stamped `unseen`: a dot
+  // per app clears by the task being READ, not by glancing at some page.
+  const unreadProjects = useMemo(
+    () => rows.filter(isDoneUnread).map((r) => r.project || ""),
+    [rows],
+  );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const entries = useCurrentApps(keySignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects);
+    const found = currentApps(entries, runningProjects, unreadProjects);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, orderEpoch]);
+  }, [entries, runningProjects, unreadProjects, orderEpoch]);
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
   // an arrangement the user made, and only they can change it.
@@ -390,6 +464,160 @@ export default function CurrentAppsSection() {
   });
 
   const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
+
+  // ---- the icon picker -------------------------------------------------------
+  // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to
+  // itself. A pick is wrapped in a standalone svg and written to the folder's
+  // icon.svg (POST /api/apps/icon) — the file the row and the tab favicon
+  // already read — and the refetch brings back the new mtime, which is what
+  // busts the <img> cache. Remove deletes the file; the row falls back to the
+  // generic mark.
+  const [iconPicker, setIconPicker] = useState<{
+    path: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const onGlyphClick = useCallback(
+    (e: React.MouseEvent<HTMLSpanElement>, path: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setIconPicker((cur) =>
+        cur?.path === path ? null : { path, top: rect.top, left: rect.left },
+      );
+    },
+    [],
+  );
+  const onPickIcon = async (icon: string | null) => {
+    const target = iconPicker;
+    setIconPicker(null);
+    if (!target) return;
+    try {
+      if (icon === null) await removeAppIcon(target.path);
+      else await setAppIcon(target.path, emojiIconSvg(icon));
+    } catch {
+      // A failed write leaves the old glyph; the refetch shows the truth.
+    }
+    refetch();
+  };
+
+  // ---- the row's right-click menu ---------------------------------------------
+  // "Open app" is the app page header's own button (AppPage.tsx) — the entry
+  // page in a new tab. The rest are the desk's own verbs — the dot, the
+  // tasks, the row itself.
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    app: CurrentApp;
+  } | null>(null);
+  const onRowMenu = useCallback((e: React.MouseEvent, app: CurrentApp) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, app });
+  }, []);
+
+  // The rename dialog: prefilled with the folder's current name; submit renames
+  // the FOLDER on disk and the server carries the app's sessions and stores
+  // along (the D548 move settlement).
+  const [renaming, setRenaming] = useState<CurrentApp | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const startRename = (app: CurrentApp) => {
+    setRenameDraft(app.name);
+    setRenaming(app);
+  };
+  const submitRename = async () => {
+    const app = renaming;
+    const name = renameDraft.trim();
+    if (!app || renameBusy) return;
+    if (!name || name === app.name) {
+      setRenaming(null);
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      const r = await renameCurrentApp(app.path, name);
+      // Carry the row's SEQUENCE to the new path in memory, so the rename does
+      // not reshuffle the list (assignSequences would put an unknown path on
+      // top). The OLD path's entry is left in place: the fetched table still
+      // names it until the refetch lands, and deleting it early hands the row
+      // a fresh top-of-list sequence in that window (Bugbot). The prune on the
+      // next assignment drops it. Deliberately NOT saved — the store is
+      // written by a drag and only by a drag (the cross-tab rule above).
+      const seq = appOrder.get(app.path);
+      if (seq !== undefined && !appOrder.has(r.path)) {
+        appOrder.set(r.path, seq);
+      }
+      setRenaming(null);
+      pokeTasks();
+      // Refetch UNCONDITIONALLY — the desk row changed either way. Then, if
+      // we are on the renamed app's page, follow it to the new folder.
+      refetch();
+      if (app.path === onPath) {
+        navigateUrl(appPageUrl(r.path, appPageTabFromSearch(location.search)));
+      }
+    } catch (e) {
+      pushToast({
+        msg: "Could not rename " + app.name + ": " + (e as Error).message,
+        tone: "error",
+      });
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const menuItems = (app: CurrentApp): MenuEntry[] => [
+    {
+      // The app page header's own "Open app": the entry page full-size in the
+      // explorer, in a new tab so the current page stays put.
+      label: "Open app",
+      icon: MenuIcons.open,
+      disabled: !app.exists || !app.entry,
+      onClick: () => {
+        if (app.entry) window.open(urlForFsPath(app.entry), "_blank", "noopener");
+      },
+    },
+    {
+      label: "Rename…",
+      icon: MenuIcons.rename,
+      disabled: !app.exists,
+      onClick: () => startRename(app),
+    },
+    "separator",
+    {
+      label: "Mark all tasks as read",
+      onClick: () => {
+        readCurrentAppTasks(app.path)
+          .catch(() => {})
+          .finally(() => pokeTasks());
+      },
+    },
+    {
+      label: "Archive all tasks",
+      icon: MenuIcons.compress,
+      onClick: () => {
+        archiveCurrentAppTasks(app.path)
+          .catch(() => {})
+          .finally(() => pokeTasks());
+      },
+    },
+    "separator",
+    // The ✕'s gesture, by name: off the desk, tasks archived with it.
+    {
+      label: "Hide from projects",
+      icon: MenuIcons.trash,
+      danger: true,
+      onClick: () => {
+        removeCurrentApp(app.path)
+          .catch(() => {})
+          .finally(() => {
+            pokeTasks();
+            refetch();
+          });
+      },
+    },
+  ];
+
   const render = useCallback(
     (app: CurrentApp) => (
       <CurrentAppRow
@@ -398,10 +626,12 @@ export default function CurrentAppsSection() {
         active={app.path === onPath}
         drag={dragProps(app.path)}
         onRemoved={refetch}
+        onGlyphClick={onGlyphClick}
+        onMenu={onRowMenu}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onPath, apps, refetch],
+    [onPath, apps, refetch, onGlyphClick, onRowMenu],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
@@ -454,6 +684,70 @@ export default function CurrentAppsSection() {
           </span>
           <span className="bookmark-name">New app</span>
         </div>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.app)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {renaming && (
+        <Modal
+          title={"Rename " + renaming.name}
+          busy={renameBusy}
+          onClose={() => setRenaming(null)}
+          width={420}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={renameBusy}
+                onClick={() => setRenaming(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={renameBusy || !renameDraft.trim()}
+                onClick={submitRename}
+              >
+                {renameBusy ? "Renaming…" : "Rename"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            Renames the app&apos;s folder on disk. Its tasks and Claude
+            sessions move with it.
+          </p>
+          <input
+            type="text"
+            className="field-control"
+            value={renameDraft}
+            autoFocus
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitRename();
+              }
+            }}
+          />
+        </Modal>
+      )}
+      {iconPicker && (
+        <IconPicker
+          anchor={iconPicker}
+          toggleSelector=".current-app-icon-toggle"
+          onPick={(icon) => onPickIcon(icon)}
+          onRemove={() => onPickIcon(null)}
+          onClose={() => setIconPicker(null)}
+        />
       )}
       {composing && (
         // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):

@@ -9,7 +9,7 @@
 // no DOM, and it is the only thing here that can render a real component
 // (rather than call a pure function) with no document at all.
 import { expect, test } from "bun:test";
-import { create } from "react-test-renderer";
+import { act, create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
 
 import { JobRow } from "@platform/ui/DownloadManager";
@@ -35,6 +35,7 @@ const BASE: Job = {
   updated_at: 0,
   finished_at: null,
   stalled: false,
+  waiting_for: "",
 };
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
@@ -47,6 +48,19 @@ function findAll(node: ReactTestRendererJSON | null, className: string): ReactTe
     if (typeof child !== "string") hits.push(...findAll(child, className));
   }
   return hits;
+}
+
+/** All rendered text in a subtree, flattened — for assertions about what the
+ *  row SAYS rather than which element says it. Added with D598, which moved
+ *  the amount onto `.dl-status`: "no failure line" can no longer be checked by
+ *  the element's absence, because a row with byte counts and no phase text
+ *  legitimately draws one. */
+function text(node: ReactTestRendererJSON | string | null): string {
+  if (node === null) return "";
+  if (typeof node === "string") return node;
+  return (node.children ?? [])
+    .map((c) => text(c as ReactTestRendererJSON | string))
+    .join("");
 }
 
 function renderRow(job: Job): ReactTestRendererJSON {
@@ -65,9 +79,8 @@ test("a job with a model draws a dimmed .dl-model suffix after the title", () =>
 test("an owner/model repo id draws only the model half, with the full id on hover", () => {
   // The owner prefix is identical for every row a given model ever draws, so it
   // consumed the head's scarcest space on the one part that distinguishes
-  // nothing — and `.dl-model` is `flex: 0 0 auto`, so what it took came out of
-  // `.dl-title`, ellipsizing the user's prompt away. Shortened for display
-  // only: the full id stays reachable, since two owners can ship the same name.
+  // nothing. Shortened for display only: the full id stays reachable, since
+  // two owners can ship the same name.
   const root = renderRow({ ...BASE, model: "black-forest-labs/FLUX.2-klein-4B" });
   const model = findAll(root, "dl-model");
   expect(model).toHaveLength(1);
@@ -114,4 +127,97 @@ test("an error job still draws — only a success clears itself", () => {
 test("a cancelled job still draws — only a success clears itself", () => {
   const root = renderRow({ ...BASE, state: "cancelled" });
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
+});
+
+// ---- a rejected Cancel/Dismiss must say so, not go quiet (D572) ----------------
+// User: "the cancel button also doesn't seem to be doing anything?" — a click
+// against a request that never lands (404/500/offline) used to hit an empty
+// `catch` that discarded the failure outright: no toast, no console entry, no
+// state change, no label move. This is the genuine coverage gap the bug report
+// exposed — a green suite over an empty catch is exactly how a dead button
+// ships. `cancelFn`/`dismissFn` are JobRow's own test seam (see its props'
+// doc) rather than a `mock.module` on `@platform/lib/jobs`, which this
+// file's sibling (DownloadManager.test.tsx) already documents as a
+// contamination risk shared process-wide across `bun test`.
+function pressButton(root: ReactTestRendererJSON, className: string): Promise<void> {
+  const button = findAll(root, className)[0];
+  const onClick = (button.props as { onClick: () => Promise<void> }).onClick;
+  return act(async () => {
+    await onClick();
+  });
+}
+
+test("a rejected Cancel surfaces a failure message instead of going silent", async () => {
+  const cancelFn = () => Promise.reject(new Error("network down"));
+  const tree = create(
+    // `detail: ""` so no PHASE text competes with the assertions below. The
+    // line is still present before any click, because D598 moved the amount
+    // (`jobAmount`) onto it and BASE carries one — so what this checks is that
+    // it says nothing about a FAILURE yet, not that it is absent.
+    <JobRow
+      job={{ ...BASE, cancellable: true, state: "running", detail: "" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      cancelFn={cancelFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  expect(text(before)).not.toContain("Could not cancel"); // nothing to say yet
+
+  await pressButton(before, "dl-row-cancel");
+
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  const status = findAll(after, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].children).toEqual(["Could not cancel — check your connection and retry."]);
+  // The row is untouched — no optimistic `cancel_requested` flip on a
+  // request that never landed.
+  expect(findAll(after, "dl-row-cancel")[0].children).toContain("Cancel");
+});
+
+test("a rejected Dismiss surfaces its own failure message and the row stays", async () => {
+  const dismissFn = () => Promise.reject(new Error("network down"));
+  // Stalled, not running: `canDismiss` requires `!running || job.stalled`,
+  // and a stalled row is the one running-job case Dismiss (not Cancel) owns.
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "running", stalled: true }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+
+  await pressButton(before, "dl-x");
+
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  // The row survives — `onPatch`'s filter never ran, so the parent's list is
+  // unchanged, and JobRow itself still has a job to draw.
+  expect(after).not.toBeNull();
+  const status = findAll(after, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].children).toEqual(["Could not dismiss — check your connection and retry."]);
+});
+
+test("a successful Cancel shows no failure line", async () => {
+  const cancelFn = () => Promise.resolve({ ...BASE, cancel_requested: true });
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, cancellable: true, state: "running", detail: "" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      cancelFn={cancelFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+
+  await pressButton(before, "dl-row-cancel");
+
+  // Asserted as the ABSENCE OF FAILURE TEXT, not as the absence of the line:
+  // D598 moved the amount onto `.dl-status`, so a row with byte counts and no
+  // phase text legitimately draws one. Checking for the element would make
+  // this test fail for the right behaviour.
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  expect(text(after)).not.toContain("Could not cancel");
 });

@@ -974,6 +974,28 @@ def _move_to_trash(path: str) -> str | None:
     return _move_to_macos_trash(path)
 
 
+def _record_app_removal(path: str) -> None:
+    """After a WHOLE app folder was deleted (or trashed), commit the removal
+    into the shared `local` repo — scoped to that folder, best-effort.
+
+    Without this the deletion would sit uncommitted at the repo root forever:
+    scoped commits about OTHER apps never touch it (that scoping is the whole
+    point), and the app itself will never commit again. Deliberately NOT a
+    widening of D245 ("manual edits commit nothing"): deleting an app is the
+    end of its lifecycle, not an edit inside it, and the repo has to record
+    it or stay dirty for good. Files deleted INSIDE an app still commit
+    nothing — this fires only when the deleted path IS the app dir."""
+    try:
+        from fused_render import app_git
+
+        ap = os.path.abspath(path)
+        if app_git.app_dir_for(ap) == ap:
+            app_git.commit(ap, f"Delete app {os.path.basename(ap)}",
+                           only_shared=True)
+    except Exception:
+        pass
+
+
 def _fs_delete(body: dict, x_fused: str | None):
     # Remove a file or directory. With trash=true the target is moved to the
     # user's OS bin instead of being erased (recoverable; ~/.Trash on macOS, the
@@ -1061,6 +1083,7 @@ def _fs_delete(body: dict, x_fused: str | None):
         # an undoable rename pair — see _move_to_trash. Omitted after the Finder
         # fallback, where the destination is unknown, and never present on a
         # hard delete, whose inverse would be data destruction.
+        _record_app_removal(path)
         out: dict = {"deleted": path, "trashed": True}
         if dest is not None:
             out["trashed_to"] = dest
@@ -1085,6 +1108,7 @@ def _fs_delete(body: dict, x_fused: str | None):
             os.remove(path)
     except OSError as e:
         return _error(f"cannot delete {path}: {e}")
+    _record_app_removal(path)
     return {"deleted": path, "trashed": False}
 
 
@@ -1321,6 +1345,29 @@ def _fs_rename(body: dict, x_fused: str | None):
         shutil.move(src, dst)
     except OSError as e:
         return _error(f"cannot rename {src} -> {dst}: {e}")
+    # A WHOLE app folder moved: record both sides in the shared repo, or the
+    # old name's deletion sits uncommitted forever (see _record_app_removal).
+    # The dst-only case is the RESTORE path — undo-from-trash comes back as a
+    # rename whose src is the trash entry, and without a commit the restored
+    # folder would sit untracked at the repo root just as a deleted one would.
+    try:
+        from fused_render import app_git
+
+        s, d = os.path.abspath(src), os.path.abspath(dst)
+        src_is_app = app_git.app_dir_for(s) == s
+        dst_is_app = app_git.app_dir_for(d) == d
+        if src_is_app and dst_is_app:
+            msg = f"Rename app {os.path.basename(s)} to {os.path.basename(d)}"
+            app_git.commit(s, msg, only_shared=True)
+            app_git.commit(d, msg, only_shared=True)
+        elif src_is_app:
+            app_git.commit(s, f"Move app {os.path.basename(s)} away",
+                           only_shared=True)
+        elif dst_is_app:
+            app_git.commit(d, f"Restore app {os.path.basename(d)}",
+                           only_shared=True)
+    except Exception:
+        pass
     return _stat_payload(dst, os.path.isdir(dst))
 
 
