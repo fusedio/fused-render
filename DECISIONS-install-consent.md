@@ -1291,3 +1291,121 @@ tests/test_server_env_install.py tests/test_jobs_api.py -n 0
 PR #935's base was retargeted from `main` to `worktree-in-tree-venv`
 ahead of this merge, so its diff shows only its own ~4772-line delta
 across 16 files; GitHub auto-retargets it to `main` once #948 merges.
+
+## Round 9: a preview card must never install, and a permanent failure must never loop
+
+Dogfooding surfaced two independent bugs. A home-page preview card boots the
+real app's `entry_html` live in a sandboxed iframe (`AppPreviewCard.tsx`'s
+3-step fallback, hover-live included) purely to paint it, and that iframe's
+own JS calls `fused.runPython()` at boot the same as a real open — so a
+folder with dependencies triggered a real install just from being displayed
+or hovered. For OpenWhisper specifically (`pyobjc-framework-applicationservices`,
+macOS-only wheels on Linux) the install can never succeed, and the toast
+("Preparing OpenWhisper…") reappeared every few seconds as `preview-start.ts`
+cycled its 2 live iframes across many cards, tearing the page down and
+remounting it — restarting the install from zero each time.
+
+**Bug A — the preview gate.** `runtime.js` already computes `IS_THUMBNAIL`
+(climbing same-origin ancestor frames for the `_preview` query flag) and
+already uses it to refuse every `fused.daemon.*` call with a message calling
+out exactly this principle — a picture of a page must not act like the page.
+The install path never consulted it. Fixed by gating `handle()`'s
+`shouldInstall` branch on `!IS_THUMBNAIL`: a preview's `needs_install` now
+falls straight through to the existing `!data.ok` branch and rejects with the
+server's own verbatim message — the SAME rejection shape every other run
+failure already produces, so no caller anywhere needs a new catch path, and
+nothing throws unhandled. `installEnv`, `/api/env/install`, the install row,
+and `/api/env/progress` polling are never reached. A real open (no `_preview`
+flag inherited) is untouched, since `IS_THUMBNAIL` is false there exactly as
+before.
+
+Tested in `tests/test_server_env_install.py` by lifting `handle()` itself
+(the existing `_loader_and_runpython_js()` slice) into node and adding
+`IS_THUMBNAIL` to the slice's own stub prelude (a new dependency the slice
+closes over but does not declare — the file's own documented pattern for
+this). `test_a_previewed_page_never_triggers_an_install` sets it `true` and
+asserts zero `/api/env/install` POSTs and zero install-consent prompts.
+
+**Bug B — the permanent-failure poison key.** Not fixed by Bug A: ANYTHING
+that remounts the previewed page (or, for a real open, retries `/api/run`)
+restarts the cycle, because each remount is a fresh JS context with no
+memory of the last attempt — a client-side "already tried this" `Set` dies
+with the page by construction, so the fix has to live server-side, in
+`envinstall.start()`'s own progress record.
+
+The worker already computes exactly the right classification:
+`platform_incompatible` (`_env_install_worker.install`'s except block) is set
+only when a `--no-build` refusal names a package published solely for a
+platform this machine is not — provably permanent, not a guess. Everything
+else that can terminate an install (an ordinary resolver failure, an
+ordinary `needs_build` refusal, a cancelled run, a network timeout, a
+crash-diagnosed record) is left alone: none of those are provably permanent,
+and poisoning one would strand an offline user, or one whose first attempt
+was simply slow, on a hard "no" forever. This is the conservative reading of
+the brief's "only poison what you can justify" — one field, one branch,
+rather than "any terminal error, twice in a row."
+
+The worker now tags a `platform_incompatible` record with the
+`pyproject.toml` digest (`_state_digest`, byte-identical to
+`projectenv._compute_state_digest`) it was reached against —
+`manifest_digest`, `None` on every other stage and every other error shape.
+`envinstall.start()`'s new `_permanent_failure(key, project_dir)` reads that
+back: a key whose last recorded attempt is `done`, carries
+`platform_incompatible`, and whose `manifest_digest` still equals
+`projectenv.state_digest(project_dir)` right now is reported AS-IS —
+`_reported(key, poisoned)` — instead of spawning attempt N+1. The check sits
+in `start()` before `_claim`/the progress-file unlink that a real spawn does,
+so the poisoned record survives to be read on every repeat call instead of
+being clobbered the moment a new attempt begins. Editing `pyproject.toml`
+changes the digest and the very next `start()` call runs for real — this is
+the invalidation the brief calls out by name, and it costs nothing extra: it
+falls out of comparing against `state_digest` at call time rather than
+caching the verdict.
+
+`allow_build=True` (the explicit "install anyway" retry off `/api/env/install`)
+skips the gate outright, checked before `_permanent_failure` is even called —
+a user who chose to compile from source must always reach a real worker,
+never be answered out of a record from a run that never attempted that in
+the first place.
+
+Tested end to end at the `envinstall.start()` layer (`tests/test_env_install.py`):
+a `platform_incompatible` record written with the CURRENT `state_digest`
+must not call `_spawn` (`test_a_permanently_incompatible_install_is_not_retried_on_the_same_manifest`);
+a record whose digest disagrees with the current manifest must let the next
+call spawn (`test_editing_the_manifest_lets_the_next_attempt_run`); and
+`allow_build=True` must spawn regardless of a matching-digest poison record
+(`test_allow_build_bypasses_the_poison_record`). Also tested at the worker
+layer: `test_platform_incompatible_record_carries_the_manifest_digest` (the
+digest is written, and is non-empty) and an added assertion on the
+neighbouring `needs_build`-only test that an ordinary `--no-build` refusal
+carries no digest at all — the control for "only the provably-permanent
+branch is tagged."
+
+**A third item — `fused.engine` warm workers on preview hover (Bug C) — was
+raised, then explicitly cancelled by the user before any code was written for
+it.** `fused.engine` was confirmed NOT an install trigger (`POST
+/api/engine` refuses to build a missing venv and 409s), so Bug A's gate does
+not need to cover it; nothing here touches `runtime.js`'s `engine`/`engineCall`/
+`engineForget`.
+
+**A dead-code check, requested alongside the cancellation.** `noFocusRequested`
+(`runtime.js:528`) is declared but never called anywhere in the file — a
+genuine editor warning. Confirmed pre-existing: `git show HEAD~1` (the commit
+immediately before this round's Bug A commit) already has it unused, and
+Bug A's own edit is nowhere near this region (`handle()`, ~2540 lines further
+down). Left alone rather than deleted, since the file's stranded-code
+convention applies to code a CHANGE here made dead, not to an unrelated
+pre-existing warning outside this round's scope.
+
+**Verification.** `.venv/bin/python -m pytest tests/test_env_install.py
+tests/test_server_env_install.py tests/test_projectenv.py
+tests/test_jobs_api.py -n 0 -p no:randomly -q` → 396 passed, 1 skipped (the
+documented pre-existing `test_a_project_whose_venv_exists_just_runs` flake,
+unrelated to this round). `tests/test_server_env_install.py` alone → 81
+passed (80 + the new Bug A test).
+
+**Commits.** Two, matching the brief's "at minimum two separate commits":
+Bug A touches only `fused_render/static/runtime.js` and
+`tests/test_server_env_install.py`; Bug B touches
+`fused_render/envinstall.py`, `fused_render/_env_install_worker.py`, and
+`tests/test_env_install.py`.
