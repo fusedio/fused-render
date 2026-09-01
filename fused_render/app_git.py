@@ -288,9 +288,17 @@ def init_repo(app_dir: str) -> bool:
         return False
 
 
-def commit(path: str, message: str) -> bool:
+def commit(path: str, message: str, only_shared: bool = False) -> bool:
     """Commit everything pending under the app folder containing `path`,
     scoped to that folder alone.
+
+    `only_shared` restricts the write to the SHARED `local` repo — for the
+    folder-lifecycle commits (delete/rename/restore hooks in fs_mutate),
+    which exist only because a lifecycle change would otherwise sit
+    uncommitted at that repo's root forever. An app heading its OWN `.git`
+    (unmigrated, remote-skipped) has no such problem, and a restore-from-
+    trash must not land a Fused-identity `add -A` commit in a clone the
+    user can push.
 
     No-op (False) when the path is not inside an app dir, the app dir
     resolves to no repo we own, there is nothing to commit, or git fails.
@@ -300,6 +308,8 @@ def commit(path: str, message: str) -> bool:
         if app_dir is None:
             return False
         scope = _repo_scope(app_dir)
+        if only_shared and scope is not None and scope[0] != local_repo_root():
+            return False
         if scope is None:
             return False
         repo_dir, spec = scope
