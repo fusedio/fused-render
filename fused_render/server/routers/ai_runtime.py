@@ -1001,7 +1001,7 @@ def _catalog_with_downloads() -> list[dict]:
                                        hardware=hardware,
                                        params=entry.get("params"),
                                        quantization=entry.get("quantization"),
-                                       **_kv_geometry_kwargs(entry["id"]))
+                                       **_kv_geometry_kwargs(entry["id"], row["runner"]))
             # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
             # calibrated, calibrationFactor} or None — SPEC AI-21. Text
             # generation only: `speed.py`'s formula is a tok/s figure, and
@@ -1058,8 +1058,9 @@ def _catalog_with_downloads() -> list[dict]:
 #: keyword `fit.footprint_bytes`'s KV-cache term reads (its own docstring:
 #: "the same field NAMES `hub_metadata` returns (minus its
 #: `numHiddenLayers`-style camelCase)"). `kv_dtype` has no harvested
-#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype — so
-#: it is left for `fit.py`'s own quantization-based default.
+#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype, so it
+#: is never read off `meta` — but `_kv_geometry_kwargs` still supplies it
+#: itself for the one runner whose cache is not fp16: see `_KV_DTYPE_RUNNERS`.
 _KV_GEOMETRY_FIELDS = {
     "numHiddenLayers": "num_hidden_layers",
     "numKeyValueHeads": "num_key_value_heads",
@@ -1069,29 +1070,49 @@ _KV_GEOMETRY_FIELDS = {
     "layerTypes": "layer_types",
 }
 
+#: Runner codes whose loader caches K/V at q8_0 rather than fp16 —
+#: `llama_text.load()`'s `_kv_cache_kwargs`, tried first at every rung of its
+#: offload schedule, on both the CPU and Vulkan builds (`registry.py`'s
+#: `llamacpp-text` and `llamacpp-text-vulkan` rows share this one loader
+#: module, `catalog._SHARED_SUGGESTIONS` aliases them for the identical
+#: reason). No other runner in `registry.py` quantizes its KV cache, so this
+#: is the complete set, not a partial one a future runner needs to remember
+#: to join.
+_KV_DTYPE_RUNNERS = {"llamacpp-text", "llamacpp-text-vulkan"}
 
-def _kv_geometry_kwargs(model_id: str) -> dict:
-    """`fit.footprint_bytes`'s `num_hidden_layers`.../`layer_types` kwargs for
-    `model_id`, read straight off `hub_metadata.cached()` — NO network call
-    (code review finding 1's same constraint `_accepts_image`/
-    `_capability_tags` already keep on this polled route). Without this, the
-    KV-cache term in `fit.footprint_bytes` is silently 0 for every catalog
-    row: the geometry `hub_metadata.cached()` already holds on disk (and
-    that this same request already reads for the vision/tool-use tags) was
-    never forwarded to `fit.verdict`.
 
-    Absent for an uncached repo, same as every other optional geometry
-    kwarg — the ladder just falls through to the params-only weight
-    estimate, exactly as before this existed.
+def _kv_geometry_kwargs(model_id: str, runner_code: str | None) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`kv_dtype` kwargs for
+    `model_id`, loaded on `runner_code` — the runner `describe()` already
+    resolved for this catalog row (`row["runner"]`), not re-derived from the
+    id here, so a filename that happens to end in `.gguf` or look like a GGUF
+    repo can never be mistaken for one this machine will actually load
+    through llama.cpp.
+
+    Geometry comes from `hub_metadata.cached()` — NO network call, the same
+    constraint `_accepts_image`/`_capability_tags` keep on this polled route.
+    It is what makes the KV-cache term in `fit.footprint_bytes` non-zero: the
+    geometry `hub_metadata.cached()` already holds on disk (and that this same
+    request already reads for the vision/tool-use tags) has to be forwarded to
+    `fit.verdict` or that term is 0 for every catalog row. Absent entirely for
+    an uncached repo, same as every other optional geometry kwarg — the ladder
+    then falls through to the params-only weight estimate.
+
+    `kv_dtype` is `"q8_0"` when `runner_code` is one of `_KV_DTYPE_RUNNERS`,
+    else omitted so `fit.py`'s own fp16 default applies — independent of
+    whether geometry was found, since a `kv_dtype` with no geometry to pair
+    it with is inert (`fit._kv_cache_bytes` returns `0.0` before it ever
+    reads the dtype).
     """
     meta = hub_metadata.cached(model_id)
-    if not meta:
-        return {}
-    return {
+    kwargs = {
         snake: meta[camel]
         for camel, snake in _KV_GEOMETRY_FIELDS.items()
         if meta.get(camel) is not None
-    }
+    } if meta else {}
+    if runner_code in _KV_DTYPE_RUNNERS:
+        kwargs["kv_dtype"] = "q8_0"
+    return kwargs
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:

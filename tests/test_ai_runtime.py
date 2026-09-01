@@ -5639,6 +5639,76 @@ def test_the_catalog_forwards_harvested_kv_geometry_into_the_fit_footprint(
         "hub_metadata.cached() geometry was not forwarded to fit.verdict")
 
 
+def test_kv_geometry_kwargs_supplies_a_q8_0_kv_dtype_for_the_llamacpp_runners(
+        monkeypatch):
+    """`_KV_DTYPE_RUNNERS` names both llama.cpp runner codes — the CPU build
+    and the Vulkan build share the exact same loader module and both try a
+    q8_0 cache first (`llama_text._kv_cache_kwargs`), so both must get
+    `kv_dtype="q8_0"` here, not just one of them."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: None)
+    for code in ("llamacpp-text", "llamacpp-text-vulkan"):
+        assert ai_runtime._kv_geometry_kwargs("org/m", code) == {"kv_dtype": "q8_0"}
+
+
+def test_kv_geometry_kwargs_leaves_kv_dtype_unset_for_every_other_runner(
+        monkeypatch):
+    """No other runner in `registry.py` quantizes its KV cache — MLX,
+    diffusers, CT2 and ONNX all still cache at fp16 or have no KV cache at
+    all — so `fit.py`'s own fp16 default must apply for any runner code that
+    is not one of the two llama.cpp ones, including `None` (no runner
+    resolved for this machine at all)."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: None)
+    for code in ("mlx-text", "diffusers-image", "faster-whisper", "onnx-embed", None):
+        assert "kv_dtype" not in ai_runtime._kv_geometry_kwargs("org/m", code)
+
+
+def test_the_catalog_uses_a_q8_0_kv_dtype_for_the_llamacpp_runner(
+        client, fixed_fit_machine, monkeypatch, tmp_path):
+    """End-to-end version of the two unit tests above: a catalog row served
+    by a runner whose CODE is `llamacpp-text` gets a strictly smaller
+    download-tier footprint than the identical geometry would get at fp16 —
+    proving `describe_catalog`'s own runner resolution (`row["runner"]`),
+    not a special case in the test, is what selects the q8_0 KV term.
+    Registers a runner under the real `llamacpp-text` code rather than the
+    suite's usual `fake-text`, since that code is the whole trigger for
+    `_KV_DTYPE_RUNNERS`."""
+    folder = tmp_path / "llamacpp_fake"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="llamacpp-text", capability=registry.TEXT_GENERATION,
+        folder=str(folder), label="Fake llama.cpp",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: {
+        "numHiddenLayers": 32,
+        "numKeyValueHeads": 8,
+        "numAttentionHeads": 32,
+        "headDim": 128,
+        "hiddenSize": 4096,
+        "layerTypes": None,
+    } if model_id == "org/geometry-known" else None)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "llamacpp-text", [
+        {"id": "org/geometry-known", "label": "Geometry known", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/geometry-known"
+
+    fp16_kv_bytes = fit._kv_cache_bytes(
+        num_hidden_layers=32, num_key_value_heads=8, head_dim=128, kv_dtype="fp16")
+    q8_0_kv_bytes = fit._kv_cache_bytes(
+        num_hidden_layers=32, num_key_value_heads=8, head_dim=128, kv_dtype="q8_0")
+    assert q8_0_kv_bytes == pytest.approx(fp16_kv_bytes / 2)
+    expected_footprint = 4.0 * 1e9 + q8_0_kv_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["footprintBytes"] == pytest.approx(expected_footprint)
+    supervisor.unload()
+    supervisor.reset()
+
+
 def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
         client, fake_runner, fixed_fit_machine, monkeypatch):
     footprints.record(registry.IMAGE_GENERATION, "org/cross-cap", 9_000_000_000)
