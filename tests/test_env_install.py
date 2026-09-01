@@ -134,14 +134,34 @@ def test_the_key_does_not_move_when_the_dependencies_do(tmp_path):
     assert envinstall.venv_key_for(proj) == before
 
 
-def test_the_venv_lives_in_our_home_dir_never_in_the_project(tmp_path):
-    """MD-7: derived state goes to the home dir, source travels with the file.
+def test_the_venv_lives_in_the_project_by_default(tmp_path):
+    """A writable user folder gets the standard `<project>/.venv` layout --
+    what `uv run`, VS Code, and our own notebook kernel picker already expect.
 
-    An in-folder `.venv` for a core template would be destroyed by the
-    release-time re-stage, costing a full re-download of numpy/pyproj/imagecodecs
-    on every upgrade.
+    `envinstall.venv_dir_for` is a thin pass-through to `projectenv`'s
+    placement rule; the point of this test is that the loader reads that
+    rule rather than any home-dir shape of its own.
     """
     proj = _project(tmp_path)
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
+
+
+def test_a_folder_inside_the_package_still_uses_the_home_store(tmp_path):
+    """MD-7 survives for exactly the case it was written for: a folder that
+    ships inside the installed `fused_render` package is read-only (the
+    AppImage squashfs mount, a Windows Program Files install), so its venv
+    still lives under our own home dir -- an in-folder `.venv` there would
+    also be destroyed by the release-time re-stage, costing a full
+    re-download of numpy/pyproj/imagecodecs on every upgrade.
+    """
+    import fused_render
+
+    package_dir = os.path.dirname(os.path.abspath(fused_render.__file__))
+    proj = os.path.join(package_dir, "ai", "runners", "faster_whisper")
+
     venv = envinstall.venv_dir_for(proj)
 
     assert venv == projectenv.venv_dir_for(proj)
@@ -889,6 +909,27 @@ def test_editing_the_declaration_makes_a_ready_venv_report_not_installed(
     assert (venv_dir / envinstall.READY_MARKER).exists(), (
         "a stale venv is re-synced, not condemned — `uv sync` reconciles in place"
     )
+
+
+@requires_fused
+def test_renaming_a_project_keeps_its_venv_installed_no_rebuild(tmp_path, monkeypatch):
+    """The in-tree venv travels with the folder, so a rename is not an orphan.
+
+    Under the old home-dir key (the folder's absolute path, hashed), a rename
+    changed the key and abandoned the venv on disk (SPEC PY-16 called that a
+    feature). In-tree, `venv_dir_for` is `<project>/.venv` -- moving the folder
+    moves the venv with it, `os.rename` included -- so the same environment is
+    still there, still marked, and `is_installed` sees it without a rebuild.
+    """
+    proj = _project(tmp_path, name="before", deps=["cowsay"])
+    _marked_venv(proj, runnable=True)
+    assert envinstall.is_installed(proj) is True
+
+    moved = str(tmp_path / "after")
+    os.rename(proj, moved)
+
+    assert envinstall.venv_dir_for(moved) == os.path.join(moved, ".venv")
+    assert envinstall.is_installed(moved) is True
 
 
 @requires_fused
@@ -2913,6 +2954,35 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
     with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
         recorded = json.load(fh)["path"]
     assert recorded == "<fused_render>/ai/runners/faster_whisper"
+
+
+@requires_fused
+def test_a_bundled_runner_resolves_to_the_home_store_and_still_gets_a_mirror(tmp_path, monkeypatch):
+    """The two mechanisms compose: package identity picks the STORE, writability
+    picks whether the SYNC needs a mirror. A synthetic package layout (the same
+    fake `_PACKAGE_DIR` the sidecar-identity test above uses) is made read-only,
+    which is what the real AppImage squashfs mount and Program Files install both
+    are — `_sync_root` does not know or care about package identity, only
+    writability, so this pins that the two questions still land on the same
+    folder correctly rather than only in isolation.
+    """
+    pkg = tmp_path / ".mount_FusedRaaaaaa" / "fused_render"
+    runner = _project(pkg / "ai" / "runners", name="faster_whisper", deps=["pip"])
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    worker = _worker_module("_env_install_worker_bundled_mirror")
+
+    venv_dir = envinstall.venv_dir_for(runner)
+    assert venv_dir.startswith(str(tmp_path / "home" / "venvs" / ""))
+
+    os.chmod(runner, 0o555)
+    try:
+        if worker._writable_dir(runner):
+            pytest.skip("running as root: a read-only directory is still writable")
+        root = worker._sync_root(runner, venv_dir)
+    finally:
+        os.chmod(runner, 0o755)
+
+    assert root == venv_dir + ".src", "a read-only runner folder must sync through its mirror"
 
 
 @requires_fused
