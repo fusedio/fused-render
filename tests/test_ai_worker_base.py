@@ -2373,11 +2373,25 @@ def _aged(path, seconds):
     os.utime(str(path), (then, then))
 
 
+def test_the_grace_window_clears_the_longest_a_fetch_can_stall(base):
+    """`_PART_GRACE_SECONDS` has to outlast `THROTTLE_TOTAL_MAX_S` — the most
+    wall clock a live segment can spend parked on a 429 without a single byte
+    reaching its part file, `_note_throttle` rather than the mtime being the
+    only sign it is still alive — and with real headroom, or the sweep can
+    delete a file a throttled fetch is still going to write into. Pinned so a
+    future edit that lets either constant drift back below the other fails
+    loudly here rather than as a corrupted multi-gigabyte download in the
+    field."""
+    assert base._PART_GRACE_SECONDS > base.THROTTLE_TOTAL_MAX_S
+    assert base._PART_GRACE_SECONDS - base.THROTTLE_TOTAL_MAX_S >= 120
+
+
 def test_sweep_removes_every_part_shape_once_it_is_old_enough(base, tmp_path):
-    """Ours (`.fusedpart` and its offsets sidecar) and both of hf's own
-    (`<etag>.incomplete` and `<etag>.<8 hex>.incomplete`) all count — a leftover
-    is a leftover regardless of which fetcher wrote it. A finished blob beside
-    them is left alone."""
+    """Ours (`.fusedpart`, its offsets sidecar, and the sidecar's own crashed
+    `.tmp`) and both of hf's own (`<etag>.incomplete` and
+    `<etag>.<8 hex>.incomplete`) all count — a leftover is a leftover
+    regardless of which fetcher wrote it. A finished blob beside them is left
+    alone."""
     folder = tmp_path / "models--org--m"
     blobs = folder / "blobs"
     blobs.mkdir(parents=True)
@@ -2385,18 +2399,20 @@ def test_sweep_removes_every_part_shape_once_it_is_old_enough(base, tmp_path):
     ours.write_bytes(b"half")
     sidecar = blobs / "e7ag.fusedpart.json"
     sidecar.write_bytes(b"{}")
+    sidecar_tmp = blobs / "e7ag.fusedpart.json.tmp"
+    sidecar_tmp.write_bytes(b"{")
     hf_old = blobs / "0ther.incomplete"
     hf_old.write_bytes(b"half")
     hf_new = blobs / "0ther.a1b2c3d4.incomplete"
     hf_new.write_bytes(b"half")
     finished = blobs / "f1n1shed"
     finished.write_bytes(b"weights")
-    for path in (ours, sidecar, hf_old, hf_new, finished):
+    for path in (ours, sidecar, sidecar_tmp, hf_old, hf_new, finished):
         _aged(path, base._PART_GRACE_SECONDS + 60)
 
     removed = base._sweep_orphan_parts(str(folder))
 
-    assert removed == 4
+    assert removed == 5
     assert sorted(p.name for p in blobs.iterdir()) == ["f1n1shed"]
 
 
@@ -2419,7 +2435,24 @@ def test_sweep_leaves_a_freshly_touched_part_file_alone(base, tmp_path):
 
 def test_sweep_on_a_never_fetched_folder_is_a_quiet_no_op(base, tmp_path):
     assert base._sweep_orphan_parts(str(tmp_path / "never-fetched")) == 0
+
+
+def test_sweep_on_a_falsy_folder_never_scans_a_relative_path(base, monkeypatch):
+    """`repo_folder` returns `None` when `huggingface_hub` cannot be imported
+    (see its docstring). `None or ""` joined with `"blobs"` is the RELATIVE
+    path `"blobs"`, not a no-op — `os.scandir` would resolve it against this
+    process's CWD, unlinking anything part-shaped it happens to find in a
+    `./blobs` there. Proven by making `scandir` explode if it is ever reached
+    at all, rather than trusting that no such directory exists in the pytest
+    CWD — the way this guard's absence used to pass by accident."""
+    def explodes(path):
+        raise AssertionError(
+            f"_sweep_orphan_parts scanned {path!r} for a falsy folder")
+
+    monkeypatch.setattr(base.os, "scandir", explodes)
+
     assert base._sweep_orphan_parts(None) == 0
+    assert base._sweep_orphan_parts("") == 0
 
 
 def test_a_failed_unlink_is_logged_rather_than_swallowed(base, tmp_path,

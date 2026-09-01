@@ -3501,24 +3501,34 @@ _NOT_CACHED = (OSError, ImportError)
 #: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
 _HF_PART_SUFFIX = ".incomplete"
 
-#: Every part-file SHAPE a fetch can leave beside a blob: ours (`.fusedpart`
-#: and its offsets sidecar) and hf's own — the bare `<etag>.incomplete` older hf
-#: writes, and the `<etag>.<8 hex chars>.incomplete` newer hf writes so two
-#: concurrent attempts at one blob cannot collide on a single name.
+#: Every part-file SHAPE a fetch can leave beside a blob: ours — `.fusedpart`,
+#: its offsets sidecar, and the sidecar's own `.tmp` (`_FileFetch.flush` writes
+#: `<sidecar>.tmp` and `os.replace`s it over the sidecar; a crash between those
+#: two steps leaves the `.tmp` behind with nothing else ever removing it) — and
+#: hf's own `.incomplete`, unanchored on any prefix so it matches whether or
+#: not the installed hf version infixes a per-attempt random name before the
+#: suffix (`<etag>.incomplete` and `<etag>.<8 hex chars>.incomplete` both end
+#: in `.incomplete`, so one alternative covers both; there is no shape here
+#: that a narrower pattern would be catching that this one misses).
 _PART_MARKER = re.compile(
-    r"(?:" + re.escape(PART_SUFFIX) + r"(?:\.json)?"
-    r"|\.[0-9a-f]{8}" + re.escape(_HF_PART_SUFFIX) +
+    r"(?:" + re.escape(PART_SUFFIX) + r"(?:\.json(?:\.tmp)?)?"
     r"|" + re.escape(_HF_PART_SUFFIX) + r")$")
 
 #: How long `_sweep_orphan_parts` leaves a part file alone before it will treat
-#: it as dead weight. A LIVE download keeps its part file's mtime current —
-#: ours flushes its sidecar every `FLUSH_EVERY_S` (one second), and hf rewrites
-#: `.incomplete` on every chunk it appends — so anything genuinely in flight is
-#: seconds old. An orphan, the resume state for a file some scope no longer
-#: covers, is minutes to months old. Five minutes is enormous headroom over the
-#: flush cadence and nothing at all against how long a card has been stuck
-#: reading "partial".
-_PART_GRACE_SECONDS = 300
+#: it as dead weight, expressed against this module's own worst case rather
+#: than as an independent guess: `_Throttle.wait` (see `THROTTLE_TOTAL_MAX_S`)
+#: can park a segment on a 429 for up to that long without a single byte
+#: reaching the part file or its sidecar, and `_note_throttle` — not the
+#: mtime — is the only sign that fetch is still alive. So the grace window has
+#: to clear the stall ceiling with real headroom, not merely match the flush
+#: cadence: five extra minutes on top of the ten-minute ceiling is enormous
+#: against `FLUSH_EVERY_S` (one second) for anything actually moving bytes,
+#: and nothing at all against how long a card has been stuck reading
+#: "partial". Defined as an offset from `THROTTLE_TOTAL_MAX_S` rather than a
+#: second bare number so the two cannot drift back below each other in a
+#: future edit to either constant; `test_the_grace_window_clears_the_longest_a_fetch_can_stall`
+#: pins the relationship.
+_PART_GRACE_SECONDS = THROTTLE_TOTAL_MAX_S + 300
 
 
 def _sweep_orphan_parts(folder):
@@ -3561,10 +3571,19 @@ def _sweep_orphan_parts(folder):
     Never raises. A failed unlink is logged and skipped rather than swallowed —
     a cosmetic cleanup step must not be the thing that turns a successful
     download into a failed one, but it must not go silent either.
+
+    `folder` is `None` when `repo_folder` could not import
+    `huggingface_hub` (see its docstring) — checked explicitly, the same way
+    `bytes_on_disk` does, rather than folded into `os.path.join` with a `""`
+    fallback: `os.path.join("", "blobs")` is the RELATIVE path `"blobs"`, not
+    a no-op, and `os.scandir` would resolve it against this process's CWD —
+    unlinking anything part-shaped it happens to find in a `./blobs` there.
     """
+    if not folder:
+        return 0
     removed = 0
     try:
-        entries = list(os.scandir(os.path.join(folder or "", "blobs")))
+        entries = list(os.scandir(os.path.join(folder, "blobs")))
     except OSError:
         return removed
     now = time.time()
