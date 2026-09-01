@@ -3818,7 +3818,11 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     same reason: an edit above the table moves it. `Enter`/blur commit,
     `Escape` cancels, `Tab` commits and opens the neighbour — which can only
     exist after the commit's own dispatch has rebuilt the widget, so the move
-    is replayed on the far side of that rebuild.
+    is replayed on the far side of that rebuild. A commit re-verifies its
+    range before writing, the same check that gates opening: a cell can stay
+    open across a reload it never saw, and `posAtDOM` answers 0 for a table
+    that has since been detached rather than failing, so an unguarded commit
+    would overwrite an unrelated line.
   - **A click opens the cell at the character it landed on**, resolved through
     the source map `renderInline` records beside the DOM (`_cellSpans`): the
     hit is measured in *rendered* text but the caret is placed in *raw*
@@ -3830,7 +3834,23 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     opening backtick. The cell's own bookkeeping is namespaced
     (`data-cell-row` and friends): a bare `data-line` is the outline rail's
     selector, and the delegated handler would claim the click as a jump to a
-    heading before the cell — or a link inside it — ever saw it.
+    heading before the cell — or a link inside it — ever saw it. The offset
+    survives a hand-off, too: a click arriving while a different cell is open
+    commits that one first, and the character it landed on is carried across
+    the rebuild rather than lost to end-of-cell.
+  - **A cell renders no construct the author escaped.** `\*` and `\[` are how
+    a marker is shown rather than obeyed, and the cell's alternation is tried
+    before anything examines escapes — so the escape is an alternative of its
+    own, first in the list, matching the pair and emitting nothing so it folds
+    into the surrounding plain run. Otherwise `\[not a link\](x)` renders as
+    a genuinely clickable link the author escaped away.
+  - **A container's marker is not a column.** A table inside a blockquote
+    carries `>` on each of its continuation lines; split with it in place that
+    segment is non-blank and survives as a phantom first column whose text is
+    the marker — editable, so typing there rewrites the quote out from under
+    the block — and it hides the delimiter row from the alignment pass. The
+    prefix is measured and skipped, not stripped, so every offset still
+    indexes the real line.
   - **The alignment row is read in a pass of its own.** It sits *below* the
     header it aligns, so a single pass would build the header's cells before
     the answer was known and leave a heading sitting left over a right-aligned
@@ -3838,7 +3858,10 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   - **Arrowing in still reveals the whole source**, which is how a row is added
     or removed: in-place editing covers a cell's *text*, not the table's shape.
     A read-only note stays inert, cursor included — `writable` is the only gate
-    here as everywhere else (MD-1a/MD-15).
+    here as everywhere else (MD-1a/MD-15). Inert is not *dead*: the press
+    handler suppresses the browser's native selection only when a cell could
+    actually open, or a read-only table's text would stop being selectable
+    and copyable.
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 

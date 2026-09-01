@@ -449,6 +449,63 @@ def test_a_link_with_a_balanced_paren_in_its_url_still_renders_as_a_link(tmp_pat
     assert link["href"] == "https://en.wikipedia.org/wiki/Foo_(bar)"
 
 
+# An escaped marker, and a table nested in a blockquote — both their own
+# fixtures for the same reason as PAREN_LINK_NOTE above.
+ESCAPED_NOTE = "top\n\n| \\*not italic\\* | \\[not a link\\](x) |\n| --- | --- |\n| y |\n"
+
+ESCAPED_TABLE_SOURCE = (
+    "| \\*not italic\\* | \\[not a link\\](x) |\n"
+    "| --- | --- |\n"
+    "| y |"
+)
+
+QUOTED_NOTE = "top\n\n> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n"
+
+# The first line's `> ` is hidden by the quote decoration and so falls outside
+# the table's own range; every CONTINUATION line keeps its marker, which is
+# exactly where the phantom column came from.
+QUOTED_TABLE_SOURCE = (
+    "| a | b |\n"
+    "> | --- | --- |\n"
+    "> | 1 | 2 |"
+)
+
+
+def test_an_escaped_marker_in_a_cell_starts_no_construct(tmp_path):
+    r"""`\*` and `\[` are how an author says "show this character". The cell
+    renderer's alternation is tried before anything looks at escapes, so
+    without an escape alternative of its own `\*not italic\*` renders as real
+    emphasis wearing a stray backslash, and `\[not a link\](x)` becomes a
+    genuinely clickable link the author escaped away. Both must come out as
+    one plain text run with the backslashes stripped.
+    """
+    path = tmp_path / "escaped.md"
+    path.write_text(ESCAPED_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), ESCAPED_TABLE_SOURCE)
+    emph_th, link_th = table["children"][0]["children"]
+
+    assert emph_th["children"] == [{"tag": "#text", "text": "*not italic*"}]
+    assert link_th["children"] == [{"tag": "#text", "text": "[not a link](x)"}]
+
+
+def test_a_table_inside_a_blockquote_grows_no_column_of_quote_markers(tmp_path):
+    """The `>` on every line belongs to the blockquote, not the table. Left in
+    the split it is not blank, so it survives as a first column whose cell
+    text is the marker itself — and since a cell is editable, typing in that
+    phantom column rewrites the quote marker and breaks the block. It also
+    hides `| --- |` from `rowAlignment`, which then renders the delimiter row
+    as a visible row of dashes.
+    """
+    path = tmp_path / "quoted.md"
+    path.write_text(QUOTED_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), QUOTED_TABLE_SOURCE)
+
+    # Two rows, not three: the delimiter row is recognised and skipped.
+    assert len(table["children"]) == 2
+    for row, texts in zip(table["children"], (["a", "b"], ["1", "2"])):
+        assert [cell["data"]["cellRaw"] for cell in row["children"]] == texts
+
+
 # ------------------------------- unknown is not missing (MD-11) --------------
 #
 # Every test above runs UNSCANNED, which is what a mount-backed root gives: no
