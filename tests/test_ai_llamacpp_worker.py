@@ -819,7 +819,8 @@ def test_a_disconnected_write_propagates_with_nothing_left_running(worker):
 
 
 def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
-                    expert_offload=True):
+                    expert_offload=True, kv_quant_supported=False,
+                    reject_kv_quant=False):
     """A fake `llama_cpp` module good enough for the offload-decision tests.
 
     `gpu_offload` stands in for `llama_supports_gpu_offload()` — the real
@@ -834,10 +835,23 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
     the package attribute would let a regression to the wrong target pass.
     `expert_offload=False` removes the ggml symbol instead, standing in for a
     binding that has moved out from under the override.
+
+    `kv_quant_supported` stands in for a binding new enough to expose
+    `GGML_TYPE_Q8_0` — `_kv_cache_kwargs` reads this off the module with
+    `getattr`, so its absence (the default, matching every OTHER test in
+    this file) is what makes `load()` skip the quantized-cache pass
+    entirely rather than a special case those tests would otherwise need.
+    `reject_kv_quant` makes `Llama()` raise whenever it is asked for one —
+    standing in for a build whose backend cannot honor `type_k`/`type_v`/
+    `flash_attn` at all, at ANY `n_gpu_layers` — so `load()`'s fp16 fallback
+    pass can be exercised regardless of what VRAM would otherwise allow.
     """
     fake_llama_cpp = types.ModuleType("llama_cpp")
     fake_llama_cpp.llama_supports_gpu_offload = lambda: gpu_offload
+    if kv_quant_supported:
+        fake_llama_cpp.GGML_TYPE_Q8_0 = 8
     calls = []
+    kv_calls = []
 
     class Params:
         def __init__(self):
@@ -859,6 +873,10 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
     class Llama:
         def __init__(self, **kwargs):
             calls.append(kwargs["n_gpu_layers"])
+            has_kv_quant = "type_k" in kwargs
+            kv_calls.append(has_kv_quant)
+            if reject_kv_quant and has_kv_quant:
+                raise ValueError("Failed to load model from file: test (kv)")
             if kwargs["n_gpu_layers"] in fail_for:
                 raise ValueError("Failed to load model from file: test")
             self.kwargs = kwargs
@@ -871,6 +889,7 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
 
     fake_llama_cpp.Llama = Llama
     fake_llama_cpp.calls = calls
+    fake_llama_cpp.kv_calls = kv_calls
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
     monkeypatch.setitem(sys.modules, "llama_cpp.llama_cpp", inner)
     return fake_llama_cpp
@@ -1076,6 +1095,85 @@ def test_expert_offload_the_binding_cannot_supply_still_loads_the_model(
     assert fake.calls == [24, 16, 8, -1]
     assert worker._loaded["llm"].overrides is None
     assert worker.worker_base.recorded == {"device": "gpu"}
+
+
+def test_load_requests_a_q8_0_kv_cache_with_flash_attention_when_the_binding_supports_it(
+        worker, monkeypatch):
+    """The whole point: `GGML_TYPE_Q8_0` on the binding must actually reach
+    `Llama()` as `type_k`/`type_v`, paired with `flash_attn=True` — the
+    combination llama.cpp itself requires for a quantized V cache (see
+    `_kv_cache_kwargs`'s docstring for the upstream check this pins to)."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, kv_quant_supported=True)
+
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
+
+    kwargs = worker._loaded["llm"].kwargs
+    assert kwargs["type_k"] == 8
+    assert kwargs["type_v"] == 8
+    assert kwargs["flash_attn"] is True
+    # One rung succeeded on the first pass — no fallback pass was needed.
+    assert fake.calls == [-1]
+    assert fake.kv_calls == [True]
+
+
+def test_load_never_asks_for_a_quantized_kv_cache_when_the_binding_lacks_the_enum(
+        worker, monkeypatch):
+    """The default fake (every OTHER test in this file) has no
+    `GGML_TYPE_Q8_0` attribute — `_kv_cache_kwargs` must answer `{}` rather
+    than guess a raw `8`, so a binding that never advertised the enum is
+    asked for nothing beyond what it already supported."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True)
+
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
+
+    kwargs = worker._loaded["llm"].kwargs
+    assert "type_k" not in kwargs
+    assert "type_v" not in kwargs
+    assert "flash_attn" not in kwargs
+    assert fake.kv_calls == [False]
+
+
+def test_load_falls_back_to_the_default_fp16_cache_when_quantization_fails_every_rung(
+        worker, monkeypatch, tmp_path):
+    """A build whose backend cannot honor the quantized cache at ALL must not
+    be mistaken for one that merely needs fewer GPU layers — `load()` runs
+    the full offload schedule a second time without the KV kwargs rather
+    than exhausting the ladder and raising over a capability gap a plain
+    fp16 cache would not have hit."""
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(_make_gguf([
+        ("general.architecture", 8, "qwen35"),
+        ("qwen35.block_count", 4, 32),
+    ]))
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, kv_quant_supported=True,
+                           reject_kv_quant=True)
+
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", str(gguf_path))
+
+    # First pass (quantized) fails at every rung — 32, 21, 10, 0 — then the
+    # fallback pass runs the SAME schedule again and succeeds on its first
+    # rung, this time with no KV kwargs.
+    assert fake.calls == [32, 21, 10, 0, 32]
+    assert fake.kv_calls == [True, True, True, True, False]
+    kwargs = worker._loaded["llm"].kwargs
+    assert "type_k" not in kwargs
+    assert worker.worker_base.recorded == {"device": "gpu"}
+
+
+def test_load_still_raises_when_no_rung_fits_in_either_kv_cache_pass(
+        worker, monkeypatch):
+    """Exhausting BOTH passes — quantized and fallback fp16 — over every rung
+    down to plain CPU is a real failure, not a sizing problem, and must
+    reach the caller exactly as the single-pass version already did."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, kv_quant_supported=True,
+                           fail_for={-1, 0})
+
+    with pytest.raises(ValueError, match="Failed to load model"):
+        worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
+    # Quantized pass: -1, 0 (both fail via fail_for). Fallback pass: -1, 0
+    # again (still fail_for, KV kwargs are gone but that was never why these
+    # failed).
+    assert fake.calls == [-1, 0, -1, 0]
 
 
 def test_memory_defers_entirely_to_rss(worker):
