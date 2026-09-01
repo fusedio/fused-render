@@ -158,7 +158,15 @@ def ensure_core_templates() -> str:
         # observe a partial tree, and the marker lands only inside a complete copy.
         staging = f"{core_dir}.staging.{os.getpid()}"
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.copytree(PACKAGE_TEMPLATES_DIR, staging)
+        # `.venv` is excluded on principle rather than because one is ever
+        # meant to be here: this predicate never puts one inside the package
+        # (`projectenv._use_home_store` keys a bundled folder to the home
+        # store precisely because that tree is read-only). But a developer
+        # running `uv sync` by hand in `fused_render/templates/<name>/` would
+        # create one, and without this it gets copied into the staging dir on
+        # every release-digest change -- a multi-gigabyte tree neither this
+        # process nor the release ever asked for.
+        shutil.copytree(PACKAGE_TEMPLATES_DIR, staging, ignore=shutil.ignore_patterns(".venv"))
         with open(_marker_path(staging), "w", encoding="utf-8") as f:
             f.write(expected)
         shutil.rmtree(core_dir, ignore_errors=True)
