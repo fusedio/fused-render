@@ -289,7 +289,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
 def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
     """D548 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
     boilerplate commit never sees it — assert both halves: the layout is there,
-    and the `.gitignore` git init just wrote already excludes it."""
+    and the shared repo's root `.gitignore` (D626) already excludes it."""
     monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
@@ -298,7 +298,7 @@ def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeyp
     assert (dest / ".fused" / "cache").is_dir()
     meta = json.loads((dest / ".fused" / "meta.json").read_text())
     assert meta["app_dir"] == os.path.abspath(str(dest))
-    assert ".fused/" in (dest / ".gitignore").read_text()
+    assert ".fused/" in (workspace / "local" / ".gitignore").read_text()
 
 
 def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):

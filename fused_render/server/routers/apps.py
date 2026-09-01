@@ -782,10 +782,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         return _error(f"failed to create app {name!r}: {exc}")
 
     # The `.fused/` state folder, before git rather than after: `init_repo`'s
-    # first commit is "the untouched starter", and `.fused/` is not starter
-    # content — creating it first means the freshly written `.gitignore` is
-    # already excluding it when `add -A` runs, instead of the boilerplate
-    # commit capturing an empty `data/`/`cache/` pair that later has to be
+    # boilerplate commit is "the untouched starter", and `.fused/` is not
+    # starter content — creating it first means the shared repo's root
+    # `.gitignore` (written by `ensure_local_repo`, D626) is already excluding
+    # it when the scoped `add -A` runs, instead of the boilerplate commit
+    # capturing an empty `data/`/`cache/` pair that later has to be
     # untracked. (The starter kit itself cannot carry the folder: git does not
     # store empty directories, so a copytree of the packaged kit would produce
     # nothing.) Opening the app would create it anyway (`record_app_open`);
@@ -806,10 +807,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     export_skill_plugin_env()
 
-    # Version control from birth: every new app is a git repo whose first
-    # commit is the untouched starter, BEFORE any session runs — so the
-    # scaffolding turn's work diffs against the boilerplate, not nothing.
-    # Best-effort (no git on the machine still gets a working app).
+    # Version control from birth: every new app lands in the shared `local`
+    # repo (D626) as one scoped boilerplate commit — the untouched starter,
+    # BEFORE any session runs — so the scaffolding turn's work diffs against
+    # the boilerplate, not nothing. Best-effort (no git on the machine still
+    # gets a working app).
     from fused_render import app_git
 
     app_git.init_repo(dest)

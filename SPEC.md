@@ -10468,8 +10468,10 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   through `appfile._slug` (no separator, dot or drive letter survives it,
   shared with the extract cache key); an empty name falls back to the FILE
   STEM, not a shared `app` literal, so two unnamed app files do not collide on
-  one folder. Plain files — no `git init`, unlike the showcase Clone, which
-  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  one folder. Plain files — no repo of its own (D626: `local/` is one shared
+  repo; the clone lands untracked and the first turn commit about it adopts
+  it), and no upstream to diff against, unlike the showcase Clone.
+  Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
 
