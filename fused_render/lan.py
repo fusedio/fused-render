@@ -86,15 +86,39 @@ _ROOTS_TTL_S = 2.0
 _roots_cache: tuple[float, list[str]] | None = None
 
 
+#: The ONLY subfolders of the app-state dir (``home_dir()``, i.e.
+#: ``~/.fused-render`` or a branch nest of it) the LAN side may reach. That dir
+#: also holds the private CA key (``lan_tls/``), every Claude transcript,
+#: logs, search indexes, mount definitions and gigabytes of venvs and git
+#: branches — none of an app's business, and a paired phone that could read
+#: ``lan_tls/ca.key`` could impersonate the computer's https forever. So the
+#: state dir is NOT a root; only these leaves are, and everything else there is
+#: 404 over the LAN. Apps are not meant to write under the state dir at all —
+#: when a feature deliberately needs a new folder here, add its relative path
+#: to this list. Kept in sync by hand, on purpose.
+_HOME_SUBROOTS = (
+    "ai/images",      # /api/ai/image output
+    "ai/videos",      # /api/ai/video output
+    "ai/transcripts", # /api/ai/transcribe output
+    "recordings",     # fused.capture uploads
+    "data",           # per-app scratch state (data/<app>/…)
+    "canvases",       # the canvases sub-app store
+    "slides",         # the slides sub-app store
+    "docs",           # the docs sub-app store
+    "appfiles",       # .fused app-file staging
+    "app-versions",   # per-app version history
+)
+
+
 def allowed_roots() -> list[str]:
     """The folders the LAN side may reach: the whole workspace (``~/Fused`` —
-    every tag folder: local, showcase, clones …), the app state dir
-    (``~/.fused-render``, where apps keep per-install data beside prefs;
-    ``FUSED_RENDER_HOME`` moves it, so both the default and the effective dir
-    are listed), and every LINKED app — an external folder registered through
-    "Open app" (registered_apps.py), which the /apps hub lists beside the
-    workspace. Registered folders come from a JSON store, so the list is held
-    for a couple of seconds: one page load fans out into many scoped reads."""
+    every tag folder: local, showcase, clones …), a fixed allow-list of
+    app-data leaves under the app-state dir (``_HOME_SUBROOTS`` — NOT the whole
+    state dir, which holds the CA key, transcripts and logs), and every LINKED
+    app — an external folder registered through "Open app" (registered_apps.py),
+    which the /apps hub lists beside the workspace. Registered folders come from
+    a JSON store, so the list is held for a couple of seconds: one page load
+    fans out into many scoped reads."""
     global _roots_cache
     import time
 
@@ -103,7 +127,9 @@ def allowed_roots() -> list[str]:
         return _roots_cache[1]
     from fused_render.shell.storage import home_dir
 
-    roots = [fused_dir(), os.path.expanduser("~/.fused-render"), home_dir()]
+    home = home_dir()
+    roots = [fused_dir()]
+    roots.extend(os.path.join(home, sub) for sub in _HOME_SUBROOTS)
     try:
         from fused_render import registered_apps
 
