@@ -525,7 +525,7 @@ def _shell_rc() -> Optional[str]:
         # when ZDOTDIR is set — writing ~/.zshrc then would land in a file zsh
         # never sources, and the button would report a success that fixed
         # nothing.
-        zdotdir = os.environ.get("ZDOTDIR")
+        zdotdir = os.environ.get("ZDOTDIR") or _zsh_zdotdir()
         if zdotdir:
             return _home_relative(os.path.join(zdotdir, ".zshrc"))
         return "~/.zshrc"
@@ -543,6 +543,36 @@ def _shell_rc() -> Optional[str]:
                 return cand
         return "~/.bash_profile"
     return None
+
+
+def _zsh_zdotdir() -> Optional[str]:
+    """ZDOTDIR as zsh itself resolves it, or None when unset.
+
+    The app's own environment is not enough to ask: users set ZDOTDIR in
+    ~/.zshenv, and a Finder/Dock launch never sources that file — so the
+    variable is absent from our process exactly on the machines where it
+    matters, and trusting os.environ alone would append to a ~/.zshrc that
+    zsh never reads while reporting success. Even a NON-login, non-interactive
+    zsh sources /etc/zshenv and ~/.zshenv, so a bare `zsh -c` answers with the
+    user's real value at minimal spawn cost. Only called on the rare paths
+    that already spawn shells (the strip's fix + button press), never on
+    routine health reads.
+    """
+    zsh = shutil.which("zsh") or ("/bin/zsh" if executable("/bin/zsh") else None)
+    if not zsh:
+        return None
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH")}
+    try:
+        out = subprocess.run(
+            [zsh, "-c", 'print -rn -- "$ZDOTDIR"'],
+            capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
+            **SUBPROCESS_KWARGS,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (out or "").strip()
+    return value or None
 
 
 def _home_relative(path: str) -> str:
