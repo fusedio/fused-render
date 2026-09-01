@@ -290,12 +290,16 @@ _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC = {"torch", "triton-rocm"}
 def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
     """The guard the bitsandbytes bug needed and did not have.
 
-    `tonera/FLUX.2-klein-4B-int8-diffusers` — the sole, `recommended: True`
-    `diffusers-image` suggestion — ships a torchao transformer AND a
-    bitsandbytes-NF4 text encoder, so all three folders need both
-    quantization backends or the model a bare `fused.ai.image()` starts
-    fails with an ImportError raised before the transformer is ever built
-    (see `catalog.py`'s entry). `bitsandbytes` could have been added to one
+    `tonera/FLUX.2-klein-4B-int8-diffusers` — the sole `diffusers-image`
+    suggestion at the time, and then the recommended one — ships a torchao
+    transformer AND a bitsandbytes-NF4 text encoder, so all three folders
+    need both quantization backends or that model fails with an ImportError
+    raised before the transformer is ever built (see `catalog.py`'s entry).
+    The recommended flag has since moved to the SDNQ row, which does not
+    weaken this guard at all: the parity it checks is now needed by THREE
+    backends rather than two, since the default model's own quantizer is the
+    `sdnq` line and a folder that missed it would break the default rather
+    than an alternative. `bitsandbytes` could have been added to one
     folder and forgotten in the other two — the venvs are built independently
     on the user's machine, so nothing short of this comparison would notice —
     and this test exists so that class of drift is a red CI line instead of a
@@ -312,8 +316,9 @@ def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
 
 
 def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release():
-    """`tonera/FLUX.2-klein-4B-int8-diffusers` — the sole `recommended: True`
-    `diffusers-image` suggestion — fails to load on torchao 0.18.0 with
+    """`tonera/FLUX.2-klein-4B-int8-diffusers` — a `diffusers-image`
+    suggestion, and the recommended one until the SDNQ row took that — fails
+    to load on torchao 0.18.0 with
     `ValueError: Failed to create instance of Int8WeightOnlyConfig: version 1
     of Int8WeightOnlyConfig has been removed, please use version 2`, because
     that repo's `transformer/config.json` serializes its
@@ -323,7 +328,9 @@ def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release(
     in this codebase, so there is nothing to fix here except keep torchao
     below 0.18 — and no test in this suite loads a real model over the
     network, so THIS specifier is the only thing standing between a future
-    `torchao<1`-style bump and a broken recommended model. See the
+    `torchao<1`-style bump and a suggestion that cannot load — and it is the
+    only route to this pipeline for a user who cannot take the `sdnq`
+    dependency the recommended row now needs. See the
     `torchao` entry in `diffusers_image/pyproject.toml`'s header for the
     full account.
     """

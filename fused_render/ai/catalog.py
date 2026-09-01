@@ -585,6 +585,23 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
             "params": "4B",
             "quantization": "SDNQ 4-bit",
+            # **What a bare `fused.ai.image()` starts.** It wins on every axis
+            # measured against the int8 row below — smaller to fetch (5.5GB vs
+            # 8.2GB), half the resident set, ~28% quicker per image — so being
+            # first in the smallest-first order and being the recommended one
+            # agree here, which is not always true of this field (see
+            # `SUGGESTIONS`' own note: `recommended` is a SECOND axis).
+            #
+            # The cost of the flag sitting here rather than below is a
+            # dependency: this row cannot load without `sdnq`, whose whole
+            # integration is a mutation of a diffusers mapping that is not
+            # public API (see the runner manifests, and
+            # `torch_image._register_extra_quantizers`). If that breaks, it
+            # breaks the DEFAULT image model rather than an alternative one —
+            # which is what the manifests' `<0.3` ceiling and
+            # `test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_
+            # below_0_3` exist to make loud instead of silent.
+            "recommended": True,
             "label": "FLUX.2 klein 4B (SDNQ 4-bit)",
             "nickname": "FLUX.2 klein",
             # The whole repo: text_encoder 2.63GiB + transformer 2.30GiB + vae
@@ -622,8 +639,16 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "params": "4B",
+            # **Incomplete, and known to be.** The transformer is torchao int8,
+            # but this repo is MIXED: `text_encoder/config.json` carries
+            # `"quant_method": "bitsandbytes"` with `"load_in_4bit": true` and
+            # `"bnb_4bit_quant_type": "nf4"` (double quant, bf16 compute), and
+            # that encoder is the larger half at 3.4GB — bf16 in 16 skipped
+            # modules is why it is not ~2.1GB. Left as it is because this
+            # string is what the AI Models page prints, and a one-line label
+            # that tried to say "int8 transformer, NF4 text encoder" would be
+            # a product decision about that column rather than a fix.
             "quantization": "int8 (torchao)",
-            "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
             "nickname": "FLUX.2 klein",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
@@ -665,11 +690,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # comment did not account for making the recommended model refuse
             # to load. See the runner manifests' own `bitsandbytes` entries for
             # the version reasoning and the ROCm-specific verification.
-            # It is the only entry, so it is what a bare `fused.ai.image()`
-            # starts: the ordering rule
-            # (`test_every_suggestion_list_is_ordered_smallest_first`) holds
-            # trivially, and being the smaller thing to fetch is why this is the
-            # entry the list keeps.
+            # **It was the only entry when that bug shipped, and is not any
+            # more** — the SDNQ row above is both smaller and recommended, so
+            # this is now the fallback rather than the default. That does not
+            # soften the bitsandbytes requirement one bit: a user who picks
+            # this row still loads that NF4 text encoder, and the ordering rule
+            # (`test_every_suggestion_list_is_ordered_smallest_first`) now has
+            # two entries to hold across rather than holding trivially.
             #
             # Hardware-neutral, per `SUGGESTIONS`' own rule: this one list
             # serves the CPU, CUDA and ROCm Diffusers rows, so a
