@@ -820,7 +820,7 @@ def test_a_disconnected_write_propagates_with_nothing_left_running(worker):
 
 def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
                     expert_offload=True, kv_quant_supported=False,
-                    reject_kv_quant=False):
+                    reject_kv_quant=False, reject_kv_quant_on_gpu_only=False):
     """A fake `llama_cpp` module good enough for the offload-decision tests.
 
     `gpu_offload` stands in for `llama_supports_gpu_offload()` — the real
@@ -844,7 +844,11 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
     `reject_kv_quant` makes `Llama()` raise whenever it is asked for one —
     standing in for a build whose backend cannot honor `type_k`/`type_v`/
     `flash_attn` at all, at ANY `n_gpu_layers` — so `load()`'s fp16 fallback
-    pass can be exercised regardless of what VRAM would otherwise allow.
+    can be exercised regardless of what VRAM would otherwise allow.
+    `reject_kv_quant_on_gpu_only` makes the same rejection happen only when
+    `n_gpu_layers != 0` — standing in for a Vulkan-style GPU backend that
+    rejects `flash_attn` plus a quantized V cache while its CPU rung (which
+    never touches that backend) accepts the same kwargs without complaint.
     """
     fake_llama_cpp = types.ModuleType("llama_cpp")
     fake_llama_cpp.llama_supports_gpu_offload = lambda: gpu_offload
@@ -877,6 +881,9 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
             kv_calls.append(has_kv_quant)
             if reject_kv_quant and has_kv_quant:
                 raise ValueError("Failed to load model from file: test (kv)")
+            if reject_kv_quant_on_gpu_only and has_kv_quant \
+                    and kwargs["n_gpu_layers"] != 0:
+                raise ValueError("Failed to load model from file: test (kv, gpu)")
             if kwargs["n_gpu_layers"] in fail_for:
                 raise ValueError("Failed to load model from file: test")
             self.kwargs = kwargs
@@ -1136,9 +1143,9 @@ def test_load_never_asks_for_a_quantized_kv_cache_when_the_binding_lacks_the_enu
 def test_load_falls_back_to_the_default_fp16_cache_when_quantization_fails_every_rung(
         worker, monkeypatch, tmp_path):
     """A build whose backend cannot honor the quantized cache at ALL must not
-    be mistaken for one that merely needs fewer GPU layers — `load()` runs
-    the full offload schedule a second time without the KV kwargs rather
-    than exhausting the ladder and raising over a capability gap a plain
+    be mistaken for one that merely needs fewer GPU layers — `load()` retries
+    the SAME rung without the KV kwargs before moving to a smaller one,
+    rather than exhausting the whole ladder over a capability gap a plain
     fp16 cache would not have hit."""
     gguf_path = tmp_path / "model.gguf"
     gguf_path.write_bytes(_make_gguf([
@@ -1150,30 +1157,59 @@ def test_load_falls_back_to_the_default_fp16_cache_when_quantization_fails_every
 
     worker.load("gemma-4-E4B-it-Q4_K_M.gguf", str(gguf_path))
 
-    # First pass (quantized) fails at every rung — 32, 21, 10, 0 — then the
-    # fallback pass runs the SAME schedule again and succeeds on its first
-    # rung, this time with no KV kwargs.
-    assert fake.calls == [32, 21, 10, 0, 32]
-    assert fake.kv_calls == [True, True, True, True, False]
+    # The very first rung (32, all layers) is tried quantized, fails, and is
+    # immediately retried at the SAME rung with no KV kwargs, which succeeds
+    # — no smaller rung is ever tried, because the fp16 fallback happens
+    # per-rung rather than as a second pass over the whole ladder.
+    assert fake.calls == [32, 32]
+    assert fake.kv_calls == [True, False]
     kwargs = worker._loaded["llm"].kwargs
     assert "type_k" not in kwargs
     assert worker.worker_base.recorded == {"device": "gpu"}
 
 
-def test_load_still_raises_when_no_rung_fits_in_either_kv_cache_pass(
+def test_load_still_raises_when_no_rung_fits_in_either_kv_cache_variant(
         worker, monkeypatch):
-    """Exhausting BOTH passes — quantized and fallback fp16 — over every rung
-    down to plain CPU is a real failure, not a sizing problem, and must
-    reach the caller exactly as the single-pass version already did."""
+    """Exhausting both KV variants at every rung down to plain CPU is a real
+    failure, not a sizing problem, and must reach the caller rather than
+    being swallowed the way a too-large GPU request is."""
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, kv_quant_supported=True,
                            fail_for={-1, 0})
 
     with pytest.raises(ValueError, match="Failed to load model"):
         worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
-    # Quantized pass: -1, 0 (both fail via fail_for). Fallback pass: -1, 0
-    # again (still fail_for, KV kwargs are gone but that was never why these
-    # failed).
-    assert fake.calls == [-1, 0, -1, 0]
+    # Rung -1: quantized fails, fp16 fallback also fails (still `fail_for`,
+    # the KV kwargs were never why these failed). Rung 0: same story.
+    assert fake.calls == [-1, -1, 0, 0]
+    assert fake.kv_calls == [True, False, True, False]
+
+
+def test_load_prefers_a_gpu_rung_at_fp16_over_falling_all_the_way_to_cpu_at_q8_0(
+        worker, monkeypatch):
+    """A backend (the concrete worry is Vulkan) that rejects `flash_attn`
+    plus a quantized V cache on every GPU rung, but whose CPU rung —
+    `_offload_schedule` always ends on `n_gpu_layers=0` — accepts a quantized
+    cache just fine, because CPU never touches that backend at all.
+
+    A per-WHOLE-LADDER fallback would walk every GPU rung with the (rejected)
+    quantized cache, land on CPU, succeed there, and return — silently
+    parking a GPU-capable machine on the CPU. Retrying the fp16 cache at EACH
+    rung before giving up on it is what makes the full-offload rung succeed
+    at fp16 so the worker never reaches the CPU rung."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, kv_quant_supported=True,
+                           reject_kv_quant_on_gpu_only=True)
+
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
+
+    # Only the top rung (-1, all layers) is ever tried: quantized fails
+    # there, the fp16 retry at that SAME rung succeeds — the CPU rung (`0`)
+    # is never reached at all.
+    assert fake.calls == [-1, -1]
+    assert fake.kv_calls == [True, False]
+    kwargs = worker._loaded["llm"].kwargs
+    assert "type_k" not in kwargs
+    assert kwargs["n_gpu_layers"] == -1
+    assert worker.worker_base.recorded == {"device": "gpu"}
 
 
 def test_memory_defers_entirely_to_rss(worker):
