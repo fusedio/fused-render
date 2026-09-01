@@ -37,6 +37,7 @@ from fused_render.server.routers import ai_runtime
 # "every test stubs the Hub" is not the same claim as "no test reaches the
 # network".
 from test_ai_hub_fetch import no_egress  # noqa: F401
+from _big_files import sparse_file
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -9594,10 +9595,13 @@ def _text_repo(hub, repo_id, *, size=0):
 
     Safetensors, so a test using this needs the `safetensors_text_engine`
     fixture — see its docstring for why the ambient platform is not enough.
+
+    The weights file is sparse: `size` here exists to be read back as a
+    `size_gb`, and the scan that reads it sums `st_size`. See `_big_files`.
     """
     repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
                         config={"architectures": ["LlamaForCausalLM"]})
-    (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
+    sparse_file(repo / "snapshots" / "c0ffee" / "model.safetensors", size)
     return repo
 
 
@@ -10200,7 +10204,7 @@ def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 1.0
     blobs = repo / "blobs"
     blobs.mkdir(parents=True, exist_ok=True)
-    (blobs / "second-revision").write_bytes(b"x" * 2_000_000_000)
+    sparse_file(blobs / "second-revision", 2_000_000_000)
     assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 3.0
 
 

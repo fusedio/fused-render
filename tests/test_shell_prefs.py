@@ -242,6 +242,40 @@ def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
     assert os.path.exists(os.path.join(run_dir, "cancel"))
 
 
+def test_a_live_scan_is_cancelled_even_with_the_run_listing_already_cached(
+        tmp_path, monkeypatch):
+    """The test above only catches this by luck, and on CI it stopped doing so.
+
+    `cancel_all_scans` enumerates live runs; the obvious way to do that is
+    `_live_runs`, the helper the ranking route uses. But that one is a 1.0s
+    PROCESS-WIDE cache, not a request-scoped one — so a listing taken before
+    the scan started answers the toggle, the running scan is not in it, and
+    nothing is cancelled. `/api/index/rank` fires on every keystroke in two
+    search boxes, so in the real app that cache is essentially always warm:
+    this was the common case, not the rare one.
+
+    Priming the cache first is what makes the failure deterministic rather
+    than a matter of which test ran a moment earlier in the same worker.
+    """
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+    from fused_render.server.routers import index as index_routes
+
+    cfg = load_config()
+    index_routes._forget_runs()
+    index_routes._live_runs(cfg)  # …as any earlier ranked request would have
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    run_id = runner.start(cfg, root)["run_id"]
+    run_dir = os.path.join(cfg.runs_dir, run_id)
+    assert not os.path.exists(os.path.join(run_dir, "cancel"))
+
+    client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED)
+
+    assert os.path.exists(os.path.join(run_dir, "cancel"))
+
+
 def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Unset is its own value — "" means "whatever each consumer's own default
