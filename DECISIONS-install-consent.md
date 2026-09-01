@@ -1487,3 +1487,88 @@ changes.
 
 **Commit.** One: `fused_render/static/runtime.js`,
 `frontend/src/platform/lib/jobs.ts`, and `tests/test_server_env_install.py`.
+
+## Round 11: the shipped skills still described the pre-consent, pre-in-tree-venv world
+
+An audit of the plugin skills (`skills/fused-render-*/SKILL.md`, shipped to
+users) found five statements this branch's three changes (consent prompt,
+`--no-build`, `<project>/.venv`) had made false or left incomplete. Fixed all
+five with the smallest correct edit each, verified against code before
+writing, per the brief's "accuracy matters more than volume."
+
+**`fused-render-index/SKILL.md` (~136).** Stated the venv path as
+`<home_dir()>/venvs/<sha256(abspath)[:16]>` unconditionally. `projectenv.
+venv_dir_for` now answers `<project_dir>/.venv` for a writable folder and
+only falls back to the home store per `_use_home_store`'s three checks (in
+that order): the `FUSED_RENDER_VENV_IN_TREE=0` escape hatch, a folder that
+ships inside the installed package (an AI runner folder — read-only on the
+AppImage's squashfs mount and under a Windows `Program Files` install), or a
+folder that fails a writability probe for any other reason (read-only
+mount, permissions). Reworded to name `.venv` as the common case and state
+the three fallback conditions; kept "`fused_render` is not importable"
+unchanged, since nothing about that changed.
+
+**`fused-render-authoring/SKILL.md` (~104, the "First render triggers an
+install" bullet).** Rewrote to cover all three outcomes verified against
+`projectenv.nonstandard_dependencies_of` and `envinstall.py`: an all-PyPI
+manifest still installs silently; a dependency in `nonstandard_dependencies_
+of`'s three shapes (`[tool.uv.sources]` git/url/path/workspace, a PEP 508
+direct reference, or a project-wide custom index from `[tool.uv]`/`uv.toml`)
+raises the consent prompt naming those dependencies before anything
+installs; a package with no matching wheel stops and offers the
+`allow_build` "install anyway" retry (`envinstall.py`'s `--no-build`
+default); a package whose wheels exist only for another platform stops with
+`_permanent_failure`'s `platform_incompatible` verdict and no retry. Added a
+one-clause pointer to the preview exception (below) since an author reading
+only this bullet needs to learn installs don't happen there.
+
+**Same SKILL.md (~106), the `uv sync`-by-hand parenthetical.** The advice
+("never run it by hand") stays right but its reason was backwards post-D948
+— for a writable folder the app's own venv now IS `<project_dir>/.venv`, so
+there's no "diverges from" to point to. Replaced with the three reasons
+verified against code: a hand sync writes no `envinstall.READY_MARKER`
+(`.openfused-ready`) and no digest sidecar (`projectenv.SIDECAR_NAME`,
+`.fused-source.json`, written by `write_sidecar` and read by
+`projectenv.state_digest`'s docstring/`is_installed`), so the app's own
+install flow has no record it ran; it skips the consent prompt for a
+non-PyPI dependency; and it runs a source build the app's own install
+defaults to refusing (`--no-build`, `allow_build=False` unless the user
+retries).
+
+**Same SKILL.md (~313, preview-mode "start none of" list).** Added the
+missing item: a page booted as a preview thumbnail never triggers an
+install — confirmed at `runtime.js:2566`'s `if (!IS_THUMBNAIL &&
+shouldInstall(...))`, whose comment (~2551-2560) states a preview's
+`needs_install` falls straight to the `!data.ok` rejection branch instead;
+worded to match, "the app fails to run" rather than "install", since no
+install path is reached at all.
+
+**`fused-render-jobs/SKILL.md` (~57, after the `watchJob` paragraph).**
+Added one clause: a watched row's `job.state` can read `"waiting"`, and
+`trackJob`'s wrapper (`runtime.js`'s `handle` object: `update`/`finish`/
+`fail`/`cancelled`) offers no way to set it — confirmed no other method
+touches `state`. Verified against `jobs.py`: `WAITING = "waiting"` is
+excluded from `TERMINAL_STATES = ("done", "error", "cancelled")`, and its
+own comment names the sole producer as `envinstall._mirror_into_jobs`'s
+`needs_build` branch (line ~1938, `fields["state"] = jobs.WAITING`) — the
+`--no-build` "install anyway" compile prompt, which is what "build-consent
+prompt" in the added sentence refers to. Kept to one sentence per the
+brief, since there is genuinely nothing else an author can do with this
+state beyond recognizing it.
+
+**Not touched:** `.claude-plugin/plugin.json` and the seven skills the audit
+called clean (`fused-render-ai`, `-app-icon`, `-capture`,
+`-custom-templates`, `-theming`, `-usage`, `-background-apps`) — spot-checked
+`-background-apps`'s 409-message guidance against its own quoted server
+string, unchanged.
+
+**Grep sweep** of all ten shipped skills for `venvs/`, `.venv`, `home_dir`,
+`uv sync`, `central`, `~/.fused-render`, `preview` after editing found no
+further stale statement — every remaining hit is either one of the five
+edits above or an unrelated, still-accurate use (AI image/transcript output
+paths under `~/.fused-render`, the file index store, custom-template
+registry paths, background-apps' `server.json` discovery, preview-thumbnail
+guidance in `-capture`/`-background-apps`/`-custom-templates` that this
+branch does not touch).
+
+**Commit.** One: the four `SKILL.md` edits plus this entry.
