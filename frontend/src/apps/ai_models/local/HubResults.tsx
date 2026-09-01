@@ -367,7 +367,6 @@ export function HubResults({
   // somewhere else would defeat it.
   const hostUrl = endpoint || "https://huggingface.co";
   const host = hostUrl.replace(/^https?:\/\//, "");
-  const summary = resultsSummary(settled.q, models?.length ?? null, host, !!error);
   // The order the grid is DRAWN in. The server's, unless a page-level sort has
   // finished measuring — and then by the figure each card is SHOWING, so the
   // column of sizes beside the names actually ascends (`hubSizeBytes`).
@@ -382,6 +381,11 @@ export function HubResults({
   // trending/size ordering already decided above survives into which family
   // leads and which order the rows themselves appear in (`hubFamilies.ts`).
   const families = shown ? groupIntoFamilies(shown) : null;
+  // `families.length`, not `models.length`: the table draws one row per
+  // FAMILY, and a heading counting server rows over a grid of grouped ones
+  // said "24 on huggingface.co" above nine visible rows — the summary and the
+  // table it sits beside must count the same thing.
+  const summary = resultsSummary(settled.q, families?.length ?? null, host, !!error);
 
   return (
     <section className="am-section">

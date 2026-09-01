@@ -3532,7 +3532,12 @@ button.am-bench-model:focus-visible {
   text-decoration: underline;
 }
 
-.am-hubtable-variant-id {
+/* The GROUPING fact ("from <baseModel>") — muted, secondary, and never the
+   bold name (E: identity/action/name must all be the same repo). Was
+   `.am-hubtable-variant-id`, which the same rule used to render the OTHER
+   way round (the primary's own id, muted, under a base-model bold name);
+   the class stays, the meaning of what it renders flipped with it. */
+.am-hubtable-basemodel {
   font-size: 10.5px;
   color: var(--fg-muted);
   max-width: 220px;
@@ -3556,6 +3561,35 @@ button.am-bench-model:focus-visible {
   padding: 1px 5px;
   border-radius: 3px;
   background: var(--bg-alt);
+  color: var(--fg-muted);
+}
+
+/* The count is also the disclosure TOGGLE (E-1) — a real affordance, not
+   chrome that only looks like one, so it wears the pointer and a visible
+   hover/focus the plain count-only span (no siblings) does not need. */
+.am-hubtable-vartoggle {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.am-hubtable-vartoggle:hover,
+.am-hubtable-vartoggle:focus-visible {
+  background: var(--bg-hover, var(--bg-alt));
+}
+
+/* A sibling's own disclosure row, opened from "N variants" — indented under
+   the family row it belongs to so it reads as folded IN rather than as a
+   result of its own. */
+.am-hubtable-variant-row {
+  font-size: 0.95em;
+}
+
+.am-hubtable-variant-row .am-hubtable-variant-name {
+  padding-left: 1.25em;
+}
+
+.am-hubtable-variant-row .am-hubtable-variant-name > a {
   color: var(--fg-muted);
 }
 

@@ -139,19 +139,21 @@ describe("familyDisplay", () => {
     return { key: primary.baseModel ?? primary.id, primary, variants };
   }
 
-  it("names the family by its base model, with the ACTUAL variant offered on the line under it", () => {
-    // The thing a Download button acts on is the primary repo id, which may
-    // not equal the family's own display name — the mock's whole point.
+  it("names the row by the primary's OWN id — the repo href and Download both act on", () => {
+    // The base model is the more "readable" name, but it is not necessarily
+    // a repo this app can run at all (D313/hubFamilies' own "never appeared"
+    // case), and two different base models can share a repo name — so the
+    // bold name must be the thing a click on this row actually reaches.
     const primary = model("mlx-community/Qwen3.8-27B-4bit", { baseModel: "Qwen/Qwen3.8-27B" });
     const display = familyDisplay(family(primary, [model("x")]));
-    expect(display.name).toBe("Qwen/Qwen3.8-27B");
-    expect(display.variantId).toBe("mlx-community/Qwen3.8-27B-4bit");
+    expect(display.name).toBe("mlx-community/Qwen3.8-27B-4bit");
+    expect(display.baseModel).toBe("Qwen/Qwen3.8-27B");
   });
 
-  it("shows no redundant second line for a standalone repo with no base model", () => {
+  it("carries no base model for a standalone repo with none", () => {
     const primary = model("tencent/Hy4-preview");
     const display = familyDisplay(family(primary));
     expect(display.name).toBe("tencent/Hy4-preview");
-    expect(display.variantId).toBeNull();
+    expect(display.baseModel).toBeNull();
   });
 });

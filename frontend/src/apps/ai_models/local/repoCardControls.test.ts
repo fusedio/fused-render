@@ -370,15 +370,17 @@ describe("what the card's face keeps, and what the (i) takes", () => {
   });
 
   it("leads every Download with the same glyph", () => {
-    // Three call sites draw it — a recommendation, a Hub result row (now a
-    // table row, `HubResultsTable.tsx`, task 4), and a partly downloaded
-    // repo's "Continue downloading" — and the point of the glyph is that
-    // those read as one act, so there is one copy of the path.
+    // Four call sites draw it — a recommendation, a Hub family row AND its
+    // own sibling disclosure row (`HubResultsTable.tsx`'s `HubResultRow` and
+    // `HubVariantRow`, task 4 plus review finding E — a variant's own
+    // Download needed the same glyph once siblings became reachable), and a
+    // partly downloaded repo's "Continue downloading" — and the point of the
+    // glyph is that those read as one act, so there is one copy of the path.
     expect(PROGRESS).toContain("export function DownloadGlyph()");
     const REC = readFileSync(join(HERE, "RecommendedCard.tsx"), "utf8");
     expect(REC.match(/<DownloadGlyph \/>/g)?.length).toBe(1);
     const TABLE = readFileSync(join(HERE, "HubResultsTable.tsx"), "utf8");
-    expect(TABLE.match(/<DownloadGlyph \/>/g)?.length).toBe(1);
+    expect(TABLE.match(/<DownloadGlyph \/>/g)?.length).toBe(2);
     expect(CARD).toContain("<DownloadGlyph />");
   });
 

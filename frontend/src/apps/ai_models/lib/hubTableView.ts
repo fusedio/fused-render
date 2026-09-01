@@ -83,21 +83,28 @@ export function variantLabel(variantCount: number): string {
   return variantCount > 0 ? String(variantCount) : DASH;
 }
 
-/** The Model column's two lines: the family's own name, and — only where it
- *  differs — the ACTUAL repo a Download button on this row would act on.
+/** The Model column's two lines: the repo a Download button on this row would
+ *  actually act on, and — only where a base model is known — what it was
+ *  grouped under.
  *
- *  **The family's display name is its `baseModel` when one is known, else the
- *  primary's own id.** A family grouped under `Qwen/Qwen3.8-27B` may have its
- *  best-fitting member be `mlx-community/Qwen3.8-27B-4bit` — the base model
- *  id is the more READABLE name for the row, but it is not the thing
- *  Download acts on, so the primary's own id is stated too, on its own line,
- *  wherever the two differ. A standalone repo with no base model shows one
- *  line only: repeating its own id under itself would be the redundant
- *  half of the sentence.
+ *  **The row's NAME is always the primary's own id, never the base model.**
+ *  An earlier version of this function named the row by `baseModel` when one
+ *  was known, with the primary's id as a muted second line — readable, but
+ *  wrong on three counts a table full of Download buttons cannot afford: the
+ *  base model may not be a repo this app can even run (it is not necessarily
+ *  among the rows `_model_row` let through, which is exactly why a variant
+ *  can still be grouped under a base that "never appeared" —
+ *  `hubFamilies.ts`'s own case for it), truncating two DIFFERENT base models
+ *  that happen to share a repo name (`Qwen/Qwen3-8B` vs `unsloth/Qwen3-8B`)
+ *  renders an identical name for two unrelated families, and — the sharpest
+ *  version of the same mistake — identity, the href, and the download action
+ *  must all name the same repo or a click acts on something other than what
+ *  was read. So `name` is `family.primary.id`, matching the href and the
+ *  download action exactly; `baseModel` is the family's grouping fact, shown
+ *  as secondary context ("grouped under …") only when one is known.
  */
-export function familyDisplay(family: HubFamily): { name: string; variantId: string | null } {
-  const name = family.primary.baseModel ?? family.primary.id;
-  return { name, variantId: name === family.primary.id ? null : family.primary.id };
+export function familyDisplay(family: HubFamily): { name: string; baseModel: string | null } {
+  return { name: family.primary.id, baseModel: family.primary.baseModel };
 }
 
 /** `params` formatted the same compact way the rest of the page counts

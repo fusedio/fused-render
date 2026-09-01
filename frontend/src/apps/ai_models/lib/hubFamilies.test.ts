@@ -118,6 +118,32 @@ describe("groupIntoFamilies", () => {
     expect(families.map((f) => f.key)).toEqual(["org/z", "org/a"]);
   });
 
+  it("places a family at its PRIMARY's index, not at whichever member appeared first", () => {
+    // `models` arrives pre-sorted (e.g. by size ascending). A family draws
+    // its primary's row for every column, so it has to sit at the primary's
+    // position in that order or a sort-visible column (Size, Pop.) stops
+    // looking sorted the moment a family's first-appearing member isn't its
+    // primary.
+    const rows = [
+      // Appears first, but LOSES the primary pick to its own variant below —
+      // this is the fp16 original a 4bit quant of it outranks on fit.
+      model("org/base", { downloads: 500, fit: fitScore(0) }),
+      model("org/other", { downloads: 1 }),
+      // The best-fitting member of "org/base"'s family — the row actually
+      // drawn for that family — appears LAST in the input.
+      model("org/base-4bit", {
+        baseModel: "org/base", relation: "quantized",
+        downloads: 50, fit: fitScore(100),
+      }),
+    ];
+    const families = groupIntoFamilies(rows);
+    // The family's primary ("org/base-4bit") sits at index 2 in `rows`, so
+    // its family belongs AFTER "org/other" (index 1) — not before it, where
+    // first-appearance would have put it.
+    expect(families.map((f) => f.key)).toEqual(["org/other", "org/base"]);
+    expect(families[1].primary.id).toBe("org/base-4bit");
+  });
+
   it("a variant whose base model never appeared in these results still groups under it", () => {
     // The base repo may not have matched the query or may have been dropped
     // upstream (D313) — the variant still names it, and still deserves a

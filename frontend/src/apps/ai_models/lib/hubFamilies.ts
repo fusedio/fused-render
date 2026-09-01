@@ -51,31 +51,39 @@ function byFitThenDownloads(a: HubModel, b: HubModel): number {
 /** Every result, collapsed to one family per model — primary chosen by fit,
  *  variants ordered the same way, an untagged row standing alone.
  *
- *  Families are returned in the order their KEY first appears in `models` —
- *  the same "never resort what the server already ranked" rule the primary
- *  pick itself follows, applied one level up.
+ *  **Families are positioned at their PRIMARY's index in `models`, not at
+ *  whichever member first appeared.** A family draws its primary's row —
+ *  size, downloads, age, everything a column shows comes off that one
+ *  member — so that is also the member whose position in an already-sorted
+ *  `models` (`bySizeAscending`, the Hub's own `downloads`/`trending` order,
+ *  `sort=fit`'s reorder) has to decide where the family lands. Positioning by
+ *  first-appearance instead let a family sit at a NON-primary variant's
+ *  index while showing the primary's value there — the Size column visibly
+ *  not ascending under a size sort, because the row drawn at the "smallest
+ *  so far" position could be showing a bigger primary. Ordering by the
+ *  primary's own index instead makes the family order exactly as sorted as
+ *  `models` itself was, for whatever key it was sorted by, with no need to
+ *  special-case which sort is in force.
  */
 export function groupIntoFamilies(models: readonly HubModel[]): HubFamily[] {
   const buckets = new Map<string, HubModel[]>();
-  const order: string[] = [];
+  const indexOf = new Map<HubModel, number>();
 
-  const bucketFor = (key: string): HubModel[] => {
+  models.forEach((model, i) => {
+    indexOf.set(model, i);
+    const key = model.baseModel ?? model.id;
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
       buckets.set(key, bucket);
-      order.push(key);
     }
-    return bucket;
-  };
+    bucket.push(model);
+  });
 
-  for (const model of models) {
-    const key = model.baseModel ?? model.id;
-    bucketFor(key).push(model);
-  }
-
-  return order.map((key) => {
-    const sorted = buckets.get(key)!.slice().sort(byFitThenDownloads);
+  const families = Array.from(buckets.entries(), ([key, group]) => {
+    const sorted = group.slice().sort(byFitThenDownloads);
     return { key, primary: sorted[0], variants: sorted.slice(1) };
   });
+  families.sort((a, b) => indexOf.get(a.primary)! - indexOf.get(b.primary)!);
+  return families;
 }
