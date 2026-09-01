@@ -130,6 +130,30 @@ def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
         engine_host._children.pop(eid, None)
 
 
+def test_reap_keeps_the_child_record_so_the_next_call_can_heal_it(monkeypatch):
+    # A `main =` app's next call must re-warm it (SKILL.md, ENGINE_HOST_DESIGN.md),
+    # the same way engine_forward._forward already heals a wedged/dead child by
+    # calling engine_host.restart(engine_id, child) using ITS bring-up args. That
+    # only works if reaping leaves the Child record (dead, but present) behind —
+    # popping it from _children entirely makes the next proxied call see
+    # `current(engine_id) is None` and hit the hard 409 instead.
+    eid = "app_reapheal"
+    idle_timeout_s = 900.0
+    child = engine_host.Child(
+        engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
+        cache="unused", version="v1", module="/tmp/reapheal-test/app.py",
+        kind="background", idle_timeout_s=idle_timeout_s)
+    child.last_used = time.monotonic() - (idle_timeout_s + 10)
+    monkeypatch.setattr(engine_host, "_terminate", lambda c: None)
+    engine_host._children[eid] = child
+    try:
+        assert engine_host.reap_idle_children() == 1
+        assert engine_host.current(eid) is child  # still findable, just not alive
+    finally:
+        engine_host._children.pop(eid, None)
+        engine_host._reinit.pop(eid, None)
+
+
 def test_warm_target_persists_then_reloads_on_mtime(tmp_path):
     ew = _load_engine_worker()
     mod = tmp_path / "mod.py"

@@ -678,7 +678,21 @@ def reap_idle_children(now: float | None = None) -> int:
     count reaped. A child with `idle_timeout_s == 0` (the default for a
     `daemon =` app and every `kind="template"` child) is never a candidate —
     eligibility is the child's own policy, not its kind. Exposed so a test can
-    drive it directly."""
+    drive it directly.
+
+    The Child record is left in `_children` (dead, but present) rather than
+    popped: `engine_forward._forward`'s existing heal-on-proxy path calls
+    `restart(engine_id, child)` using an existing record's own bring-up args
+    whenever a proxied call finds it unreachable, and only 409s when
+    `current(engine_id)` is `None` from the start. Popping the record here
+    would defeat that path for every retired `main =` child, since the very
+    next call to it would find no record at all instead of one `restart` can
+    revive — the same reason autostart folders (no page ever calling here)
+    still need the next call to re-warm them. `stop()` still fully clears the
+    record: that IS the "quit this app right now, stay down" contract a
+    `daemon =` app's explicit stop makes, which idle retirement (an invisible,
+    resumable pause) must not share.
+    """
     now = time.monotonic() if now is None else now
     with _lock:
         candidates = [c for c in _children.values()
@@ -690,9 +704,6 @@ def reap_idle_children(now: float | None = None) -> int:
     stale = [c for c in candidates if _inflight(c) == 0]
     with _lock:
         stale = [c for c in stale if _children.get(c.engine_id) is c]
-        for child in stale:
-            _children.pop(child.engine_id, None)
-            _reinit.pop(child.engine_id, None)
     for child in stale:
         logger.info("retiring idle child %s (module %s)",
                     child.engine_id, child.module)

@@ -2877,7 +2877,19 @@
   // gives a `daemon =` author talking to their own routes.
   function daemonRun(params) {
     if (IS_THUMBNAIL) return _daemonRejectPreview("run");
-    return daemonCall("/call", params || {}).then((data) => {
+    // Unlike call() (an author's own arbitrary route, gated on start() having
+    // been called explicitly), run() is the `main =` convenience over the
+    // shipped worker's one route — documented to bring the daemon up
+    // transparently on its very first call, and to re-warm it after the idle
+    // reaper retires it. _daemonKnownRunning is false in both of those cases
+    // (nothing has started it yet, or the last poll predates the reap), so
+    // bring it up here rather than letting daemonCall's start-first gate
+    // reject a call that's supposed to just work. Once known running, this
+    // adds no extra round trip — call() heals a since-reaped child on its own
+    // via engine_forward's restart-on-proxy-failure path.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    const bringUp = ready.then(() => (_daemonKnownRunning ? null : daemonStart()));
+    return bringUp.then(() => daemonCall("/call", params || {})).then((data) => {
       if (data && data.stdout) console.log("[python]", data.stdout);
       if (data && data.resolved_py) watchPath(data.resolved_py);
       if (!data.ok) {
