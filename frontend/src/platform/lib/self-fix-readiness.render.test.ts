@@ -70,7 +70,7 @@ function mount(): { current: () => SelfFixReadinessState; unmount: () => void } 
   let latest: SelfFixReadinessState = {
     readOnly: false,
     claudeMissing: false,
-    recheck: () => {},
+    recheck: () => Promise.resolve({ readOnly: false, claudeMissing: false }),
   };
   const Probe = (): ReactElement | null => {
     latest = useSelfFixReadiness();

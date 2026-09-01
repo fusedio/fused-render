@@ -4,7 +4,7 @@
 // issue URL that forgets the version is a bug report nobody can act on, and a
 // poll cadence that never leaves its fast lane is a request every five seconds
 // for the life of the app.
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 // fixSessionUrl pulls urlForFsPath from router.ts, which reads `location` at
 // MODULE scope (IS_EMBED). Bun's runtime has no DOM and a static import is
@@ -52,6 +52,7 @@ const {
   fixSessionUrl,
   issueUrl,
   lastFixStartedAt,
+  claudeArrivedMidClick,
   mayPaint,
   maySchedule,
   modifiedSummary,
@@ -382,4 +383,36 @@ test("a diagnostic start does not arm the fast poll", () => {
   expect(
     shouldNoteStart({ run_id: "r", target: "/x", incident: "/i", report: "/r", diagnostic: true })
   ).toBe(false);
+});
+
+// The Preferences button's empty-body window (SPEC §48, SF-13f1). `recheck`
+// already stops a stale "Claude Code is missing" mis-wording the BUTTON; this
+// is the same belief one layer down, where it licensed the empty REQUEST BODY.
+describe("claudeArrivedMidClick", () => {
+  test("the install that the button asked for explains the refusal", () => {
+    // Clicked "Set up Claude Code" with the box empty, went and installed it,
+    // clicked again: the server now gets past its CLI check and validates a
+    // body that was only ever legal while the CLI was absent.
+    expect(claudeArrivedMidClick(true, false, "")).toBe(true);
+    expect(claudeArrivedMidClick(true, false, "   ")).toBe(true);
+  });
+
+  test("a CLI that is STILL missing explains nothing — that refusal is real", () => {
+    // The install card is the whole point of this path; suppressing it would
+    // leave the button silent on the one machine it has something to say about.
+    expect(claudeArrivedMidClick(true, true, "")).toBe(false);
+  });
+
+  test("a described problem sent a body the server would have taken anyway", () => {
+    // So its failure is a real one — read-only, or a session already running —
+    // and must be shown even though the CLI did arrive during the click.
+    expect(claudeArrivedMidClick(true, false, "the sidebar is blank")).toBe(false);
+  });
+
+  test("a click never licensed by the belief is untouched", () => {
+    // believedMissing false means the box was non-empty to be clickable at all;
+    // nothing here may swallow an ordinary failure.
+    expect(claudeArrivedMidClick(false, false, "")).toBe(false);
+    expect(claudeArrivedMidClick(false, false, "boom")).toBe(false);
+  });
 });

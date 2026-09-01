@@ -350,6 +350,33 @@ export function describedProblemIsSendable(note: string): boolean {
   return note.trim().length > 0;
 }
 
+/** Whether a failed start is explained by the CLI ARRIVING during the click,
+    rather than by anything the user still needs to hear.
+
+    The Preferences button is offered with the description box EMPTY only while
+    Claude Code is missing — there is nothing to describe yet, the CLI is the
+    problem — so that belief is what licenses an empty body. The server checks
+    the machine before the request (`routers/selffix`: "THE MACHINE BEFORE THE
+    REQUEST"), so while the CLI really is absent the empty body never reaches
+    validation and the click correctly returns the install card.
+
+    Install the CLI and click again and the same empty body now DOES reach
+    validation, which answers "say what is wrong" — a refusal aimed at a
+    question the user is no longer asking, over a panel that (once `recheck`
+    lands) is already asking it properly. This is the same trap `recheck` was
+    written for, one layer down: it stopped the stale belief mis-wording the
+    BUTTON and left it licensing the BODY.
+
+    Only the empty-note case: a click that carried a description sent a body the
+    server would have taken either way, so its failure is real and is shown. */
+export function claudeArrivedMidClick(
+  believedMissing: boolean,
+  nowMissing: boolean,
+  note: string,
+): boolean {
+  return believedMissing && !nowMissing && !describedProblemIsSendable(note);
+}
+
 export function getSelfFix(): Promise<SelfFixSnapshot> {
   return getJson<SelfFixSnapshot>("/api/selffix");
 }

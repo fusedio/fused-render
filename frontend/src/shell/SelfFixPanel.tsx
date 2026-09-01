@@ -32,6 +32,7 @@ import { Field, TextArea } from "@platform/ui/field/fields";
 import { useSelfFixReadiness } from "@platform/lib/hooks";
 import {
   clearSelfFix,
+  claudeArrivedMidClick,
   describedProblemIsSendable,
   failureContextFromNote,
   fixSessionUrl,
@@ -83,6 +84,11 @@ function DescribeSection({
   const start = async () => {
     setBusy(true);
     setError(null);
+    // The belief that LICENSED this click. The button is offered with the box
+    // empty only while Claude Code is missing, so this is what allowed an empty
+    // body to be sent — and it is the very state the button asks the user to
+    // change, which is what makes it worth capturing before the await.
+    const believedMissing = claudeMissing;
     try {
       const started = await startSelfFix(failureContextFromNote(note));
       // The target is ALWAYS the install directory, so the hint is a fact and
@@ -91,14 +97,27 @@ function DescribeSection({
       // `stat` answers, which is a visible stutter on the one navigation this
       // feature promises lands you in the session (SF-3).
       navigateUrl(fixSessionUrl(started), { isDir: true });
+      recheck();
     } catch (e) {
-      // Covers the two refusals worth reading: a read-only installation, and a
-      // fix session already running (one at a time — they all edit the same
-      // tree). Both are the server's own sentence; neither is worth rewording.
+      // THE RECHECK IS PART OF REPORTING THIS FAILURE, not tidying up after it:
+      // the user may have just installed what this button told them to, and if
+      // they did, the refusal we are holding was answered to a machine that no
+      // longer exists. Awaited here rather than fired in `finally` so the answer
+      // arrives before we decide whether there is anything to show.
+      const fresh = await recheck();
+      if (claudeArrivedMidClick(believedMissing, fresh.claudeMissing, note)) {
+        // Nothing to say. The re-render this recheck triggers IS the answer:
+        // the "not installed" note goes, the verb becomes "Start a fix session",
+        // and the button sits disabled over the empty box it now needs filled.
+        // A TroubleCard here would report the install as if it were a fault.
+        return;
+      }
+      // Covers the refusals worth reading: a read-only installation, and a fix
+      // session already running (one at a time — they all edit the same tree).
+      // Both are the server's own sentence; neither is worth rewording.
       setError(String((e as Error)?.message || e));
     } finally {
       setBusy(false);
-      recheck();  // the user may have just installed what this told them to
     }
   };
 

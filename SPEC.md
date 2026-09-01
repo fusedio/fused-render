@@ -11812,6 +11812,27 @@ the installation, and the mark that says so.
   nothing needed. The row's verb becomes **Set up Claude Code** and Preferences
   says the same in a sentence: naming the precondition, not the failed download,
   because that is the thing standing between the user and a session.
+- **SF-13f1** **The stale belief licensed the BODY as well as the verb, and
+  `recheck` only fixed the verb.** The same trap as SF-13f, one layer down and
+  found the same way. Preferences leaves the button live over an EMPTY box while
+  the CLI is missing, so that belief is what permits an empty request at all;
+  the server, ordering the machine before the request, never validates that body
+  while the CLI really is absent. Install the CLI and click again and the same
+  empty body now reaches validation, so the click that followed the button's own
+  instruction is answered *say what is wrong* — a refusal aimed at a question
+  the user has stopped asking, on a panel that is at that instant re-rendering
+  to ask it properly. The download-manager row never had this: its context
+  always carries a title, so its body is legal on either machine.
+  So the recheck is part of REPORTING the failure rather than tidying up after
+  it — awaited, not fired into `finally` — and a refusal that the install itself
+  explains is dropped rather than shown (`claudeArrivedMidClick`). Dropped, not
+  reworded: the re-render IS the answer, since the not-installed note goes, the
+  verb becomes *Start a fix session*, and the button sits disabled over the box
+  it now needs filled. Only the empty-note case is dropped; a click that carried
+  a description sent a body the server would have taken either way, so its
+  failure is real and is shown. The general rule underneath: **when a cached
+  belief is what made a request legal, discovering the belief was stale
+  invalidates the answer, not just the label.**
 - **SF-13e** **WRITERS take the first records home that will have them; READERS
   look in all of them** (`record_homes`). `writable()` is `os.access` on the
   install root — a PREDICTION, and one that answers only for the real uid's

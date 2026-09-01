@@ -211,8 +211,12 @@ export interface SelfFixReadiness {
 
 /** The hook's return: the two facts, plus a way to ask again. */
 export interface SelfFixReadinessState extends SelfFixReadiness {
-  /** Re-read after a start attempt — the user may have just installed Claude. */
-  recheck: () => void;
+  /** Re-read after a start attempt — the user may have just installed Claude.
+      RESOLVES WITH THE FRESH ANSWER, because a caller may need to know not just
+      that the machine changed but WHAT it changed to: a start that failed while
+      we believed the CLI was missing has to tell a real refusal apart from one
+      the install itself just made obsolete (SelfFixPanel). */
+  recheck: () => Promise<SelfFixReadiness>;
 }
 
 // The two preconditions a surface can check before it offers a self-fix session
@@ -340,13 +344,19 @@ function deliverReadiness(apply: (value: SelfFixReadiness) => void): void {
   });
 }
 
-function refreshReadiness(): void {
+function refreshReadiness(): Promise<SelfFixReadiness> {
   readinessProbe = null;
   readinessGen += 1;
   const gen = readinessGen;
-  probeReadiness().then((value) => {
-    if (gen !== readinessGen) return;  // a later recheck already superseded this
-    for (const notify of [...readinessListeners]) notify(value);
+  // The value is RETURNED even when a later recheck has superseded this one;
+  // only the PAINT is suppressed. The caller asked this question and is owed
+  // its answer — what the generation guards is the shared listeners, where a
+  // stale answer would overwrite a fresher one for every other mounted row.
+  return probeReadiness().then((value) => {
+    if (gen === readinessGen) {
+      for (const notify of [...readinessListeners]) notify(value);
+    }
+    return value;
   });
 }
 
