@@ -2863,7 +2863,7 @@
   // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
-  // "timeout"), mirroring runPython's rejection style. opts:
+  // "timeout" | "cancelled"), mirroring runPython's rejection style. opts:
   //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
   // effort defaults to low = no extended thinking (fast, cheap); medium+
   // enables Claude Code's own effort/thinking semantics.
@@ -2872,7 +2872,11 @@
   // {text, model, usage} at the end. Without it the request/response is the
   // plain JSON exchange it always was.
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
-  // half-billed completion buys nothing — calls run fully concurrent.
+  // half-billed completion buys nothing — calls run fully concurrent. The
+  // call IS cancellable, though, from the status bar's Activity row (its ✕,
+  // same as a model download's) rather than from this function — there is no
+  // `AbortSignal` here, and the row's cancel is what turns into `"cancelled"`
+  // above.
   function ai(prompt, opts) {
     opts = opts || {};
     if (typeof prompt !== "string" || !prompt.trim()) {

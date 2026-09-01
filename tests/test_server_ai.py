@@ -389,17 +389,16 @@ def test_relay_remote_job_row_title_is_truncated_to_80_chars(monkeypatch):
     assert row["title"] == "x" * 80
 
 
-def test_relay_remote_job_row_does_not_advertise_a_dead_cancel(monkeypatch):
+def test_relay_remote_job_row_is_cancellable(monkeypatch):
     # JobRow renders a ✕ Cancel affordance whenever cancellable=True on a
-    # running row. Nothing in the remote-Claude path polls cancel_requested,
-    # so a row claiming to be cancellable would ship a button that does
-    # nothing — the thing the brief explicitly forbids. Checked on the
-    # errored path for the same reason as the title test above: a success
-    # dismisses the row before anything could inspect it.
+    # running row (SPEC BG-4). This row earns the claim: the beat below
+    # actually polls cancel_requested and stops the call when it is set.
+    # Checked on the errored path for the same reason as the title test
+    # above: a success dismisses the row before anything could inspect it.
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     _relay({"prompt": "hello"})
     row = jobs.list_jobs()[0]
-    assert row["cancellable"] is False
+    assert row["cancellable"] is True
 
 
 def test_relay_remote_job_row_closes_on_cli_error(monkeypatch):
@@ -512,11 +511,12 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
 # rather than by waiting out the real 30s.
 
 
-def _tight_timers(monkeypatch, stale=0.4, tick=0.02, timeout=2.0):
+def _tight_timers(monkeypatch, stale=0.4, tick=0.02, timeout=2.0, cancel_poll=0.02):
     """The real ratio — a heartbeat comfortably inside the stale window —
     at a hundredth of the wall-clock. Returns nothing; every knob is a
     module global read at call time."""
     monkeypatch.setattr(_server_ai, "_REMOTE_TICK_S", tick)
+    monkeypatch.setattr(_server_ai, "_REMOTE_CANCEL_POLL_S", cancel_poll)
     monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", timeout)
     monkeypatch.setattr(jobs, "STALE_AFTER_S", stale)
 
@@ -656,6 +656,114 @@ def test_a_call_waiting_its_turn_says_so_rather_than_looking_busy(monkeypatch):
     # rather than saying "queued" for the rest of its life.
     assert queued[-1]["detail"] == _server_ai._REMOTE_ROW_DETAIL
     assert not any(row["stalled"] for row in queued)
+
+
+# -- real cancellation -------------------------------------------------------
+#
+# The row is cancellable (SPEC BG-4): the beat that heartbeats it also polls
+# `cancel_requested` far more often than the display tick and cancels the
+# call's own asyncio task the moment it sees the ✕, whether the task is
+# mid-turn or still parked on `_AI_SESSION.lock`.
+
+
+def test_cancelling_a_running_call_stops_it_and_answers_cancelled(monkeypatch):
+    _cli_ok(monkeypatch, turn_delay=5.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        relay = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "hello"}))
+        # Wait for the row to exist, then press its ✕ — same call the
+        # dock's Cancel button makes (routers/jobs.py `api_jobs_cancel`).
+        while not jobs.list_jobs():
+            await asyncio.sleep(0.01)
+        row_id = jobs.list_jobs()[0]["id"]
+        jobs.request_cancel(row_id)
+        return await relay
+
+    resp = asyncio.run(go())
+    data = _data(resp)
+    assert data["ok"] is False
+    assert data["error"]["type"] == "cancelled"
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "cancelled"
+    # The wedged/mid-turn instance must not be handed to the next request —
+    # same discipline as a genuine client disconnect (run_once's own
+    # CancelledError branch).
+    assert _server_ai._AI_SESSION._proc is None
+
+
+def test_cancelling_a_running_STREAMING_call_yields_a_cancelled_done_frame(
+        monkeypatch):
+    _cli_ok(monkeypatch, lines=[_delta_line("hi")], turn_delay=5.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        resp = await _server_ai._ai_relay({"prompt": "hello", "stream": True})
+        frames = []
+
+        async def drain():
+            async for chunk in resp.body_iterator:
+                frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+
+        pump = asyncio.ensure_future(drain())
+        while not jobs.list_jobs():
+            await asyncio.sleep(0.01)
+        jobs.request_cancel(jobs.list_jobs()[0]["id"])
+        await pump
+        return frames
+
+    frames = asyncio.run(go())
+    assert frames[-1]["ok"] is False
+    assert frames[-1]["error"]["type"] == "cancelled"
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "cancelled"
+
+
+def test_cancelling_a_queued_call_frees_the_lock_without_waiting_its_turn(
+        monkeypatch):
+    """The case the follow-up called out as the one most worth cancelling: a
+    second call parked behind the first's `_AI_SESSION.lock` has not started
+    at all, so its ✕ should not have to wait out the first call's whole turn
+    — `asyncio.Lock.acquire()` abandons a cancelled waiter cleanly."""
+    _cli_ok(monkeypatch, turn_delay=1.0)
+    _tight_timers(monkeypatch)
+
+    async def go():
+        first = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "one"}))
+        await asyncio.sleep(0.1)  # let it take the lock
+        second = asyncio.ensure_future(_server_ai._ai_relay({"prompt": "two"}))
+        # Wait for the QUEUED row specifically (there are two rows now).
+        while not any(j["title"] == "two" for j in jobs.list_jobs()):
+            await asyncio.sleep(0.01)
+        queued_id = next(j["id"] for j in jobs.list_jobs() if j["title"] == "two")
+        started = asyncio.get_running_loop().time()
+        jobs.request_cancel(queued_id)
+        second_resp = await second
+        elapsed = asyncio.get_running_loop().time() - started
+        first_resp = await first
+        return second_resp, elapsed, first_resp
+
+    second_resp, elapsed, first_resp = asyncio.run(go())
+    assert _data(second_resp)["error"]["type"] == "cancelled"
+    # Settled well inside the first call's own 1s turn — it never had to wait
+    # one out, because the ✕ aborted its own lock wait instead of the turn.
+    assert elapsed < 0.5
+    assert _data(first_resp)["ok"] is True
+
+
+def test_a_cancel_pressed_after_the_call_already_settled_is_a_no_op(
+        monkeypatch):
+    """A press that lands after the outcome was already reported — a slow
+    click racing a fast answer — must not resurrect or corrupt a row that is
+    already gone. `_remote_cancel_requested` reading a missing row as "not
+    requested" is what makes this safe."""
+    _cli_ok(monkeypatch, _CLI_RESULT)
+    _tight_timers(monkeypatch)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert jobs.list_jobs() == []  # success dismisses its row immediately
+    # Nothing to press any more — this must not raise.
+    assert jobs.request_cancel("sys:ai-claude:doesnotexist") is None
 
 
 # -- happy path -----------------------------------------------------------------
