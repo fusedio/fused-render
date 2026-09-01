@@ -129,7 +129,7 @@ function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
   return (
     <span
       className="am-loaded-badge"
-      title={
+      data-hint={
         `${loaded.model} is loaded in memory` +
         (loaded.residentBytes ? ` — ${formatSize(loaded.residentBytes)} resident` : "")
       }
@@ -163,7 +163,7 @@ function DeviceNote({ device }: { device: string }) {
   return (
     <span
       className={"am-runtime-device" + (cpu ? " am-runtime-device-cpu" : "")}
-      title={
+      data-hint={
         cpu
           ? "This model is running on the processor, not a graphics card — it " +
             "works, but expect a few words a second rather than an instant " +
@@ -211,7 +211,7 @@ function RuntimeChip({
         {loaded.residentBytes ? (
           <span
             className="am-runtime-mem am-runtime-mem-lead"
-            title={
+            data-hint={
               "Resident memory of the model's process. Not the model's size: it " +
               "counts shared pages too and moves while it generates."
             }
@@ -226,7 +226,7 @@ function RuntimeChip({
   }
   if (loaded?.state === "error") {
     return (
-      <div className="am-card-runtime am-card-runtime-error" title={loaded.error ?? undefined}>
+      <div className="am-card-runtime am-card-runtime-error" data-hint={loaded.error ?? undefined}>
         Failed to load{loaded.error ? ` — ${loaded.error}` : ""}
       </div>
     );
@@ -236,6 +236,7 @@ function RuntimeChip({
 
 export function RepoCard({
   repo,
+  label,
   recommended,
   loaded,
   job,
@@ -251,6 +252,18 @@ export function RepoCard({
   onUnload,
 }: {
   repo: AiModelRepo;
+  /** The curated display name for the card's HEAD (AI-2c, catalog.py): a
+   *  human name is a curated field, never one mechanically derived from a
+   *  repo id at runtime. Looked up by the page (`LocalTab.tsx`'s
+   *  `labelByRepoId`) from `AiCatalogModel.label` — the unique, size/quant-
+   *  carrying field, not `nickname`, which deliberately collides within a
+   *  model family. `undefined` for a repo the curation does not name (most
+   *  engine-fetched repos, and anything outside the shortlist), in which
+   *  case the head falls back to `modelName(repo.id)` — the mechanical
+   *  strip this prop exists to avoid wherever a curated name IS available.
+   *  Every other identifier on the card (Load/Delete/Try hints, the subtitle
+   *  slug) keeps using `repo.id` — this prop only ever touches the head. */
+  label?: string;
   /** Whether the curation names this exact repo id — the tick beside the name.
    *  Decided by the page, which holds the catalog; a repo row itself has no
    *  opinion about whether we recommend it. */
@@ -393,9 +406,9 @@ export function RepoCard({
           href={hubUrl(repo)}
           target="_blank"
           rel="noopener noreferrer"
-          title={`Open ${repo.id} on the Hugging Face Hub`}
+          data-hint={`Open ${repo.id} on the Hugging Face Hub`}
         >
-          {modelName(repo.id)}
+          {label ?? modelName(repo.id)}
         </a>
         {recommended && <RecommendedMark />}
         {loaded?.state === "ready" && <LoadedBadge loaded={loaded} />}
@@ -472,7 +485,7 @@ export function RepoCard({
               className="am-card-engine am-card-engine-component"
               tabIndex={0}
               aria-label={`Part of ${repo.component.owner} — ${repo.component.what}`}
-              title={repo.component.what}
+              data-hint={repo.component.what}
             >
               part of {repo.component.owner}
             </span>
@@ -481,7 +494,7 @@ export function RepoCard({
               className="am-card-engine am-card-engine-partial"
               tabIndex={0}
               aria-label={`${PARTIAL_TAG} — ${partialNote(repo)}`}
-              title={partialNote(repo)}
+              data-hint={partialNote(repo)}
             >
               {PARTIAL_TAG}
             </span>
@@ -613,7 +626,7 @@ export function RepoCard({
               type="button"
               className="am-card-power am-card-power-on"
               disabled={busy}
-              title={`Unload ${repo.id} and give its memory back`}
+              data-hint={`Unload ${repo.id} and give its memory back`}
               onClick={onUnload}
             >
               Unload
@@ -623,7 +636,7 @@ export function RepoCard({
               type="button"
               className="am-card-power"
               disabled
-              title={`${repo.id} is loading into memory — the ✕ on the progress row stops it`}
+              data-hint={`${repo.id} is loading into memory — the ✕ on the progress row stops it`}
               aria-label={`${repo.id} is loading`}
             >
               Loading…
@@ -643,7 +656,7 @@ export function RepoCard({
               type="button"
               className="am-card-power am-card-power-discard"
               disabled={busy || !!inUse}
-              title={
+              data-hint={
                 inUse
                   ? `Cannot delete ${repo.id}: ${inUse}`
                   : `Delete ${repo.id} — ${
@@ -675,7 +688,7 @@ export function RepoCard({
               type="button"
               className="am-card-power"
               disabled={busy || fetching || !!job}
-              title={`Continue downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
+              data-hint={`Continue downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
               aria-label={`Continue downloading ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
@@ -687,12 +700,12 @@ export function RepoCard({
               type="button"
               className="am-card-power"
               disabled={busy || !!job || !!refusal}
-              title={refusal ?? `Load ${repo.id} into memory so it can answer`}
-              /* The reason again, in the accessible name. A `title` is a hover,
-                 and a disabled button is one a pointer user may never think to
-                 hover — while a screen reader reads the name and nothing else.
-                 It opens with the visible label so the name still contains
-                 what is on screen (WCAG 2.5.3). */
+              data-hint={refusal ?? `Load ${repo.id} into memory so it can answer`}
+              /* The reason again, in the accessible name. A hover-only hint is
+                 one a pointer user may never think to hover — while a screen
+                 reader reads the name and nothing else. It opens with the
+                 visible label so the name still contains what is on screen
+                 (WCAG 2.5.3). */
               aria-label={
                 refusal ? `Load ${repo.id} — unavailable: ${refusal}` : `Load ${repo.id}`
               }
@@ -733,7 +746,7 @@ export function RepoCard({
                  this card's. Anything else in the query is a stage setting
                  dialled in for a different model. */
               href={tryHref(repo)}
-              title={`Try ${repo.id} in the Playground`}
+              data-hint={`Try ${repo.id} in the Playground`}
               onClick={(e) => {
                 if (
                   e.defaultPrevented ||
@@ -761,7 +774,7 @@ export function RepoCard({
           <button
             type="button"
             className="cc-iconbtn cc-iconbtn-danger"
-            title={inUse ? `Cannot delete ${repo.id}: ${inUse}` : `Delete ${repo.id}`}
+            data-hint={inUse ? `Cannot delete ${repo.id}: ${inUse}` : `Delete ${repo.id}`}
             aria-label={`Delete ${repo.id}`}
             disabled={!!inUse}
             onClick={onDeleteRepo}
@@ -772,7 +785,7 @@ export function RepoCard({
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="1.5"
               strokeLinecap="round"
               strokeLinejoin="round"
               aria-hidden="true"

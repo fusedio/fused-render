@@ -35,13 +35,12 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
-  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
-  // on the packaged mac app when the probe is conclusive. FdaCard renders
-  // off this; absent means render nothing and stop watching. `relevant`
-  // flips when this session first reads under a TCC-protected folder — the
-  // moment the Allow prompts start, which is the only moment the card is
-  // worth showing.
-  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
+  // Full Disk Access state (fused_render/shell/fda.py) — present only on the
+  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
+  // absent means render nothing and stop watching. `denied` flips when this
+  // session hits a PermissionError on an fs route — the moment the warning
+  // is worth showing; dismissing clears it server-side until the next one.
+  fda?: { granted: boolean; denied: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -2262,6 +2261,41 @@ export async function removeCurrentApp(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** Rename the app's FOLDER on disk. The server settles the move the same way
+ *  an out-of-band move is settled: stores repointed, Claude sessions carried
+ *  along. Answers the new canonical path. */
+export function renameCurrentApp(
+  path: string,
+  name: string,
+): Promise<{ ok: boolean; path: string }> {
+  return postJson<{ ok: boolean; path: string }>("/api/current-apps/rename", {
+    path,
+    name,
+  });
+}
+
+/** Mark every message of every task under the app's folder read — clears the
+ *  row's unread dot in one gesture. */
+export function readCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; marked: number; tasks: number }> {
+  return postJson<{ ok: boolean; marked: number; tasks: number }>(
+    "/api/current-apps/read",
+    { path },
+  );
+}
+
+/** Archive every task under the app's folder — the ✕'s task half without its
+ *  desk half: the row stays. */
+export function archiveCurrentAppTasks(
+  path: string,
+): Promise<{ ok: boolean; archived: number; cancelled: number }> {
+  return postJson<{ ok: boolean; archived: number; cancelled: number }>(
+    "/api/current-apps/archive",
+    { path },
+  );
 }
 
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
