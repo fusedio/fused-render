@@ -105,6 +105,11 @@ final class AppModel: ObservableObject {
     /// user scans again (Forget → Pair).
     func open(_ server: Server) {
         let server = known.first(where: { $0.host == server.host }) ?? server
+        // Navigating away from an in-flight pairing abandons it: only the
+        // /pair load that pair() itself started may confirm, or a later
+        // landing on this host's grid (reached through an OLD record) would
+        // persist an unproven scheme/CA with no cookie behind it.
+        unconfirmed = nil
         remember(server)
         current = server
     }
@@ -183,6 +188,7 @@ final class AppModel: ObservableObject {
     func open(deepLink url: URL) -> Bool {
         guard let link = DeepLink(url),
               let server = known.first(where: { $0.host == link.host }) else { return false }
+        unconfirmed = nil  // same rule as open(_:) — leaving the pairing abandons it
         remember(server)
         var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         c.path = "/render"
