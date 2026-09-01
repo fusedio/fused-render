@@ -376,6 +376,13 @@ def create_app(start_dir: str) -> FastAPI:
 
     app = FastAPI(title="fused-render",
                   lifespan=_lifespan(startup_handlers, shutdown_handlers))
+    # Exposed so the registry is inspectable — `on_event` kept its own on
+    # `app.router.on_startup`/`on_shutdown`, and losing that would mean the
+    # ORDER these run in, which is the contract, could only be checked by
+    # reading 450 lines of decorators. `tests/test_app_lifespan.py` asserts
+    # the exact sequence against what `on_event` produced.
+    app.state.startup_handlers = startup_handlers
+    app.state.shutdown_handlers = shutdown_handlers
     app.state.start_dir = start_dir
 
     # Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy

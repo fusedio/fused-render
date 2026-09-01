@@ -105,6 +105,53 @@ def test_handlers_registered_after_the_app_is_built_are_still_picked_up():
     assert log == ["late"]
 
 
+#: Exactly what `@app.on_event` registered, in order, on the commit before the
+#: migration — read off `app.router.on_startup` / `.on_shutdown` there rather
+#: than transcribed from the decorators. This is the ground truth the move had
+#: to preserve, and the only thing that checks the real 19 handlers rather than
+#: the mechanism driving them.
+EXPECTED_STARTUP = [
+    "_startup_pooled_client",
+    "_startup_prewarm_ai",
+    "_startup_warm_engine",
+    "_startup_resurrect_background_apps",
+    "_startup_sync_user_plugin",
+    "_startup_schedule",
+    "_startup_tasks_watch",
+    "_startup_ai_idle_reaper",
+    "_startup_ai_hardware_refresh",
+    "_startup_ai_hub_metadata_refresh",
+    "_startup_gc_project_venvs",
+    "_startup_index_scan",
+]
+
+#: `_startup_shutdown_ai` is a SHUTDOWN handler despite the name — read the
+#: decorator, not the name. Kept as-is so this list stays a faithful record of
+#: what ran before rather than a tidied version of it.
+EXPECTED_SHUTDOWN = [
+    "_shutdown_pooled_client",
+    "_shutdown_background_apps_resurrection",
+    "_startup_shutdown_ai",
+    "_shutdown_server_json",
+    "_shutdown_captures",
+    "_shutdown_ai_workers",
+    "_shutdown_engines",
+]
+
+
+def test_every_handler_is_collected_in_the_order_on_event_had():
+    """The wiring, not the mechanism.
+
+    Every other test here drives `_lifespan` with fake handlers, which proves
+    the contract but not that the real hooks reach it. A decorator swapped to
+    the wrong collector, or a handler moved, would pass all of them and change
+    what the server does at startup.
+    """
+    app = create_app(start_dir=".")
+    assert [f.__name__ for f in app.state.startup_handlers] == EXPECTED_STARTUP
+    assert [f.__name__ for f in app.state.shutdown_handlers] == EXPECTED_SHUTDOWN
+
+
 def test_create_app_registers_nothing_on_the_deprecated_path():
     """The regression guard for the migration itself: one `@app.on_event`
     creeping back in would re-open the deprecation and go unnoticed, since
