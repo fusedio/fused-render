@@ -11833,6 +11833,20 @@ the installation, and the mark that says so.
   failure is real and is shown. The general rule underneath: **when a cached
   belief is what made a request legal, discovering the belief was stale
   invalidates the answer, not just the label.**
+  **And the drop needs a READING, not a default.** The first cut of this asked
+  only whether the fresh answer said the CLI was present, and `claudeMissing:
+  false` is two facts wearing one name: *found*, and *could not tell* — a health
+  probe that fails answers FALSE deliberately, because defaulting the other way
+  would mis-word the button for everyone whose fetch was merely slow (SF-13f).
+  Read as proof of an install, that default made a failed probe on the way back
+  from a genuine missing-CLI refusal swallow the install card the click went to
+  fetch, leaving a blank panel over a disabled button — strictly worse than the
+  message it replaced, and in exactly the corner this feature exists to serve.
+  So the readiness carries `claudeChecked` — the probe ANSWERED — and the drop
+  requires it. The rule generalises past this button: **a default chosen to be
+  safe for a LABEL is not safe for a decision that DISCARDS information**, and
+  the two need separate names the moment one of them is used to throw something
+  away.
 - **SF-13e** **WRITERS take the first records home that will have them; READERS
   look in all of them** (`record_homes`). `writable()` is `os.access` on the
   install root — a PREDICTION, and one that answers only for the real uid's

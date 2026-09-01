@@ -70,7 +70,13 @@ function mount(): { current: () => SelfFixReadinessState; unmount: () => void } 
   let latest: SelfFixReadinessState = {
     readOnly: false,
     claudeMissing: false,
-    recheck: () => Promise.resolve({ readOnly: false, claudeMissing: false }),
+    claudeChecked: false,
+    recheck: () =>
+      Promise.resolve({
+        readOnly: false,
+        claudeMissing: false,
+        claudeChecked: false,
+      }),
   };
   const Probe = (): ReactElement | null => {
     latest = useSelfFixReadiness();
@@ -182,6 +188,23 @@ describe("useSelfFixReadiness", () => {
     await settle();
     expect(probe.current().readOnly).toBe(true);
     expect(probe.current().claudeMissing).toBe(false);
+    // ...but that FALSE is the safe default for wording a button, not a
+    // reading, and the two must stay tellable apart. A caller that discards
+    // something on "the CLI is present" has to see that nothing was measured
+    // (SF-13f1) — read as a reading, this would swallow the install card.
+    expect(probe.current().claudeChecked).toBe(false);
+    probe.unmount();
+  });
+
+  test("a health probe that ANSWERED is marked as a reading", async () => {
+    // The other side of the pair: `claudeMissing: false` here means found, and
+    // is the one shape that may license dropping a stale refusal.
+    reply = () => Promise.resolve(config());
+    healthReply = () => Promise.resolve(health());
+    const probe = mount();
+    await settle();
+    expect(probe.current().claudeMissing).toBe(false);
+    expect(probe.current().claudeChecked).toBe(true);
     probe.unmount();
   });
 

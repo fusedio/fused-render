@@ -368,13 +368,26 @@ export function describedProblemIsSendable(note: string): boolean {
     BUTTON and left it licensing the BODY.
 
     Only the empty-note case: a click that carried a description sent a body the
-    server would have taken either way, so its failure is real and is shown. */
+    server would have taken either way, so its failure is real and is shown.
+
+    AND ONLY ON A READING. `claudeMissing: false` is two facts wearing one name —
+    "found" and "could not tell" — because a health probe that fails answers
+    FALSE by design, which is the right default for WORDING a button and is not
+    evidence of anything. Suppressing an error needs the positive fact, so this
+    asks `claudeChecked` too. Without it a probe that merely failed on the way
+    back from a genuine missing-CLI refusal would read as the install having
+    happened, and would swallow the install card this whole path exists to
+    show — turning a bad message into a blank panel. A default that is safe for
+    a LABEL is not safe for a decision that DISCARDS something. */
 export function claudeArrivedMidClick(
   believedMissing: boolean,
-  nowMissing: boolean,
+  fresh: { claudeMissing: boolean; claudeChecked: boolean },
   note: string,
 ): boolean {
-  return believedMissing && !nowMissing && !describedProblemIsSendable(note);
+  return believedMissing
+    && fresh.claudeChecked
+    && !fresh.claudeMissing
+    && !describedProblemIsSendable(note);
 }
 
 export function getSelfFix(): Promise<SelfFixSnapshot> {

@@ -207,6 +207,12 @@ export interface SelfFixReadiness {
   readOnly: boolean;
   /** Claude Code is not installed: no session can start at all. */
   claudeMissing: boolean;
+  /** The health probe ANSWERED, so `claudeMissing` is a reading rather than the
+      fallback below. The two are not the same fact and the difference only
+      matters one way: `claudeMissing: false` means "found" OR "could not tell",
+      which is the right default for WORDING a button and the wrong one for any
+      decision that DISCARDS something on the strength of it (SF-13f1). */
+  claudeChecked: boolean;
 }
 
 /** The hook's return: the two facts, plus a way to ask again. */
@@ -273,7 +279,12 @@ export interface SelfFixReadinessState extends SelfFixReadiness {
 // truth (`diagnostic`, or the spawn's own "isn't installed") and a session that
 // is told in its own prompt. Defaulting the other way would mis-word the button
 // for everyone whose config fetch was merely slow.
-const NOT_READY: SelfFixReadiness = { readOnly: false, claudeMissing: false };
+const NOT_READY: SelfFixReadiness = {
+  readOnly: false,
+  claudeMissing: false,
+  // Nothing has been read yet, so nothing here is a reading.
+  claudeChecked: false,
+};
 
 let readinessProbe: Promise<SelfFixReadiness> | null = null;
 
@@ -292,6 +303,7 @@ function probeReadiness(): Promise<SelfFixReadiness> {
           config.status === "fulfilled" && config.value.read_only === true,
         claudeMissing:
           health.status === "fulfilled" && health.value.found === false,
+        claudeChecked: health.status === "fulfilled",
       };
       // A failed read is not remembered as an answer — the next mount asks
       // again rather than inheriting a shrug for the rest of the session.

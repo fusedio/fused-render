@@ -105,7 +105,7 @@ function DescribeSection({
       // longer exists. Awaited here rather than fired in `finally` so the answer
       // arrives before we decide whether there is anything to show.
       const fresh = await recheck();
-      if (claudeArrivedMidClick(believedMissing, fresh.claudeMissing, note)) {
+      if (claudeArrivedMidClick(believedMissing, fresh, note)) {
         // Nothing to say. The re-render this recheck triggers IS the answer:
         // the "not installed" note goes, the verb becomes "Start a fix session",
         // and the button sits disabled over the empty box it now needs filled.

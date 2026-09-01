@@ -389,30 +389,45 @@ test("a diagnostic start does not arm the fast poll", () => {
 // already stops a stale "Claude Code is missing" mis-wording the BUTTON; this
 // is the same belief one layer down, where it licensed the empty REQUEST BODY.
 describe("claudeArrivedMidClick", () => {
+  const found = { claudeMissing: false, claudeChecked: true };
+  const missing = { claudeMissing: true, claudeChecked: true };
+  /** What a health probe that FAILED reports: `claudeMissing` false because
+      that is the label-safe default, and nothing actually read. */
+  const unknown = { claudeMissing: false, claudeChecked: false };
+
   test("the install that the button asked for explains the refusal", () => {
     // Clicked "Set up Claude Code" with the box empty, went and installed it,
     // clicked again: the server now gets past its CLI check and validates a
     // body that was only ever legal while the CLI was absent.
-    expect(claudeArrivedMidClick(true, false, "")).toBe(true);
-    expect(claudeArrivedMidClick(true, false, "   ")).toBe(true);
+    expect(claudeArrivedMidClick(true, found, "")).toBe(true);
+    expect(claudeArrivedMidClick(true, found, "   ")).toBe(true);
   });
 
   test("a CLI that is STILL missing explains nothing — that refusal is real", () => {
     // The install card is the whole point of this path; suppressing it would
     // leave the button silent on the one machine it has something to say about.
-    expect(claudeArrivedMidClick(true, true, "")).toBe(false);
+    expect(claudeArrivedMidClick(true, missing, "")).toBe(false);
+  });
+
+  test("a FAILED probe is not evidence the CLI arrived", () => {
+    // The regression this guard exists for. A health probe that cannot report
+    // answers `claudeMissing: false` by design — safe for wording a button,
+    // and NOT a reading. Read as proof of an install it would swallow the very
+    // missing-CLI card this click went to fetch, leaving a blank panel over a
+    // disabled button: strictly worse than the message it was replacing.
+    expect(claudeArrivedMidClick(true, unknown, "")).toBe(false);
   });
 
   test("a described problem sent a body the server would have taken anyway", () => {
     // So its failure is a real one — read-only, or a session already running —
     // and must be shown even though the CLI did arrive during the click.
-    expect(claudeArrivedMidClick(true, false, "the sidebar is blank")).toBe(false);
+    expect(claudeArrivedMidClick(true, found, "the sidebar is blank")).toBe(false);
   });
 
   test("a click never licensed by the belief is untouched", () => {
     // believedMissing false means the box was non-empty to be clickable at all;
     // nothing here may swallow an ordinary failure.
-    expect(claudeArrivedMidClick(false, false, "")).toBe(false);
-    expect(claudeArrivedMidClick(false, false, "boom")).toBe(false);
+    expect(claudeArrivedMidClick(false, found, "")).toBe(false);
+    expect(claudeArrivedMidClick(false, found, "boom")).toBe(false);
   });
 });
