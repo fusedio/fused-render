@@ -1271,3 +1271,18 @@ def test_a_missing_sdnq_does_not_stop_an_ordinary_model_loading(monkeypatch, bas
     worker = load_worker(monkeypatch, base)
     monkeypatch.setitem(sys.modules, "sdnq", None)   # a None entry raises on import
     worker._register_extra_quantizers()
+
+
+def test_a_missing_sdnq_still_writes_why_it_did_not_register(monkeypatch, base, capsys):
+    """The swallow above must not be a black hole: a load that genuinely
+    needed sdnq fails later with diffusers' own `Unknown quantization type,
+    got sdnq` ValueError, which names what is missing but not why it never
+    registered. `_register_extra_quantizers` has to leave that reason
+    somewhere a person debugging the later failure can find it."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setitem(sys.modules, "sdnq", None)   # a None entry raises on import
+    worker._register_extra_quantizers()
+    err = capsys.readouterr().err
+    assert "sdnq" in err
+    assert "did not register" in err

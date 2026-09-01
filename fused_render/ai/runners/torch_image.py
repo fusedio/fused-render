@@ -188,8 +188,17 @@ def _register_extra_quantizers():
     """
     try:
         import sdnq  # noqa: F401 - imported to register, not to call
-    except Exception:  # noqa: BLE001 - an optional backend must never break loading
-        pass
+    except Exception as error:  # noqa: BLE001 - an optional backend must never break loading
+        # A load that never needed sdnq must still succeed, which is why this
+        # is caught rather than raised — but a load that DOES need it now fails
+        # later with diffusers' own "Unknown quantization type, got sdnq"
+        # ValueError, which names what went missing but not why. This
+        # breadcrumb is the why: it puts the real import error (a triton
+        # mismatch, a missing wheel, whatever broke `sdnq/quantizer.py`'s own
+        # import chain) next to that later failure instead of leaving it
+        # silently discarded.
+        sys.stderr.write("[fused] sdnq did not register its quantization "
+                         f"backend: {error.__class__.__name__}: {error}\n")
 
 
 def _load_quantization(recipe):
@@ -211,6 +220,24 @@ def _load_quantization(recipe):
     slower and a dtype mismatch waiting to surface inside an attention block.
     The default is float32, so leaving it out would be choosing the wrong one
     silently.
+
+    **Also correct on Apple Silicon, where `_place()` sends the whole pipe to
+    `mps` instead of `cuda`.** This is not a CUDA/ROCm-only trick that happens
+    to survive that move: bitsandbytes has shipped a real `mps` backend since
+    0.49.0 (`backends/mps/ops.py`), registering `quantize_4bit`,
+    `dequantize_4bit`, `gemv_4bit` and `gemm_4bit` behind pure-PyTorch
+    fallbacks that need no compiled kernel — only the Hub kernel it also tries
+    is macOS-26-and-up. `Params4bit.to()` has no device allow-list; it
+    dispatches through whichever of those is registered for the tensor's
+    device. The runner manifests' `bitsandbytes>=0.46.1,<1` floor predates a
+    macOS wheel — PyPI carries none for bitsandbytes before 0.49.0 — so
+    without a committed lockfile a Mac's `uv sync` can only land on 0.49.0 or
+    newer, which is exactly the range with the mps backend. The same NF4
+    format already ships on `mps` for `tonera/FLUX.2-klein-4B-int8-diffusers`'s
+    text encoder, which resolves its `quantization_config` straight out of
+    that repo's `config.json` rather than through this function — this recipe
+    is the second caller of a device this dependency already had to work on,
+    not the first.
 
     Deliberately NOT wrapped in a try/except. A `_place()` probe that raises
     must degrade to offload because a measurement is advisory; a quantization
