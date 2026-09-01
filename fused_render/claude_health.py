@@ -558,6 +558,21 @@ def _home_relative(path: str) -> str:
     return path
 
 
+def _shell_quote_rc(rc: str) -> str:
+    """`rc` quoted for the shell command shown next to the button.
+
+    A path with no spaces goes through bare. One WITH spaces is quoted with
+    the leading `~/` left OUTSIDE the quotes — a quoted tilde is a literal
+    tilde, so `>> "~/x y"` would create a directory named `~` instead of
+    hitting the file the one-click fix edits.
+    """
+    if " " not in rc:
+        return rc
+    if rc.startswith("~/"):
+        return '~/"' + rc[2:] + '"'
+    return f'"{rc}"'
+
+
 def path_fix(path: str) -> Optional[dict]:
     """The command that puts `path`'s directory on the terminal's PATH, or None.
 
@@ -584,8 +599,7 @@ def path_fix(path: str) -> Optional[dict]:
     return {
         "rc_file": rc,
         "line": line,
-        "command": f"echo '{line}' >> {rc}" if " " not in rc
-                   else f"echo '{line}' >> \"{rc}\"",
+        "command": f"echo '{line}' >> {_shell_quote_rc(rc)}",
     }
 
 
