@@ -1494,17 +1494,15 @@ describe("workloadNote", () => {
     expect(note).not.toContain("…");
   });
 
-  it("names the size, guidance and seed for image generation, and says steps are per-model", () => {
+  it("names the size, step count, guidance and seed for image generation", () => {
     const note = workloadNote(
       "text-to-image",
-      workload({ prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 }),
+      workload({ prompt: "…", width: 512, height: 512, steps: 4, seed: 0, guidance: 4.0 }),
     );
     expect(note).toContain("512");
+    expect(note).toContain("4 steps");
     expect(note).toContain("guidance");
     expect(note).toContain("seed");
-    // `steps` is deliberately absent from the server's own params — the
-    // note has to say THAT in words, not just quietly omit it.
-    expect(note?.toLowerCase()).toContain("step");
   });
 
   it("names the duration, tone and sample rate for speech", () => {

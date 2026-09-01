@@ -63,13 +63,10 @@ export function workloadNote(capability: string, workload: AiBenchmarkWorkload |
     case "text-generation":
       return `Decodes ${p.maxTokens} tokens from a fixed prompt, greedy (temperature ${p.temperature}) — ${provenance}.`;
     case "text-to-image":
-      // `steps` is deliberately ABSENT from `params` (ai/benchmark.py's own
-      // module docstring) — each model contributes its own catalog default,
-      // recorded per run rather than fixed here, and that omission is
-      // exactly the fact a reader comparing two image models needs, so it
-      // is said in words rather than silently leaving `steps` out of this
-      // sentence with no explanation.
-      return `Renders a fixed ${p.width}×${p.height} prompt at guidance ${p.guidance}, seed ${p.seed} — each model's own step count (not fixed here) is recorded per run — ${provenance}.`;
+      // `steps` is pinned in `params` like every other field here
+      // (ai/benchmark.py) — every model renders at the same step count, which
+      // is what makes total render time comparable across models.
+      return `Renders a fixed ${p.width}×${p.height} prompt at ${p.steps} steps, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`;
     case "automatic-speech-recognition":
       return `Transcribes ${p.audioSeconds}s of a generated ${p.toneHz} Hz tone at ${p.sampleRate} Hz — ${provenance}.`;
     case "embeddings":
