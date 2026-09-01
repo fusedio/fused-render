@@ -27,6 +27,10 @@
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
+  /* Paper behind a QR code: cameras want dark-on-white in BOTH themes, so the
+   * value is the same in each palette — a token so the no-literals rule holds,
+   * not because it varies. */
+  --qr-paper: #fff;
 
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
@@ -305,6 +309,7 @@
   --error: #c62828;
   --success: #1a7f37;
   --warning: #8f6a10;
+  --qr-paper: #fff; /* same in both themes — see the dark palette's note */
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
