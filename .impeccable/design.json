@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "title": "Design System: fused-render",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Fused Lime", "canonical": "#E5FF44", "tonalRamp": ["#252b00", "#3a4400", "#4f5d00", "#5f7300", "#8ba315", "#b8d42e", "#E5FF44", "#f4ffa3"] },
+      "accent-soft": { "role": "primary", "displayName": "Lime Soft", "canonical": "#c9d95e" },
+      "fg": { "role": "neutral", "displayName": "Ink", "canonical": "#e8eaed", "tonalRamp": ["#131417", "#1b1d21", "#2a2d33", "#4a4e55", "#61656c", "#9aa0a6", "#c4c7cc", "#e8eaed"] },
+      "fg-muted": { "role": "neutral", "displayName": "Ink Muted", "canonical": "#9aa0a6" },
+      "bg": { "role": "neutral", "displayName": "Page", "canonical": "#131417" },
+      "bg-alt": { "role": "neutral", "displayName": "Raised", "canonical": "#1b1d21" },
+      "bg-panel": { "role": "neutral", "displayName": "Panel", "canonical": "#202329" },
+      "border": { "role": "neutral", "displayName": "Hairline", "canonical": "#2a2d33" },
+      "sel": { "role": "neutral", "displayName": "Selection", "canonical": "#2b3a52" },
+      "error": { "role": "semantic", "displayName": "Error", "canonical": "#ff6b6b" },
+      "success": { "role": "semantic", "displayName": "Success", "canonical": "#3fb950" },
+      "warning": { "role": "semantic", "displayName": "Warning", "canonical": "#d29922" },
+      "activity": { "role": "semantic", "displayName": "Activity", "canonical": "#60a5fa" }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Body", "purpose": "Page default, 14px system sans." },
+      "control": { "displayName": "Control", "purpose": "Buttons, fields, rows — 13px; sidebar 13.5px." },
+      "label": { "displayName": "Label", "purpose": "Field labels, hints, metadata — 12px/500, Ink Muted." },
+      "mono": { "displayName": "Mono", "purpose": "Paths, code, sizes, technical values." }
+    },
+    "shadows": [
+      { "name": "shadow-sm", "value": "rgba(0,0,0,0.25)", "purpose": "Ambient ink for small lifts (dark); 0.1 in light." },
+      { "name": "shadow-md", "value": "rgba(0,0,0,0.4)", "purpose": "Ambient ink for panels (dark); 0.14 in light." },
+      { "name": "shadow-lg", "value": "rgba(0,0,0,0.5)", "purpose": "Ambient ink for overlays (dark); 0.18 in light." },
+      { "name": "scrim", "value": "rgba(0,0,0,0.55)", "purpose": "Modal backdrop, dark in both themes." }
+    ],
+    "motion": [
+      { "name": "dur-fast", "value": "80ms", "purpose": "Hover / press colour changes." },
+      { "name": "dur-med", "value": "150ms", "purpose": "Overlays, toasts, fades, context menus." },
+      { "name": "dur-slow", "value": "200ms", "purpose": "Panels, slide-overs, sidebar collapse, FLIP reorders." },
+      { "name": "ease-out", "value": "ease-out", "purpose": "The one easing; all durations collapse under prefers-reduced-motion." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Base Button",
+      "kind": "button",
+      "refersTo": "button-base",
+      "description": "Default action: page fill, hairline border, ink text.",
+      "html": "<button class=\"ds-btn\">Cancel</button>",
+      "css": ".ds-btn { font-size: 13px; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border, #2a2d33); border-radius: 6px; background: var(--bg, #131417); color: var(--fg, #e8eaed); cursor: pointer; white-space: nowrap; transition: background-color 80ms ease-out, border-color 80ms ease-out; } .ds-btn:hover { background: var(--row-bg-hover, #26282c); } .ds-btn:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; } .ds-btn:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Strongest through contrast, never accent: ink-filled.",
+      "html": "<button class=\"ds-btn-primary\">Save</button>",
+      "css": ".ds-btn-primary { font-size: 13px; font-weight: 600; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 6px; background: var(--fg, #e8eaed); color: var(--bg, #131417); cursor: pointer; transition: background-color 80ms ease-out; } .ds-btn-primary:hover { background: var(--on-fg, #ffffff); } .ds-btn-primary:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; }"
+    },
+    {
+      "name": "Field",
+      "kind": "input",
+      "refersTo": "field-control",
+      "description": "Label + control: quiet focus, no glow.",
+      "html": "<div class=\"ds-field\"><label class=\"ds-field-label\">Folder <span class=\"ds-req\">*</span></label><input class=\"ds-field-control\" placeholder=\"~/data\" /></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; } .ds-field-label { font-size: 12px; font-weight: 500; color: var(--fg-muted, #9aa0a6); } .ds-req { color: var(--accent, #E5FF44); } .ds-field-control { font-size: 13px; color: var(--fg, #e8eaed); background: var(--bg, #131417); border: 1px solid var(--border, #2a2d33); border-radius: 6px; padding: 7px 10px; height: 32px; } .ds-field-control:focus { outline: none; border-color: var(--fg-muted, #9aa0a6); } .ds-field-control::placeholder { color: var(--fg-muted, #9aa0a6); }"
+    },
+    {
+      "name": "Sidebar Item",
+      "kind": "nav",
+      "refersTo": "sidebar-item",
+      "description": "Global sidebar row; colour-only 80ms transitions.",
+      "html": "<a class=\"ds-sidebar-item\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z\"/></svg>Explorer</a>",
+      "css": ".ds-sidebar-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; color: var(--fg, #e8eaed); text-decoration: none; cursor: pointer; font-size: 13.5px; transition: background-color 80ms ease-out, color 80ms ease-out; } .ds-sidebar-item:hover { background: var(--row-bg-hover, #26282c); } .ds-sidebar-item:focus-visible { outline: 2px solid var(--accent, #E5FF44); outline-offset: 2px; }"
+    },
+    {
+      "name": "Listing Row",
+      "kind": "custom",
+      "refersTo": "sidebar-item",
+      "description": "The app's atom: file row with typed icon hue and mono metadata.",
+      "html": "<div class=\"ds-row\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"var(--icon-data, #a898cb)\" stroke-width=\"1.5\"><rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 6h11M6 6v7.5\"/></svg><span class=\"ds-row-name\">metrics.parquet</span><span class=\"ds-row-meta\">4.2 MB</span></div>",
+      "css": ".ds-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; color: var(--fg, #e8eaed); font-size: 13px; cursor: pointer; transition: background-color 80ms ease-out; } .ds-row:hover { background: var(--row-bg-hover, #26282c); } .ds-row-name { flex: 1; } .ds-row-meta { color: var(--fg-muted, #9aa0a6); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }"
+    },
+    {
+      "name": "Card Thumb",
+      "kind": "card",
+      "refersTo": "button-base",
+      "description": "Thumbnail card: hairline only; hover tints border toward accent.",
+      "html": "<button class=\"ds-card\"><span class=\"ds-card-thumb\"></span><span class=\"ds-card-name\">weather-view.html</span></button>",
+      "css": ".ds-card { display: flex; flex-direction: column; gap: 10px; width: 200px; padding: 0; background: none; border: none; cursor: pointer; text-align: left; color: var(--fg, #e8eaed); font-size: 13px; } .ds-card-thumb { aspect-ratio: 16/9; background: var(--bg-alt, #1b1d21); border: 1px solid var(--border, #2a2d33); border-radius: 6px; transition: border-color 120ms ease; } .ds-card:hover .ds-card-thumb { border-color: color-mix(in srgb, var(--accent, #E5FF44) 55%, var(--border, #2a2d33)); } .ds-card:hover .ds-card-name { color: var(--accent-soft, #c9d95e); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Panel",
+    "overview": "fused-render is a dark cockpit for your own machine: quiet chrome, hairline seams, utility density, and one lime signal. The interface is confident and dark-first — the dark palette IS the app's identity, and light mode is a faithful, per-token translation of the same relationships, never a restyle. The system runs on semantic colour discipline: every hue means something. The Fused Lime accent is rare and earned — focus rings, selection, the occasional highlight — never a button fill or a large surface. Hierarchy is carried by contrast, spacing, and hairline borders, not by colour weight.",
+    "keyCharacteristics": [
+      "Dark-first; light is a byte-faithful translation, not a second design",
+      "Quiet, precise, dense — 13–14px UI type, 32px controls, hairline borders",
+      "One accent (Fused Lime), used sparingly; neutral-filled primary buttons",
+      "Every colour is a named token with a defined role; semantic hues form a learned vocabulary",
+      "Flat-first: borders carry separation, shadows stay minimal and ambient"
+    ],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Fused Lime never fills a button or a large surface; it marks focus, selection, and the rare highlight. Primary actions read strongest through contrast (ink-filled), not accent.", "section": "colors" },
+      { "name": "The Token Rule", "body": "Every colour comes from tokens.css. A hardcoded colour is a colour light mode cannot repaint.", "section": "colors" },
+      { "name": "The Scrim Exception", "body": "Controls sitting on arbitrary pixels (images, maps, video) use the --scrim-* set — identical in both themes, white ink on dark wash — because the surface underneath is not ours.", "section": "colors" },
+      { "name": "The No-Display Rule", "body": "There is no display face. Headings differentiate by weight and spacing within the system stack; nothing is decorative.", "section": "typography" },
+      { "name": "The Drawn-Edge Rule", "body": "If two surfaces must read as separate, give them a Hairline border or an ordered fill — never a heavier shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take every colour from tokens.css; add a token (with a light counterpart) before adding a colour.",
+      "Do keep controls at 32px, radius at 6px, and UI type at 13–14px.",
+      "Do use --activity for in-flight/unread signals and the status hues for outcomes; keep hue meanings stable.",
+      "Do carry hierarchy with contrast and Hairline borders; keep primary buttons ink-filled.",
+      "Do pick one of the three motion durations; never invent a new number."
+    ],
+    "donts": [
+      "Don't fill buttons or large surfaces with Fused Lime — accent everywhere is the confirmed anti-reference; accent is for focus and selection.",
+      "Don't import generic SaaS decoration: gradient heroes, glassmorphism, decorative card shadows.",
+      "Don't play terminal cosplay: no scanlines, phosphor glow, or faux-CRT styling — developer-native means quiet, not themed.",
+      "Don't hardcode a colour, restyle dark mode, or give a dark token no light counterpart.",
+      "Don't use heavier shadows to separate surfaces; draw the edge instead."
+    ]
+  }
+}
