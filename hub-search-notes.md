@@ -806,3 +806,111 @@ cross-reference to the branch's old D631/D632/D633 — in this file and in
 numbers; references to D631/D632/D633 elsewhere in the repo (`fused_render/
 server/ai.py`, `common.py`, `ai_runtime.py`, the AI Playground frontend
 files) are main's `fused.ai` decisions and were left untouched.
+
+## Fifth fix-builder round: five more code review findings (three cascades from the fourth round's own fix)
+
+D654-D656 in DECISIONS.md carry the full reasoning; this is what changed and
+what the brief got wrong.
+
+**(1) GGUF params feed under-reported memory fit by ~3.4x for unfittable
+models (HIGH, a cascade from D651's own fix).** `hub_models.py`'s
+`gguf_quantization`/`fit_params` are now set ONLY when `formats.gguf_quant_
+token(file)` actually resolved a token — an unsuffixed or full-precision
+GGUF (`model.gguf`, `...-F16.gguf`) goes back to `fit: null`/`speedEstimate:
+null`, letting the client's lazy per-file lookup supply the real verdict.
+`params` itself stays reported either way (the real, quantization-invariant
+HUB total is still worth the Params column). Added a regression test pinned
+at 16GB RAM specifically — 32GB (this suite's usual pin) can't distinguish
+"wrongly under-reported 4.1GB guess" from "correctly estimated ~14GB" since
+both read as comfortably fitting; 16GB is the smallest pin where the two
+readings disagree.
+
+**(2)/(3) Match cell precedence and staleness (MEDIUM each, one commit).**
+`effectiveFit`/`effectiveSpeed` used `model.fit ?? fitOverride ?? null`,
+which let a GGUF row's derived guess (recognized-quant, params x bytes-per-
+param — real as of D651) permanently beat the lazy lookup's REAL measured
+verdict once the guess existed, since `wantsTotal` stays true for every
+GGUF row regardless of whether `model.fit` is null. Fixed the precedence
+(`fitOverride !== undefined` wins) and, separately, fixed `matchScoreStale`
+treating a lookup that resolved to `null` ("nothing to judge",
+`knownFit`'s own pinned contract) as if it were a correction — it isn't,
+and the old check blanked a perfectly valid server score for nothing.
+Pulled all four rules (`resolveFit`, `resolveSpeed`, `matchFitBasis`,
+`isMatchScoreStale`) out of the component into pure, tested functions in
+`hubTableView.ts` — the brief asked for tests on logic that used to live
+inline with no way to drive it, so this round extracted it first.
+
+**(4) Hoist summary vs. presence contradiction, SECOND time reported
+(MEDIUM).** The third round's fix for the blank-column bug made
+`columnVisible` re-check primaries+variants while leaving the hoist/summary
+on primaries only (D640's original call) — which reproduced the exact
+"summary says one thing, column shows another" bug one level up. Pulled
+BOTH computations into one new function, `familyHoist`, reading a single
+`allCapabilityValues`/`allQuantValues` set for everything (hoist, summary,
+presence) — a differing variant now downgrades "all BF16" to "mostly BF16"
+at the same instant it keeps the column visible, by construction, since
+there is only one computation left to disagree with itself. Also pure and
+tested (three states: unanimous, majority-with-a-differing-variant,
+all-unknown), same reasoning as (2)/(3).
+
+**(5) hubFamilies ordering-invariant doc, LOW.** The claim that positioning
+by primary index preserves order "for the SAME key `primaryComparator`
+used to choose the primary" is only true for `fit`/`best`; for
+`size`/`downloads`/`trending`/`new`, `models` is sorted by that key while
+`primaryComparator` still returns `byMatchThenDownloads` — different keys.
+Rewrote to state the real guarantee: placing a family at its primary's own
+array index produces exactly `models`'s own order with non-primary rows
+deleted, which preserves relative order unconditionally (deleting elements
+never reorders survivors) — no dependency on how the primary was picked.
+Doc-only, no behavior change.
+
+### What this round's brief got wrong
+
+Nothing substantive — the fifth-round brief's descriptions of all five
+findings matched what was in the code. One thing worth flagging for a
+future round: `isMatchScoreStale` still only fires when `model.fit` was
+fully `null` (per the brief's literal instruction, `fitOverride != null &&
+model.fit == null`). A GGUF row whose `model.fit` is a non-null D651 GUESS,
+later corrected by a real measurement that differs from the guess, does
+NOT get marked stale — the displayed `matchScore` was computed against the
+guess's fit-axis contribution and is technically as outdated as the
+null-default case, just not reported as such. The reviewer's finding named
+only the resolves-to-null false positive, not this gap, so it was left
+alone (see D655's own "Rejected" column) rather than silently widening
+scope.
+
+### Tests run this session
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 181 passed (180
+  before this session, 1 new — the unrecognized-quant regression test for
+  finding 1, pinned at 16GB RAM).
+- `.venv/bin/python -m pytest tests/test_ai_fit.py tests/test_ai_speed.py
+  -q`: 117 passed (checking the `fit_params`/`gguf_quantization` call
+  pattern change didn't regress either module).
+- `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
+  (after appending D654-D656).
+- `cd frontend && bun test src/apps/ai_models`: 636 passed (was 3 pass
+  short before this round's new `resolveFit`/`resolveSpeed`/
+  `matchFitBasis`/`isMatchScoreStale`/`familyHoist` test blocks were added;
+  no full `bun test` run — no `mock.module` touched this round, and the
+  rule only requires the full suite when a mock is touched).
+- `cd frontend && bun run typecheck`: clean.
+- `cd frontend && node scripts/check-boundaries.mjs`: clean (426 files).
+- Grepped `tests/` for every backend/frontend symbol touched this session
+  (`gguf_quantization`, `fit_params`, `resolveFit`, `resolveSpeed`,
+  `matchFitBasis`, `isMatchScoreStale`, `familyHoist`, `hoistValue`,
+  `hoistSummary`, `columnVisible`, `effectiveFit`, `matchScoreStale`,
+  `fitOverride`, `speedOverride`): no hits outside this repo's own frontend
+  test files.
+
+### Left for a human with a browser
+
+- Finding (2)'s new `matchFitBasis` hover text ("This fit is an estimate
+  from the parameter count and quantization alone…" / "…measured from the
+  actual file…") has never been seen rendered — confirm it reads naturally
+  beside the existing verdict/mode sentences rather than as a bolted-on
+  fourth clause.
+- Finding (4)'s "mostly" downgrade on a real result set with a
+  quant-diverse variant — confirm the summary line and the Quant column
+  visibly agree now, on an actual page rather than only in `familyHoist`'s
+  own unit tests.
