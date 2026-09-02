@@ -76,6 +76,14 @@ class Manifest:
     #: means resident. Defaults per protocol (see the two constants above),
     #: overridable with an explicit `idle_timeout_s` key in the manifest.
     idle_timeout_s: float
+    #: Whether a proxied POST to this daemon is safely re-runnable, so a
+    #: heal-restart mid-call may retry it instead of surfacing the failure.
+    #: `False` (the safe default: at-most-once) unless the manifest opts in
+    #: with `retry_post = true` — a `daemon =` author's own HTTP surface can
+    #: have arbitrary side effects, so re-running it uninvited is the wrong
+    #: default; a built-in template's own daemon (map's tile daemon is the
+    #: first) declares its POSTs idempotent and opts in.
+    retry_post: bool
 
 
 def load_manifest(folder: str) -> Manifest | None:
@@ -146,6 +154,9 @@ def load_manifest(folder: str) -> Manifest | None:
     idle_timeout_s = app.get("idle_timeout_s")
     if not isinstance(idle_timeout_s, (int, float)) or isinstance(idle_timeout_s, bool):
         idle_timeout_s = None
+    retry_post = app.get("retry_post")
+    if not isinstance(retry_post, bool):
+        retry_post = False
 
     if has_daemon:
         daemon = _resolve(daemon_name)
@@ -154,13 +165,15 @@ def load_manifest(folder: str) -> Manifest | None:
         default_idle = DEFAULT_DAEMON_IDLE_TIMEOUT_S
         return Manifest(folder=folder, daemon=daemon, main="",
                         idle_timeout_s=(idle_timeout_s if idle_timeout_s is not None
-                                        else default_idle))
+                                        else default_idle),
+                        retry_post=retry_post)
     main = _resolve(main_name)
     if main is None:
         return None
     return Manifest(folder=folder, daemon="", main=main,
                     idle_timeout_s=(idle_timeout_s if idle_timeout_s is not None
-                                    else DEFAULT_MAIN_IDLE_TIMEOUT_S))
+                                    else DEFAULT_MAIN_IDLE_TIMEOUT_S),
+                    retry_post=retry_post)
 
 
 def engine_id_for(folder: str) -> str:

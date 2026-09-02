@@ -69,6 +69,38 @@ def test_load_manifest_accepts_valid_background_app(tmp_path):
     assert manifest.daemon == os.path.abspath(str(folder / "daemon.py"))
     assert manifest.main == ""
     assert manifest.idle_timeout_s == background_apps.DEFAULT_DAEMON_IDLE_TIMEOUT_S
+    assert manifest.retry_post is False
+
+
+def test_load_manifest_defaults_retry_post_to_false_for_a_main_app(tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is False
+
+
+def test_load_manifest_honors_explicit_retry_post(tmp_path):
+    folder = tmp_path / "retryable"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = true\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is True
+
+
+def test_load_manifest_rejects_non_bool_retry_post(tmp_path):
+    # A malformed value must not silently coerce to a truthy retry_post — the
+    # safe default (at-most-once) wins rather than a stray "yes" or 1.
+    folder = tmp_path / "badretry"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = "yes"\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is False
 
 
 def test_load_manifest_accepts_valid_main_app(tmp_path):
