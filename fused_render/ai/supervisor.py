@@ -261,6 +261,14 @@ class Worker:
     #: build and the accelerated ones are opt-in. Same argument AI-8 makes
     #: about resident bytes: only the process holding the weights knows.
     device: str = ""
+    #: Which rung of `torch_image._place()`'s ladder the worker actually
+    #: landed on — "all-gpu" | "group-offload" | "offload", as the WORKER
+    #: reported it via `set_state(placement=...)`, never inferred here. None
+    #: from a runner that never calls `_place` (the CPU/MPS branches report
+    #: nothing, and non-diffusers runners have no placement decision to make
+    #: at all) — the page renders that as nothing rather than as a guess,
+    #: the same convention `device` above already follows.
+    placement: str | None = None
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
     #: `time.monotonic()` of the last thing this worker did, and how many turns
@@ -1169,6 +1177,12 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
                 worker.device = str(health.get("device") or "")
+                # Same "read every poll, coerce falsy to the sentinel" shape
+                # as `device` just above — `_place` sets this alongside
+                # `device` inside `load()`, and a runner that never calls it
+                # must report `None`, not the empty string.
+                placement = health.get("placement")
+                worker.placement = placement if isinstance(placement, str) else None
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
                     # AI-13: the idle clock starts HERE, not at construction.
@@ -2757,6 +2771,13 @@ def refresh_memory() -> None:
             footprint_now = health.get("os_footprint_bytes")
             worker.os_footprint_bytes = (
                 footprint_now if isinstance(footprint_now, int) else None)
+            # Same display-only, re-read-every-poll treatment as the OS
+            # footprint just above — `_place` only runs once, at `load()`,
+            # but re-reading it here rather than trusting the load loop's
+            # last value keeps this worker's copy honest if a future runner
+            # ever calls `set_state(placement=...)` again after `ready`.
+            placement_now = health.get("placement")
+            worker.placement = placement_now if isinstance(placement_now, str) else None
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this
@@ -2827,6 +2848,12 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # Which rung of `torch_image._place()`'s ladder the weights
+                # actually landed on — "all-gpu" | "group-offload" |
+                # "offload". None from a runner that never calls `_place`,
+                # which the page renders as nothing rather than as a guess,
+                # the same convention `device` below follows.
+                "placement": w.placement,
                 # The OS's "right now" figure (D597) — what a user's system
                 # monitor shows, which `residentBytes` does NOT on Apple
                 # Silicon (Metal buffers are charged to `phys_footprint`, not

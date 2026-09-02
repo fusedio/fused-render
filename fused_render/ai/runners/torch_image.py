@@ -546,16 +546,12 @@ def _place(pipe):
 
     Every case reports which one happened via `set_state(placement=...)`,
     which reaches the WORKER's own `/health` endpoint (`worker_base.snapshot`)
-    — but nothing downstream reads it today. `supervisor._health` only lifts
-    `state`/`detail`/`resident_bytes`/`os_footprint_bytes`/`device` out of
-    that response into the `Worker` it is polling, and `describe()` (what the
-    app's own `/health`-adjacent API and the AI Models page actually see)
-    forwards none of those extra fields either. So `placement` exists,
-    survives one hop, and stops — it is not yet visible outside this
-    process. Forwarding it is a small, separate change (a `Worker.placement`
-    field plus one more key in `describe()`'s dict); this function sets the
-    state on the assumption that whoever wires that up later will find it
-    waiting here, not because the wiring exists yet.
+    and, from there, `Worker.placement` and `describe()`'s `"placement"` key
+    — the app's own `/health`-adjacent API and the AI Models page. Both the
+    load loop and `refresh_memory()` lift it out of `/health` the same way
+    `device` is lifted, and `describe()` emits it beside `residentBytes`, so
+    the page can say which of the three placements a worker actually chose
+    rather than only which device it landed on.
     """
     import torch
 

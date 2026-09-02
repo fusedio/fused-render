@@ -2891,6 +2891,36 @@ def test_describe_carries_the_os_footprint_without_coercing_null(
 # frozen-value behaviour that was the bug.
 
 
+def test_describe_surfaces_a_workers_placement(fake_runner, monkeypatch):
+    """`_place()` (`torch_image.py`) already calls `set_state(placement=...)`
+    and its own docstring anticipates this wiring: a `Worker.placement`
+    field plus one more key in `describe()`'s dict. This is that wiring —
+    a worker whose `/health` reports a placement must have it ride all the
+    way out to the API the AI Models page reads, the same hop `device` and
+    `osFootprintBytes` already make."""
+    worker = _ready_worker()
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready", "resident_bytes": 1234, "placement": "group-offload",
+    })
+    supervisor.refresh_memory()
+
+    assert worker.placement == "group-offload"
+    assert supervisor.describe()["loaded"][0]["placement"] == "group-offload"
+
+
+def test_describe_reports_no_placement_as_null_not_a_guess(fake_runner):
+    """A runner too old to report `placement` (or one that never calls
+    `_place`, like the CPU/MPS branches) must not have this column filled in
+    with a guess — the fake worker's own `/health` never sets this key, so
+    the row must stay `None` end to end."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["placement"] is None
+
+
 def test_describe_carries_the_machine_ceiling_once_not_per_row(fake_runner):
     """D594: the denominator the status bar colours against is a per-machine
     constant, so it rides at the TOP LEVEL rather than being repeated on every
