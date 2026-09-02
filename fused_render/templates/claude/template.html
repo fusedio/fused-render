@@ -13691,12 +13691,15 @@ function activityVerb(stats, thinkVerb, quietSecs) {
   // The model's turn: request out, thinking, or writing. A long silence here
   // is the one ambiguity worth naming — and if a background command is still
   // running, that is almost always what the wait is.
+  // "Waiting for a reply" read as waiting for the USER's reply (Akshil,
+  // 2026-09-02) — the words must say who owes whom: the request is with
+  // Claude, the user owes nothing.
   if (quietSecs >= 20) {
     return act.tasks && act.tasks.length
       ? "Waiting for a background command to finish"
-      : "Still waiting for a reply";
+      : "Claude is taking longer than usual";
   }
-  if (stats.phase === "requesting") return "Waiting for a reply";
+  if (stats.phase === "requesting") return "Sending to Claude";
   if (stats.phase === "composing") return "Writing a reply";
   return thinkVerb;
 }
