@@ -3870,10 +3870,10 @@ export function getGitRepos(): Promise<GitRepos> {
 // named here would outrank the preference (that is the relay's precedence
 // rule), so every one of these call sites must keep NOT naming one for the
 // preference to mean anything.
-export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
+export function aiComplete(prompt: string, systemPrompt?: string): Promise<string> {
   return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
     prompt,
-    ...(system_prompt ? { system_prompt } : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
   }).then((r) => r.result.text);
 }
 
