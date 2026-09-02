@@ -691,8 +691,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(app_api_router)
     # Background apps (routers/background_apps.py): enable/disable/stop/
     # restart/status for a folder's declared long-running daemon, backed by
-    # engine_host's "background" child kind + background_apps.py's enabled
-    # store. See the startup resurrection hook below.
+    # engine_host's own per-child fields (`Child.folder`, `idle_timeout_s`,
+    # `retry_post`) + background_apps.py's enabled store. See the startup
+    # resurrection hook below.
     app.include_router(background_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.

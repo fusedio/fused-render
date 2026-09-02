@@ -1,6 +1,6 @@
 """Background apps: a folder can declare a long-running daemon that this
 server supervises — single instance, the folder's own venv, killed with the
-server (see engine_host.py's "background" child kind and
+server (see engine_host.py's `Child.folder` and
 server/routers/background_apps.py).
 
 A folder opts in with a manifest table in its own `pyproject.toml`, declaring

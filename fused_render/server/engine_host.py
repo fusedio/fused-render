@@ -302,23 +302,13 @@ def _spawn_env(child: Child) -> dict:
     `sys.executable`, in which case they are left intact: like the built-in
     executor (which spawns [sys.executable, _child.py] with the environment
     intact), a packaged/bundled interpreter needs PYTHONHOME to locate its own
-    runtime at all, and that is a fact about the INTERPRETER, not about which
-    engine_host child kind is asking.
+    runtime at all, and that is a fact about the INTERPRETER, not about the
+    caller.
 
-    Keyed on `child.python == sys.executable`, deliberately not on
-    `child.module` (2026-08-26 fix): the old `child.module and child.python ==
-    sys.executable` condition only preserved the environment for an app warm
-    worker, since `module` is that kind's own marker — every OTHER child
-    running on `sys.executable`, background apps included, took the strip
-    branch. In the packaged app, where the fused engine is unavailable,
-    `background_apps.interpreter_for` always resolves to `sys.executable`, so
-    a background daemon lost PYTHONHOME and died at bootstrap on every
-    packaged install; a dev checkout never sees it because `fused` being
-    importable there takes the venv path instead. A template daemon running
-    on `sys.executable` (no project venv declared) picks up the same
-    preservation now, by the same reasoning the comment already gave for the
-    app-worker case — this is a deliberate widening, not a side effect: the
-    "needs PYTHONHOME" fact was never actually specific to app workers."""
+    Keyed purely on `child.python == sys.executable`, so it applies uniformly
+    to every child that runs on this app's own interpreter — a template
+    daemon, a `main =` warm worker, or a `daemon =` background app all get
+    the same treatment when that's the interpreter they were resolved to."""
     env = dict(os.environ)
     if child.python != sys.executable:
         for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):

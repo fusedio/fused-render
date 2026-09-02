@@ -11039,9 +11039,13 @@ browser control surface, `static/runtime.js`) and `fused_render/background_apps.
 + `server/routers/background_apps.py` (the server side) turn engine_host's
 existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
 general "keep this running" primitive, rather than a special case wired for
-one built-in template. `engine_host` has two child kinds: `template` (a
-built-in template's own tile daemon) and `background` (a folder's own
-declared daemon).
+one built-in template. `engine_host` has no child-kind tag at all — a
+built-in template's own tile daemon and a folder's own declared daemon are
+both just a `Child`, distinguished only by which of its fields are set:
+`folder` (the declaring app folder, empty for a template), `module` (the
+warm-worker module a `main =` app serves, empty otherwise), `idle_timeout_s`
+(the reap rule — `0` for a resident daemon, positive for a `main =` app),
+and `retry_post` (whether a proxied POST to it is safely re-runnable).
 
 - **Manifest.** A folder opts in with `[tool.fused-render.app]` in its own
   `pyproject.toml`, declaring its protocol with exactly one of two keys:
@@ -11153,33 +11157,34 @@ declared daemon).
   a daemon started without opting into autostart — now the DEFAULT path —
   had no row there and the badge stayed off for it even while genuinely
   running). `engine_host.background_running_folders()` enumerates the
-  in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
+  in-memory `_children` dict directly (`c.folder` truthy, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
 - **The status bar's Engines section (D591).** Two routes on
   `server/routers/engines.py` let the user see and stop what is running,
-  across ALL THREE child kinds rather than background apps only:
+  across every live child rather than background apps only:
   - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
-    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
-    (`kind="background"` only) and `module` (warm app workers only) so a row
-    can be labelled without guessing each kind's conventions. Read-only and
-    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
-    this router's proxied GETs. The work is
-    `engine_host.running_engines()`, which keeps the same lock discipline
-    `background_running_folders` established — snapshot under `_lock`,
-    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
-    lock or the private `_children` dict.
+    child with `engine_id`, `pid`, `version`, `folder` (set for a background
+    app's own daemon, empty for a template) and `module` (set for a `main =`
+    warm worker, empty otherwise) so a row can be labelled without guessing
+    which fields a given child populated. Read-only and UNGUARDED, the same
+    posture as `GET /api/apps/background/running` and as this router's
+    proxied GETs. The work is `engine_host.running_engines()`, which keeps
+    the same lock discipline `background_running_folders` established —
+    snapshot under `_lock`, `_alive()`'s `Popen.poll()` outside it — so the
+    router never touches the lock or the private `_children` dict.
   - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
     like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
     executing side. Calls `engine_host.stop`, which is idempotent (it pops
     with a default), so a stale row clicked after the engine already exited
-    is a no-op rather than an error. NOT a destructive route: a `template`
+    is a no-op rather than an error. NOT a destructive route: a template
     engine respawns on the next `ensure`, a `main =` background child on its
     next call (and is idle-reaped on a timer regardless, `idle_timeout_s`),
     and a `daemon =` background daemon going down is exactly the documented "quit this app
     right now" action. Deliberately NOT routed through
     `POST /api/apps/background/stop`, which takes an `html` PAGE path and
     derives the folder with a `dirname()` — handing it a folder resolves to
-    the folder's PARENT — and which covers `kind="background"` only.
+    the folder's PARENT — and which covers a background app's own folder
+    only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
@@ -11241,17 +11246,17 @@ declared daemon).
   symlinked app folder's badge no longer silently fails to match its
   daemon's (realpath-keyed) running folder.
 - **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
-  `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
-  `Child.folder`) into a `kind="background"` child's environment only — the
-  one affordance the API above doesn't otherwise offer, since every endpoint
-  keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
+  `FUSED_RENDER_APP_DIR` into any child whose `Child.folder` is set (the
+  manifest's declaring folder) — the one affordance the API above doesn't
+  otherwise offer, since every endpoint keys off a page's `html` path and a
+  daemon has none. `templates/shared/background_app.py`
   is the stdlib-only client that reads it: `status()`/`stop()`/`set_autostart(bool)`/`restart()`
   against the calling daemon's own app, resolving the origin the same ladder
   `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
   `NotUnderEngine` when the env var is absent (not running as an
   engine-spawned background daemon at all). `engine_host.restart()` carries
   `folder` over onto its replacement `Child` the same as `python`/`daemon`/
-  `cache`/`version`/`kind` — a healed or manually-restarted background
+  `cache`/`version` — a healed or manually-restarted background
   child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
   bring-up.
 - **Resurrection has three triggers, not one, and they are not equally

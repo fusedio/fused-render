@@ -56,7 +56,7 @@ Everything else — routes, state, threads — is yours. The fixture also serves
 
 ## Asking the server about yourself, from inside the daemon
 
-Every `fused.daemon` method sends the caller's page path as `html`, which the server resolves to an app folder. Your daemon has no page — so it uses `templates/shared/background_app.py` instead, which reads the `FUSED_RENDER_APP_DIR` that `engine_host._spawn_env` exports into every `kind="background"` child.
+Every `fused.daemon` method sends the caller's page path as `html`, which the server resolves to an app folder. Your daemon has no page — so it uses `templates/shared/background_app.py` instead, which reads the `FUSED_RENDER_APP_DIR` that `engine_host._spawn_env` exports into any child whose `Child.folder` is set — i.e. a background app's own daemon.
 
 **A bare `import background_app` does not work here.** `/api/run` and the warm worker get `templates/shared` appended to `sys.path` for free (`_child.py`); a background daemon is spawned as a plain script with no such seeding, so the import raises `ModuleNotFoundError`. Bootstrap it off the discovery file `server/app.py` writes at bind time — `server.json`'s `shared` key names the exact `templates/shared` this server build ships, and `FUSED_RENDER_HOME_DIR` (branch-resolved for a dev worktree server, falling back to `~/.fused-render`) says where to find it:
 
@@ -103,7 +103,7 @@ const unsubscribe = fused.daemon.watch((s) => {
 });
 ```
 
-The JS namespace is `daemon` while the HTTP endpoints (`/api/apps/background/*`) and Python modules say "background": "app" already means three other things here (an `fused-app`-tagged folder, the warm worker's `Child.kind`, the `/apps` hub), and `daemon` is the noun the manifest, the file and `engine_host` already use.
+The JS namespace is `daemon` while the HTTP endpoints (`/api/apps/background/*`) and Python modules say "background": "app" already means three other things here (an `fused-app`-tagged folder, the warm-worker HTTP surface, the `/apps` hub), and `daemon` is the noun the manifest, the file and `engine_host` already use.
 
 Every method except `call`/`run` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to, the same `resolve_py` pattern `/api/run` uses, so there is no path-typed API to defend. `call(path, body)` reaches the daemon through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` and bringing the daemon up transparently when it isn't known to be running — on a page's first call, or after the idle reaper has retired it — the same way `run()` always has; **`start()` is not required first**. `run(params)` is the `main =` convenience over the same proxy mechanics: POST `/call` with `params` as the body, the `{ok, result, error, stdout, resolved_py}` envelope unwrapped the way `runPython` unwraps `/api/run`'s.
 
