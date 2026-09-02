@@ -7912,7 +7912,7 @@ def _js_fn_with_helper(source, marker):
     helpers = ("  function rejectUnknownOptions(", "  function abortSignalOf(",
                "  function cancelledError(", "  function rethrowAbort(",
                "  function resultFrame(", "  function frameSegment(",
-               "  function cancelJob(")
+               "  function startJob(", "  function cancelJob(")
     return "".join(_lift_js_fn(source, h) for h in helpers) + _lift_js_fn(source, marker)
 
 
@@ -8501,7 +8501,8 @@ def test_asking_for_speakers_properly_gets_the_labels_and_the_legend_back():
     settled = _run_ai_transcribe(written, '{state: "done"}',
                                  opts='{path: "a.m4a", diarize: true, speakers: 2}')
     assert settled["ok"] is True, settled
-    assert settled["value"]["speakers"] == ["Speaker 1", "Speaker 2"]
+    # D632: the legend lives under providerMetadata.local; `speaker` per segment stays in the payload.
+    assert settled["value"]["providerMetadata"]["local"]["speakers"] == ["Speaker 1", "Speaker 2"]
     assert settled["value"]["segments"][1]["speaker"] == "Speaker 2"
 
 
@@ -8520,8 +8521,8 @@ def test_diarizing_WITHOUT_a_count_is_the_estimating_path_not_a_rejection(opts):
                'language: "en", duration: 2}))')
     settled = _run_ai_transcribe(written, '{state: "done"}', opts=opts)
     assert settled["ok"] is True, settled
-    assert settled["value"]["estimatedSpeakers"] == 2
-    assert settled["value"]["speakers"] == ["Speaker 1"]
+    assert settled["value"]["providerMetadata"]["local"]["estimatedSpeakers"] == 2
+    assert settled["value"]["providerMetadata"]["local"]["speakers"] == ["Speaker 1"]
 
 
 def test_a_run_that_was_GIVEN_the_count_reports_no_estimate():

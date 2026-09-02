@@ -3299,6 +3299,29 @@
     }
     return out;
   }
+  // Starting a job-backed verb. The start POST is NOT passed the signal: an
+  // abort that interrupted it could leave a job running whose id the page
+  // never received — orphaned work nobody can cancel. So the signal is
+  // checked before, the POST runs to completion, and an abort that landed
+  // meanwhile cancels the job BY ID (`addEventListener("abort")` does not
+  // fire for an already-aborted signal, so that window is handled here). A
+  // 200 with no jobId is an error, not a watch on `undefined` that never
+  // settles.
+  function startJob(path, body, signal, what) {
+    if (signal && signal.aborted) return Promise.reject(cancelledError(what));
+    return aiPost(path, body).then((started) => {
+      if (!started || typeof started.jobId !== "string" || !started.jobId) {
+        const err = new Error(path + " replied with no jobId");
+        err.type = "ai_error";
+        throw err;
+      }
+      if (signal && signal.aborted) {
+        cancelJob(started.jobId);
+        throw cancelledError(what, started.jobId);
+      }
+      return started;
+    });
+  }
   function cancelJob(jobId) {
     return fetch("/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {
       method: "POST",
@@ -3325,19 +3348,22 @@
   // half-billed completion buys nothing — calls run fully concurrent.
   function aiText(opts) {
     opts = opts || {};
+    // Closed envelope (D413's rule, D633): an option this verb does not have
+    // is a 400 here, before any request — the same check the other four
+    // verbs already run, so a `systemprompt` typo cannot silently do nothing.
+    // Checked BEFORE `prompt`, like the others: a call with both an unknown
+    // option and a missing prompt must learn about the option, or "add a
+    // prompt" fixes the visible error and lands the same typo again.
+    const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
+                      "raw", "images", "temperature", "maxTokens", "topP"];
+    const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
+    if (textUnknownErr) return Promise.reject(textUnknownErr);
     const prompt = opts.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
       const err = new Error("fused.ai.text({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
       return Promise.reject(err);
     }
-    // Closed envelope (D413's rule, D633): an option this verb does not have
-    // is a 400 here, before any request — the same check the other four
-    // verbs already run, so a `systemprompt` typo cannot silently do nothing.
-    const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
-                      "raw", "images", "temperature", "maxTokens", "topP"];
-    const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
-    if (textUnknownErr) return Promise.reject(textUnknownErr);
     const body = { prompt: prompt };
     // Which tier serves the call: "local" (weights on this machine) or
     // "claude" (the Claude Code CLI). A SEPARATE field, not a prefix on the
@@ -3393,11 +3419,24 @@
     // the capability-wide cancel is asked for too. One resident text model
     // means the generation in flight is this one; on the Claude tier the
     // route answers false and nothing happens.
-    if (signal) {
-      signal.addEventListener("abort", () => {
-        aiPost("/api/ai/cancel", {}).catch(() => {});
-      }, { once: true });
-    }
+    //
+    // Scoped three ways so it cannot stop somebody else's generation: only a
+    // NON-streaming call (a stream is stopped by its own disconnect), only
+    // one that will land on the local tier (the same shape rule the server
+    // applies when `provider` is omitted — a Claude call has nothing to
+    // cancel there, and posting would hit whatever local generation another
+    // page has in flight), and only while THIS call is unsettled — the
+    // listener is removed once it resolves or rejects, so a reused signal
+    // aborted later does not reach back.
+    const looksLocal = body.provider === "local"
+      || (body.provider === undefined && typeof body.model === "string"
+          && (body.model.indexOf("/") !== -1 || /\.gguf$/i.test(body.model)));
+    const wantsServerCancel = !!signal && !onChunk && looksLocal;
+    const onAbort = () => { aiPost("/api/ai/cancel", {}).catch(() => {}); };
+    if (wantsServerCancel) signal.addEventListener("abort", onAbort, { once: true });
+    const settle = (promise) => wantsServerCancel
+      ? promise.finally(() => signal.removeEventListener("abort", onAbort))
+      : promise;
     const req = fetch("/api/ai", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -3414,21 +3453,23 @@
       throw err;
     }
     if (!onChunk) {
-      return req
-        .then((res) => res.json())
+      // The body read is abortable too — an abort that lands while the
+      // completion is still downloading must still read as `cancelled`.
+      return settle(req
+        .then((res) => res.json().catch(rethrowAbort("the AI call")))
         .then((data) => {
           if (!data.ok) fail(data.error);
           return data.result;
-        });
+        }));
     }
     // Streaming: the body is NDJSON — {"type":"chunk","text"} lines, then a
     // terminal {"type":"done"}. A chunk may split across read() boundaries,
     // so buffer and cut on newlines. Errors BEFORE the stream starts arrive
     // as ordinary non-200 JSON; after, as an ok:false done frame.
-    return req.then((res) => {
+    return settle(req.then((res) => {
       const ct = (res.headers.get("Content-Type") || "").indexOf("x-ndjson");
       if (!res.ok || ct === -1) {
-        return res.json().then((data) => fail(data && data.error));
+        return res.json().catch(rethrowAbort("the AI call")).then((data) => fail(data && data.error));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -3456,7 +3497,7 @@
         }, rethrowAbort("the AI call"));
       }
       return pump();
-    });
+    }));
   }
 
   // ---- background jobs / the download manager (SPEC §36, D244) --------------
@@ -3825,7 +3866,13 @@
       body: JSON.stringify(body || {}),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
-    const data = await res.json().catch(() => ({}));
+    // A non-JSON body (proxy 502, HTML error page) reads as `{}` so the
+    // status below still produces a typed error; an ABORT mid-read is not
+    // that case and must surface as `cancelled`, never as an empty reply.
+    const data = await res.json().catch(rethrowAbort("the AI call")).catch((e) => {
+      if (e && e.type === "cancelled") throw e;
+      return {};
+    });
     if (!res.ok) {
       const err = new Error((data && data.error) || res.statusText);
       err.type = res.status === 409 ? "unavailable" : "bad_request";
@@ -3929,7 +3976,7 @@
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
     const signal = abortSignalOf(opts);
-    return aiPost("/api/ai/image", body, signal).then((started) => {
+    return startJob("/api/ai/image", body, signal, "the image").then((started) => {
       const watcher = watchJob(started.jobId);
       if (signal) {
         signal.addEventListener("abort", () => {
@@ -4025,7 +4072,7 @@
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
     const signal = abortSignalOf(opts);
-    return aiPost("/api/ai/video", body, signal).then((started) => {
+    return startJob("/api/ai/video", body, signal, "the video").then((started) => {
       const watcher = watchJob(started.jobId);
       if (signal) {
         signal.addEventListener("abort", () => {
@@ -4179,7 +4226,7 @@
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
     const signal = abortSignalOf(opts);
-    return aiPost("/api/ai/transcribe", body, signal).then((started) => {
+    return startJob("/api/ai/transcribe", body, signal, "the transcription").then((started) => {
       const watcher = watchJob(started.jobId);
       if (signal) {
         signal.addEventListener("abort", () => {
