@@ -191,8 +191,12 @@ the same plugin under `~/.fused-render/skill-plugin/` and loads it per session
 with `--plugin-dir`, so they work on a plain DMG or wheel install with nothing
 cloned.
 
-## Security and license
+## Security
 
 [SECURITY.md](SECURITY.md) has the trust model and how to report a
-vulnerability. fused-render is open source under the [MIT license](LICENSE),
-made by [Fused](https://www.fused.io).
+vulnerability.
+
+## License
+
+Open source under the [MIT license](LICENSE), made by
+[Fused](https://www.fused.io).
