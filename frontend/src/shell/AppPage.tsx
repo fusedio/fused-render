@@ -382,19 +382,32 @@ export default function AppPage({
     resolved.apiVersion != null &&
     resolved.currentApiVersion != null &&
     resolved.apiVersion < resolved.currentApiVersion;
-  const [migrating, setMigrating] = useState(false);
+  // `created` is sticky for this page: the entry still declares the OLD
+  // version until the session writes the tag, so `behind` stays true and the
+  // button would otherwise come straight back, inviting a second task that
+  // rewrites the same files. Reset when `dir` changes (below), and by a fresh
+  // page load — at which point the tag says whether the migration landed.
+  const [migrateState, setMigrateState] = useState<"idle" | "creating" | "created">(
+    "idle",
+  );
   const [migrateError, setMigrateError] = useState<string | null>(null);
+  useEffect(() => {
+    setMigrateState("idle");
+    setMigrateError(null);
+  }, [dir]);
   const startMigration = async () => {
-    if (migrating) return;
-    setMigrating(true);
+    if (migrateState !== "idle") return;
+    setMigrateState("creating");
     setMigrateError(null);
     try {
       const res = await migrateApp(dir);
       if (res.task) announceTasksChanged();
       if (res.task_error) {
         setMigrateError(res.task_error);
+        setMigrateState("idle");
         return;
       }
+      setMigrateState("created");
       if (res.task?.run_id) {
         navigateUrl(appLandingUrl(res.entry_html, res.task.run_id));
       } else {
@@ -403,8 +416,7 @@ export default function AppPage({
       }
     } catch (e) {
       setMigrateError((e as Error).message);
-    } finally {
-      setMigrating(false);
+      setMigrateState("idle");
     }
   };
 
@@ -429,13 +441,19 @@ export default function AppPage({
                 size="sm"
                 variant="default"
                 className="app-page-migrate"
-                disabled={migrating}
-                title={`This app declares fused API version ${resolved.apiVersion}; the runtime is on ${resolved.currentApiVersion}. Creates a task that updates the code and the tag.`}
+                disabled={migrateState !== "idle"}
+                title={
+                  migrateState === "created"
+                    ? "A migration task was created for this app; it is listed under Tasks. The button returns once the page is reloaded."
+                    : `This app declares fused API version ${resolved.apiVersion}; the runtime is on ${resolved.currentApiVersion}. Creates a task that updates the code and the tag.`
+                }
                 onClick={startMigration}
               >
-                {migrating
+                {migrateState === "creating"
                   ? "Creating task…"
-                  : `Migrate to API v${resolved.currentApiVersion}`}
+                  : migrateState === "created"
+                    ? "Migration task created"
+                    : `Migrate to API v${resolved.currentApiVersion}`}
               </Button>
             )}
             {/* The app full-size in the explorer (its entry page), in a new tab
