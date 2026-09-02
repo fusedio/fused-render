@@ -1,20 +1,22 @@
 ---
 name: fused-render-ai
-description: Call an AI model from a fused-render page or .py file — fused.ai text and streaming, .image, .video, .transcribe, .embed, .models, and `import fused_ai`. Use when a page needs a model, or an AI call rejects (ai_unavailable, model_loading, timeout, stalled).
+description: Call an AI model from a fused-render page or .py file — fused.ai.text and streaming, .image, .video, .transcribe, .embed, .models, and `import fused_ai`. Use when a page needs a model, or an AI call rejects (ai_unavailable, model_loading, timeout, stalled).
 ---
 
 # AI in a fused-render Page
 
 ## Overview
 
-`fused.ai` is one call with **two destinations**, and the model id alone decides which:
+`fused.ai` is a **namespace, not a function**: `fused.ai.text`, `.image`, `.video`, `.transcribe`, `.embed`, plus `.models` and `.cancel`. (`fused.ai(prompt)` no longer exists — it throws `fused.ai is not a function`. D631.)
 
-| `opts.model` | Where it runs | Credential |
-|---|---|---|
-| Contains a `/` (a Hugging Face repo id), **or ends in `.gguf`** (a llamacpp-text curated filename id) | **This machine.** A resident worker process holding the weights. | none |
-| Anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, omitted | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
+Text has **two destinations** — two *tiers*, in a fixed order — and `opts.provider` or, when omitted, the model id decides which:
 
-That rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
+| `opts.provider` | `opts.model` | Where it runs | Credential |
+|---|---|---|---|
+| `"local"`, or omitted with a model that contains a `/` (a Hugging Face repo id) **or ends in `.gguf`** (a llamacpp-text curated filename id) | required for `"local"` | **This machine.** A resident worker process holding the weights. | none |
+| `"claude"`, or omitted with anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, no model at all | a Claude alias or full id | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
+
+The default rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. `provider` pins a tier explicitly; the reply's `provider` field says which one answered. Mismatches are `bad_request`, not silent: `provider: "local"` with no model (every default is a Claude id), or `provider: "claude"` with a repo id. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
 
 **Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to llama.cpp. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
@@ -30,7 +32,7 @@ Both destinations are **local-only** — there is no hosted path — so an expor
 
 For `runPython`, params, or file IO → **`fused-render-authoring`**. For opening/running the app → **`fused-render-usage`**. For a folder that needs its own long-running daemon (outliving a page, surviving the warm worker's 15-minute idle-retire) rather than a per-call AI request → **`fused-render-background-apps`**.
 
-## Text: `fused.ai(prompt, opts?)`
+## Text: `fused.ai.text(prompt, opts?)`
 
 Resolves with **exactly** this — the server normalizes, so no guarding:
 
@@ -38,12 +40,14 @@ Resolves with **exactly** this — the server normalizes, so no guarding:
 {
   "text": "the completion",
   "model": "claude-haiku-4-5-20251001",
-  "usage": { "input_tokens": 544, "output_tokens": 73 }
+  "usage": { "input_tokens": 544, "output_tokens": 73 },
+  "provider": "claude"
 }
 ```
 
 - `model` — the id that **actually ran**; an alias (`"sonnet"`) echoes back resolved.
 - `usage` — `null`, or exactly `{input_tokens, output_tokens}`. **Anthropic names**; `prompt_tokens`/`completion_tokens` give `undefined`.
+- `provider` — `"local"` or `"claude"`: the tier that answered. Show it when it matters; the same line lands on a different tier once the weights are deleted.
 
 ### Options, and which destination honours them
 
@@ -51,6 +55,7 @@ The local-only options are **refused with a 400, never silently dropped** — a 
 
 | Option | Claude path | Local model |
 |---|---|---|
+| `provider` `"local"｜"claude"` | ✅ pins this tier | ✅ pins this tier (`model` then required) |
 | `systemPrompt` | ✅ | ✅ |
 | `model` | ✅ | ✅ (a repo id) |
 | `effort` `"low"｜"medium"｜"high"｜"xhigh"` | ✅ Claude Code's own thinking semantics | ignored |
@@ -61,7 +66,7 @@ The local-only options are **refused with a 400, never silently dropped** — a 
 
 Defaults: model `claude-haiku-4-5-20251001` (or the user's configured default); `effort` low = no extended thinking. `raw` and `history` are mutually exclusive — raw has nowhere to put prior turns.
 
-`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage}`**. Both destinations stream.
+`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage, provider}`**. Both destinations stream.
 
 ### Store the model beside the vectors
 
@@ -122,7 +127,7 @@ Every rejection is an `Error` with `.type`, and `err.jobId` is set on any reject
 
 ```js
 try {
-  const res = await fused.ai(question, { model: chosenRepoId });
+  const res = await fused.ai.text(question, { model: chosenRepoId });
   out.textContent = res.text;
 } catch (err) {
   if (err.type === "model_loading") {
@@ -151,7 +156,7 @@ const context = JSON.stringify({                              // aggregates for 
   total_revenue: data.total_revenue,
   revenue_by_region: data.by_region,
 });
-const res = await fused.ai(`Data (JSON):\n${context}\n\nQuestion: ${q}`, {
+const res = await fused.ai.text(`Data (JSON):\n${context}\n\nQuestion: ${q}`, {
   systemPrompt: "You are a data analyst. Answer ONLY from the provided JSON. Cite figures.",
   effort: "low",
 });
@@ -159,7 +164,7 @@ const res = await fused.ai(`Data (JSON):\n${context}\n\nQuestion: ${q}`, {
 
 ## Local Models: `fused.ai.models`
 
-Generation itself needs **nothing new** — a repo id in `fused.ai({model})` already reaches a local model. What needs an API is everything *around* it, because a model here is a resident process, not a request to someone else's datacentre.
+Generation itself needs **nothing new** — a repo id in `fused.ai.text(prompt, {model})` already reaches a local model. What needs an API is everything *around* it, because a model here is a resident process, not a request to someone else's datacentre.
 
 | Call | Returns |
 |---|---|
@@ -288,7 +293,7 @@ The same model also downloads differently per engine: ~4.6GB as one MLX repo aga
 
 `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops the render (the work is the server's, not the page's). `unit` is `""`, so steps read as a bare pair (`14 / 28`), not the clock a transcription draws; `detail` goes from "Preparing…" to `Saved <filename>`, and the row is titled with the prompt truncated to 80 characters.
 
-**The cold-model path is NOT `model_loading`** — the biggest difference from `fused.ai()`. `fused.ai.image` does not reject when the model is cold; it loads it inside the job you are already watching, so there is no retry to write. But:
+**The cold-model path is NOT `model_loading`** — the biggest difference from `fused.ai.text()`. `fused.ai.image` does not reject when the model is cold; it loads it inside the job you are already watching, so there is no retry to write. But:
 
 - While the weights arrive, `detail` reads `Waiting for <repo> — …` and **`done`/`total` are null**. Guard the division (`if (job.total)`) or draw an indeterminate bar — a bar that divides straight through shows `NaN` for the whole download.
 - **The bytes are on the model's own row**, never on the image job. For a download percentage, take that row's id from `fused.ai.models.list()` (the `loaded[]` entry carries `jobId` while it is still loading) rather than spelling it yourself.
@@ -562,13 +567,13 @@ return plausible vectors computed against the wrong prefix.
 
 ### Rejections
 
-Same `{ok, error:{type, message}}` shape `fused.ai` itself uses, and the same
+Same `{ok, error:{type, message}}` shape `fused.ai.text` uses, and the same
 `.type` on the thrown `Error`:
 
 | `.type` | When | What a page should do |
 |---|---|---|
 | `bad_request` | Both `texts` and `paths`; an empty list; over 64 items; a non-string item; `kind` on a model with no scheme; `paths` on a model with no vision tower; a `kind` value outside the pair | Fix the call. These name the problem — and the per-model two name the MODEL, because the fix is to pick a different one. |
-| `model_loading` | The model is not resident yet. Carries `jobId` — the load this call just started | `fused.watchJob(err.jobId)`, then retry. The same cold-start dance `fused.ai()` has. |
+| `model_loading` | The model is not resident yet. Carries `jobId` — the load this call just started | `fused.watchJob(err.jobId)`, then retry. The same cold-start dance `fused.ai.text()` has. |
 | `unavailable` | Nothing here serves embeddings, or no curated default exists | Show `err.message`; it names the reason (e.g. an engine that is not built yet). |
 | `ai_error` | The worker failed | Surface the message. |
 
@@ -610,7 +615,7 @@ Those five strings are the capability vocabulary — what `unload({capability})`
 
 **Which runner serves you is not purely a hardware fact.** The user can override the default per capability from the AI Models page's Engines tab, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is it serving the capability right now). Read `active` to say what is running, `available` to say what this machine could do. Never hard-code either, and let `unavailable` messages reach the user.
 
-**And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it. A page holding it gets `model_loading` on its next `fused.ai()` call (the cold-start path it already handles); the artefact calls reload inside their own job and just take longer.
+**And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it. A page holding it gets `model_loading` on its next `fused.ai.text()` call (the cold-start path it already handles); the artefact calls reload inside their own job and just take longer.
 
 ## Calling from Python: `fused_ai`
 
@@ -636,8 +641,8 @@ Same names, same options as `fused.ai` above:
 
 | Python | JS equivalent |
 |---|---|
-| `fused_ai.text(prompt, model=, effort=, system_prompt=)` → `str` | `fused.ai(prompt, opts)` |
-| `fused_ai.stream(prompt, model=, effort=, system_prompt=)` → generator of `str` | `fused.ai(prompt, {onChunk})` |
+| `fused_ai.text(prompt, model=, effort=, system_prompt=, provider=)` → `str` | `fused.ai.text(prompt, opts)` |
+| `fused_ai.stream(prompt, model=, effort=, system_prompt=, provider=)` → generator of `str` | `fused.ai.text(prompt, {onChunk})` |
 | `fused_ai.transcribe(path=, model=, language=, task=, initial_prompt=, vad=, diarize=, speakers=, words=, ...)` | `fused.ai.transcribe({...})` |
 | `fused_ai.image(prompt=, model=, width=, height=, steps=, guidance=, seed=, image=, ...)` | `fused.ai.image({...})` |
 | `fused_ai.embed(texts=, paths=, model=, kind=)` | same `/api/ai/embed` endpoint — one forward pass, not job-backed; see **Embeddings** below for the two per-model refusals |
@@ -701,11 +706,11 @@ An exported page has no server behind it, so this is moot rather than dangerous:
 
 ## Surviving Export
 
-The exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so `if (fused.env === "local")` does **not** make a page exportable, and aliasing the call to dodge the match only trades a clear refusal for a page that ships broken. An exported page has no CLI and no worker; the call could only fail at the reader.
+The exporter **rejects any page containing the string `fused.ai.text(`** (SPEC RH-11) — matched textually, so `if (fused.env === "local")` does **not** make a page exportable, and aliasing the call to dodge the match only trades a clear refusal for a page that ships broken. An exported page has no CLI and no worker; the call could only fail at the reader.
 
-If a view must export, **keep AI out of it** and gate the feature at the page level — a local-only companion view, or a UI that hides the AI panel when `fused.env !== "local"` with no `fused.ai(` in the file at all. `fused.trackJob` exports fine (it no-ops hosted); `fused.ai` never will.
+If a view must export, **keep AI out of it** and gate the feature at the page level — a local-only companion view, or a UI that hides the AI panel when `fused.env !== "local"` with no `fused.ai.text(` in the file at all. `fused.trackJob` exports fine (it no-ops hosted); `fused.ai` never will.
 
-**The DOTTED calls are a trap in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it — and then fail at the reader, since a hosted page has no worker, no `<home>/ai/` directories and no `/api/fs/raw`, making every `url`, `previewUrl` and `output` a dead address. Gate them on `fused.env === "local"` yourself; nothing will stop you at export time. (Recorded as an open question in `docs/EXPORT.md`.)
+**The OTHER verbs are a trap in the opposite direction.** The check matches `fused.ai.text(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it — and then fail at the reader, since a hosted page has no worker, no `<home>/ai/` directories and no `/api/fs/raw`, making every `url`, `previewUrl` and `output` a dead address. Gate them on `fused.env === "local"` yourself; nothing will stop you at export time. (Recorded as an open question in `docs/EXPORT.md`.)
 
 **Same story for the Python client.** `export.py` does not copy `templates/shared/` into an exported bundle at all, so `import fused_ai` fails outright rather than resolving to a dead server — moot rather than dangerous, but worth knowing before you assume a `.py` data file survives export unchanged.
 

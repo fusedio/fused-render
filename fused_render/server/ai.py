@@ -30,7 +30,7 @@ router = APIRouter()
 
 # --- /api/ai — inference through the Claude Code CLI --------------------------
 #
-# fused.ai(prompt, opts) lands here. The shell invokes the `claude` binary the
+# fused.ai.text(prompt, opts) lands here. The shell invokes the `claude` binary the
 # user already has (Claude Code — its login is the credential) rather than
 # pages fetching a model directly: the page stays origin-clean (no API key or
 # endpoint baked into authored HTML), and the server is one place to grow
@@ -88,6 +88,12 @@ _AI_SHORT_MODEL_IDS = {
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }
+# The tiers a call can name (SPEC RH-11, D631). FIXED order, local first: the
+# boundary between them is where a prompt leaves the machine, and that is not
+# a preference a user reorders. A hosted gateway is the third entry when it
+# arrives — appended here, honoured below the two, and the wire already
+# carries the key it needs.
+_AI_PROVIDERS = ("local", "claude")
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
 # How often the remote-Claude activity row re-states itself while a call is in
@@ -133,8 +139,10 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # The slash is the SEAM (SPEC §40): a model id with an org in it names a repo on
 # disk, which means local inference, and one without it is a Claude alias. That
 # is not a heuristic — a Hub id always has the form `org/name`, and no Claude
-# alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
-# reach a local model with no new parameter and no change to any existing caller.
+# alias ever contains a slash — and it is what lets `fused.ai.text(prompt,
+# {model})` reach a local model with no `provider` spelled out. Since D631
+# the shape rule is the DEFAULT, not the only route: an explicit `provider`
+# pins the tier and this function is not consulted.
 #
 # **The seam gained a second shape (D411) and this is the one place it has to
 # be spelled out, because it is genuinely not a slash-shaped id.**
@@ -734,7 +742,7 @@ def _ai_result_payload(data: dict, requested_model: str):
     if isinstance(model_usage, dict) and len(model_usage) == 1:
         used_model = next(iter(model_usage))
     return {"text": text, "model": used_model,
-            "usage": _ai_usage(data.get("usage"))}, None
+            "usage": _ai_usage(data.get("usage")), "provider": "claude"}, None
 
 
 #: Who may speak in a supplied history. Deliberately not "system" — the system
@@ -1134,7 +1142,8 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
         return JSONResponse(
-            {"ok": True, "result": {"text": "".join(text), "model": model, "usage": usage}})
+            {"ok": True, "result": {"text": "".join(text), "model": model,
+                                    "usage": usage, "provider": "local"}})
 
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
@@ -1170,7 +1179,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                         "type": "done", "ok": ok,
                         **({"result": {
                             "text": "".join(text), "model": model,
-                            "usage": usage}}
+                            "usage": usage, "provider": "local"}}
                            if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
@@ -1212,7 +1221,41 @@ async def _ai_relay(body: dict):
     # `default_model` is module-level so the mapping is the only thing between
     # the pref and argv — an unmapped value falls through to the default rather
     # than being passed along.
+    # Which tier serves the call (SPEC RH-11, D631). Explicit `provider` pins
+    # it; omitted, the model's SHAPE picks it (`_is_local_model`): a repo id
+    # or GGUF filename is weights on this machine, anything else a Claude
+    # alias. For the two tiers that exist the shape rule IS the tier walk
+    # local -> claude, because the Claude alias set is closed and slash-free
+    # so no id can sit in both — the field earns its keep the day a tier
+    # arrives whose ids LOOK like repo ids (a hosted gateway's do), and it is
+    # on the wire now so that day adds a value, not a key.
+    provider = body.get("provider")
+    if provider is not None and provider not in _AI_PROVIDERS:
+        return _ai_error(
+            "bad_request",
+            "'provider' must be one of: %s" % ", ".join(_AI_PROVIDERS),
+            status=400)
+    # `provider: "local"` with no model has nothing to resolve: every default
+    # below is a Claude id, and handing one to the local relay would be a
+    # confident "no such repo" about a model the caller never named.
+    if provider == "local" and model is None:
+        return _ai_error(
+            "bad_request",
+            "'provider': 'local' needs 'model' — pick a repo id from "
+            "fused.ai.models.catalog(); the default model is a Claude alias",
+            status=400)
     model = model or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
+    # The other direction: a repo id or GGUF filename is not something the
+    # Claude CLI can run, and passing it through would surface as the CLI's
+    # own "unknown model" a subprocess hop later. Refused here, naming the
+    # tier that WOULD take it.
+    if provider == "claude" and _is_local_model(model):
+        return _ai_error(
+            "bad_request",
+            f"'provider': 'claude' cannot run {model!r}: a repo id or .gguf "
+            "filename is weights on this machine — drop 'provider' or send "
+            "'local'",
+            status=400)
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORTS:
         return _ai_error(
@@ -1285,8 +1328,9 @@ async def _ai_relay(body: dict):
 
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
-    # everything below this line is the Claude CLI's own path.
-    if _is_local_model(model):
+    # everything below this line is the Claude CLI's own path. An explicit
+    # provider decides; only an omitted one falls back to the model's shape.
+    if provider == "local" or (provider is None and _is_local_model(model)):
         # Sampling is checked INSIDE this branch, not above it, and the reason
         # is which sentence a bad value earns. These parameters do not exist on
         # the Claude path at all, so range-checking them first meant a
@@ -1754,7 +1798,7 @@ async def shutdown_ai_session():
 
 @router.post("/api/ai")
 async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    # fused.ai() — validation and the claude CLI hop live in _ai_relay
+    # fused.ai.text() — validation and the claude CLI hop live in _ai_relay
     # (module-level so tests can drive it with the subprocess mocked).
     guard = _require_fused(x_fused)
     if guard is not None:

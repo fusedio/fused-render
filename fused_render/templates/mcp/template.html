@@ -653,7 +653,7 @@ async function curate() {
     say("Asking the model to propose tools…");
     let res;
     try {
-      res = await fused.ai(
+      res = await fused.ai.text(
         "App surface (JSON):\n" + surfaceForModel()
           + "\n\nPropose the MCP tools for this app.",
         // `sonnet` NAMED, not left to resolve. Omitting `model` lands on the

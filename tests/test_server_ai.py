@@ -918,7 +918,7 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     # Same result schema as the non-streaming response.
     assert done["result"] == {
         "text": "hi there", "model": "claude-haiku-4-5-20251001",
-        "usage": {"input_tokens": 3, "output_tokens": 2}}
+        "usage": {"input_tokens": 3, "output_tokens": 2}, "provider": "claude"}
 
 
 def test_relay_stream_skips_thinking_deltas(monkeypatch):
@@ -1654,7 +1654,8 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
 
 
 def test_runtime_ships_ai():
-    assert "function ai(prompt, opts)" in RUNTIME
+    assert "function aiText(prompt, opts)" in RUNTIME
+    assert "text: aiText," in RUNTIME
     assert '"/api/ai"' in RUNTIME
     assert "ai," in RUNTIME  # registered on window.fused
 
@@ -1678,7 +1679,7 @@ def test_runtime_ai_streams_on_onchunk():
 
 
 def test_export_rejects_ai(tmp_path):
-    html = "<script>fused.ai('summarize this');</script>"
+    html = "<script>fused.ai.text('summarize this');</script>"
     plan = plan_export(html, str(tmp_path))
-    assert any("fused.ai() is not supported on a hosted page" in e
+    assert any("fused.ai.text() is not supported on a hosted page" in e
                for e in plan.errors)

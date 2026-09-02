@@ -2245,7 +2245,7 @@ async function generateMessage() {
   let received = "";
   setMessage("");
   try {
-    const result = await fused.ai(aiPrompt(payload), {
+    const result = await fused.ai.text(aiPrompt(payload), {
       systemPrompt: AI_SYSTEM,
       effort: "low",              // a commit message is not a thinking problem
       onChunk: (text) => {
@@ -2495,7 +2495,7 @@ async function resolveWithAI(path) {
   }
 
   try {
-    const result = await fused.ai(conflictPrompt(payload, entry), {
+    const result = await fused.ai.text(conflictPrompt(payload, entry), {
       systemPrompt: RESOLVE_SYSTEM,
       model: RESOLVE_MODEL,
       effort: "low",

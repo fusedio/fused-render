@@ -215,8 +215,11 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 // Runtime identity — "local" here, "hosted" on a deployed artifact (§18, RH-10)
 fused.env
 
-// Ask an AI model via the local claude (Claude Code) CLI (RH-11). Local-only.
-const { text, model, usage } = await fused.ai(prompt, {
+// Ask an AI model — the local claude (Claude Code) CLI, or a model resident on
+// this machine (RH-11, §40). Local-only. `fused.ai` is a namespace of verbs
+// (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
+const { text, model, usage, provider } = await fused.ai.text(prompt, {
+  provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
@@ -229,26 +232,36 @@ const { text, model, usage } = await fused.ai(prompt, {
   §18). It lets a page branch on where it runs — gating any local-only behaviour when
   `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
   it, so the check is a positive signal, not the absence of an API.
-- **RH-11** `fused.ai(prompt, opts?)` asks an AI model through the shell: the server's
-  `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** — the user's
-  existing Claude Code login is the credential; no API key or proxy to configure
-  (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on PATH). The
-  CLI runs as a pure one-shot completion (no tools, no settings/CLAUDE.md, no session
-  persistence, one turn). Resolves with exactly this shape — the server normalizes it,
-  so a page may read the fields without guarding:
+- **RH-11** `fused.ai.text(prompt, opts?)` asks an AI model through the shell: the
+  server's `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** —
+  the user's existing Claude Code login is the credential; no API key or proxy to
+  configure (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on
+  PATH) — or through a model resident on this machine (§40). The CLI runs as a pure
+  one-shot completion (no tools, no settings/CLAUDE.md, no session persistence, one
+  turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
+  `.image`/`.video`/`.transcribe`/`.embed`, and the former callable `fused.ai(prompt)`
+  is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
+  pins the **tier** that serves the call; omitted, the model's shape decides (a repo
+  id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
+  is the fixed tier walk local → claude. `provider: "local"` with no `model` is a
+  `bad_request` (every default is a Claude id); `provider: "claude"` with a repo id is
+  a `bad_request` naming the tier that would take it. Resolves with exactly this
+  shape — the server normalizes it, so a page may read the fields without guarding:
 
   ```json
   {
     "text": "the completion",
     "model": "claude-haiku-4-5-20251001",
-    "usage": { "input_tokens": 544, "output_tokens": 73 }
+    "usage": { "input_tokens": 544, "output_tokens": 73 },
+    "provider": "claude"
   }
   ```
 
   `text` string; `model` the **full model id that ran** (an alias request like
   `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
   `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
-  `prompt_tokens`/`completion_tokens`). Rejects with
+  `prompt_tokens`/`completion_tokens`); `provider` the tier that answered, so which
+  side of the machine boundary a call landed on is always inspectable. Rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
@@ -6344,10 +6357,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   `model` parameter already existed, and a value containing a **slash** is a
   Hugging Face repo id and therefore local, while one without is a Claude alias.
   That is not a heuristic — a Hub id is always `org/name` and no Claude alias
-  contains a slash. So `fused.ai(prompt, {model})` reaches a local model with no
-  new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
+  contains a slash. So `fused.ai.text(prompt, {model})` reaches a local model with
+  no new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
-  which is what keeps every page written before this working.
+  which is what keeps every page written before this working. Since D631 the shape
+  rule is the **default**, not the only route: an explicit `provider: "local" |
+  "claude"` (RH-11) pins the tier without consulting the model's shape, and the
+  reply's `provider` names the tier that answered on both paths and in both shapes.
 - **AI-1a** **A conversation and a stop, because a chat client needs both.**
   `prompt` stays the thing being asked NOW, and `history` carries the turns
   before it — so adding it changes no existing call, and the turns reach the
@@ -6365,7 +6381,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   and the CLI does not expose one — dropping it would answer a raw continuation
   as a chat turn, which is plausible text that is silently not what was asked.
 - **AI-1b** **The terminal frame carries the RESULT, on both tiers and in both
-  shapes.** `fused.ai()` resolves with `{text, model, usage}` whether or not the
+  shapes.** `fused.ai.text()` resolves with `{text, model, usage, provider}` whether or not the
   caller passed `onChunk`, so a page can stream and still use the return value —
   and a streamed local reply that closed with a bare `{"type":"done","ok":true}`
   is why this is a written rule rather than an obvious one: every token had
@@ -8696,7 +8712,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
-  keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
+  keystroke, a render loop calling `fused.ai.text()` per frame, and an idle machine
   were the same picture — as were a working chat box and one whose every call
   timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
   covering one hour, plus since-start totals, and `/ai-models/usage` draws
@@ -8792,7 +8808,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   persisting it would make a guess look like a setting the app stands behind.
 - **AI-13** **A resident local model's tenancy is TIME-BOUNDED: a model
   nothing has used for ten minutes (default) unloads itself, and the next
-  `fused.ai(...)` reloads it exactly as a cold first call already does.**
+  `fused.ai.text(...)` reloads it exactly as a cold first call already does.**
   Before this, the one way a model's gigabytes came back was the user closing
   the app or picking a different one — a page opened once at 9am and never
   used again holds its weights until quit. `fused_render/ai/supervisor.py`
@@ -10412,7 +10428,7 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   filter; loud `AppFileError`s.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
-- **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
+- **AF-3** `fused.ai.text()` SHIPS, unlike the hosted exporter (RH-11 does not
   apply — D388 reversed D385's original stance): an opened `.fused` runs
   inside the recipient's full local runtime, where `/api/ai` exists. A
   recipient without the claude CLI or a resident local model gets the API's

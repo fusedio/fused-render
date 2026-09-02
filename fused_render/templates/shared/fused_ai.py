@@ -430,12 +430,19 @@ def _raise_for_terminal_job(job: dict) -> None:
 
 
 def text(prompt: str, model: str | None = None, effort: str | None = None,
-         system_prompt: str | None = None, timeout: float = _DEFAULT_TIMEOUT_S) -> str:
-    """`POST /api/ai` and return the completion text. Mirrors `fused.ai()`
-    without `onChunk` — see `stream()` for the streaming form."""
+         system_prompt: str | None = None, provider: str | None = None,
+         timeout: float = _DEFAULT_TIMEOUT_S) -> str:
+    """`POST /api/ai` and return the completion text. Mirrors `fused.ai.text()`
+    without `onChunk` — see `stream()` for the streaming form.
+
+    `provider` is `"local"` or `"claude"` — which tier serves the call. Left
+    `None`, the server picks from the model's shape (a repo id or `.gguf`
+    filename is local, anything else Claude), exactly as the JS side does."""
     body: dict = {"prompt": prompt}
     if model is not None:
         body["model"] = model
+    if provider is not None:
+        body["provider"] = provider
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:
@@ -448,9 +455,11 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
 
 
 def stream(prompt: str, model: str | None = None, effort: str | None = None,
-           system_prompt: str | None = None, timeout: float = _DEFAULT_TIMEOUT_S):
+           system_prompt: str | None = None, provider: str | None = None,
+           timeout: float = _DEFAULT_TIMEOUT_S):
     """`POST /api/ai` with `{"stream": true}` and yield text chunks as they
-    arrive, mirroring `fused.ai(prompt, {onChunk})`.
+    arrive, mirroring `fused.ai.text(prompt, {onChunk})`. `provider` as in
+    `text()`.
 
     The NDJSON body is `{"type":"chunk","text":...}` lines closed by one
     `{"type":"done", ...}` line. A `done` frame with `ok: false` is an error
@@ -461,6 +470,8 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
     body = {"prompt": prompt, "stream": True}
     if model is not None:
         body["model"] = model
+    if provider is not None:
+        body["provider"] = provider
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:

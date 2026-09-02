@@ -1194,7 +1194,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     c.aiInput.disabled = true;
     const isMd = c.model.cell_type === "markdown";
     try {
-      const res = await fused.ai(prompt, {
+      const res = await fused.ai.text(prompt, {
         systemPrompt: isMd ? AI_SYSTEM_MD : AI_SYSTEM_CODE,
         effort: "low",
         onChunk: (t) => {
