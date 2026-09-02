@@ -69,7 +69,9 @@ def _no_token(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _no_format_filter(monkeypatch):
     """Every test here starts with an active text engine that filters no format,
-    and the handful that care about the format filter override it.
+    NO secondary GGUF-capable runner available either, and the handful that care
+    about the format filter (or D638's secondary-runner pick) override one or
+    both.
 
     Without this the module's assertions depend on the HOST, and D416 is what
     made that bite. `hub._model_row` narrows a text-generation search by the
@@ -82,8 +84,16 @@ def _no_format_filter(monkeypatch):
     designed. Pinning it makes the DEFAULT explicit and the format-filter tests
     the deliberate exception they already read as (`_gguf_runner` below), and it
     is the same reasoning `_no_token` above applies to a developer's Hub login.
+
+    `available_runners` is pinned to `()` for the identical reason (D638, the
+    fix-builder round that added it): left real, this Mac's own registry (both
+    `mlx-text` AND `llamacpp-text` genuinely available here) would make the
+    secondary-runner GGUF pick fire on `siblings` fixtures that were never
+    written to exercise it, and pass or fail by an accident of which machine
+    ran the suite — exactly the trap D638's own test file comment warns about.
     """
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    monkeypatch.setattr(hub, "available_runners", lambda capability: ())
 
 
 @pytest.fixture()
@@ -307,13 +317,15 @@ def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
 # second request.
 
 
-def _gguf_runner(tags=("gguf",)):
-    """A stand-in for whatever runner `registry.for_capability` resolves to,
-    carrying only the one field `_model_row` reads. Not a real `Runner` —
-    this module's own resolution is under test, not the registry's."""
+def _gguf_runner(tags=("gguf",), code="stand-in"):
+    """A stand-in for whatever runner `registry.for_capability` (or
+    `registry.available_runners`) resolves to, carrying only the fields
+    `_model_row` reads. Not a real `Runner` — this module's own resolution is
+    under test, not the registry's. `code` matters once there are TWO stand-ins
+    in play (D638's secondary-runner pick tells them apart by `.code`)."""
     import types as _types
 
-    return _types.SimpleNamespace(hub_filter_tags=tags)
+    return _types.SimpleNamespace(hub_filter_tags=tags, code=code)
 
 
 def test_a_gguf_repo_resolves_to_the_pickers_choice_when_llamacpp_is_active(
@@ -341,18 +353,75 @@ def test_a_gguf_repo_with_nothing_loadable_is_dropped_when_llamacpp_is_active(
     assert models == []
 
 
-def test_a_gguf_row_carries_no_file_when_the_active_engine_is_not_llamacpp(
+def test_a_gguf_row_carries_no_file_when_no_available_runner_speaks_gguf(
         client, hub_cache, monkeypatch):
     """When the capability's active runner declares no format tag at all —
-    the `mlx-text` case — a repo is not resolved or dropped
-    by the picker, whatever its `siblings` look like: `file` is simply
-    absent from the answer, the same as it always was before D412."""
+    the `mlx-text` case — AND no other runner available here does either
+    (D638's `available_runners`, empty per the autouse fixture), a repo is
+    not resolved or dropped by the picker, whatever its `siblings` look
+    like: `file` is simply absent from the answer, the same as it always was
+    before D412 and D638."""
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
         {"rfilename": "m-mmproj-F16.gguf"},
     ])]))
     row = _search(client).json()["models"][0]
     assert row["file"] is None
+
+
+def test_a_gguf_repo_resolves_via_an_available_but_not_preferred_runner(
+        client, hub_cache, monkeypatch):
+    """D638 — the reviewer-caught defect: `mlx-text` (no format tag) is the
+    ACTIVE runner, but `llamacpp-text` is genuinely AVAILABLE here (just not
+    preferred). The GGUF pick must still resolve against it — `file`, and
+    everything downstream that depends on it (`quant`), must not be `None`
+    just because llama.cpp is the second choice rather than the first."""
+    active = _gguf_runner(tags=(), code="mlx-text")
+    secondary = _gguf_runner(tags=("gguf",), code="llamacpp-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: active)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (active, secondary))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/gguf-on-a-mac", siblings=[
+        {"rfilename": "x-Q8_0.gguf"}, {"rfilename": "x-Q4_K_M.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q4_K_M.gguf"
+    assert row["quant"] == "Q4_K_M"
+
+
+def test_a_gguf_repo_stays_unresolved_when_only_the_active_runner_is_available(
+        client, hub_cache, monkeypatch):
+    """The mirror case: `available_runners` reports ONLY the active runner
+    (nothing else here can load GGUF at all) — the secondary-pick loop must
+    not somehow resolve against itself or fabricate a runner. `file` stays
+    `None`, same as the no-secondary-runner-at-all case."""
+    active = _gguf_runner(tags=(), code="mlx-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: active)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (active,))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
+        {"rfilename": "x-Q4_K_M.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
+
+
+def test_a_secondary_runner_finding_nothing_loadable_does_not_drop_the_row(
+        client, hub_cache, monkeypatch):
+    """D412's drop is the ACTIVE runner's own verdict, not a secondary
+    runner's. `mlx-text` is active and declares no tag (so it never asks for
+    a pick at all); `llamacpp-text` is available but finds nothing loadable
+    among the siblings (an auxiliary-only GGUF, same fixture shape as the
+    D412 drop test above). The row must survive with `file=None` — it is
+    NOT the same as the active runner itself failing its own pick."""
+    active = _gguf_runner(tags=(), code="mlx-text")
+    secondary = _gguf_runner(tags=("gguf",), code="llamacpp-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: active)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (active, secondary))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/only-a-projector", siblings=[
+        {"rfilename": "m-mmproj-F16.gguf"},
+    ])]))
+    models = _search(client).json()["models"]
+    assert len(models) == 1
+    assert models[0]["file"] is None
 
 
 def test_a_gguf_row_carries_no_file_when_nothing_serves_the_capability_here(

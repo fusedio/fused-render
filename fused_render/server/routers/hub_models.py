@@ -122,7 +122,7 @@ from fastapi import APIRouter, Body, Header
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
 from fused_render.ai import tasks as ai_tasks
-from fused_render.ai.registry import TEXT_GENERATION, for_capability
+from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
@@ -643,6 +643,26 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
       capability existence alone, and is therefore the one exception to this
       module's "search does not depend on the host" rule.
 
+    **(D638) A GGUF pick is not limited to the ACTIVE runner.** D412 reads as
+    "the active runner decides", but a Mac with `mlx-text` active and
+    `llamacpp-text` merely AVAILABLE (not preferred) was falling through
+    every GGUF-only repo with `file` left `None` — no drop (mlx-text
+    declares no format tag, so the D412 branch above never runs), but no
+    resolution either, so `quant`/`params`/`estimatedSize`/`fit` were all
+    `None` and the client's lazy per-file size lookup (keyed on `file`)
+    never fired, leaving the repo's whole-repo `usedStorage` as the only
+    number the page had — a multi-quant repo's TOTAL standing in for one
+    file's size. So the GGUF pick is tried against the active runner FIRST
+    (unchanged), and — only when the active runner declares no format tag at
+    all — against the first OTHER runner this machine has AVAILABLE for the
+    same capability that does declare one (`registry.available_runners`).
+    Still no outbound Hub request: `pick_gguf_file` reads the same `siblings`
+    already on the row. The drop rule above is UNCHANGED — it fires only when
+    the ACTIVE runner itself needed a pick and found none; a repo the
+    secondary runner also cannot resolve simply keeps `file=None`, same as
+    before this fix, because the active runner never asked to be a gatekeeper
+    for a format it does not speak.
+
     **`gated` is NOT a drop, and the distinction is the point** (D316). It was
     one, on the rule that every card must be downloadable — a rule drawn one
     step too tight. A gate you open by signing in and accepting a licence is
@@ -692,7 +712,22 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         return None
     file = None
     runner = for_capability(capability)
+    gguf_runner = None
     if runner is not None and "gguf" in runner.hub_filter_tags:
+        gguf_runner = runner
+    elif runner is not None:
+        # D638: the active runner speaks no format this picker knows, but
+        # another runner registered for the SAME capability may still be
+        # able to load this repo — merely not preferred, not unavailable.
+        # Only tried when the active runner itself declared no tag at all;
+        # an active runner that DID declare one and found nothing already
+        # took the drop branch above, and that verdict is the active
+        # runner's alone to make (see the docstring's D638 paragraph).
+        for candidate in available_runners(capability):
+            if candidate.code != runner.code and "gguf" in candidate.hub_filter_tags:
+                gguf_runner = candidate
+                break
+    if gguf_runner is not None:
         # The one runner-specific branch in this module (see the docstring's
         # last section) — `pick_gguf_file` is a GGUF-specific function, and
         # `hub_filter_tags` names the FILTER TAG generically but not the
@@ -703,7 +738,10 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
                  if isinstance(siblings, list) else [])
         file = formats.pick_gguf_file(names)
-        if file is None:
+        if file is None and gguf_runner is runner:
+            # Only the ACTIVE runner's own inability to resolve a pick drops
+            # the row (D412) — a secondary runner finding nothing is not a
+            # verdict the active runner ever asked for.
             return None
     safetensors = raw.get("safetensors")
     config = raw.get("config")

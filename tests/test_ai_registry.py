@@ -118,6 +118,37 @@ def test_windows_resolves_to_onnx_embed(monkeypatch):
     assert resolved is not None and resolved.code == "onnx-embed"
 
 
+# -- D638: `available_runners`, the whole-set counterpart to `for_capability` -
+
+
+def test_available_runners_on_apple_silicon_lists_both_text_engines(monkeypatch):
+    """The fix-builder round's live premise on this exact Mac: `mlx-text` is
+    preferred (`for_capability`), but `llamacpp-text` is ALSO available here —
+    just not preferred. `available_runners` is what a caller uses to find that
+    second runner, and it must actually list it, in registration order (`mlx-text`
+    ahead of `llamacpp-text`, matching `for_capability`'s own AUTO tie-break)."""
+    _mac_arm(monkeypatch)
+    codes = [r.code for r in registry.available_runners(registry.TEXT_GENERATION)]
+    assert "mlx-text" in codes and "llamacpp-text" in codes
+    assert codes.index("mlx-text") < codes.index("llamacpp-text")
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+
+
+def test_available_runners_excludes_a_platform_that_cannot_run_it(monkeypatch):
+    """`llamacpp-text` has no macOS x86_64 wheel (`_llamacpp_platform`'s own
+    docstring) — Intel Mac must not appear as "available" for a format it could
+    never actually install."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    codes = [r.code for r in registry.available_runners(registry.TEXT_GENERATION)]
+    assert "llamacpp-text" not in codes
+
+
+def test_available_runners_is_empty_for_a_capability_nothing_here_serves(monkeypatch):
+    _windows(monkeypatch)
+    assert registry.available_runners(registry.VIDEO_GENERATION) == ()
+
+
 def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
     """`onnxruntime-directml` publishes `win_amd64` and nothing else, so the row
     is Windows/AMD64 by construction. Unlike `_vulkan` there is no loader or
