@@ -127,13 +127,23 @@ def current_version() -> int:
     return vs[-1] if vs else 0
 
 
+# The first words of every migration task's prompt — how a stored task is
+# recognised as a migration (`server/routers/apps.py::_live_migration_task`)
+# without a second field on the schedule entry.
+MIGRATION_PROMPT_PREFIX = "Migrate this fused-render app from fused API version "
+
+
+def is_migration_prompt(message: str) -> bool:
+    return str(message or "").startswith(MIGRATION_PROMPT_PREFIX)
+
+
 def migration_prompt(entry_html: str, from_version: int, to_version: int) -> str:
     """The migration task's text: invoke the skill, name the jump. The skill
     carries the procedure and the per-version notes; repeating them here
     would be the second copy the skill exists to prevent."""
     entry_name = os.path.basename(entry_html)
     return (
-        f"Migrate this fused-render app from fused API version {from_version} "
+        f"{MIGRATION_PROMPT_PREFIX}{from_version} "
         f"to version {to_version}. Invoke the `{MIGRATION_SKILL_QUALIFIED}` "
         f"skill and follow it end to end — it reads the per-version notes, "
         f"updates every file in this folder that uses the `fused` runtime, and "

@@ -199,6 +199,9 @@ type Resolved =
       // Null from an older server that does not report versions.
       apiVersion: number | null;
       currentApiVersion: number | null;
+      // A migration task on the entry that has not finished yet (the server's
+      // own verdict), so a reload does not offer a second one.
+      migrationTask: { id: string; state: string; run_id: string | null } | null;
     };
 
 export default function AppPage({
@@ -284,6 +287,7 @@ export default function AppPage({
             entry: info.entry,
             apiVersion: info.api_version ?? null,
             currentApiVersion: info.current_api_version ?? null,
+            migrationTask: info.migration_task ?? null,
           });
       } catch (e) {
         if (live) setResolved({ kind: "error", message: (e as Error).message });
@@ -382,6 +386,10 @@ export default function AppPage({
     resolved.apiVersion != null &&
     resolved.currentApiVersion != null &&
     resolved.apiVersion < resolved.currentApiVersion;
+  // A migration already underway (server-side fact, survives a reload): the
+  // button shows it instead of offering another. Clicking it opens the Tasks
+  // tab, where the task is listed.
+  const inProgress = resolved?.kind === "app" && !!resolved.migrationTask;
   // `created` is sticky for this page: the entry still declares the OLD
   // version until the session writes the tag, so `behind` stays true and the
   // button would otherwise come straight back, inviting a second task that
@@ -439,21 +447,29 @@ export default function AppPage({
                  changelog for every version being crossed. */
               <Button
                 size="sm"
-                variant="default"
                 className="app-page-migrate"
-                disabled={migrateState !== "idle"}
+                variant={inProgress ? "outline" : "default"}
+                disabled={!inProgress && migrateState !== "idle"}
                 title={
-                  migrateState === "created"
-                    ? "A migration task was created for this app; it is listed under Tasks. The button returns once the page is reloaded."
-                    : `This app declares fused API version ${resolved.apiVersion}; the runtime is on ${resolved.currentApiVersion}. Creates a task that updates the code and the tag.`
+                  inProgress
+                    ? "A migration task for this app is still running; it is listed under Tasks. The button returns once it finishes."
+                    : migrateState === "created"
+                      ? "A migration task was created for this app; it is listed under Tasks."
+                      : `This app declares fused API version ${resolved.apiVersion}; the runtime is on ${resolved.currentApiVersion}. Creates a task that updates the code and the tag.`
                 }
-                onClick={startMigration}
+                onClick={
+                  inProgress
+                    ? () => navigateUrl(appPageUrl(dir, "tasks", location.search))
+                    : startMigration
+                }
               >
-                {migrateState === "creating"
-                  ? "Creating task…"
-                  : migrateState === "created"
-                    ? "Migration task created"
-                    : `Migrate to API v${resolved.currentApiVersion}`}
+                {inProgress
+                  ? "Migration in progress"
+                  : migrateState === "creating"
+                    ? "Creating task…"
+                    : migrateState === "created"
+                      ? "Migration task created"
+                      : `Migrate to API v${resolved.currentApiVersion}`}
               </Button>
             )}
             {/* The app full-size in the explorer (its entry page), in a new tab

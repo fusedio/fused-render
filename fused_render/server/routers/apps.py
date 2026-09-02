@@ -457,7 +457,42 @@ def api_app_entry(path: str):
         # Null when there is no entry to read it off.
         "api_version": fused_api_version.api_version(entry) if entry else None,
         "current_api_version": fused_api_version.current_version(),
+        # A migration task on this entry that has not finished — the button
+        # reads "in progress" instead of offering a second one. Null when none.
+        "migration_task": _live_migration_task(entry) if entry else None,
     }
+
+
+def _live_migration_task(entry_html: str) -> dict | None:
+    """The stored migration task on `entry_html` that is still LIVE — pending,
+    sending, or sent with no `turn` verdict yet — as `{id, state, run_id}`, or
+    None. A migration is recognised by its prompt's fixed first words
+    (`fused_api_version.is_migration_prompt`); "finished" is the schedule's own
+    verdict (`turn` is stamped ok/failed/cancelled when the run closes), so a
+    session that died without writing the tag frees the button again rather
+    than pinning it forever. The tag on disk stays the one truth about whether
+    the migration LANDED — this only says whether one is underway."""
+    want = os.path.realpath(entry_html)
+    try:
+        entries = schedule.list_entries()
+    except Exception:  # noqa: BLE001 — a store that cannot be read is "none live"
+        return None
+    for e in entries:
+        if e.get("state") not in (schedule.PENDING, schedule.SENDING, schedule.SENT):
+            continue
+        if e.get("turn"):
+            continue
+        if not fused_api_version.is_migration_prompt(e.get("message")):
+            continue
+        target = str(e.get("target") or "")
+        if not target or os.path.realpath(target) != want:
+            continue
+        return {
+            "id": str(e.get("id") or ""),
+            "state": str(e.get("state") or ""),
+            "run_id": e.get("run_id") or None,
+        }
+    return None
 
 
 @router.post("/api/apps/migrate")
@@ -505,6 +540,9 @@ def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default
         return _error(
             f"already on fused API version {from_version} (current is {to_version})",
             status=409)
+    if _live_migration_task(entry_html) is not None:
+        return _error("a migration task for this app is already in progress",
+                      status=409)
 
     prompt = fused_api_version.migration_prompt(entry_html, from_version, to_version)
     task, task_error = _create_app_task(entry_html, prompt, model, effort)

@@ -2240,6 +2240,10 @@ export interface AppEntryInfo {
   // Both optional so an older server (entry only) still types.
   api_version?: number | null;
   current_api_version?: number;
+  // A migration task on this entry that has not finished (pending, sending,
+  // or running with no verdict yet) — the button reads "in progress" instead
+  // of offering a second one. Null / absent when none.
+  migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
 export function getAppEntry(path: string): Promise<AppEntryInfo> {
