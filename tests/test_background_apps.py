@@ -1139,6 +1139,29 @@ def test_api_status_not_running_and_autostart_false_on_a_never_configured_app(
     assert body["pid"] is None
 
 
+def test_api_status_reports_daemon_protocol_for_a_daemon_folder(client, tmp_path):
+    folder = _bg_folder(tmp_path)  # daemon = "daemon.py"
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.json()["protocol"] == "daemon"
+
+
+def test_api_status_reports_main_protocol_for_a_main_folder(client, tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.json()["protocol"] == "main"
+
+
+def test_api_status_reports_null_protocol_for_a_folder_with_no_manifest(
+        client, tmp_path):
+    folder = _make_app(tmp_path, table=False)
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.status_code == 200
+    assert resp.json()["protocol"] is None
+
+
 def test_api_start_leaves_autostart_false_on_status(client, tmp_path, monkeypatch):
     # The end-to-end proof of the opt-in default through the real API: start
     # the app, then read status() back — autostart must still read False.

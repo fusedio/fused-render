@@ -107,12 +107,19 @@ async def api_background_status(html: str = ""):
     autostart = folder in await asyncio.to_thread(background_apps.autostart_paths)
     child = engine_host.current(engine_id)
     running = child is not None and engine_host._alive(child)
+    # "protocol" tells the runtime which page-side method the folder wants:
+    # "main" for the shipped worker's single /call route, "daemon" for the
+    # author's own HTTP surface, None when the folder has no valid manifest
+    # at all (still a 200 here — this endpoint always answers).
+    manifest = await asyncio.to_thread(background_apps.load_manifest, folder)
+    protocol = None if manifest is None else ("main" if manifest.main else "daemon")
     return {
         "running": running,
         "autostart": autostart,
         "pid": child.pid if running else None,
         "version": child.version if child is not None else None,
         "engine_id": engine_id,
+        "protocol": protocol,
     }
 
 
