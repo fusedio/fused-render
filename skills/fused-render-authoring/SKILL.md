@@ -32,7 +32,10 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <head>
 <meta charset="utf-8" />
 <meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
 ```
+
+**Declare the fused API version beside it: `<meta name="fused-api-version" content="1" />`** (the starter carries it; `1` is the current version). It records which shape of the `fused` runtime the page was authored against. A page without the tag is version 0. When the API changes in a breaking way, the app page shows a **Migrate** button that opens a task on the entry page carrying the changelog for every version being crossed (`fused_render/fused_api_migrations.json`); that task updates the code and bumps the tag. Authoring a new page: use the current version. Adding a breaking change to the runtime: add a changelog entry and bump the starter's tag — the procedure is in `fused_render/fused_api_version.py`.
 
 **Optional app icon: `icon.svg`.** An `icon.svg` next to the entry page becomes the app's sidebar glyph and tab favicon, rendered as is. Designing one (own background, both themes, 14–16 px legibility) → **`fused-render-app-icon`**.
 

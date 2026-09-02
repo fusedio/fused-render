@@ -1174,16 +1174,16 @@ def test_app_entry_endpoint_answers_by_the_marker_rule(client, workspace, tmp_pa
     # the rule from filenames (D301) — any folder may be asked, workspace or not.
     d = _app_dir(workspace, "sine", htmls=("main.html",))
     r = client.get("/api/apps/entry", params={"path": str(d)})
-    assert r.json() == {"entry": str(d / "main.html")}
+    assert r.json()["entry"] == str(d / "main.html")
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "index.html").write_text("<html></html>")  # untagged: no entry
     assert client.get("/api/apps/entry",
-                      params={"path": str(plain)}).json() == {"entry": None}
+                      params={"path": str(plain)}).json()["entry"] is None
     assert client.get("/api/apps/entry",
-                      params={"path": "relative/nope"}).json() == {"entry": None}
+                      params={"path": "relative/nope"}).json()["entry"] is None
     assert client.get("/api/apps/entry",
-                      params={"path": str(tmp_path / "gone")}).json() == {"entry": None}
+                      params={"path": str(tmp_path / "gone")}).json()["entry"] is None
 
 
 def test_rendering_an_external_marked_page_registers_the_folder(

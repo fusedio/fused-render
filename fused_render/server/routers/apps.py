@@ -61,7 +61,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 
-from fused_render import app_listing, schedule
+from fused_render import app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -441,16 +441,82 @@ def api_app_entry(path: str):
     workspace or not; an unreadable or entry-less one is `entry: null`."""
     from fused_render.index.ignore import MountGuard
 
+    entry = None
+    if isinstance(path, str) and os.path.isabs(path) and not MountGuard().blocks(path):
+        try:
+            if os.path.isdir(path):
+                entry = app_listing.app_entry(path)
+        except OSError:
+            entry = None
+    return {
+        "entry": entry,
+        # The fused page API version the entry declares (`<meta
+        # name="fused-api-version">`, 0 when undeclared — every app authored
+        # before the tag existed) beside the version the runtime speaks now.
+        # The app page's "Migrate" button is `api_version < current_api_version`.
+        # Null when there is no entry to read it off.
+        "api_version": fused_api_version.api_version(entry) if entry else None,
+        "current_api_version": fused_api_version.current_version(),
+    }
+
+
+@router.post("/api/apps/migrate")
+def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Create the MIGRATION task: move the app's entry page (and the rest of
+    the folder that speaks `fused`) from the fused API version it declares to
+    the current one. The prompt carries the changelog for every version being
+    crossed — v2 → v5 attaches v3 + v4 + v5 (`fused_api_version.migration_prompt`)
+    — and lands on the entry page, the same shape and the same seam as the
+    scaffolding task `/api/apps/new` creates, so the app's Tasks tab lists it
+    and the Claude pane can attach to its run. The version tag itself is the
+    session's to write (step 2 of the prompt): stamping it here would declare a
+    migration done before the code moved."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
     if not isinstance(path, str) or not os.path.isabs(path):
-        return {"entry": None}
-    if MountGuard().blocks(path):
-        return {"entry": None}
+        return _error("'path' must be an absolute folder path")
+    model = body.get("model", "")
+    effort = body.get("effort", "")
+    for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
+                                  ("effort", effort, _VALID_SESSION_EFFORTS)):
+        err = _session_choice_error(field, value, allowed)
+        if err is not None:
+            return _error(err)
+
+    from fused_render.index.ignore import MountGuard
+
+    if MountGuard().blocks(path) or not os.path.isdir(path):
+        return _error("no such app folder", status=404)
     try:
-        if not os.path.isdir(path):
-            return {"entry": None}
-        return {"entry": app_listing.app_entry(path)}
+        entry_html = app_listing.app_entry(path)
     except OSError:
-        return {"entry": None}
+        entry_html = None
+    if not entry_html:
+        return _error('this folder has no app entry page (no <meta name="fused-app">)',
+                      status=404)
+
+    from_version = fused_api_version.api_version(entry_html)
+    to_version = fused_api_version.current_version()
+    if from_version >= to_version:
+        return _error(
+            f"already on fused API version {from_version} (current is {to_version})",
+            status=409)
+
+    prompt = fused_api_version.migration_prompt(entry_html, from_version, to_version)
+    task, task_error = _create_app_task(entry_html, prompt, model, effort)
+    return {
+        "path": os.path.abspath(path),
+        "entry_html": entry_html,
+        "from_version": from_version,
+        "to_version": to_version,
+        # Same two keys as /api/apps/new, same meaning: the stored entry with
+        # its `run_id` once the send resolved, and why no entry was stored.
+        "task": task,
+        "task_error": task_error,
+    }
 
 
 # The authored thumbnail's cap and signature — the same two the .fused

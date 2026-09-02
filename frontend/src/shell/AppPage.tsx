@@ -52,6 +52,7 @@ import {
   appIconUrl,
   getAppEntry,
   getAppIcon,
+  migrateApp,
   resolveConditions,
   statPath,
   type Config,
@@ -70,6 +71,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { appLandingUrl } from "@apps/builder/HomeHero";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -188,7 +191,15 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
 type Resolved =
   | { kind: "missing" }
   | { kind: "error"; message: string }
-  | { kind: "app"; entry: string | null };
+  | {
+      kind: "app";
+      entry: string | null;
+      // The fused API version the entry declares (0 = undeclared, predates
+      // the tag) and the one the runtime speaks; "Migrate" shows when behind.
+      // Null from an older server that does not report versions.
+      apiVersion: number | null;
+      currentApiVersion: number | null;
+    };
 
 export default function AppPage({
   dir,
@@ -266,8 +277,14 @@ export default function AppPage({
         // The server's entry rule (D269/D301), asked at open time — the same
         // question every other surface asks, so this page can never disagree
         // with the card that pictures the app.
-        const { entry } = await getAppEntry(dir);
-        if (live) setResolved({ kind: "app", entry });
+        const info = await getAppEntry(dir);
+        if (live)
+          setResolved({
+            kind: "app",
+            entry: info.entry,
+            apiVersion: info.api_version ?? null,
+            currentApiVersion: info.current_api_version ?? null,
+          });
       } catch (e) {
         if (live) setResolved({ kind: "error", message: (e as Error).message });
       }
@@ -353,6 +370,44 @@ export default function AppPage({
   const home = config.home.replace(/\\/g, "/");
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
+  // The fused-API migration: offered only when the entry declares a version
+  // behind the runtime's (an undeclared page is 0, so every pre-tag app
+  // qualifies — the task's prompt tells the session to verify the code
+  // before touching it). One click creates the task on the entry page (the
+  // /api/apps/new shape) and lands in the Claude pane on its run; an app that
+  // could not even get its task stores the reason here, not silently.
+  const behind =
+    resolved?.kind === "app" &&
+    !!entry &&
+    resolved.apiVersion != null &&
+    resolved.currentApiVersion != null &&
+    resolved.apiVersion < resolved.currentApiVersion;
+  const [migrating, setMigrating] = useState(false);
+  const [migrateError, setMigrateError] = useState<string | null>(null);
+  const startMigration = async () => {
+    if (migrating) return;
+    setMigrating(true);
+    setMigrateError(null);
+    try {
+      const res = await migrateApp(dir);
+      if (res.task) announceTasksChanged();
+      if (res.task_error) {
+        setMigrateError(res.task_error);
+        return;
+      }
+      if (res.task?.run_id) {
+        navigateUrl(appLandingUrl(res.entry_html, res.task.run_id));
+      } else {
+        // Stored but not yet running: the Tasks tab lists it.
+        navigateUrl(appPageUrl(dir, "tasks", location.search));
+      }
+    } catch (e) {
+      setMigrateError((e as Error).message);
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   return (
     <div className="app-page">
       <header className="app-page-head">
@@ -365,19 +420,41 @@ export default function AppPage({
           </a>
         </div>
         {entry && (
-          /* The app full-size in the explorer (its entry page), in a new tab
-             so this page and its live frame stay put. */
-          <Button
-            size="sm"
-            variant="outline"
-            className="app-page-open"
-            onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
-          >
-            Open app
-            <ExternalLink data-icon="inline-end" />
-          </Button>
+          <div className="app-page-actions">
+            {behind && resolved?.kind === "app" && (
+              /* The app is on an older fused API than the runtime: one click
+                 creates the migration task on its entry page, carrying the
+                 changelog for every version being crossed. */
+              <Button
+                size="sm"
+                variant="default"
+                className="app-page-migrate"
+                disabled={migrating}
+                title={`This app declares fused API version ${resolved.apiVersion}; the runtime is on ${resolved.currentApiVersion}. Creates a task that updates the code and the tag.`}
+                onClick={startMigration}
+              >
+                {migrating
+                  ? "Creating task…"
+                  : `Migrate to API v${resolved.currentApiVersion}`}
+              </Button>
+            )}
+            {/* The app full-size in the explorer (its entry page), in a new tab
+                so this page and its live frame stay put. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="app-page-open"
+              onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
+            >
+              Open app
+              <ExternalLink data-icon="inline-end" />
+            </Button>
+          </div>
         )}
       </header>
+      {migrateError && (
+        <ErrorBanner>Could not create the migration task: {migrateError}</ErrorBanner>
+      )}
 
       <div className="app-page-body">
         {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
