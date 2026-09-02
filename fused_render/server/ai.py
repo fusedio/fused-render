@@ -901,12 +901,16 @@ def _resolve_images(images: list, base) -> tuple[list | None, str | None]:
     resolved = []
     for path in images:
         path = os.path.expanduser(path)
+        # An absolute path passes through UNTOUCHED — not through abspath(),
+        # which on Windows would rewrite a POSIX-rooted "/Users/x/a.png" to
+        # "D:\\Users\\x\\a.png" (CI caught exactly that). Only a relative
+        # path is joined and normalised.
         if not os.path.isabs(path):
             if not isinstance(base, str) or not os.path.isabs(base):
                 return None, ("'images' must be absolute, or relative to a page "
                               "named by 'base'")
-            path = os.path.join(os.path.dirname(base), path)
-        resolved.append(os.path.abspath(path))
+            path = os.path.abspath(os.path.join(os.path.dirname(base), path))
+        resolved.append(path)
     return resolved, None
 
 
