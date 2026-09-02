@@ -1535,27 +1535,28 @@ def _select_budget_victims(capability: str, model: str, footprint: float | None,
     cause — so a busy worker is filtered out before ranking even starts, not
     merely ranked last.
 
-    **A candidate must also be idle BY THE SAME CLOCK `reap_idle` uses** —
-    `now - last_activity >= prefs.effective_ai_idle_unload_minutes() * 60` —
-    not merely `ready` with nothing in flight. A worker that answered a
-    request ten seconds ago is not "idle" in any sense a user would recognize
-    just because nothing is running on it this instant; evicting it to make
-    room for a page's very next call is the chat-model/image-model ping-pong
-    the module docstring's coexistence promise exists to prevent, trading a
-    coexistence problem for a "everything reloads from cold on every switch"
-    problem that is worse. Given a genuine choice between spawning into
-    contention (finding 1's cross-capability case, refused when there is
-    something to refuse against) and reaping a model a human is actively
-    switching between, refusing — and telling the caller why — is the
-    honest answer; evicting silently is not. When the idle-unload preference
-    itself is disabled (`minutes <= 0`), nothing here is idle either, which
-    matches `reap_idle`'s own "disabled means never" reading of the same
-    preference.
+    **The idle window (`prefs.effective_ai_idle_unload_minutes()`) ranks
+    candidates, it does not filter them.** Every `ready`, not-in-flight
+    worker is eligible; the ones past
+    `now - last_activity >= idle_window` are simply preferred victims,
+    walked first in LRU order, before any worker that answered a request
+    more recently is even considered. A request being served right now
+    beats a warm model that is not serving anything — so a recently-used
+    worker is only evicted when the past-window ones do not cover the
+    shortfall on their own. This is deliberately NOT a hard floor: a user
+    who renders an image and thirty seconds later asks a chat model a
+    question is not going to wait out a multi-minute idle window for that
+    to work, and refusing the load outright when eviction would have made
+    it fit is exactly as unacceptable as the OOM this whole gate exists to
+    prevent. When the idle-unload preference itself is disabled
+    (`minutes <= 0`), nothing is ever past-window, which only affects
+    ordering — the full candidate set (recency floor aside) is still
+    eligible.
 
-    **All-or-nothing: if the FULL set of idle candidates would not free
-    enough room, nothing is evicted at all.** Silently evicting a pile of
-    idle models for a load that gets refused anyway would be pure loss —
-    other capabilities go cold and the new model still does not spawn. The
+    **All-or-nothing: if the FULL candidate list would not free enough
+    room, nothing is evicted at all.** Silently evicting a pile of idle
+    models for a load that gets refused anyway would be pure loss — other
+    capabilities go cold and the new model still does not spawn. The
     refusal is the honest answer when the gate (an ESTIMATE — see
     `_predicted_footprint`) says this machine cannot hold both; unloading
     something on purpose, or trying again once room is free, is the caller's
@@ -1590,10 +1591,14 @@ def _select_budget_victims(capability: str, model: str, footprint: float | None,
     minutes = prefs.effective_ai_idle_unload_minutes()
     idle_window = minutes * 60 if minutes > 0 else float("inf")
     now = time.monotonic()
-    candidates = sorted(
-        (w for w in others if w.state == "ready" and w.in_flight == 0
-         and now - w.last_activity >= idle_window),
+    evictable = [w for w in others if w.state == "ready" and w.in_flight == 0]
+    past_window = sorted(
+        (w for w in evictable if now - w.last_activity >= idle_window),
         key=lambda w: w.last_activity)
+    recent = sorted(
+        (w for w in evictable if now - w.last_activity < idle_window),
+        key=lambda w: w.last_activity)
+    candidates = past_window + recent
     victims: list[Worker] = []
     freed = 0.0
     for worker in candidates:

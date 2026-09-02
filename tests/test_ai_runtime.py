@@ -3395,35 +3395,130 @@ def test_a_first_load_bigger_than_the_budget_proceeds_when_nothing_is_resident(
     assert supervisor._workers[registry.TEXT_GENERATION].model == "org/oversized-text"
 
 
-def test_a_recently_active_worker_is_not_evicted_as_the_lru(fake_runner, monkeypatch):
-    """`_is_idle`'s own idle window, not merely `ready` with nothing in
-    flight — a worker a user was on ten seconds ago is not "idle" in any
-    sense that survives the chat/image ping-pong the module docstring's
-    coexistence promise is written against. Refusing the load here (there IS
-    something committed: the recent worker) is the honest answer; silently
-    evicting a warm model a human just used is not."""
+def test_a_recently_active_worker_is_evicted_when_nothing_else_covers_the_shortfall(
+        fake_runner, monkeypatch):
+    """A request served now beats a warm model that is not serving anything
+    — the idle window only ranks which idle worker goes first, it is not a
+    floor that can refuse a load outright. With nothing past the window to
+    evict instead, the recent worker is the eviction candidate and the load
+    proceeds."""
     from fused_render.shell import prefs
 
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
     monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
     monkeypatch.setattr(fit, "footprint_bytes",
                         lambda *a, **kw: (9_000_000_000, "measured"))
-    recent = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
-                          model="org/recent-image",
-                          last_activity=time.monotonic() - 10)
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/recent-image",
+                last_activity=time.monotonic() - 10)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert registry.IMAGE_GENERATION not in supervisor._workers
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/new-text"
+
+
+def test_past_window_victim_alone_covers_the_shortfall_the_recent_one_survives(
+        fake_runner, monkeypatch):
+    """Two idle workers, one past the idle window and one recent — when the
+    past-window one alone frees enough room, it is the only one evicted and
+    the recent worker is left warm, exactly the LRU-first ranking the past-
+    window tier exists to prefer."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 20_000_000_000.0)
+    footprint_of = {"org/stale-image": 9_000_000_000, "org/recent-speech": 9_000_000_000,
+                    "org/new-text": 9_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/stale-image", last_activity=time.monotonic() - 999)
+    recent = _idle_worker(monkeypatch, capability=registry.SPEECH_TO_TEXT,
+                          model="org/recent-speech", last_activity=time.monotonic() - 10)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert registry.IMAGE_GENERATION not in supervisor._workers
+    assert supervisor._workers[registry.SPEECH_TO_TEXT] is recent
+
+
+def test_shortfall_needing_both_evicts_the_past_window_one_first(
+        fake_runner, monkeypatch):
+    """When the past-window worker alone is not enough, the recent one is
+    also evicted — but only after the past-window one, LRU-first within
+    each tier and past-window before recent across tiers."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    footprint_of = {"org/stale-image": 5_000_000_000, "org/recent-speech": 5_000_000_000,
+                    "org/new-text": 9_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/stale-image", last_activity=time.monotonic() - 999)
+    _idle_worker(monkeypatch, capability=registry.SPEECH_TO_TEXT,
+                model="org/recent-speech", last_activity=time.monotonic() - 10)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert registry.IMAGE_GENERATION not in supervisor._workers
+    assert registry.SPEECH_TO_TEXT not in supervisor._workers
+
+
+def test_a_recent_busy_worker_is_never_a_victim_even_if_refusing_is_the_result(
+        fake_runner, monkeypatch):
+    """`in_flight > 0` stays an absolute exclusion regardless of recency —
+    ranking recent workers below past-window ones never makes a busy worker
+    evictable. With nothing else to evict, the load is refused rather than
+    tearing down a worker mid-request."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    busy = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                        model="org/busy-recent-image",
+                        last_activity=time.monotonic() - 10, in_flight=1)
     with pytest.raises(supervisor.SupervisorError):
         supervisor.load("org/new-text", registry.TEXT_GENERATION)
-    assert supervisor._workers[registry.IMAGE_GENERATION] is recent
+    assert supervisor._workers[registry.IMAGE_GENERATION] is busy
+
+
+def test_refusal_still_happens_when_the_full_combined_list_cannot_cover_it(
+        fake_runner, monkeypatch):
+    """Both tiers evicted together still fall short of a huge incoming
+    model — the combined candidate list, not just the past-window tier, is
+    what has to fail to cover the shortfall before refusing."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    footprint_of = {"org/stale-image": 3_000_000_000, "org/recent-speech": 3_000_000_000,
+                    "org/huge-text": 50_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    stale = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                         model="org/stale-image", last_activity=time.monotonic() - 999)
+    recent = _idle_worker(monkeypatch, capability=registry.SPEECH_TO_TEXT,
+                          model="org/recent-speech", last_activity=time.monotonic() - 10)
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/huge-text", registry.TEXT_GENERATION)
+    assert supervisor._workers[registry.IMAGE_GENERATION] is stale
+    assert supervisor._workers[registry.SPEECH_TO_TEXT] is recent
 
 
 def test_same_capability_replace_is_now_checked_against_other_capabilities(
         fake_runner, monkeypatch):
-    """A same-capability reload used to free its own slot and spawn
-    unconditionally, running no budget check at all — so a 2GB image model
-    warm beside a text model, switched to a bigger text model, landed in
-    exactly the memory storm the gate exists to prevent. The switch is
-    refused instead: the image model is not idle long enough to evict, and
-    the replacement does not fit without it."""
+    """A same-capability reload frees its own slot but still has to clear the
+    budget check against every OTHER capability's worker — so a 2GB image
+    model warm beside a text model, switched to a bigger text model, is
+    checked against the image model just as a fresh cross-capability spawn
+    would be. The switch succeeds by evicting the image model: a request
+    served now beats a warm model that is not serving anything, so its
+    being recent rather than past the idle window does not block it."""
     from fused_render.shell import prefs
 
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
@@ -3433,17 +3528,14 @@ def test_same_capability_replace_is_now_checked_against_other_capabilities(
     monkeypatch.setattr(
         fit, "footprint_bytes",
         lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
-    text_a = _idle_worker(monkeypatch, capability=registry.TEXT_GENERATION,
-                          model="org/text-a", last_activity=time.monotonic())
-    image_a = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
-                           model="org/image-a", last_activity=time.monotonic())
-    with pytest.raises(supervisor.SupervisorError):
-        supervisor.load("org/text-b", registry.TEXT_GENERATION)
-    # Refused BEFORE anything was mutated: the original text worker is
-    # still exactly the one resident, not stranded in `_draining` and not
-    # replaced by a half-started worker for the refused model.
-    assert supervisor._workers[registry.TEXT_GENERATION] is text_a
-    assert supervisor._workers[registry.IMAGE_GENERATION] is image_a
+    _idle_worker(monkeypatch, capability=registry.TEXT_GENERATION,
+                model="org/text-a", last_activity=time.monotonic())
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/image-a", last_activity=time.monotonic())
+    supervisor.load("org/text-b", registry.TEXT_GENERATION)
+    _wait_ready("org/text-b")
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/text-b"
+    assert registry.IMAGE_GENERATION not in supervisor._workers
 
 
 def test_same_capability_replace_credits_the_outgoing_models_bytes(
