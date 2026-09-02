@@ -1379,7 +1379,7 @@ def _memory_gate_enabled() -> bool:
     return True
 
 
-def _predicted_footprint(capability: str, model: str, store: dict) -> tuple[float | None, str | None]:
+def _predicted_footprint(capability: str, model: str, store: dict | None) -> tuple[float | None, str | None]:
     """The ONE footprint expression `describe()` and the pre-spawn budget gate
     both call, so a model's cost can never read differently on the AI Models
     page than it did to the code that decided whether to evict something for
@@ -1408,7 +1408,7 @@ def _predicted_footprint(capability: str, model: str, store: dict) -> tuple[floa
         params=entry.get("params"))
 
 
-def _worker_footprint_bytes(worker: Worker, store: dict) -> float:
+def _worker_footprint_bytes(worker: Worker, store: dict | None) -> float:
     """What `worker` counts as, for the budget gate's arithmetic: its
     predicted footprint when one is known, else its actual `resident_bytes` —
     real RSS is a real floor even when nothing measured/declared/download
@@ -1421,7 +1421,7 @@ def _worker_footprint_bytes(worker: Worker, store: dict) -> float:
 
 
 def _select_budget_victims(capability: str, model: str, footprint: float | None,
-                           budget: float | None, store: dict) -> list[Worker]:
+                           budget: float | None, store: dict | None) -> list[Worker]:
     """Which IDLE workers to evict, LRU-first, to make room for `model` — or a
     SupervisorError if evicting every eligible one still would not be enough.
 
