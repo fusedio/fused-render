@@ -13645,9 +13645,12 @@ function syncPermissions(list, run_id, working, liveMode) {
 // is swamped and waiting helps, versus we are being throttled. `max_retries` is
 // the CLI's budget and is only shown when it told us one.
 function retryVerb(retry) {
-  const what = retry.status === 429 ? "Rate limited"
-             : retry.status === 529 ? "Overloaded"
-             : "API error";
+  // Plain words, not API vocabulary: 429 and 529 still send the user to
+  // different conclusions (wait vs our pace is capped), but neither needs
+  // the words "rate limited" or "overloaded" to say so.
+  const what = retry.status === 429 ? "Claude is busy"
+             : retry.status === 529 ? "Claude's servers are busy"
+             : "Connection problem";
   const budget = retry.max_retries ? "/" + retry.max_retries : "";
   return what + " — retrying (" + retry.attempt + budget + ")";
 }
@@ -13671,10 +13674,10 @@ function retryVerb(retry) {
 // instead of appending "quiet 86s" to a verb that still claims progress.
 function activityVerb(stats, thinkVerb, quietSecs) {
   const act = stats.activity || {};
-  if (act.hook) return "Running project hooks";
+  if (act.hook) return "Running project setup";
   if (stats.phase === "tooling") {
     const t = act.tool;
-    if (!t) return "Reading the result";
+    if (!t) return "Finishing a step";
     const streaming = act.tool_input_bytes && !t.detail;
     switch (t.name) {
       case "Bash": return streaming ? "Preparing a command" : "Running a command";
@@ -13684,8 +13687,11 @@ function activityVerb(stats, thinkVerb, quietSecs) {
       case "Grep": case "Glob": return "Searching files";
       case "Task": case "Agent": return "Running a helper agent";
       case "Skill": return "Loading a skill";
-      case "WebFetch": case "WebSearch": return "Fetching from the web";
-      default: return "Using " + t.name;
+      case "WebFetch": return "Fetching a page";
+      case "WebSearch": return "Searching the web";
+      // MCP tools arrive as mcp__server__tool — the last segment is the name
+      // a person would recognize; the raw id is nobody's vocabulary.
+      default: return "Using " + String(t.name).split("__").pop().replace(/_/g, " ");
     }
   }
   // The model's turn: request out, thinking, or writing. A long silence here
@@ -13700,7 +13706,7 @@ function activityVerb(stats, thinkVerb, quietSecs) {
       : "Claude is taking longer than usual";
   }
   if (stats.phase === "requesting") return "Sending to Claude";
-  if (stats.phase === "composing") return "Writing a reply";
+  if (stats.phase === "composing") return "Claude is replying";
   return thinkVerb;
 }
 // The ONE thing that goes in the brackets beside the time: the command's
