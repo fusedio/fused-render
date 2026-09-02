@@ -95,12 +95,25 @@ function primaryComparator(sort: ResultSort): (a: HubModel, b: HubModel) => numb
  *  variant's index while showing the primary's value there — a sort-visible
  *  column (Size, Match) visibly not ascending/descending, because the row
  *  drawn at that position could be showing a different member's value.
- *  Ordering by the primary's own index instead makes the family order
- *  exactly as sorted as `models` itself was, for the SAME key
- *  `primaryComparator(sort)` used to choose that primary — which is what
- *  keeps the two decisions from disagreeing the way they did before this
- *  fix, rather than a guarantee that holds for every key regardless of
- *  which one the primary was actually chosen by.
+ *
+ *  **What positioning by the primary's own index actually guarantees, and
+ *  why** (code review finding: the paragraph this replaces overstated the
+ *  reason). The guarantee is NOT "the same key decided both `models`'s
+ *  order and the primary" — that is only true for `sort="fit"`/`"best"`,
+ *  where `models` is sorted by the composite/fit score AND
+ *  `primaryComparator(sort)` picks the primary by that same score. For
+ *  `"size"`, `"downloads"`, `"trending"` and `"new"`, `models` is sorted by
+ *  THAT key while `primaryComparator` still returns `byMatchThenDownloads`
+ *  (see its own doc) — a genuinely different key from the one that ordered
+ *  `models`. What actually holds, unconditionally, regardless of whether
+ *  those two keys agree: a family is placed at the exact array index its
+ *  own primary already held in `models`, so the resulting family order is
+ *  just `models`'s own order with every non-primary member deleted —
+ *  reusing a real position `models` already decided, not deriving a new
+ *  one. Deleting elements from an array can never change the relative
+ *  order of the ones left behind, so whatever monotone property `models`'s
+ *  own sort key had among the surviving (primary) rows is preserved
+ *  automatically, with no dependency on how that primary was chosen.
  */
 export function groupIntoFamilies(
   models: readonly HubModel[],
