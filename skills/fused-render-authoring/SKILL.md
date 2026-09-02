@@ -252,7 +252,7 @@ Three things decide whether a page using it behaves:
 
 Rejections carry `.type`: `model_loading` (a local model is loading — `err.jobId` is the download it just started, not a failure), `ai_unavailable` (show a friendly state, not a raw overlay), `bad_request`, `ai_error`, `timeout`.
 
-Everything else — the full options and rejection tables, `fused.ai.models.*`, `.image()`, `.video()`, `.transcribe()`, `.embed()`, `.cancel()`, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
+Everything else — the result frame, per-verb option lists, recipes for `.image()`, `.video()`, `.transcribe()`, `.embed()`, the `fused.ai.models.*` picker, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
 
 ## The canonical wiring pattern
 
