@@ -1619,8 +1619,7 @@ class _FakePsutil:
 
 
 def test_sweep_stale_spill_files_removes_only_dead_pids(monkeypatch, tmp_path):
-    """Ported from the deleted `_sweep_stale_group_offload_dirs` tests: a
-    filename whose pid prefix names a process that is no longer alive is
+    """A filename whose pid prefix names a process that is no longer alive is
     removed; one naming a live pid, or one this function cannot parse as
     `<pid>-<random>.safetensors`, is left alone."""
     mmap_spill = load_mmap_spill()
