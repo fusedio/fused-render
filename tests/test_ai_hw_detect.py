@@ -77,6 +77,208 @@ def test_rocm_smi_malformed_json_is_no_gpus():
     assert hw_detect._parse_rocm_smi("not json") is None
 
 
+def test_rocm_smi_title_cased_keys_are_parsed_too():
+    """ROCm 6 emits `"Card Series"`, the build this parser was written
+    against emitted `"Card series"`. Reading only the lowercase spelling
+    skipped every card on a current install, `gpus or None` returned None,
+    and a real discrete Radeon reported as no GPU at all — which
+    `fit._select_pool` turns into `cpu-only` for every row in the catalog.
+    Payload below is verbatim from `rocm-smi 1.1.10` on an RX 9060 XT."""
+    payload = json.dumps({
+        "card0": {"VRAM Total Memory (B)": "17095983104",
+                  "VRAM Total Used Memory (B)": "1827020800",
+                  "Card Series": "AMD Radeon RX 9060 XT",
+                  "Card Model": "0x7590",
+                  "GFX Version": "gfx1200"},
+    })
+    gpus = hw_detect._parse_rocm_smi(payload)
+    assert gpus is not None
+    assert gpus[0].name == "AMD Radeon RX 9060 XT"
+    assert gpus[0].vram_gb == pytest.approx(17095983104 / 1e9, rel=1e-3)
+
+
+def test_rocm_smi_is_tried_at_its_opt_rocm_path_when_not_on_path(monkeypatch):
+    """ROCm installs to `/opt/rocm/bin` and puts nothing on the default
+    PATH, so the bare-name spawn fails with `FileNotFoundError` (which
+    `_run` reports as None) on a machine where the tool is installed and
+    working."""
+    seen = []
+
+    def fake_run(args, timeout=None):
+        seen.append(args[0])
+        if args[0] == "rocm-smi":
+            return None  # not on PATH
+        return json.dumps({"card0": {"Card Series": "AMD Radeon RX 9060 XT",
+                                     "VRAM Total Memory (B)": "17095983104"}})
+
+    monkeypatch.setattr(hw_detect, "_run", fake_run)
+    gpus = hw_detect._amd_gpus()
+
+    assert seen == ["rocm-smi", "/opt/rocm/bin/rocm-smi"]
+    assert gpus is not None and gpus[0].name == "AMD Radeon RX 9060 XT"
+
+
+def test_rocm_smi_on_path_wins_and_no_fallback_is_spawned(monkeypatch):
+    """A user's own PATH (a newer or versioned ROCm) stays first — the
+    fallback path must not be spawned once the bare name answered."""
+    seen = []
+
+    def fake_run(args, timeout=None):
+        seen.append(args[0])
+        return json.dumps({"card0": {"Card Series": "AMD Radeon RX 7900 XTX",
+                                     "VRAM Total Memory (B)": "25753026560"}})
+
+    monkeypatch.setattr(hw_detect, "_run", fake_run)
+    gpus = hw_detect._amd_gpus()
+
+    assert seen == ["rocm-smi"]
+    assert gpus is not None and gpus[0].name == "AMD Radeon RX 7900 XTX"
+
+
+# -- Linux DRM sysfs fallback -----------------------------------------------------
+
+
+LSPCI_MM_NN_D = (
+    '0000:00:02.0 "Host bridge [0600]" "Advanced Micro Devices, Inc. [AMD] [1022]" '
+    '"Device [14d8]" -r00 -p00 "ASUSTeK Computer Inc. [1043]" "Device [8877]"\n'
+    '0000:03:00.0 "VGA compatible controller [0300]" '
+    '"Advanced Micro Devices, Inc. [AMD/ATI] [1002]" '
+    '"Navi 44 [Radeon RX 9060 XT] [7590]" -rc0 -p00 '
+    '"ASUSTeK Computer Inc. [1043]" "Device [061e]"\n'
+)
+
+
+def _drm_tree(tmp_path, cards):
+    """A fake `/sys/class/drm`: `cards` maps a card name to the
+    `{filename: contents}` under its `device/`. Connector and render-node
+    entries are added alongside, since the real directory always has them
+    and the probe has to filter them out by shape."""
+    root = tmp_path / "drm"
+    root.mkdir()
+    for name, files in cards.items():
+        device = root / name / "device"
+        device.mkdir(parents=True)
+        for filename, contents in files.items():
+            (device / filename).write_text(contents)
+    (root / "card1-DP-1").mkdir(exist_ok=True)
+    (root / "renderD128").mkdir(exist_ok=True)
+    (root / "version").write_text("drm 1.1.0\n")
+    return str(root)
+
+
+def test_sysfs_reports_vram_with_no_vendor_tool_installed(tmp_path, monkeypatch):
+    """The whole point of this probe: `rocm-smi` is a multi-GB SDK nobody
+    installs to run a GGUF through llama.cpp's Vulkan backend, but the
+    kernel has already published the VRAM total. Without this fallback a
+    plain Linux desktop with a discrete Radeon reads as GPU-less, and every
+    row in the model catalog prints "CPU only"."""
+    root = _drm_tree(tmp_path, {"card1": {
+        "mem_info_vram_total": "17095983104\n",
+        "uevent": "DRIVER=amdgpu\nPCI_ID=1002:7590\nPCI_SLOT_NAME=0000:03:00.0\n",
+    }})
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", root)
+    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None: LSPCI_MM_NN_D)
+
+    gpus = hw_detect._sysfs_gpus()
+
+    assert gpus is not None and len(gpus) == 1
+    # The RETAIL name out of lspci's brackets, not the `Navi 44` codename —
+    # the retail spelling is what `_BANDWIDTH_TABLE`'s keys are.
+    assert gpus[0].name == "Radeon RX 9060 XT"
+    assert gpus[0].vram_gb == pytest.approx(17095983104 / 1e9, rel=1e-3)
+
+
+def test_sysfs_falls_back_to_the_driver_name_without_lspci(tmp_path, monkeypatch):
+    """No lspci is a lost NAME, never a lost VRAM figure — the number is
+    what `fit._select_pool` needs, and a device labelled by its driver stays
+    identifiable in the cache."""
+    root = _drm_tree(tmp_path, {"card1": {
+        "mem_info_vram_total": "17095983104\n",
+        "uevent": "DRIVER=amdgpu\nPCI_SLOT_NAME=0000:03:00.0\n",
+    }})
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", root)
+    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None: None)
+
+    gpus = hw_detect._sysfs_gpus()
+
+    assert gpus is not None
+    assert gpus[0].name == "amdgpu"
+    assert gpus[0].vram_gb == pytest.approx(17.096, rel=1e-3)
+
+
+def test_sysfs_skips_a_card_with_no_vram_file(tmp_path, monkeypatch):
+    """An integrated `i915`/`xe` display device publishes no VRAM total.
+    Reporting it as a 0GB device would only make the aggregate across a
+    real second card harder to reason about — `_select_pool` reads a zero
+    total as "no GPU" regardless."""
+    root = _drm_tree(tmp_path, {
+        "card0": {"uevent": "DRIVER=i915\n"},
+        "card1": {"mem_info_vram_total": "0\n", "uevent": "DRIVER=amdgpu\n"},
+    })
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", root)
+    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None: None)
+
+    assert hw_detect._sysfs_gpus() is None
+
+
+def test_sysfs_is_absent_off_linux(tmp_path, monkeypatch):
+    """No `/sys/class/drm` at all — every non-Linux platform, where this
+    probe is a no-op the `or` chain falls straight through."""
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", str(tmp_path / "nope"))
+    assert hw_detect._sysfs_gpus() is None
+
+
+def test_sysfs_spawns_lspci_at_most_once_for_many_cards(tmp_path, monkeypatch):
+    """This probe exists for machines with no vendor tooling; it must not
+    become a per-card subprocess storm on the way there."""
+    root = _drm_tree(tmp_path, {
+        "card1": {"mem_info_vram_total": "17095983104\n",
+                  "uevent": "PCI_SLOT_NAME=0000:03:00.0\n"},
+        "card2": {"mem_info_vram_total": "17095983104\n",
+                  "uevent": "PCI_SLOT_NAME=0000:04:00.0\n"},
+    })
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", root)
+    calls = []
+    monkeypatch.setattr(hw_detect, "_run",
+                        lambda args, timeout=None: (calls.append(args), LSPCI_MM_NN_D)[1])
+
+    gpus = hw_detect._sysfs_gpus()
+
+    assert len(calls) == 1
+    # Multi-GPU aggregation still applies: two cards sum to one pool.
+    assert gpus is not None
+    assert hw_detect._total_vram_gb(gpus) == pytest.approx(34.19, rel=1e-3)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Navi 44 [Radeon RX 9060 XT] [7590]", "Radeon RX 9060 XT"),
+    ("Navi 21 [Radeon RX 6800/6800 XT / 6900 XT] [73bf]", "Radeon RX 6800/6800 XT / 6900 XT"),
+    ("GA102 [GeForce RTX 3090] [2204]", "GeForce RTX 3090"),
+    ("Device [14d8]", "Device"),
+])
+def test_lspci_device_names_reduce_to_the_retail_name(raw, expected):
+    assert hw_detect._clean_pci_device_name(raw) == expected
+
+
+def test_sysfs_named_card_still_reaches_the_bandwidth_table(tmp_path, monkeypatch):
+    """The reason the retail name is dug out of lspci's brackets at all:
+    `_BANDWIDTH_TABLE`'s keys are retail spellings, so a card named by its
+    `Navi 21` codename would miss a row it should hit."""
+    root = _drm_tree(tmp_path, {"card1": {
+        "mem_info_vram_total": "25753026560\n",
+        "uevent": "PCI_SLOT_NAME=0000:03:00.0\n",
+    }})
+    monkeypatch.setattr(hw_detect, "_DRM_CLASS_DIR", root)
+    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None: (
+        '0000:03:00.0 "VGA compatible controller [0300]" "AMD [1002]" '
+        '"Navi 31 [Radeon RX 7900 XTX] [744c]" -rc8 -p00 "AMD [1002]" "Device [0e3b]"\n'))
+
+    gpus = hw_detect._sysfs_gpus()
+
+    assert gpus is not None
+    assert hw_detect._bandwidth_for(gpus[0].name) == 960.0
+
+
 # -- Windows AdapterRAM 32-bit cap ------------------------------------------------
 
 
@@ -187,6 +389,7 @@ def test_detect_hardware_reads_proc_cpuinfo_on_linux(monkeypatch):
     monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: [
         hw_detect.GpuDevice(name="AMD Radeon 8060S Graphics", vram_gb=0.5)])
+    monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     monkeypatch.setattr(hw_detect, "_linux_cpu_name",
@@ -211,6 +414,7 @@ def test_detect_hardware_bandwidth_falls_back_to_the_device_name_first(monkeypat
     monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: [
         hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)])
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     monkeypatch.setattr(hw_detect, "_linux_cpu_name", lambda: "AMD Ryzen 9 7950X")
@@ -353,6 +557,7 @@ def test_run_survives_non_utf8_bytes_from_a_real_child(tmp_path):
 def test_detect_hardware_never_raises_when_every_probe_fails(monkeypatch):
     monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     info = hw_detect.detect_hardware(ram_gb=16.0)
