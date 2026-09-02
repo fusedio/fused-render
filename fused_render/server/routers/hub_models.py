@@ -648,19 +648,60 @@ def supported_tags() -> tuple[str, ...]:
 
 def _estimated_bytes(safetensors) -> int | None:
     """Bytes on disk, recovered from the dtype -> parameter-count map. None when
-    the repo carries no safetensors metadata: a size we cannot compute is left
-    out, never guessed from the parameter count alone."""
+    the repo carries no safetensors metadata (a size we cannot compute is left
+    out, never guessed from the parameter count alone) OR when the naive byte
+    sum below is DOMINATED by a packed dtype (`_PACKED_DTYPES`, D634/D636's
+    own "names the storage CONTAINER, not the precision" rule, applied here to
+    size instead of the quantization label).
+
+    An MLX/GPTQ checkpoint's `U32` packs several weights into one word; this
+    function has no honest way to know the packing factor (that is exactly
+    what `_quant`, elsewhere in this module, can never report for a packed
+    dtype either), so treating the container's own width as real per-weight
+    bytes overstates the size by that unknown factor. Verified live against
+    the repo that surfaced this bug: `mlx-community/Lens-3.8B-4bit` and
+    `-8bit` report the IDENTICAL dtype map — `{"BF16": 27_361_664, "U32":
+    4_076_863_488}` — for two different quantizations, and the naive sum
+    (~15.24 GiB) is *larger* than the real BF16 original
+    (`mlx-community/Lens-3.8B-bf16`, ~7.65 GiB): a ~2x over-report for the
+    8-bit variant, ~6.6x for the 4-bit one, both reporting a QUANT of `—`
+    (`_quant` already refuses to name a packed dtype) as the corroborating
+    signal that nothing here actually knows this repo's real precision.
+
+    "Dominated" is measured in BYTES, over this function's own naive
+    (uncorrected) sum: refuse only when packed-dtype rows account for a
+    STRICT MAJORITY of that sum. Deliberately not "any packed dtype present"
+    or "majority of PARAMETERS packed" — a repo can legitimately mix a small
+    integer buffer (a quantization scale/zero-point tensor, a rotary cache)
+    alongside real float weights, and refusing a size for that case, where the
+    packed slice is a rounding error against the float majority, would be an
+    over-correction with no evidence behind it. Byte share is the direct
+    measure of how wrong the OUTPUT would be: a packed minority can only skew
+    the total by a small amount even at an unknown packing factor, while a
+    packed majority (both Lens variants above are ~99.7% packed by this
+    measure) means the number this function would return is mostly a count of
+    storage slots, not weight bytes.
+    """
     if not isinstance(safetensors, dict):
         return None
     by_dtype = safetensors.get("parameters")
     if not isinstance(by_dtype, dict):
         return None
     total = 0
+    packed = 0
     for dtype, count in by_dtype.items():
-        bits = _DTYPE_BITS.get(str(dtype).upper())
+        dtype_u = str(dtype).upper()
+        bits = _DTYPE_BITS.get(dtype_u)
         if bits and isinstance(count, int) and count >= 0:
-            total += count * bits // 8
-    return total or None
+            row_bytes = count * bits // 8
+            total += row_bytes
+            if dtype_u in _PACKED_DTYPES:
+                packed += row_bytes
+    if total <= 0:
+        return None
+    if packed * 2 > total:
+        return None
+    return total
 
 
 def _quant(safetensors, file: str | None, config=None) -> str | None:

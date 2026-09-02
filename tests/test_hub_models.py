@@ -284,6 +284,50 @@ def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
     assert row["estimatedSize"] == 16_000_000_000
 
 
+def test_a_packed_dtype_map_reports_no_size(client, hub_cache, monkeypatch):
+    # `mlx-community/Lens-3.8B-4bit` and its `-8bit` sibling, as returned by
+    # the Hub live: an identical dtype map for two different quantizations,
+    # almost entirely U32 (a packed storage container, not a real per-weight
+    # width). The old unguarded sum reported ~15.24 GiB for BOTH — larger
+    # than the real BF16 original's ~7.65 GiB (4,104,225,152 params * 2
+    # bytes), a ~2x-6.6x over-report. `estimatedSize` must come back absent
+    # rather than lie, and specifically must not exceed the unquantized
+    # original's own real size.
+    _pin_hardware(monkeypatch)
+    packed_safetensors = {
+        "parameters": {"BF16": 27_361_664, "U32": 4_076_863_488},
+        "total": 4_104_225_152,
+    }
+    bf16_original_bytes = 4_104_225_152 * 2  # 8,208,450,304 — the real size
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("mlx-community/Lens-3.8B-4bit", safetensors=packed_safetensors),
+        _hit("mlx-community/Lens-3.8B-8bit", safetensors=packed_safetensors),
+    ]))
+    rows = _search(client).json()["models"]
+    ids = {row["id"]: row for row in rows}
+    for row in ids.values():
+        assert row["estimatedSize"] is None
+        # Never larger than the real unquantized original — the whole point.
+        assert (row["estimatedSize"] or 0) <= bf16_original_bytes
+
+
+def test_a_minority_packed_dtype_still_reports_a_size(client, hub_cache, monkeypatch):
+    # A small integer buffer (e.g. a quantization scale tensor) alongside a
+    # float-dominated repo must not make the whole size vanish — only a
+    # packed-dtype MAJORITY (by naive bytes) refuses to compute.
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/mostly-float",
+        safetensors={
+            "parameters": {"BF16": 8_000_000_000, "U8": 1_000_000},
+            "total": 8_001_000_000,
+        },
+    )]))
+    row = _search(client).json()["models"][0]
+    # 8e9 * 2 + 1e6 * 1 = 16,001,000,000 bytes — packed share is ~0.006%.
+    assert row["estimatedSize"] == 16_001_000_000
+
+
 def test_a_repo_with_no_safetensors_metadata_reports_no_size(client, hub_cache, monkeypatch):
     # A size we cannot compute is left out. A guessed one would be a number
     # someone plans a download around.
