@@ -2,7 +2,7 @@
 ([tool.fused-render.app] in pyproject.toml), the autostart store persisted
 at ~/.fused-render/background_apps.json, engine_id identity, and the version
 digest that retires a child when the manifest, daemon file, or interpreter
-changes. Also covers engine_host's "background" child kind: validated
+changes. Also covers engine_host's background-app children: validated
 against the folder's own manifest (independent of autostart, D511), and
 exempt from the warm-app idle reaper.
 """
@@ -482,7 +482,7 @@ def test_start_then_simulated_restart_does_not_resurrect_without_autostart(monke
         "must not come back at the next server start")
 
 
-# ---------------------------------------------- engine_host: background kind
+# -------------------------------------------- engine_host: background apps
 
 
 def test_ensure_background_rejects_foreign_interpreter(tmp_path):
@@ -598,7 +598,6 @@ def test_ensure_background_validates_against_the_callers_folder_not_dirname(tmp_
         engine_id, sys.executable, manifest.daemon, cache, version,
         FIXTURE_APP_NESTED)
     try:
-        assert child.kind == "background"
         assert engine_host._ping(child)
     finally:
         engine_host.stop(engine_id)
@@ -618,7 +617,7 @@ def test_ensure_background_succeeds_for_a_valid_manifest_without_autostart():
     child = engine_host.ensure_background(
         engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
     try:
-        assert child.kind == "background"
+        assert engine_host._ping(child)
     finally:
         engine_host.stop(engine_id)
 
@@ -630,7 +629,7 @@ def test_reap_idle_children_skips_a_zero_idle_timeout():
     eid = "bg_reapskip"
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon="/tmp/bg-daemon.py",
-        cache="unused", version="v1", kind="background", idle_timeout_s=0.0)
+        cache="unused", version="v1", idle_timeout_s=0.0)
     child.last_used = time.monotonic() - 10_000
     engine_host._children[eid] = child
     try:
@@ -651,7 +650,6 @@ def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
     child = engine_host.ensure_background(
         engine_id, sys.executable, manifest.daemon, cache, version)
     try:
-        assert child.kind == "background"
         assert engine_host._ping(child)
 
         # A second call with the same identity reuses the live child rather
@@ -733,7 +731,7 @@ def test_ensure_background_without_folder_defaults_to_empty_string():
 def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
     child = engine_host.Child(
         engine_id="bg_envtest", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="background", folder="/tmp/my-bg-app")
+        cache="c", version="v1", folder="/tmp/my-bg-app")
     env = engine_host._spawn_env(child)
     assert env["FUSED_RENDER_APP_DIR"] == "/tmp/my-bg-app"
 
@@ -741,20 +739,11 @@ def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
 def test_spawn_env_omits_app_dir_when_folder_is_empty():
     child = engine_host.Child(
         engine_id="bg_envtest2", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="background", folder="")
+        cache="c", version="v1", folder="")
     env = engine_host._spawn_env(child)
     assert "FUSED_RENDER_APP_DIR" not in env
 
 
-def test_spawn_env_omits_app_dir_for_non_background_kinds():
-    # Only kind="background" children carry a folder at all — a template or
-    # app-worker child spawned with a stray `folder` value (should never
-    # happen in production) still must not leak the var.
-    child = engine_host.Child(
-        engine_id="tmpl_envtest", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="template", folder="/tmp/should-not-leak")
-    env = engine_host._spawn_env(child)
-    assert "FUSED_RENDER_APP_DIR" not in env
 
 
 def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, monkeypatch):
@@ -766,7 +755,7 @@ def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, 
     fake_child = engine_host.Child(
         engine_id="bg_folderfake", python=sys.executable,
         daemon=str(folder / "daemon.py"), cache="c", version="v1",
-        kind="background", pid=1)
+        pid=1)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
                     idle_timeout_s=0.0, module=""):
@@ -815,7 +804,7 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
     calls = []
     fake_child = engine_host.Child(
         engine_id="bg_fake", python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=4242)
+        cache="c", version="v1", pid=4242)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
                     idle_timeout_s=0.0, module=""):
@@ -857,7 +846,7 @@ def test_api_start_falls_back_to_sys_executable_when_project_venv_not_built(
     fake_child = engine_host.Child(
         engine_id="bg_fallback", python=sys.executable,
         daemon=str(folder / "daemon.py"), cache="c", version="v1",
-        kind="background", pid=5150)
+        pid=5150)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
                     idle_timeout_s=0.0, module=""):
@@ -982,7 +971,7 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     ensured = []
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=9191)
+        cache="c", version="v1", pid=9191)
 
     def fake_ensure(eid, python, daemon, cache, version, folder="",
                     idle_timeout_s=0.0, module=""):
@@ -1018,7 +1007,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
     stale_version = "stale-version-from-before-the-edit"
     live_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version=stale_version, kind="background", pid=1)
+        cache="c", version=stale_version, pid=1)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: live_child if eid == engine_id else None)
 
@@ -1029,7 +1018,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
         captured["version"] = version
         return engine_host.Child(
             engine_id=eid, python=sys.executable, daemon=str(folder / "daemon.py"),
-            cache="c", version=version or stale_version, kind="background", pid=2222)
+            cache="c", version=version or stale_version, pid=2222)
 
     monkeypatch.setattr(engine_host, "restart", fake_restart)
 
@@ -1057,7 +1046,7 @@ def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
 
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon="d", cache="c",
-        version="v9", kind="background", pid=555)
+        version="v9", pid=555)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)
     monkeypatch.setattr(engine_host, "_alive", lambda c: True)
@@ -1094,7 +1083,7 @@ def test_api_start_leaves_autostart_false_on_status(client, tmp_path, monkeypatc
     engine_id = background_apps.engine_id_for(str(folder))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=321)
+        cache="c", version="v1", pid=321)
     monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)
@@ -1125,7 +1114,7 @@ def test_status_agrees_on_autostart_and_running_through_a_symlinked_alias(
     engine_id = background_apps.engine_id_for(str(real))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(real / "daemon.py"),
-        cache="c", version="v9", kind="background", pid=777)
+        cache="c", version="v9", pid=777)
     monkeypatch.setattr(engine_host, "ensure_background",
                         lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
@@ -1200,7 +1189,7 @@ def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path,
             raise engine_host.EngineError("boom")
         started.append(engine_id)
         return engine_host.Child(engine_id=engine_id, python=python, daemon=daemon,
-                                 cache=cache, version=version, kind="background")
+                                 cache=cache, version=version)
 
     monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
 
@@ -1256,7 +1245,7 @@ def test_resurrect_autostart_stops_a_child_that_finished_spawning_during_shutdow
     shutdown_event = threading.Event()
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background")
+        cache="c", version="v1")
 
     def fake_ensure(eid, python, daemon, cache, version, folder="",
                     idle_timeout_s=0.0, module=""):
@@ -1334,7 +1323,7 @@ def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatc
     monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
     bg_child = engine_host.Child(
         engine_id="bg_pin", python=sys.executable, daemon="/d.py",
-        cache="c", version="v1", kind="background")
+        cache="c", version="v1")
     monkeypatch.setattr(engine_host, "current", lambda eid: bg_child)
 
     resp = client.post("/api/engines/bg_pin/proxy/count", json={}, headers=HDRS)
@@ -1342,10 +1331,11 @@ def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatc
     assert captured["at_most_once"] is True
 
 
-def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monkeypatch):
-    # The other half of the same fix: a TEMPLATE daemon's POST traffic stays
-    # pooled/retry-friendly — the fix is scoped to background apps, not a
-    # blanket policy change for every engine kind.
+def test_proxy_does_not_mark_a_retry_post_daemon_at_most_once_on_post(client, monkeypatch):
+    # The other half of the same fix: a daemon whose manifest declares
+    # `retry_post = true` (the map template's own tile daemon is the first)
+    # stays pooled/retry-friendly — the fix is scoped to non-retry-safe
+    # daemons, not a blanket policy change for every child.
     from fused_render.server.routers import engines as engines_router_mod
 
     captured = {}
@@ -1357,10 +1347,10 @@ def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monk
                         media_type="application/json")
 
     monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
-    template_child = engine_host.Child(
+    retry_safe_child = engine_host.Child(
         engine_id="map_tiles", python=sys.executable, daemon="/d.py",
-        cache="c", version="v1", kind="template")
-    monkeypatch.setattr(engine_host, "current", lambda eid: template_child)
+        cache="c", version="v1", retry_post=True)
+    monkeypatch.setattr(engine_host, "current", lambda eid: retry_safe_child)
 
     resp = client.post("/api/engines/map_tiles/proxy/describe", json={}, headers=HDRS)
     assert resp.status_code == 200
@@ -1390,7 +1380,7 @@ def test_proxy_call_timeout_follows_the_shipped_worker_not_idle_timeout_s(
     # A daemon= app (own daemon.py, module="") that opted into an idle timeout.
     own_daemon_child = engine_host.Child(
         engine_id="bg_owndaemon", python=sys.executable, daemon="/d.py",
-        cache="c", version="v1", kind="background", idle_timeout_s=60.0)
+        cache="c", version="v1", idle_timeout_s=60.0)
     monkeypatch.setattr(engine_host, "current", lambda eid: own_daemon_child)
 
     resp = client.post("/api/engines/bg_owndaemon/proxy/slow_route", json={},
@@ -1416,7 +1406,7 @@ def test_proxy_call_timeout_still_applies_to_a_main_app(client, monkeypatch):
     main_child = engine_host.Child(
         engine_id="bg_main", python=sys.executable,
         daemon=engine_host.DEFAULT_DAEMON, cache="c", version="v1",
-        module="/m.py", kind="background", idle_timeout_s=900.0)
+        module="/m.py", idle_timeout_s=900.0)
     monkeypatch.setattr(engine_host, "current", lambda eid: main_child)
 
     resp = client.post("/api/engines/bg_main/proxy/call", json={}, headers=HDRS)
@@ -1476,7 +1466,7 @@ def test_running_reports_a_started_app_that_never_opted_into_autostart(
     engine_id = background_apps.engine_id_for(str(folder))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=999, folder=str(folder))
+        cache="c", version="v1", pid=999, folder=str(folder))
     monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)

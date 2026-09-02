@@ -41,17 +41,16 @@ def _child(engine_id, **over):
     return engine_host.Child(**fields)
 
 
-def test_running_reports_every_live_kind_with_its_labelling_fields(client, monkeypatch):
-    """One row per live child, whatever its kind, carrying the fields the
+def test_running_reports_every_live_child_with_its_labelling_fields(client, monkeypatch):
+    """One row per live child, whatever brought it up, carrying the fields the
     status bar needs to LABEL it: `folder` for a background app, `module` for a
     `main =` daemon (empty for a `daemon =` one), and the id itself for a
     template engine (those are already readable — `map`, `geotiff`)."""
     children = {
-        "map": _child("map", kind="template"),
-        "bg:widget": _child("bg:widget", kind="background",
-                           folder="/w/widget", module="widget.main",
+        "map": _child("map"),
+        "bg:widget": _child("bg:widget", folder="/w/widget", module="widget.main",
                            idle_timeout_s=900.0),
-        "bg:demo": _child("bg:demo", kind="background", folder="/w/demo"),
+        "bg:demo": _child("bg:demo", folder="/w/demo"),
     }
     monkeypatch.setattr(engine_host, "_children", children)
     monkeypatch.setattr(engine_host, "_alive", lambda c: True)
@@ -60,12 +59,10 @@ def test_running_reports_every_live_kind_with_its_labelling_fields(client, monke
 
     by_id = {e["engine_id"]: e for e in engines}
     assert set(by_id) == {"map", "bg:widget", "bg:demo"}
-    assert by_id["map"]["kind"] == "template"
+    assert by_id["map"]["folder"] == ""
     assert by_id["bg:widget"]["module"] == "widget.main"
     assert by_id["bg:demo"]["folder"] == "/w/demo"
-    # The kind is reported so two similarly-named rows stay distinguishable,
-    # and the pid so a user can find the process outside the app.
-    assert by_id["bg:demo"]["kind"] == "background"
+    # The pid is reported so a user can find the process outside the app.
     assert by_id["map"]["pid"] == 4242
 
 

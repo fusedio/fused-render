@@ -51,7 +51,7 @@ def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
     child = engine_host.Child(
         engine_id="app_timeouttest", python=sys.executable,
         daemon=engine_host.DEFAULT_DAEMON, cache="unused",
-        version="v1", module="/tmp/x.py", kind="background",
+        version="v1", module="/tmp/x.py",
         idle_timeout_s=900.0)
     monkeypatch.setattr(engine_host, "current", lambda eid: child)
     healed = []
@@ -80,7 +80,7 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/reaper-test/app.py",
-        kind="background", idle_timeout_s=idle_timeout_s)
+        idle_timeout_s=idle_timeout_s)
     stale = time.monotonic() - (idle_timeout_s + 10)
     child.last_used = stale
     reaped = []
@@ -112,7 +112,7 @@ def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/inflight-test/app.py",
-        kind="background", idle_timeout_s=idle_timeout_s)
+        idle_timeout_s=idle_timeout_s)
     child.last_used = time.monotonic() - (idle_timeout_s + 10)
     reaped = []
     monkeypatch.setattr(engine_host, "_terminate",
@@ -142,7 +142,7 @@ def test_reap_keeps_the_child_record_so_the_next_call_can_heal_it(monkeypatch):
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/reapheal-test/app.py",
-        kind="background", idle_timeout_s=idle_timeout_s)
+        idle_timeout_s=idle_timeout_s)
     child.last_used = time.monotonic() - (idle_timeout_s + 10)
     monkeypatch.setattr(engine_host, "_terminate", lambda c: None)
     engine_host._children[eid] = child
@@ -191,17 +191,19 @@ def test_warm_target_rejects_non_json_result(tmp_path):
     assert out["error"]["type"] == "TypeError"
 
 
-# --- _spawn_env: PYTHONHOME survival keyed on interpreter, not kind ----------
-# The condition being pinned here doesn't gate on `module` or `kind`: a
-# background daemon — or a template daemon — running on `sys.executable`
-# must keep PYTHONHOME exactly like a `main =` daemon on the shipped worker
-# does. Pinning every kind here so the fix can't regress by kind again.
+# --- _spawn_env: PYTHONHOME survival keyed on interpreter, not what brought
+# --- the child up -------------------------------------------------------
+# The condition being pinned here doesn't gate on `module` or how the child
+# was brought up: a background daemon — or a template daemon — running on
+# `sys.executable` must keep PYTHONHOME exactly like a `main =` daemon on the
+# shipped worker does. Pinning every bring-up path here so the fix can't
+# regress for any of them.
 
 def test_spawn_env_strips_for_a_venv_interpreter(monkeypatch):
     monkeypatch.setenv("PYTHONHOME", "/should/be/stripped")
     child = engine_host.Child(
         engine_id="templ_venv", python="/some/venv/bin/python",
-        daemon="/t/daemon.py", cache="c", version="v1", kind="template")
+        daemon="/t/daemon.py", cache="c", version="v1")
     env = engine_host._spawn_env(child)
     assert "PYTHONHOME" not in env
 
@@ -210,7 +212,7 @@ def test_spawn_env_keeps_pythonhome_for_a_main_daemon_on_sys_executable(monkeypa
     monkeypatch.setenv("PYTHONHOME", "/keep/me")
     child = engine_host.Child(
         engine_id="app_x", python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
-        cache="c", version="v1", module="/m.py", kind="background",
+        cache="c", version="v1", module="/m.py",
         idle_timeout_s=900.0)
     env = engine_host._spawn_env(child)
     assert env.get("PYTHONHOME") == "/keep/me"
@@ -223,7 +225,7 @@ def test_spawn_env_keeps_pythonhome_for_a_background_daemon_on_sys_executable(mo
     monkeypatch.setenv("PYTHONHOME", "/keep/me")
     child = engine_host.Child(
         engine_id="bg_x", python=sys.executable, daemon="/t/daemon.py",
-        cache="c", version="v1", kind="background")
+        cache="c", version="v1")
     env = engine_host._spawn_env(child)
     assert env.get("PYTHONHOME") == "/keep/me"
 
@@ -235,6 +237,6 @@ def test_spawn_env_keeps_pythonhome_for_a_template_daemon_on_sys_executable(monk
     monkeypatch.setenv("PYTHONHOME", "/keep/me")
     child = engine_host.Child(
         engine_id="templ_own", python=sys.executable, daemon="/t/daemon.py",
-        cache="c", version="v1", kind="template")
+        cache="c", version="v1")
     env = engine_host._spawn_env(child)
     assert env.get("PYTHONHOME") == "/keep/me"

@@ -161,7 +161,6 @@ def test_a_proxied_post_marks_a_bounded_child_busy_for_the_duration(
     # forwarded request with mark_busy/mark_idle.
     _ensure(client, stub_python, stub_daemon, tmp_path)
     child = engine_host.current(ENGINE)
-    child.kind = "background"
     child.idle_timeout_s = 900.0
 
     events = []
@@ -178,7 +177,7 @@ def test_a_proxied_post_marks_a_bounded_child_busy_for_the_duration(
 def test_a_proxied_post_to_a_template_child_is_untouched_by_busy_marking(
     client, stub_python, stub_daemon, tmp_path, engine_host, monkeypatch,
 ):
-    # The default child from `ensure` is kind="template", idle_timeout_s=0 —
+    # The default child from `ensure` is a template daemon, idle_timeout_s=0 —
     # never reap-eligible, so the new branch must be a complete no-op for it.
     _ensure(client, stub_python, stub_daemon, tmp_path)
 
