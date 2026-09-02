@@ -983,6 +983,35 @@ def _gpu_footprint():
     return None
 
 
+def _device_memory():
+    """`worker_base.serve(device_memory=...)`'s hook (D670): this worker's
+    DISCRETE GPU pool, reported as `(allocated, reserved)` bytes rather than
+    the single figure `memory()`/`_gpu_footprint` each already fold into
+    `resident_bytes()`/`os_footprint_bytes()`. Answering here, independently,
+    is what lets `/health` publish RAM and VRAM as two separate figures
+    without changing what either of those two functions returns.
+
+    **CUDA only, never MPS** — the identical boundary `_gpu_footprint` draws,
+    for the identical reason: on darwin the Metal pool a torch-on-MPS build
+    allocates through IS system memory, already counted in `phys_footprint`,
+    so reporting a separate VRAM figure there would double the same bytes
+    into the split. See `worker_base._device_memory`'s own docstring.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    try:
+        allocated = int(torch.cuda.memory_allocated())
+    except (RuntimeError, OSError):
+        allocated = None
+    try:
+        reserved = int(torch.cuda.memory_reserved())
+    except (RuntimeError, OSError):
+        reserved = None
+    return (allocated, reserved)
+
+
 def main():
     """Serve, forever. The entry point each variant's `worker.py` shell calls.
 
@@ -992,4 +1021,4 @@ def main():
     """
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False, memory=memory, release=release,
-                      footprint=_gpu_footprint)
+                      footprint=_gpu_footprint, device_memory=_device_memory)

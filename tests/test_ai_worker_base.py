@@ -1105,6 +1105,115 @@ def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base,
     assert base._rss_peak == 5_000
 
 
+# -- RAM vs VRAM (D670) ----------------------------------------------------------
+
+
+def test_host_resident_bytes_is_plain_rss_never_maxed_with_the_runner_probe(
+        base, monkeypatch):
+    """`resident_bytes()` takes `max(RSS, a runner's own memory() hook)`, and on
+    a GPU-resident model that hook answers in DEVICE bytes — which is exactly
+    the conflation this field exists to undo. `host_resident_bytes()` must
+    report the bare RSS reading regardless of what `_measure` (the `memory=`
+    hook) says, even when that probe is far larger."""
+    import types
+
+    base._measure = lambda: 99_000_000_000  # a device-memory figure, huge
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=lambda pid: types.SimpleNamespace(
+            memory_info=lambda: types.SimpleNamespace(rss=2_500_000_000))))
+    assert base.host_resident_bytes() == 2_500_000_000
+
+
+def test_host_resident_bytes_is_none_when_psutil_cannot_answer(base, monkeypatch):
+    import types
+
+    def _boom(pid):
+        raise RuntimeError("no such process")
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=_boom))
+    assert base.host_resident_bytes() is None
+
+
+def test_device_memory_bytes_is_none_none_when_no_hook_was_supplied(base):
+    """The default for every runner that never calls `serve(device_memory=...)`
+    — an older runner, or a unified-memory one (MLX/mflux, torch on MPS) that
+    must never fake a device split (D670)."""
+    assert base._device_memory is None
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_device_memory_bytes_reports_the_runners_allocated_and_reserved_pair(base):
+    base._device_memory = lambda: (5_200_000_000, 8_100_000_000)
+    assert base.device_memory_bytes() == (5_200_000_000, 8_100_000_000)
+
+
+def test_device_memory_bytes_swallows_a_raising_probe(base):
+    def boom():
+        raise RuntimeError("no CUDA device")
+
+    base._device_memory = boom
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_device_memory_bytes_drops_a_non_positive_or_malformed_reading(base):
+    """A malformed hook answer (wrong shape, zero, negative) must not become a
+    figure the supervisor charges real budget arithmetic against."""
+    base._device_memory = lambda: (0, -1)
+    assert base.device_memory_bytes() == (None, None)
+
+    base._device_memory = lambda: "not a tuple"
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_health_reports_host_and_device_memory_only_once_ready(base):
+    """Same rule `peak_resident_bytes` already follows: a loading model has no
+    settled reading to report."""
+    base.TOKEN = "secret"
+    base.set_state(state="loading")
+    base._device_memory = lambda: (5_200_000_000, 8_100_000_000)
+    server = _serve(base, lambda body: {})
+    try:
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "host_resident_bytes" not in health
+        assert "device_allocated_bytes" not in health
+        assert "device_reserved_bytes" not in health
+
+        base.set_state(state="ready")
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        # psutil is absent from the server venv (AI-2), so this legitimately
+        # resolves to null here; where psutil IS present it must be a real RSS.
+        assert "host_resident_bytes" in health
+        assert health["host_resident_bytes"] is None or health["host_resident_bytes"] > 0
+        assert health["device_allocated_bytes"] == 5_200_000_000
+        assert health["device_reserved_bytes"] == 8_100_000_000
+    finally:
+        server.shutdown()
+
+
+def test_serve_wires_device_memory_into_the_module_global(base, monkeypatch, tmp_path):
+    """`serve(device_memory=...)` has to actually reach the module global that
+    `device_memory_bytes()` reads — the same wiring `memory=`/`peak_memory=`/
+    `release=`/`footprint=` already get."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    sentinel = lambda: None  # noqa: E731 - identity is what's under test
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, device_memory=sentinel,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._device_memory is sentinel
+
+
 def test_serve_moves_into_the_directory_the_supervisor_names(base, monkeypatch, tmp_path):
     """The posix_spawn half of the fork-crash fix (`supervisor._spawn_kwargs`):
     with no `cwd=` on the Popen, the worker has to `chdir` itself, before

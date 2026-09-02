@@ -768,6 +768,82 @@ _release = None
 #: actually moves when `release()`'s `empty_cache()` fires.
 _footprint = None
 
+#: `serve(device_memory=...)`'s hook — the FIFTH optional hook beside
+#: `_measure`/`_measure_peak`/`_release`/`_footprint` above, set by a runner
+#: that can tell RAM and VRAM apart. Returns `(allocated, reserved)` in
+#: bytes, or `None`.
+#:
+#: Why this exists (D670): every reading above this point answers "what is
+#: this worker costing", not "which POOL is it costing" — `resident_bytes()`
+#: takes the LARGER of RSS and a runner's `memory=` hook, which for a
+#: GPU-resident `torch_image` worker reports DEVICE bytes as though they were
+#: host RAM, and `_footprint` folds a discrete GPU's reserved pool additively
+#: into `os_footprint_bytes()`. Both are deliberately left exactly as they
+#: are (see `resident_bytes`'s own docstring on why redefining it would
+#: re-verdict every model ever run). This hook is the new, separate answer:
+#: a runner that HAS a genuinely disjoint device pool (CUDA/ROCm) supplies
+#: it, and `device_memory_bytes()`/`host_resident_bytes()` below let
+#: `/health` publish RAM and VRAM as two honest, independent figures instead
+#: of the one conflated number.
+#:
+#: **Never wired for a UNIFIED-MEMORY runner.** On Apple Silicon (MLX/mflux,
+#: torch on MPS) the "GPU pool" IS system memory — there is no second pool to
+#: report, and a runner that supplied one anyway would have the page double-
+#: count the same bytes as both RAM and VRAM. `torch_image._device_memory`
+#: is CUDA-only for the identical reason `_gpu_footprint` above is.
+_device_memory = None
+
+
+def host_resident_bytes():
+    """The bare host RSS reading, with no runner probe folded in — or None.
+
+    `resident_bytes()` answers `max(RSS, a runner's own memory() hook)` on
+    purpose (see its own docstring), and that hook answers in DEVICE bytes
+    for a GPU-resident `torch_image` worker — so the max is frequently NOT
+    a RAM figure at all. This function is the un-conflated one: the same
+    `psutil` RSS read `resident_bytes()` takes internally, exposed on its
+    own so `/health` (and, downstream, the supervisor's RAM budget gate) can
+    tell host memory apart from a device allocator's pool (D670).
+
+    Deliberately does NOT feed `_rss_peak` — that high-water mark already has
+    exactly one writer (`resident_bytes()`, called on every poll already), and
+    a second writer sampling the same counter would just be redundant, not
+    more accurate.
+    """
+    try:
+        import psutil
+
+        rss = int(psutil.Process(os.getpid()).memory_info().rss)
+    except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
+        return None
+    return rss if rss > 0 else None
+
+
+def device_memory_bytes():
+    """`(allocated, reserved)` bytes in a DISCRETE GPU's own pool, or
+    `(None, None)` — the runner-supplied halves of the RAM/VRAM split (D670).
+
+    `(None, None)` whenever `_device_memory` is unset (an older runner, or a
+    unified-memory one that must never fake a split — see that global's own
+    docstring), the hook raises, or it answers something that is not a
+    `(int, int)` pair of positive readings. A malformed or partial answer is
+    treated exactly like no answer at all, never patched up with a guess:
+    this figure ends up in the supervisor's budget arithmetic, where a wrong
+    number is worse than a missing one.
+    """
+    if _device_memory is None:
+        return (None, None)
+    try:
+        probed = _device_memory()
+    except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+        probed = None
+    if not isinstance(probed, tuple) or len(probed) != 2:
+        return (None, None)
+    allocated, reserved = probed
+    allocated = allocated if isinstance(allocated, int) and allocated > 0 else None
+    reserved = reserved if isinstance(reserved, int) and reserved > 0 else None
+    return (allocated, reserved)
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
@@ -4621,6 +4697,13 @@ def _handler(generate, streaming):
                     # The OS's own "right now" figure (D597), additive beside
                     # the two above — see `os_footprint_bytes`.
                     health["os_footprint_bytes"] = os_footprint_bytes()
+                    # RAM and VRAM, un-conflated (D670) — see `host_resident_
+                    # bytes`/`device_memory_bytes`'s own docstrings for why
+                    # neither of the three fields above can answer this.
+                    health["host_resident_bytes"] = host_resident_bytes()
+                    allocated, reserved = device_memory_bytes()
+                    health["device_allocated_bytes"] = allocated
+                    health["device_reserved_bytes"] = reserved
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -4784,7 +4867,7 @@ def _adopt_spawn_shape():
 
 
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
-         release=None, footprint=None, argv=None):
+         release=None, footprint=None, device_memory=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
@@ -4807,14 +4890,22 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     footprint_bytes()` adds it to the platform figure it already computes; see
     that function's and `_footprint`'s own docstrings for why addition, not
     `max`, and why `torch_image.main()` is the only caller that supplies one.
+
+    `device_memory` is a fifth, independent optional hook (D670): a runner
+    with a genuinely disjoint device pool (CUDA/ROCm) reports
+    `(allocated, reserved)` bytes through it, which is how `/health` tells
+    RAM and VRAM apart without touching `memory`/`footprint` above — see
+    `_device_memory`'s own docstring for why a unified-memory runner must
+    never supply one.
     """
-    global JOB_ID, _measure, _measure_peak, _release, _footprint
+    global JOB_ID, _measure, _measure_peak, _release, _footprint, _device_memory
 
     _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
     _release = release
     _footprint = footprint
+    _device_memory = device_memory
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

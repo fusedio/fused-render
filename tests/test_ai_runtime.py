@@ -3793,6 +3793,109 @@ def test_a_ready_workers_live_resident_bytes_is_credited_over_its_peak_estimate(
     assert supervisor._workers[registry.TEXT_GENERATION].model == "org/new-text"
 
 
+# -- RAM vs VRAM in the budget gate (D670) ---------------------------------------
+
+
+def test_worker_footprint_bytes_charges_host_only_when_the_device_split_is_known():
+    """A GPU-resident worker's `resident_bytes` is `max(RSS, the device
+    allocator's own figure)` (`worker_base.resident_bytes`'s own docstring) —
+    on a ROCm box with a FLUX pipeline pinned to VRAM that is 5.2 GB of DEVICE
+    memory, not 5.2 GB of the RAM budget this gate protects. Once the worker
+    has reported a genuinely separate device pool, the gate must charge only
+    the HOST figure, not the conflated one."""
+    worker = supervisor.Worker(
+        model="org/flux", capability=registry.IMAGE_GENERATION,
+        runner_code="diffusers-image-rocm", state="ready",
+        resident_bytes=5_200_000_000,      # RSS max'd against device-allocated
+        host_resident_bytes=2_500_000_000,  # the real RAM cost
+        device_allocated_bytes=5_200_000_000,
+        device_reserved_bytes=8_100_000_000)
+    assert supervisor._worker_footprint_bytes(worker, None) == 2_500_000_000
+
+
+def test_worker_footprint_bytes_falls_back_to_resident_bytes_when_the_split_is_unknown():
+    """An older runner, a unified-memory one (MLX/mflux, torch on MPS), or a
+    probe that failed — `device_allocated_bytes`/`device_reserved_bytes` both
+    stay null, and the gate must behave EXACTLY as it did before this split
+    existed: charge the worker's live `resident_bytes`, never guess a host
+    figure that was never measured."""
+    worker = supervisor.Worker(
+        model="org/mlx", capability=registry.IMAGE_GENERATION,
+        runner_code="mflux-image", state="ready",
+        resident_bytes=1234, host_resident_bytes=None,
+        device_allocated_bytes=None, device_reserved_bytes=None)
+    assert supervisor._worker_footprint_bytes(worker, None) == 1234.0
+
+
+def test_worker_footprint_bytes_falls_back_when_the_split_is_known_but_the_host_reading_is_not():
+    """The device hook answered but `host_resident_bytes` itself is null (a
+    partial probe failure) — charging 0 would let the gate admit a load the
+    machine has no room for, so this must fall back to the same
+    `resident_bytes` ladder the unknown-split case uses, not to zero."""
+    worker = supervisor.Worker(
+        model="org/flux", capability=registry.IMAGE_GENERATION,
+        runner_code="diffusers-image-cuda", state="ready",
+        resident_bytes=5_200_000_000, host_resident_bytes=None,
+        device_allocated_bytes=5_200_000_000, device_reserved_bytes=8_100_000_000)
+    assert supervisor._worker_footprint_bytes(worker, None) == 5_200_000_000.0
+
+
+def test_worker_footprint_bytes_ignores_the_split_for_a_non_ready_worker():
+    """A worker still downloading/loading has no settled RSS to trust yet
+    (the existing rule `_worker_footprint_bytes`'s own docstring states) —
+    that must hold regardless of whether a device figure happens to be set."""
+    worker = supervisor.Worker(
+        model="org/flux", capability=registry.IMAGE_GENERATION,
+        runner_code="diffusers-image-cuda", state="loading",
+        resident_bytes=5_200_000_000, host_resident_bytes=2_500_000_000,
+        device_allocated_bytes=5_200_000_000, device_reserved_bytes=8_100_000_000)
+    # Falls through to `_predicted_footprint`, which answers None with no
+    # catalog entry and no footprint store — so the last resort, RAW resident
+    # bytes (never the host-only figure, since the split rule is `ready`-only).
+    assert supervisor._worker_footprint_bytes(worker, None) == 5_200_000_000.0
+
+
+def test_describe_carries_the_host_and_device_memory_fields(fake_runner, tmp_path,
+                                                             monkeypatch):
+    """The new figures ride beside `residentBytes`/`osFootprintBytes` in
+    `describe()`'s payload (D670), the same additive hop those two already
+    make — never replacing either."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready",
+        "resident_bytes": 5_200_000_000,
+        "host_resident_bytes": 2_500_000_000,
+        "device_allocated_bytes": 5_200_000_000,
+        "device_reserved_bytes": 8_100_000_000,
+    })
+    supervisor.refresh_memory()
+
+    assert worker.host_resident_bytes == 2_500_000_000
+    assert worker.device_allocated_bytes == 5_200_000_000
+    assert worker.device_reserved_bytes == 8_100_000_000
+
+    row = supervisor.describe()["loaded"][0]
+    assert row["hostResidentBytes"] == 2_500_000_000
+    assert row["deviceAllocatedBytes"] == 5_200_000_000
+    assert row["deviceReservedBytes"] == 8_100_000_000
+    assert row["residentBytes"] == 5_200_000_000
+
+
+def test_describe_reports_null_host_and_device_bytes_for_an_older_runner(fake_runner):
+    """The fake runner's `/health` never sets these three keys, which is
+    exactly the "runner too old / unified memory / probe unavailable" case —
+    the row must stay null end to end, never coerced to 0."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["hostResidentBytes"] is None
+    assert row["deviceAllocatedBytes"] is None
+    assert row["deviceReservedBytes"] is None
+
+
 def test_predicted_footprint_threads_kv_geometry_kwargs_through_to_fit(monkeypatch):
     """`server/routers/ai_runtime.py`'s `_kv_geometry_kwargs` feeds the AI
     Models page's fit badge; `_predicted_footprint` must feed `fit.

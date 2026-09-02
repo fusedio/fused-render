@@ -260,6 +260,23 @@ class Worker:
     #: this into `footprints.py` on every poll that grows it, which is what
     #: `fit.py` (AI-16) reads back as the "measured" basis.
     peak_resident_bytes: int | None = None
+    #: The bare host RSS reading, un-conflated with a runner's own device
+    #: probe (D670, `worker_base.host_resident_bytes`) — what `resident_bytes`
+    #: above CANNOT answer, since that field is deliberately left as `max(RSS,
+    #: the runner's memory() hook)` and a GPU-resident model's hook answers in
+    #: DEVICE bytes. This is the true RAM cost, used by `_worker_footprint_
+    #: bytes` to charge the RAM budget gate correctly once it is known.
+    host_resident_bytes: int | None = None
+    #: A DISCRETE GPU's own pool, as the worker's `device_memory` hook
+    #: reported it (D670, `worker_base.device_memory_bytes`) — `allocated` is
+    #: `torch.cuda.memory_allocated()`'s figure, `reserved` is `memory_
+    #: reserved()`'s. Both null together on any worker that never supplied
+    #: the hook: an older runner, a probe that failed, or (deliberately) a
+    #: UNIFIED-MEMORY runner — MLX/mflux, torch on MPS — where there is no
+    #: second pool to report at all. Their presence (not merely their value)
+    #: is what `_worker_footprint_bytes` reads as "the split is known".
+    device_allocated_bytes: int | None = None
+    device_reserved_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
     #: whether the RUNNER IT ACTUALLY RESOLVED is the one whose torch was built
@@ -273,7 +290,7 @@ class Worker:
     #: knows.
     device: str = ""
     #: Which rung of `torch_image._place()`'s ladder the worker actually
-    #: landed on — "all-gpu" | "group-offload" | "offload", as the WORKER
+    #: landed on — "all-gpu" | "offload", as the WORKER
     #: reported it via `set_state(placement=...)`, never inferred here. None
     #: from a runner that never calls `_place` (the CPU/MPS branches report
     #: nothing, and non-diffusers runners have no placement decision to make
@@ -1186,6 +1203,19 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 footprint = health.get("os_footprint_bytes")
                 worker.os_footprint_bytes = (
                     footprint if isinstance(footprint, int) else None)
+                # RAM and VRAM, un-conflated (D670) — same "coerce falsy to
+                # None" shape as the two fields just above, and re-read every
+                # poll for the same reason: a runner sets these inside
+                # `load()`, and this loop is what is watching when that
+                # happens.
+                host = health.get("host_resident_bytes")
+                worker.host_resident_bytes = host if isinstance(host, int) else None
+                allocated = health.get("device_allocated_bytes")
+                worker.device_allocated_bytes = (
+                    allocated if isinstance(allocated, int) else None)
+                reserved = health.get("device_reserved_bytes")
+                worker.device_reserved_bytes = (
+                    reserved if isinstance(reserved, int) else None)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
@@ -1488,9 +1518,30 @@ def _worker_footprint_bytes(worker: Worker, store: dict | None) -> float:
     when nothing measured/declared/download could answer, and treating an
     unknown footprint as ZERO would let the gate admit a load it should have
     refused.
+
+    **A `ready` worker with a KNOWN host/device split (D670) is charged its
+    HOST figure, not `resident_bytes`.** This gate protects the system-RAM
+    budget, and `resident_bytes` is `max(RSS, a runner's own memory() hook)`
+    — for a GPU-resident worker that hook answers in DEVICE bytes, so the
+    max routinely reports VRAM as though it were RAM the machine does not
+    have to spare (a ROCm FLUX worker: 5.2 GB of VRAM charged against a RAM
+    budget it never touched). The split is "known" when the worker reported
+    a genuinely separate device pool — `device_allocated_bytes` or `device_
+    reserved_bytes` is not `None` — never inferred from silence: an older
+    runner, a unified-memory one (MLX/mflux, torch on MPS), or a probe that
+    failed all leave both `None`, and this function then falls through to
+    the `resident_bytes` behaviour above exactly as it always has. A known
+    split whose `host_resident_bytes` itself came back `None` (a partial
+    probe failure) also falls through rather than charging zero, for the
+    same reason the caller above never charges zero.
     """
-    if worker.state == "ready" and worker.resident_bytes:
-        return float(worker.resident_bytes)
+    if worker.state == "ready":
+        split_known = (worker.device_allocated_bytes is not None
+                       or worker.device_reserved_bytes is not None)
+        if split_known and worker.host_resident_bytes:
+            return float(worker.host_resident_bytes)
+        if worker.resident_bytes:
+            return float(worker.resident_bytes)
     footprint, _basis = _predicted_footprint(worker.capability, worker.model, store,
                                              worker.runner_code)
     if footprint is not None:
@@ -3139,6 +3190,19 @@ def refresh_memory() -> None:
             footprint_now = health.get("os_footprint_bytes")
             worker.os_footprint_bytes = (
                 footprint_now if isinstance(footprint_now, int) else None)
+            # Same "assigned whenever the worker answered, including with
+            # None" treatment as the OS footprint just above (D670): these
+            # are display/gate-input fields describing RIGHT NOW, so a
+            # worker that stops reporting a split (or never had one) must
+            # clear the cells rather than leave a stale figure standing.
+            host_now = health.get("host_resident_bytes")
+            worker.host_resident_bytes = host_now if isinstance(host_now, int) else None
+            allocated_now = health.get("device_allocated_bytes")
+            worker.device_allocated_bytes = (
+                allocated_now if isinstance(allocated_now, int) else None)
+            reserved_now = health.get("device_reserved_bytes")
+            worker.device_reserved_bytes = (
+                reserved_now if isinstance(reserved_now, int) else None)
             # Same display-only, re-read-every-poll treatment as the OS
             # footprint just above — `_place` only runs once, at `load()`,
             # but re-reading it here rather than trusting the load loop's
@@ -3217,17 +3281,27 @@ def describe() -> dict:
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
                 # Which rung of `torch_image._place()`'s ladder the weights
-                # actually landed on — "all-gpu" | "group-offload" |
-                # "offload". None from a runner that never calls `_place`.
-                # Rides through the API the same way `device` below does, but
-                # `AiLoadedModel` (`frontend/src/platform/lib/api.ts`) has no
-                # `placement` field yet, so no page reads this key.
+                # actually landed on — "all-gpu" | "offload". None from a
+                # runner that never calls `_place`. Rides through the API the
+                # same way `device` below does, but `AiLoadedModel`
+                # (`frontend/src/platform/lib/api.ts`) has no `placement`
+                # field yet, so no page reads this key.
                 "placement": w.placement,
                 # The OS's "right now" figure (D597) — what a user's system
                 # monitor shows, which `residentBytes` does NOT on Apple
                 # Silicon (Metal buffers are charged to `phys_footprint`, not
                 # RSS). Null where no counter could be read; never coerced.
                 "osFootprintBytes": w.os_footprint_bytes,
+                # RAM and VRAM as two separate figures (D670), additive
+                # beside `residentBytes`/`osFootprintBytes` above rather than
+                # replacing either — those two stay exactly as they were
+                # (see their own comments and `Worker.resident_bytes`'s
+                # docstring on why). Null together on any worker that never
+                # reported a genuine host/device split — an older runner, a
+                # unified-memory one, or a probe that failed.
+                "hostResidentBytes": w.host_resident_bytes,
+                "deviceAllocatedBytes": w.device_allocated_bytes,
+                "deviceReservedBytes": w.device_reserved_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.

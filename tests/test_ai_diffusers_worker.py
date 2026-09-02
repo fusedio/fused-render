@@ -1665,6 +1665,47 @@ def test_the_footprint_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, 
     assert worker._gpu_footprint() is None
 
 
+# -- the RAM/VRAM split hook (`worker_base.serve(device_memory=...)`, D670) -----
+
+
+def test_main_wires_a_device_memory_hook_into_serve(monkeypatch, base):
+    """`main()` is the one caller of `worker_base.serve` in this file — the
+    same wiring `memory=`/`footprint=` already get, plus the new fifth hook."""
+    worker = load_worker(monkeypatch, base)
+    worker.main()
+    assert base.serve_kwargs["device_memory"] is worker._device_memory
+
+
+def test_the_device_memory_hook_reports_allocated_and_reserved(monkeypatch, base):
+    """Both numbers, not just the one `_gpu_footprint` already reports:
+    `resident_bytes()` needs `allocated` (SPEC AI-8c's own basis), and the
+    live-footprint hook needs `reserved` — the RAM/VRAM split has to carry
+    both, independently of the other two hooks."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        memory_allocated=lambda: 5_200_000_000,
+        memory_reserved=lambda: 8_100_000_000)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._device_memory() == (5_200_000_000, 8_100_000_000)
+
+
+def test_the_device_memory_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, base):
+    """CUDA only, never MPS — the same boundary `_gpu_footprint` draws and for
+    the identical reason: on Apple Silicon the GPU pool IS system memory, so a
+    separate VRAM figure would double-count the same bytes as RAM."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._device_memory() is None
+
+
 def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
         monkeypatch, base, tmp_path):
     """Step 1 has no predecessor, so it has no velocity and no estimate — and
