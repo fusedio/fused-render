@@ -9,21 +9,30 @@ below. They differ in which wheel index their manifest takes
 never about the code. (The pattern is `torch_image.py`'s and was the removed
 `torch_text.py`'s, which served three such folders — D416.)
 
-**The DEFAULT text engine on Windows and Linux since D416, and it was designed
-not to be.** This module shipped registered below three `transformers-text*`
-rows so that `auto` could never reach it, because `llamacpp_text/pyproject.toml`
-records that the maintainer's wheel index is a coin-flip per release on macOS
-arm64 (4 of 16 sampled releases fail an integrity check) and a capability that
-fragile to INSTALL is a poor thing to hand a machine that did not ask for it.
-D416 removed those rows on a benchmark this engine won on every axis at once
-(4.2x transformers' throughput on a Radeon GPU, 2.4x on CPU, a third of the
-download, a third of the peak RSS), so the packaging argument lost to a
-performance one and the default moved. What kept it affordable: the pinned
-`0.3.29` Linux and Windows wheels were verified intact, macOS arm64 still
-resolves to `mlx-text` ahead of this row, and a corrupt wheel fails LOUDLY at
-`uv sync` rather than answering wrongly later. `llamacpp_text/pyproject.toml`
-carries the version this was audited against and the audit itself; bumping the
-pin without repeating it is the one thing that folder's comment forbids.
+**The DEFAULT text engine on Windows and Linux since D416, and now only the
+FALLTHROUGH one wherever `llamacpp_text_vulkan/`'s own row can run — and it
+was designed not to be even that.** This module shipped registered below
+three `transformers-text*` rows so that `auto` could never reach it, because
+`llamacpp_text/pyproject.toml` records that the maintainer's wheel index is a
+coin-flip per release on macOS arm64 (4 of 16 sampled releases fail an
+integrity check) and a capability that fragile to INSTALL is a poor thing to
+hand a machine that did not ask for it. D416 removed those rows on a
+benchmark this engine won on every axis at once (4.2x transformers'
+throughput on a Radeon GPU, 2.4x on CPU, a third of the download, a third of
+the peak RSS), so the packaging argument lost to a performance one and the
+default moved here. The GPU-first policy decision (`registry.py`'s block
+comment above `_RUNNERS`) has since moved it again, onto
+`llamacpp_text_vulkan/`'s row, wherever `registry._vulkan` finds a usable
+hardware Vulkan GPU — this module still backs BOTH rows (`main()` below is
+shared), so what changed is which folder's wheel a Windows/Linux machine
+gets by default, not which code runs once it has one. What kept the D416
+move affordable, and still applies to this row now that it is the
+fallthrough: the pinned `0.3.29` Linux and Windows wheels were verified
+intact, macOS arm64 still resolves to `mlx-text` ahead of this row, and a
+corrupt wheel fails LOUDLY at `uv sync` rather than answering wrongly later.
+`llamacpp_text/pyproject.toml` carries the version this was audited against
+and the audit itself; bumping the pin without repeating it is the one thing
+that folder's comment forbids.
 
 **The model-id problem, and why there is no `repo:Q4_K_M` grammar.** A GGUF
 repo commonly publishes 25-30 quantizations of one model — `unsloth/Qwen3.5-9B-GGUF`

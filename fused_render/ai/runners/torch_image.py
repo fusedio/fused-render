@@ -5,9 +5,13 @@ beside `worker_base.py`, `formats.py` and `preview.py` — which is the rule
 `preview.py` states about itself, applied one level out. THREE folders serve this
 one engine — `diffusers_image/`, `diffusers_image_cuda/` and
 `diffusers_image_rocm/` — and they differ only in which index their
-`pyproject.toml` takes torch from. CPU is the default, CUDA and ROCm are variants
-a user picks on the Engines tab, and the hardware they select is a fact about the
-wheel, never about the code. Each folder's `worker.py` is a five-line shell around
+`pyproject.toml` takes torch from. CUDA and ROCm are the DEFAULT now on a
+machine `registry._cuda`/`_rocm` finds usable hardware for (the GPU-first
+policy decision, `registry.py`'s block comment above `_RUNNERS`); CPU is what
+a user without one gets automatically, or picks deliberately from the
+Engines tab to move away from an accelerator. Either way the hardware
+selected is a fact about the wheel, never about the code. Each folder's
+`worker.py` is a five-line shell around
 `torch_image.main()`; a second copy of the pipeline recipes, the GGUF swap or the
 preview wiring under any of them would fail no test, because each copy would pass
 its own.

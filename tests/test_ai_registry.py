@@ -62,15 +62,16 @@ def test_mlx_embed_is_registered_before_every_other_embed_row():
     the table): MLX must come first so an Apple Silicon machine resolves there
     by default, exactly like text generation and image generation. Widened
     from asserting the two-row list verbatim to the property this test actually
-    cares about: MLX is first, ahead of every other build — and the
-    unaccelerated ONNX row is ahead of its own accelerated siblings, which is
-    what keeps `auto` off a GPU.
+    cares about: MLX is first, ahead of every other build — and each of the
+    accelerated ONNX rows is ahead of the unaccelerated `onnx-embed`, which is
+    what puts `auto` ON a GPU when one is there (the policy this table's block
+    comment records).
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes[0] == "mlx-embed"
-    assert codes.index("onnx-embed") < codes.index("onnx-embed-directml")
-    assert codes.index("onnx-embed") < codes.index("onnx-embed-cuda")
-    assert codes.index("onnx-embed") < codes.index("onnx-embed-rocm")
+    assert codes.index("onnx-embed-directml") < codes.index("onnx-embed")
+    assert codes.index("onnx-embed-cuda") < codes.index("onnx-embed")
+    assert codes.index("onnx-embed-rocm") < codes.index("onnx-embed")
 
 
 def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
@@ -109,20 +110,28 @@ def test_onnx_embed_is_refused_on_intel_macos(monkeypatch):
     assert "Apple Silicon" in status.reason
 
 
-def test_windows_resolves_to_onnx_embed(monkeypatch):
-    """Was `transformers-embed` until the torch family went. `onnx-embed` is now
-    the cross-platform row and the Apple-Silicon fallback, so this is the engine
-    every machine off a Mac resolves to with no preference set."""
+def test_windows_resolves_to_onnx_embed_directml(monkeypatch):
+    """Was `transformers-embed`, then `onnx-embed`, until the GPU-first policy
+    reordered the ONNX family (see `registry.py`'s block comment above
+    `_RUNNERS`). `_directml` answers True for any Windows/AMD64 machine — every
+    Windows 10+ box has a Direct3D 12 adapter — so a Windows machine with no
+    preference set now resolves to the DirectML row rather than the CPU one
+    behind it; `onnx-embed` is the fallthrough for Windows ARM64, which
+    `_directml` refuses."""
     _windows(monkeypatch)
     resolved = registry.for_capability(registry.EMBEDDINGS)
-    assert resolved is not None and resolved.code == "onnx-embed"
+    assert resolved is not None and resolved.code == "onnx-embed-directml"
 
 
 def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
     """`onnxruntime-directml` publishes `win_amd64` and nothing else, so the row
-    is Windows/AMD64 by construction. Unlike `_vulkan` there is no loader or
-    driver ICD to probe: DirectML runs on any Direct3D 12 adapter, which every
-    Windows 10+ machine has — see `_directml`'s own docstring."""
+    is Windows/AMD64 by construction. Unlike `_vulkan` there is no loader
+    file to probe — DirectML ships as part of Windows itself — but since the
+    GPU-first reorder `_directml` also checks for a REAL Direct3D 12 adapter
+    (see `_directml`'s own docstring and the tests below); on this real macOS
+    test machine `_windows_display_adapter_ids` cannot read the Windows
+    registry at all (`winreg` does not exist here) and returns `None`, which
+    `_directml` treats as "could not determine" and does not refuse on."""
     _windows(monkeypatch)
     assert _runner("onnx-embed-directml").available().ok
     for setter in (_mac_arm, _linux):
@@ -133,6 +142,59 @@ def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
     assert not _runner("onnx-embed-directml").available().ok
 
 
+def test_directml_refuses_a_machine_with_only_the_basic_render_driver(monkeypatch):
+    """The main fix (code review): `_directml` had NO adapter probe at all —
+    its own old docstring argued one was not needed because `auto` never
+    reached this row. That argument is gone since the GPU-first reorder made
+    it the embeddings default on every Windows x86_64 box, including a
+    headless/RDP/Server/VM machine whose only Direct3D 12 adapter is the
+    Microsoft Basic Render Driver (vendor `0x1414`, device `0x8c`) — a
+    software rasterizer, not a GPU, on which `onnxruntime-directml` session
+    creation fails at load time.
+
+    `_windows_display_adapter_ids` is the injectable seam (real code reads
+    the Display class registry key `hw_detect.py` already trusts for VRAM;
+    this test fakes its return value directly rather than touching a real
+    Windows registry, which does not exist on the machine running this
+    suite).
+    """
+    _windows(monkeypatch)
+    monkeypatch.setattr(
+        registry, "_windows_display_adapter_ids",
+        lambda: [(registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE)])
+    status = _runner("onnx-embed-directml").available()
+    assert status.ok is False
+    assert "Basic Render Driver" in status.reason or "basic render driver" in status.reason.lower()
+
+
+def test_directml_passes_with_a_real_adapter_beside_the_basic_render_driver(monkeypatch):
+    """Windows always registers the Microsoft Basic Render Driver alongside
+    any real adapter — its presence alone must not disqualify a machine that
+    also has a usable GPU."""
+    _windows(monkeypatch)
+    monkeypatch.setattr(
+        registry, "_windows_display_adapter_ids",
+        lambda: [
+            (registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE),
+            (0x10DE, 0x2704),  # an NVIDIA device id, any real value will do
+        ])
+    assert _runner("onnx-embed-directml").available().ok
+
+
+def test_directml_passes_when_the_adapter_probe_cannot_determine(monkeypatch):
+    """`None` (registry unreadable, or a permissions failure) is "could not
+    determine", not "determined and it's software-only" — refusing on an
+    inconclusive read would be a false negative on a real machine this probe
+    simply failed to read correctly, which is worse than the loose check it
+    replaces. An empty list (enumerated successfully, found nothing) gets the
+    same fail-open treatment for the same reason."""
+    _windows(monkeypatch)
+    monkeypatch.setattr(registry, "_windows_display_adapter_ids", lambda: None)
+    assert _runner("onnx-embed-directml").available().ok
+    monkeypatch.setattr(registry, "_windows_display_adapter_ids", lambda: [])
+    assert _runner("onnx-embed-directml").available().ok
+
+
 def test_the_accelerated_onnx_rows_reuse_the_existing_hardware_probes():
     """`_cuda` and `_rocm` unchanged, not transliterated: the question "does this
     machine have a usable NVIDIA/AMD GPU" does not become a different question
@@ -141,30 +203,66 @@ def test_the_accelerated_onnx_rows_reuse_the_existing_hardware_probes():
     assert _runner("onnx-embed-rocm")._available is registry._rocm
 
 
-def test_the_embeddings_rows_are_ordered_with_auto_on_an_unaccelerated_row():
+def test_the_embeddings_rows_are_ordered_with_auto_on_an_accelerated_row():
     """The decision this test used to pin — no accelerated embed variant,
     because a dual encoder is "too cheap to justify a second or third wheel"
-    — was DELIBERATELY REVERSED, not overlooked. The speed argument for the TEXT
-    tower still holds (one short sequence, milliseconds on a CPU), but an image
-    tower run at `embed_common.MAX_ITEMS` (64) items per call is real work a GPU
+    — was DELIBERATELY REVERSED once already, not overlooked, when the ONNX
+    accelerated rows were added: the speed argument for the TEXT tower still
+    holds (one short sequence, milliseconds on a CPU), but an image tower run
+    at `embed_common.MAX_ITEMS` (64) items per call is real work a GPU
     meaningfully speeds up, and a machine that already has a working NVIDIA or
     fully ROCm-capable AMD card was otherwise stuck running every one of those
     batches in fp32 on the CPU with no way to opt out.
 
     Those rows were `transformers-embed-cuda`/`-rocm`; they are now
     `onnx-embed-directml`/`-cuda`/`-rocm`, gated on `_directml` and on the same
-    `_cuda`/`_rocm` probes `diffusers-image-cuda`/`-rocm` use. All three sit
-    BELOW `onnx-embed`, so `auto` resolves to an unaccelerated row on every
-    platform (`test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_rows`
-    in `test_ai_runtime.py` pins that through platform mocks; this test pins only
-    the static ordering). DirectML leads the three because it is the only one of
-    them Windows can take.
+    `_cuda`/`_rocm` probes `diffusers-image-cuda`/`-rocm` use. A second reversal
+    — the GPU-first policy `registry.py`'s block comment above `_RUNNERS`
+    records — then moved all three ABOVE `onnx-embed`, so `auto` resolves to an
+    accelerated row whenever the device is there
+    (`test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onnx`
+    in `test_ai_runtime.py` pins that through platform mocks; this test pins
+    only the static ordering). DirectML leads the three because it is the only
+    one of them Windows can take.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
         "mlx-embed",
-        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
+        "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
     ]
+
+
+#: Every family that has both an accelerated row and an unaccelerated CPU
+#: sibling — `mlx-text`/`mflux-image`/`mlx-embed` excluded, since those are
+#: already the GPU row on Apple Silicon and have no CPU sibling to lead.
+_GPU_CPU_PAIRS = (
+    ("llamacpp-text-vulkan", "llamacpp-text"),
+    ("diffusers-image-cuda", "diffusers-image"),
+    ("diffusers-image-rocm", "diffusers-image"),
+    ("onnx-embed-directml", "onnx-embed"),
+    ("onnx-embed-cuda", "onnx-embed"),
+    ("onnx-embed-rocm", "onnx-embed"),
+)
+
+
+def test_every_accelerated_row_leads_its_cpu_sibling():
+    """Pins the invariant the GPU-first policy exists to guarantee (see the
+    block comment above `_RUNNERS`): GPU-backed engines are preferred over
+    CPU-backed ones, so `auto` must resolve to the accelerated row whenever it
+    can run. That is exactly `_first_available`'s first-match-wins rule
+    applied to registry ORDER — an accelerated row registered below its CPU
+    sibling would never be reached by `auto` no matter how it probed — so this
+    test asserts the one fact that makes it reachable: the accelerated row's
+    index is strictly lower than its CPU sibling's, for every pair in this
+    table. A future contributor adding a new hardware variant (or
+    re-alphabetizing the table, which the comment above it already asks
+    nobody to do) trips this immediately rather than silently reintroducing
+    an opt-in-only accelerator.
+    """
+    codes = [r.code for r in registry.all_runners()]
+    for accelerated, cpu in _GPU_CPU_PAIRS:
+        assert codes.index(accelerated) < codes.index(cpu), (
+            f"{accelerated} must lead {cpu} so auto prefers the GPU build")
 
 
 # The task-vocabulary tests that used to live here (the embeddings dual-encoder
