@@ -742,7 +742,12 @@ async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
 
 def _ai_result_payload(data: dict, requested_model: str):
     """Map a terminal `result` event to the RH-11 result payload.
-    Returns (payload, None) on success or (None, error_message)."""
+    Returns (payload, None) on success or (None, error_message).
+
+    `finishReason` is always `"stop"` here: the CLI's result event carries
+    no stop reason, and a truncated turn is not something `claude -p`
+    reports — so this is the one value that is honestly known, not a guess
+    dressed as a vocabulary."""
     try:
         text = data["result"]
     except (LookupError, TypeError):
@@ -756,7 +761,8 @@ def _ai_result_payload(data: dict, requested_model: str):
     if isinstance(model_usage, dict) and len(model_usage) == 1:
         used_model = next(iter(model_usage))
     return {"text": text, "model": used_model,
-            "usage": _ai_usage(data.get("usage")), "provider": "claude"}, None
+            "usage": _ai_usage(data.get("usage")), "provider": "claude",
+            "finishReason": "stop", "warnings": []}, None
 
 
 #: Who may speak in a supplied history. Deliberately not "system" — the system
@@ -778,6 +784,51 @@ _SAMPLING = {
     "top_p": (0.0, 1.0),
     "max_tokens": (1, 32768),
 }
+
+
+# The wire name of each sampling knob -> the option name a PAGE wrote
+# (`runtime.js` maps camelCase to snake_case on the way in), so a warning
+# names the thing the author can find in their own code.
+_OPTION_NAMES = {"temperature": "temperature", "max_tokens": "maxTokens",
+                 "top_p": "topP", "effort": "effort"}
+
+
+def _unsupported(setting: str, tier: str, why: str) -> dict:
+    """One `warnings[]` entry (RH-11, D631): a well-formed option this tier
+    cannot honour, DROPPED and reported rather than refused.
+
+    The shape follows the AI SDK's `unsupported-setting` warning so a page
+    reads one vocabulary for it. This is the declared-support model the
+    provider design called for: with N tiers × M knobs, "400 on anything a
+    tier lacks" stops scaling and starts hiding real errors behind tunables.
+    It applies to TUNABLES only — a knob whose absence changes quality, not
+    meaning. `history`, `raw` and `images` stay 400s on the Claude tier:
+    dropping those answers a different question than the one asked, which
+    is not a degraded answer but a wrong one.
+    """
+    return {"type": "unsupported-setting",
+            "setting": _OPTION_NAMES.get(setting, setting),
+            "message": f"{_OPTION_NAMES.get(setting, setting)!r} is not "
+                       f"supported by the {tier} tier and was ignored — {why}"}
+
+
+def _local_finish_reason(event: dict, body: dict) -> str:
+    """Why a local generation stopped, from its terminal frame.
+
+    `cancelled` when the worker says so; `length` when it produced exactly
+    the `max_tokens` the caller set (the worker has no stop-reason field of
+    its own, so hitting the cap IS the signal — a reply that stopped one
+    token short of it stopped on its own); `stop` otherwise. Vocabulary is
+    the AI SDK's `finishReason` subset this app can actually observe.
+    """
+    if event.get("cancelled"):
+        return "cancelled"
+    limit = body.get("max_tokens")
+    tokens = event.get("tokens")
+    if (isinstance(limit, int) and not isinstance(limit, bool)
+            and isinstance(tokens, int) and tokens >= limit):
+        return "length"
+    return "stop"
 
 
 def _sampling_problem(body: dict) -> str | None:
@@ -937,7 +988,7 @@ def _local_usage(event: dict) -> dict:
 
 
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
-                 body: dict):
+                 body: dict, warnings: list | None = None):
     """One completion from a model resident on THIS machine (SPEC §40).
 
     Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
@@ -1140,8 +1191,9 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                 tick(state="error", done=count, total=None,
                      message="generation stopped before it finished")
 
+    warnings = list(warnings or [])
     if not stream:
-        text, usage = [], {}
+        text, usage, finish = [], {}, "stop"
         for event in walk():
             if event.get("type") == "chunk":
                 text.append(event.get("text") or "")
@@ -1151,13 +1203,15 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                                       str(event.get("error") or "generation failed"),
                                       status=502)
                 usage = _local_usage(event)
+                finish = _local_finish_reason(event, body)
         # The counter is fed the SAME dict the caller is about to read (AI-12),
         # here and at the three other terminal frames — so the graph and the
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
         return JSONResponse(
             {"ok": True, "result": {"text": "".join(text), "model": model,
-                                    "usage": usage, "provider": "local"}})
+                                    "usage": usage, "provider": "local",
+                                    "finishReason": finish, "warnings": warnings}})
 
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
@@ -1193,7 +1247,9 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                         "type": "done", "ok": ok,
                         **({"result": {
                             "text": "".join(text), "model": model,
-                            "usage": usage, "provider": "local"}}
+                            "usage": usage, "provider": "local",
+                            "finishReason": _local_finish_reason(event, body),
+                            "warnings": warnings}}
                            if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
@@ -1349,15 +1405,24 @@ async def _ai_relay(body: dict):
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path. An explicit
     # provider decides; only an omitted one falls back to the model's shape.
+    # Options a tier cannot honour are DROPPED and reported in the result's
+    # `warnings[]` (RH-11, `_unsupported`) — for tunables. The semantic flags
+    # (`history`, `raw`, `images`) stay refusals on the Claude tier below.
+    warnings: list[dict] = []
     if provider == "local" or (provider is None and _is_local_model(model)):
+        if effort is not None:
+            warnings.append(_unsupported(
+                "effort", "local",
+                "a local model has no thinking budget to set; use "
+                "'temperature' / 'maxTokens' / 'topP'"))
         # Sampling is checked INSIDE this branch, not above it, and the reason
         # is which sentence a bad value earns. These parameters do not exist on
         # the Claude path at all, so range-checking them first meant a
         # `temperature: 5.0` sent to Claude was answered "must be between 0.0
         # and 2.0" — an error that invites the caller to correct a number and
-        # try again, on a path where no number would ever work. The refusal
-        # below is the true one, and it must not be pre-empted by a message that
-        # implies support.
+        # try again, on a path where no number would ever work. On the Claude
+        # tier they are now a WARNING, not a 400 (see `_unsupported`), and the
+        # range check still belongs here, where the numbers are actually used.
         #
         # Bounded at all for the reason the image endpoint clamps its own
         # numbers: `max_tokens` is how long this machine is busy, and one
@@ -1389,7 +1454,7 @@ async def _ai_relay(body: dict):
         # that long. (The StreamingResponse it returns is fine — Starlette
         # iterates a sync generator in a threadpool of its own.)
         return await asyncio.to_thread(
-            _local_relay, model, prompt, system_prompt, bool(stream), body)
+            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings)
 
     # Refused rather than dropped. The Claude path is one `claude -p` invocation
     # with no conversation to resume, so honouring history would mean inventing
@@ -1429,18 +1494,18 @@ async def _ai_relay(body: dict):
             f"{model!r}, which cannot be handed a picture",
             status=400)
 
-    # Fourth flag, same rule. The Claude CLI exposes no sampling knobs at all —
-    # `effort` is what it has — so a temperature accepted here would be a
-    # setting the caller could watch have no effect, which is the failure mode
-    # `history`, `raw` and `images` are refused for.
-    named = [name for name in _SAMPLING if body.get(name) is not None]
-    if named:
-        return _ai_error(
-            "bad_request",
-            f"{', '.join(repr(n) for n in named)} only applies to a local model "
-            "(a Hugging Face repo id, e.g. 'mlx-community/Qwen3-8B-4bit'); "
-            f"this call would go to {model!r}, which takes 'effort' instead",
-            status=400)
+    # Sampling knobs are the OTHER kind of option: tunables, not semantics.
+    # The Claude CLI exposes none of them — `effort` is what it has — so each
+    # one present is dropped and reported in `warnings[]` rather than refused
+    # (D631, reversing the 400 this branch used to answer). A page can still
+    # tell the setting had no effect; it reads it in the result instead of
+    # losing the call over it, which is what lets one page carry sampling
+    # options across tiers without a per-tier branch.
+    for name in _SAMPLING:
+        if body.get(name) is not None:
+            warnings.append(_unsupported(
+                name, "claude", "the Claude CLI exposes 'effort' and no "
+                "sampling knobs"))
 
     if not _claude_bin():
         return _ai_failed(
@@ -1651,6 +1716,10 @@ async def _ai_relay(body: dict):
                 _report_remote(state="error", message=str(exc))
                 return _ai_failed(model, "ai_error", str(exc))
             payload, err = _ai_result_payload(data, model)
+            if payload is not None:
+                # Merged HERE rather than passed in: the payload builder keeps
+                # its two-argument shape (tests stand in for it by arity).
+                payload["warnings"] = list(warnings)
             if err is not None:
                 _report_remote(state="error", message=err)
                 return _ai_failed(model, "ai_error", err)
@@ -1744,6 +1813,10 @@ async def _ai_relay(body: dict):
                     "type": "ai_error", "message": str(exc)}}) + "\n"
                 return
             payload, err = _ai_result_payload(data, model)
+            if payload is not None:
+                # Merged HERE rather than passed in: the payload builder keeps
+                # its two-argument shape (tests stand in for it by arity).
+                payload["warnings"] = list(warnings)
             if err is not None:
                 ai_metrics.record_failure(model, "ai_error")
                 _report_remote(state="error", message=err)

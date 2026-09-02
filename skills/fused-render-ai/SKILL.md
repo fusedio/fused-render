@@ -45,32 +45,53 @@ Resolves with **exactly** this — the server normalizes, so no guarding:
   "text": "the completion",
   "model": "claude-haiku-4-5-20251001",
   "usage": { "input_tokens": 544, "output_tokens": 73 },
-  "provider": "claude"
+  "provider": "claude",
+  "finishReason": "stop",
+  "warnings": []
 }
 ```
 
 - `model` — the id that **actually ran**; an alias (`"sonnet"`) echoes back resolved.
 - `usage` — `null`, or exactly `{input_tokens, output_tokens}`. **Anthropic names**; `prompt_tokens`/`completion_tokens` give `undefined`.
 - `provider` — `"local"` or `"claude"`: the tier that answered. Show it when it matters; the same line lands on a different tier once the weights are deleted.
+- `finishReason` — `"stop"`, `"length"` (a local model produced exactly `maxTokens` — the reply is truncated), `"cancelled"`. The Claude CLI reports no stop reason, so that tier always says `"stop"`.
+- `warnings` — usually `[]`. Each entry is `{type: "unsupported-setting", setting, message}`: a tunable the tier could not honour and **dropped**. Check it in a page that sets sampling options and may land on Claude.
+
+### Cancelling: `abortSignal`
+
+Every verb takes `opts.abortSignal`, a standard `AbortSignal`. Aborting rejects the promise with `.type === "cancelled"` and stops the work server-side — a stream by disconnecting, a local text generation through `/api/ai/cancel`, a job-backed verb through the job's own cancel (the same flag the download manager's ✕ sets).
+
+```js
+const ctl = new AbortController();
+stopBtn.onclick = () => ctl.abort();
+try {
+  const res = await fused.ai.text({ prompt, onChunk, abortSignal: ctl.signal });
+} catch (err) {
+  if (err.type !== "cancelled") throw err;
+}
+```
+
+`fused.ai.cancel(capability)` remains the capability-wide form — it stops whatever local generation is in flight, whoever started it.
 
 ### Options, and which destination honours them
 
-The local-only options are **refused with a 400, never silently dropped** — a setting you can watch have no effect is the failure mode the server is built to avoid.
+Two kinds of local-only option. The **semantic** ones (`history`, `raw`, `images`) are **refused with a 400** on Claude — dropping them would answer a different question than the one asked. The **tunables** (`temperature`/`topP`/`maxTokens` on Claude, `effort` on a local model) are **dropped and reported** in the result's `warnings[]` — the call succeeds, and the result names what had no effect, so one options object travels across tiers.
 
 | Option | Claude path | Local model |
 |---|---|---|
 | `provider` `"local"｜"claude"` | ✅ pins this tier | ✅ pins this tier (no `model` → the catalog's default text model) |
 | `systemPrompt` | ✅ | ✅ |
 | `model` | ✅ | ✅ (a repo id) |
-| `effort` `"low"｜"medium"｜"high"｜"xhigh"` | ✅ Claude Code's own thinking semantics | ignored |
+| `effort` `"low"｜"medium"｜"high"｜"xhigh"` | ✅ Claude Code's own thinking semantics | ⚠️ dropped, `warnings[]` |
 | `onChunk(text)` | ✅ | ✅ |
 | `history` `[{role, content}]` | ❌ **400** | ✅ |
 | `raw` (no chat template) | ❌ **400** | ✅ |
-| `temperature` / `topP` / `maxTokens` | ❌ **400** | ✅ |
+| `temperature` / `topP` / `maxTokens` | ⚠️ dropped, `warnings[]` | ✅ |
+| `abortSignal` | ✅ | ✅ |
 
 Defaults: model `claude-haiku-4-5-20251001` (or the user's configured default); `effort` low = no extended thinking. `raw` and `history` are mutually exclusive — raw has nowhere to put prior turns.
 
-`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage, provider}`**. Both destinations stream.
+`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage, provider, finishReason, warnings}`**. Both destinations stream.
 
 ### Store the model beside the vectors
 

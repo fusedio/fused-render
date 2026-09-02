@@ -1695,8 +1695,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # rather than as an error.
         "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
-        # The tier that served it, as `/api/ai`'s reply carries (D631).
+        # The tier that served it, as `/api/ai`'s reply carries (D631) — and
+        # the same `warnings[]` slot, empty here: every option this route
+        # accepts it honours, and the ones it cannot are already 400s per
+        # runner (`engine_options`). The key exists so a page reads one result
+        # shape across the five verbs.
         "provider": "local",
+        "warnings": [],
         "prompt": request["prompt"],
         "width": request["width"],
         "height": request["height"],
@@ -1901,6 +1906,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         "path": canonical_fs_path(path),
         "model": model,
         "provider": "local",
+        "warnings": [],
         "prompt": request["prompt"],
         "width": width,
         "height": height,
@@ -2131,6 +2137,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "provider": "local",
+        "warnings": [],
         "task": task,
     }
 
@@ -2310,5 +2317,6 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             "dim": result.get("dim") or 0,
             "model": model,
             "provider": "local",
+            "warnings": [],
         },
     }

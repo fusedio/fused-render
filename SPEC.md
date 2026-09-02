@@ -264,7 +264,9 @@ const { text, model, usage, provider } = await fused.ai.text({
     "text": "the completion",
     "model": "claude-haiku-4-5-20251001",
     "usage": { "input_tokens": 544, "output_tokens": 73 },
-    "provider": "claude"
+    "provider": "claude",
+    "finishReason": "stop",
+    "warnings": []
   }
   ```
 
@@ -272,7 +274,20 @@ const { text, model, usage, provider } = await fused.ai.text({
   `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
   `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
   `prompt_tokens`/`completion_tokens`); `provider` the tier that answered, so which
-  side of the machine boundary a call landed on is always inspectable. Rejects with
+  side of the machine boundary a call landed on is always inspectable;
+  **`finishReason`** `"stop" | "length" | "cancelled"` (`length` = a local model
+  produced exactly `maxTokens`; the Claude CLI reports no stop reason, so that tier
+  always says `stop`); **`warnings`** an array, usually empty, of
+  `{type: "unsupported-setting", setting, message}` — a **tunable** the serving tier
+  cannot honour (`temperature`/`maxTokens`/`topP` on Claude, `effort` on a local
+  model) is DROPPED and named here rather than refused, so one page carries one
+  options object across tiers. The semantic flags `history`/`raw`/`images` stay
+  400s on the Claude tier: dropping those answers a different question. Every
+  verb's reply carries `warnings` (empty on the four local-only verbs today) and
+  every verb takes **`opts.abortSignal`**, a standard `AbortSignal`: aborting
+  rejects with `.type === "cancelled"` and stops the work server-side (disconnect
+  for a stream, `/api/ai/cancel` for a local text generation, the job's own cancel
+  route for image/video/transcribe). Rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned

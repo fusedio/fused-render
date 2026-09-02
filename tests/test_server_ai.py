@@ -491,7 +491,7 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         _server_ai, "_local_relay",
-        lambda model, prompt, system_prompt, stream, body:
+        lambda model, prompt, system_prompt, stream, body, warnings=None:
             _server_ai.JSONResponse({"ok": True, "result": {
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
@@ -918,7 +918,8 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     # Same result schema as the non-streaming response.
     assert done["result"] == {
         "text": "hi there", "model": "claude-haiku-4-5-20251001",
-        "usage": {"input_tokens": 3, "output_tokens": 2}, "provider": "claude"}
+        "usage": {"input_tokens": 3, "output_tokens": 2}, "provider": "claude",
+        "finishReason": "stop", "warnings": []}
 
 
 def test_relay_stream_skips_thinking_deltas(monkeypatch):

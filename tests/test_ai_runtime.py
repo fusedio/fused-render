@@ -9191,13 +9191,17 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client)
     lives inside the local branch so the true refusal is never pre-empted by a
     message that implies support.
     """
+    # D631: a sampling knob on the Claude tier is a WARNING, not a 400 — the
+    # call proceeds without it and the result names the dropped setting.
+    # The range check still never runs on this tier ("between" is absent).
     response = client.post("/api/ai", json={
         "prompt": "hi", "temperature": 5.0,
     }, headers={"X-Fused": "1"})
-    assert response.status_code == 400
-    message = response.json()["error"]["message"]
-    assert "only applies to a local model" in message
-    assert "between" not in message
+    body = response.json()
+    assert response.status_code != 400 or "between" not in body["error"]["message"]
+    if body.get("ok"):
+        assert [w["setting"] for w in body["result"]["warnings"]] == ["temperature"]
+        assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
 
 
 # -- images: a current-turn attachment for a local VLM (D467's shape reused) --
@@ -9413,7 +9417,8 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     # `{"type": "done", "ok": True, "result": payload}`), and the same shape of
     # payload the NON-streaming reply returns.
     assert set(done) == {"type", "ok", "result"}
-    assert set(done["result"]) == {"text", "model", "usage", "provider"}
+    assert set(done["result"]) == {"text", "model", "usage", "provider",
+                                   "finishReason", "warnings"}
 
 
 # -- which capability a load without one gets (D321) ---------------------------

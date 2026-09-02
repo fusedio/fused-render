@@ -167,7 +167,7 @@ def test_a_resident_model_answers_with_vectors(client, monkeypatch):
     assert body["ok"] is True
     assert body["result"] == {
         "vectors": [[0.6, 0.8]], "dim": 2, "model": "org/embed-x",
-        "provider": "local"}
+        "provider": "local", "warnings": []}
     # `kind` is forwarded RESOLVED — the route decides it and the worker
     # validates the same value again, so the two cannot disagree about what a
     # caller who said nothing meant.

@@ -344,9 +344,18 @@ other verb. It resolves with exactly
   "text": "the completion",
   "model": "claude-haiku-4-5-20251001",
   "usage": { "input_tokens": 544, "output_tokens": 73 },
-  "provider": "claude"
+  "provider": "claude",
+  "finishReason": "stop",
+  "warnings": []
 }
 ```
+
+`finishReason` is `"stop"`, `"length"` (a local model hit `maxTokens`) or
+`"cancelled"`. `warnings` lists options the serving tier could not honour and
+dropped — `temperature`, `maxTokens`, `topP` on Claude, `effort` on a local
+model — as `{type: "unsupported-setting", setting, message}`. Pass a standard
+`abortSignal` to any verb to cancel it; the call rejects with
+`.type === "cancelled"`.
 
 Two tiers can answer, in a fixed order: **local** (a model resident on this
 machine, see above) and **claude**. Pass `opts.provider: "local" | "claude"` to
