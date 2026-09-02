@@ -45,7 +45,9 @@ import {
   searchHubModels,
   startHfLogin,
   type HfAuth,
+  type HubFitLevel,
   type HubModel,
+  type HubParamsBand,
 } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -60,6 +62,14 @@ export interface SettledQuery {
   sort: ResultSort;
   /** Ask for models this machine likely cannot run too — off by default. */
   includeUnfit: boolean;
+  /** Part B's three server-side filters over `fit`/`params`, plus the Hub's
+   *  own `author` parameter — see `SearchControls.tsx` for the controls and
+   *  `hub_models.py`'s own `api_hub_search` for how each is applied. "any"/""
+   *  is every filter's no-op default. */
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
 }
 
 /** How many rows one question is worth. `limit` means "rows you will be shown":
@@ -277,6 +287,10 @@ export function HubResults({
       sort: wireSort(settled.sort),
       limit: LIMIT,
       includeUnfit: settled.includeUnfit,
+      fitLevel: settled.fitLevel,
+      paramsBand: settled.paramsBand,
+      quant: settled.quant || undefined,
+      publisher: settled.publisher || undefined,
     }).then(
       (data) => {
         if (!alive) return;

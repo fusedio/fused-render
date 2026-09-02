@@ -33,12 +33,16 @@
 // else on the page reads, and which menu is open.
 import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import {
+  activeFitLevel,
+  activeParamsBand,
   activeSort,
   activeTask,
+  FIT_LEVELS,
+  PARAMS_BANDS,
   SORTS,
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
-import { getHubTasks, type HubTask } from "@platform/lib/api";
+import { getHubTasks, type HubFitLevel, type HubParamsBand, type HubTask } from "@platform/lib/api";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
@@ -164,12 +168,20 @@ export function SearchControls({
   task,
   sort,
   includeUnfit,
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
   showsReset,
   searchBox,
   onQuery,
   onTask,
   onSort,
   onIncludeUnfit,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
   onClear,
 }: {
   query: string;
@@ -180,6 +192,15 @@ export function SearchControls({
    *  buried in a menu: it is a filter over a fact the page itself computed
    *  (D316's own "never a silent drop"), not one more ordering. */
   includeUnfit: boolean;
+  /** Part B's four explicit filters, all server-side (`hub_models.py`'s own
+   *  `api_hub_search`). `fitLevel`/`paramsBand` are closed ladders, so they
+   *  get the same `ControlMenu` the task/sort triggers use; `quant`/
+   *  `publisher` are open text — a Hub org or a quant token nothing here
+   *  could offer a menu of. */
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
   /** Whether the ✕ is offered — asked of the LIVE controls rather than of the
    *  settled query, because it belongs to the box: appearing 350ms after the
    *  first keystroke, or lingering that long after a clear, is the control
@@ -193,6 +214,10 @@ export function SearchControls({
   onTask: (task: string) => void;
   onSort: (sort: ResultSort) => void;
   onIncludeUnfit: (v: boolean) => void;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
   /** Query AND task filter, in one act. See `clearSearch` in LocalTab. */
   onClear: () => void;
 }) {
@@ -219,6 +244,8 @@ export function SearchControls({
 
   const activeT = activeTask(task, tasks);
   const activeS = activeSort(sort);
+  const activeFit = activeFitLevel(fitLevel);
+  const activeParams = activeParamsBand(paramsBand);
 
   // ONE glyph for the whole task group, and that is a choice rather than a gap.
   // A per-task icon would have to be invented for every pipeline tag the server
@@ -251,6 +278,25 @@ export function SearchControls({
     icon: SORT_ICONS[s.value],
     active: s.value === sort,
     onClick: () => onSort(s.value),
+  }));
+
+  // Fit level reuses the info glyph, same as "Fit" ordering above — the fact
+  // both add over a plain result is a judgement about THIS machine.
+  const fitLevelItems: MenuEntry[] = FIT_LEVELS.map((l) => ({
+    label: l.label,
+    icon: MenuIcons.info,
+    active: l.value === fitLevel,
+    onClick: () => onFitLevel(l.value),
+  }));
+
+  // Params band reuses the drive glyph — the same reuse the "Size" ordering
+  // makes above, for the same reason: both are about how much weight a model
+  // carries.
+  const paramsBandItems: MenuEntry[] = PARAMS_BANDS.map((b) => ({
+    label: b.label,
+    icon: MenuIcons.drive,
+    active: b.value === paramsBand,
+    onClick: () => onParamsBand(b.value),
   }));
 
   return (
@@ -308,6 +354,42 @@ export function SearchControls({
         title={activeS.title}
         ariaLabel={"Sort results: " + activeS.label}
         items={sortItems}
+      />
+      <ControlMenu
+        icon={MenuIcons.info}
+        label={activeFit.label}
+        title={activeFit.title}
+        ariaLabel={"Filter by fit: " + activeFit.label}
+        items={fitLevelItems}
+      />
+      <ControlMenu
+        icon={MenuIcons.drive}
+        label={activeParams.label}
+        title={activeParams.title}
+        ariaLabel={"Filter by parameter count: " + activeParams.label}
+        items={paramsBandItems}
+      />
+      {/* Open text, not menus: a quant token and a Hub org are both open sets
+          nothing here could offer a glossary of (unlike task, whose menu is
+          the server's own runnable-tag list). Exact match, case-insensitive
+          on the server, so nothing is normalized here either. */}
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={quant}
+        placeholder="Quant (e.g. Q4_K_M)"
+        aria-label="Filter by exact quantization"
+        title="Show only results with this exact measured quantization"
+        onChange={(e) => onQuant(e.target.value)}
+      />
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={publisher}
+        placeholder="Publisher/org"
+        aria-label="Filter by publisher or organization"
+        title="Show only results published by this Hub user or organization"
+        onChange={(e) => onPublisher(e.target.value)}
       />
       <label className="am-hub-unfit-toggle" title="Include models this machine likely cannot run">
         <input

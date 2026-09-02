@@ -1182,6 +1182,31 @@
   cursor: pointer;
 }
 
+/* Part B's two open-text filters (Quant, Publisher) — same metrics as the two
+   `ControlMenu` triggers beside them (32px tall, 13px text, 1px border, 6px
+   radius) but no icon/caret: they are plain inputs over an open set, not a
+   vocabulary this page can offer a menu of. Fixed, narrow widths rather than
+   `flex: 1 1 auto` like the search box — these are a second, minor axis of
+   narrowing, and letting either grow would fight the search box for the row's
+   one flexible slot. */
+.am-hub-textfilter {
+  flex: 0 0 auto;
+  width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-hub-textfilter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .am-hub-search {
   flex: 1 1 auto;
   min-width: 0;

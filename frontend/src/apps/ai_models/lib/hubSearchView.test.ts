@@ -4,11 +4,15 @@
 // false claim about itself.
 import { describe, expect, it } from "bun:test";
 import {
+  activeFitLevel,
+  activeParamsBand,
   activeSort,
   activeTask,
   bySizeAscending,
+  FIT_LEVELS,
   gateChrome,
   needsHubLogin,
+  PARAMS_BANDS,
   resultsSummary,
   searchChrome,
   SORTS,
@@ -426,5 +430,37 @@ describe("bySizeAscending", () => {
   it("has nothing to say about an empty or single answer", () => {
     expect(order([])).toEqual([]);
     expect(order(["unasked"])).toEqual(["unasked"]);
+  });
+});
+
+describe("activeFitLevel", () => {
+  it("names the no-op default", () => {
+    expect(activeFitLevel("any")).toEqual(FIT_LEVELS[0]);
+    expect(activeFitLevel("any").value).toBe("any");
+  });
+
+  it("finds the option for each real level", () => {
+    expect(activeFitLevel("tight").value).toBe("tight");
+    expect(activeFitLevel("easy").value).toBe("easy");
+  });
+
+  it("falls back to the no-op default for a value this menu does not offer", () => {
+    expect(activeFitLevel("bogus" as never)).toEqual(FIT_LEVELS[0]);
+  });
+});
+
+describe("activeParamsBand", () => {
+  it("names the no-op default", () => {
+    expect(activeParamsBand("any")).toEqual(PARAMS_BANDS[0]);
+  });
+
+  it("finds the option for each real band", () => {
+    expect(activeParamsBand("under4b").value).toBe("under4b");
+    expect(activeParamsBand("4to15b").value).toBe("4to15b");
+    expect(activeParamsBand("over15b").value).toBe("over15b");
+  });
+
+  it("falls back to the no-op default for a value this menu does not offer", () => {
+    expect(activeParamsBand("bogus" as never)).toEqual(PARAMS_BANDS[0]);
   });
 });

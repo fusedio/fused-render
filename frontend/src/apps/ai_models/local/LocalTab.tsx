@@ -68,6 +68,8 @@ import {
   type AiCatalogCapability,
   type AiModelDeleteTarget,
   type AiModelRepo,
+  type HubFitLevel,
+  type HubParamsBand,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
@@ -138,6 +140,13 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   // default (D316's own "never a silent drop", applied here the way it was to
   // gated repos): the results summary states how many were hidden either way.
   const [includeUnfit, setIncludeUnfit] = useState(false);
+  // Part B's four explicit filters — all server-side (`hub_models.py`'s own
+  // `api_hub_search`), all "any"/empty as their no-op default, same as
+  // `includeUnfit` above.
+  const [fitLevel, setFitLevel] = useState<HubFitLevel>("any");
+  const [paramsBand, setParamsBand] = useState<HubParamsBand>("any");
+  const [quant, setQuant] = useState("");
+  const [publisher, setPublisher] = useState("");
   // …and settled, which is what the results section is keyed on: a burst of
   // typing is one request, and the LAYOUT must not swap on the first letter and
   // back on a backspace.
@@ -146,6 +155,10 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     task: "",
     sort: "downloads",
     includeUnfit: false,
+    fitLevel: "any",
+    paramsBand: "any",
+    quant: "",
+    publisher: "",
   });
   const debounce = useRef<number | null>(null);
   const searchBox = useRef<HTMLInputElement>(null);
@@ -155,13 +168,13 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     // Long enough that a typed word is one request rather than five, short
     // enough that the results feel like they are following the query.
     debounce.current = window.setTimeout(
-      () => setSettled({ q: query, task, sort, includeUnfit }),
+      () => setSettled({ q: query, task, sort, includeUnfit, fitLevel, paramsBand, quant, publisher }),
       350,
     );
     return () => {
       if (debounce.current) window.clearTimeout(debounce.current);
     };
-  }, [query, task, sort, includeUnfit]);
+  }, [query, task, sort, includeUnfit, fitLevel, paramsBand, quant, publisher]);
 
   /** Back to this machine's own models, in one act.
    *
@@ -179,11 +192,15 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const clearSearch = () => {
     setQuery("");
     setTask("");
-    // Unlike the sort, this IS reset: it is a filter over one search's
+    // Unlike the sort, these ARE reset: each is a filter over one search's
     // answer, not a standing preference, and a reader who opted into "show
-    // everything" on one query should not have it silently follow them into
-    // the next unrelated one.
+    // everything" (or narrowed to one org, one quant) on one query should not
+    // have it silently follow them into the next unrelated one.
     setIncludeUnfit(false);
+    setFitLevel("any");
+    setParamsBand("any");
+    setQuant("");
+    setPublisher("");
     searchBox.current?.focus();
   };
 
@@ -476,12 +493,20 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         task={task}
         sort={sort}
         includeUnfit={includeUnfit}
+        fitLevel={fitLevel}
+        paramsBand={paramsBand}
+        quant={quant}
+        publisher={publisher}
         showsReset={live.showsReset}
         searchBox={searchBox}
         onQuery={setQuery}
         onTask={setTask}
         onSort={setSort}
         onIncludeUnfit={setIncludeUnfit}
+        onFitLevel={setFitLevel}
+        onParamsBand={setParamsBand}
+        onQuant={setQuant}
+        onPublisher={setPublisher}
         onClear={clearSearch}
       />
       {load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
