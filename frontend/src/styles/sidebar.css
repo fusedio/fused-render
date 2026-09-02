@@ -258,35 +258,36 @@ a.sidebar-rail-btn {
  * carrying a mark so the state survives a monochrome screen or a colour-blind
  * reader. It is deliberately NOT loud — nothing is broken, the version string
  * has simply stopped being the whole truth about what is running. */
-.sidebar-brand .brand-version-host {
+/* The chip lives in the SETTINGS ROW, so it wears main's `.version-chip` pill
+   (above) and these rules only add what a control needs on top of it. They are
+   NOT scoped to `.sidebar-brand` any more: the version left that row in #737,
+   and rules still anchored there matched nothing — the modified chip painted as
+   plain body text with no amber, no border and no pill at all. */
+.version-chip-host {
   position: relative;
   flex-shrink: 0;
   display: flex;
 }
 
-.sidebar-brand button.brand-version {
-  display: flex;
-  align-items: center;
+/* `.version-chip` already supplies the pill — border, radius, padding, the
+   monospace size. A button wearing it needs only the gap for its mark and the
+   cursor; anything more would fight the shape it is meant to match. */
+button.version-chip {
   gap: 3px;
-  padding: 1px 5px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: none;
-  font-family: inherit;
   cursor: pointer;
 }
 
-.sidebar-brand button.brand-version.is-modified {
+button.version-chip.is-modified {
   color: var(--warning);
   border-color: rgba(var(--warning-rgb), 0.4);
   background: rgba(var(--warning-rgb), 0.12);
 }
 
-.sidebar-brand button.brand-version.is-modified:hover {
+button.version-chip.is-modified:hover {
   background: rgba(var(--warning-rgb), 0.2);
 }
 
-.brand-version-mark {
+.version-chip-mark {
   font-size: 9px;
   line-height: 1;
 }
@@ -650,13 +651,37 @@ a.update-badge-action {
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
+/* The ROW carries `.sidebar-item` (padding, radius, hover); this is the trigger
+   INSIDE it. It grows to fill whatever the trailing chip leaves, so the click
+   target for Settings is still everything except the chip itself — see
+   `PreferencesTrigger` for why the chip cannot live inside this button. */
+.sidebar-prefs-row {
+  padding: 0;
+}
+
 button.sidebar-prefs-trigger {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* The padding the row gave up, so the hit area still spans the full row. */
+  padding: 7px 10px;
   background: none;
   border: none;
+  border-radius: 8px;
+  color: inherit;
   font: inherit;
   text-align: left;
   font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The chip sits inside the row's box, so the row needs the right-hand padding
+   the trigger no longer covers. */
+.sidebar-prefs-row > .sidebar-item-trail {
+  margin-right: 10px;
 }
 
 /* The pop-up it opens: the shared .context-menu chassis, pinned by its

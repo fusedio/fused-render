@@ -11910,6 +11910,23 @@ the installation, and the mark that says so.
   nothing needed. The row's verb becomes **Set up Claude Code** and Preferences
   says the same in a sentence: naming the precondition, not the failed download,
   because that is the thing standing between the user and a session.
+- **SF-9a** **The chip is a SIBLING of the Settings trigger, not content inside
+  it**, and it wears that row's own `.version-chip` pill. Both follow from the
+  same fact — the version moved out of the brand row into the Settings row's
+  trailing slot (#737) — and both were got wrong by inheriting the old row's
+  arrangement. The slot is inside the trigger's `<button>`, which is right for
+  the Tasks count because a count is TEXT; this slot holds a CONTROL once the
+  install is modified, and a button inside a button is not merely invalid markup
+  — the click meant for the report bubbles to the trigger and opens the Settings
+  menu, so the badge cannot do the one thing it exists for. So the ROW carries
+  the padding, radius and hover, and the trigger is a transparent child that
+  grows to fill whatever the chip leaves. The styling half is the same mistake
+  twice over: rules still scoped to `.sidebar-brand` matched nothing after the
+  move, and the chip kept naming the brand row's class instead of the pill this
+  slot already had, so BOTH states painted as plain body text. The rule worth
+  carrying: **when an element moves rows, its selectors and its container's
+  assumptions move with it — a class name that still reads right is not evidence
+  that it still matches.**
 - **SF-13f1** **The stale belief licensed the BODY as well as the verb, and
   `recheck` only fixed the verb.** The same trap as SF-13f, one layer down and
   found the same way. Preferences leaves the button live over an EMPTY box while

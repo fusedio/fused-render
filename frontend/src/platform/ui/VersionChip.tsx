@@ -452,7 +452,7 @@ export default function VersionChip({
   if (!version) return null;
   // Stock install: a plain label, exactly as before. Not a button — there is
   // nothing behind it, and a control that opens nothing is worse than text.
-  if (!modified) return <span className="brand-version">v{version}</span>;
+  if (!modified) return <span className="version-chip">v{version}</span>;
 
   const openAt = (e: React.MouseEvent<HTMLButtonElement>) => {
     if (at) {
@@ -464,10 +464,10 @@ export default function VersionChip({
   };
 
   return (
-    <span className="brand-version-host" ref={rootRef}>
+    <span className="version-chip-host" ref={rootRef}>
       <button
         type="button"
-        className="brand-version is-modified"
+        className="version-chip is-modified"
         aria-expanded={at !== null}
         aria-haspopup="dialog"
         // The accessible name says what the colour says, because the colour is
@@ -480,7 +480,7 @@ export default function VersionChip({
         v{version}
         {/* A mark, not only a colour: the chip is 10.5px muted text, and colour
             alone is not a signal everyone can read. */}
-        <span className="brand-version-mark" aria-hidden="true">
+        <span className="version-chip-mark" aria-hidden="true">
           ✳
         </span>
       </button>

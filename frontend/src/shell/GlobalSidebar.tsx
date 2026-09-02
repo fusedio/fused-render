@@ -198,21 +198,35 @@ function PreferencesTrigger({
   trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
+  // THE TRAILING SLOT IS A SIBLING OF THE BUTTON, not a child of it — the one
+  // place this row departs from `NavItem`, and the reason is what goes in it.
+  // Tasks puts a count there, which is text and sits happily inside a button.
+  // This row's is the VERSION CHIP, and once a self-fix session has modified
+  // the install that chip becomes a control of its own (SPEC §48). A button
+  // inside a button is invalid, and worse than invalid here: the click that
+  // should open the report bubbles to this trigger and opens the Settings menu
+  // instead, so the badge's one job cannot be done.
+  //
+  // So the ROW is the `.sidebar-item` — it owns the padding, the radius and the
+  // hover — and the trigger inside it is a transparent full-height child that
+  // grows to fill everything the chip does not take.
   return (
-    <button
-      type="button"
-      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-      aria-haspopup="menu"
-      aria-expanded={open}
-      onClick={(e) => onToggle(e.currentTarget)}
-    >
-      <span className="icon">
-        {PREFERENCES_ICON}
-        {dot}
-      </span>{" "}
-      Settings
+    <div className={"sidebar-item sidebar-prefs-row" + (active ? " active" : "")}>
+      <button
+        type="button"
+        className="sidebar-prefs-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => onToggle(e.currentTarget)}
+      >
+        <span className="icon">
+          {PREFERENCES_ICON}
+          {dot}
+        </span>{" "}
+        Settings
+      </button>
       {trailing && <span className="sidebar-item-trail">{trailing}</span>}
-    </button>
+    </div>
   );
 }
 
