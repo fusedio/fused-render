@@ -5,9 +5,9 @@ Every endpoint under `/api/apps/background/*` (`server/routers/background_apps.p
 keys off `html` — the page's own path — and resolves the app folder from it
 server-side (`_folder_for` there does `os.path.dirname(os.path.abspath(html))`).
 A background daemon spawned by `engine_host.ensure_background` has no page and
-no `html` path of its own, so before this module it had no way to ask the
-server about itself at all: it could not check whether it is still enabled,
-tell the server to stop it, or turn itself off.
+no `html` path of its own, so this module gives it a way to ask the server
+about itself: check whether it is still enabled, tell the server to stop it,
+or turn itself off.
 
 The missing piece is `FUSED_RENDER_APP_DIR` — exported into a background
 child's environment only (`engine_host.py`'s `_spawn_env`, keyed on
@@ -19,7 +19,7 @@ speaks the same endpoints a page's `fused.daemon.*` calls speak.
 
 Run state and autostart are independent (D511): `stop()` only kills this
 process, `set_autostart(bool)` only flips the persisted flag — neither
-implies the other. There is no `disable()` here any more.
+implies the other.
 
 **Stdlib only, no `import fused_render`** — same constraint as `fused_ai.py`
 and `appenv.py` beside this file (see the `adding-a-shared-template-utility`

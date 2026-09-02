@@ -195,23 +195,18 @@ def version_for(folder: str, interpreter: str) -> str:
     upgrade (this is what fixes the OpenWhisper upgrade-rot class — a stale
     venv reused against a new interpreter).
 
-    D514 revised (2026-08-26 code review): the interpreter component used to
-    be `os.path.realpath(interpreter)` alone, which broke two ways. First, a
-    realpath DESTROYS venv identity rather than naming it: a venv's `bin/
-    python` is a symlink to its base CPython, so realpath collapses every
-    venv built on the same base interpreter into one identity, and two
-    different app folders' venvs contributed an IDENTICAL digest component —
-    caught by CI (Linux's `/usr/bin/python3` and `/usr/bin/python3.12` are
-    symlinks to the same file; macOS/Windows runners happened not to alias
-    the two paths the test used, so it passed everywhere else). Second, a
-    path alone — realpath'd or not — cannot see the exact upgrade-rot case
-    D514 exists for: the packaged app's own interpreter gets rewritten IN
-    PLACE at the same path on upgrade (confirmed against a real install: same
-    path, same `--version` string, different bytes, mtime moved). So the
-    interpreter now gets the identical treatment the daemon file already gets
-    two lines above it — the RAW path (no realpath) plus an `os.stat` of the
-    file actually at that path, mtime and size both — which catches an
-    in-place rewrite the same way it already catches a daemon.py edit.
+    The interpreter component is the RAW path (no realpath) plus an
+    `os.stat` of the file actually at that path, mtime and size both — the
+    identical treatment the daemon file already gets two lines above it
+    (D514). A realpath alone would DESTROY venv identity rather than name
+    it: a venv's `bin/python` is a symlink to its base CPython, so realpath
+    collapses every venv built on the same base interpreter into one
+    identity, and two different app folders' venvs would contribute an
+    IDENTICAL digest component. A path alone — realpath'd or not — also
+    cannot see the packaged app's own interpreter getting rewritten IN PLACE
+    at the same path on upgrade (same path, same `--version` string,
+    different bytes, mtime moved); the raw-path-plus-stat treatment catches
+    that in-place rewrite the same way it already catches a daemon.py edit.
 
     Raises OSError if the manifest is missing/invalid, the daemon file does
     not exist, or the interpreter does not exist — all "dead manifest" /
@@ -236,10 +231,9 @@ def version_for(folder: str, interpreter: str) -> str:
         # (engine_host.DEFAULT_DAEMON), not by anything inside the app's own
         # folder — daemon_st above only ever sees the user's own module
         # (manifest.main). Without also stating DEFAULT_DAEMON itself, a
-        # changed engine_worker.py would not change this digest at all,
-        # silently losing the guard the deleted APP_WORKER_VERSION constant
-        # used to provide: a running child built against an older worker
-        # would be reused across an upgrade instead of retired.
+        # changed engine_worker.py would not change this digest at all, and a
+        # running child built against an older worker would be reused across
+        # an upgrade instead of retired.
         from fused_render.server import engine_host
 
         worker_st = os.stat(engine_host.DEFAULT_DAEMON)
@@ -320,7 +314,7 @@ def interpreter_for(folder: str) -> str:
 
     Deliberately does NOT reuse `projectenv.project_env_for`/`project_root_for`,
     which walk UPWARD from a `.py` FILE to find the enclosing project — a
-    decision, not an oversight (D503, 2026-08-26 code review). Walking upward
+    decision, not an oversight (D503). Walking upward
     is correct for a bare script, which has no project boundary of its own,
     so the nearest ancestor `pyproject.toml` IS its project. A background
     app's FOLDER is already the project boundary — it declares itself

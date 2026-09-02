@@ -19,19 +19,15 @@ unbuilt_deps_reason`'s actionable message instead of the generic spawn
 failure, matching what `resurrect_autostart` already logs for the identical
 condition.
 
-Run state and autostart are two independent, orthogonal things (D511, code
-review that produced this module's current shape): `start`/`stop`/`restart`
-change whether the daemon is alive RIGHT NOW and never touch the persisted
-autostart flag; `autostart` changes only that flag and never starts or stops
-anything. **Autostart is opt-in** — `start` alone leaves it exactly where it
-was (usually off), so calling `start` never silently installs a
-"come back forever" daemon; only an explicit `POST .../autostart` with
-`{"autostart": true}` does that. `status` reports both facts explicitly
-(`running`, `autostart`) so a caller never has to infer one from the other.
-
-`enable`/`disable` (which used to conflate the two) are gone — no back-compat
-aliases; this feature is unmerged and the only caller (OpenWhisper) was
-updated alongside this router.
+Run state and autostart are two independent, orthogonal things (D511):
+`start`/`stop`/`restart` change whether the daemon is alive RIGHT NOW and
+never touch the persisted autostart flag; `autostart` changes only that flag
+and never starts or stops anything. **Autostart is opt-in** — `start` alone
+leaves it exactly where it was (usually off), so calling `start` never
+silently installs a "come back forever" daemon; only an explicit
+`POST .../autostart` with `{"autostart": true}` does that. `status` reports
+both facts explicitly (`running`, `autostart`) so a caller never has to infer
+one from the other.
 """
 import asyncio
 import os
@@ -50,17 +46,14 @@ router = APIRouter()
 def _folder_for(html) -> str | None:
     """The app folder `html` (the caller's own page path) belongs to.
 
-    realpath'd (not just abspath'd) — D509, 2026-08-26 code review: this used
-    to be a bare `os.path.dirname(os.path.abspath(html))`, which diverged
-    from `background_apps.engine_id_for`'s realpath-based identity the
-    moment a folder was reached through a symlink alias. `autostart`
-    (compared against `autostart_paths()`, itself realpath'd — D512) and
-    `running` (keyed off `engine_id_for`'s realpath hash) could then
-    disagree for the exact same app — `{"autostart": False, "running": True}`
-    through one alias while the other alias showed the opposite — and an
-    `autostart` call through different aliases wrote/removed different store
-    entries for what is really one folder. Realpath'ing here makes every
-    endpoint's folder identity agree with `engine_id_for`'s, the same
+    realpath'd (not just abspath'd) — D509 — so every endpoint's folder
+    identity agrees with `background_apps.engine_id_for`'s realpath-based
+    identity: `autostart` (compared against `autostart_paths()`, itself
+    realpath'd — D512) and `running` (keyed off `engine_id_for`'s realpath
+    hash) must resolve the same folder for a page reached through a symlink
+    alias as for one reached directly, or an `autostart` call through one
+    alias would write/remove a different store entry than a `running` check
+    through another for what is really one folder. This is the same
     normalization `background_apps.py`'s own `daemon`-containment check and
     autostart store already apply."""
     if not isinstance(html, str) or not html:
@@ -219,15 +212,13 @@ async def api_background_restart(body: dict = Body(...),
         return error
     engine_id = background_apps.engine_id_for(folder)
     try:
-        # Always recompute the version fresh (D510, 2026-08-26 code review):
-        # a live child's restart used to keep `existing.version` — the
-        # digest from whenever it was last brought up — which meant a
-        # restart right after editing daemon.py respawned the new code
-        # tagged with the OLD version. The next start()/server-start
-        # resurrection would then see its own fresh digest disagree with
-        # the registered one and tear the just-restarted child down and
-        # spawn it a SECOND time. Computing it once here and passing it to
-        # both branches keeps them in sync.
+        # Always recompute the version fresh (D510): a restart must tag the
+        # respawned child with the digest of the code it's actually running,
+        # not a stale `existing.version`, so the next start()/server-start
+        # resurrection sees its own fresh digest agree with the registered
+        # one instead of tearing the child down and spawning it again.
+        # Computing it once here and passing it to both branches keeps them
+        # in sync.
         version = background_apps.version_for(folder, interpreter)
         if engine_host.current(engine_id) is None:
             daemon, module = background_apps.bring_up_args(manifest)
@@ -254,14 +245,13 @@ async def api_background_running():
     """The set of app folders with a live background child RIGHT NOW — for
     the /apps grid's running badge (Task 5).
 
-    Enumerated from `engine_host`'s own in-memory children (2026-08-26 code
-    review), not `background_apps.autostart_paths()`: after D511 split run
-    state from autostart, `start()` no longer persists anything, so a daemon
-    started without opting into autostart — now the DEFAULT path — had no
-    row in the autostart store and the grid's badge stayed off for it even
-    while it was genuinely running. `engine_host.background_running_folders`
-    is a dict comprehension plus a `Popen.poll()` per background child; no
-    folder walk, no toml reads, so this stays cheap enough to call once per
-    grid render exactly as before."""
+    Enumerated from `engine_host`'s own in-memory children, not
+    `background_apps.autostart_paths()`: `start()` doesn't persist anything
+    (D511 keeps run state and autostart independent), so a daemon started
+    without opting into autostart has no row in the autostart store even
+    while it's genuinely running, and the grid's badge needs the live set
+    instead. `engine_host.background_running_folders` is a dict
+    comprehension plus a `Popen.poll()` per background child; no folder walk,
+    no toml reads, so this stays cheap enough to call once per grid render."""
     folders = await asyncio.to_thread(engine_host.background_running_folders)
     return {"running": {folder: True for folder in folders}}

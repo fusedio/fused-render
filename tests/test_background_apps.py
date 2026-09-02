@@ -22,8 +22,9 @@ from fused_render.shell import prefs as shell_prefs
 
 FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
 #: Same fixture daemon, but declared with a NESTED daemon path
-#: (`daemon = "src/daemon.py"`) — the shape `_validate_background` used to
-#: mishandle by re-deriving the folder as `os.path.dirname(daemon)`.
+#: (`daemon = "src/daemon.py"`) — `_validate_background` must resolve the
+#: declaring folder from the caller, not by re-deriving it as
+#: `os.path.dirname(daemon)`.
 FIXTURE_APP_NESTED = os.path.join(
     os.path.dirname(__file__), "fixtures", "background_app_nested")
 HDRS = {"X-Fused": "1"}
@@ -315,7 +316,7 @@ def test_version_for_raises_on_missing_daemon_file(tmp_path):
 
 
 # --------------------------------------------------- interpreter resolution
-# D503 (2026-08-26 code review): interpreter_for must NOT walk past the app's
+# D503: interpreter_for must NOT walk past the app's
 # own folder looking for an ancestor project the way projectenv.project_env_for
 # does for a plain .py script — the app folder IS the project boundary.
 

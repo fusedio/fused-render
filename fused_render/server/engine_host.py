@@ -498,15 +498,12 @@ def _validate_background(engine_id: str, python: str, daemon: str,
     over a daemon belonging to some folder whose OWN manifest does not
     declare it.
 
-    Deliberately independent of the autostart store (D511, code review):
-    this used to walk `background_apps.enabled_paths()` looking for a match,
-    which meant `ensure_background` would refuse to spawn any app that
-    wasn't opted into autostart — exactly backwards now that autostart is a
-    separate, opt-in flag and `start()` must work whether or not it is set.
-    Instead, the declaring folder is asked for ITS manifest
+    Deliberately independent of the autostart store (D511): autostart is a
+    separate, opt-in flag, and `start()` must work whether or not it is set,
+    so this asks the declaring folder for ITS manifest
     (`background_apps.load_manifest`, self-contained — no store lookup) and
-    the check is simply "does that folder's manifest declare exactly this
-    daemon file", which needs nothing but the daemon path itself.
+    checks simply "does that folder's manifest declare exactly this daemon
+    file", which needs nothing but the daemon path itself.
 
     `folder` is the caller's own resolved declaring folder — the same one
     `ensure_background` threads onto `Child.folder` — used here instead of
@@ -612,15 +609,15 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
 
 def background_running_folders() -> set[str]:
     """The declaring folders of every currently-live background child — the
-    actual run-state source for the `/apps` grid's running badge
-    (2026-08-26 code review: the badge used to be keyed off
-    `background_apps.autostart_paths()`, which went stale the moment D511
-    split run state from autostart, since `start()` no longer persists
-    anything and a running-but-not-autostart daemon has no other row to
-    appear in). `_children`/`folder`/`_alive` are all already in memory, so
-    this is a snapshot over a dict plus a `Popen.poll()` per child — no
-    folder walk, no toml read, cheap enough to call once per grid render
-    exactly like the endpoint's docstring promises."""
+    run-state source for the `/apps` grid's running badge. Reads
+    `_children` rather than `background_apps.autostart_paths()`: `start()`
+    doesn't persist anything (D511 keeps run state and autostart
+    independent), so a running-but-not-autostart daemon has no row in the
+    autostart store to appear in. `_children`/`folder`/`_alive` are all
+    already in memory, so this is a snapshot over a dict plus a
+    `Popen.poll()` per child — no folder walk, no toml read, cheap enough to
+    call once per grid render exactly like the endpoint's docstring
+    promises."""
     with _lock:
         children = list(_children.values())
     return {c.folder for c in children if c.folder and _alive(c)}
@@ -770,13 +767,13 @@ def restart(engine_id: str, failed: Child | None = None,
     original behavior every non-background caller (engine_forward.py's
     heal-on-proxy) still wants — a healed child should keep answering to the
     same version its caller already knows. `/api/apps/background/restart`
-    (D510, 2026-08-26 code review) passes the FRESHLY computed digest instead:
-    without this, a live child's restart rebuilt its replacement from
-    `existing.version` — the OLD digest — so `fused.daemon.restart()` right
-    after editing `daemon.py` respawned the new code tagged with the stale
-    version, and the next enable()/server-start resurrection would then see
-    its own fresh digest disagree with what's registered and tear the
-    just-restarted child down and spawn it a second time.
+    (D510) passes the FRESHLY computed digest instead: a restart must tag
+    the respawned child with the digest of the code it's actually running,
+    so `fused.daemon.restart()` right after editing `daemon.py` respawns the
+    new code tagged with the new version, and the next start()/server-start
+    resurrection sees its own fresh digest agree with what's registered
+    instead of tearing the just-restarted child down and spawning it a
+    second time.
 
     The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose

@@ -266,9 +266,9 @@
  *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
  *     Report a long-running operation THIS PAGE is running to the shell's
  *     download manager, so it stays visible after the page that started it is
- *     navigated away from (SPEC §36, D244). Model downloads used to be the
- *     motivating example; they are the server's job now (SPEC §40) and a page
- *     observes them with fused.job() instead of reporting them. Every
+ *     navigated away from (SPEC §36, D244). Model downloads are the server's
+ *     job (SPEC §40); a page observes them with fused.job() instead of
+ *     reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
@@ -513,11 +513,11 @@
   //     permanently: from then on everything works exactly as written. Clicking
   //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
-  // flag used to be, so a page could gate its own boot focus instead of being
-  // corrected — and the claude template was its only reader, gating a focus()
-  // the patch below was already dropping. One mechanism, applied to every page
-  // including the ones nobody has written yet, beats two that have to agree.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A per-page flag would let a
+  // page gate its own boot focus instead of being corrected, and every page
+  // that has not been written yet would need to opt in correctly. One
+  // mechanism, applied to every page including the ones nobody has written
+  // yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
@@ -681,12 +681,11 @@
       }
     }
 
-    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
-    // MutationObserver re-stripping as the document streamed. It never worked on
-    // its own — the browser queues the candidate when the element is inserted
-    // and removing the attribute afterwards does not dequeue it — so the blur
-    // above was already carrying that case, and for a card thumbnail the
-    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // `autofocus` IS NOT TOUCHED HERE: stripping the attribute would not work on
+    // its own — the browser queues the candidate when the element is inserted,
+    // so removing the attribute afterwards does not dequeue it — the blur
+    // above already carries that case, and for a card thumbnail the
+    // attribute does not apply at all (`sandbox` sets the sandboxed automatic
     // features flag, which has no re-enabling token — THUMB_SEAL). What is left
     // is one focus flicker in a pane preview before the bounce lands, against
     // an observer running over every mutation of every previewed document.
@@ -1404,14 +1403,14 @@
   // leaves in the same synchronous task as the abort — so `X-Fused-Supersedes`
   // on it reaches the server as early as anything can, with no extra round trip.
   //
-  // The separate POST below used to be the only path, deferred by setTimeout(0)
-  // to batch. Measured in Chromium against a local server, that landed ~19 ms
-  // after the abort — and any superseded call whose handler finished inside that
-  // window was written as `ok` and counted in the latency percentiles, which is
-  // the exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
-  // finish that fast, so a template re-querying per keystroke hit it often.
-  // Reported by Bugbot; the header closes the gap for every supersession that
-  // has a causing request, which is all of them.
+  // A separate POST, deferred by setTimeout(0) to batch, would arrive too late:
+  // measured in Chromium against a local server, an abort's POST lands ~19 ms
+  // after the abort, and any superseded call whose handler finishes inside that
+  // window is written as `ok` and counted in the latency percentiles — the
+  // exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
+  // finish that fast, so a template re-querying per keystroke hits it often.
+  // The header closes the gap for every supersession that has a causing
+  // request, which is all of them.
   //
   // The POST survives as the unload backstop: pagehide has ids with no request
   // left to carry them.
@@ -1578,10 +1577,10 @@
   // able to).
   //
   // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
-  // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
-  // one-shot by construction) and that shape had a hole no amount of caching
-  // fixed: ANY remount of that iframe for ANY reason — toggling the sidebar
-  // away and back, closing and reopening the folder pane, a panel/tab
+  // A `_fused_ask` query param baked into the claude iframe's URL, one-shot by
+  // construction, has a hole no amount of caching fixes: ANY remount of that
+  // iframe for ANY reason — toggling the sidebar away and back, closing and
+  // reopening the folder pane, a panel/tab
   // reattaching — rebuilds the src from the same cached value and replays the
   // ask into a brand new conversation. A src is not a message; it is a
   // document's ADDRESS, and an address that is only supposed to be visited
@@ -1668,15 +1667,14 @@
 
   // How long an install may run before the overlay appears at all.
   //
-  // The overlay used to mount synchronously, before anything was known about how
-  // long the install would take — so an install that finishes in tens of
-  // milliseconds still threw a full-screen modal over the page and tore it down
-  // again, which reads as a flicker/flash rather than as progress. Now that a
-  // declaration the app interpreter already satisfies installs NOTHING (see engine.py's
-  // `app_satisfies`), the installs that remain are either genuinely long (a real
-  // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
-  // cache, where the modal was pure noise). Delay separates the two without having
-  // to predict which one this is.
+  // The overlay must not mount synchronously: an install that finishes in tens
+  // of milliseconds would still throw a full-screen modal over the page and
+  // tear it down again, which reads as a flicker/flash rather than as progress.
+  // A declaration the app interpreter already satisfies installs NOTHING (see
+  // engine.py's `app_satisfies`), so the installs that remain are either
+  // genuinely long (a real download, where 600ms of delay is imperceptible) or
+  // genuinely short (a warm uv cache, where the modal would be pure noise).
+  // Delay separates the two without having to predict which one this is.
   const INSTALL_MOUNT_DELAY_MS = 600;
 
   let installUi = null;
@@ -1797,10 +1795,10 @@
   //   * A LATE RESPONSE. A call answered before the install began but delivered
   //     after it finished is not a loop — it has not run at all yet — and must
   //     re-attempt rather than report a stale snapshot as a failure.
-  //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
-  //     editing dependencies minted a NEW key and a legitimate second install. It
-  //     is stable per project now, so a page-scoped set refused the install for a
-  //     user who had just fixed their `pyproject.toml`.
+  //   * A MANIFEST EDIT. The key is stable per project, not derived from the
+  //     requirement set, so editing dependencies does not mint a new key — a
+  //     page-scoped set would refuse the install for a user who had just fixed
+  //     their `pyproject.toml`.
   //
   // Deduplication — the actual "one install per page, not one per script" — lives
   // in `installEnv`'s `installInFlight` registry instead, which is the right
@@ -1813,9 +1811,9 @@
     return Boolean(need && need.key) && !installed.has(need.key);
   }
 
-  // The backdrop, and the container every install's row is appended to. It owns no
-  // title/detail/bar of its own any more — those belong to a row, because there is
-  // no longer one install to describe.
+  // The backdrop, and the container every install's row is appended to. It owns
+  // no title/detail/bar of its own — those belong to a row, since multiple
+  // installs can run concurrently, each needing its own to describe.
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -1955,9 +1953,9 @@
       : "Preparing " + (need.name || "the environment");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
     // already in flight rather than duplicating it, so re-opening a page whose
-    // download is four minutes old used to paint 0% and then jump to 25% on the
-    // first poll — nothing was lost, but a user switching between apps saw
-    // 0% → 25% → freeze over and over and concluded it was looping. The initial
+    // download is four minutes old would otherwise paint 0% and then jump to
+    // 25% on the first poll — a user switching between apps would see
+    // 0% → 25% → freeze over and over and read it as looping. The initial
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
@@ -2180,15 +2178,13 @@
   // `pkg` comes from `needs_build` on the polled progress record — set by
   // the worker (`_env_install_worker.py`'s `install`), the process that
   // actually knows `--no-build` was passed and can tell this refusal apart
-  // from a genuine resolver failure. That used to be re-derived here, by
-  // regexing uv's stderr for either of its two wordings — two detectors
-  // that could disagree is exactly the defect this rewrite removes; there is
-  // one now, and it lives where the fact actually originates.
+  // from a genuine resolver failure. There is a single detector, and it
+  // lives where the fact actually originates.
   //
   // `appName` is `need.name` (same fallback `confirmInstall` uses): a
   // non-expert reading this dialog cannot act on "no ready-to-use package"
-  // sitting next to a bare package name, and nothing in the old copy said
-  // which app even wants the dependency or what continuing costs.
+  // sitting next to a bare package name without knowing which app wants the
+  // dependency or what continuing costs.
   function confirmBuildRetry(row, ui, pkg, appName) {
     return askRow(
       row, ui,
@@ -2468,10 +2464,10 @@
   // would show CURRENT content under a heading that says otherwise.
   //
   // Closing it means the reader can no longer be handed a path: it needs the bytes
-  // (a temp materialization, which is exactly the on-disk snapshot this design
-  // removed) or a file-like object over the revision route (a Python-side shim
-  // every reader would have to accept). That is phase 2b, and it is a change to the
-  // `main()` contract rather than a patch here — hence the deferral.
+  // (a temp materialization) or a file-like object over the revision route (a
+  // Python-side shim every reader would have to accept). That is phase 2b, and
+  // it is a change to the `main()` contract rather than a patch here — hence
+  // the deferral.
   //
   // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
   // revision indicator names the limitation next to the sha (Preview.tsx —
@@ -4180,21 +4176,18 @@
         : onProgress;
       return watcher.watch(onTick).then((record) => {
         if (!record) {
-          // The row is gone — and since the manager stopped evicting live
-          // SERVER work under its cap, that no longer happens MID-RUN. It means
-          // the row finished and aged out while this tab was asleep, which a
-          // transcription long enough to background does easily.
+          // The row is gone. Live SERVER work under the manager's cap is never
+          // evicted, so this cannot happen MID-RUN — it means the row finished
+          // and aged out while this tab was asleep, which a transcription long
+          // enough to background does easily.
           //
           // The TRANSCRIPT is the other witness and the one that matters, so
           // reading it is both the answer and the check: if it is there, the
-          // work landed. An earlier cut tried to out-wait a mid-run absence
-          // here instead, resuming the watcher and polling for the file — and
-          // that machinery could hang forever (a re-entered `watch` that never
-          // SEES the row never gives up) while also turning one flaky
-          // `/api/jobs` fetch into a hard failure. Both were compensation for
-          // an eviction that should not have been happening; the fix belonged
-          // in the manager, and this is a backstop again rather than a state
-          // machine.
+          // work landed. Resuming the watcher and polling for the file instead
+          // would risk hanging forever (a re-entered `watch` that never SEES
+          // the row never gives up) while also turning one flaky `/api/jobs`
+          // fetch into a hard failure — so this stays a backstop rather than a
+          // state machine.
           return done().catch(() => {
             const err = new Error("the transcription job is no longer being reported");
             err.type = "ai_error";
