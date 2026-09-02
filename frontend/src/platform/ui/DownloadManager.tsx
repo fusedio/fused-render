@@ -386,7 +386,6 @@ function EngineRow({
         <span className="dl-title dl-title-id" title={engine.folder || engine.engine_id}>
           {engineLabel(engine)}
         </span>
-        <span className="dl-amount">{engine.kind}</span>
         <button className="dl-row-cancel" onClick={stop} disabled={busy}>
           {busy ? "Stopping…" : "Stop"}
         </button>

@@ -947,13 +947,12 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
 
 const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
   engine_id: "e1",
-  kind: "template",
   pid: 1,
   version: "",
   folder: "",
   module: "",
   ...over,
-} as RunningEngine);
+});
 
 function renderActivity(props: {
   reported?: Job[];
@@ -981,21 +980,32 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(circleFilled(tree)).toBe(false);
   });
 
-  test("draws the engine's label and kind, with a Stop button", () => {
+  test("draws the engine's label, with a Stop button", () => {
     const tree = renderActivity({
       engines: {
-        engines: [runningEngine({ engine_id: "e2", kind: "background", folder: "/apps/geotiff" })],
+        engines: [runningEngine({ engine_id: "e2", folder: "/apps/geotiff" })],
         onStop: async () => {},
       },
     });
     const row = findAll(tree, "dl-row")[0];
     expect(text(findAll(row, "dl-title")[0])).toBe("geotiff");
-    expect(text(findAll(row, "dl-amount")[0])).toBe("background");
     expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop");
   });
 
+  test("the row carries no wire field beyond what RunningEngine declares", () => {
+    // Guards against the class of defect where a fixture supplies a field
+    // (`kind`, say) the server no longer sends and the panel silently
+    // depends on it: `runningEngine()` has no `as RunningEngine` escape
+    // hatch, so an extra property here is a real excess-property error at
+    // build time, not just a missing assertion.
+    const engine = runningEngine();
+    expect(Object.keys(engine).sort()).toEqual(
+      ["engine_id", "folder", "module", "pid", "version"].sort(),
+    );
+  });
+
   test("falls back to the module when a background engine has no folder recorded", () => {
-    expect(engineLabel(runningEngine({ kind: "background", module: "compute.py" }))).toBe(
+    expect(engineLabel(runningEngine({ module: "compute.py" }))).toBe(
       "compute.py",
     );
   });
