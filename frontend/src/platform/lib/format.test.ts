@@ -79,6 +79,19 @@ describe("formatParams", () => {
     expect(formatParams(512)).toBe("512");
   });
 
+  it("rolls a count that would ROUND to 1000M over into B instead", () => {
+    // `gemma-3-1b-it`'s own real shape: just under 1e9, which used to render
+    // as the nonsensical "1000M" because the raw count (not what the M-step
+    // would round it to) decided the threshold. Same trailing-zero-stripping
+    // the exact-1e9 case already used ("1B", not "1.0B") — this is that same
+    // rule reached from just under the boundary instead of just at it.
+    expect(formatParams(999_700_000)).toBe("1B");
+    // A count that rounds to a real fraction of a billion keeps the decimal.
+    expect(formatParams(999_500_000)).toBe("1B");
+    // Comfortably under the boundary still reads as M.
+    expect(formatParams(994_000_000)).toBe("994M");
+  });
+
   it("says nothing when there is no count", () => {
     expect(formatParams(null)).toBe("");
     expect(formatParams(undefined)).toBe("");

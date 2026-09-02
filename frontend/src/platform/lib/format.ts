@@ -19,7 +19,14 @@ export function formatSize(bytes: number | null | undefined): string {
 // by the number alone.
 export function formatParams(count: number | null | undefined): string {
   if (!count || count < 0) return "";
-  if (count >= 1e9) return `${Number((count / 1e9).toFixed(1))}B`;
+  // The threshold is against the ROUNDED value, not the raw one: a count like
+  // 999,700,000 is under 1e9 so the naive check sends it through the M step,
+  // where `Math.round(999_700_000 / 1e6)` is 1000 — "1000M" rather than the
+  // "1.0B" a reader expects the moment a compact count rolls over three
+  // digits (`gemma-3-1b-it`'s own real parameter count is exactly this
+  // shape). Checking what the M-step would ROUND TO catches that before it
+  // renders, without changing anything for a count nowhere near the boundary.
+  if (count >= 1e9 || Math.round(count / 1e6) >= 1000) return `${Number((count / 1e9).toFixed(1))}B`;
   if (count >= 1e6) return `${Math.round(count / 1e6)}M`;
   if (count >= 1e3) return `${Math.round(count / 1e3)}K`;
   return `${count}`;
