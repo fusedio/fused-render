@@ -243,10 +243,19 @@ const { text, model, usage, provider } = await fused.ai.text(prompt, {
   is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
   pins the **tier** that serves the call; omitted, the model's shape decides (a repo
   id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
-  is the fixed tier walk local → claude. `provider: "local"` with no `model` is a
-  `bad_request` (every default is a Claude id); `provider: "claude"` with a repo id is
-  a `bad_request` naming the tier that would take it. Resolves with exactly this
-  shape — the server normalizes it, so a page may read the fields without guarding:
+  is the fixed tier walk local → claude. The three omitted-`model` cases: no
+  `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
+  the same; `"local"` → the catalog's default text model for this machine
+  (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
+  `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
+  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe` and
+  `.embed`** (their D413 envelopes grow that one key), and every reply of the five
+  carries `provider`; those four have only a local tier today, so omitted means
+  `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
+  against a tier that lacks the verb, not a malformed one — which becomes a real
+  path the day a gateway serves them, with no page changing. Resolves with exactly
+  this shape — the server normalizes it, so a page may read the fields without
+  guarding:
 
   ```json
   {

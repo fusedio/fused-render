@@ -21,7 +21,7 @@ from fastapi.responses import (
 from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
-from fused_render.server.common import _require_fused
+from fused_render.server.common import AI_PROVIDERS, _require_fused
 from fused_render.shell.prefs import default_model
 
 router = APIRouter()
@@ -88,12 +88,11 @@ _AI_SHORT_MODEL_IDS = {
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }
-# The tiers a call can name (SPEC RH-11, D631). FIXED order, local first: the
-# boundary between them is where a prompt leaves the machine, and that is not
-# a preference a user reorders. A hosted gateway is the third entry when it
-# arrives — appended here, honoured below the two, and the wire already
-# carries the key it needs.
-_AI_PROVIDERS = ("local", "claude")
+# The tiers a call can name (SPEC RH-11, D631) — `common.AI_PROVIDERS`, shared
+# with the four capability routes; the module-local alias keeps this file's
+# naming. A hosted gateway is the third entry when it arrives, and the wire
+# already carries the key it needs.
+_AI_PROVIDERS = AI_PROVIDERS
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
 # How often the remote-Claude activity row re-states itself while a call is in
@@ -163,6 +162,21 @@ _AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 def _is_local_model(model: str) -> bool:
     return "/" in model or model.lower().endswith(formats.GGUF_EXTENSION)
+
+
+def _local_default_model() -> str | None:
+    """What `provider: "local"` with no `model` runs: the catalog's default
+    text model for the runner serving this machine (`catalog.default_for`,
+    position 0 — the smallest, deliberately), or None when no text runner
+    resolves here. Lazy import, as `_images_unsupported_by_runner` does, so
+    this module keeps its import-time independence from the runtime router."""
+    from fused_render.ai import catalog, registry
+    return catalog.default_for(registry.TEXT_GENERATION)
+
+
+def _local_unavailable_reason() -> str | None:
+    from fused_render.ai import registry
+    return registry.unavailable_reason(registry.TEXT_GENERATION)
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -1235,15 +1249,20 @@ async def _ai_relay(body: dict):
             "bad_request",
             "'provider' must be one of: %s" % ", ".join(_AI_PROVIDERS),
             status=400)
-    # `provider: "local"` with no model has nothing to resolve: every default
-    # below is a Claude id, and handing one to the local relay would be a
-    # confident "no such repo" about a model the caller never named.
+    # `provider: "local"` with no model means the LOCAL default — the catalog's
+    # position-0 text model for whichever runner serves this machine (the
+    # same answer a bare AI Models page load gives) — never the Claude chain
+    # below, whose every entry is a Claude id. Owner's call: the three
+    # omitted-model cases are (none, none) -> Claude + haiku, ("claude",
+    # none) -> haiku, ("local", none) -> the catalog default.
     if provider == "local" and model is None:
-        return _ai_error(
-            "bad_request",
-            "'provider': 'local' needs 'model' — pick a repo id from "
-            "fused.ai.models.catalog(); the default model is a Claude alias",
-            status=400)
+        model = _local_default_model()
+        if not model:
+            return _ai_error(
+                "ai_unavailable",
+                _local_unavailable_reason()
+                or "no local text model is available on this machine",
+                status=409)
     model = model or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the
     # Claude CLI can run, and passing it through would surface as the CLI's

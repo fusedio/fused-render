@@ -350,7 +350,10 @@ with `fused.ai.text(prompt, opts?)`. It resolves with exactly
 Two tiers can answer, in a fixed order: **local** (a model resident on this
 machine, see above) and **claude**. Pass `opts.provider: "local" | "claude"` to
 pin one; leave it out and the model id decides — a Hugging Face repo id or a
-`.gguf` filename is local, anything else goes to Claude. On the Claude tier the
+`.gguf` filename is local, anything else goes to Claude. The same `provider`
+option is on `.image`, `.video`, `.transcribe` and `.embed`, and every reply
+carries it; those four run locally only, so `"claude"` there rejects with
+`unavailable`. On the Claude tier the
 server runs the
 call through the **`claude` (Claude Code) CLI** on your machine — your existing
 Claude Code login is the credential; there is no proxy or API key to configure.

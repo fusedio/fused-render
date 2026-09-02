@@ -52,7 +52,7 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 # and a body this route refuses must be refused for the identical reason a
 # worker asked directly would give.
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import AI_PROVIDERS, _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -79,8 +79,13 @@ _MAX_SEED = 2**31 - 1
 # dropped. These are the CALLER-FACING sets — the same facts `runtime.js`
 # restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
 # below is what stops the two from drifting apart.
+# `provider` is in every capability's envelope (D631): the same key with the
+# same meaning `/api/ai` takes, so a page reads one option name across all five
+# verbs. Only "local" is served on these four routes today — see
+# `_provider_rejection` for what the other values earn.
 _IMAGE_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
+    "provider"})
 # Bounds for a video request. Narrower canvas than an image's — `w*h <=
 # 768*1344` — originally chosen against the FL2VA checkpoint of the
 # since-dropped `h3-video` runner (D468), the shape it was benchmarked at;
@@ -129,14 +134,15 @@ _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # the Playground cannot offer a control the resolved engine will not
 # honour), not for a request-time gate here.
 _VIDEO_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "frames", "steps", "seed", "image"})
+    "prompt", "model", "width", "height", "frames", "steps", "seed", "image",
+    "provider"})
 # `base` is bridge-injected, the identical asymmetry `_IMAGE_SERVER_OPTIONS`
 # documents — video had no way to resolve a page-relative path at all until
 # `image` needed one, so this is also where `base` first reaches this route.
 _VIDEO_SERVER_OPTIONS = _VIDEO_OPTIONS | {"base"}
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
-    "speakers", "words"})
+    "speakers", "words", "provider"})
 # `base` is bridge-injected — `aiTranscribe` adds it from the page's own
 # `?path=`, never from the caller's own options object — so the SERVER's
 # accepted set is wider than the caller-facing one on purpose. Collapsing
@@ -164,7 +170,7 @@ _IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
 #: it is refused per MODEL (a dual encoder has no retrieval convention), so a
 #: client that could not send it would leave every retrieval model embedding
 #: queries as documents with nothing to show it.
-_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind"})
+_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind", "provider"})
 #: `base` is bridge-injected — `aiEmbed` adds it from the page's own `?path=` so
 #: a relative `paths` entry resolves beside the calling page (RH-1) — so the
 #: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
@@ -191,6 +197,35 @@ def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
     verb = "is not an option" if len(unknown) == 1 else "are not options"
     accepted = ", ".join(sorted(allowed))
     return _error(f"{named} {verb} of {endpoint}; accepted: {accepted}", status=400)
+
+
+def _provider_rejection(body: dict, verb: str):
+    """The `provider` tier check the four capability routes share (D631).
+
+    Returns `(None, None)` when the call may proceed locally, else
+    `(type, message, status)`-shaped data for the caller to wrap in its own
+    error envelope (`_error` for the three job-backed routes, `_embed_error`
+    for embed — the two wire shapes differ, so the wrapping is the caller's).
+
+    Omitted, or `"local"`: proceed — local is the only tier that serves these
+    verbs today, so it is also the default, with no shape inference needed
+    (every id here is a repo id). A value outside `AI_PROVIDERS` is a 400,
+    same as `/api/ai`. A value INSIDE it that this verb has no tier for
+    (`"claude"`: the CLI speaks text and nothing else) is `unavailable` on a
+    409, not a 400 — the request is well formed and the tier simply lacks the
+    verb, which is the same sentence a machine with no image runner gets. The
+    vocabulary stays closed, and the day a gateway serves images this branch
+    becomes a real path with no change to any page.
+    """
+    provider = body.get("provider")
+    if provider is None or provider == "local":
+        return None
+    if provider not in AI_PROVIDERS:
+        return ("bad_request",
+                "'provider' must be one of: %s" % ", ".join(AI_PROVIDERS), 400)
+    return ("unavailable",
+            f"provider {provider!r} does not serve {verb}; only 'local' does "
+            "on this machine", 409)
 
 
 def _side(value, default: int) -> int:
@@ -1427,6 +1462,9 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     rejection = _reject_unknown(body, _IMAGE_SERVER_OPTIONS, "/api/ai/image")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "image")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1657,6 +1695,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # rather than as an error.
         "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
+        # The tier that served it, as `/api/ai`'s reply carries (D631).
+        "provider": "local",
         "prompt": request["prompt"],
         "width": request["width"],
         "height": request["height"],
@@ -1695,6 +1735,9 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     rejection = _reject_unknown(body, _VIDEO_SERVER_OPTIONS, "/api/ai/video")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "video")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1857,6 +1900,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # Canonical, like every other path this API hands back.
         "path": canonical_fs_path(path),
         "model": model,
+        "provider": "local",
         "prompt": request["prompt"],
         "width": width,
         "height": height,
@@ -1906,6 +1950,9 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     rejection = _reject_unknown(body, _TRANSCRIBE_SERVER_OPTIONS, "/api/ai/transcribe")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "transcribe")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     source = body.get("path")
     if not isinstance(source, str) or not source.strip():
@@ -2083,6 +2130,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # would be the one that broke there.
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
+        "provider": "local",
         "task": task,
     }
 
@@ -2143,6 +2191,9 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     if rejection is not None:
         message = json.loads(bytes(rejection.body))["error"]
         return _embed_error("bad_request", message, status=400)
+    tier = _provider_rejection(body, "embed")
+    if tier is not None:
+        return _embed_error(tier[0], tier[1], status=tier[2])
 
     # Same rule `generate()` enforces inside each worker's own venv
     # (`embed_common.request_kind`) — refused HERE too, before a model is even
@@ -2258,5 +2309,6 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             "vectors": result.get("vectors") or [],
             "dim": result.get("dim") or 0,
             "model": model,
+            "provider": "local",
         },
     }

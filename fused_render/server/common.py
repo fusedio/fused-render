@@ -80,6 +80,14 @@ HERE = os.path.dirname(os.path.abspath(fused_render.__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 
+#: The tiers an AI call can name, in FIXED order (SPEC RH-11, D631) — shared by
+#: `/api/ai` (server/ai.py) and the four capability routes (routers/ai_runtime.py)
+#: so the two can never disagree about the vocabulary. Local first: the boundary
+#: between the entries is where a prompt leaves the machine, and that is not a
+#: preference a user reorders. A hosted gateway is appended here when it arrives.
+AI_PROVIDERS = ("local", "claude")
+
+
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 

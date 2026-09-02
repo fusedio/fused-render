@@ -107,17 +107,18 @@ SERVER_JSON_NAME = "server.json"
 # `runtime.js` and the server from disagreeing. Never consulted to reject a
 # caller's option: the server is the one closed envelope (D413).
 _IMAGE_WIRE_KEYS = frozenset(
-    {"prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+    {"prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
+     "provider"})
 _TRANSCRIBE_WIRE_KEYS = frozenset(
     {"path", "model", "language", "task", "initialPrompt", "vad", "diarize",
-     "speakers", "words"})
+     "speakers", "words", "provider"})
 #: …and `/api/ai/embed`'s, pinned against `_EMBED_OPTIONS` the same way.
 #: `kind` is the member worth naming: it is refused per MODEL rather than
 #: per endpoint (a dual encoder has no retrieval convention), so a client
 #: that could not send it would leave every retrieval model embedding
 #: queries as documents — unit-length vectors of the right dimension, and
 #: worse, with nothing a caller could measure to say so.
-_EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind"})
+_EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind", "provider"})
 
 
 class ServerNotRunning(Exception):
@@ -532,6 +533,7 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
                task: str | None = None, initial_prompt: str | None = None,
                vad: bool | None = None, diarize: bool | None = None,
                speakers: int | None = None, words: bool | None = None,
+               provider: str | None = None,
                wait: bool = True, on_progress=None,
                timeout: float | None = None) -> dict:
     """`POST /api/ai/transcribe`. Job-backed (SPEC AI-9), so this blocks by
@@ -554,7 +556,7 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     for key, value in (
         ("model", model), ("language", language), ("task", task),
         ("initialPrompt", initial_prompt), ("vad", vad), ("diarize", diarize),
-        ("speakers", speakers), ("words", words),
+        ("speakers", speakers), ("words", words), ("provider", provider),
     ):
         if value is not None:
             body[key] = value
@@ -589,7 +591,8 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
 def image(prompt: str, model: str | None = None, width: int | None = None,
           height: int | None = None, steps: int | None = None,
           guidance: float | None = None, seed: int | None = None,
-          image: str | None = None, wait: bool = True, on_progress=None,
+          image: str | None = None, provider: str | None = None,
+          wait: bool = True, on_progress=None,
           timeout: float | None = None) -> dict:
     """`POST /api/ai/image`. Job-backed like `transcribe()`, same default.
 
@@ -601,6 +604,7 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     for key, value in (
         ("model", model), ("width", width), ("height", height),
         ("steps", steps), ("guidance", guidance), ("seed", seed),
+        ("provider", provider),
     ):
         if value is not None:
             body[key] = value
@@ -620,6 +624,7 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
 
 def embed(texts: list | None = None, paths: list | None = None,
           model: str | None = None, kind: str | None = None,
+          provider: str | None = None,
           timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
     """`POST /api/ai/embed`. Not job-backed (`/api/ai/embed`'s own docstring:
     one forward pass over a short batch, over before a progress row would
@@ -656,6 +661,8 @@ def embed(texts: list | None = None, paths: list | None = None,
         body["model"] = model
     if kind is not None:
         body["kind"] = kind
+    if provider is not None:
+        body["provider"] = provider
     payload = _post_json("/api/ai/embed", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)

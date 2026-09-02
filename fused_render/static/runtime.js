@@ -56,7 +56,11 @@
  *     the model's shape decides (a repo id or .gguf filename is weights on
  *     this machine, anything else is a Claude alias), which IS the tier walk
  *     local -> claude for the two tiers that exist. The reply's `provider`
- *     names the tier that answered.
+ *     names the tier that answered. The SAME option, same meaning, is on
+ *     .image/.video/.transcribe/.embed, and every reply carries `provider`;
+ *     those four have only a local tier today, so omitted means "local" and
+ *     "claude" rejects with `unavailable` (the CLI speaks text and nothing
+ *     else) rather than a 400 — the tier exists, it lacks the verb.
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
@@ -79,8 +83,8 @@
  *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
  *     GENERATE TEXT with a local model there is no new call: pass its repo id
  *     as fused.ai.text(prompt, {model: "org/name"}).
- *   fused.ai.image({prompt, model, width, height, steps, guidance, seed,
- *                   onProgress}) -> Promise<{path, url, seed, ...}>
+ *   fused.ai.image({prompt, model, provider, width, height, steps, guidance,
+ *                   seed, onProgress}) -> Promise<{path, url, seed, provider, ...}>
  *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
@@ -92,8 +96,8 @@
  *     it is null on the last tick and on resolve, because the preview file is
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers, words,
- *                        onProgress, onSegment})
+ *   fused.ai.transcribe({path, model, provider, language, task, diarize,
+ *                        speakers, words, onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
@@ -164,8 +168,8 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
- *   fused.ai.video({prompt, model, width, height, frames, steps, seed, image,
- *                   onProgress}) -> Promise<{path, url, model, prompt, width,
+ *   fused.ai.video({prompt, model, provider, width, height, frames, steps, seed,
+ *                   image, onProgress}) -> Promise<{path, url, model, provider, prompt, width,
  *                                            height, frames, steps, seed,
  *                                            image}>
  *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
@@ -193,7 +197,7 @@
  *     an edit's default from its base image — pass width/height explicitly
  *     to override either one. Rejects with .type "bad_request" if `image`
  *     is missing, not a regular file, or anything but a single string.
- *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
+ *   fused.ai.embed({texts, paths, model, provider}) -> Promise<{vectors, dim, model, provider}>
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
  *     `paths` (files on this machine, resolved beside this page when
@@ -3774,7 +3778,7 @@
     // the option it does not have, not about the field it also got wrong —
     // "add a prompt" would "fix" the error and land the caller right back
     // in the silent-drop illusion this whole change exists to end.
-    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed", "image"];
+    const imageKeys = ["prompt", "model", "provider", "width", "height", "steps", "guidance", "seed", "image"];
     const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -3860,7 +3864,7 @@
   // reasoning.
   function aiVideo(opts) {
     opts = opts || {};
-    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed", "image"];
+    const videoKeys = ["prompt", "model", "provider", "width", "height", "frames", "steps", "seed", "image"];
     const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -3932,7 +3936,7 @@
     // accepts it — it is injected below from the page's own `?path=`, never
     // from the caller's own options object, so a caller passing it directly
     // is passing an option that does not exist from here.
-    const transcribeKeys = ["path", "model", "language", "task", "initialPrompt",
+    const transcribeKeys = ["path", "model", "provider", "language", "task", "initialPrompt",
                             "vad", "diarize", "speakers", "words"];
     const transcribeUnknownErr = rejectUnknownOptions(
       opts, transcribeKeys, ["onProgress", "onSegment"], "fused.ai.transcribe");
@@ -4366,6 +4370,9 @@
     if (hasTexts) body.texts = opts.texts;
     if (hasPaths) body.paths = opts.paths;
     if (opts.model !== undefined) body.model = opts.model;
+    // Same `provider` every other verb takes (D631); forwarded only when set,
+    // and validated server-side like the rest of the envelope.
+    if (opts.provider !== undefined) body.provider = opts.provider;
     // Forwarded only when the caller set it, exactly like `model` above: the
     // server reads an absent key as "I did not say" and applies its own
     // default, while an explicit value on a model with no retrieval convention

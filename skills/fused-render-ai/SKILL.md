@@ -16,7 +16,9 @@ Text has **two destinations** — two *tiers*, in a fixed order — and `opts.pr
 | `"local"`, or omitted with a model that contains a `/` (a Hugging Face repo id) **or ends in `.gguf`** (a llamacpp-text curated filename id) | required for `"local"` | **This machine.** A resident worker process holding the weights. | none |
 | `"claude"`, or omitted with anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, no model at all | a Claude alias or full id | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
 
-The default rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. `provider` pins a tier explicitly; the reply's `provider` field says which one answered. Mismatches are `bad_request`, not silent: `provider: "local"` with no model (every default is a Claude id), or `provider: "claude"` with a repo id. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
+The default rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. `provider` pins a tier explicitly; the reply's `provider` field says which one answered. With no `model`: no `provider` → Claude (the user's default-model preference, else haiku); `"claude"` → the same; `"local"` → the catalog's default text model for this machine. `provider: "claude"` with a repo id is a `bad_request`.
+
+**Every verb takes `provider`** — `.image`, `.video`, `.transcribe`, `.embed` too — and every reply carries it. Those four have only a local tier today: omitted means `"local"`, and `"claude"` rejects with `unavailable` (the CLI speaks text and nothing else). Same option name everywhere, so a page reads one field across the surface. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
 
 **Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to llama.cpp. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
@@ -55,7 +57,7 @@ The local-only options are **refused with a 400, never silently dropped** — a 
 
 | Option | Claude path | Local model |
 |---|---|---|
-| `provider` `"local"｜"claude"` | ✅ pins this tier | ✅ pins this tier (`model` then required) |
+| `provider` `"local"｜"claude"` | ✅ pins this tier | ✅ pins this tier (no `model` → the catalog's default text model) |
 | `systemPrompt` | ✅ | ✅ |
 | `model` | ✅ | ✅ (a repo id) |
 | `effort` `"low"｜"medium"｜"high"｜"xhigh"` | ✅ Claude Code's own thinking semantics | ignored |
