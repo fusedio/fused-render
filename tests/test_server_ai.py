@@ -491,7 +491,7 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         _server_ai, "_local_relay",
-        lambda model, prompt, system_prompt, stream, body:
+        lambda model, prompt, system_prompt, stream, body, warnings=None:
             _server_ai.JSONResponse({"ok": True, "result": {
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
@@ -668,8 +668,8 @@ def test_relay_happy_path(monkeypatch):
     data = _data(resp)
     assert data["ok"] is True
     assert data["result"]["text"] == "hi there"
-    assert data["result"]["model"] == "claude-haiku-4-5-20251001"
-    assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert data["result"]["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert data["result"]["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
     # One CLI spawn: stream-json in and out (the D169 persistent-instance
     # spawn shape; --verbose is mandatory with stream-json output), the
     # prompt over stdin as a JSON user message (argv has an OS size cap),
@@ -733,7 +733,7 @@ def test_relay_options_become_reconfiguration_requests(monkeypatch):
     fake = _cli_ok(monkeypatch)
     proc = _FakeProc(turns=[_result_lines(), _result_lines()])
     _seed_session(proc)  # live instance
-    _relay({"prompt": "hello", "system_prompt": "be terse",
+    _relay({"prompt": "hello", "systemPrompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
     assert fake.calls == []  # reconfigured, not respawned
 
@@ -868,7 +868,7 @@ def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
     # or malformed block degrades to null rather than leaking through.
     _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
     usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
-    assert usage == {"input_tokens": 3, "output_tokens": 2}
+    assert usage == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
 
     for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
                 {"input_tokens": "3", "output_tokens": 2},        # wrong type
@@ -889,7 +889,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
-    assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
+    assert _data(resp)["result"]["response"]["modelId"] == "claude-sonnet-5-20250929"
 
 
 def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
@@ -916,9 +916,14 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     done = frames[-1]
     assert done["type"] == "done" and done["ok"] is True
     # Same result schema as the non-streaming response.
-    assert done["result"] == {
-        "text": "hi there", "model": "claude-haiku-4-5-20251001",
-        "usage": {"input_tokens": 3, "output_tokens": 2}}
+    result = done["result"]
+    assert result["text"] == "hi there"
+    assert result["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert result["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
+    assert result["provider"] == "claude"
+    assert result["finishReason"] == "stop" and result["warnings"] == []
+    assert set(result) == {"text", "provider", "finishReason", "warnings", "usage",
+                           "response", "providerMetadata"}
 
 
 def test_relay_stream_skips_thinking_deltas(monkeypatch):
@@ -1040,7 +1045,7 @@ def test_relay_control_error_respawns_with_argv_config(monkeypatch):
     live = _FakeProc(control_error={
         "set_model": "unexpected field: system_prompt"})
     _seed_session(live)
-    resp = _relay({"prompt": "hello", "system_prompt": "be terse",
+    resp = _relay({"prompt": "hello", "systemPrompt": "be terse",
                    "model": "claude-sonnet-5"})
     assert _data(resp)["ok"] is True
     assert live.killed  # the control error discarded the instance
@@ -1654,7 +1659,8 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
 
 
 def test_runtime_ships_ai():
-    assert "function ai(prompt, opts)" in RUNTIME
+    assert "function aiText(opts)" in RUNTIME
+    assert "text: aiText," in RUNTIME
     assert '"/api/ai"' in RUNTIME
     assert "ai," in RUNTIME  # registered on window.fused
 
@@ -1678,9 +1684,9 @@ def test_runtime_ai_streams_on_onchunk():
 
 
 def test_export_rejects_ai(tmp_path):
-    html = "<script>fused.ai('summarize this');</script>"
+    html = "<script>fused.ai.text({prompt: 'summarize this'});</script>"
     plan = plan_export(html, str(tmp_path))
-    assert any("fused.ai() is not supported on a hosted page" in e
+    assert any("fused.ai.text() is not supported on a hosted page" in e
                for e in plan.errors)
 
 

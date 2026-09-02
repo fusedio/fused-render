@@ -2278,6 +2278,14 @@ export default function NewJobModal({
   // BEFORE the upload starts, which a state updater cannot do either.
   // `applyImages` writes the ref synchronously, then mirrors.
   const imagesRef = useRef<TaskImage[]>(images);
+  // Every `blob:` thumbnail is revoked when the form unmounts — Save and Close
+  // both drop the list without walking it, and with no count or size cap a
+  // folder of photos would otherwise stay pinned in memory for the rest of the
+  // session (bugbot, #915). The ref, not the state: it is the list as of the
+  // last write, and this runs once, after the final render.
+  useEffect(() => () => {
+    for (const i of imagesRef.current) if (i.thumb) URL.revokeObjectURL(i.thumb);
+  }, []);
   const applyImages = useCallback((fn: (prev: TaskImage[]) => TaskImage[]) => {
     imagesRef.current = fn(imagesRef.current);
     setImages(imagesRef.current);
@@ -2317,8 +2325,18 @@ export default function NewJobModal({
         thumb,
       }]);
       const pending: Promise<void> = uploadTaskShot(file)
-        .then((up) => applyImages((prev) => prev.map(
-          (i) => (i.key === key ? { ...i, path: up.path, kind: up.kind } : i))))
+        .then((up) => applyImages((prev) => prev.map((i) => {
+          if (i.key !== key) return i;
+          // The server's `kind` is trusted only where the PATH it stored can be
+          // drawn: a `.tif`/`.heic` whose transcode failed (no sips, Pillow
+          // without HEIF) comes back `kind: "image"` on the original bytes,
+          // and an <img> of those is the empty box DRAWABLE_EXTS exists to
+          // avoid — so it wears the glyph and the file viewer instead
+          // (bugbot, #915). The blob thumb is kept where the browser drew one.
+          const kind = up.kind === "image" && attachmentKindOf(up.path) === "image"
+            ? "image" : (i.thumb ? "image" : "file");
+          return { ...i, path: up.path, kind };
+        })))
         .catch((e) => {
           // A failed upload takes its chip with it — an attachment on the card
           // that would not reach the task is the lie to avoid.
@@ -2337,7 +2355,16 @@ export default function NewJobModal({
   // size (the zoom class) with the box scrolling; a FILE opens in its own
   // fused-render template, which is the only answer to "is this the right file"
   // that a name cannot give (D616).
-  const [viewer, setViewer] = useState<TaskImage | null>(null);
+  // The viewer holds a KEY and reads the entry out of `images` on every render,
+  // rather than holding the entry itself: an upload finishes AFTER the click
+  // that opened its chip, and it lands `path`/`kind` in the list only — a
+  // snapshot taken at click time would sit on "uploading…" for ever, and a
+  // TIFF that came back as a PNG would stay in the file dialog (bugbot, #915).
+  const [viewerKey, setViewerKey] = useState<number | null>(null);
+  const viewer = useMemo<TaskImage | null>(
+    () => (viewerKey === null ? null
+           : images.find((i) => i.key === viewerKey) ?? null),
+    [images, viewerKey]);
   const [viewerZoom, setViewerZoom] = useState(false);
   // A file's preview: the src once the stat has answered, null for every "no
   // preview" case (no template, a pruned copy, a declining server, an upload
@@ -2347,7 +2374,7 @@ export default function NewJobModal({
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewWait, setPreviewWait] = useState(false);
   const [frameLoaded, setFrameLoaded] = useState(false);
-  const closeViewer = useCallback(() => setViewer(null), []);
+  const closeViewer = useCallback(() => setViewerKey(null), []);
   useEffect(() => {
     setPreviewSrc(null);
     setFrameLoaded(false);
@@ -2365,7 +2392,10 @@ export default function NewJobModal({
       .catch(() => { if (live) setPreviewSrc(null); })
       .finally(() => { if (live) setPreviewWait(false); });
     return () => { live = false; };
-  }, [viewer]);
+    // The three fields the stat depends on, not `viewer` itself: the object is
+    // re-derived on every `images` change (an upload landing on ANOTHER chip),
+    // and a re-stat of an unchanged file would blank a frame that was showing.
+  }, [viewer?.key, viewer?.kind, viewer?.path]);
 
   // Escape closes the VIEWER while it is up — captured at the document so the
   // modal chassis' own Escape (which would close the whole card) never sees it.
@@ -2374,7 +2404,7 @@ export default function NewJobModal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        setViewer(null);
+        setViewerKey(null);
       }
     };
     document.addEventListener("keydown", onKey, { capture: true });
@@ -3361,7 +3391,7 @@ export default function NewJobModal({
                   aria-label={img.kind === "image"
                     ? "View image" : "Preview " + img.name}
                   onClick={() => {
-                    setViewer(img);
+                    setViewerKey(img.key);
                     setViewerZoom(false);
                   }}
                 >
@@ -3381,7 +3411,7 @@ export default function NewJobModal({
                   onClick={() => {
                     if (img.thumb) URL.revokeObjectURL(img.thumb);
                     applyImages((prev) => prev.filter((i) => i.key !== img.key));
-                    setViewer((v) => (v?.key === img.key ? null : v));
+                    setViewerKey((k) => (k === img.key ? null : k));
                   }}
                 >
                   {ICON_X}

@@ -4,7 +4,7 @@
 // The other three tabs answer questions about models at rest: what is on this
 // disk, what could be, which backend would run it. None of them says whether
 // anything is actually being GENERATED — so a page stuck in a render loop
-// calling `fused.ai()` on every tick, or a chat box quietly re-asking the model
+// calling `fused.ai.text()` on every tick, or a chat box quietly re-asking the model
 // after every keystroke, looked exactly like an idle machine. The graph is what
 // makes that visible, and the shape of the bars is the finding: one prompt is a
 // spike, a runaway loop is a wall.
@@ -465,7 +465,7 @@ export default function UsageTab() {
             <div className="cc-empty am-usage-empty">
               <p>No output tokens yet.</p>
               <p>
-                Every <code>fused.ai()</code> call a page makes — and the app&apos;s own AI
+                Every <code>fused.ai.text()</code> call a page makes — and the app&apos;s own AI
                 features — is counted here while the server runs.
               </p>
             </div>

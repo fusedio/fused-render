@@ -21,7 +21,7 @@ from fastapi.responses import (
 from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
-from fused_render.server.common import _require_fused
+from fused_render.server.common import AI_PROVIDERS, _require_fused, ai_result, ai_usage_tokens
 from fused_render.shell.prefs import default_model
 
 router = APIRouter()
@@ -30,7 +30,7 @@ router = APIRouter()
 
 # --- /api/ai — inference through the Claude Code CLI --------------------------
 #
-# fused.ai(prompt, opts) lands here. The shell invokes the `claude` binary the
+# fused.ai.text({prompt, ...opts}) lands here. The shell invokes the `claude` binary the
 # user already has (Claude Code — its login is the credential) rather than
 # pages fetching a model directly: the page stays origin-clean (no API key or
 # endpoint baked into authored HTML), and the server is one place to grow
@@ -88,6 +88,11 @@ _AI_SHORT_MODEL_IDS = {
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }
+# The tiers a call can name (SPEC RH-11, D631) — `common.AI_PROVIDERS`, shared
+# with the four capability routes; the module-local alias keeps this file's
+# naming. A hosted gateway is the third entry when it arrives, and the wire
+# already carries the key it needs.
+_AI_PROVIDERS = AI_PROVIDERS
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
 # How often the remote-Claude activity row re-states itself while a call is in
@@ -133,8 +138,10 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # The slash is the SEAM (SPEC §40): a model id with an org in it names a repo on
 # disk, which means local inference, and one without it is a Claude alias. That
 # is not a heuristic — a Hub id always has the form `org/name`, and no Claude
-# alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
-# reach a local model with no new parameter and no change to any existing caller.
+# alias ever contains a slash — and it is what lets `fused.ai.text({prompt,
+# model})` reach a local model with no `provider` spelled out. Since D631
+# the shape rule is the DEFAULT, not the only route: an explicit `provider`
+# pins the tier and this function is not consulted.
 #
 # **The seam gained a second shape (D411) and this is the one place it has to
 # be spelled out, because it is genuinely not a slash-shaped id.**
@@ -155,6 +162,21 @@ _AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 def _is_local_model(model: str) -> bool:
     return "/" in model or model.lower().endswith(formats.GGUF_EXTENSION)
+
+
+def _local_default_model() -> str | None:
+    """What `provider: "local"` with no `model` runs: the catalog's default
+    text model for the runner serving this machine (`catalog.default_for`,
+    position 0 — the smallest, deliberately), or None when no text runner
+    resolves here. Lazy import, as `_images_unsupported_by_runner` does, so
+    this module keeps its import-time independence from the runtime router."""
+    from fused_render.ai import catalog, registry
+    return catalog.default_for(registry.TEXT_GENERATION)
+
+
+def _local_unavailable_reason() -> str | None:
+    from fused_render.ai import registry
+    return registry.unavailable_reason(registry.TEXT_GENERATION)
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -720,7 +742,12 @@ async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
 
 def _ai_result_payload(data: dict, requested_model: str):
     """Map a terminal `result` event to the RH-11 result payload.
-    Returns (payload, None) on success or (None, error_message)."""
+    Returns (payload, None) on success or (None, error_message).
+
+    `finishReason` is always `"stop"` here: the CLI's result event carries
+    no stop reason, and a truncated turn is not something `claude -p`
+    reports — so this is the one value that is honestly known, not a guess
+    dressed as a vocabulary."""
     try:
         text = data["result"]
     except (LookupError, TypeError):
@@ -733,8 +760,14 @@ def _ai_result_payload(data: dict, requested_model: str):
     used_model = requested_model
     if isinstance(model_usage, dict) and len(model_usage) == 1:
         used_model = next(iter(model_usage))
-    return {"text": text, "model": used_model,
-            "usage": _ai_usage(data.get("usage"))}, None
+    usage = _ai_usage(data.get("usage"))
+    payload = ai_result({"text": text}, provider="claude", model=used_model,
+                        usage=ai_usage_tokens(usage), finish_reason="stop",
+                        metadata={"seconds": _claude_seconds(data)})
+    # The counter's own vocabulary rides along under a private key the two
+    # call sites pop before replying — the wire never sees it.
+    payload["_usage"] = usage
+    return payload, None
 
 
 #: Who may speak in a supplied history. Deliberately not "system" — the system
@@ -751,11 +784,69 @@ _HISTORY_ROLES = ("user", "assistant")
 #: an unbounded token budget is not one caller's slow request — it is every
 #: other caller blocked behind it. 32k is past any chat turn and short of "this
 #: laptop is busy until you notice".
+# Wire names are the PAGE's names — camelCase, as on every other `/api/ai/*`
+# route (D633). `runtime.js` used to rename these to snake_case on the way in
+# and the worker still speaks snake; the one rename now happens where the
+# worker request is built (`_local_relay`), not at the bridge.
 _SAMPLING = {
     "temperature": (0.0, 2.0),
-    "top_p": (0.0, 1.0),
-    "max_tokens": (1, 32768),
+    "topP": (0.0, 1.0),
+    "maxTokens": (1, 32768),
 }
+#: The closed envelope of `/api/ai` (D413's rule, extended to text by D633):
+#: an unrecognised key is a 400 naming it, checked before any other field —
+#: the same asymmetry as the other four routes, where `base` is bridge-
+#: injected (the page's own `?path=`, for relative `images`) and not a
+#: caller-facing option.
+_TEXT_OPTIONS = frozenset({
+    "prompt", "provider", "model", "systemPrompt", "effort", "history", "raw",
+    "images", "temperature", "maxTokens", "topP"})
+_TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
+
+
+# The wire name of each sampling knob -> the option name a PAGE wrote
+# (`runtime.js` maps camelCase to snake_case on the way in), so a warning
+# names the thing the author can find in their own code.
+_OPTION_NAMES = {"temperature": "temperature", "maxTokens": "maxTokens",
+                 "topP": "topP", "effort": "effort"}
+
+
+def _unsupported(setting: str, tier: str, why: str) -> dict:
+    """One `warnings[]` entry (RH-11, D631): a well-formed option this tier
+    cannot honour, DROPPED and reported rather than refused.
+
+    The shape follows the AI SDK's `unsupported-setting` warning so a page
+    reads one vocabulary for it. This is the declared-support model the
+    provider design called for: with N tiers × M knobs, "400 on anything a
+    tier lacks" stops scaling and starts hiding real errors behind tunables.
+    It applies to TUNABLES only — a knob whose absence changes quality, not
+    meaning. `history`, `raw` and `images` stay 400s on the Claude tier:
+    dropping those answers a different question than the one asked, which
+    is not a degraded answer but a wrong one.
+    """
+    return {"type": "unsupported-setting",
+            "setting": _OPTION_NAMES.get(setting, setting),
+            "message": f"{_OPTION_NAMES.get(setting, setting)!r} is not "
+                       f"supported by the {tier} tier and was ignored — {why}"}
+
+
+def _local_finish_reason(event: dict, body: dict) -> str:
+    """Why a local generation stopped, from its terminal frame.
+
+    `cancelled` when the worker says so; `length` when it produced exactly
+    the `max_tokens` the caller set (the worker has no stop-reason field of
+    its own, so hitting the cap IS the signal — a reply that stopped one
+    token short of it stopped on its own); `stop` otherwise. Vocabulary is
+    the AI SDK's `finishReason` subset this app can actually observe.
+    """
+    if event.get("cancelled"):
+        return "cancelled"
+    limit = body.get("maxTokens")
+    tokens = event.get("tokens")
+    if (isinstance(limit, int) and not isinstance(limit, bool)
+            and isinstance(tokens, int) and tokens >= limit):
+        return "length"
+    return "stop"
 
 
 def _sampling_problem(body: dict) -> str | None:
@@ -792,13 +883,35 @@ def _images_problem(images) -> str | None:
     beside `history`'s and `raw`'s own refusals, and this only checks the
     SHAPE: a list of non-empty strings, under the cap."""
     if not isinstance(images, list):
-        return "'images' must be a list of absolute file paths"
+        return "'images' must be a list of file paths"
     if len(images) > _MAX_IMAGES:
         return f"'images' may not carry more than {_MAX_IMAGES} paths"
     for index, path in enumerate(images):
         if not isinstance(path, str) or not path:
             return f"'images[{index}]' must be a non-empty string"
     return None
+
+
+def _resolve_images(images: list, base) -> tuple[list | None, str | None]:
+    """Page-relative `images`, the rule every other file input on this
+    surface follows (RH-1, D633): a relative path resolves against the
+    directory of `base`, the calling page's own absolute path, which the
+    bridge injects; an absolute path passes through untouched. Before this,
+    text was the one verb whose file input had to be absolute."""
+    resolved = []
+    for path in images:
+        path = os.path.expanduser(path)
+        # An absolute path passes through UNTOUCHED — not through abspath(),
+        # which on Windows would rewrite a POSIX-rooted "/Users/x/a.png" to
+        # "D:\\Users\\x\\a.png" (CI caught exactly that). Only a relative
+        # path is joined and normalised.
+        if not os.path.isabs(path):
+            if not isinstance(base, str) or not os.path.isabs(base):
+                return None, ("'images' must be absolute, or relative to a page "
+                              "named by 'base'")
+            path = os.path.abspath(os.path.join(os.path.dirname(base), path))
+        resolved.append(path)
+    return resolved, None
 
 
 def _images_unsupported_by_runner(model: str) -> str | None:
@@ -915,7 +1028,7 @@ def _local_usage(event: dict) -> dict:
 
 
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
-                 body: dict):
+                 body: dict, warnings: list | None = None):
     """One completion from a model resident on THIS machine (SPEC §40).
 
     Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
@@ -945,9 +1058,11 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # `prompt` — so this is only set when the caller asked for raw.
         **({"prompt": prompt} if body.get("raw") else {}),
         "messages": messages,
-        "max_tokens": body.get("max_tokens"),
+        # The worker's vocabulary is snake_case; the wire's is the page's
+        # camelCase (D633). This is the one place the two meet.
+        "max_tokens": body.get("maxTokens"),
         "temperature": body.get("temperature"),
-        "top_p": body.get("top_p"),
+        "top_p": body.get("topP"),
         # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
         # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
         # VLM's chat template is told `num_images` and asking about two
@@ -1118,8 +1233,9 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                 tick(state="error", done=count, total=None,
                      message="generation stopped before it finished")
 
+    warnings = list(warnings or [])
     if not stream:
-        text, usage = [], {}
+        text, usage, finish = [], {}, "stop"
         for event in walk():
             if event.get("type") == "chunk":
                 text.append(event.get("text") or "")
@@ -1129,12 +1245,15 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                                       str(event.get("error") or "generation failed"),
                                       status=502)
                 usage = _local_usage(event)
+                finish = _local_finish_reason(event, body)
         # The counter is fed the SAME dict the caller is about to read (AI-12),
         # here and at the three other terminal frames — so the graph and the
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
-        return JSONResponse(
-            {"ok": True, "result": {"text": "".join(text), "model": model, "usage": usage}})
+        return JSONResponse({"ok": True, "result": ai_result(
+            {"text": "".join(text)}, provider="local", model=model,
+            usage=ai_usage_tokens(usage), finish_reason=finish, warnings=warnings,
+            request_id=job, metadata={"seconds": usage.get("seconds")})})
 
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
@@ -1168,9 +1287,12 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                         ai_metrics.record_failure(model, "ai_error")
                     yield json.dumps({
                         "type": "done", "ok": ok,
-                        **({"result": {
-                            "text": "".join(text), "model": model,
-                            "usage": usage}}
+                        **({"result": ai_result(
+                            {"text": "".join(text)}, provider="local", model=model,
+                            usage=ai_usage_tokens(usage),
+                            finish_reason=_local_finish_reason(event, body),
+                            warnings=warnings, request_id=job,
+                            metadata={"seconds": usage.get("seconds")})}
                            if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
@@ -1202,6 +1324,19 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     request pinned to one session even if another app build reassigns the
     global while this request is in flight. Callers with no app handle
     (direct module-level calls, tests) fall back to `_AI_SESSION`."""
+    # The envelope is CLOSED, checked before any field (D413's rule, D633):
+    # a page that mistyped an option learns about the option it does not
+    # have, not about the field it also got wrong — and never watches a
+    # `systemprompt` silently do nothing. Same message shape as the four
+    # capability routes' `_reject_unknown`.
+    unknown = sorted(k for k in body if k not in _TEXT_SERVER_OPTIONS)
+    if unknown:
+        named = ", ".join(repr(k) for k in unknown)
+        verb = "is not an option" if len(unknown) == 1 else "are not options"
+        return _ai_error(
+            "bad_request",
+            f"{named} {verb} of /api/ai; accepted: {', '.join(sorted(_TEXT_OPTIONS))}",
+            status=400)
     session = session if session is not None else _AI_SESSION
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1222,14 +1357,53 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     # `default_model` is module-level so the mapping is the only thing between
     # the pref and argv — an unmapped value falls through to the default rather
     # than being passed along.
+    # Which tier serves the call (SPEC RH-11, D631). Explicit `provider` pins
+    # it; omitted, the model's SHAPE picks it (`_is_local_model`): a repo id
+    # or GGUF filename is weights on this machine, anything else a Claude
+    # alias. For the two tiers that exist the shape rule IS the tier walk
+    # local -> claude, because the Claude alias set is closed and slash-free
+    # so no id can sit in both — the field earns its keep the day a tier
+    # arrives whose ids LOOK like repo ids (a hosted gateway's do), and it is
+    # on the wire now so that day adds a value, not a key.
+    provider = body.get("provider")
+    if provider is not None and provider not in _AI_PROVIDERS:
+        return _ai_error(
+            "bad_request",
+            "'provider' must be one of: %s" % ", ".join(_AI_PROVIDERS),
+            status=400)
+    # `provider: "local"` with no model means the LOCAL default — the catalog's
+    # position-0 text model for whichever runner serves this machine (the
+    # same answer a bare AI Models page load gives) — never the Claude chain
+    # below, whose every entry is a Claude id. Owner's call: the three
+    # omitted-model cases are (none, none) -> Claude + haiku, ("claude",
+    # none) -> haiku, ("local", none) -> the catalog default.
+    if provider == "local" and model is None:
+        model = _local_default_model()
+        if not model:
+            return _ai_error(
+                "ai_unavailable",
+                _local_unavailable_reason()
+                or "no local text model is available on this machine",
+                status=409)
     model = model or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
+    # The other direction: a repo id or GGUF filename is not something the
+    # Claude CLI can run, and passing it through would surface as the CLI's
+    # own "unknown model" a subprocess hop later. Refused here, naming the
+    # tier that WOULD take it.
+    if provider == "claude" and _is_local_model(model):
+        return _ai_error(
+            "bad_request",
+            f"'provider': 'claude' cannot run {model!r}: a repo id or .gguf "
+            "filename is weights on this machine — drop 'provider' or send "
+            "'local'",
+            status=400)
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORTS:
         return _ai_error(
             "bad_request",
             "'effort' must be one of: %s" % ", ".join(_AI_EFFORTS),
             status=400)
-    system_prompt = body.get("system_prompt")
+    system_prompt = body.get("systemPrompt")
     if not (isinstance(system_prompt, str) and system_prompt):
         system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
 
@@ -1271,6 +1445,10 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
         problem = _images_problem(images)
         if problem:
             return _ai_error("bad_request", problem, status=400)
+        images, problem = _resolve_images(images, body.get("base"))
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+        body = {**body, "images": images}
     # `raw` and `images` refuse each other, the same shape as `raw`/`history`
     # above and for the same underlying reason: `raw` means "no chat template
     # at all", and the image placeholder tokens a picture needs are inserted
@@ -1295,16 +1473,26 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
 
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
-    # everything below this line is the Claude CLI's own path.
-    if _is_local_model(model):
+    # everything below this line is the Claude CLI's own path. An explicit
+    # provider decides; only an omitted one falls back to the model's shape.
+    # Options a tier cannot honour are DROPPED and reported in the result's
+    # `warnings[]` (RH-11, `_unsupported`) — for tunables. The semantic flags
+    # (`history`, `raw`, `images`) stay refusals on the Claude tier below.
+    warnings: list[dict] = []
+    if provider == "local" or (provider is None and _is_local_model(model)):
+        if effort is not None:
+            warnings.append(_unsupported(
+                "effort", "local",
+                "a local model has no thinking budget to set; use "
+                "'temperature' / 'maxTokens' / 'topP'"))
         # Sampling is checked INSIDE this branch, not above it, and the reason
         # is which sentence a bad value earns. These parameters do not exist on
         # the Claude path at all, so range-checking them first meant a
         # `temperature: 5.0` sent to Claude was answered "must be between 0.0
         # and 2.0" — an error that invites the caller to correct a number and
-        # try again, on a path where no number would ever work. The refusal
-        # below is the true one, and it must not be pre-empted by a message that
-        # implies support.
+        # try again, on a path where no number would ever work. On the Claude
+        # tier they are now a WARNING, not a 400 (see `_unsupported`), and the
+        # range check still belongs here, where the numbers are actually used.
         #
         # Bounded at all for the reason the image endpoint clamps its own
         # numbers: `max_tokens` is how long this machine is busy, and one
@@ -1336,7 +1524,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
         # that long. (The StreamingResponse it returns is fine — Starlette
         # iterates a sync generator in a threadpool of its own.)
         return await asyncio.to_thread(
-            _local_relay, model, prompt, system_prompt, bool(stream), body)
+            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings)
 
     # Refused rather than dropped. The Claude path is one `claude -p` invocation
     # with no conversation to resume, so honouring history would mean inventing
@@ -1376,18 +1564,18 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
             f"{model!r}, which cannot be handed a picture",
             status=400)
 
-    # Fourth flag, same rule. The Claude CLI exposes no sampling knobs at all —
-    # `effort` is what it has — so a temperature accepted here would be a
-    # setting the caller could watch have no effect, which is the failure mode
-    # `history`, `raw` and `images` are refused for.
-    named = [name for name in _SAMPLING if body.get(name) is not None]
-    if named:
-        return _ai_error(
-            "bad_request",
-            f"{', '.join(repr(n) for n in named)} only applies to a local model "
-            "(a Hugging Face repo id, e.g. 'mlx-community/Qwen3-8B-4bit'); "
-            f"this call would go to {model!r}, which takes 'effort' instead",
-            status=400)
+    # Sampling knobs are the OTHER kind of option: tunables, not semantics.
+    # The Claude CLI exposes none of them — `effort` is what it has — so each
+    # one present is dropped and reported in `warnings[]` rather than refused
+    # (D631, reversing the 400 this branch used to answer). A page can still
+    # tell the setting had no effect; it reads it in the result instead of
+    # losing the call over it, which is what lets one page carry sampling
+    # options across tiers without a per-tier branch.
+    for name in _SAMPLING:
+        if body.get(name) is not None:
+            warnings.append(_unsupported(
+                name, "claude", "the Claude CLI exposes 'effort' and no "
+                "sampling knobs"))
 
     if not _claude_bin():
         return _ai_failed(
@@ -1598,13 +1786,19 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
                 _report_remote(state="error", message=str(exc))
                 return _ai_failed(model, "ai_error", str(exc))
             payload, err = _ai_result_payload(data, model)
+            if payload is not None:
+                # Merged HERE rather than passed in: the payload builder keeps
+                # its two-argument shape (tests stand in for it by arity).
+                payload["warnings"] = list(warnings)
+                payload["response"]["id"] = _remote_job
+                _usage_internal = payload.pop("_usage", None)
             if err is not None:
                 _report_remote(state="error", message=err)
                 return _ai_failed(model, "ai_error", err)
             # Under the RESOLVED id, not the alias the caller sent: "opus" and
             # "claude-opus-5" are one model and must not be two rows in the
             # breakdown. `_ai_result_payload` already did that resolution.
-            ai_metrics.record(payload["model"], payload["usage"],
+            ai_metrics.record(payload["response"]["modelId"], _usage_internal,
                               _claude_seconds(data))
             _finish_remote_job()
             return JSONResponse({"ok": True, "result": payload})
@@ -1691,13 +1885,19 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
                     "type": "ai_error", "message": str(exc)}}) + "\n"
                 return
             payload, err = _ai_result_payload(data, model)
+            if payload is not None:
+                # Merged HERE rather than passed in: the payload builder keeps
+                # its two-argument shape (tests stand in for it by arity).
+                payload["warnings"] = list(warnings)
+                payload["response"]["id"] = _remote_job
+                _usage_internal = payload.pop("_usage", None)
             if err is not None:
                 ai_metrics.record_failure(model, "ai_error")
                 _report_remote(state="error", message=err)
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": err}}) + "\n"
                 return
-            ai_metrics.record(payload["model"], payload["usage"],
+            ai_metrics.record(payload["response"]["modelId"], _usage_internal,
                               _claude_seconds(data))
             _finish_remote_job()
             yield json.dumps(
@@ -1796,7 +1996,7 @@ async def shutdown_ai_session(app=None):
 @router.post("/api/ai")
 async def api_ai(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None)):
-    # fused.ai() — validation and the claude CLI hop live in _ai_relay
+    # fused.ai.text() — validation and the claude CLI hop live in _ai_relay
     # (module-level so tests can drive it with the subprocess mocked).
     # `request.app.state.ai_session` is THIS app's own session, stashed by
     # `prewarm_ai(app)` at startup — not the module global, which a second,

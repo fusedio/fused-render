@@ -7,7 +7,11 @@ top-level `.html` next to it — one entry file is what makes the folder open
 as an app). Keep the `<meta name="fused-app" />` tag near the top of its
 `<head>`: the marker is the ONLY thing that identifies this page as a fused
 app's entry — without it the app disappears from the apps hub (detection reads
-only the first 4 KiB of the file, so keep the tag near the top).
+only the first 4 KiB of the file, so keep the tag near the top). Right after
+it sits `<meta name="fused-api-version" content="N" />` — the version of the
+`fused` page API this app was written against. Leave it as is; the app page
+offers a "Migrate" task that updates the code and the tag together when the
+API moves on. A page without the tag is version 0.
 
 The page runs inside the explorer, which injects a `fused` runtime bridge:
 `fused.params` (URL-synced view state), `fused.runPython("./file.py", args)`

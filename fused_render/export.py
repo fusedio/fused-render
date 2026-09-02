@@ -93,11 +93,16 @@ _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITER
 # entry maps to the reason a hosted page can't have it (writeFile/stat: no
 # filesystem behind a served artifact; ai: it runs the claude CLI on the
 # author's own machine, which a hosted page can't reach).
-_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai)\s*\(")
+# `ai.text`, not `ai`: since D631 `fused.ai` is a namespace and text is a verb
+# on it like image/transcribe/embed. Only the text verb is caught, as only the
+# bare call was before — the other dotted calls stay a `fused.env` gating
+# obligation (docs/EXPORT.md, an open call rather than an oversight).
+_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai\.text)\s*\(")
 _UNSUPPORTED_REASON = {
     "writeFile": "a served artifact is immutable and has no filesystem",
     "stat": "a served artifact is immutable and has no filesystem",
-    "ai": "it runs the claude CLI on the local machine, which a hosted page cannot reach",
+    "ai.text": "it runs the claude CLI, or a model resident on the local machine, "
+               "neither of which a hosted page can reach",
 }
 
 # Bundle v2 payload directory. Every bundled file lives at ``<PAYLOAD>/<page-relative

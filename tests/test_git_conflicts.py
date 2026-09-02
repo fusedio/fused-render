@@ -450,7 +450,7 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     assert "&& window._fusedAskClaude(" in fn
     assert "if (!delivered) {" in fn
     # It must NOT call fused.ai itself — that is the whole point of the change.
-    assert "fused.ai(" not in fn
+    assert "fused.ai.text(" not in fn
 
 
 def test_a_missing_ancestor_hook_is_a_visible_failure_not_a_silent_one():
