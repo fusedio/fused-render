@@ -3376,6 +3376,210 @@ def test_a_bogus_env_value_degrades_to_the_gate_being_on(fake_runner, monkeypatc
         supervisor.load("org/new-text", registry.TEXT_GENERATION)
 
 
+def test_a_first_load_bigger_than_the_budget_proceeds_when_nothing_is_resident(
+        fake_runner, monkeypatch):
+    """The 8/13/16/20GB catalog rows on a 16GB machine (~8GB budget): with
+    `_workers` empty, there is no cross-capability contention for the gate to
+    referee, only an estimate that this one model might not fit on its own —
+    exactly the case `llama_text._offload_schedule` and diffusers group
+    offload already exist to run through. Refusing here is pure regression:
+    the load used to be attempted (and often succeeded, weights mmapped
+    file-backed or offloaded) and must still be attempted, not refused
+    outright with "unload something first" while nothing is loaded."""
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 8_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (16_100_000_000, "download"))
+    assert not supervisor._workers
+    supervisor.load("org/oversized-text", registry.TEXT_GENERATION)
+    _wait_ready("org/oversized-text")
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/oversized-text"
+
+
+def test_a_recently_active_worker_is_not_evicted_as_the_lru(fake_runner, monkeypatch):
+    """`_is_idle`'s own idle window, not merely `ready` with nothing in
+    flight — a worker a user was on ten seconds ago is not "idle" in any
+    sense that survives the chat/image ping-pong the module docstring's
+    coexistence promise is written against. Refusing the load here (there IS
+    something committed: the recent worker) is the honest answer; silently
+    evicting a warm model a human just used is not."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    recent = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                          model="org/recent-image",
+                          last_activity=time.monotonic() - 10)
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    assert supervisor._workers[registry.IMAGE_GENERATION] is recent
+
+
+def test_same_capability_replace_is_now_checked_against_other_capabilities(
+        fake_runner, monkeypatch):
+    """A same-capability reload used to free its own slot and spawn
+    unconditionally, running no budget check at all — so a 2GB image model
+    warm beside a text model, switched to a bigger text model, landed in
+    exactly the memory storm the gate exists to prevent. The switch is
+    refused instead: the image model is not idle long enough to evict, and
+    the replacement does not fit without it."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 5)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    footprint_of = {"org/text-a": 8_000_000_000, "org/image-a": 2_000_000_000,
+                    "org/text-b": 9_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    text_a = _idle_worker(monkeypatch, capability=registry.TEXT_GENERATION,
+                          model="org/text-a", last_activity=time.monotonic())
+    image_a = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                           model="org/image-a", last_activity=time.monotonic())
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/text-b", registry.TEXT_GENERATION)
+    # Refused BEFORE anything was mutated: the original text worker is
+    # still exactly the one resident, not stranded in `_draining` and not
+    # replaced by a half-started worker for the refused model.
+    assert supervisor._workers[registry.TEXT_GENERATION] is text_a
+    assert supervisor._workers[registry.IMAGE_GENERATION] is image_a
+
+
+def test_same_capability_replace_credits_the_outgoing_models_bytes(
+        fake_runner, monkeypatch):
+    """The outgoing worker's bytes are reclaimable and must be credited, not
+    double-counted alongside the incoming model — an 8GB audio model stays
+    warm and untouched while a 2GB text model replaces a 1GB one, which
+    only fits because the 1GB outgoing text worker is excluded from
+    `committed` rather than summed in on top of the incoming 2GB."""
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    footprint_of = {"org/audio": 8_000_000_000, "org/text-a": 1_000_000_000,
+                    "org/text-b": 2_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    audio = _idle_worker(monkeypatch, capability=registry.SPEECH_TO_TEXT,
+                         model="org/audio", last_activity=time.monotonic() - 999)
+    _idle_worker(monkeypatch, capability=registry.TEXT_GENERATION,
+                model="org/text-a", last_activity=time.monotonic())
+    supervisor.load("org/text-b", registry.TEXT_GENERATION)
+    _wait_ready("org/text-b")
+    assert supervisor._workers[registry.SPEECH_TO_TEXT] is audio
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/text-b"
+
+
+def test_a_ready_workers_live_resident_bytes_is_credited_over_its_peak_estimate(
+        fake_runner, monkeypatch):
+    """`_predicted_footprint` answers off a past run's PEAK, which
+    systematically over-counts a worker that has since settled to a lower
+    steady state. A `ready` worker's live, continuously-polled
+    `resident_bytes` is the real figure once it is up, so a load that only
+    fits when the warm worker is charged its live 1GB (not its 8GB peak)
+    must succeed without evicting anything."""
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    footprint_of = {"org/warm": 8_000_000_000, "org/new-text": 5_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    warm = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                        model="org/warm", last_activity=time.monotonic(),
+                        resident_bytes=1_000_000_000)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert supervisor._workers[registry.IMAGE_GENERATION] is warm
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/new-text"
+
+
+def test_predicted_footprint_threads_kv_geometry_kwargs_through_to_fit(monkeypatch):
+    """`server/routers/ai_runtime.py`'s `_kv_geometry_kwargs` feeds the AI
+    Models page's fit badge; `_predicted_footprint` must feed `fit.
+    footprint_bytes` the identical geometry (and the identical q8_0 dtype
+    rule for a llama.cpp runner) or the two can name different footprints
+    for the same text model."""
+    from fused_render.ai import hub_metadata
+
+    monkeypatch.setattr(hub_metadata, "cached", lambda repo: {
+        "numHiddenLayers": 32, "numKeyValueHeads": 8, "numAttentionHeads": 32,
+        "headDim": 128, "hiddenSize": 4096,
+    })
+    captured = {}
+
+    def fake_footprint_bytes(capability, model, *a, **kw):
+        captured.update(kw)
+        return 1_000_000_000, "download"
+
+    monkeypatch.setattr(fit, "footprint_bytes", fake_footprint_bytes)
+    supervisor._predicted_footprint(registry.TEXT_GENERATION, "org/gguf-model",
+                                    None, "llamacpp-text")
+    assert captured["num_hidden_layers"] == 32
+    assert captured["num_key_value_heads"] == 8
+    assert captured["num_attention_heads"] == 32
+    assert captured["head_dim"] == 128
+    assert captured["hidden_size"] == 4096
+    assert captured["kv_dtype"] == "q8_0"
+
+
+def test_predicted_footprint_omits_kv_dtype_for_a_non_llamacpp_runner(monkeypatch):
+    """`kv_dtype="q8_0"` is specific to the llama.cpp KV cache — a runner
+    that caches at fp16 must not have that override forced onto it."""
+    from fused_render.ai import hub_metadata
+
+    monkeypatch.setattr(hub_metadata, "cached", lambda repo: {"numHiddenLayers": 32})
+    captured = {}
+
+    def fake_footprint_bytes(capability, model, *a, **kw):
+        captured.update(kw)
+        return 1_000_000_000, "download"
+
+    monkeypatch.setattr(fit, "footprint_bytes", fake_footprint_bytes)
+    supervisor._predicted_footprint(registry.TEXT_GENERATION, "org/mlx-model",
+                                    None, "mlx-text")
+    assert "kv_dtype" not in captured
+
+
+def test_refusal_names_a_still_loading_worker_rather_than_unload_something(
+        fake_runner, monkeypatch):
+    """A `downloading`/`loading` worker counts toward `committed` but can
+    never be a candidate (only `ready` workers are) — so "unload something
+    first" names a blocker the caller has no unload button for. The message
+    must name the actual blocker and say to retry, not tell the user to
+    unload the one thing they cannot."""
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/still-loading", state="loading",
+                last_activity=time.monotonic())
+    with pytest.raises(supervisor.SupervisorError) as excinfo:
+        supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    message = str(excinfo.value)
+    assert "org/still-loading" in message
+    assert "unload something first" not in message
+
+
+def test_a_budget_evicted_worker_reports_an_identifiable_job_row(
+        fake_runner, monkeypatch):
+    """The victim's own job row, from whenever IT loaded, is long gone by
+    the time the budget gate evicts it hours later — `jobs.upsert` refuses
+    to create a row with no `title`, and `_report` swallows that error, so
+    without a title the eviction reported NOTHING at all. Passing
+    `title=victim.model` is what makes the report actually land."""
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    victim = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                          model="org/stale-image",
+                          last_activity=time.monotonic() - 999)
+    assert not any(j["id"] == supervisor.job_id_for(victim.model)
+                  for j in jobs.list_jobs())
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    row = next(j for j in jobs.list_jobs()
+              if j["id"] == supervisor.job_id_for(victim.model))
+    assert row["title"] == "org/stale-image"
+
+
 def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
         fake_runner, monkeypatch):
     """C1 tightened `_bring_up`'s health-poll sleep from 0.5s to 0.1s for load
@@ -3505,14 +3709,16 @@ def test_in_use_nests_without_losing_track(fake_runner):
 
 
 def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
-                 capability=registry.TEXT_GENERATION, model="org/idle"):
+                 capability=registry.TEXT_GENERATION, model="org/idle",
+                 resident_bytes=None, runner_code="fake-text"):
     """A `ready` worker planted directly in `_workers`, the same shortcut
     `test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served` uses — no
     process, so `_terminate` is stubbed the same way."""
     monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
     worker = supervisor.Worker(model=model, capability=capability,
-                               runner_code="fake-text", token="t", state=state,
-                               last_activity=last_activity, in_flight=in_flight)
+                               runner_code=runner_code, token="t", state=state,
+                               last_activity=last_activity, in_flight=in_flight,
+                               resident_bytes=resident_bytes)
     monkeypatch.setitem(supervisor._workers, capability, worker)
     return worker
 
