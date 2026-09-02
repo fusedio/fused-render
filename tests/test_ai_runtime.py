@@ -3264,6 +3264,118 @@ def test_unload_all_waits_for_an_in_progress_eviction_to_finish_draining(
         t.join(timeout=5)
 
 
+# -- the pre-spawn memory budget gate ----------------------------------------
+#
+# The module docstring's coexistence promise ("a text model and an image
+# model coexist because they are different capabilities") holds only while
+# both actually fit. These drive `_start_resident`'s cross-capability path
+# with `fit.available_budget_bytes`/`fit.footprint_bytes` stubbed to known
+# numbers — the arithmetic is `fit`'s, already covered on its own; this is
+# about the SUPERVISOR deciding, atomically, what to evict before it spawns.
+
+
+def test_two_models_that_fit_both_stay_warm(fake_runner, monkeypatch):
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 100_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (1_000_000_000, "measured"))
+    already_warm = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                                model="org/already-warm",
+                                last_activity=time.monotonic())
+    supervisor.load("org/second", registry.TEXT_GENERATION)
+    _wait_ready("org/second")
+    assert supervisor._workers[registry.IMAGE_GENERATION] is already_warm
+    assert supervisor._workers[registry.TEXT_GENERATION].model == "org/second"
+
+
+def test_a_load_that_does_not_fit_evicts_the_lru_idle_worker(fake_runner, monkeypatch):
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    victim = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                          model="org/stale-image",
+                          last_activity=time.monotonic() - 999)
+    supervisor._report(supervisor.job_id_for(victim.model), title=victim.model,
+                       state="running", kind="task")
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert registry.IMAGE_GENERATION not in supervisor._workers
+    row = next(j for j in jobs.list_jobs()
+              if j["id"] == supervisor.job_id_for(victim.model))
+    assert "org/new-text" in row["detail"]
+
+
+def test_a_busy_worker_is_never_evicted_even_as_the_lru(fake_runner, monkeypatch):
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (9_000_000_000, "measured"))
+    busy = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                        model="org/busy-image",
+                        last_activity=time.monotonic() - 999, in_flight=1)
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    assert supervisor._workers[registry.IMAGE_GENERATION] is busy
+
+
+def test_only_as_many_workers_as_needed_are_evicted(fake_runner, monkeypatch):
+    # 15GB budget, 10GB already committed (two 5GB idle models) — an
+    # incoming 6GB model is 1GB short, which evicting the LRU alone (5GB)
+    # already covers.
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 15_000_000_000.0)
+    footprint_of = {"org/a": 5_000_000_000, "org/b": 5_000_000_000,
+                    "org/new-text": 6_000_000_000}
+    monkeypatch.setattr(
+        fit, "footprint_bytes",
+        lambda capability, model, *a, **kw: (footprint_of[model], "measured"))
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION, model="org/a",
+                 last_activity=time.monotonic() - 999)
+    newer = _idle_worker(monkeypatch, capability=registry.SPEECH_TO_TEXT, model="org/b",
+                         last_activity=time.monotonic() - 10)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert registry.IMAGE_GENERATION not in supervisor._workers
+    assert supervisor._workers[registry.SPEECH_TO_TEXT] is newer
+
+
+def test_when_evicting_everything_idle_still_is_not_enough_the_load_is_refused(
+        fake_runner, monkeypatch):
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (50_000_000_000, "measured"))
+    idle = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                        model="org/idle-image",
+                        last_activity=time.monotonic() - 999)
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/huge-text", registry.TEXT_GENERATION)
+    # Refusing is deliberate: nothing is evicted for a load that was going to
+    # be refused anyway.
+    assert supervisor._workers[registry.IMAGE_GENERATION] is idle
+
+
+def test_the_env_knob_disables_the_gate(fake_runner, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_AI_MEMORY_GATE", "0")
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (50_000_000_000, "measured"))
+    busy = _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                        model="org/busy-image",
+                        last_activity=time.monotonic() - 999, in_flight=1)
+    supervisor.load("org/new-text", registry.TEXT_GENERATION)
+    _wait_ready("org/new-text")
+    assert supervisor._workers[registry.IMAGE_GENERATION] is busy
+
+
+def test_a_bogus_env_value_degrades_to_the_gate_being_on(fake_runner, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_AI_MEMORY_GATE", "banana")
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 10_000_000_000.0)
+    monkeypatch.setattr(fit, "footprint_bytes",
+                        lambda *a, **kw: (50_000_000_000, "measured"))
+    _idle_worker(monkeypatch, capability=registry.IMAGE_GENERATION,
+                model="org/busy-image",
+                last_activity=time.monotonic() - 999, in_flight=1)
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.load("org/new-text", registry.TEXT_GENERATION)
+
+
 def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
         fake_runner, monkeypatch):
     """C1 tightened `_bring_up`'s health-poll sleep from 0.5s to 0.1s for load
