@@ -2,6 +2,44 @@
 
 Source: shared artifact 659284ce-6996-48e9-8f7e-170ac18fab4f
 
+**SUPERSEDED IN PART — see `DECISIONS.md` (D633 and the Task 2 note
+following it) for the full record.** Read this plan for Task 1's original
+reasoning, but treat the following as corrected or overtaken, not as
+written below:
+
+* **Task 1 shipped with one more exclusion than this plan specced.**
+  `enable_group_offload`'s `exclude_modules` also drops `text_encoder`
+  (when the pipeline has one), not just `vae` — the klein recipe's
+  bitsandbytes NF4 text encoder keeps its dequantization state
+  (`quant_state`) as a plain Python attribute invisible to `ModuleGroup`,
+  which group offload's onload path would move `.data` without ever
+  calling `Params4bit.to()` for, producing a device-mismatch crash on the
+  first forward. A `Qwen3ForCausalLM`'s direct children are also not
+  `ModuleList`s, so block-level offload would buy nothing there even
+  without the crash. This plan's Task 1 section below does not mention
+  this component at all.
+* **Task 2, disk residency via `offload_to_disk_path`, is CANCELLED as
+  specced here — not merely gated on the hardware run this plan asks for.**
+  This plan's own risk note (below, "Quantized weights may not survive the
+  disk round-trip") correctly flagged a correctness risk for quantized
+  weights, but understated the memory finding: the text encoder excluded
+  above is the DOMINANT component of the measured 11.7 GiB idle baseline
+  (7.5GB bf16 / ~3.75GB NF4, against a 2.6GB GGUF transformer and a 0.17GB
+  VAE) and, being excluded from group offload entirely, could never reach
+  `offload_to_disk_path` regardless of how the gate below turns out. The
+  safe subset this task could ever apply to — the GGUF transformer alone —
+  does not move the number the maintainer cares about. Do not implement
+  Task 2 as written below.
+* **What happens instead is not yet decided.** Freeing the text encoder
+  after `encode_prompt` (compute embeddings once, drop the module, reload
+  from the HF cache on the next render) was investigated as a way to reach
+  the dominant component, but is not the chosen direction — the maintainer
+  wants disk-backed mmap residency instead, the same shape MLX already gets
+  for its own models. Whether that is achievable for this pipeline's
+  quantized components (a GGUF transformer, a bnb NF4 text encoder) is a
+  separate, open investigation. Task 3 (forwarding placement through the
+  supervisor, D632) is unaffected by any of this and already shipped.
+
 Group-Offload Placement 
  Implementation plan · fused-render
  Group-offload placement for the diffusers image runner
