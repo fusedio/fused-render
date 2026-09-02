@@ -47,8 +47,15 @@
  *     listeners (see the preview note on start()/stop() below; watch()
  *     itself is read-only like status(), so it is not rejected, just kept
  *     inert).
+ *   EVERY fused.ai verb resolves with ONE frame (D632) plus its own payload:
+ *     {provider, finishReason, warnings, usage, response: {id, modelId,
+ *      timestamp}, providerMetadata: {<provider>: {...}}, ...payload}
+ *     Learn it once. `response.modelId` is the id that actually ran (there is
+ *     no top-level `model`); nothing you passed is echoed back at top level —
+ *     what the server snapped, clamped or invented (seed, size, steps, file
+ *     paths, seconds) is under providerMetadata[provider].
  *   fused.ai.text({prompt, ...opts})
- *     -> Promise<{text, model, usage, provider, finishReason, warnings}>
+ *     -> Promise<{text, ...frame}>  usage: {inputTokens, outputTokens, totalTokens}
  *     Text is ONE capability among five (image, video, transcribe, embed), so
  *     it is a verb like the others and takes ONE options object like the
  *     others — `prompt` is a field, not a positional argument, exactly as
@@ -84,11 +91,9 @@
  *     verb on fused.ai takes it; on the job-backed ones it cancels the job.
  *     fused.ai.cancel() remains the capability-wide form.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
- *     (Claude Code) CLI or a resident local model. Resolves with exactly
- *     {text: string, model: full model id that ran, usage: {input_tokens,
- *     output_tokens} | null, provider: "local" | "claude", finishReason,
- *     warnings: []} — Anthropic-style
- *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
+ *     (Claude Code) CLI or a resident local model. Resolves with the frame
+ *     above plus `text`; usage is the AI SDK's {inputTokens, outputTokens,
+ *     totalTokens} or null. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
  *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
@@ -98,7 +103,10 @@
  *     GENERATE TEXT with a local model there is no new call: pass its repo id
  *     as fused.ai.text({prompt, model: "org/name"}).
  *   fused.ai.image({prompt, model, provider, width, height, steps, guidance,
- *                   seed, onProgress}) -> Promise<{path, url, seed, provider, ...}>
+ *                   seed, onProgress})
+ *     -> Promise<{images: [{path, url, mediaType}], ...frame}>
+ *     usage: {imagesGenerated}; providerMetadata.local: {seed, width, height,
+ *     steps, guidance, image, prompt, previewPath}; response.id = the job id.
  *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
@@ -112,7 +120,10 @@
  *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, provider, language, task, diarize,
  *                        speakers, words, onProgress, onSegment})
- *                  -> Promise<{output, url, text, segments, language, ...}>
+ *     -> Promise<{text, segments: [{text, startSecond, endSecond, speaker?,
+ *                 words?}], language, durationInSeconds, ...frame}>
+ *     providerMetadata.local: {path, output, url, outputText, outputPartial,
+ *     task, speakers, estimatedSpeakers}; response.id = the job id.
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
  *     when relative, like readFile/rawUrl. Resolves with the
@@ -183,9 +194,10 @@
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
  *   fused.ai.video({prompt, model, provider, width, height, frames, steps, seed,
- *                   image, onProgress}) -> Promise<{path, url, model, provider, prompt, width,
- *                                            height, frames, steps, seed,
- *                                            image}>
+ *                   image, onProgress})
+ *     -> Promise<{videos: [{path, url, mediaType}], ...frame}>
+ *     usage: {videosGenerated}; providerMetadata.local: {seed, width, height,
+ *     frames, steps, image, prompt}; response.id = the job id.
  *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
  *     Silicon only (no fallback on other platforms: the first capability
  *     with no "everywhere" runner). Same shape as fused.ai.image minus
@@ -212,7 +224,8 @@
  *     to override either one. Rejects with .type "bad_request" if `image`
  *     is missing, not a regular file, or anything but a single string.
  *   fused.ai.embed({texts, paths, model, provider, abortSignal})
- *     -> Promise<{vectors, dim, model, provider, warnings}>
+ *     -> Promise<{embeddings: number[][], values, ...frame}>
+ *     providerMetadata.local: {dim, kind}.
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
  *     `paths` (files on this machine, resolved beside this page when
@@ -3253,6 +3266,36 @@
       throw e;
     };
   }
+  // The one result frame (D632) the three job-backed verbs assemble client
+  // side from the started reply + the record — the server's `/api/ai` and
+  // `/api/ai/embed` build the identical shape in `common.ai_result`.
+  function resultFrame(payload, f) {
+    const meta = {};
+    Object.keys(f.metadata || {}).forEach((k) => {
+      if (f.metadata[k] !== undefined) meta[k] = f.metadata[k];
+    });
+    return {
+      provider: f.provider || "local",
+      finishReason: f.finishReason || "stop",
+      warnings: f.warnings || [],
+      usage: f.usage === undefined ? null : f.usage,
+      response: { id: f.id || null, modelId: f.modelId, timestamp: new Date().toISOString() },
+      providerMetadata: { [f.provider || "local"]: meta },
+      ...payload,
+    };
+  }
+  // A transcript segment as the file stores it -> as the frame speaks it
+  // (the AI SDK's {text, startSecond, endSecond}; `speaker` and `words` ride
+  // along, the words renamed the same way).
+  function frameSegment(s) {
+    if (!s || typeof s !== "object") return s;
+    const { start, end, words, ...rest } = s;
+    const out = { ...rest, startSecond: start, endSecond: end };
+    if (Array.isArray(words)) {
+      out.words = words.map((w) => ({ word: w.word, startSecond: w.start, endSecond: w.end }));
+    }
+    return out;
+  }
   function cancelJob(jobId) {
     return fetch("/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {
       method: "POST",
@@ -3896,7 +3939,13 @@
           : null;
       // Same fact on the resolved object: it names the real PNG through `url`,
       // and `previewUrl` is null because the file it would name is deleted.
-      const done = () => ({ ...started, url: rawUrl(started.path), previewUrl: null });
+      const done = () => resultFrame(
+        { images: [{ path: started.path, url: rawUrl(started.path), mediaType: "image/png" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { imagesGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      steps: started.steps, guidance: started.guidance, image: started.image,
+                      prompt: started.prompt, previewPath: started.previewPath } });
       // The record is COPIED rather than annotated: it is the same object the
       // job manager is drawing from, and a field written onto it here would
       // travel to every other watcher of that row.
@@ -3968,7 +4017,13 @@
           cancelJob(started.jobId);
         }, { once: true });
       }
-      const done = () => ({ ...started, url: rawUrl(started.path) });
+      const done = () => resultFrame(
+        { videos: [{ path: started.path, url: rawUrl(started.path), mediaType: "video/mp4" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { videosGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      frames: started.frames, steps: started.steps, image: started.image,
+                      prompt: started.prompt } });
       const tick = onProgress ? (job) => onProgress({ ...job }) : null;
       return watcher.watch(tick).then((record) => {
         if (signal && signal.aborted) throw cancelledError("the video", started.jobId);
@@ -4143,7 +4198,8 @@
       let broken = false;
       const decoder = onSegment && typeof TextDecoder === "function"
         ? new TextDecoder("utf-8") : null;
-      const deliver = (segment) => {
+      const deliver = (raw) => {
+        const segment = frameSegment(raw);
         // Counted BEFORE the call, so a callback that throws cannot make the
         // final drain resend the segment it threw on.
         delivered += 1;
@@ -4277,24 +4333,30 @@
             }
             return written;
           })
-          .then((written) => ({
-            ...started,
-            url: rawUrl(started.output),
-            text: written.text,
-            segments: written.segments,
-            language: written.language,
-            duration: written.duration,
-            // The transcript's legend, and undefined unless `diarize` was
-            // asked for. Read from the FILE like everything else here, so a
-            // page never has to know which engine wrote it.
-            speakers: written.speakers,
-            // …and how many people the clustering decided there were, present
-            // only on a run that had to work it out (D318). A caller who
-            // passed `speakers` already has this number and gets undefined
-            // here, which is the honest shape: the field means "estimated",
-            // not "resolved".
-            estimatedSpeakers: written.estimatedSpeakers,
-          }))
+          .then((written) => resultFrame(
+            {
+              text: written.text,
+              segments: (written.segments || []).map(frameSegment),
+              language: written.language,
+              durationInSeconds: written.duration,
+            },
+            { provider: started.provider, modelId: started.model, id: started.jobId,
+              warnings: started.warnings, usage: null,
+              metadata: {
+                path: started.path,
+                output: started.output,
+                url: rawUrl(started.output),
+                outputText: started.outputText,
+                outputPartial: started.outputPartial,
+                task: started.task,
+                // The transcript's legend, undefined unless `diarize` was
+                // asked for. Read from the FILE like everything else here, so
+                // a page never has to know which engine wrote it.
+                speakers: written.speakers,
+                // …and how many people the clustering decided there were,
+                // present only on a run that had to work it out (D318).
+                estimatedSpeakers: written.estimatedSpeakers,
+              } }))
           .catch((cause) => {
             const err = new Error(
               "the transcript could not be read: " + ((cause && cause.message) || cause),

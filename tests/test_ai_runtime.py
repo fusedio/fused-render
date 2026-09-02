@@ -9417,8 +9417,8 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     # `{"type": "done", "ok": True, "result": payload}`), and the same shape of
     # payload the NON-streaming reply returns.
     assert set(done) == {"type", "ok", "result"}
-    assert set(done["result"]) == {"text", "model", "usage", "provider",
-                                   "finishReason", "warnings"}
+    assert set(done["result"]) == {"text", "provider", "finishReason", "warnings",
+                                   "usage", "response", "providerMetadata"}
 
 
 # -- which capability a load without one gets (D321) ---------------------------

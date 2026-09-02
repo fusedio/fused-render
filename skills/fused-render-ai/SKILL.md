@@ -38,22 +38,26 @@ For `runPython`, params, or file IO → **`fused-render-authoring`**. For openin
 
 One options object, like every other verb — `prompt` is a field, not a positional argument. `fused.ai.text("hi")` is a `bad_request`.
 
-Resolves with **exactly** this — the server normalizes, so no guarding:
+Resolves with **the result frame** — the same six keys every `fused.ai` verb returns, plus this verb's payload (`text`). The server normalizes, so no guarding:
 
 ```json
 {
   "text": "the completion",
-  "model": "claude-haiku-4-5-20251001",
-  "usage": { "input_tokens": 544, "output_tokens": 73 },
   "provider": "claude",
   "finishReason": "stop",
-  "warnings": []
+  "warnings": [],
+  "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
+  "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+  "providerMetadata": { "claude": { "seconds": 3.1 } }
 }
 ```
 
-- `model` — the id that **actually ran**; an alias (`"sonnet"`) echoes back resolved.
-- `usage` — `null`, or exactly `{input_tokens, output_tokens}`. **Anthropic names**; `prompt_tokens`/`completion_tokens` give `undefined`.
+**Learn the frame once; it is the AI SDK's `generateText` shape.** Each verb adds only its payload: `text` · `images: [{path, url, mediaType}]` · `videos: [...]` · `text, segments, language, durationInSeconds` · `embeddings, values`.
+
+- `response.modelId` — the id that **actually ran**; an alias (`"sonnet"`) echoes back resolved. There is **no top-level `model`**. `response.id` is the job id on image/video/transcribe.
+- `usage` — per verb, camelCase, or `null`. Text: `{inputTokens, outputTokens, totalTokens}` (`input_tokens` reads `undefined` now). Image/video: `{imagesGenerated}` / `{videosGenerated}`. Transcribe and embed: `null`.
 - `provider` — `"local"` or `"claude"`: the tier that answered. Show it when it matters; the same line lands on a different tier once the weights are deleted.
+- `providerMetadata[provider]` — everything tier-specific that is not part of the contract: `seconds` on text, `seed`/`width`/`height`/`steps`/`guidance`/`previewPath` on image, transcript file paths on transcribe, `dim`/`kind` on embed. **Nothing you passed is echoed at top level.**
 - `finishReason` — `"stop"`, `"length"` (a local model produced exactly `maxTokens` — the reply is truncated), `"cancelled"`. The Claude CLI reports no stop reason, so that tier always says `"stop"`.
 - `warnings` — usually `[]`. Each entry is `{type: "unsupported-setting", setting, message}`: a tunable the tier could not honour and **dropped**. Check it in a page that sets sampling options and may land on Claude.
 
@@ -91,23 +95,24 @@ Two kinds of local-only option. The **semantic** ones (`history`, `raw`, `images
 
 Defaults: model `claude-haiku-4-5-20251001` (or the user's configured default); `effort` low = no extended thinking. `raw` and `history` are mutually exclusive — raw has nowhere to put prior turns.
 
-`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage, provider, finishReason, warnings}`**. Both destinations stream.
+`onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same result frame**. Both destinations stream.
 
 ### Store the model beside the vectors
 
-`embed` returns the `model` it actually used. **Persist it with anything you
+`embed` returns the model it actually used as `response.modelId`. **Persist it with anything you
 persist the vectors in, and treat a query embedded under a different model as
 invalid** — not as a result to rank, as a bug to refuse.
 
 ```js
-const { vectors, dim, model } = await fused.ai.embed({ texts: chunks, kind: "document" });
-await fused.writeFile("index.json", JSON.stringify({ model, dim, vectors }));
+const r = await fused.ai.embed({ texts: chunks, kind: "document" });
+const model = r.response.modelId, dim = r.providerMetadata.local.dim;
+await fused.writeFile("index.json", JSON.stringify({ model, dim, embeddings: r.embeddings }));
 
 // …and at query time
 const index = JSON.parse(await fused.readFile("index.json"));
 const q = await fused.ai.embed({ texts: [question], kind: "query" });
-if (q.model !== index.model) throw new Error(
-  `index was built with ${index.model}, cannot search it with ${q.model}`);
+if (q.response.modelId !== index.model) throw new Error(
+  `index was built with ${index.model}, cannot search it with ${q.response.modelId}`);
 ```
 
 Two models produce two different spaces. A cosine between them is not a low
@@ -257,8 +262,8 @@ const img = await fused.ai.image({
     if (job.previewUrl) { el.src = job.previewUrl; el.hidden = false; }
   },
 });
-el.src = img.url;        // ready-made /api/fs/raw url — no need to build it
-el.dataset.seed = img.seed;
+el.src = img.images[0].url;                    // ready-made /api/fs/raw url — no need to build it
+el.dataset.seed = img.providerMetadata.local.seed;
 ```
 
 ### Options and the reply
@@ -278,7 +283,7 @@ el.dataset.seed = img.seed;
 
 **No negative prompt, no batch count, no scheduler or LoRA, and no `strength`** — the edit mechanism `image` uses does not take a strength knob at all, so there is nothing to pass. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D413).
 
-Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that will actually happen, not the one you asked for.
+Resolves with the result frame: payload `images: [{path, url, mediaType: "image/png"}]` (one entry — one prompt, one PNG), `usage: {imagesGenerated: 1}`, `response.id` = the job id, and under `providerMetadata.local` the render that actually happened — `seed, width, height, steps, guidance, prompt, previewPath`, plus `image` (the resolved absolute path) when you passed one.
 
 ### Editing a base image: `{image}` — mflux only
 
@@ -351,7 +356,7 @@ const vid = await fused.ai.video({
   prompt: "a paper boat drifting down a rain-soaked street, cinematic",
   onProgress: (job) => { if (job.total) bar.value = job.done / job.total; },
 });
-video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
+video.src = vid.videos[0].url;   // ready-made /api/fs/raw url, with audio muxed in
 ```
 
 ### Options and the reply
@@ -371,7 +376,7 @@ video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
 
 **No `guidance`** — the engine is CFG-distilled and takes no such parameter; passing one is refused `bad_request` like any other unsupported option, the same envelope rule `fused.ai.image` documents (D413). **No live preview either** (`previewUrl`/`previewPath` do not exist on this reply).
 
-Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that actually happened, not the one you asked for (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
+Resolves with the result frame: payload `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerated: 1}`, `response.id` = the job id, and under `providerMetadata.local` the render that actually happened — `seed, width, height, frames, steps, prompt`, plus `image` when you passed one (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
 
 - **`seed` comes back whether or not you passed one.**
 - **The server owns where the mp4 goes**: `<home>/ai/videos/<YYYYmmdd-HHMMSS>-<uid>.mp4`, time-ordered, outlives the tab, nothing cleans these up.
@@ -414,16 +419,16 @@ const rec = await fused.ai.transcribe({
   onProgress: (job) => bar.value = job.done / job.total,    // SECONDS OF AUDIO
 });
 out.textContent = rec.text;
-for (const s of rec.segments) addCue(s.start, s.end, s.text);   // {start, end, text}
+for (const s of rec.segments) addCue(s.startSecond, s.endSecond, s.text);   // {text, startSecond, endSecond}
 ```
 
 Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `words`, `onProgress`, `onSegment`.
 
-Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers, estimatedSpeakers}`.
+Resolves with the result frame: payload `text`, `segments: [{text, startSecond, endSecond, speaker?, words?}]`, `language`, `durationInSeconds`; `response.id` = the job id; and under `providerMetadata.local` the files and the run — `path` (the input), `output`, `url` (a ready-made `/api/fs/raw` address for `output`), `outputText`, `outputPartial`, `task`, `speakers`, `estimatedSpeakers`.
 
 **The result is read off DISK, not returned by the job** — the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it; when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
 
-- `output` is that JSON path, `outputText` the plain-text one, `outputPartial` the segments-as-they-decode one, and `url` a ready-made `/api/fs/raw` address for `output`.
+- `providerMetadata.local.output` is that JSON path, `outputText` the plain-text one, `outputPartial` the segments-as-they-decode one, and `url` a ready-made `/api/fs/raw` address for `output`.
 - A transcription **outlives the tab that asked for it** — the file is the result, the row only says when to read it.
 - If the transcript cannot be read (deleted, truncated), the rejection is typed `ai_error` with `err.jobId`, not a bare `SyntaxError`.
 
@@ -450,7 +455,7 @@ const rec = await fused.ai.transcribe({
 ```
 
 - **Every segment, in order, exactly once** — including ones decoded before your first callback, and the last ones. Append on each call and you have the transcript; never de-duplicate or re-sort.
-- **Same shape as `rec.segments`** — `{start, end, text}`, plus `speaker` when diarizing and `words` when asked for and available. One rendering path for both.
+- **Same shape as `rec.segments`** — `{text, startSecond, endSecond}`, plus `speaker` when diarizing and `words` when asked for and available. One rendering path for both.
 - **It costs one extra request per poll, and only if you pass it** — the tail rides the tick `onProgress` was already paying for.
 - **Resolution is the engine's, not the callback's.** faster-whisper emits a segment at a time; the MLX runner finishes a whole decoded window (up to 30s) and emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
 - `onSegment` is a live view, not the delivery mechanism: the file is. It stops when the promise does, and the last reads in flight are delivered *before* the rejection, so a `catch` that clears the transcript pane keeps it clear.
@@ -478,9 +483,9 @@ const rec = await fused.ai.transcribe({
   diarize: true,
   speakers: 3,          // OPTIONAL — leave it out and the count is estimated
 });
-rec.speakers;                       // ["Speaker 1", "Speaker 2", "Speaker 3"]
-rec.segments[0].speaker;            // "Speaker 1"  (or null — see below)
-rec.estimatedSpeakers;              // 3 — only on a run that had to work it out
+rec.providerMetadata.local.speakers;           // ["Speaker 1", "Speaker 2", "Speaker 3"]
+rec.segments[0].speaker;                       // "Speaker 1"  (or null — see below)
+rec.providerMetadata.local.estimatedSpeakers;  // 3 — only on a run that had to work it out
 ```
 
 - **`speakers` is an optional hint.** A whole number 1–100 fixes the clustering to exactly that many voices; omitted (`undefined`, `null`, `""`) the count is **estimated** and `estimatedSpeakers` says what it decided. A value that is present and unusable (`0`, `2.5`, `"3"`, `true`, over 100) rejects `bad_request` **before a job opens** — that is a typo, not a request to estimate.
@@ -493,12 +498,12 @@ rec.estimatedSpeakers;              // 3 — only on a run that had to work it o
 
 ### Word timings: `words: true`
 
-A segment is a whole sentence or several, so `{start, end, text}` is too coarse for a karaoke highlight or a click-a-word-to-seek player. `words: true` times each word inside it.
+A segment is a whole sentence or several, so `{text, startSecond, endSecond}` is too coarse for a karaoke highlight or a click-a-word-to-seek player. `words: true` times each word inside it.
 
 ```js
 const rec = await fused.ai.transcribe({ path: "meeting.m4a", words: true });
 for (const s of rec.segments) {
-  for (const w of s.words || []) hi(w.start, w.end, w.word);   // {start, end, word}
+  for (const w of s.words || []) hi(w.startSecond, w.endSecond, w.word);   // {word, startSecond, endSecond}
 }
 ```
 
@@ -532,7 +537,9 @@ through a small encoder, over before a progress row would have drawn, so the
 reply IS the result.
 
 ```js
-const { vectors, dim, model } = await fused.ai.embed({ texts: ["a cat", "a dog"] });
+const { embeddings, values, response } = await fused.ai.embed({ texts: ["a cat", "a dog"] });
+// embeddings[i] pairs with values[i]; response.modelId is the model that ran;
+// providerMetadata.local.dim is the vector length.
 ```
 
 Vectors come back **unit-length**, so a cosine similarity between two of them is

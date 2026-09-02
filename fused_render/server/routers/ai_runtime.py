@@ -52,7 +52,7 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 # and a body this route refuses must be refused for the identical reason a
 # worker asked directly would give.
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
-from fused_render.server.common import AI_PROVIDERS, _error, _require_fused
+from fused_render.server.common import AI_PROVIDERS, _error, _require_fused, ai_result
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -2310,13 +2310,13 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     except supervisor.SupervisorError as e:
         return _embed_error("ai_error", str(e), status=502)
 
+    # The one result frame (`common.ai_result`, D632): `embeddings` is the
+    # payload, `values` the inputs they pair with (the SDK's `embedMany`
+    # shape), `dim` and the resolved `kind` under providerMetadata.
     return {
         "ok": True,
-        "result": {
-            "vectors": result.get("vectors") or [],
-            "dim": result.get("dim") or 0,
-            "model": model,
-            "provider": "local",
-            "warnings": [],
-        },
+        "result": ai_result(
+            {"embeddings": result.get("vectors") or [], "values": list(items)},
+            provider="local", model=model, usage=None,
+            metadata={"dim": result.get("dim") or 0, "kind": kind}),
     }

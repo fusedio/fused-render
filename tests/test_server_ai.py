@@ -668,8 +668,8 @@ def test_relay_happy_path(monkeypatch):
     data = _data(resp)
     assert data["ok"] is True
     assert data["result"]["text"] == "hi there"
-    assert data["result"]["model"] == "claude-haiku-4-5-20251001"
-    assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert data["result"]["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert data["result"]["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
     # One CLI spawn: stream-json in and out (the D169 persistent-instance
     # spawn shape; --verbose is mandatory with stream-json output), the
     # prompt over stdin as a JSON user message (argv has an OS size cap),
@@ -868,7 +868,7 @@ def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
     # or malformed block degrades to null rather than leaking through.
     _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
     usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
-    assert usage == {"input_tokens": 3, "output_tokens": 2}
+    assert usage == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
 
     for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
                 {"input_tokens": "3", "output_tokens": 2},        # wrong type
@@ -889,7 +889,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
-    assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
+    assert _data(resp)["result"]["response"]["modelId"] == "claude-sonnet-5-20250929"
 
 
 def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
@@ -916,10 +916,14 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     done = frames[-1]
     assert done["type"] == "done" and done["ok"] is True
     # Same result schema as the non-streaming response.
-    assert done["result"] == {
-        "text": "hi there", "model": "claude-haiku-4-5-20251001",
-        "usage": {"input_tokens": 3, "output_tokens": 2}, "provider": "claude",
-        "finishReason": "stop", "warnings": []}
+    result = done["result"]
+    assert result["text"] == "hi there"
+    assert result["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert result["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
+    assert result["provider"] == "claude"
+    assert result["finishReason"] == "stop" and result["warnings"] == []
+    assert set(result) == {"text", "provider", "finishReason", "warnings", "usage",
+                           "response", "providerMetadata"}
 
 
 def test_relay_stream_skips_thinking_deltas(monkeypatch):

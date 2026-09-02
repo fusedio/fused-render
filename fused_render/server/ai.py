@@ -21,7 +21,7 @@ from fastapi.responses import (
 from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
-from fused_render.server.common import AI_PROVIDERS, _require_fused
+from fused_render.server.common import AI_PROVIDERS, _require_fused, ai_result, ai_usage_tokens
 from fused_render.shell.prefs import default_model
 
 router = APIRouter()
@@ -760,9 +760,14 @@ def _ai_result_payload(data: dict, requested_model: str):
     used_model = requested_model
     if isinstance(model_usage, dict) and len(model_usage) == 1:
         used_model = next(iter(model_usage))
-    return {"text": text, "model": used_model,
-            "usage": _ai_usage(data.get("usage")), "provider": "claude",
-            "finishReason": "stop", "warnings": []}, None
+    usage = _ai_usage(data.get("usage"))
+    payload = ai_result({"text": text}, provider="claude", model=used_model,
+                        usage=ai_usage_tokens(usage), finish_reason="stop",
+                        metadata={"seconds": _claude_seconds(data)})
+    # The counter's own vocabulary rides along under a private key the two
+    # call sites pop before replying — the wire never sees it.
+    payload["_usage"] = usage
+    return payload, None
 
 
 #: Who may speak in a supplied history. Deliberately not "system" — the system
@@ -1208,10 +1213,10 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # here and at the three other terminal frames — so the graph and the
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
-        return JSONResponse(
-            {"ok": True, "result": {"text": "".join(text), "model": model,
-                                    "usage": usage, "provider": "local",
-                                    "finishReason": finish, "warnings": warnings}})
+        return JSONResponse({"ok": True, "result": ai_result(
+            {"text": "".join(text)}, provider="local", model=model,
+            usage=ai_usage_tokens(usage), finish_reason=finish, warnings=warnings,
+            request_id=job, metadata={"seconds": usage.get("seconds")})})
 
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
@@ -1245,11 +1250,12 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                         ai_metrics.record_failure(model, "ai_error")
                     yield json.dumps({
                         "type": "done", "ok": ok,
-                        **({"result": {
-                            "text": "".join(text), "model": model,
-                            "usage": usage, "provider": "local",
-                            "finishReason": _local_finish_reason(event, body),
-                            "warnings": warnings}}
+                        **({"result": ai_result(
+                            {"text": "".join(text)}, provider="local", model=model,
+                            usage=ai_usage_tokens(usage),
+                            finish_reason=_local_finish_reason(event, body),
+                            warnings=warnings, request_id=job,
+                            metadata={"seconds": usage.get("seconds")})}
                            if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
@@ -1720,13 +1726,15 @@ async def _ai_relay(body: dict):
                 # Merged HERE rather than passed in: the payload builder keeps
                 # its two-argument shape (tests stand in for it by arity).
                 payload["warnings"] = list(warnings)
+                payload["response"]["id"] = _remote_job
+                _usage_internal = payload.pop("_usage", None)
             if err is not None:
                 _report_remote(state="error", message=err)
                 return _ai_failed(model, "ai_error", err)
             # Under the RESOLVED id, not the alias the caller sent: "opus" and
             # "claude-opus-5" are one model and must not be two rows in the
             # breakdown. `_ai_result_payload` already did that resolution.
-            ai_metrics.record(payload["model"], payload["usage"],
+            ai_metrics.record(payload["response"]["modelId"], _usage_internal,
                               _claude_seconds(data))
             _finish_remote_job()
             return JSONResponse({"ok": True, "result": payload})
@@ -1817,13 +1825,15 @@ async def _ai_relay(body: dict):
                 # Merged HERE rather than passed in: the payload builder keeps
                 # its two-argument shape (tests stand in for it by arity).
                 payload["warnings"] = list(warnings)
+                payload["response"]["id"] = _remote_job
+                _usage_internal = payload.pop("_usage", None)
             if err is not None:
                 ai_metrics.record_failure(model, "ai_error")
                 _report_remote(state="error", message=err)
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": err}}) + "\n"
                 return
-            ai_metrics.record(payload["model"], payload["usage"],
+            ai_metrics.record(payload["response"]["modelId"], _usage_internal,
                               _claude_seconds(data))
             _finish_remote_job()
             yield json.dumps(

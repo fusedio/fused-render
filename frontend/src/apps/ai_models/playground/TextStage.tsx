@@ -152,16 +152,18 @@ const STARTERS: Starter[] = [
   },
 ];
 
-function replyStats(usage: ChatUsage | null | undefined): string | null {
-  if (!usage?.output_tokens) return null;
-  const rate = usage.seconds ? ` · ${(usage.output_tokens / usage.seconds).toFixed(1)} tok/s` : "";
-  return `${usage.output_tokens} tokens${rate}`;
+function replyStats(usage: ChatUsage | null | undefined, seconds?: number | null): string | null {
+  if (!usage?.outputTokens) return null;
+  const rate = seconds ? ` · ${(usage.outputTokens / seconds).toFixed(1)} tok/s` : "";
+  return `${usage.outputTokens} tokens${rate}`;
 }
 
 interface Reply {
   text: string;
   pending: boolean;
   usage?: ChatUsage | null;
+  /** The local tier's wall-clock, from `providerMetadata.local.seconds` (D632). */
+  seconds?: number | null;
 }
 
 export function TextStage({
@@ -356,7 +358,10 @@ export function TextStage({
         downloaded,
         onStatus: setStatus,
       });
-      setReply((r) => (r ? { ...r, pending: false, usage: result.usage ?? null } : r));
+      setReply((r) => (r ? {
+        ...r, pending: false, usage: result.usage ?? null,
+        seconds: result.providerMetadata?.local?.seconds ?? null,
+      } : r));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
       // Keep what streamed before the stop — those tokens were real.
@@ -388,7 +393,7 @@ export function TextStage({
   };
 
   const shown = reply ? splitThink(reply.text) : null;
-  const stats = replyStats(reply?.usage);
+  const stats = replyStats(reply?.usage, reply?.seconds);
 
   // Hoisted because the composer has two shapes below and this button is the
   // one thing both put in the same place — the bottom-right corner. Written

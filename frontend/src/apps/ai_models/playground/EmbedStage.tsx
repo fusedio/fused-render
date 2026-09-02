@@ -318,7 +318,7 @@ export function EmbedStage({
         downloaded,
         onStatus: setStatus,
       });
-      const [queryVector, ...itemVectors] = result.vectors;
+      const [queryVector, ...itemVectors] = result.embeddings;
       const scored = items.map((text, at) => ({
         text,
         score: (itemVectors[at] || []).reduce(
@@ -328,10 +328,10 @@ export function EmbedStage({
       }));
       scored.sort((a, b) => b.score - a.score);
       setRanked(scored);
-      // `result.model` — what the SERVER says it used, not what was asked for. A
+      // `response.modelId` — what the SERVER says it used, not what was asked for. A
       // bare call takes the capability's default, so the request's own `model` is
       // not always the answer.
-      setVectorModel(result.model ?? model);
+      setVectorModel(result.response?.modelId ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -398,18 +398,18 @@ export function EmbedStage({
         onStatus: setStatus,
       });
       const images = await embedPaths(model, pictures);
-      const queryVector = phrase.vectors[0] ?? [];
+      const queryVector = phrase.embeddings[0] ?? [];
       const scored = pictures.map((path, at) => ({
         path,
         name: basename(path),
-        score: (images.vectors[at] || []).reduce(
+        score: (images.embeddings[at] || []).reduce(
           (sum, value, dim) => sum + value * (queryVector[dim] ?? 0),
           0,
         ),
       }));
       scored.sort((a, b) => b.score - a.score);
       setRankedPictures(scored);
-      setVectorModel(images.model ?? model);
+      setVectorModel(images.response?.modelId ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {

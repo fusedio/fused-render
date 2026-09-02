@@ -690,7 +690,7 @@ async function curate() {
     tools = proposed;
     render();
     say("Proposed " + proposed.length + " tool" + (proposed.length === 1 ? "" : "s")
-        + " (" + res.model + ") — edit, then Save.");
+        + " (" + res.response.modelId + ") — edit, then Save.");
   });
 }
 

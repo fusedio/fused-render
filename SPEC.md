@@ -218,7 +218,7 @@ fused.env
 // Ask an AI model — the local claude (Claude Code) CLI, or a model resident on
 // this machine (RH-11, §40). Local-only. `fused.ai` is a namespace of verbs
 // (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
-const { text, model, usage, provider } = await fused.ai.text({
+const { text, usage, response, provider } = await fused.ai.text({
   prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
   provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
   systemPrompt,               // optional system message
@@ -262,19 +262,33 @@ const { text, model, usage, provider } = await fused.ai.text({
   ```json
   {
     "text": "the completion",
-    "model": "claude-haiku-4-5-20251001",
-    "usage": { "input_tokens": 544, "output_tokens": 73 },
     "provider": "claude",
     "finishReason": "stop",
-    "warnings": []
+    "warnings": [],
+    "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
+    "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+    "providerMetadata": { "claude": { "seconds": 3.1 } }
   }
   ```
 
-  `text` string; `model` the **full model id that ran** (an alias request like
-  `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
-  `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
-  `prompt_tokens`/`completion_tokens`); `provider` the tier that answered, so which
-  side of the machine boundary a call landed on is always inspectable;
+  **This is THE result frame (D632): every `fused.ai` verb resolves with these six
+  keys plus its own payload** — `text` here; `images: [{path, url, mediaType}]`,
+  `videos: [...]`, `text` + `segments: [{text, startSecond, endSecond, speaker?,
+  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`. Learn it once.
+  It is the AI SDK's `generateText` return contract, chosen because it is the shape
+  page authors already know: **`provider`** the tier that answered, so which side of
+  the machine boundary a call landed on is always inspectable; **`response`**
+  `{id, modelId, timestamp}` — `modelId` the **full model id that ran** (an alias
+  request like `"sonnet"` echoes the resolved id; there is NO top-level `model`), `id`
+  the job id on the job-backed verbs and the activity-row id on text; **`usage`**
+  per-verb, camelCase, or `null` — text is `{inputTokens, outputTokens, totalTokens}`
+  (the SDK's names; the counter keeps Anthropic's snake-case internally and converts
+  once at the wire), image/video `{imagesGenerated}`/`{videosGenerated}`, transcribe
+  and embed `null`; **`providerMetadata`** `{<provider>: {...}}` holds everything
+  tier-specific that is not part of the contract — the seed, snapped size and steps,
+  file paths (`previewPath`, transcript `output`/`outputText`/`outputPartial`),
+  `seconds` — so **no input is echoed at top level** (the SDK's rule), and the frame
+  never changes shape because a tier learned a new fact;
   **`finishReason`** `"stop" | "length" | "cancelled"` (`length` = a local model
   produced exactly `maxTokens`; the Claude CLI reports no stop reason, so that tier
   always says `stop`); **`warnings`** an array, usually empty, of
@@ -304,7 +318,7 @@ const { text, model, usage, provider } = await fused.ai.text({
   latest-wins channel (an AI call is never a slider scrub).
   **Streaming**: `opts.onChunk(text)` fires per text delta as the model produces it
   (the server relays `{"stream": true}` NDJSON chunks); the promise still resolves
-  with the same `{text, model, usage}` at the end, so streaming only changes when
+  with the same result frame at the end, so streaming only changes when
   the text arrives, not what the call returns. Errors after the first chunk reject
   the promise with the same `.type` values. **Warm process** (D168/D169): the
   server keeps ONE persistent claude CLI process and resets it between calls
@@ -6407,7 +6421,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   and the CLI does not expose one — dropping it would answer a raw continuation
   as a chat turn, which is plausible text that is silently not what was asked.
 - **AI-1b** **The terminal frame carries the RESULT, on both tiers and in both
-  shapes.** `fused.ai.text()` resolves with `{text, model, usage, provider}` whether or not the
+  shapes.** `fused.ai.text()` resolves with the RH-11 result frame whether or not the
   caller passed `onChunk`, so a page can stream and still use the return value —
   and a streamed local reply that closed with a bare `{"type":"done","ok":true}`
   is why this is a written rule rather than an obvious one: every token had

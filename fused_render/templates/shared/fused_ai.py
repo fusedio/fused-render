@@ -418,6 +418,44 @@ def _wait_job(job_id: str, on_progress=None, timeout: float | None = None,
         time.sleep(poll_interval)
 
 
+def _frame(payload: dict, started: dict, *, usage=None, metadata: dict | None = None) -> dict:
+    """The one result frame every verb resolves with (RH-11, D632) — the
+    same shape `runtime.js`'s `resultFrame` builds and `common.ai_result`
+    sends: {provider, finishReason, warnings, usage, response, providerMetadata,
+    ...payload}. `started` is a job-backed route's immediate reply."""
+    import datetime as _dt
+    provider = started.get("provider") or "local"
+    meta = {k: v for k, v in (metadata or {}).items() if v is not None}
+    return {
+        "provider": provider,
+        "finishReason": "stop",
+        "warnings": list(started.get("warnings") or []),
+        "usage": usage,
+        "response": {
+            "id": started.get("jobId"),
+            "modelId": started.get("model"),
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        },
+        "providerMetadata": {provider: meta},
+        **payload,
+    }
+
+
+def _frame_segment(s):
+    """A transcript segment as the file stores it -> as the frame speaks it
+    (`startSecond`/`endSecond`, words renamed the same way) — `runtime.js`'s
+    `frameSegment`, mirrored."""
+    if not isinstance(s, dict):
+        return s
+    out = {k: v for k, v in s.items() if k not in ("start", "end", "words")}
+    out["startSecond"] = s.get("start")
+    out["endSecond"] = s.get("end")
+    if isinstance(s.get("words"), list):
+        out["words"] = [{"word": w.get("word"), "startSecond": w.get("start"),
+                         "endSecond": w.get("end")} for w in s["words"] if isinstance(w, dict)]
+    return out
+
+
 def _raise_for_terminal_job(job: dict) -> None:
     state = job.get("state")
     if state == "done":
@@ -567,22 +605,28 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     job = _wait_job(job_id, on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
     written = _read_transcript(reply["output"], job_id=job_id)
-    return {
-        **reply,
-        "text": written.get("text"),
-        "segments": written.get("segments"),
-        "language": written.get("language"),
-        "duration": written.get("duration"),
-        # The transcript's legend — None unless `diarize` was asked for, read
-        # from the FILE like everything else here, same as `runtime.js`: a
-        # caller never has to know which engine wrote it.
-        "speakers": written.get("speakers"),
-        # How many voices the clustering decided there were, present only on
-        # a run that had to estimate (D318); a caller who passed `speakers`
-        # already knows this and gets None here, matching the JS reply's
-        # `undefined` for the same case.
-        "estimatedSpeakers": written.get("estimatedSpeakers"),
-    }
+    return _frame(
+        {
+            "text": written.get("text"),
+            "segments": [_frame_segment(s) for s in (written.get("segments") or [])],
+            "language": written.get("language"),
+            "durationInSeconds": written.get("duration"),
+        },
+        reply,
+        metadata={
+            "path": reply.get("path"),
+            "output": reply.get("output"),
+            "outputText": reply.get("outputText"),
+            "outputPartial": reply.get("outputPartial"),
+            "task": reply.get("task"),
+            # The transcript's legend — None unless `diarize` was asked for,
+            # read from the FILE like everything else here, same as
+            # `runtime.js`: a caller never has to know which engine wrote it.
+            "speakers": written.get("speakers"),
+            # How many voices the clustering decided there were, present only
+            # on a run that had to estimate (D318).
+            "estimatedSpeakers": written.get("estimatedSpeakers"),
+        })
 
 
 # ------------------------------------------------------------------- image
@@ -616,7 +660,12 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     job = _wait_job(_require_job_id(reply, "/api/ai/image"),
                     on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
-    return reply
+    return _frame(
+        {"images": [{"path": reply.get("path"), "mediaType": "image/png"}]},
+        reply, usage={"imagesGenerated": 1},
+        metadata={k: reply.get(k) for k in
+                  ("seed", "width", "height", "steps", "guidance", "image",
+                   "prompt", "previewPath")})
 
 
 # ------------------------------------------------------------------- embed

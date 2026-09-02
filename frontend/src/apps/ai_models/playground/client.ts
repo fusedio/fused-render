@@ -30,16 +30,25 @@ export interface ChatSettings {
   system_prompt?: string;
 }
 
+/** The AI SDK's token counts (D632) — `totalTokens` is the sum the server
+ *  already did. */
 export interface ChatUsage {
-  input_tokens: number | null;
-  output_tokens: number | null;
-  seconds?: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
 }
 
+/** `/api/ai`'s result: the one frame every fused.ai verb resolves with
+ *  (RH-11, D632) plus `text`. `response.modelId` is the id that ran; the
+ *  local tier's wall-clock lands under `providerMetadata.local.seconds`. */
 export interface ChatResult {
   text: string;
-  model: string;
+  provider: "local" | "claude";
+  finishReason: "stop" | "length" | "cancelled";
+  warnings: { type: string; setting?: string; message: string }[];
   usage: ChatUsage | null;
+  response: { id: string | null; modelId: string; timestamp: string };
+  providerMetadata: Record<string, { seconds?: number | null } & Record<string, unknown>>;
 }
 
 /** The 409 a text generation answers when its model is not resident (AI-5):
@@ -401,10 +410,18 @@ export function startVideo(request: VideoRequest): Promise<VideoStarted> {
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
 
+/** `/api/ai/embed`'s result — the same frame as every other verb (D632)
+ *  with `embeddings` as the payload and the inputs echoed as `values`;
+ *  `dim` sits under `providerMetadata.local`. */
 export interface EmbedResult {
-  vectors: number[][];
-  dim: number;
-  model: string;
+  embeddings: number[][];
+  values: string[];
+  provider: "local" | "claude";
+  finishReason: string;
+  warnings: { type: string; setting?: string; message: string }[];
+  usage: null;
+  response: { id: string | null; modelId: string; timestamp: string };
+  providerMetadata: Record<string, { dim?: number; kind?: string }>;
 }
 
 /** One batch of texts into the model's vector space. Vectors come back

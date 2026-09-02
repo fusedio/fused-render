@@ -333,22 +333,27 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 `fused.ai` is a namespace of verbs — `.text`, `.image`, `.video`, `.transcribe`,
 `.embed`, plus `.models` and `.cancel` — not a function. Pages ask a text model
 with `fused.ai.text({prompt, ...opts})` — one options object, like every
-other verb. It resolves with exactly
-`{text, model, usage, provider}` — `model` is the full model id that ran,
-`usage` is either `null` or exactly `{input_tokens, output_tokens}`
-(Anthropic-style names, not OpenAI's `prompt_tokens`/`completion_tokens`), and
-`provider` is the tier that answered:
+other verb. Every verb resolves with the **same frame** plus its own payload
+(`text` here; `images`, `videos`, `text`+`segments`, `embeddings` on the
+others), so you learn the shape once:
 
 ```json
 {
   "text": "the completion",
-  "model": "claude-haiku-4-5-20251001",
-  "usage": { "input_tokens": 544, "output_tokens": 73 },
   "provider": "claude",
   "finishReason": "stop",
-  "warnings": []
+  "warnings": [],
+  "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
+  "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+  "providerMetadata": { "claude": { "seconds": 3.1 } }
 }
 ```
+
+`response.modelId` is the full model id that ran (there is no top-level
+`model`). `usage` is per verb — text uses `inputTokens`/`outputTokens`/
+`totalTokens`. `providerMetadata[provider]` holds what the serving tier
+snapped or invented (seed, size, steps, file paths, seconds); nothing you
+passed is echoed at top level.
 
 `finishReason` is `"stop"`, `"length"` (a local model hit `maxTokens`) or
 `"cancelled"`. `warnings` lists options the serving tier could not honour and
