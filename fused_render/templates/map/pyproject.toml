@@ -86,3 +86,15 @@ dependencies = [
 # and install. Without this uv would try to build the "project" itself and fail.
 [tool.uv]
 package = false
+
+# The map viewer's own tile daemon (docs/ENGINE_HOST_DESIGN.md). Declared here
+# for engine_host to read `retry_post` from — this is NOT the trust boundary:
+# `engine_host._validate` still requires the daemon to resolve under one of
+# the hardcoded blessed template roots at `<root>/map/daemon.py`, exactly as
+# it did before this table existed. `retry_post = true` because a describe
+# POST is safely re-runnable (it only classifies a target and returns tile
+# URLs), so a heal-restart mid-call may retry it instead of surfacing the
+# failure — the resilience every other proxied POST here still gets.
+[tool.fused-render.app]
+daemon = "daemon.py"
+retry_post = true
