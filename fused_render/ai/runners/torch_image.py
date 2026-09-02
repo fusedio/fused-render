@@ -49,6 +49,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 
 # The base sits in THIS directory, and so does everything else this imports.
 # Each `worker.py` shell has already inserted `runners/` on the way in (it is one
@@ -431,45 +432,145 @@ def _group_offload_disk_enabled():
     return raw.strip().lower() != "off"
 
 
+def _group_offload_base_dir():
+    """The directory `_group_offload_disk_path()`'s per-load subdirectories
+    live under — `~/.fused-render/cache/group-offload` (or `$FUSED_RENDER_
+    HOME`'s equivalent), the app's own real-disk home, never `$TMPDIR`/`/tmp`
+    and never `$XDG_RUNTIME_DIR`: `fused_render/supervisor/paths.py`
+    documents `$XDG_RUNTIME_DIR` as tmpfs-backed on Linux, and a generic
+    `/tmp` is exactly as likely to be a tmpfs mount on the machines this
+    ships to. Spilling group-offloaded weights onto tmpfs would just move
+    the same anonymous, unreclaimable pages this feature exists to get rid
+    of from the process's RSS to a filesystem backed by that same RAM —
+    clean-looking in `/proc/<pid>/smaps_rollup` (file-backed pages, evictable
+    in principle) but not actually freeing anything on a memory-constrained
+    host, since the kernel would need to evict them back into a RAM the
+    tmpfs itself consumes. `~/.fused-render` is the same `os.environ.get
+    ("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")` fallback
+    used throughout the rest of the app (`tasks_store.py`, `community.py`,
+    `meta_migration.py`, and others), reused here rather than inventing a new
+    base path.
+    """
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(home, "cache", "group-offload")
+
+
+def _sweep_stale_group_offload_dirs(base):
+    """Remove every subdirectory of `base` left behind by a PROCESS THAT NO
+    LONGER EXISTS, best-effort, before this load claims its own subdirectory.
+
+    **This is the mechanism disk cleanup actually depends on — `atexit` is
+    not.** A worker's two shutdown paths (`worker_base.serve`'s `/quit`
+    handler, which spawns a thread that calls `os._exit(0)`; and
+    `supervisor._kill_tree`, SIGTERM then SIGKILL) both skip `atexit`
+    handlers entirely — `os._exit` by definition, and a signal Python has
+    installed no handler for by not giving the interpreter a chance to run
+    its exit machinery at all. `enable_group_offload`'s disk path also
+    writes its whole offloaded weight set to disk the moment it is enabled
+    (`GroupOffloadingHook.initialize_hook` calls `group.offload_()` at LOAD
+    time, per the installed `diffusers/hooks/group_offloading.py`), not
+    lazily on first render — so every ordinary load-then-quit cycle through
+    this rung would otherwise leave its whole subdirectory on disk forever,
+    with `atexit`'s registration in `_group_offload_disk_path()` firing only
+    on the rare unhandled-exception exit. Ten loads on a machine that takes
+    this rung costs the user tens of GB with no indication why, absent this
+    sweep.
+
+    **Only a directory whose pid prefix names a process that is no longer
+    alive is removed** — never every sibling, and never by simply sweeping
+    everything under `base` on the theory that "this process's own directory
+    is the only one that matters right now": two workers can legitimately be
+    group-offloading at once, each holding its own live subdirectory, and a
+    sweep that cannot tell a dead worker's leftovers from a live one's
+    in-progress files would delete out from under it. `os.kill(pid, 0)`
+    (raises `ProcessLookupError` for a dead pid, `OSError` for one this
+    process cannot signal, returns cleanly for a live one) is the liveness
+    check; a directory is only ever removed on the FIRST of those two,
+    matching the identity `_group_offload_disk_path()` writes below
+    (`<pid>-<random>`). A directory whose name this function cannot parse as
+    that shape is left alone rather than guessed at.
+
+    Best-effort throughout: a missing `base` (nothing has ever offloaded to
+    disk on this machine), a permission error walking it, or a permission
+    error removing one stale entry must not turn an optimisation's own
+    housekeeping into a reason a load fails. This runs once per call to
+    `_group_offload_disk_path()`, which is once per load that reaches the
+    group-offload rung — O(number of stale directories on disk), never
+    O(their contents), so it costs nothing proportional to weight size.
+    """
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return
+    for entry in entries:
+        pid_str = entry.split("-", 1)[0]
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # Alive, or this process cannot tell (EPERM on a foreign-owned
+            # pid) — either way, not confidently dead, so leave it alone.
+            continue
+        else:
+            continue  # the process answered: it is alive, its directory stays.
+        try:
+            shutil.rmtree(os.path.join(base, entry), ignore_errors=True)
+        except OSError:
+            pass
+
+
 def _group_offload_disk_path():
     """Where `_place`'s group-offload rung should spill block weights to
     while they are offloaded, or `None` when `_group_offload_disk_enabled()`
     says disk offload is off (memory mode: `enable_group_offload` with no
     `offload_to_disk_path` at all, its own long-standing default).
 
-    Deliberately real disk, never `$TMPDIR`/`/tmp` and never `$XDG_RUNTIME_
-    DIR`: `fused_render/supervisor/paths.py` documents `$XDG_RUNTIME_DIR` as
-    tmpfs-backed on Linux, and a generic `/tmp` is exactly as likely to be a
-    tmpfs mount on the machines this ships to. Spilling group-offloaded
-    weights onto tmpfs would just move the same anonymous, unreclaimable
-    pages this feature exists to get rid of from the process's RSS to a
-    filesystem backed by that same RAM — clean-looking in `/proc/<pid>/
-    smaps_rollup` (file-backed pages, evictable in principle) but not
-    actually freeing anything on a memory-constrained host, since the
-    kernel would need to evict them back into a RAM the tmpfs itself
-    consumes. `~/.fused-render` is the app's own real-disk home directory —
-    the same `os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser
-    ("~/.fused-render")` fallback used throughout the rest of the app
-    (`tasks_store.py`, `community.py`, `meta_migration.py`, and others) —
-    so this reuses that convention rather than inventing a new base path.
+    **Identity is `<pid>-<random>`, never pid alone, and the directory is
+    swept clean before use even though the identity is already unique —
+    both, not either.** `enable_group_offload`'s own disk-write skip (`if
+    not self._is_offloaded_to_disk and not os.path.exists(self.safetensors_
+    file_path)`, `diffusers/hooks/group_offloading.py`) is keyed by a hash
+    of the module's own group id — deterministic across processes, and
+    across any two loads of the same recipe. A pid-only directory name is
+    reused whenever Linux recycles a pid (commonly every ~32768 loads on
+    this platform's default `pid_max`), and combined with a directory that
+    nothing ever swept (see `_sweep_stale_group_offload_dirs`), a worker
+    whose pid collides with a dead one would inherit that directory
+    fully populated, skip every write, and go on to ONLOAD THE WRONG
+    MODEL'S WEIGHTS with no error at all. A random suffix makes that
+    collision astronomically unlikely by construction; deleting whatever
+    (if anything) already sits at this exact path before `os.makedirs`
+    closes the gap for the one case a random suffix does not cover on its
+    own — a stale directory this process's own earlier, uncleaned run left
+    at the exact same identity, which cannot happen with a fresh `uuid4`
+    but costs nothing to guard against anyway.
 
-    Scoped per-worker by pid rather than shared across worker processes:
-    two workers group-offloading the same recipe at once must not read or
-    write each other's half-written block files. Created eagerly (`os.
-    makedirs(..., exist_ok=True)`) so `enable_group_offload` never has to
-    create it itself mid-load, and removed via `atexit` — registered once,
-    the first time this function actually returns a path, not on every
-    call — because the tree exists only for this process's lifetime and
-    nothing else reads it once the process is gone. Losing the directory to
-    an unclean exit (SIGKILL, a crash) leaves stale files on disk rather
-    than corrupting anything: `enable_group_offload`'s own disk path skips
-    rewriting a block file that already exists, so leftover files are dead
-    weight, not a correctness risk — cleanup here is tidiness, not safety.
+    Deliberately real disk — see `_group_offload_base_dir()` for why, and
+    for the `FUSED_RENDER_HOME` convention this reuses.
+
+    Created eagerly (`os.makedirs(..., exist_ok=True)`) so `enable_group_
+    offload` never has to create it itself mid-load. `atexit.register`
+    still runs on a normal Python-level exit (an unhandled exception, a
+    plain `return` from `main()`) as a best-effort EXTRA — cheap insurance
+    for the one shutdown path that does reach it — but `_sweep_stale_group_
+    offload_dirs` above, not this, is the mechanism cleanup actually
+    depends on; see that function's own docstring for why `atexit` alone
+    was not enough.
     """
     if not _group_offload_disk_enabled():
         return None
-    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    path = os.path.join(home, "cache", "group-offload", str(os.getpid()))
+    base = _group_offload_base_dir()
+    _sweep_stale_group_offload_dirs(base)
+    identity = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
+    path = os.path.join(base, identity)
+    shutil.rmtree(path, ignore_errors=True)
     os.makedirs(path, exist_ok=True)
     if path not in _GROUP_OFFLOAD_DISK_PATHS_REGISTERED:
         atexit.register(shutil.rmtree, path, ignore_errors=True)
@@ -505,29 +606,126 @@ def _component_bytes(module):
     return total
 
 
-def _group_offload_exclusions(pipe):
-    """Which of `pipe.components` block offload must never touch: just
-    `vae`, always — see `_place`'s docstring for the full mechanism. `pipe`
-    is still taken as an argument (rather than this being a bare constant)
-    so a future exclusion can be conditioned on what the pipeline actually
-    has, the way the text encoder's exclusion used to be here.
-
-    The text encoder is NOT excluded. The klein recipe's text encoder is a
-    GGUF `Qwen3ForCausalLM`, built by `transformers`' own `gguf_file=`
-    loader (see `load()`), and `GGUFParameter` keeps all of its quantized
-    bytes in `.data` itself — its quant metadata is plain Python attributes,
-    same shape as bitsandbytes' `Params4bit`, but nothing quantized lives
-    outside `.data` the way bitsandbytes' `quant_state` does. `ModuleGroup`
-    (`diffusers/hooks/group_offloading.py`) collects tensors from `module.
-    parameters()`/`module.buffers()` and its onload path moves `.data`
-    directly; a `GGUFParameter` round-trips through that correctly, with
-    nothing left behind on the wrong device. A bitsandbytes NF4 text
-    encoder could not make this same claim — `Params4bit.to()` is the only
-    method that moves `quant_state` alongside `.data`, and `ModuleGroup`
-    never calls it — which is why this component was excluded before the
-    text encoder moved to GGUF.
+def _has_untracked_tensor(obj, registered_ids, _depth=0):
+    """True when `obj` (a parameter, a buffer, or — one recursion level down
+    — a plain object hanging off one) carries a plain attribute that is a
+    `torch.Tensor` not in `registered_ids`. `registered_ids` is the SAME set
+    at every level of the recursion: it always names the owning component's
+    actual `named_parameters()`/`named_buffers()`, never the attributes of
+    whatever `obj` happens to be at this level, so a tensor found two levels
+    down (bitsandbytes' `weight.quant_state.absmax`) is judged against the
+    same registration `ModuleGroup` itself would check, not against
+    `quant_state`'s own attributes as if reaching `absmax` by recursion
+    somehow registered it. `_depth` bounds the walk to component → attribute
+    → attribute's own attribute and no further, a fixed, small cost
+    regardless of what a component's attributes reference.
     """
-    return ["vae"]
+    import torch
+
+    if not hasattr(obj, "__dict__"):
+        return False
+    for value in vars(obj).values():
+        if isinstance(value, torch.Tensor):
+            if id(value) not in registered_ids:
+                return True
+        elif _depth < 1 and hasattr(value, "__dict__"):
+            if _has_untracked_tensor(value, registered_ids, _depth=_depth + 1):
+                return True
+    return False
+
+
+def _unsafe_for_group_offload(component):
+    """True when `component` holds quantization state that `enable_group_
+    offload`'s tensor movement would leave behind, so it must be excluded
+    from block offload.
+
+    Governing fact (installed `diffusers/hooks/group_offloading.py`,
+    `ModuleGroup.__init__`): a group collects tensors ONLY from `module.
+    parameters()` and `module.buffers()`, and moves each one by reassigning
+    `tensor.data` (`_transfer_tensor_to_device`) — it never calls `.to()`.
+    A parameter whose entire quantized representation lives in `.data`
+    itself, with any quantization metadata kept as plain non-tensor Python
+    attributes, survives that move correctly: diffusers' own `GGUFParameter`
+    (`diffusers/quantizers/gguf/utils.py`) is exactly this shape — nothing
+    on it but `.data` and a `quant_type` string. A parameter that instead
+    keeps PART of its quantized representation in a SEPARATE tensor hanging
+    off it as a plain attribute is silently corrupted by the move: the
+    attribute tensor never gets reassigned, so after an onload the weight's
+    `.data` sits on the new device while its quant state is still on the
+    old one. bitsandbytes' `Params4bit` is this shape — `quant_state.
+    absmax`, `quant_state.code`, and (double-quantized) `quant_state.
+    state2`'s own `absmax`/`code` are ordinary tensors kept as attributes of
+    `quant_state`, itself a plain attribute of the parameter, never
+    registered as a parameter or buffer anywhere `ModuleGroup` would find
+    it.
+
+    Detected STRUCTURALLY, by `_has_untracked_tensor`: walk each parameter's
+    and buffer's own plain attributes (recursing one level into any
+    attribute that is itself a plain object, since bitsandbytes nests a
+    second `quant_state` this way for double quantization) looking for a
+    tensor that is not itself a registered parameter or buffer of
+    `component` — the SAME `registered_ids` set is threaded through every
+    level of that recursion, not recomputed at each level, because a nested
+    object's own tensor attributes (`quant_state.absmax`) are exactly the
+    ones this is trying to catch, not tensors to treat as newly "registered"
+    just because they were reached by recursing. No name list, and no
+    `import bitsandbytes`/`gguf`/`sdnq` — those packages are optional and
+    this module gains no hard dependency on any of them just to decide
+    whether a component is safe to move. Walking already-resident Python
+    attributes costs nothing proportional to weight size, so this is fine
+    to run at load time.
+
+    **Anything this function cannot make sense of comes back UNSAFE
+    (excluded).** `component.named_parameters()` raising, or a shape this
+    walk does not recognize, is treated the same as a confirmed-bad one:
+    staying resident costs memory, where guessing SAFE and being wrong
+    silently corrupts a render.
+
+    **`sdnq` is not installed in this environment, and this function has
+    never actually been run against an SDNQ-quantized component.** Nothing
+    here verifies whether SDNQ's tensors are safe under `ModuleGroup`'s
+    movement; the structural check above may exclude an SDNQ component or
+    may not, depending on how SDNQ happens to shape its parameters, and
+    neither outcome should be read as SDNQ having been checked against a
+    real object.
+    """
+    try:
+        registered_ids = {id(t) for _, t in component.named_parameters()}
+        registered_ids |= {id(t) for _, t in component.named_buffers()}
+        tensors = [t for _, t in component.named_parameters()]
+        tensors += [t for _, t in component.named_buffers()]
+        for tensor in tensors:
+            if _has_untracked_tensor(tensor, registered_ids):
+                return True
+    except Exception:  # noqa: BLE001 - an unrecognized shape is unsafe, not a crash
+        return True
+    return False
+
+
+def _group_offload_exclusions(pipe):
+    """Which of `pipe.components` block offload must never touch: `vae`
+    always — see `_place`'s docstring for the decode-path reason, a hook
+    problem `_unsafe_for_group_offload` has nothing to say about — plus
+    whatever that structural check finds unsafe to move by `.data`
+    reassignment.
+
+    Generic and quantizer-agnostic on purpose: this used to exclude (or
+    not) a component by name, on reasoning specific to what THAT recipe's
+    text encoder happened to be quantized with. That does not generalize
+    to a catalog where a user can point this app at an arbitrary HF repo
+    whose component quantization this app has never seen and cannot
+    hand-tune for. Asking each component structurally whether ITS tensors
+    survive `enable_group_offload`'s movement, rather than asking which
+    model this is, is the version of this check that keeps working for a
+    repo nobody curated.
+    """
+    exclusions = ["vae"]
+    for name, component in pipe.components.items():
+        if name == "vae" or component is None or not hasattr(component, "named_parameters"):
+            continue
+        if _unsafe_for_group_offload(component):
+            exclusions.append(name)
+    return exclusions
 
 
 def _place(pipe):
@@ -571,14 +769,12 @@ def _place(pipe):
        exactly like never passing it at all: memory mode, the same shape
        this rung shipped with before disk residency existed.
 
-       `exclude_modules=` (`_group_offload_exclusions(pipe)`, always `vae`)
-       names the one component that must never reach `enable_group_offload`
-       — see `_group_offload_exclusions`'s own docstring for why the text
-       encoder is NOT in this list: it is a GGUF component (see `load()`),
-       and GGUF's quantized tensors round-trip through group offload's
-       (and, by extension, the disk path's) tensor movement correctly,
-       unlike bitsandbytes' NF4 weights, which could not appear here at
-       all.
+       `exclude_modules=` (`_group_offload_exclusions(pipe)`) names every
+       component that must never reach `enable_group_offload`: `vae`,
+       always, plus whatever `_unsafe_for_group_offload` finds holding
+       quantization state outside the tensors `ModuleGroup` actually moves
+       — see that function's own docstring for the structural check and
+       why it does not need to know which model this is.
 
        `vae` is load-bearing, not an optimization: block offload's hooks
        only fire on a module's `forward`, and diffusers'
@@ -601,12 +797,14 @@ def _place(pipe):
        already run. Excluding it moves it once to the onload device instead
        and leaves it resident — at 0.17 GiB, cheap enough next to the
        transformer this rung exists for that it is not worth measuring.
-    3. **Offload** — group offload itself raised with nothing left hooked, or
-       the probe raised before it could answer whether the model fits:
-       today's unconditional `enable_model_cpu_offload()`, unchanged, and
-       still the terminal fallback either way. (A group-offload raise that
-       left some components already hooked cannot reach this cleanly — see
-       the `except` below.)
+    3. **Offload** — group offload itself raised with nothing left hooked
+       (after one retry in memory mode, if the first attempt was in disk
+       mode — see the `except` below for why disk mode gets a second try
+       before falling here), or the probe raised before it could answer
+       whether the model fits: today's unconditional `enable_model_cpu_
+       offload()`, unchanged, and still the terminal fallback either way.
+       (A group-offload raise that left some components already hooked
+       cannot reach this cleanly — see the `except` below.)
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
@@ -748,6 +946,7 @@ def _place(pipe):
             # The probe RAN and said it does not fit — group offload is only
             # tried when that answer is trustworthy. `placement is None`
             # (the probe raised) skips straight to the `else` below instead.
+            disk_path = _group_offload_disk_path()
             try:
                 pipe.enable_group_offload(
                     onload_device=torch.device("cuda"),
@@ -760,13 +959,12 @@ def _place(pipe):
                     # klein recipe's VAE) would silently never come back off
                     # the offload device. See the docstring above for the
                     # full mechanism. 0.17 GiB resident is not worth the risk
-                    # of getting this wrong. The text encoder is NOT excluded
-                    # — it is a GGUF component (see `load()`), and GGUF's
-                    # quantized tensors round-trip through group offload
-                    # correctly, unlike the bitsandbytes NF4 weights this
-                    # recipe used to load it with.
+                    # of getting this wrong. Every other exclusion in this
+                    # list came from `_unsafe_for_group_offload` structurally
+                    # inspecting that component's own parameters — see that
+                    # function's docstring, not this comment, for why.
                     exclude_modules=_group_offload_exclusions(pipe),
-                    offload_to_disk_path=_group_offload_disk_path(),
+                    offload_to_disk_path=disk_path,
                 )
                 placement = "group-offload"
             except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it
@@ -781,16 +979,49 @@ def _place(pipe):
                 # `ValueError` about group offload being active, on a load
                 # that the docstring promises will fall back to plain
                 # offload. Ask the same question with `raise_error=False`
-                # first: a clean failure (nothing got hooked) still falls
-                # through to plain offload exactly as before; a partial
-                # failure re-raises the ORIGINAL error, since there is no
-                # supported diffusers call to strip a partially-applied set
-                # of group-offload hooks back off and let plain offload
-                # proceed.
+                # first: a clean failure (nothing got hooked) is safe to act
+                # on further; a partial failure re-raises the ORIGINAL error,
+                # since there is no supported diffusers call to strip a
+                # partially-applied set of group-offload hooks back off and
+                # let anything else proceed.
                 if pipe._maybe_raise_error_if_group_offload_active(raise_error=False):
                     raise
-                pipe.enable_model_cpu_offload()
-                placement = "offload"
+                # A clean failure in DISK mode gets one retry in memory mode
+                # before falling all the way to plain offload: disk mode's
+                # `initialize_hook` runs `group.offload_()` immediately, at
+                # hook-install time, which for a torchao-quantized component
+                # (`tonera/FLUX.2-klein-4B-int8-diffusers`'s transformer, the
+                # catalog's own curated recipe) hits `_check_disk_offload_
+                # torchao` and raises `ValueError` before a single render has
+                # happened — turning a load that succeeds fine in memory mode
+                # (and used to succeed via plain offload, before disk
+                # residency existed) into a hard failure. The same shape
+                # applies to a disk that is out of space or unwritable
+                # (ENOSPC/EACCES). Nothing about this retry is torchao-
+                # specific: any clean failure that showed up only because
+                # `offload_to_disk_path` was set gets the same second chance,
+                # on the theory that the mechanism this rung exists to
+                # provide (group offload without accelerate's chain) is worth
+                # more than the disk residency on top of it.
+                if disk_path is not None:
+                    try:
+                        pipe.enable_group_offload(
+                            onload_device=torch.device("cuda"),
+                            offload_device=torch.device("cpu"),
+                            offload_type="block_level",
+                            num_blocks_per_group=_num_blocks_per_group(),
+                            exclude_modules=_group_offload_exclusions(pipe),
+                            offload_to_disk_path=None,
+                        )
+                        placement = "group-offload"
+                    except Exception:  # noqa: BLE001 - same fallback contract as above
+                        if pipe._maybe_raise_error_if_group_offload_active(raise_error=False):
+                            raise
+                        pipe.enable_model_cpu_offload()
+                        placement = "offload"
+                else:
+                    pipe.enable_model_cpu_offload()
+                    placement = "offload"
         else:
             pipe.enable_model_cpu_offload()
             placement = "offload"

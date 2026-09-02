@@ -817,6 +817,14 @@ class _FakePlacementPipe:
         #: must degrade to plain offload exactly like a raising `.to("cuda")`
         #: does for the all-gpu case.
         self._group_offload_raises = group_offload_raises
+        #: Raises only on a call that carries a disk path — set directly on
+        #: the instance rather than threaded through `_placement_pipe`'s own
+        #: constructor, which callers already reach for the two group-
+        #: offload-always-fails shapes above. Simulates the torchao "clean
+        #: failure only in disk mode" case Finding #3's retry rung exists
+        #: for: a call with `offload_to_disk_path=None` (the retry itself)
+        #: succeeds normally.
+        self._group_offload_raises_if_disk = False
         #: The real `enable_group_offload` hooks pipeline components ONE AT A
         #: TIME in a loop (`pipelines/pipeline_utils.py`), so a raise on
         #: component N leaves components before it already hooked. Naming a
@@ -844,6 +852,8 @@ class _FakePlacementPipe:
         self.group_offload_calls.append({"exclude_modules": exclude_modules, **kwargs})
         if self._group_offload_raises:
             raise RuntimeError("group offload unsupported here")
+        if self._group_offload_raises_if_disk and kwargs.get("offload_to_disk_path") is not None:
+            raise RuntimeError("disk offload unsupported here (torchao-shaped failure)")
         exclude_modules = exclude_modules or []
         for name, component in self.components.items():
             if name in exclude_modules or not isinstance(component, self.nn.Module):
@@ -985,40 +995,20 @@ def test_place_uses_group_offload_when_it_does_not_all_fit(monkeypatch, base):
     assert {"placement": "group-offload"} in base.state_calls
 
 
-def test_place_group_offload_excludes_only_vae_when_pipeline_has_no_text_encoder(
-    monkeypatch, base
-):
-    """`_group_offload_exclusions` names only `vae` unconditionally now — no
-    text-encoder-specific branch exists to raise on a name that was never
-    registered, but a pipeline with no `text_encoder` attribute at all (a
-    future recipe, a test fake) should still reach `enable_group_offload`
-    with exactly `["vae"]`, same as any other pipeline."""
-    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    worker = load_worker(monkeypatch, base)
-    components = {
-        "transformer": _make_component(nn, int(2.6 * _GIB)),
-        "vae": _make_component(nn, int(0.17 * _GIB)),
-        "tokenizer": object(),
-    }
-    seq = "->".join(name for name, component in components.items()
-                    if isinstance(component, nn.Module))
-    pipe = _FakePlacementPipe(nn, components, seq)
-
-    device, seed_device = worker._place(pipe)
-
-    assert (device, seed_device) == ("cuda", "cuda")
-    assert len(pipe.group_offload_calls) == 1
-    assert pipe.group_offload_calls[0]["exclude_modules"] == ["vae"]
-    assert {"placement": "group-offload"} in base.state_calls
-
-
 def test_place_falls_back_to_plain_offload_when_group_offload_raises(monkeypatch, base):
     """Group offload itself failing (an unsupported diffusers/backend
     combination) must degrade to today's unconditional `enable_model_cpu_
     offload()` — the same "a load that would have succeeded via plain
     offload must not fail outright" reasoning the all-gpu case's own
-    raising `.to("cuda")` already follows."""
+    raising `.to("cuda")` already follows.
+
+    Disk mode is forced off here: a clean failure in disk mode gets its own
+    retry rung (`test_place_retries_in_memory_mode_after_a_clean_disk_mode_
+    failure` below) before falling back to plain offload, which would make
+    `group_offload_calls` land at 2, not 1. This test is about the
+    fallback-to-plain-offload contract on its own, so it pins the simpler,
+    single-attempt shape that contract had before disk residency existed."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", "off")
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
@@ -1086,6 +1076,288 @@ def test_place_reraises_original_error_when_group_offload_fails_partway(monkeypa
     assert pipe.offload_calls == 0
     assert {"placement": "group-offload"} not in base.state_calls
     assert {"placement": "offload"} not in base.state_calls
+
+
+def test_place_retries_in_memory_mode_after_a_clean_disk_mode_failure(monkeypatch, base):
+    """Finding #3: a clean failure (nothing hooked) that happened only
+    because `offload_to_disk_path` was set — e.g. a torchao-quantized
+    component's `_check_disk_offload_torchao` guard firing at hook-install
+    time — gets one retry with `offload_to_disk_path=None` before falling
+    all the way back to plain offload. The retry succeeds here, landing on
+    `group-offload` exactly as if disk residency had never been attempted."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+    pipe._group_offload_raises_if_disk = True
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert len(pipe.group_offload_calls) == 2
+    assert pipe.group_offload_calls[0]["offload_to_disk_path"] is not None
+    assert pipe.group_offload_calls[1]["offload_to_disk_path"] is None
+    assert pipe.offload_calls == 0
+    assert {"placement": "group-offload"} in base.state_calls
+    assert {"placement": "offload"} not in base.state_calls
+
+
+def test_place_falls_back_to_plain_offload_after_disk_mode_retry_also_fails(monkeypatch, base):
+    """Finding #3, the other half: when even the memory-mode retry fails
+    cleanly, `_place` falls all the way back to plain `enable_model_cpu_
+    offload()` — two `enable_group_offload` attempts (disk, then memory),
+    both clean failures, before the same fallback `test_place_falls_back_
+    to_plain_offload_when_group_offload_raises` proves for the single-
+    attempt memory-mode case above."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB),
+                            group_offload_raises=True)
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert len(pipe.group_offload_calls) == 2
+    assert pipe.group_offload_calls[0]["offload_to_disk_path"] is not None
+    assert pipe.group_offload_calls[1]["offload_to_disk_path"] is None
+    assert pipe.offload_calls == 1
+    assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "group-offload"} not in base.state_calls
+
+
+# -- the generic structural quantization detector (`_unsafe_for_group_offload`) --
+#
+# No name list and no `import bitsandbytes`/`gguf` — see that function's own
+# docstring for the full reasoning. These fakes build the two shapes real
+# quantizers actually produce (bitsandbytes' separate `quant_state` tensor,
+# GGUF's `.data`-only parameter) structurally, rather than asserting against
+# either package by name.
+
+
+def _fake_torch_with_tensor():
+    """A `torch` stand-in whose `Tensor` is a real, empty class — enough for
+    `_unsafe_for_group_offload`'s own `isinstance(value, torch.Tensor)`
+    check, and for test fakes to hang arbitrary extra attributes off an
+    instance the same way a quantized parameter would."""
+    torch = types.ModuleType("torch")
+
+    class Tensor:
+        pass
+
+    torch.Tensor = Tensor
+    return torch, Tensor
+
+
+class _DetectorComponent:
+    """Enough of a pipeline component for `_unsafe_for_group_offload`'s own
+    walk: `named_parameters()`/`named_buffers()`, nothing else read."""
+
+    def __init__(self, params=(), buffers=()):
+        self._params = list(params)
+        self._buffers = list(buffers)
+
+    def named_parameters(self):
+        return iter(self._params)
+
+    def named_buffers(self):
+        return iter(self._buffers)
+
+
+def test_unsafe_for_group_offload_excludes_a_component_with_an_untracked_tensor_attribute(
+        monkeypatch, base):
+    """A registered parameter that itself holds a SECOND tensor as a plain
+    attribute — nowhere `named_parameters`/`named_buffers` would find it —
+    is exactly what block offload's `.data`-only move would leave behind on
+    the old device."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    weight = Tensor()
+    weight.quant_state = Tensor()
+    component = _DetectorComponent(params=[("weight", weight)])
+
+    assert worker._unsafe_for_group_offload(component) is True
+
+
+def test_unsafe_for_group_offload_excludes_bitsandbytes_double_quantized_shape(
+        monkeypatch, base):
+    """bitsandbytes' actual shape nests one level deeper than the flat case
+    above: `weight.quant_state` is itself a plain, non-tensor object, and
+    THAT object's own `absmax`/`code` attributes are the tensors block
+    offload's move would strand. `registered_ids` is threaded through the
+    recursion unchanged, so `absmax` is checked against `weight`'s
+    registration — the component's actual `named_parameters()` — not
+    treated as newly "registered" for having been reached via `quant_state`."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    weight = Tensor()
+    weight.quant_state = types.SimpleNamespace(absmax=Tensor(), code=Tensor())
+    component = _DetectorComponent(params=[("weight", weight)])
+
+    assert worker._unsafe_for_group_offload(component) is True
+
+
+def test_unsafe_for_group_offload_allows_a_gguf_shaped_component(monkeypatch, base):
+    """`GGUFParameter`'s real shape: nothing but `.data` and a plain string
+    `quant_type` attribute — no separate tensor hanging off it, so the move
+    `enable_group_offload` performs (`tensor.data` reassignment) carries the
+    whole quantized representation along correctly."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    weight = Tensor()
+    weight.quant_type = "Q4_K"
+    component = _DetectorComponent(params=[("weight", weight)])
+
+    assert worker._unsafe_for_group_offload(component) is False
+
+
+def test_unsafe_for_group_offload_allows_a_plain_unquantized_component(monkeypatch, base):
+    """An ordinary bf16 parameter with no extra attributes at all — the
+    common case, and the one this check must not flag."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    component = _DetectorComponent(params=[("weight", Tensor())])
+
+    assert worker._unsafe_for_group_offload(component) is False
+
+
+def test_unsafe_for_group_offload_is_fail_safe_when_named_parameters_raises(monkeypatch, base):
+    """Anything this walk cannot make sense of comes back UNSAFE — staying
+    resident costs memory, where guessing safe and being wrong silently
+    corrupts a render."""
+    torch, _Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+
+    class _Broken:
+        def named_parameters(self):
+            raise RuntimeError("not a real module")
+
+        def named_buffers(self):
+            return iter(())
+
+    assert worker._unsafe_for_group_offload(_Broken()) is True
+
+
+def test_group_offload_exclusions_always_excludes_vae_even_when_structurally_safe(
+        monkeypatch, base):
+    """`vae` is excluded unconditionally — the decode-path reason
+    `_place`'s own docstring gives, a hook problem the structural check has
+    nothing to say about — even when its own parameters would otherwise
+    pass the structural check cleanly."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    vae = _DetectorComponent(params=[("weight", Tensor())])
+    pipe = types.SimpleNamespace(components={"vae": vae})
+
+    assert worker._group_offload_exclusions(pipe) == ["vae"]
+
+
+def test_group_offload_exclusions_includes_structurally_unsafe_non_vae_components(
+        monkeypatch, base):
+    """A quantizer-agnostic catalog: whichever component's own parameters
+    turn out unsafe gets excluded, by structure, with no name list singling
+    out `text_encoder` (or any other component) by name."""
+    torch, Tensor = _fake_torch_with_tensor()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    unsafe_weight = Tensor()
+    unsafe_weight.quant_state = Tensor()  # a second, untracked tensor attribute
+    pipe = types.SimpleNamespace(components={
+        "text_encoder": _DetectorComponent(params=[("weight", unsafe_weight)]),
+        "transformer": _DetectorComponent(params=[("weight", Tensor())]),
+        "vae": _DetectorComponent(params=[("weight", Tensor())]),
+        "tokenizer": object(),  # no named_parameters — skipped, not flagged
+    })
+
+    assert set(worker._group_offload_exclusions(pipe)) == {"vae", "text_encoder"}
+
+
+# -- stale group-offload directory cleanup (`_sweep_stale_group_offload_dirs`) ---
+#
+# `os.kill` is monkeypatched on the real `os` module, not faked through
+# `sys.modules` — `torch_image.py` imports `os` the ordinary way, so
+# patching the attribute on the same module object the worker already holds
+# a reference to reaches it without needing a fake stand-in module.
+
+
+def test_sweep_stale_group_offload_dirs_removes_a_dead_pid_directory(monkeypatch, base, tmp_path):
+    worker = load_worker(monkeypatch, base)
+    stale = tmp_path / "424242-deadbeef"
+    stale.mkdir()
+    monkeypatch.setattr(os, "kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+
+    worker._sweep_stale_group_offload_dirs(str(tmp_path))
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_group_offload_dirs_keeps_a_live_pid_directory(monkeypatch, base, tmp_path):
+    worker = load_worker(monkeypatch, base)
+    live = tmp_path / "424242-deadbeef"
+    live.mkdir()
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)  # answers: still alive
+
+    worker._sweep_stale_group_offload_dirs(str(tmp_path))
+
+    assert live.exists()
+
+
+def test_sweep_stale_group_offload_dirs_leaves_an_unparseable_name_alone(
+        monkeypatch, base, tmp_path):
+    """A directory whose name this function cannot parse as `<pid>-<random>`
+    is left alone rather than guessed at — `os.kill` is never even asked
+    about it."""
+    worker = load_worker(monkeypatch, base)
+    odd = tmp_path / "not-a-pid-at-all"
+    odd.mkdir()
+    calls = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(pid))
+
+    worker._sweep_stale_group_offload_dirs(str(tmp_path))
+
+    assert odd.exists()
+    assert calls == []
+
+
+def test_sweep_stale_group_offload_dirs_leaves_an_unconfirmed_pid_alone(
+        monkeypatch, base, tmp_path):
+    """`os.kill` raising anything OTHER than `ProcessLookupError` — `EPERM`
+    on a foreign-owned pid, most plausibly — means "alive, or this process
+    cannot tell", never "confidently dead"; the directory must not be
+    removed on that answer."""
+    worker = load_worker(monkeypatch, base)
+    unsure = tmp_path / "424242-deadbeef"
+    unsure.mkdir()
+    monkeypatch.setattr(os, "kill", lambda pid, sig: (_ for _ in ()).throw(PermissionError()))
+
+    worker._sweep_stale_group_offload_dirs(str(tmp_path))
+
+    assert unsure.exists()
+
+
+def test_group_offload_disk_path_never_repeats_within_a_process(monkeypatch, base):
+    """Identity is `<pid>-<random>`, never pid alone — two calls in the same
+    process (only ever happens in tests; `_place` calls this at most once
+    per load) must not collide."""
+    monkeypatch.delenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", raising=False)
+    worker = load_worker(monkeypatch, base)
+
+    first = worker._group_offload_disk_path()
+    second = worker._group_offload_disk_path()
+
+    assert first != second
+    assert os.path.isdir(first)
+    assert os.path.isdir(second)
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
