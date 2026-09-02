@@ -508,3 +508,68 @@ columns, the `HubFilterBar`'s placement/wrapping inside the results
 section, and the URL round-trip (typing a query, reloading the tab, and
 confirming the address bar and the results agree) are all unverified by
 eye. See the parent report's own to-verify list.
+
+## Fix builder (second session): F1-F7 from a live-browser review
+
+A different builder confirmed F1's symptom directly in a running dev server
+(searching `Llama-3.2-1B-Instruct-GGUF` showed every row with dashes for
+Fit/Score/Params/Quant and repo-wide sizes) and F2's (`Qwen3-4B-4bit` showed
+`U32`/`I32`/`U8`/`BF16` in the Quant column and understated Params for
+packed 4-bit repos). Both are fixed this session — see D636/D637 in
+`DECISIONS.md` for the substance. F3-F7 were caught by review/reasoning
+rather than a live repro; each has its own new test (Python) or existing
+scoped bun suite coverage (frontend) demonstrating the fixed behavior.
+
+**Known limitation, deliberately NOT fixed this session (per the fix
+brief's own scope line) — family grouping under-fills the page.**
+`groupIntoFamilies` (`hubFamilies.ts`) runs CLIENT-side, on the results
+`api_hub_search` already truncated to `limit` (D633's own row-positioning
+fix does not change this). So a query whose top results mostly share one
+`base_model` tag returns, say, 24 raw rows that fold into far fewer than 24
+family rows on screen — the Hub's remaining candidates that could have
+backfilled those folded-away slots were already discarded server-side by
+the `[:count]` truncation, and nothing re-asks for more. The summary count
+was fixed (an earlier finding) to count families rather than raw rows, so
+the NUMBER shown is honest, but the grid itself is still under-filled
+relative to what `limit` promises. This is the same shape of bug the
+`includeUnfit`/`fetch` overfetch fix and Part 3's filters both had to solve
+for their own drops (see D632/D635) — `api_hub_search`'s own overfetch
+comments already treat "something drops rows after the Hub's answer but
+before the page sees them" as requiring the SAME `fetch` multiplier
+`includeUnfit` gets. Family grouping is the one drop that still runs
+entirely on the client, after `limit` has already applied, so it cannot be
+backfilled without either moving the grouping server-side (a bigger
+change, since `hubFamilies.ts` has no Python counterpart today) or having
+the client ask for more rows when it notices under-fill (which would turn
+one search into a variable number of round trips depending on how clustered
+the results happen to be). Recorded here rather than silently left alone,
+per the fix brief's own instruction, because it is a real gap in what
+`limit` promises — not a dismissed non-issue.
+
+### This session's test/verification commands
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 153 passed (144
+  before this session's new tests; 9 added across F1-F3/F6).
+- `bun test src/apps/ai_models` (frontend/): 588 passed, 0 failed.
+- `npm run typecheck` (frontend/): clean.
+- `node scripts/check-boundaries.mjs` (frontend/): clean (426 files).
+
+### Left for a human with a browser (this session's additions)
+
+- F1: confirm searching a GGUF repo (e.g. `Llama-3.2-1B-Instruct-GGUF`) now
+  shows a per-file size and a populated Fit/Quant, not a repo-wide total
+  with dashes.
+- F2: confirm searching `Qwen3-4B-4bit`-shaped queries now shows `4-bit`
+  (or similar) in Quant rather than `U32`/`I32`/`U8`, and a plausible full
+  parameter count (not a ~4x-undercounted one) in Params.
+- F4: confirm the variant disclosure rows stay column-aligned with the
+  header/family row as the pane narrows through 900px and 600px (where
+  `.am-col-cap`/`.am-col-score` drop).
+- F5: confirm the table never clips Fit/Model/Size/the action column at any
+  pane width — including via the new `overflow-x: auto` safety net on
+  `.am-hubtable-wrap`, which should only ever engage in the gap between
+  ladder steps, never at a width the ladder already covers cleanly — and
+  confirm the PAGE itself still never scrolls sideways.
+- F7: confirm `.am-hubtable-row:hover`'s new subtle background reads
+  sensibly rather than looking like a false click affordance on a row that
+  is not, as a whole, clickable.
