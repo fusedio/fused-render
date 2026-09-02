@@ -24,7 +24,7 @@
 // perform — see `ResultSort` — for the same reason: a page-level sort whose
 // whole safety property is "this value never reaches the wire" is a rule, and a
 // rule belongs somewhere it can be driven.
-import type { HubSort, HubTask } from "@platform/lib/api";
+import type { HubFitLevel, HubParamsBand, HubSort, HubTask } from "@platform/lib/api";
 
 /** Which face of the Local page is on screen. */
 export type SearchFace = "models" | "results";
@@ -148,17 +148,44 @@ export interface SortOption {
   title: string;
 }
 
-/** Every ordering the page offers, in the order the menu lists them: the three
- *  ways the Hub ranks a search, then the one the page ranks itself.
+/** Every ordering the page offers, in the order the menu lists them.
  *
- *  Size is LAST and not first even though it is the most concrete of them,
- *  because it is the only one that costs a measurement (see `wireSort`) and the
- *  menu reads best when the cheap answers come first. */
+ *  **"Best match" is FIRST, and that is what makes it the default** (D639):
+ *  `activeSort` falls back to `SORTS[0]` for a value the page does not
+ *  recognise — the same mechanism `readHubUrl` already relies on for a
+ *  missing `?hubSort=` — so putting the composite ranking at index 0 is
+ *  what makes it the default sort with no second "what does an empty
+ *  `sort` mean" rule to keep in sync. Downloads used to hold this slot;
+ *  see D639 for why raw downloads rewards age and CI traffic over
+ *  usefulness. Size is LAST, unchanged, because it is the only ordering
+ *  that costs a measurement (see `wireSort`) and the menu reads best when
+ *  the cheap answers come first. */
 export const SORTS: readonly SortOption[] = [
+  {
+    value: "best",
+    label: "Best match",
+    title:
+      "This machine's own ranking: blends how well each result fits its memory, how much of its " +
+      "capacity the model uses, estimated speed, how recently it was published, and popularity — " +
+      "see the Match column's own hover for the full breakdown.",
+  },
   { value: "downloads", label: "Downloads", title: "Most downloaded in the last month" },
   { value: "likes", label: "Likes", title: "Most liked on the Hub" },
   { value: "updated", label: "Updated", title: "Changed most recently" },
   { value: "created", label: "New", title: "Published most recently" },
+  {
+    value: "trending",
+    label: "Trending",
+    title: "Rising fastest on the Hub right now — the Hub's own trending score",
+  },
+  {
+    value: "fit",
+    label: "Fit",
+    title:
+      "Memory fit only, on THIS machine — narrower than \"Best match\": it asks for the " +
+      "most-downloaded results and reorders them by how comfortably each one would run, with no " +
+      "regard to speed, size or popularity.",
+  },
   {
     value: "size",
     label: "Size",
@@ -340,6 +367,63 @@ export function gateChrome(
  *  into an ordinary Download. Already signed in, or nothing gated came back,
  *  and there is nothing here to say.
  */
+// ---- Part B's four filters: fit level, quant, params band, publisher -------
+//
+// Only two of the four need a vocabulary here (`activeFitLevel`,
+// `activeParamsBand`) — the same `ControlMenu` pattern `activeTask`/
+// `activeSort` already drive. Quant and publisher are free text over an open
+// set (a Hub org, a quant token some author invented), so they are plain
+// inputs on the controls row with nothing to look up — there is no menu of
+// "every org on the Hub" to offer.
+
+export interface FitLevelOption {
+  value: HubFitLevel;
+  label: string;
+  title: string;
+}
+
+/** Every fit level the menu offers, in the order it lists them: loosest
+ *  restriction first, same convention `SORTS` uses (cheapest/broadest first).
+ */
+export const FIT_LEVELS: readonly FitLevelOption[] = [
+  { value: "any", label: "Any fit", title: "Every result, regardless of whether it would run here" },
+  {
+    value: "tight",
+    label: "Easy or tight",
+    title: "Hide results this machine could not load at all — keep the ones that would be a squeeze",
+  },
+  { value: "easy", label: "Easy fit only", title: "Only results that would run here comfortably" },
+];
+
+/** The option the Fit-level trigger wears. Falls back to the first entry (the
+ *  no-op "Any fit") for the same reason `activeSort` does: the trigger always
+ *  shows a value, and a level this page does not offer cannot be reached from
+ *  its own menu anyway. */
+export function activeFitLevel(level: HubFitLevel): FitLevelOption {
+  return FIT_LEVELS.find((l) => l.value === level) ?? FIT_LEVELS[0];
+}
+
+export interface ParamsBandOption {
+  value: HubParamsBand;
+  label: string;
+  title: string;
+}
+
+/** Every params band the menu offers — the same three-way split
+ *  `hub_models.py`'s own `_params_band` draws the line at. */
+export const PARAMS_BANDS: readonly ParamsBandOption[] = [
+  { value: "any", label: "Any size", title: "Every result, regardless of parameter count" },
+  { value: "under4b", label: "Under 4B", title: "Fewer than 4 billion parameters" },
+  { value: "4to15b", label: "4B – 15B", title: "Between 4 and 15 billion parameters" },
+  { value: "over15b", label: "Over 15B", title: "More than 15 billion parameters" },
+];
+
+/** The option the params-band trigger wears — see `activeFitLevel`'s own
+ *  doc for why an unreachable value falls back to the first (no-op) entry. */
+export function activeParamsBand(band: HubParamsBand): ParamsBandOption {
+  return PARAMS_BANDS.find((b) => b.value === band) ?? PARAMS_BANDS[0];
+}
+
 export function needsHubLogin(
   models: readonly { gated: "auto" | "manual" | null }[] | null,
   authenticated: boolean,

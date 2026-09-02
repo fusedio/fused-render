@@ -23,35 +23,22 @@
 // different gap between the click and the walk that confirms it (see
 // `spokenFor` in LocalTab), and dropping any one puts the Download button back
 // on live work.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { hubModelUrl } from "./hub";
-import {
-  PARTIAL_TAG,
-  jobFraction,
-  type ResultDisk,
-  type SectionRunner,
-} from "@apps/ai_models/lib/aiModelGroups";
+import { jobFraction, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
 // No `engineHueStyle` import any more: one hue per engine family was a signal
 // for a reader SWEEPING a grid of tags, and there are no engine tags on these
 // faces to sweep — the engine is a row in the (i) now, in the same grey as
 // every other fact in there.
 import { tabHref } from "@apps/ai_models/routes";
-import { gateChrome } from "@apps/ai_models/lib/hubSearchView";
-import {
-  hubSizeLabel,
-  hubSizeTitle,
-  knownTotalSize,
-  lookupTotalSize,
-} from "@apps/ai_models/lib/hubSize";
 import { InfoButton } from "./ModelInfo";
-import { modelName, CuratedMark } from "./RepoCard";
+import { CuratedMark } from "./RepoCard";
 import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
-import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
-import { timeAgo } from "@platform/lib/format";
+import { type AiCatalogModel } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl } from "@platform/lib/router";
 
 /** The card every model on this page that is not a cache repo is drawn as.
  *
@@ -64,7 +51,6 @@ function ModelCard({
   variant,
   style,
   hoverNote,
-  cardRef,
   name,
   marked,
   badges,
@@ -93,9 +79,6 @@ function ModelCard({
    *  `data-hint` win, where two native titles on the same point would both
    *  fire and show the browser's tooltip on top of the app's. */
   hoverNote?: string;
-  /** For the one card that has to know whether it is on screen (see
-   *  `HubResultCard`'s lazy size). */
-  cardRef?: React.Ref<HTMLDivElement>;
   /** The name, which always goes to the HUB — the same rule every other card on
    *  this page follows, because the licence, the model card and the discussions
    *  are there and none of them are here. */
@@ -124,7 +107,6 @@ function ModelCard({
       className={`cc-mdcard am-card ${variant}`}
       style={style}
       data-hint={hoverNote}
-      ref={cardRef}
     >
       <div className="cc-mdcard-head">
         <a
@@ -217,7 +199,7 @@ function engineRow(runner: SectionRunner | null, capabilityOnly = false) {
  *  only thing on the card explaining why Download is greyed — and that half is
  *  not identity, it is the reason the control beside it does nothing. So it
  *  stays on the face, as the verb rather than the noun. */
-function SwitchEngines({ runner }: { runner: SectionRunner | null }) {
+export function SwitchEngines({ runner }: { runner: SectionRunner | null }) {
   const why = `${runner?.shortLabel ?? "This model"} cannot be loaded here: ${runner?.reason ?? "no engine serves this capability on this machine"}.`;
   return (
     <a
@@ -361,318 +343,3 @@ export function RecommendedCard({
   );
 }
 
-function count(n: number | null): string | null {
-  if (n === null || n === undefined) return null;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
-  return String(n);
-}
-
-/** One Hub search result: the same card, for a model the curation never named.
- *
- *  Three things it has that a recommendation does not, and each is why the
- *  search is worth having in the app rather than in a browser tab.
- *
- *  **The JOIN.** huggingface.co cannot tell you that the model you are reading
- *  about is already in your cache. This page can, and it asks its OWN listing
- *  rather than the `local` field on the search reply (`resultDisk`): that reply
- *  is frozen at the moment of the search, so a model downloaded from these very
- *  results would go on offering a Download button until somebody typed again.
- *  One definition of on-disk per page.
- *
- *  **The SIZE.** A cache fills up with multi-GB checkpoints nothing on screen
- *  mentions, so "≈16 GB" belongs next to a model's name before anyone decides to
- *  fetch it. When the search reply has no estimate — a GGUF or mflux repo
- *  publishes no dtype map — the card asks the Hub for the repo's total once it is
- *  on screen (`hubSize.ts`) rather than showing a dash for a number
- *  huggingface.co is perfectly willing to give.
- *
- *  **The GATE.** A licence you accept by signing in is a step the reader can
- *  take, so the card names the gate and offers the way through it rather than
- *  the search pretending the model is not there (D316).
- */
-export function HubResultCard({
-  model,
-  curated,
-  runner,
-  disk,
-  authenticated,
-  busy,
-  job,
-  onDownload,
-  onCancel,
-}: {
-  model: HubModel;
-  /** Whether the curation names this exact repo id. A search is the Hub's list,
-   *  not ours, so most rows are not marked — but a search that turns up a model
-   *  in this app's shortlist should say so, or the page's own opinion depends on
-   *  which surface you found the model through. */
-  curated: boolean;
-  /** Which backend would load this capability here, from the catalog — the same
-   *  table the recommended cards read. */
-  runner: SectionRunner | null;
-  /** What this machine already has of it, from the page's own walk. */
-  disk: ResultDisk;
-  /** Whether this machine holds a Hub token. It belongs to the SEARCH, not to
-   *  the model, which is why it arrives beside the row rather than in it. */
-  authenticated: boolean;
-  busy: boolean;
-  job: Job | undefined;
-  /** Starts — or, on a partial, RESUMES — the pull. */
-  onDownload: () => void;
-  onCancel: (job: Job) => void;
-}) {
-  // The FALLBACK total, for a repo the Hub's dtype map could not measure (see
-  // `hubSize.ts`). Two constraints, and both are about not spending someone
-  // else's rate limit: only a row with no estimate asks at all, and it waits
-  // until this card is actually on screen. A page of two dozen results would
-  // otherwise be two dozen outbound calls on every debounced keystroke.
-  const card = useRef<HTMLDivElement>(null);
-  const wantsTotal = !model.estimatedSize;
-  // Seeded from the page-lifetime cache, so a card scrolled back to paints its
-  // number immediately instead of flashing a dash.
-  const [total, setTotal] = useState<number | null>(
-    (wantsTotal ? knownTotalSize(model.id) : null) ?? null,
-  );
-  useEffect(() => {
-    if (!wantsTotal) return;
-    const known = knownTotalSize(model.id);
-    if (known !== undefined) {
-      setTotal(known);
-      return;
-    }
-    const el = card.current;
-    if (!el) return;
-    let alive = true;
-    // Asked, or asking: one request per visit to the viewport, so a card that
-    // sits on screen while the answer arrives is not asked about twice. Cleared
-    // when the card leaves view, which is what lets a FAILED ask be retried —
-    // scroll away and back and the card tries again, rather than a single 429
-    // costing this repo its size for the rest of the page's life. A card whose
-    // ask succeeded stops observing entirely.
-    let asking = false;
-    const io = new IntersectionObserver((entries) => {
-      if (!entries.some((e) => e.isIntersecting)) {
-        asking = false;
-        return;
-      }
-      if (asking) return;
-      asking = true;
-      lookupTotalSize(model.id).then((bytes) => {
-        if (!alive) return;
-        setTotal(bytes);
-        // An answer — a number, or the Hub having none — is now cached and
-        // cannot change while this page is open. Anything else was a failure
-        // that nobody remembered, so keep watching for another chance.
-        if (knownTotalSize(model.id) !== undefined) io.disconnect();
-      });
-    });
-    io.observe(el);
-    return () => {
-      alive = false;
-      io.disconnect();
-    };
-  }, [model.id, wantsTotal]);
-
-  // The Hub's own measurement, and deliberately NOT replaced by a running
-  // pull's own total the way a recommended card's is (`shared/modelSize`). The
-  // size SORT ranks these cards by `hubSizeBytes`, which is defined to match
-  // exactly what this cell shows — "the number beside a name is the only
-  // evidence a reader has that a size sort worked" (`hubSize.ts`) — so a card
-  // that swapped in a different figure mid-download would sit visibly out of
-  // order in a size-sorted grid. One measurement per column beats a
-  // more-accurate one on the row that happens to be busy.
-  const size = hubSizeLabel(model, total);
-  // What the Hub asks before it will hand this one over, when it asks anything.
-  // Never on a copy we already hold: a gate is a condition on GETTING the model.
-  const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
-  const dl = count(model.downloads);
-  const likes = count(model.likes);
-  // The Hub sends an ISO timestamp; timeAgo works in epoch seconds. An
-  // unparseable one is a field the card leaves out, not a "NaN ago".
-  const updatedAt = model.updated ? Date.parse(model.updated) : NaN;
-  const updated = Number.isFinite(updatedAt) ? timeAgo(updatedAt / 1000) : null;
-  // A runner the catalog does not name is not a refusal here, unlike on a
-  // recommended card: the server already dropped every row no registered runner
-  // serves (D313), so a null runner means the catalog has not answered yet, and
-  // disabling every Download until it does would break the page's one action for
-  // a reason that is not about the model. A runner it names as UNAVAILABLE is a
-  // refusal, for the recommended card's reason exactly.
-  const loadable = !runner || runner.available;
-  // Same wash as the recommended card and the disk card: a download in flight
-  // fills the card it is filling.
-  const arriving = jobFraction(job);
-
-  return (
-    <ModelCard
-      /* The same two washes the Local view's cards wear, for the same two
-         states (D436) — a search result IS a card about this disk once the
-         model is on it, and two colour grammars for one fact would be two
-         answers to "do I have this". No fraction on this side: the search reply
-         says "partial" and nothing more, and this card has no folder to
-         measure, so the wash is flat — which is the honest drawing of "some of
-         it is here, we cannot say how much". */
-      variant={
-        "am-hubcard" +
-        (arriving !== null
-          ? " am-card-arriving"
-          : disk.state === "downloaded"
-            ? " am-card-have"
-            : disk.state === "partial"
-              ? " am-card-part am-card-part-unknown"
-              : /* Nothing of it here — the faded end of the same axis. This card
-                   is the one place all three disk answers land side by side in a
-                   single list, so it is also where the axis has to be readable:
-                   a search for "qwen" returns models this machine has and models
-                   it does not, and the surface is what separates them before a
-                   single word is read. */
-                " am-card-none")
-      }
-      style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
-      cardRef={card}
-      name={{
-        href: model.url,
-        /* The MODEL half, like every other card on this page — the owner leads
-           the caption line below rather than eating the head's first third. */
-        text: modelName(model.id),
-        title: `Open ${model.id} on the Hub`,
-      }}
-      slug={model.id}
-      marked={curated}
-      info={<InfoButton name={model.id} rows={[engineRow(runner, true)]} />}
-      badges={
-        <>
-          {disk.state === "downloaded" && !busy && (
-            <span className="am-suggest-have" data-hint={`${model.id} is already on this machine`}>
-              ✓ downloaded
-            </span>
-          )}
-          {/* The gate, named, with the whole of what to do about it on hover.
-              This is NOT the pill D313 deleted: that one announced a problem
-              and left a Download button beside it that would 403. Here the gate
-              decides the action too — see the footer. */}
-          {gate && (
-            <span className="am-card-gate" data-hint={gate.title}>
-              {gate.pill}
-            </span>
-          )}
-        </>
-      }
-      size={{ text: size ?? "—", title: hubSizeTitle(model, total) }}
-      what={
-        /* The one tag left on the face, and it is STATE rather than identity —
-           the same reason `RepoCard` kept it (D424). A half-fetched snapshot is
-           not a model an engine can read, and it is what makes Download mean
-           "resume" instead of "fetch". The engine tag that used to be the other
-           arm of this ternary is a row in the (i) now. */
-        disk.state === "partial" ? (
-          <span
-            className="am-card-engine am-card-engine-partial"
-            tabIndex={0}
-            aria-label={`${PARTIAL_TAG} — Download picks this up from the bytes already here.`}
-            data-hint={
-              `${model.id} is a download that did not finish. Download picks it up from the ` +
-              "bytes already here rather than starting over; the Local view's trash discards them."
-            }
-          >
-            {PARTIAL_TAG}
-          </span>
-        ) : null
-      }
-      progress={busy && <ModelProgress job={job} />}
-      meta={
-        <>
-          {dl ? `${dl} downloads` : null}
-          {dl && likes ? " · " : null}
-          {likes ? `${likes} likes` : null}
-          {(dl || likes) && updated ? " · " : null}
-          {updated ? `updated ${updated}` : null}
-        </>
-      }
-      actions={
-        busy ? (
-          <CancelButton id={model.id} job={job} onCancel={onCancel} />
-        ) : (
-          <>
-            {/* The copy we already hold, opened where it lives. Only for a
-                COMPLETE download: "partial" means blobs with no materialised
-                snapshot, so there is no revision for the model card to
-                describe and linking there would hand someone a view that
-                cannot load. */}
-            {disk.path && (
-              <a
-                className="am-card-explore-link"
-                // The same URL the Local view's Explore builds — a raw "#" +
-                // path drops the mode, so a middle-click would land on the
-                // folder listing rather than the model card.
-                href={urlForFsPath(disk.path, "?_mode=model_card")}
-                data-hint={`Explore ${model.id} here — ${disk.path}`}
-                onClick={(e) => {
-                  if (
-                    e.defaultPrevented ||
-                    e.button !== 0 ||
-                    e.metaKey ||
-                    e.ctrlKey ||
-                    e.shiftKey ||
-                    e.altKey
-                  )
-                    return;
-                  e.preventDefault();
-                  navigate(disk.path!, { isDir: true, mode: "model_card" });
-                }}
-              >
-                Explore
-              </a>
-            )}
-            {/* A gate this machine cannot open gets the way to open it instead
-                of a button that cannot start. The link goes to the model's own
-                Hub page, which is where both the licence and the access
-                request live. */}
-            {gate?.action && (
-              <a
-                className="am-card-power am-card-gate-link"
-                href={model.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                data-hint={gate.title}
-              >
-                {gate.action}
-              </a>
-            )}
-            {/* The reason that Download is dead, where it is — same amber verb
-                the other two cards use. */}
-            {!loadable && <SwitchEngines runner={runner} />}
-            {/* Nothing at all while the walk has not answered: both the ✓ and
-                the button would be a claim about a disk nobody has read yet.
-                And nothing on a copy we already have — the ✓ above and the
-                Explore beside it are what that state offers. */}
-            {(disk.state === "absent" || disk.state === "partial") &&
-              (!gate || gate.canDownload) && (
-                <button
-                  type="button"
-                  className="am-card-power"
-                  disabled={!loadable}
-                  data-hint={
-                    !loadable
-                      ? `${model.id} cannot be loaded here: ${runner?.reason ?? "unavailable"}.`
-                      : disk.state === "partial"
-                        ? `Resume downloading ${model.id} from the bytes already here`
-                        : `Download ${model.id}${size ? ` (${size})` : ""}`
-                  }
-                  aria-label={
-                    disk.state === "partial"
-                      ? `Resume downloading ${model.id}`
-                      : `Download ${model.id}`
-                  }
-                  onClick={onDownload}
-                >
-                  <DownloadGlyph />
-                  Download
-                </button>
-              )}
-          </>
-        )
-      }
-    />
-  );
-}

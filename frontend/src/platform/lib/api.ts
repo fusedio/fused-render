@@ -3090,6 +3090,41 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** Will this fit on THIS machine — the same judgement a downloaded model's
+   *  card carries, over the same `fit.verdict` ladder server-side. Null when
+   *  there is nothing to judge (no safetensors size, no params). */
+  fit: AiFitVerdict | null;
+  /** Text-generation rows only — see `AiSpeedEstimate`'s own contract. */
+  speedEstimate: AiSpeedEstimate | null;
+  /** ISO8601, or null when the Hub did not say. The field the "New" sort
+   *  orders by, now actually drawn rather than fetched and discarded. */
+  created: string | null;
+  /** What this repo was derived from, parsed off the Hub's own
+   *  `base_model:<relation>:<id>` tag — null/null for a row standing alone.
+   *  See `hubFamilies.ts` for the grouping rule this feeds. */
+  baseModel: string | null;
+  /** e.g. "quantized", "finetune", "merge", "adapter" — free text on the
+   *  Hub's side, so this is not a closed union. Null exactly when `baseModel`
+   *  is. */
+  relation: string | null;
+  /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
+   *  for every other row (D412's own field). Threaded back into
+   *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask
+   *  about the file this row would actually download rather than the
+   *  repo-wide total. */
+  file: string | null;
+  /** Measured quantization — a real dtype off the safetensors map, or a
+   *  GGUF file's own published quant token — never a guess from the repo's
+   *  name. Null when nothing measured it. */
+  quant: string | null;
+  /** 0-100, D639 — the composite the DEFAULT sort ranks by and the merged
+   *  Fit+Score cell (D640) both bars and prints. Blends memory fit,
+   *  params-as-capability, speed, recency and popularity, plus a small
+   *  on-disk bonus — see `hub_models.py::_composite_score`'s own docstring
+   *  and DECISIONS.md's D639 for the weights and why. Always present:
+   *  every axis has an honest default for missing evidence, so this is
+   *  never null the way `fit`/`speedEstimate` can be. */
+  matchScore: number;
   local: HubModelLocal;
   url: string;
 }
@@ -3101,6 +3136,10 @@ export interface HubSearchResult {
   error?: string;
   endpoint?: string;
   authenticated?: boolean;
+  /** How many `verdict: "no"` rows this search dropped before `limit` was
+   *  applied — 0 when `includeUnfit` asked for them back. Optional so an
+   *  error reply (which never got this far) does not have to fake a count. */
+  hiddenUnfit?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -3110,14 +3149,49 @@ export interface HubSearchResult {
  *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
  *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
  *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
- *  it reaches this function only through `wireSort`. */
-export type HubSort = "downloads" | "likes" | "updated" | "created";
+ *  it reaches this function only through `wireSort`.
+ *
+ *  "fit" is a real value the SERVER accepts even though it is not a field the
+ *  HUB has: the server asks the Hub for `downloads` (the same honest default
+ *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
+ *  "trending" IS a Hub field (`trendingScore`), sent straight through.
+ *
+ *  "best" (D639) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
+ *  is the identical shape as "fit": not a Hub field, same downloads
+ *  candidate set, reordered by the composite score after the join. */
+export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit" | "best";
+
+/** Fit level — Part 3's own filter, the same three-way ladder `AiFitVerdict`
+ *  reports. "any" is the no-op default: nothing is excluded on it. */
+export type HubFitLevel = "easy" | "tight" | "any";
+
+/** Params band — Part 3's own size filter, over the measured `params` a row
+ *  carries. "any" is the no-op default. */
+export type HubParamsBand = "under4b" | "4to15b" | "over15b" | "any";
 
 export function searchHubModels(opts: {
   q?: string;
   task?: string;
   sort?: HubSort;
   limit?: number;
+  /** Ask for models that will NOT fit this machine too — off by default, so a
+   *  search does not fill the grid with rows nothing here could hold. The
+   *  server states how many it hid either way (`HubSearchResult.hiddenUnfit`),
+   *  so the default is never a silent drop. */
+  includeUnfit?: boolean;
+  /** Part 3's three explicit filters, all server-side (see `hub_models.py`'s
+   *  own `api_hub_search` for why: each one only removes rows AFTER the
+   *  Hub's own answer, so filtering client-side over an already-truncated
+   *  page would under-fill it). */
+  fitLevel?: HubFitLevel;
+  /** Exact match against a row's own measured `quant` — case-insensitive on
+   *  the server, so this is not normalized here. */
+  quant?: string;
+  paramsBand?: HubParamsBand;
+  /** The repo owner (`mlx-community`, `unsloth`, …) — sent to the Hub as its
+   *  own `author` query parameter, a real narrowing of the WIRE request
+   *  rather than a post-join filter (unlike the three above). */
+  publisher?: string;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
@@ -3128,26 +3202,55 @@ export function searchHubModels(opts: {
     task: opts.task,
     sort: opts.sort,
     limit: opts.limit,
+    includeUnfit: opts.includeUnfit,
+    fitLevel: opts.fitLevel,
+    quant: opts.quant,
+    paramsBand: opts.paramsBand,
+    publisher: opts.publisher,
   });
 }
 
-/** One repo's TOTAL size on the Hub — everything in it, not just the weights.
+/** One repo's size on the Hub — the whole repo's TOTAL by default, or one
+ *  named FILE's own bytes when the caller already knows which single file a
+ *  row would download (a GGUF row's own resolved `HubModel.file`).
  *
  *  The fallback for a row whose `estimatedSize` is null (GGUF, mflux, a
  *  LoRA): no dtype map means nothing for the search to measure, and the Hub
  *  will only expand this field one repo at a time. `usedStorage` is null when
- *  the Hub does not measure the repo either. */
+ *  the Hub does not measure the repo either; `fileSize` is null unless a
+ *  `file` was asked for AND the Hub still lists it.
+ *
+ *  `fit`/`speedEstimate` ride the SAME round trip, judged off `fileSize` —
+ *  never off the repo-wide `usedStorage`, which counts every quantization the
+ *  author published rather than the weights a load would read. Both are null
+ *  unless `capability` was given AND a file-specific size resolved. */
 export interface HubModelSizeResult {
   id: string;
   usedStorage: number | null;
+  fileSize: number | null;
+  fit: AiFitVerdict | null;
+  speedEstimate: AiSpeedEstimate | null;
   error?: string;
 }
 
-/** One repo's total size. ONE round trip per call — the Hub's list endpoint
+/** One repo's size. ONE round trip per call — the Hub's list endpoint
  *  refuses this field, so callers ask lazily (a card that has scrolled into
- *  view) and never for a whole page of results at once. */
-export function getHubModelSize(id: string): Promise<HubModelSizeResult> {
-  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", { id });
+ *  view) and never for a whole page of results at once.
+ *
+ *  `file` and `capability` are both optional and travel together: passing
+ *  `file` (a GGUF row's own resolved filename) switches the server from the
+ *  repo-wide total to that one file's own bytes, and passing `capability`
+ *  alongside it additionally asks for a fit/speed judgement riding the same
+ *  request — see `HubModelSizeResult`'s own docstring for why judging either
+ *  requires a `file`, not just a `capability`. */
+export function getHubModelSize(
+  id: string,
+  file?: string | null,
+  capability?: string | null,
+): Promise<HubModelSizeResult> {
+  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", {
+    id, file: file || undefined, capability: capability || undefined,
+  });
 }
 
 export interface HubTask {

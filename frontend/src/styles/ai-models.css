@@ -617,9 +617,8 @@
    Ragged is the state the page is in ALL the time; a stretched neighbour is the
    state it is in while a drawer is open, and `margin-top: auto` on the footer
    below makes that case read as deliberate rather than as a hole. */
-.am-grid {
-  align-items: stretch;
-}
+/* `.am-grid` (the card grid task 4 replaced with `.am-hubtable`) is gone —
+   see that block, further down, for its replacement. */
 
 /* …which is the other half of it: the facts sit under the head, and the
    footer sits on the floor of whatever height the row settled on. Without
@@ -1168,6 +1167,53 @@
   display: flex;
   flex: 1 1 260px;
   min-width: 180px;
+}
+
+/* Part B's four facets (`HubFilterBar`, in `HubResults.tsx`) reuse
+   `.am-hub-controls`'s flex-wrap row, but this one sits INSIDE the search
+   section — between the "Searching huggingface.co" disclosure and the
+   table it narrows — rather than above a section swap, so it wears a
+   smaller gap than the section-changing row above it. */
+.am-hub-facets {
+  margin: 0 0 10px;
+}
+
+/* The one checkbox on this row — a filter over the results, not a menu, so it
+   wears the plainest control that says "on/off" rather than borrowing the two
+   menus' bordered-trigger skin. */
+.am-hub-unfit-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Part B's two open-text filters (Quant, Publisher) — same metrics as the two
+   `ControlMenu` triggers beside them (32px tall, 13px text, 1px border, 6px
+   radius) but no icon/caret: they are plain inputs over an open set, not a
+   vocabulary this page can offer a menu of. Fixed, narrow widths rather than
+   `flex: 1 1 auto` like the search box — these are a second, minor axis of
+   narrowing, and letting either grow would fight the search box for the row's
+   one flexible slot. */
+.am-hub-textfilter {
+  flex: 0 0 auto;
+  width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-hub-textfilter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .am-hub-search {
@@ -3404,4 +3450,416 @@ button.am-bench-model:focus-visible {
 .am-bench-forget:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* ---- The dense Hub results table (task 4, redesigned D639-D641) ---------
+   Replaces the card grid the search face used to draw (`.am-grid`, above).
+   Follows `.am-bench-table` above it — same app, same stylesheet, the same
+   sticky-head-free plain table with tabular numbers on the right. Container
+   queries are the PRIMARY mechanism: columns drop as the pane narrows so the
+   page never scrolls sideways for the common case.
+
+   **Design review, 2026-09-02: three levels of ink, no more.** Full `--fg`
+   is reserved for the model name and the size — the two facts every row
+   states about itself that a reader compares row to row. A heavier weight
+   at full `--fg` is reserved for the match SCORE number (below) — the one
+   number this whole table is ranked by. Everything else (`--fg-muted`) is
+   support: it answers a question a reader asks only sometimes, and giving
+   it the same weight as the two facts above buries them in noise — the
+   screenshot this redesign responds to counted `text generation` /
+   `text-generation` / `GPU` / `BF16` / `≈` on nearly every one of 21 rows,
+   about 40% of the table's ink stating something that told two rows apart
+   from each other zero times.
+
+   **`overflow-x: auto` on the wrap too (code review F5), as a SAFETY NET,
+   not the primary mechanism.** The ladder thresholds below were chosen with
+   no running browser to measure against (`hub-search-notes.md` says so
+   directly) — an acknowledged, still-open gap, not something this pass
+   fixed. Losing Match, Model, Size or the action is worse than a horizontal
+   scrollbar confined to this table's own box, so the wrap scrolls
+   internally rather than clipping when the ladder under-shoots; it stays a
+   no-op at every width the ladder DOES cover. The page body scrolling
+   sideways is still the thing this must never do — `overflow-x` here is
+   scoped to `.am-hubtable-wrap` alone, never the page. */
+.am-hubtable-wrap {
+  container-type: inline-size;
+  margin-top: 6px;
+  overflow-x: auto;
+}
+
+/* The hoisted-constants summary line (D640/D641) — "21 text-generation
+   models · all BF16" in place of repeating either fact on every row below.
+   Sits directly above the table, its own single line: not stacked beside
+   the "Searching huggingface.co…" note above the filter bar, which is a
+   different fact (WHO is being asked) stated in a different place. */
+.am-hubtable-summary {
+  margin: 0 0 4px;
+}
+
+.am-hubtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-hubtable th,
+.am-hubtable td {
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* The per-row hairline is GONE (design review): 21 identical borders read as
+   one grey field with no primary column. What survives is a stronger rule
+   every FIFTH row (`[data-band]`, set in `HubResultsTable.tsx` — see that
+   file's own doc for why it counts only primary/family rows, never an
+   opened variant's own sub-rows) and the existing hover tint, which is now
+   load-bearing for tracking a row sideways with no border to anchor on.
+
+   `border-top` on the row that STARTS a band, not `border-bottom` on the
+   one that ends it (code review finding): a `border-bottom` on the 5th
+   family drew the separator directly below that family's OWN row, which
+   sits ABOVE its own variant disclosure rows when one is open — reading as
+   if the variants belonged to the family AFTER it. A `border-top` on the
+   family that begins the next band always lands between the previous
+   family's last rendered row and this one, open disclosure or not. */
+.am-hubtable tbody tr[data-band] td {
+  border-top: 1px solid var(--border);
+}
+
+.am-hubtable th.num,
+.am-hubtable td.num {
+  text-align: right;
+}
+
+.am-hubtable thead th {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The Match column (D639/D640/D641) — the table's signature element and the
+   one place this design spends emphasis. Bar LENGTH and the printed number
+   are the composite `matchScore`; bar FILL COLOUR and the glyph's SHAPE are
+   the memory verdict (`fit.verdict`) — two different facts sharing one
+   cell because, after D639, they finally say two different things. A
+   non-GPU run mode (D641 folded Mode's own column in here) prints as a
+   visible muted suffix rather than a second colour, since colour in this
+   cell already carries the verdict and must not carry two meanings.
+
+   The flex layout lives on an INNER wrapper, never on the `<td>` itself
+   (`am-hubtable-match-inner`, below) — `display: flex` on a table cell
+   drops it out of `display: table-cell`, which knocks the whole row's
+   cells out of the table's column model (the browser then generates
+   anonymous cells around it) and misaligns every column to its right. The
+   `<td>` keeps `display: table-cell` and only carries `white-space`. */
+.am-hubtable-match {
+  white-space: nowrap;
+}
+
+.am-hubtable-match-inner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The verdict glyph — colour AND shape both carry the verdict (a
+   red/green-blind reader loses nothing either the shape or the cell's own
+   `aria-label`/hover does not already say): a filled circle for "easy", a
+   triangle for "tight", a square for "no", a bare "?" for a row nothing
+   could be judged for at all (a fourth, neutral state — NOT the same as
+   "no", which means judged and does not fit). */
+.am-hubtable-dot {
+  display: inline-block;
+  font-size: 9px;
+  line-height: 1;
+  flex: none;
+}
+
+.am-hubtable-dot-easy {
+  color: var(--success);
+}
+
+.am-hubtable-dot-tight {
+  color: var(--warning);
+}
+
+.am-hubtable-dot-no {
+  color: var(--error);
+}
+
+.am-hubtable-dot-unknown {
+  color: var(--fg-muted);
+}
+
+/* Widened substantially from the pre-redesign 46px (design review) — this is
+   now the column the eye returns to, not an accent beside a separate Score
+   column. Sized to still survive the narrowest ladder step: Match never
+   drops (see the ladder below), so this width is a floor the table's own
+   `overflow-x` safety net exists to cover if a pane narrower than this was
+   ever asked to render it with nothing else given up. */
+.am-hubtable-bar {
+  display: inline-block;
+  position: relative;
+  width: 100px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  flex: none;
+}
+
+.am-hubtable-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  /* `width` is set inline, per row — the one thing about a score a stylesheet
+     cannot know (see `HubResultsTable.tsx`). */
+}
+
+.am-hubtable-bar i.am-hubtable-dot-easy {
+  background: var(--success);
+}
+
+.am-hubtable-bar i.am-hubtable-dot-tight {
+  background: var(--warning);
+}
+
+.am-hubtable-bar i.am-hubtable-dot-no {
+  background: var(--error);
+}
+
+.am-hubtable-bar i.am-hubtable-dot-unknown {
+  background: var(--fg-muted);
+}
+
+/* The printed match score — heavier and at full `--fg`, the one number in
+   this table's second ink level (design review's three-tier rule: name +
+   size at full `--fg`, the score heavier still, everything else muted). */
+.am-hubtable-score-num {
+  font-weight: 700;
+  color: var(--fg);
+  min-width: 1.6em;
+  text-align: right;
+}
+
+/* D641: the visible, non-colour cost of not running on the GPU/unified
+   memory — a small muted suffix beside the score, never a colour change
+   (colour in this cell already carries the memory verdict). */
+.am-hubtable-offload {
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* D641 fix: a value matching the hoisted majority (Task/Capability, Quant)
+   is muted rather than blanked — the column still prints every row's real
+   value; a blank cell and a genuine dash (unknown) must never look the
+   same, so this is the ONLY difference a majority row gets.
+
+   A dedicated colour token, never `opacity` (code review finding): this
+   table already sets `color: var(--fg-muted)` on itself, so an `opacity`
+   here used to COMPOUND with that muting rather than replace it — a
+   ~2.3:1 contrast in light mode, invisible in practice, re-creating the
+   exact blank-vs-dash ambiguity this rule exists to prevent. `--fg-faint`
+   is a known, single contrast value in each theme instead of a product of
+   two unrelated dimming rules — see `tokens.css`'s own comment on it. */
+.am-hubtable-majority {
+  color: var(--fg-faint);
+}
+
+/* The Model column: the family's own name, the curated seal, the state tag
+   and — on its own line — the actual repo a Download button acts on.
+
+   Same rule as `.am-hubtable-match` above: the flex column lives on an
+   INNER wrapper (`am-hubtable-name-inner`), never directly on the `<td>` —
+   a `<td>` with `display: flex` stops being a table cell, which is what
+   was collapsing this column into its neighbour and offsetting every
+   header rightward. The `<td>` stays a plain cell carrying only
+   `white-space`. Full `--fg` (design review): this is one of the two
+   facts (with Size) a reader compares row to row, so it wears the table's
+   highest ink level alongside the match score. */
+.am-hubtable-name {
+  white-space: normal;
+  color: var(--fg);
+}
+
+/* Size shares the Model column's ink level (design review): it is the other
+   fact a reader compares row to row on a ranked list of things they might
+   download, so it stays full `--fg` while every other support column sits
+   at `--fg-muted`. */
+.am-hubtable td.am-col-size {
+  color: var(--fg);
+}
+
+.am-hubtable-name-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.am-hubtable-name-inner > a {
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.am-hubtable-name-inner > a:hover {
+  text-decoration: underline;
+}
+
+/* The GROUPING fact ("from <baseModel>") — muted, secondary, and never the
+   bold name (E: identity/action/name must all be the same repo). Was
+   `.am-hubtable-variant-id`, which the same rule used to render the OTHER
+   way round (the primary's own id, muted, under a base-model bold name).
+   Corrected (code review F7): the class name did NOT stay, contrary to what
+   this comment used to claim — the JSX now emits `am-hubtable-basemodel`
+   (below), so `.am-hubtable-variant-id` would have been a dead selector had
+   one still existed under that name; there was none left to remove, only
+   this comment's stale claim about it. */
+.am-hubtable-basemodel {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-hubtable-partial {
+  font-size: 10px;
+  color: var(--warning-soft);
+  border: 1px dashed var(--warning-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* Var. — how many other repos this row folded in. A pill, not a bare number,
+   for the same reason `catalog.py`'s recommended badge is one: it is a COUNT,
+   not a measurement, and the shape says so before the digit is read. */
+.am-hubtable-varcount {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+}
+
+/* The count is also the disclosure TOGGLE (E-1) — a real affordance, not
+   chrome that only looks like one, so it wears the pointer and a visible
+   hover/focus the plain count-only span (no siblings) does not need. */
+.am-hubtable-vartoggle {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.am-hubtable-vartoggle:hover,
+.am-hubtable-vartoggle:focus-visible {
+  background: var(--bg-hover, var(--bg-alt));
+}
+
+/* Quality floor (design review): keyboard focus stays VISIBLE on every
+   interactive cell, not just hover — this button had a hover-only
+   treatment before, which is invisible to a keyboard user tabbing through
+   the table. */
+.am-hubtable-vartoggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A sibling's own disclosure row, opened from "N variants" — indented under
+   the family row it belongs to so it reads as folded IN rather than as a
+   result of its own. */
+.am-hubtable-variant-row {
+  font-size: 0.95em;
+}
+
+.am-hubtable-variant-row .am-hubtable-variant-name {
+  padding-left: 1.25em;
+}
+
+.am-hubtable-variant-row .am-hubtable-name-inner > a {
+  color: var(--fg-muted);
+}
+
+/* The family row's own base class (code review F7) — emitted in JSX
+   (`HubResultsTable.tsx`, alongside the disk-state washes below) so a family
+   row and a variant sub-row (`.am-hubtable-variant-row`) can be told apart in
+   CSS, but this had no rule of its own at all before this fix. A subtle
+   hover, matching `.am-hubtable-vartoggle`'s own hover treatment, so a row
+   under the pointer reads as the thing being scanned — most rows carry
+   neither disk-state wash, and for the few that do this briefly swaps their
+   wash for the hover tint while the pointer is over them, reverting on
+   mouseout, which is an acceptable trade for one shared rule rather than a
+   `:not(.am-card-have):not(.am-card-part-unknown):not(.am-card-arriving)`
+   guard nobody asked for. */
+.am-hubtable-row:hover {
+  background: var(--bg-hover, var(--bg-alt));
+}
+
+/* The disk-state washes themselves (`am-card-have`, `am-card-part-unknown`,
+   `am-card-arriving`) are the SAME classes every other card on this page
+   wears for the same three states (D436) — see `HubResultsTable.tsx`, and
+   their rules further up this file. Nothing hubtable-specific needed here. */
+
+.am-hubtable-action {
+  text-align: right;
+}
+
+/* Column-hiding, widest-drops-first (D641 rewrite): Task, tok/s, Params,
+   Quant, Pop. and New drop in that order as the pane narrows — Match,
+   Model, Size and the action never do (the redesign's own line in the
+   sand: the fitness spine, identity, the one other row-to-row comparison,
+   and the escape hatch). Capability, Mode and Score are GONE as their own
+   columns (merged into Task, folded into Match, merged into Match — see
+   D640/D641), so this ladder is six rungs where it used to be eight.
+   Thresholds are the TABLE's own inline size (`container-type:
+   inline-size` above), not the viewport, so a split pane narrows the same
+   columns a full-width window would — unverified in a running browser, per
+   this file's own long-standing caveat above.
+
+   Task drops first (820px): once Mode and Capability are gone, it is the
+   one remaining column most likely to already be stated once in the
+   hoisted summary line above the table (D640) rather than carrying new
+   information on any given row. Quant drops just after Params rather than
+   with it, since a quant token is often the more decisive fact of the two
+   at that width. */
+@container (max-width: 820px) {
+  .am-hubtable .am-col-task {
+    display: none;
+  }
+}
+
+@container (max-width: 740px) {
+  .am-hubtable .am-col-tok {
+    display: none;
+  }
+}
+
+@container (max-width: 660px) {
+  .am-hubtable .am-col-params {
+    display: none;
+  }
+}
+
+@container (max-width: 600px) {
+  .am-hubtable .am-col-quant {
+    display: none;
+  }
+}
+
+@container (max-width: 540px) {
+  .am-hubtable .am-col-pop {
+    display: none;
+  }
+}
+
+@container (max-width: 460px) {
+  .am-hubtable .am-col-new {
+    display: none;
+  }
 }

@@ -288,4 +288,15 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M12 8h.01" />
     </svg>
   ),
+  // A target/bullseye — "Best match" (D639) is the one ordering that is a
+  // judgement blending several facts into a single ranking rather than a
+  // fact about the repo itself, and no existing glyph here reads as
+  // "ranked for you" without already meaning something else in this menu.
+  target: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </svg>
+  ),
 };

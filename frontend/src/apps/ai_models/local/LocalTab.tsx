@@ -57,7 +57,14 @@ import {
   runnersByCapability,
 } from "@apps/ai_models/lib/aiModelGroups";
 import { publishAiRuntime, refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { searchChrome, type ResultSort } from "@apps/ai_models/lib/hubSearchView";
+import {
+  activeFitLevel,
+  activeParamsBand,
+  activeSort,
+  searchChrome,
+  type ResultSort,
+} from "@apps/ai_models/lib/hubSearchView";
+import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import {
   deleteAiModels,
@@ -68,6 +75,8 @@ import {
   type AiCatalogCapability,
   type AiModelDeleteTarget,
   type AiModelRepo,
+  type HubFitLevel,
+  type HubParamsBand,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
@@ -97,6 +106,47 @@ function SectionHead({ title }: { title: string }) {
     </div>
   );
 }
+
+/** Everything the URL says about the Hub search, read once on load —
+ *  `hubQ`/`hubTask`/`hubSort`/`hubUnfit` unconditionally, and Part B's four
+ *  search-only facets (`hubFit`/`hubParams`/`hubQuant`/`hubOrg`) ONLY when a
+ *  query or task is ALSO present.
+ *
+ *  **A facet param with no query is INERT, not half-applied.** `?hubFit=easy`
+ *  with nothing else opens the ordinary idle "your models" face — there is no
+ *  results grid yet for it to narrow, `HubFilterBar` does not even mount
+ *  there (see its own doc in `HubResults.tsx`), and seeding the state anyway
+ *  would stash a filter that silently applies to whatever the reader types
+ *  next, which is exactly the "which grid does this filter?" ambiguity that
+ *  facets not rendering on the idle face already avoids. `?hubQ=llama
+ *  &hubFit=easy` together apply both, because there IS a grid by then.
+ *
+ *  Prefixed names throughout (`hub*`, never bare `q`/`sort`/`model`):
+ *  `?model=` already means something else, page-wide (the side panel's own
+ *  seed — a live, deliberately unfixed collision this page must not add a
+ *  second version of), and a bare `?sort=`/`?q=` would be the same hazard
+ *  the next page that wants either.
+ *
+ *  `activeSort`/`activeFitLevel`/`activeParamsBand` do double duty as
+ *  validation here, for free: each already falls back to its own menu's
+ *  first (no-op) entry for a value it does not recognise, which is exactly
+ *  what a malformed or hand-edited param needs. */
+function readHubUrl(): SettledQuery {
+  const q = readParam("hubQ") ?? "";
+  const task = readParam("hubTask") ?? "";
+  const asked = !!(q.trim() || task.trim());
+  return {
+    q,
+    task,
+    sort: activeSort(readParam("hubSort") as ResultSort).value,
+    includeUnfit: readParam("hubUnfit") === "1",
+    fitLevel: asked ? activeFitLevel(readParam("hubFit") as HubFitLevel).value : "any",
+    paramsBand: asked ? activeParamsBand(readParam("hubParams") as HubParamsBand).value : "any",
+    quant: asked ? (readParam("hubQuant") ?? "") : "",
+    publisher: asked ? (readParam("hubOrg") ?? "") : "",
+  };
+}
+
 export function LocalTab({ scan }: { scan: CacheScan }) {
   const {
     load,
@@ -128,16 +178,33 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   // `settled` decides which face of the page renders, and because the ✕ in the
   // box and the "← Back to models" control in the results heading are one act
   // reachable from two places (`clearSearch`).
-  const [query, setQuery] = useState("");
-  const [task, setTask] = useState("");
+  //
+  // Every one of these eight seeds from the URL (`readHubUrl`) so a shared
+  // link RUNS the search rather than merely prefilling the box — `settled`
+  // below seeds from the same read, which is what puts the page straight
+  // into the results face on load rather than waiting on the debounce.
+  const [query, setQuery] = useState(() => readHubUrl().q);
+  const [task, setTask] = useState(() => readHubUrl().task);
   // The PAGE's sort, which is a superset of the Hub's: "Size" is ranked here
   // because the Hub's list endpoint cannot rank by it (`ResultSort`). What
   // reaches the wire is `wireSort` of this, in `HubResults`.
-  const [sort, setSort] = useState<ResultSort>("downloads");
+  const [sort, setSort] = useState<ResultSort>(() => readHubUrl().sort);
+  // Whether to ask for models this machine likely cannot run too — off by
+  // default (D316's own "never a silent drop", applied here the way it was to
+  // gated repos): the results summary states how many were hidden either way.
+  const [includeUnfit, setIncludeUnfit] = useState(() => readHubUrl().includeUnfit);
+  // Part B's four explicit filters — all server-side (`hub_models.py`'s own
+  // `api_hub_search`), all "any"/empty as their no-op default, same as
+  // `includeUnfit` above. `readHubUrl` seeds these as "any"/"" unless a query
+  // or task came along with them (see its own doc).
+  const [fitLevel, setFitLevel] = useState<HubFitLevel>(() => readHubUrl().fitLevel);
+  const [paramsBand, setParamsBand] = useState<HubParamsBand>(() => readHubUrl().paramsBand);
+  const [quant, setQuant] = useState(() => readHubUrl().quant);
+  const [publisher, setPublisher] = useState(() => readHubUrl().publisher);
   // …and settled, which is what the results section is keyed on: a burst of
   // typing is one request, and the LAYOUT must not swap on the first letter and
   // back on a backspace.
-  const [settled, setSettled] = useState<SettledQuery>({ q: "", task: "", sort: "downloads" });
+  const [settled, setSettled] = useState<SettledQuery>(readHubUrl);
   const debounce = useRef<number | null>(null);
   const searchBox = useRef<HTMLInputElement>(null);
 
@@ -145,11 +212,42 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     if (debounce.current) window.clearTimeout(debounce.current);
     // Long enough that a typed word is one request rather than five, short
     // enough that the results feel like they are following the query.
-    debounce.current = window.setTimeout(() => setSettled({ q: query, task, sort }), 350);
+    debounce.current = window.setTimeout(
+      () => setSettled({ q: query, task, sort, includeUnfit, fitLevel, paramsBand, quant, publisher }),
+      350,
+    );
     return () => {
       if (debounce.current) window.clearTimeout(debounce.current);
     };
-  }, [query, task, sort]);
+  }, [query, task, sort, includeUnfit, fitLevel, paramsBand, quant, publisher]);
+
+  // Mirrors the SETTLED search into the URL, never the live controls — a
+  // `writeParams` per keystroke would put a query in the address bar that
+  // has not actually been asked for yet (`params.ts`'s own `writeMode`
+  // doc: `replaceState`, so this never stacks a history entry a typed
+  // character would have to Back through).
+  //
+  // The four facets are cleared from the URL (passed `null`) whenever
+  // nothing is asked (`asked` below) — the WRITE-side mirror of
+  // `HubFilterBar` not rendering on the idle face: the URL must never
+  // advertise a filter that is not in effect on whatever is actually on
+  // screen.
+  useEffect(() => {
+    const asked = !!(settled.q.trim() || settled.task.trim());
+    writeParams({
+      hubQ: settled.q || null,
+      hubTask: settled.task || null,
+      // "best" (D639) is now the default — the same slot "downloads" held
+      // before the composite ranking existed — so it is the value omitted
+      // from the URL rather than always written.
+      hubSort: settled.sort === "best" ? null : settled.sort,
+      hubUnfit: settled.includeUnfit ? "1" : null,
+      hubFit: asked && settled.fitLevel !== "any" ? settled.fitLevel : null,
+      hubParams: asked && settled.paramsBand !== "any" ? settled.paramsBand : null,
+      hubQuant: asked && settled.quant ? settled.quant : null,
+      hubOrg: asked && settled.publisher ? settled.publisher : null,
+    });
+  }, [settled]);
 
   /** Back to this machine's own models, in one act.
    *
@@ -167,6 +265,15 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const clearSearch = () => {
     setQuery("");
     setTask("");
+    // Unlike the sort, these ARE reset: each is a filter over one search's
+    // answer, not a standing preference, and a reader who opted into "show
+    // everything" (or narrowed to one org, one quant) on one query should not
+    // have it silently follow them into the next unrelated one.
+    setIncludeUnfit(false);
+    setFitLevel("any");
+    setParamsBand("any");
+    setQuant("");
+    setPublisher("");
     searchBox.current?.focus();
   };
 
@@ -458,11 +565,13 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         query={query}
         task={task}
         sort={sort}
+        includeUnfit={includeUnfit}
         showsReset={live.showsReset}
         searchBox={searchBox}
         onQuery={setQuery}
         onTask={setTask}
         onSort={setSort}
+        onIncludeUnfit={setIncludeUnfit}
         onClear={clearSearch}
       />
       {load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
@@ -481,6 +590,10 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       {face === "results" ? (
         <HubResults
           settled={settled}
+          fitLevel={fitLevel}
+          paramsBand={paramsBand}
+          quant={quant}
+          publisher={publisher}
           cards={onCard}
           runners={runners}
           curated={curated}
@@ -488,6 +601,10 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
           pulling={pulling}
           onDownload={runDownload}
           onCancel={runCancelDownload}
+          onFitLevel={setFitLevel}
+          onParamsBand={setParamsBand}
+          onQuant={setQuant}
+          onPublisher={setPublisher}
           onBack={clearSearch}
         />
       ) : (

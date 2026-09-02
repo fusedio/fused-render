@@ -26,11 +26,17 @@
 // join that makes an in-app Hub search worth having is "you already have this
 // one", and the page's own walk is the only honest source for it.
 import { useEffect, useState } from "react";
-import { HubResultCard } from "./RecommendedCard";
-import { type DiskCard, resultDisk, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
+import { ControlMenu } from "./SearchControls";
+import { HubResultsTable } from "./HubResultsTable";
+import { type DiskCard, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
+import { groupIntoFamilies } from "@apps/ai_models/lib/hubFamilies";
 import {
+  activeFitLevel,
+  activeParamsBand,
   bySizeAscending,
+  FIT_LEVELS,
   needsHubLogin,
+  PARAMS_BANDS,
   resultsSummary,
   searchChrome,
   sortsOnPage,
@@ -44,10 +50,115 @@ import {
   searchHubModels,
   startHfLogin,
   type HfAuth,
+  type HubFitLevel,
   type HubModel,
+  type HubParamsBand,
 } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
+import type { MenuEntry } from "@platform/ui/ContextMenu";
+
+/** Part B's four explicit facets — fit level, quant, params band, publisher —
+ *  rendered HERE, in the search face's own component, rather than in
+ *  `SearchControls` above both faces.
+ *
+ *  **Why this row lives in the search face and not the shared header.** All
+ *  four only mean anything once there is a Hub result set to sift — the idle
+ *  "your models" face lists a handful of repos the reader already chose to
+ *  keep, and a publisher/quant/params control that visibly narrows nothing
+ *  on that short a list is worse than no control: it teaches the reader that
+ *  the row does nothing. Splitting it out here, rather than conditionally
+ *  showing four of `SearchControls`' own controls, also removes any question
+ *  of which grid a control affects — there is only ever one grid in scope
+ *  wherever this component is mounted.
+ *
+ *  Reuses `ControlMenu`/`SORT_ICONS`-style icon choices from
+ *  `SearchControls.tsx` verbatim rather than a second dropdown — see that
+ *  file's own doc for why a hand-rolled third menu is exactly the drift the
+ *  app's one menu surface exists to prevent. Quant/publisher stay plain text
+ *  inputs for the same reason they did there: both are open sets (an
+ *  author's own quant token, any Hub org) with no glossary to offer a menu
+ *  of. */
+function HubFilterBar({
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
+}: {
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
+}) {
+  const activeFit = activeFitLevel(fitLevel);
+  const activeParams = activeParamsBand(paramsBand);
+
+  // Fit level reuses the info glyph, same as the "Fit" ordering in
+  // `SearchControls`: what both add over a plain result is a judgement
+  // ABOUT THIS MACHINE.
+  const fitLevelItems: MenuEntry[] = FIT_LEVELS.map((l) => ({
+    label: l.label,
+    icon: MenuIcons.info,
+    active: l.value === fitLevel,
+    onClick: () => onFitLevel(l.value),
+  }));
+
+  // Params band reuses the drive glyph — the same reuse the "Size" ordering
+  // makes in `SearchControls`, for the same reason: both are about how much
+  // weight a model carries.
+  const paramsBandItems: MenuEntry[] = PARAMS_BANDS.map((b) => ({
+    label: b.label,
+    icon: MenuIcons.drive,
+    active: b.value === paramsBand,
+    onClick: () => onParamsBand(b.value),
+  }));
+
+  return (
+    <div className="am-hub-controls am-hub-facets">
+      <ControlMenu
+        icon={MenuIcons.info}
+        label={activeFit.label}
+        title={activeFit.title}
+        ariaLabel={"Filter by fit: " + activeFit.label}
+        items={fitLevelItems}
+      />
+      <ControlMenu
+        icon={MenuIcons.drive}
+        label={activeParams.label}
+        title={activeParams.title}
+        ariaLabel={"Filter by parameter count: " + activeParams.label}
+        items={paramsBandItems}
+      />
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={quant}
+        placeholder="Quant (e.g. Q4_K_M)"
+        aria-label="Filter by exact quantization"
+        title="Show only results with this exact measured quantization"
+        onChange={(e) => onQuant(e.target.value)}
+      />
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={publisher}
+        placeholder="Publisher/org"
+        aria-label="Filter by publisher or organization"
+        title="Show only results published by this Hub user or organization"
+        onChange={(e) => onPublisher(e.target.value)}
+      />
+    </div>
+  );
+}
 
 /** A settled query — what the debounce hands over, and the only thing this
  *  section is keyed on. */
@@ -57,6 +168,16 @@ export interface SettledQuery {
   /** The PAGE's sort, which may be one the Hub cannot perform. What goes on the
    *  wire is `wireSort(sort)`; see `ResultSort`. */
   sort: ResultSort;
+  /** Ask for models this machine likely cannot run too — off by default. */
+  includeUnfit: boolean;
+  /** Part B's three server-side filters over `fit`/`params`, plus the Hub's
+   *  own `author` parameter — see `HubFilterBar` (above) for the controls and
+   *  `hub_models.py`'s own `api_hub_search` for how each is applied. "any"/""
+   *  is every filter's no-op default. */
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
 }
 
 /** How many rows one question is worth. `limit` means "rows you will be shown":
@@ -85,7 +206,7 @@ async function measureSizes(
   const worker = async () => {
     while (alive() && next < ids.length) {
       const id = ids[next++];
-      out.set(id, await lookupTotalSize(id));
+      out.set(id, await lookupTotalSize(id, null));
     }
   };
   await Promise.all(
@@ -213,6 +334,10 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
 
 export function HubResults({
   settled,
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
   cards,
   runners,
   curated,
@@ -220,9 +345,22 @@ export function HubResults({
   pulling,
   onDownload,
   onCancel,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
   onBack,
 }: {
   settled: SettledQuery;
+  /** The LIVE (not yet debounced) filter values `HubFilterBar` edits — kept
+   *  apart from `settled.fitLevel`/etc for the same reason `query`/`task` are
+   *  live in `LocalTab` while `settled.q`/`settled.task` drive the fetch: a
+   *  quant/publisher keystroke is one of several before the debounce settles,
+   *  and a menu click is instantaneous either way. */
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
   /** What this machine already has, from the page's ONE walk — never the
    *  `local` field on the search reply, which is frozen at the moment of the
    *  search. Null while the walk has not answered. */
@@ -239,6 +377,10 @@ export function HubResults({
   pulling: (id: string) => boolean;
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
   /** Clears query AND task filter — the same act as the ✕ in the box. */
   onBack: () => void;
 }) {
@@ -256,6 +398,10 @@ export function HubResults({
   // and in both cases the grid is drawn in the server's order.
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
+  // How many `verdict: "no"` rows the server dropped before `limit` — 0 when
+  // `includeUnfit` asked for them back, or when nothing needed hiding. Stated
+  // beside the results so the default filter is never a silent drop (D316).
+  const [hiddenUnfit, setHiddenUnfit] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -269,6 +415,11 @@ export function HubResults({
       task: settled.task,
       sort: wireSort(settled.sort),
       limit: LIMIT,
+      includeUnfit: settled.includeUnfit,
+      fitLevel: settled.fitLevel,
+      paramsBand: settled.paramsBand,
+      quant: settled.quant || undefined,
+      publisher: settled.publisher || undefined,
     }).then(
       (data) => {
         if (!alive) return;
@@ -281,6 +432,7 @@ export function HubResults({
         setError(data.error ?? null);
         setModels(data.models);
         setEndpoint(data.endpoint ?? null);
+        setHiddenUnfit(data.hiddenUnfit ?? 0);
         // Whether this machine holds a Hub token — never the token, only the
         // fact. It decides what a gated card offers (`gateChrome`), and it
         // comes from the same reply as the rows so the two cannot describe
@@ -358,7 +510,6 @@ export function HubResults({
   // somewhere else would defeat it.
   const hostUrl = endpoint || "https://huggingface.co";
   const host = hostUrl.replace(/^https?:\/\//, "");
-  const summary = resultsSummary(settled.q, models?.length ?? null, host, !!error);
   // The order the grid is DRAWN in. The server's, unless a page-level sort has
   // finished measuring — and then by the figure each card is SHOWING, so the
   // column of sizes beside the names actually ascends (`hubSizeBytes`).
@@ -368,6 +519,16 @@ export function HubResults({
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
       : models;
+  // One row per model FAMILY (task 3), grouped over whatever order `shown`
+  // settled on — server ranking, or the page's own size pass — so the fit/
+  // trending/size ordering already decided above survives into which family
+  // leads and which order the rows themselves appear in (`hubFamilies.ts`).
+  const families = shown ? groupIntoFamilies(shown, settled.sort) : null;
+  // `families.length`, not `models.length`: the table draws one row per
+  // FAMILY, and a heading counting server rows over a grid of grouped ones
+  // said "24 on huggingface.co" above nine visible rows — the summary and the
+  // table it sits beside must count the same thing.
+  const summary = resultsSummary(settled.q, families?.length ?? null, host, !!error);
 
   return (
     <section className="am-section">
@@ -384,6 +545,14 @@ export function HubResults({
               it is about to reorder — and only while it is true, which is at
               most the few seconds a size sort spends measuring. */}
           {measuring && <span className="am-discover-summary">measuring sizes…</span>}
+          {/* Never a silent drop (D316): the toggle beside the search box
+              turns this filter off, and this is what tells the reader it is
+              on in the first place. */}
+          {hiddenUnfit > 0 && (
+            <span className="am-discover-summary">
+              {hiddenUnfit} hidden — will not fit here
+            </span>
+          )}
           {/* The second way back, in the row somebody looking at results they
               did not want is already reading. The ✕ in the box is the one you
               find when you go looking for it; this is the one you cannot miss,
@@ -418,6 +587,18 @@ export function HubResults({
           , limited to models an engine here can load.
         </p>
       )}
+      {/* The four facets, in this face only (see `HubFilterBar`'s own doc for
+          why they do not live in `SearchControls`, above both faces). */}
+      <HubFilterBar
+        fitLevel={fitLevel}
+        paramsBand={paramsBand}
+        quant={quant}
+        publisher={publisher}
+        onFitLevel={onFitLevel}
+        onParamsBand={onParamsBand}
+        onQuant={onQuant}
+        onPublisher={onPublisher}
+      />
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {/* Only where a gated result needs it (`needsHubLogin`) — a standing
           offer of an account on every search would be this page recommending
@@ -432,27 +613,24 @@ export function HubResults({
           Nothing on {host} matches that — among the models this app can run.
         </p>
       )}
-      {shown !== null && shown.length > 0 && (
+      {families !== null && families.length > 0 && (
         // A refetch in flight DIMS the rows rather than replacing them: the old
         // answer is the best one there is until the new one lands, and swapping
         // it for empty space makes typing feel like the page is breaking. A size
         // pass is the same situation — these are the right rows in the wrong
         // order — so it wears the same treatment rather than inventing one.
-        <div className={"cc-mdgrid am-grid" + (loading || measuring ? " am-hub-stale" : "")}>
-          {shown.map((m) => (
-            <HubResultCard
-              key={m.id}
-              model={m}
-              curated={curated.has(m.id)}
-              runner={runners.get(m.capability) ?? null}
-              disk={resultDisk(m.id, cards)}
-              authenticated={authenticated}
-              busy={pulling(m.id)}
-              job={jobByModel.get(m.id)}
-              onDownload={() => onDownload(m.id, m.capability)}
-              onCancel={onCancel}
-            />
-          ))}
+        <div className={loading || measuring ? "am-hub-stale" : undefined}>
+          <HubResultsTable
+            families={families}
+            cards={cards}
+            runners={runners}
+            curated={curated}
+            jobByModel={jobByModel}
+            pulling={pulling}
+            authenticated={authenticated}
+            onDownload={onDownload}
+            onCancel={onCancel}
+          />
         </div>
       )}
     </section>
