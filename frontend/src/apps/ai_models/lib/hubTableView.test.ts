@@ -9,6 +9,7 @@ import {
   isMatchScoreStale,
   hoistSummary,
   hoistValue,
+  majorityValue,
   matchCell,
   matchFitBasis,
   matchTitle,
@@ -449,25 +450,19 @@ describe("capabilityHint", () => {
 });
 
 describe("hoistValue", () => {
-  it("is unanimous when every row shares one value", () => {
-    expect(hoistValue(["a", "a", "a"])).toEqual({ value: "a", unanimous: true });
+  it("is the shared value when every row agrees — the only case it returns non-null", () => {
+    expect(hoistValue(["a", "a", "a"])).toEqual({ value: "a" });
   });
 
-  it("hoists the modal value, not unanimous, at or above the 80% majority", () => {
-    // 4 of 5 = 80%, the documented floor.
-    expect(hoistValue(["a", "a", "a", "a", "b"])).toEqual({ value: "a", unanimous: false });
-  });
-
-  it("hoists nothing just under the majority threshold", () => {
-    // 3 of 4 = 75%, below 80%.
+  it("is null for anything short of unanimous, even a strong majority", () => {
+    // 4 of 5 = 80%, the old (now-retired) majority floor — no longer enough.
+    expect(hoistValue(["a", "a", "a", "a", "b"])).toBeNull();
+    // 3 of 4 = 75%, below even that old floor.
     expect(hoistValue(["a", "a", "a", "b"])).toBeNull();
   });
 
-  it("never counts a null as agreement, and nulls still count toward the denominator", () => {
-    // 4 of 5 known values agree, but the fifth (null) still counts against
-    // the total — 4/5 = 80% still clears it here, but the null must not be
-    // silently dropped from the count entirely.
-    expect(hoistValue(["a", "a", "a", "a", null])).toEqual({ value: "a", unanimous: false });
+  it("a single null anywhere breaks unanimity outright, even with every known value agreeing", () => {
+    expect(hoistValue(["a", "a", "a", "a", null])).toBeNull();
     expect(hoistValue([null, null, null])).toBeNull();
   });
 
@@ -476,18 +471,36 @@ describe("hoistValue", () => {
   });
 });
 
+describe("majorityValue", () => {
+  it("is the modal value at or above the 80% floor — the styling-only concept `hoistValue` used to double as", () => {
+    expect(majorityValue(["a", "a", "a", "a", "b"])).toEqual({ value: "a" });
+  });
+
+  it("is null just under the floor", () => {
+    expect(majorityValue(["a", "a", "a", "b"])).toBeNull();
+  });
+
+  it("nulls count toward the denominator but never toward the modal count", () => {
+    expect(majorityValue(["a", "a", "a", "a", null])).toEqual({ value: "a" });
+    expect(majorityValue([null, null, null])).toBeNull();
+  });
+
+  it("is also non-null for a fully unanimous set (the column just won't be visible for it to matter)", () => {
+    expect(majorityValue(["a", "a", "a"])).toEqual({ value: "a" });
+  });
+
+  it("is null for an empty result set", () => {
+    expect(majorityValue([])).toBeNull();
+  });
+});
+
 describe("columnVisible", () => {
-  it("is absent (false) when every row agrees — the unanimous case", () => {
-    expect(columnVisible({ value: "BF16", unanimous: true }, ["BF16", "BF16", "BF16"])).toBe(false);
+  it("is absent (false) when the hoist is non-null — unanimous by construction", () => {
+    expect(columnVisible({ value: "BF16" }, ["BF16", "BF16", "BF16"])).toBe(false);
   });
 
-  it("is present (true) under a majority hoist, so the minority stays legible", () => {
-    expect(columnVisible({ value: "BF16", unanimous: false }, ["BF16", "BF16", "BF16", "BF16", "Q4_K_M"])).toBe(
-      true,
-    );
-  });
-
-  it("is present when there is no hoist at all — real diversity, below the majority floor", () => {
+  it("is present (true) with no hoist — a majority short of unanimous, or real diversity", () => {
+    expect(columnVisible(null, ["BF16", "BF16", "BF16", "BF16", "Q4_K_M"])).toBe(true);
     expect(columnVisible(null, ["BF16", "Q4_K_M", "Q8_0", "F16"])).toBe(true);
   });
 
@@ -498,55 +511,36 @@ describe("columnVisible", () => {
   it("is absent for an empty result set", () => {
     expect(columnVisible(null, [])).toBe(false);
   });
-
-  it("stays PRESENT when primaries are unanimous but a variant differs (code review finding)", () => {
-    // All primaries are BF16 (the hoist says unanimous), but a family's own
-    // variant — its quant/finetune republish — is Q4_K_M. The hoist's word
-    // alone would drop the column header-and-all while an opened disclosure
-    // still shows a Q4_K_M row with nothing to label it; `columnVisible`
-    // must re-check the FULL set (primaries + variants) it is actually given.
-    expect(
-      columnVisible({ value: "BF16", unanimous: true }, ["BF16", "BF16", "BF16", "Q4_K_M"]),
-    ).toBe(true);
-  });
 });
 
 describe("isMajorityValue", () => {
-  it("is true for a row matching a non-unanimous hoist's own value", () => {
-    expect(isMajorityValue("BF16", { value: "BF16", unanimous: false })).toBe(true);
+  it("is true for a row matching the majority value", () => {
+    expect(isMajorityValue("BF16", { value: "BF16" })).toBe(true);
   });
 
-  it("is false for the minority row under that same hoist", () => {
-    expect(isMajorityValue("Q4_K_M", { value: "BF16", unanimous: false })).toBe(false);
+  it("is false for a row that does not match it", () => {
+    expect(isMajorityValue("Q4_K_M", { value: "BF16" })).toBe(false);
   });
 
-  it("is false under a UNANIMOUS hoist — that column is not rendered at all, so styling is moot", () => {
-    expect(isMajorityValue("BF16", { value: "BF16", unanimous: true })).toBe(false);
-  });
-
-  it("is false with no hoist, and false for a null (unknown) value", () => {
+  it("is false with no majority, and false for a null (unknown) value", () => {
     expect(isMajorityValue("BF16", null)).toBe(false);
-    expect(isMajorityValue(null, { value: "BF16", unanimous: false })).toBe(false);
+    expect(isMajorityValue(null, { value: "BF16" })).toBe(false);
   });
 });
 
 describe("hoistSummary", () => {
   it("states the unanimous capability and the count together", () => {
-    expect(hoistSummary(21, { value: "text-generation", unanimous: true }, null)).toBe(
-      "21 text-generation models",
-    );
+    expect(hoistSummary(21, { value: "text-generation" }, null)).toBe("21 text-generation models");
   });
 
-  it("says 'mostly' for a majority-only capability hoist", () => {
-    expect(hoistSummary(5, { value: "text-generation", unanimous: false }, null)).toBe(
-      "5 models (mostly text-generation)",
-    );
+  it("states nothing about a column that did not reach unanimity — no hoist means no clause, never 'mostly'", () => {
+    expect(hoistSummary(5, null, null)).toBe("5 models");
   });
 
-  it("appends the quant hoist after the capability one", () => {
-    expect(
-      hoistSummary(21, { value: "text-generation", unanimous: true }, { value: "BF16", unanimous: false }),
-    ).toBe("21 text-generation models · mostly BF16");
+  it("appends the quant hoist after the capability one, both stated as 'all'-strength facts", () => {
+    expect(hoistSummary(21, { value: "text-generation" }, { value: "BF16" })).toBe(
+      "21 text-generation models · all BF16",
+    );
   });
 
   it("uses the singular noun for exactly one model", () => {
@@ -554,16 +548,15 @@ describe("hoistSummary", () => {
   });
 
   it("is null for an empty result set even with a hoist to report", () => {
-    expect(hoistSummary(0, { value: "text-generation", unanimous: true }, null)).toBeNull();
+    expect(hoistSummary(0, { value: "text-generation" }, null)).toBeNull();
   });
 });
 
 describe("familyHoist", () => {
-  // Code review finding 4: presence (`showTask`/`showQuant`) and the
-  // summary line must come from the SAME value set — every row the table
-  // can display, primaries and variants alike — never two separate
-  // computations that can disagree about whether the result set actually
-  // agrees on something.
+  // Code review finding 4 (presence/summary must share one value set), and
+  // D661 (unanimity-only hoisting): four states pinned directly, the
+  // variant-dominated shape (few primaries, many hidden variants) explicitly
+  // among them since it is the shape that regressed twice.
   function family(id: string, quant: string | null, variantQuants: (string | null)[] = []): HubFamily {
     const primary = model(id, { quant });
     const variants = variantQuants.map((q, i) => model(`${id}-variant-${i}`, { quant: q }));
@@ -572,28 +565,58 @@ describe("familyHoist", () => {
 
   it("unanimous across primaries AND variants: hides the column, summary says 'all'", () => {
     const families = [family("a", "BF16"), family("b", "BF16", ["BF16"]), family("c", "BF16")];
-    const { quantHoist, summary, showQuant } = familyHoist(families);
-    expect(quantHoist).toEqual({ value: "BF16", unanimous: true });
+    const { quantHoist, quantMajority, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toEqual({ value: "BF16" });
+    expect(quantMajority).toEqual({ value: "BF16" });
     expect(showQuant).toBe(false);
     expect(summary).toContain("all BF16");
   });
 
-  it("majority-with-a-differing-variant: the reported bug — column stays, summary says 'mostly', not 'all'", () => {
-    // All four PRIMARIES are BF16; one family's own variant is Q4_K_M. A
-    // primaries-only hoist would read "unanimous" here (the exact
-    // contradiction the reviewer caught: summary says "all BF16" while an
-    // opened disclosure shows a real Q4_K_M with the column still visible).
+  it("majority with a differing VARIANT (the regressed shape): three visible primaries all BF16, fifteen hidden variants Q4_K_M — column stays, summary claims nothing about quant", () => {
+    // Round 2's own contradiction: a primaries-only hoist (or a majority
+    // hoist over the full set) would have let "mostly Q4_K_M" print above
+    // three visible cells that all read BF16. Now: any disagreement in the
+    // full set (primaries+variants) means no hoist at all, so the summary
+    // states no quant fact — but the column still renders, and the three
+    // BF16 primaries are each muted (`quantMajority`) since Q4_K_M is now
+    // the actual majority value across the full 18-row set.
+    const families = [
+      family("a", "BF16", Array(5).fill("Q4_K_M")),
+      family("b", "BF16", Array(5).fill("Q4_K_M")),
+      family("c", "BF16", Array(5).fill("Q4_K_M")),
+    ];
+    const { quantHoist, quantMajority, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toBeNull();
+    expect(quantMajority).toEqual({ value: "Q4_K_M" });
+    expect(showQuant).toBe(true);
+    expect(summary).not.toContain("BF16");
+    expect(summary).not.toContain("Q4_K_M");
+    expect(summary).not.toContain("mostly");
+  });
+
+  it("majority with a differing PRIMARY: four primaries BF16, one primary Q4_K_M (80%) — column stays, no quant clause, BF16 primaries muted", () => {
     const families = [
       family("a", "BF16"),
       family("b", "BF16"),
       family("c", "BF16"),
-      family("d", "BF16", ["Q4_K_M"]),
+      family("d", "BF16"),
+      family("e", "Q4_K_M"),
     ];
-    const { quantHoist, summary, showQuant } = familyHoist(families);
-    expect(quantHoist).toEqual({ value: "BF16", unanimous: false });
+    const { quantHoist, quantMajority, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toBeNull();
+    expect(quantMajority).toEqual({ value: "BF16" });
     expect(showQuant).toBe(true);
-    expect(summary).toContain("mostly BF16");
-    expect(summary).not.toContain("all BF16");
+    expect(summary).not.toContain("mostly");
+  });
+
+  it("one null among otherwise-agreeing knowns: not unanimous, column stays, no quant clause", () => {
+    // A row that genuinely does not know is exactly when the column earns
+    // its place — nulls must never be filtered out to manufacture agreement.
+    const families = [family("a", "BF16"), family("b", "BF16"), family("c", null)];
+    const { quantHoist, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toBeNull();
+    expect(showQuant).toBe(true);
+    expect(summary).not.toContain("BF16");
   });
 
   it("all-unknown: no hoist, no summary clause, and the column stays visible (real diversity of nothing known)", () => {
@@ -602,8 +625,12 @@ describe("familyHoist", () => {
     expect(quantHoist).toBeNull();
     // No quant clause at all when nothing is known — every fixture here
     // shares `model()`'s default `capability: "text-generation"`, so the
-    // capability hoist is unanimous and the summary states only that.
-    expect(summary).toBe(`${families.length} text-generation models`);
+    // capability hoist is unanimous and the summary states only that. The
+    // count is `allRows.length` (D661's denominator fix), not
+    // `families.length` — here 2 families with 1 hidden null variant makes
+    // 3 total rows, all still `text-generation`.
+    const totalRows = families.flatMap((f) => [f.primary, ...f.variants]).length;
+    expect(summary).toBe(`${totalRows} text-generation models`);
     // A column of nothing but dashes is dropped, per `columnVisible`'s own
     // "NOTHING is known at all" case.
     expect(showQuant).toBe(false);

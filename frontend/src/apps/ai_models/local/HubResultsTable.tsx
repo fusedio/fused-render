@@ -22,11 +22,13 @@
 // are the columns `ai-models.css`'s drop ladder never hides — Task is the
 // FIRST to drop now that it is often already stated in the summary line.
 //
-// **Constants identical across the result set are HOISTED into one summary
+// **Constants UNANIMOUS across the result set are HOISTED into one summary
 // line** (`hoistValue`/`hoistSummary`, `hubTableView.ts`) rather than
 // repeated on every row — task/capability and quant are the two candidates
-// left after D641 folded Mode away. See that module's own doc for the
-// unanimous/majority thresholds.
+// left after D641 folded Mode away. A merely common (not unanimous) value
+// stays a per-row cell, just muted (`majorityValue`/`isMajorityValue`) —
+// see that module's own doc (D661) for why a majority never drives the
+// summary line or a column's presence any more.
 //
 // **The lazy total-size lookup stays viewport-gated**, moved here verbatim
 // from `HubResultCard` (RecommendedCard.tsx) rather than rewritten: a dense
@@ -52,7 +54,7 @@ import {
   capabilityHint,
   familyDisplay,
   familyHoist,
-  hoistValue,
+  majorityValue,
   isMajorityValue,
   isMatchScoreStale,
   matchCell,
@@ -244,8 +246,8 @@ function HubVariantRow({
 function HubResultRow({
   family,
   banded,
-  capabilityHoist,
-  quantHoist,
+  capabilityMajority,
+  quantMajority,
   showTask,
   showQuant,
   cards,
@@ -267,11 +269,13 @@ function HubResultRow({
   banded: boolean;
   /** Used only for the MAJORITY-value styling hint (`isMajorityValue`) on a
    *  column that IS rendered — column presence itself is `showTask`/
-   *  `showQuant`, computed once in `HubResultsTable` from these same
-   *  objects so the header, this row and `HubVariantRow` cannot disagree
-   *  about how many columns there are. */
-  capabilityHoist: ReturnType<typeof hoistValue>;
-  quantHoist: ReturnType<typeof hoistValue>;
+   *  `showQuant`, computed once in `HubResultsTable` from `familyHoist`'s
+   *  UNANIMOUS hoist (a separate, stricter fact — see `hubTableView.ts`),
+   *  so the header, this row and `HubVariantRow` cannot disagree about how
+   *  many columns there are, while this styling hint stays purely cosmetic
+   *  and never implies the column's absence. */
+  capabilityMajority: ReturnType<typeof majorityValue>;
+  quantMajority: ReturnType<typeof majorityValue>;
   showTask: boolean;
   showQuant: boolean;
   cards: ReadonlyMap<string, DiskCard> | null;
@@ -369,8 +373,8 @@ function HubResultRow({
   const arriving = jobFraction(job);
   const curatedFlag = curated.has(model.id);
   const taskHint = capabilityHint(model);
-  const taskIsMajority = isMajorityValue(model.capability, capabilityHoist);
-  const quantIsMajority = isMajorityValue(model.quant, quantHoist);
+  const taskIsMajority = isMajorityValue(model.capability, capabilityMajority);
+  const quantIsMajority = isMajorityValue(model.quant, quantMajority);
 
   return (
     <>
@@ -622,7 +626,7 @@ export function HubResultsTable({
   // disagree — `familyHoist` (`hubTableView.ts`) owns that computation now
   // (and this file's test suite drives it directly); see its own doc for
   // the contradiction two separate computations used to produce.
-  const { capabilityHoist, quantHoist, summary, showTask, showQuant } = familyHoist(families);
+  const { capabilityMajority, quantMajority, summary, showTask, showQuant } = familyHoist(families);
 
   return (
     <div className="am-hubtable-wrap">
@@ -652,8 +656,8 @@ export function HubResultsTable({
               key={family.key}
               family={family}
               banded={i > 0 && i % BAND_EVERY === 0}
-              capabilityHoist={capabilityHoist}
-              quantHoist={quantHoist}
+              capabilityMajority={capabilityMajority}
+              quantMajority={quantMajority}
               showTask={showTask}
               showQuant={showQuant}
               cards={cards}

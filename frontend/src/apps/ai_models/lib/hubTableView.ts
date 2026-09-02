@@ -229,40 +229,71 @@ export function capabilityHint(model: Pick<HubModel, "capability" | "task">): st
 }
 
 // ---------------------------------------------------------------------------
-// D640 — hoisting a value that is identical (or nearly so) across the whole
-// result set out of every row's cell and into one summary line above the
-// table. A value repeated on 21 of 21 rows is noise in a cell and
-// information in a header.
+// D640 — hoisting a value that is identical across the whole result set out
+// of every row's cell and into one summary line above the table. A value
+// repeated on 21 of 21 rows is noise in a cell and information in a header.
+//
+// D661 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
+// the other's direction: round 1 computed presence over primaries only (the
+// summary said "all BF16" while an expanded disclosure showed `Q4_K_M`);
+// round 2 shared one primaries+variants set for BOTH presence and the hoist,
+// but let a strong (80%) MAJORITY still drive both `isMajorityValue`'s
+// full-weight cell styling and a "mostly X" summary line — so three visible
+// primary rows all reading `BF16` could sit under a "mostly Q4_K_M" summary
+// decided entirely by fifteen variants nobody had opened the disclosure to
+// see. There is no majority hoist any more: `hoistValue` only ever returns a
+// value when the ENTIRE set (primaries and variants) agrees, so the summary
+// can never state a fact contradicted by a row that's actually on screen.
+// The muted-common-value styling a majority used to buy is now a SEPARATE,
+// column-local concept (`majorityValue`) that only ever affects which cell
+// is de-emphasized, never whether the column exists or what the header says.
 
-/** One column's hoisted fact: the value worth stating once, and whether
- *  EVERY row shares it (`unanimous` — the column is DROPPED entirely, see
- *  `columnVisible`) or only a strong majority does (the column stays, every
- *  row prints its own real value, and `isMajorityValue` is only a styling
- *  hint for which ones are the common case). */
+/** One column's hoisted fact: the single value EVERY row in the set shares.
+ *  Returned only when the whole set is unanimous (`hoistValue`) — the
+ *  column is then DROPPED entirely (`columnVisible`) and the value is
+ *  stated once in the summary line instead of on every row. */
 export interface Hoist {
   value: string;
-  unanimous: boolean;
 }
 
-/** The majority threshold (design review, 2026-09-02): a plain majority
- *  (just over half) would still be wrong for close to half the rows a
- *  summary line claims to describe, which defeats the point of stating it
- *  once. 80% is high enough that the stated fact is still true of the row a
- *  reader is actually looking at nineteen times out of twenty, while still
- *  catching the overwhelmingly common case (one task filter, one machine's
- *  hardware, one popular quantization) that a strict 100% would miss over
- *  a handful of outliers. */
+/** The threshold (design review, 2026-09-02) a value's SHARE of a column
+ *  must clear to be muted as "the common case" (`majorityValue`,
+ *  `isMajorityValue`) — a purely cosmetic de-emphasis, never a fact this
+ *  column's header or the summary line above it claims. 80%: high enough
+ *  that muting still tracks the row a reader is actually looking at most of
+ *  the time, without pretending a bare majority makes the minority beneath
+ *  notice. */
 export const HOIST_MAJORITY = 0.8;
 
-/** Whether a column's values are uniform enough to hoist, and what the
- *  hoisted value is. `null` values are never evidence of agreement — a row
- *  with nothing to say about this column does not count toward EITHER the
- *  majority or the total the majority is measured against being satisfied
- *  by coincidence; it simply cannot be hoisted alongside if it would need
- *  to be the modal value itself (it can't: `null` is filtered out before
- *  counting), but it DOES count in the denominator, so a column half full
- *  of unknowns cannot reach an 80% majority off the known half alone. */
+/** Whether every value in the set is the SAME known value — the only case
+ *  this column's fact is ever hoisted out of the table. A `null` anywhere
+ *  in the set breaks unanimity outright, same as a differing value would:
+ *  "we don't know for one row" is exactly the case the column exists to
+ *  show, never something to explain away by treating the known majority as
+ *  the whole truth. There is no partial/majority result here any more —
+ *  see `majorityValue` for the separate, purely cosmetic concept that used
+ *  to live in this function. */
 export function hoistValue(values: readonly (string | null)[]): Hoist | null {
+  if (values.length === 0) return null;
+  const first = values[0];
+  if (first === null) return null;
+  for (const v of values) {
+    if (v !== first) return null;
+  }
+  return { value: first };
+}
+
+/** The value most rows in the set share, when it clears `HOIST_MAJORITY` —
+ *  used ONLY to mute that value's cells (`isMajorityValue`) so the rows
+ *  that disagree with it are what catch the eye. Never used to hide a
+ *  column or to put a value in the summary line: those both require full
+ *  unanimity (`hoistValue`) now, and a column that is visible (i.e. NOT
+ *  unanimous) may still have a common value worth de-emphasizing without
+ *  the header claiming it as fact. `null` values are excluded from the
+ *  count itself (an unknown row is not evidence FOR any value) but still
+ *  count in the denominator, so a column half full of unknowns cannot
+ *  read as 80%-common off the known half alone. */
+export function majorityValue(values: readonly (string | null)[]): Hoist | null {
   if (values.length === 0) return null;
   const counts = new Map<string, number>();
   for (const v of values) {
@@ -278,8 +309,7 @@ export function hoistValue(values: readonly (string | null)[]): Hoist | null {
     }
   }
   if (modal === null || modalCount === 0) return null;
-  if (modalCount === values.length) return { value: modal, unanimous: true };
-  if (modalCount / values.length >= HOIST_MAJORITY) return { value: modal, unanimous: false };
+  if (modalCount / values.length >= HOIST_MAJORITY) return { value: modal };
   return null;
 }
 
@@ -288,15 +318,16 @@ export function hoistValue(values: readonly (string | null)[]): Hoist | null {
  *  to leave every cell blank while the `<th>` and every `<td>` still
  *  rendered, which is a labelled column stating nothing 21 times over).
  *
- *  HIDDEN in two cases: every row agrees (`hoist.unanimous`, already stated
- *  once in the summary line — repeating it as a column of identical text
- *  would be the exact noise this whole redesign removes), or NOTHING is
- *  known at all (every value `null`) — a column of nothing but dashes
- *  states nothing either, so it is not worth its width.
+ *  HIDDEN in two cases: every row agrees (`hoist` non-null — by
+ *  construction that means unanimous, already stated once in the summary
+ *  line — repeating it as a column of identical text would be the exact
+ *  noise this whole redesign removes), or NOTHING is known at all (every
+ *  value `null`) — a column of nothing but dashes states nothing either,
+ *  so it is not worth its width.
  *
- *  SHOWN in every other case, including a strong-majority (non-unanimous)
- *  hoist: `hubTableView`'s cell rule for a shown column always prints the
- *  row's own real value (see `isMajorityValue` for the muted/full-weight
+ *  SHOWN in every other case — including a strong majority short of full
+ *  agreement: `hubTableView`'s cell rule for a shown column always prints
+ *  the row's own real value (see `isMajorityValue` for the muted/full-weight
  *  split) — it never blanks a majority row's cell while the column is
  *  visible, because that produced a real ambiguity a reviewer caught live:
  *  a blank cell and a genuine dash (unknown) are two different facts, and
@@ -304,61 +335,47 @@ export function hoistValue(values: readonly (string | null)[]): Hoist | null {
  *  "unremarkable, matches the summary" from "nobody knows".
  *
  *  **`values` must cover every row the table can DISPLAY, primaries and
- *  variants alike** (code review finding) — and, as of a second finding,
- *  so must `hoist` itself. An earlier version kept `hoist`/the summary line
- *  computed over primaries only (D640's original reasoning: a closed
- *  disclosure's siblings are not on screen, so the summary must not
- *  silently change what it claims about the rows a reader can currently
- *  see) while this function alone re-checked the full set — which fixed
- *  the blank-column bug but reopened a different contradiction one level
- *  up: a primaries-only hoist could read "unanimous" (driving the summary
- *  line AND `isMajorityValue`'s full-weight styling) while this function,
- *  reading the same variants the summary ignored, correctly kept the
- *  column visible — a summary claiming agreement above a column visibly
- *  showing disagreement. A family's variants are precisely its
- *  quant/finetune republishes, i.e. the rows most likely to actually
- *  DIFFER on Quant or Capability, so ignoring them for the hoist while
- *  counting them for presence let that happen on the very column most
- *  likely to trigger it. The fix (`HubResultsTable.tsx`'s own call site)
- *  is not "recheck harder here" but "stop computing `hoist` over a
- *  different set than this function does" — `hoist` and `values` must
- *  always be built from the SAME rows, so this function's re-check and the
- *  summary line it accompanies can never again disagree. */
+ *  variants alike** (code review finding), and so must `hoist` itself —
+ *  both are built from the same set in `familyHoist`, so this function's
+ *  own re-check of `values` can never disagree with what `hoist` was
+ *  computed from. */
 export function columnVisible(hoist: Hoist | null, values: readonly (string | null)[]): boolean {
   const known = values.filter((v): v is string => v !== null);
   if (known.length === 0) return false;
-  if (hoist?.unanimous && known.every((v) => v === hoist.value)) return false;
-  return true;
+  return hoist === null;
 }
 
-/** Whether ONE row's value is the majority value of a non-unanimous hoist —
- *  purely a STYLING signal (de-emphasize the value everyone already knows
- *  is common, per the summary line) and never a reason to omit the text:
- *  the cell always prints `value` (or the dash for a genuinely unknown one)
- *  regardless of this function's answer. `false` for a unanimous hoist too
- *  — that column is not rendered at all (`columnVisible`), so there is no
- *  cell left to style. */
-export function isMajorityValue(value: string | null, hoist: Hoist | null): boolean {
-  return !!hoist && !hoist.unanimous && value !== null && value === hoist.value;
+/** Whether ONE row's value is the column's majority value (`majorityValue`)
+ *  — purely a STYLING signal (de-emphasize the value most rows already
+ *  share) and never a reason to omit the text: the cell always prints
+ *  `value` (or the dash for a genuinely unknown one) regardless of this
+ *  function's answer. Callers pass `majorityValue`'s result here, never
+ *  `hoistValue`'s — a unanimous column is not rendered at all
+ *  (`columnVisible`), so there is no cell left to style, and `hoistValue`
+ *  no longer has a non-unanimous "majority" shape to hand this function. */
+export function isMajorityValue(value: string | null, majority: Hoist | null): boolean {
+  return !!majority && value !== null && value === majority.value;
 }
 
-/** The one line above the table naming whatever the result set agrees on
- *  (D640) — task/capability and quant are the two candidates left after
- *  D641 folded Mode into the Match cell's own hint. Size, Params, tok/s,
- *  Pop. and New are never hoisted: they are the columns a reader compares
- *  row-to-row on a RANKED list, so even a coincidental cluster must stay
- *  visible per row. `null` when there is nothing to say (no rows yet, or
- *  neither column reached even a majority). */
+/** The one line above the table naming whatever the result set UNANIMOUSLY
+ *  agrees on (D640, narrowed by D661) — task/capability and quant are the
+ *  two candidates left after D641 folded Mode into the Match cell's own
+ *  hint. Size, Params, tok/s, Pop. and New are never hoisted: they are the
+ *  columns a reader compares row-to-row on a RANKED list, so even a
+ *  coincidental cluster must stay visible per row.
+ *
+ *  There is no "mostly X" clause any more (D661): a hoist that is anything
+ *  short of unanimous is `null` by construction (`hoistValue`), so this
+ *  function only ever states a value it can back with full agreement across
+ *  every row it was computed from — never a claim decided by rows a reader
+ *  cannot currently see. `null` when there is nothing to say (no rows yet,
+ *  or neither column reached unanimity). */
 export function hoistSummary(count: number, capabilityHoist: Hoist | null, quantHoist: Hoist | null): string | null {
   if (count <= 0) return null;
   const noun = count === 1 ? "model" : "models";
-  const head = capabilityHoist
-    ? capabilityHoist.unanimous
-      ? `${count} ${capabilityHoist.value} ${noun}`
-      : `${count} ${noun} (mostly ${capabilityHoist.value})`
-    : `${count} ${noun}`;
+  const head = capabilityHoist ? `${count} ${capabilityHoist.value} ${noun}` : `${count} ${noun}`;
   if (!quantHoist) return head;
-  return `${head} · ${quantHoist.unanimous ? "all" : "mostly"} ${quantHoist.value}`;
+  return `${head} · all ${quantHoist.value}`;
 }
 
 /** Everything `HubResultsTable` needs to draw the Task/Capability and Quant
@@ -367,37 +384,38 @@ export function hoistSummary(count: number, capabilityHoist: Hoist | null, quant
  *  pure function this file's own test suite can drive, the way every other
  *  rule in this module already is.
  *
- *  **The whole fix, in one sentence: `capabilityHoist`/`quantHoist` and the
- *  values `columnVisible` re-checks against must be built from the SAME
- *  rows.** An earlier version computed the hoist over primaries only (D640:
- *  "a closed disclosure's siblings are not on screen") while `columnVisible`
- *  re-checked primaries+variants (a later fix for a DIFFERENT bug — a fully
- *  hoisted column left blank cells on screen). That combination produced a
- *  contradiction of its own: all primaries `BF16` plus one family's variant
- *  `Q4_K_M` made the hoist read "unanimous" — driving both the summary
- *  line's "all BF16" AND `isMajorityValue`'s full-weight styling for every
- *  primary cell — while `columnVisible`, correctly reading the fuller set,
- *  kept the Quant column on screen with a real `Q4_K_M` sitting in an
- *  opened disclosure. A summary claiming agreement above a column visibly
- *  disagreeing with it is the same class of bug the blank-column fix was
- *  supposed to end, just one level up. So both the hoist and the presence
- *  check here read `allCapabilityValues`/`allQuantValues` — every row the
- *  table can DISPLAY, primaries and variants alike — and nothing else. */
+ *  **The whole fix, in one sentence: `capabilityHoist`/`quantHoist`, their
+ *  majority counterparts, and the `values` `columnVisible` re-checks against
+ *  are all built from the SAME rows** — `allRows`, every family's primary
+ *  AND every one of its variants, whether or not a disclosure is currently
+ *  open. `count` (fed to `hoistSummary`) is `allRows.length` too, not
+ *  `families.length` (D661's fix to a denominator mismatch a code review
+ *  caught: the OLD call passed `families.length` — the number of top-level
+ *  rows — as the count a hoist claim was stated "about", while the hoist
+ *  itself was already being decided over the larger primaries+variants set;
+ *  a claim and the count attached to it must describe the same rows, or a
+ *  reader has no way to know how many models the stated fact actually
+ *  covers). */
 export function familyHoist(families: readonly HubFamily[]): {
   capabilityHoist: Hoist | null;
   quantHoist: Hoist | null;
+  capabilityMajority: Hoist | null;
+  quantMajority: Hoist | null;
   summary: string | null;
   showTask: boolean;
   showQuant: boolean;
 } {
-  const allCapabilityValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.capability);
-  const allQuantValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.quant);
+  const allRows = families.flatMap((f) => [f.primary, ...f.variants]);
+  const allCapabilityValues = allRows.map((m) => m.capability);
+  const allQuantValues = allRows.map((m) => m.quant);
   const capabilityHoist = hoistValue(allCapabilityValues);
   const quantHoist = hoistValue(allQuantValues);
   return {
     capabilityHoist,
     quantHoist,
-    summary: hoistSummary(families.length, capabilityHoist, quantHoist),
+    capabilityMajority: majorityValue(allCapabilityValues),
+    quantMajority: majorityValue(allQuantValues),
+    summary: hoistSummary(allRows.length, capabilityHoist, quantHoist),
     showTask: columnVisible(capabilityHoist, allCapabilityValues),
     showQuant: columnVisible(quantHoist, allQuantValues),
   };
