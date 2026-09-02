@@ -58,41 +58,48 @@ export interface MatchCell {
   offloadLabel: "offload" | "CPU only" | null;
 }
 
-/** Which of the two things a shown fit verdict is (code review finding 2):
- *  `"measured"` for a real byte size (either the search's own safetensors-
- *  derived reading, or the lazy per-file `hub/size` lookup once it
- *  resolves), `"estimated"` for a GGUF row's params x bytes-per-param guess
- *  still standing in while that lookup is in flight, or `null` when there
- *  is nothing to say (no fit at all, or the caller does not track this).
- *  `matchTitle`'s only use for it — the bar/dot themselves never change,
- *  since an estimate is still the best judgement available in the moment. */
-export type MatchFitBasis = "measured" | "estimated" | null;
+/** Which basis a shown fit verdict rests on — the SAME three-way ladder
+ *  `AiFitVerdict.basis` already carries (`measured`/`declared`/`download`,
+ *  see `fitNote.ts`'s own copy table for the established wording), or
+ *  `null` when there is no fit at all. Read straight off the wire rather
+ *  than re-derived: this module used to infer a fourth state, "estimated",
+ *  for a GGUF row's server-side params x bytes-per-param guess — that guess
+ *  was deleted entirely (the derived-fit feed under-reported real memory
+ *  footprints for quant tokens `fit._quant_key` cannot classify; see the
+ *  DECISIONS.md entry recorded alongside this change), so there is no guess
+ *  left to distinguish from a measurement. Every fit a row can show now
+ *  comes from `fit.verdict` itself — either computed at search time (never
+ *  for a GGUF row any more) or by the lazy per-file `hub/size` lookup — and
+ *  `fit.verdict` already states which rung of its own ladder it used. */
+export type MatchFitBasis = AiFitVerdict["basis"] | null;
 
 /** The fit actually shown for a row — pulled out of `HubResultsTable.tsx`
  *  (code review finding 2) so the precedence rule is a pure function this
  *  file's own test suite can drive, matching every other rule in this
  *  module.
  *
- *  **A MEASURED verdict always wins over a DERIVED one — never `??`'s
- *  left-to-right "first non-null wins".** A row with safetensors metadata
- *  never sets `wantsTotal`, so `fitOverride` stays `undefined` there and
- *  `modelFit` (real, safetensors-measured) is the only side with a value —
- *  fine either way. But a GGUF row's `modelFit` can ALSO be non-null: the
- *  params x bytes-per-param ESTIMATE `hub_models.py` feeds in for a file
- *  whose name carries a recognized quant token. `wantsTotal` stays true for
- *  every GGUF row regardless (its `estimatedSize` is never set — see
- *  `hub_models.py`'s own comment on why), so the lazy per-file `hub/size`
- *  lookup keeps firing, and once it resolves it carries REAL bytes-derived
- *  evidence that must not lose to the earlier guess just because it
- *  resolved second. `fitOverride !== undefined` is exactly "the lookup has
- *  answered" — its own value may still be `null` ("asked, and there was
- *  nothing to judge"), which is itself a real answer that outranks a stale
- *  guess. */
+ *  **A judged override only wins when the lookup that produced it could
+ *  actually judge anything.** `api_hub_size` (`hub_models.py`) computes a
+ *  fit/speed verdict ONLY when it was asked with a `file` — a lookup made
+ *  with `file: null` (any row `HubResultsTable` did not resolve a GGUF pick
+ *  for) always answers `fit: null`, not because there was nothing to fit,
+ *  but because that shape of request never judges at all. `hubSize.ts`'s
+ *  `lookupTotalSize` caches that `null` the same way it would cache a real
+ *  "asked, and there was nothing to judge" answer (`knownFit`'s own pinned
+ *  contract, `hubSize.test.ts:295`) — the two are indistinguishable from the
+ *  cache alone. Without this `file` gate, a row that already carries a real
+ *  `basis: "measured"` verdict from `footprint_store` (a model already on
+ *  disk, scored at search time) would have that verdict WIPED by the
+ *  never-judges `null` the moment its `file`-less lookup resolves — the dot
+ *  drops to "unknown" and the tok/s blanks for a row nothing was ever wrong
+ *  with. So the override is only honoured when `file !== null`: exactly the
+ *  shape of request `api_hub_size` can answer with a real verdict for. */
 export function resolveFit(
   modelFit: AiFitVerdict | null,
   fitOverride: AiFitVerdict | null | undefined,
+  file: string | null,
 ): AiFitVerdict | null {
-  return fitOverride !== undefined ? fitOverride : (modelFit ?? null);
+  return file !== null && fitOverride !== undefined ? fitOverride : (modelFit ?? null);
 }
 
 /** `resolveFit`'s sibling for the speed estimate riding the same lazy
@@ -100,25 +107,18 @@ export function resolveFit(
 export function resolveSpeed(
   modelSpeed: AiSpeedEstimate | null,
   speedOverride: AiSpeedEstimate | null | undefined,
+  file: string | null,
 ): AiSpeedEstimate | null {
-  return speedOverride !== undefined ? speedOverride : (modelSpeed ?? null);
+  return file !== null && speedOverride !== undefined ? speedOverride : (modelSpeed ?? null);
 }
 
-/** Whether the fit `resolveFit` is showing right now is a real measurement
- *  or still a params-only guess waiting on one — `matchTitle`'s hover text,
- *  so a reader is never left to assume an estimate is settled fact.
- *  `modelFit` being non-null while `wantsTotal` is true is what marks the
- *  GGUF params-only-estimate case (a safetensors-backed row with a real
- *  `modelFit` never sets `wantsTotal` at all) — there is no dedicated wire
- *  field for this, so the same fact `resolveFit` reads is read again here. */
-export function matchFitBasis(
-  effectiveFit: AiFitVerdict | null,
-  fitOverride: AiFitVerdict | null | undefined,
-  wantsTotal: boolean,
-): MatchFitBasis {
-  if (effectiveFit == null) return null;
-  if (fitOverride !== undefined) return "measured";
-  return wantsTotal ? "estimated" : "measured";
+/** Which basis the fit actually being shown rests on — `matchTitle`'s hover
+ *  text. Reads `AiFitVerdict.basis` straight off the resolved verdict rather
+ *  than re-deriving it from `wantsTotal`/`fitOverride`: with the derived-fit
+ *  guess deleted (see `MatchFitBasis`'s own doc), the wire value is already
+ *  the honest answer, and inferring a second one risks disagreeing with it. */
+export function matchFitBasis(fit: AiFitVerdict | null): MatchFitBasis {
+  return fit?.basis ?? null;
 }
 
 /** Whether `matchScore` was computed against a fit this row is no longer
@@ -127,26 +127,25 @@ export function matchFitBasis(
  *  `resolveFit` was: a rule worth a test belongs in a module that can be
  *  driven, not inline in a component with no DOM harness to exercise it.
  *
- *  **True exactly when the lazy lookup handed back an ACTUAL correction —
- *  not merely "the lookup has answered".** `modelFit == null` says the
- *  server scored `matchScore` against `_FIT_DEFAULT` (~40) with nothing
- *  real to judge by; `fitOverride != null` says the lookup then resolved a
- *  REAL verdict to replace it. Both conditions are required: `fitOverride`
- *  resolving to `null` — `knownFit`'s own pinned contract for "asked, and
- *  there was nothing to judge" (`hubSize.test.ts`) — is not a correction of
- *  anything, and treating it as one used to blank a perfectly valid score
- *  for a row nothing was ever wrong with. When genuinely stale, the
- *  bar/number fall back to the dash/empty state (never a second, possibly-
- *  also-wrong number invented to fill the gap) so the colour/shape the
- *  corrected fit earns has nothing beside it to contradict it — this is
- *  what let an EARLIER bug show a GGUF row's green "easy" dot beside a
- *  ~40%-long bar and a low number, while the hover claimed the number
- *  "blends memory fit". */
+ *  **True when the lazy lookup handed back a verdict that actually differs
+ *  from the one `matchScore` was computed against** — not merely "the
+ *  lookup has answered". Compares verdicts, not just nullness: `modelFit ==
+ *  null` alone (the server scored `matchScore` against `_FIT_DEFAULT` with
+ *  nothing real to judge by) still counts, but so would a same-shaped
+ *  correction that changed the verdict outright, if one were ever possible.
+ *  `fitOverride` resolving to `null` (`knownFit`'s own pinned contract for
+ *  "asked, and there was nothing to judge") is not a correction of
+ *  anything, so it never marks stale. When genuinely stale, the bar/number
+ *  fall back to the dash/empty state (never a second, possibly-also-wrong
+ *  number invented to fill the gap) so the colour/shape the corrected fit
+ *  earns has nothing beside it to contradict it — this is what let an
+ *  EARLIER bug show a GGUF row's green "easy" dot beside a ~40%-long bar and
+ *  a low number, while the hover claimed the number "blends memory fit". */
 export function isMatchScoreStale(
   modelFit: AiFitVerdict | null,
   fitOverride: AiFitVerdict | null | undefined,
 ): boolean {
-  return modelFit == null && fitOverride != null;
+  return fitOverride != null && (modelFit == null || fitOverride.verdict !== modelFit.verdict);
 }
 
 export function matchCell(
@@ -194,18 +193,18 @@ export function matchTitle(
         : fit?.runMode === "gpu"
           ? " Runs on the GPU (Apple's unified memory counts as this too)."
           : "";
-  // Code review finding (2): a GGUF row's fit can come from two different
-  // places — an estimate off the parameter count and quantization alone
-  // (no real bytes read yet), or the file's own measured size once the lazy
-  // per-file lookup resolves. Both render through this same cell, so the
-  // hover has to say which one a reader is looking at rather than let an
-  // estimate read as settled fact.
+  // Code review finding (2): a row's fit can rest on different rungs of
+  // `fit.verdict`'s own ladder (`AiFitVerdict.basis` — see `fitNote.ts`'s
+  // copy table for the established wording this mirrors) — a real runtime
+  // measurement, or a real-but-unmeasured figure judged from the repo's own
+  // reported size. There is no "guess in flight" state any more (the
+  // derived-fit estimate this used to describe was deleted), so the hover
+  // only ever distinguishes "this actually ran here" from "judged, not run".
   const basisText =
-    fitBasis === "estimated"
-      ? " This fit is an estimate from the parameter count and quantization alone — a fuller size lookup for " +
-        "this specific file is still in flight and may correct it."
-      : fitBasis === "measured"
-        ? " This fit is measured from the actual file this row would download."
+    fitBasis === "measured"
+      ? " This fit is measured from real memory usage recorded when this model ran on this machine."
+      : fitBasis != null
+        ? " This fit is judged from this repo's own reported size — not yet measured by an actual run here."
         : "";
   return `${scoreText} Bar colour and glyph: ${verdictText}.${modeText}${basisText}`;
 }

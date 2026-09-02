@@ -356,9 +356,9 @@ function HubResultRow({
   // rules, pulled into `hubTableView.ts` — `resolveFit`/`resolveSpeed`/
   // `matchFitBasis`/`isMatchScoreStale` — so this file's own test suite can
   // drive them directly. See those functions' own docs for the "why".
-  const effectiveFit = resolveFit(model.fit, fitOverride);
-  const effectiveSpeed = resolveSpeed(model.speedEstimate, speedOverride);
-  const fitBasis = matchFitBasis(effectiveFit, fitOverride, wantsTotal);
+  const effectiveFit = resolveFit(model.fit, fitOverride, model.file);
+  const effectiveSpeed = resolveSpeed(model.speedEstimate, speedOverride, model.file);
+  const fitBasis = matchFitBasis(effectiveFit);
   const matchScoreStale = isMatchScoreStale(model.fit, fitOverride);
 
   const display = familyDisplay(family);

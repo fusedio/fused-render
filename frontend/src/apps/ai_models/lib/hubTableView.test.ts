@@ -143,33 +143,43 @@ describe("resolveFit / resolveSpeed", () => {
     score: 0,
   });
 
-  it("a measured override beats a derived model.fit, not just whichever is non-null first (code review finding 2)", () => {
-    // The reported bug: a GGUF row's `model.fit` can be a params x
-    // bytes-per-param GUESS (a recognized-quant estimate), and the lazy
-    // per-file lookup then resolves the file's REAL measured verdict. The
-    // old `??` precedence let the guess win forever because it was already
-    // non-null. `fitOverride !== undefined` — the lookup has answered —
-    // must win regardless of what `modelFit` was.
-    const guess = verdict("easy");
+  it("a resolved override wins when the lookup could actually judge (file !== null)", () => {
+    const stale = verdict("easy");
     const measured = verdict("tight");
-    expect(resolveFit(guess, measured)).toBe(measured);
+    expect(resolveFit(stale, measured, "x-Q4_K_M.gguf")).toBe(measured);
   });
 
-  it("a resolved-to-null override still beats a derived model.fit — 'nothing to judge' is itself an answer", () => {
-    const guess = verdict("easy");
-    expect(resolveFit(guess, null)).toBeNull();
+  it("a resolved-to-null override still wins when file !== null — 'nothing to judge' is itself an answer", () => {
+    const stale = verdict("easy");
+    expect(resolveFit(stale, null, "x-Q4_K_M.gguf")).toBeNull();
+  });
+
+  it("does NOT let a never-judges null override wipe a real modelFit, when file === null", () => {
+    // The bug this fix pins: `api_hub_size` only ever computes a fit verdict
+    // when it was asked with a `file`. A row with `model.file === null` still
+    // runs the lazy lookup (for the repo-wide total), which always answers
+    // `fit: null` — not because there was nothing to judge, but because that
+    // request shape never judges at all. `lookupTotalSize` caches that `null`
+    // indistinguishably from a real "asked, and there was nothing to judge"
+    // answer (`hubSize.test.ts:295`), so without gating on `file`, this would
+    // wipe a real `basis: "measured"` verdict a model already on disk earned
+    // at search time.
+    const measured = verdict("easy");
+    expect(resolveFit(measured, null, null)).toBe(measured);
+    expect(resolveFit(measured, verdict("tight"), null)).toBe(measured);
   });
 
   it("falls back to model.fit when the lookup has not answered yet (undefined)", () => {
     const guess = verdict("easy");
-    expect(resolveFit(guess, undefined)).toBe(guess);
+    expect(resolveFit(guess, undefined, "x-Q4_K_M.gguf")).toBe(guess);
   });
 
   it("is null, never undefined, when neither side has anything", () => {
-    expect(resolveFit(null, undefined)).toBeNull();
+    expect(resolveFit(null, undefined, "x-Q4_K_M.gguf")).toBeNull();
+    expect(resolveFit(null, undefined, null)).toBeNull();
   });
 
-  it("resolveSpeed follows the identical precedence", () => {
+  it("resolveSpeed follows the identical file-gated precedence", () => {
     const speed = (tokensPerSecond: number): AiSpeedEstimate => ({
       tokensPerSecond,
       method: "backend-constant",
@@ -181,35 +191,29 @@ describe("resolveFit / resolveSpeed", () => {
     });
     const modelSpeed = speed(5);
     const measuredSpeed = speed(40);
-    expect(resolveSpeed(modelSpeed, measuredSpeed)).toBe(measuredSpeed);
-    expect(resolveSpeed(modelSpeed, undefined)).toBe(modelSpeed);
-    expect(resolveSpeed(modelSpeed, null)).toBeNull();
+    expect(resolveSpeed(modelSpeed, measuredSpeed, "x-Q4_K_M.gguf")).toBe(measuredSpeed);
+    expect(resolveSpeed(modelSpeed, undefined, "x-Q4_K_M.gguf")).toBe(modelSpeed);
+    expect(resolveSpeed(modelSpeed, null, "x-Q4_K_M.gguf")).toBeNull();
+    expect(resolveSpeed(modelSpeed, null, null)).toBe(modelSpeed);
   });
 });
 
 describe("matchFitBasis", () => {
-  const verdict = (v: AiFitVerdict["verdict"]): AiFitVerdict => ({
+  const verdict = (v: AiFitVerdict["verdict"], basis: AiFitVerdict["basis"] = "download"): AiFitVerdict => ({
     verdict: v,
-    basis: "download",
+    basis,
     footprintBytes: 1e9,
     score: 0,
   });
 
   it("is null when there is no fit to show at all", () => {
-    expect(matchFitBasis(null, undefined, true)).toBeNull();
+    expect(matchFitBasis(null)).toBeNull();
   });
 
-  it("is 'measured' once the lazy lookup has answered, whatever it answered", () => {
-    expect(matchFitBasis(verdict("easy"), verdict("easy"), true)).toBe("measured");
-    expect(matchFitBasis(null, null, true)).toBeNull(); // no fit to show, basis is moot
-  });
-
-  it("is 'estimated' for a GGUF row's params-only guess still awaiting the lookup", () => {
-    expect(matchFitBasis(verdict("easy"), undefined, true)).toBe("estimated");
-  });
-
-  it("is 'measured' for a safetensors row that never asked for a lookup at all (wantsTotal false)", () => {
-    expect(matchFitBasis(verdict("easy"), undefined, false)).toBe("measured");
+  it("reads the basis straight off the verdict's own wire field", () => {
+    expect(matchFitBasis(verdict("easy", "measured"))).toBe("measured");
+    expect(matchFitBasis(verdict("easy", "declared"))).toBe("declared");
+    expect(matchFitBasis(verdict("easy", "download"))).toBe("download");
   });
 });
 
@@ -238,8 +242,20 @@ describe("isMatchScoreStale", () => {
     expect(isMatchScoreStale(null, undefined)).toBe(false);
   });
 
-  it("is false when model.fit was never null to begin with", () => {
-    expect(isMatchScoreStale(verdict("easy"), verdict("tight"))).toBe(false);
+  it("is true when a non-null model.fit is corrected to a DIFFERING verdict, not just when it was null", () => {
+    // The gap the fifth fix-builder round flagged and left open: comparing
+    // only nullness missed a real correction that happened to start from a
+    // non-null `model.fit`. With derived GGUF fit deleted entirely, a
+    // `file !== null` row's `model.fit` is now always null (see
+    // `resolveFit`'s own doc), so this path is not reachable from a GGUF row
+    // any more — but the function itself must still not silently pass a
+    // genuine mismatch, for any future caller shape.
+    expect(isMatchScoreStale(verdict("easy"), verdict("tight"))).toBe(true);
+  });
+
+  it("is false when the resolved fit agrees with model.fit — nothing to correct", () => {
+    const same = verdict("easy");
+    expect(isMatchScoreStale(same, verdict("easy"))).toBe(false);
   });
 });
 
@@ -267,6 +283,30 @@ describe("matchTitle", () => {
     expect(title).not.toContain("Match score 40/100");
     expect(title).not.toContain("blends");
     expect(title.toLowerCase()).toContain("not");
+  });
+
+  // The `fitBasis` branch (code review finding 2) had no test before this
+  // round — added alongside the fix that made `matchFitBasis` read the basis
+  // straight off `AiFitVerdict.basis` instead of re-deriving a fourth
+  // "estimated" state that no longer exists once derived GGUF fit was
+  // deleted.
+  it("says the fit was measured from a real run, for a 'measured' basis", () => {
+    const title = matchTitle({ verdict: "easy", basis: "measured", footprintBytes: 1, score: 100 }, 72, false, "measured");
+    expect(title).toContain("measured from real memory usage");
+    expect(title).not.toContain("judged from this repo's own reported size");
+  });
+
+  it("says the fit was judged from the repo's own reported size, for a 'declared' or 'download' basis", () => {
+    const declared = matchTitle({ verdict: "easy", basis: "declared", footprintBytes: 1, score: 100 }, 72, false, "declared");
+    const download = matchTitle({ verdict: "easy", basis: "download", footprintBytes: 1, score: 100 }, 72, false, "download");
+    expect(declared).toContain("judged from this repo's own reported size");
+    expect(download).toContain("judged from this repo's own reported size");
+    expect(declared).not.toContain("measured from real memory usage");
+  });
+
+  it("adds no basis sentence at all when there is no basis to report", () => {
+    const title = matchTitle(null, null, false, null);
+    expect(title).not.toContain("This fit is");
   });
 });
 
