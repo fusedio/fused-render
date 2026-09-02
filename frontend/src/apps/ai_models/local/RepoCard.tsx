@@ -156,10 +156,13 @@ function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
 // error (with what went wrong, because "it failed" sends people nowhere).
 /** Where a loaded model actually ended up, and — on a CPU — what that means.
  *
- *  **The CPU case is the one this exists for, and since the per-hardware runner
- *  split it is the DEFAULT case.** torch runs on whatever it can see, and the
- *  engine `auto` picks off Apple Silicon is the CPU-only build, so a perfectly
- *  healthy 4B model answers at a few words a second. Without this the
+ *  **The CPU case is the one this exists for.** `auto` prefers the accelerated
+ *  build when a machine has the matching GPU (D-less policy decision, see
+ *  `registry.py`'s block comment above `_RUNNERS`), so a resident model
+ *  reporting `cpu` now means either the machine has no supported GPU, or a
+ *  user chose the CPU build explicitly on the Engines tab — either way, a
+ *  perfectly healthy 4B model answers at a few words a second and that is
+ *  worth explaining rather than leaving as a mystery. Without this the
  *  page shows a green LOADED card and a memory figure, both of which say the
  *  model is fine, and leaves the user to conclude from the speed that it is not.
  *  A GPU is reported too — quietly, as a fact — because a chip that appears only
@@ -175,9 +178,9 @@ function DeviceNote({ device }: { device: string }) {
         cpu
           ? "This model is running on the processor, not a graphics card — it " +
             "works, but expect a few words a second rather than an instant " +
-            "answer. The CPU engine is the default off Apple Silicon — if this " +
-            "machine has a supported graphics card, a CUDA or ROCm engine can " +
-            "be chosen on the Engines tab."
+            "answer. This machine either has no supported graphics card, or " +
+            "the CPU engine was chosen deliberately — check the Engines tab " +
+            "to switch to a CUDA or ROCm engine if one is available."
           : "This model is running on the graphics card."
       }
     >
