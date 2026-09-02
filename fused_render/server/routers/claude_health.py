@@ -89,6 +89,37 @@ async def api_claude_install_status():
     return claude_install.status()
 
 
+@router.post("/api/claude/link-path")
+async def api_claude_link_path(x_fused: str | None = Header(default=None)):
+    """Append the PATH line to the user's shell rc — the fix for a CLI the app
+    can see and the terminal cannot.
+
+    Exists because the installer never edits an rc file, and its printed advice
+    is suppressed by the app's own augmented PATH (see claude_health.path_fix).
+    Guarded: it writes to a shell profile, which a blind cross-origin POST has
+    no business touching. The health cache is re-measured on success so the
+    strip closes on the next read instead of repeating advice just taken.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    def _run():
+        result = claude_health.add_to_shell_path()
+        if result.get("ok"):
+            try:
+                claude_health.summary_refreshed()
+            except Exception:  # noqa: BLE001 - the write, not the re-probe, is the fix
+                logger.warning("PATH line written but the health re-probe failed")
+        return result
+
+    result = await run_in_threadpool(_run)
+    if not result.get("ok"):
+        return _error(result.get("error") or "could not update the shell profile",
+                      status=409)
+    return result
+
+
 @router.post("/api/claude/doctor")
 async def api_claude_doctor(x_fused: str | None = Header(default=None)):
     """`claude doctor` on demand — the answer to "the install is broken".

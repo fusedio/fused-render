@@ -133,7 +133,7 @@ Rejections follow the rest of the bridge: an `Error` whose `.message` is the ser
 
 ## B. The Python side: read the parquet directly
 
-The index is real parquet on disk, so Python can read it with **nothing but `duckdb`** — no HTTP, no `import fused_render`. That last point is not a preference: an app folder with a `pyproject.toml` gets its own uv-built venv (`<home_dir()>/venvs/<sha256(abspath)[:16]>`, see `fused_render/projectenv.py`) where `fused_render` is **not importable**. So you copy this reader into the app and declare `duckdb` in the app's own `pyproject.toml`; you do not import ours.
+The index is real parquet on disk, so Python can read it with **nothing but `duckdb`** — no HTTP, no `import fused_render`. That last point is not a preference: an app folder with a `pyproject.toml` gets its own uv-built venv (`<project folder>/.venv`, or `<home_dir()>/venvs/<sha256(abspath)[:16]>` when the folder can't hold one — an in-package runner folder, an unwritable mount, or `FUSED_RENDER_VENV_IN_TREE=0`; see `fused_render/projectenv.py`) where `fused_render` is **not importable**. So you copy this reader into the app and declare `duckdb` in the app's own `pyproject.toml`; you do not import ours.
 
 ### The store on disk
 

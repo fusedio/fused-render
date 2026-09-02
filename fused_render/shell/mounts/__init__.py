@@ -347,16 +347,7 @@ from .credentials import (
     broken_mount_error,
     resolve_cloud_url,
 )
-from .automount import (
-    BUILTIN_MOUNTS,
-    SESSIONS_MOUNT_NAME,
-    _force_detach_builtin_mount,
-    builtin_mount_ready,
-    builtin_zip_path,
-    ensure_builtin_mounts,
-    sessions_mount_ready,
-    set_builtin_ready,
-)
+from .automount import prune_builtin_mounts
 from .health import (
     HEALTH_POLL_INTERVAL,
     _NEEDS_RECONNECT,

@@ -52,7 +52,7 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 # and a body this route refuses must be refused for the identical reason a
 # worker asked directly would give.
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import AI_PROVIDERS, _error, _require_fused, ai_result
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -79,8 +79,13 @@ _MAX_SEED = 2**31 - 1
 # dropped. These are the CALLER-FACING sets — the same facts `runtime.js`
 # restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
 # below is what stops the two from drifting apart.
+# `provider` is in every capability's envelope (D631): the same key with the
+# same meaning `/api/ai` takes, so a page reads one option name across all five
+# verbs. Only "local" is served on these four routes today — see
+# `_provider_rejection` for what the other values earn.
 _IMAGE_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
+    "provider"})
 # Bounds for a video request. Narrower canvas than an image's — `w*h <=
 # 768*1344` — originally chosen against the FL2VA checkpoint of the
 # since-dropped `h3-video` runner (D468), the shape it was benchmarked at;
@@ -129,14 +134,15 @@ _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # the Playground cannot offer a control the resolved engine will not
 # honour), not for a request-time gate here.
 _VIDEO_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "frames", "steps", "seed", "image"})
+    "prompt", "model", "width", "height", "frames", "steps", "seed", "image",
+    "provider"})
 # `base` is bridge-injected, the identical asymmetry `_IMAGE_SERVER_OPTIONS`
 # documents — video had no way to resolve a page-relative path at all until
 # `image` needed one, so this is also where `base` first reaches this route.
 _VIDEO_SERVER_OPTIONS = _VIDEO_OPTIONS | {"base"}
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
-    "speakers", "words"})
+    "speakers", "words", "provider"})
 # `base` is bridge-injected — `aiTranscribe` adds it from the page's own
 # `?path=`, never from the caller's own options object — so the SERVER's
 # accepted set is wider than the caller-facing one on purpose. Collapsing
@@ -164,7 +170,7 @@ _IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
 #: it is refused per MODEL (a dual encoder has no retrieval convention), so a
 #: client that could not send it would leave every retrieval model embedding
 #: queries as documents with nothing to show it.
-_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind"})
+_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind", "provider"})
 #: `base` is bridge-injected — `aiEmbed` adds it from the page's own `?path=` so
 #: a relative `paths` entry resolves beside the calling page (RH-1) — so the
 #: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
@@ -191,6 +197,35 @@ def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
     verb = "is not an option" if len(unknown) == 1 else "are not options"
     accepted = ", ".join(sorted(allowed))
     return _error(f"{named} {verb} of {endpoint}; accepted: {accepted}", status=400)
+
+
+def _provider_rejection(body: dict, verb: str):
+    """The `provider` tier check the four capability routes share (D631).
+
+    Returns None when the call may proceed locally, else a
+    `(type, message, status)` triple for the caller to wrap in its own
+    error envelope (`_error` for the three job-backed routes, `_embed_error`
+    for embed — the two wire shapes differ, so the wrapping is the caller's).
+
+    Omitted, or `"local"`: proceed — local is the only tier that serves these
+    verbs today, so it is also the default, with no shape inference needed
+    (every id here is a repo id). A value outside `AI_PROVIDERS` is a 400,
+    same as `/api/ai`. A value INSIDE it that this verb has no tier for
+    (`"claude"`: the CLI speaks text and nothing else) is `unavailable` on a
+    409, not a 400 — the request is well formed and the tier simply lacks the
+    verb, which is the same sentence a machine with no image runner gets. The
+    vocabulary stays closed, and the day a gateway serves images this branch
+    becomes a real path with no change to any page.
+    """
+    provider = body.get("provider")
+    if provider is None or provider == "local":
+        return None
+    if provider not in AI_PROVIDERS:
+        return ("bad_request",
+                "'provider' must be one of: %s" % ", ".join(AI_PROVIDERS), 400)
+    return ("unavailable",
+            f"provider {provider!r} does not serve {verb}; only 'local' does "
+            "on this machine", 409)
 
 
 def _side(value, default: int) -> int:
@@ -1001,7 +1036,7 @@ def _catalog_with_downloads() -> list[dict]:
                                        hardware=hardware,
                                        params=entry.get("params"),
                                        quantization=entry.get("quantization"),
-                                       **_kv_geometry_kwargs(entry["id"]))
+                                       **_kv_geometry_kwargs(entry["id"], row["runner"]))
             # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
             # calibrated, calibrationFactor} or None — SPEC AI-21. Text
             # generation only: `speed.py`'s formula is a tok/s figure, and
@@ -1058,8 +1093,9 @@ def _catalog_with_downloads() -> list[dict]:
 #: keyword `fit.footprint_bytes`'s KV-cache term reads (its own docstring:
 #: "the same field NAMES `hub_metadata` returns (minus its
 #: `numHiddenLayers`-style camelCase)"). `kv_dtype` has no harvested
-#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype — so
-#: it is left for `fit.py`'s own quantization-based default.
+#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype, so it
+#: is never read off `meta` — but `_kv_geometry_kwargs` still supplies it
+#: itself for the one runner whose cache is not fp16: see `_KV_DTYPE_RUNNERS`.
 _KV_GEOMETRY_FIELDS = {
     "numHiddenLayers": "num_hidden_layers",
     "numKeyValueHeads": "num_key_value_heads",
@@ -1069,29 +1105,49 @@ _KV_GEOMETRY_FIELDS = {
     "layerTypes": "layer_types",
 }
 
+#: Runner codes whose loader caches K/V at q8_0 rather than fp16 —
+#: `llama_text.load()`'s `_kv_cache_kwargs`, tried first at every rung of its
+#: offload schedule, on both the CPU and Vulkan builds (`registry.py`'s
+#: `llamacpp-text` and `llamacpp-text-vulkan` rows share this one loader
+#: module, `catalog._SHARED_SUGGESTIONS` aliases them for the identical
+#: reason). No other runner in `registry.py` quantizes its KV cache, so this
+#: is the complete set, not a partial one a future runner needs to remember
+#: to join.
+_KV_DTYPE_RUNNERS = {"llamacpp-text", "llamacpp-text-vulkan"}
 
-def _kv_geometry_kwargs(model_id: str) -> dict:
-    """`fit.footprint_bytes`'s `num_hidden_layers`.../`layer_types` kwargs for
-    `model_id`, read straight off `hub_metadata.cached()` — NO network call
-    (code review finding 1's same constraint `_accepts_image`/
-    `_capability_tags` already keep on this polled route). Without this, the
-    KV-cache term in `fit.footprint_bytes` is silently 0 for every catalog
-    row: the geometry `hub_metadata.cached()` already holds on disk (and
-    that this same request already reads for the vision/tool-use tags) was
-    never forwarded to `fit.verdict`.
 
-    Absent for an uncached repo, same as every other optional geometry
-    kwarg — the ladder just falls through to the params-only weight
-    estimate, exactly as before this existed.
+def _kv_geometry_kwargs(model_id: str, runner_code: str | None) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`kv_dtype` kwargs for
+    `model_id`, loaded on `runner_code` — the runner `describe()` already
+    resolved for this catalog row (`row["runner"]`), not re-derived from the
+    id here, so a filename that happens to end in `.gguf` or look like a GGUF
+    repo can never be mistaken for one this machine will actually load
+    through llama.cpp.
+
+    Geometry comes from `hub_metadata.cached()` — NO network call, the same
+    constraint `_accepts_image`/`_capability_tags` keep on this polled route.
+    It is what makes the KV-cache term in `fit.footprint_bytes` non-zero: the
+    geometry `hub_metadata.cached()` already holds on disk (and that this same
+    request already reads for the vision/tool-use tags) has to be forwarded to
+    `fit.verdict` or that term is 0 for every catalog row. Absent entirely for
+    an uncached repo, same as every other optional geometry kwarg — the ladder
+    then falls through to the params-only weight estimate.
+
+    `kv_dtype` is `"q8_0"` when `runner_code` is one of `_KV_DTYPE_RUNNERS`,
+    else omitted so `fit.py`'s own fp16 default applies — independent of
+    whether geometry was found, since a `kv_dtype` with no geometry to pair
+    it with is inert (`fit._kv_cache_bytes` returns `0.0` before it ever
+    reads the dtype).
     """
     meta = hub_metadata.cached(model_id)
-    if not meta:
-        return {}
-    return {
+    kwargs = {
         snake: meta[camel]
         for camel, snake in _KV_GEOMETRY_FIELDS.items()
         if meta.get(camel) is not None
-    }
+    } if meta else {}
+    if runner_code in _KV_DTYPE_RUNNERS:
+        kwargs["kv_dtype"] = "q8_0"
+    return kwargs
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
@@ -1406,6 +1462,9 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     rejection = _reject_unknown(body, _IMAGE_SERVER_OPTIONS, "/api/ai/image")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "image")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1486,22 +1545,50 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # Decision 1: an edit's default size comes from the BASE IMAGE, using the
     # prototype's own arithmetic (confirmed as written by the gate run). Any
     # explicit `width`/`height` still wins — this only changes the DEFAULT.
-    default_width = default_height = 1024
-    if image_path is not None:
-        edit_size = _edit_default_size(image_path)
-        if edit_size is not None:
-            default_width, default_height = edit_size
-
-    # An edit's defaults are the PROTOTYPE's own (4 steps, guidance 1.0), not
-    # the 28/4.0 shared between the generate paths of both image engines
-    # (`mflux_image/worker.py:generate`'s own comment) — applying the
+    #
+    # A FRESH render (no `image`) instead defaults to the resolved model's own
+    # curated hints where the catalog names them (`catalog.entry_for`'s
+    # `defaults`) — size, step count, and guidance scale, each named
+    # independently so a curated entry can supply only the ones it has
+    # evidence for. `segmind/tiny-sd` is 512x512-native and is also
+    # `default_for()`'s position-0 pick, so a model-less `fused.ai.image()`
+    # must not fall through to the generic 1024²/28/4.0 meant for a model the
+    # catalog says nothing about — and a FLUX.2 klein row, distilled for 4
+    # steps and declaring `"steps": 4`, must not be handed the generic 28
+    # either. A model with no curated entry (a cached repo the user
+    # downloaded themselves), or a curated entry that names size but not
+    # steps/guidance, keeps the generic default for whichever field it left
+    # unnamed.
+    #
+    # An edit's defaults are the PROTOTYPE's own instead (4 steps, guidance
+    # 1.0), not the 28/4.0 shared between the generate paths of both image
+    # engines (`mflux_image/worker.py:generate`'s own comment) — applying the
     # generate defaults to an edit silently would be a real quality
     # regression (mflux's own denoising mechanism for editing wants far
     # fewer steps and far less guidance than a from-scratch render), and
     # changing them for this one mode is a documented choice rather than an
-    # unnoticed one.
+    # unnoticed one. An edit also never consults the curated entry — its
+    # defaults are fixed by the prototype, not by whichever model the edit
+    # happens to resolve to, exactly as it already short-circuits the size
+    # lookup above.
+    default_width = default_height = 1024
     default_steps = 4 if image_path is not None else 28
     default_guidance = 1.0 if image_path is not None else 4.0
+    if image_path is not None:
+        edit_size = _edit_default_size(image_path)
+        if edit_size is not None:
+            default_width, default_height = edit_size
+    else:
+        entry = catalog.entry_for(registry.IMAGE_GENERATION, model)
+        entry_defaults = entry.get("defaults") if entry else None
+        if entry_defaults:
+            if "width" in entry_defaults and "height" in entry_defaults:
+                default_width = entry_defaults["width"]
+                default_height = entry_defaults["height"]
+            if "steps" in entry_defaults:
+                default_steps = entry_defaults["steps"]
+            if "guidance" in entry_defaults:
+                default_guidance = entry_defaults["guidance"]
     # `is None or == ""`, NOT `body.get(...) or default` — the falsy-`or`
     # form silently replaced an explicit `steps: 0` or `guidance: 0` with
     # the default, clamping never got a chance to run on the caller's own
@@ -1608,6 +1695,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # rather than as an error.
         "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
+        # The tier that served it, as `/api/ai`'s reply carries (D631) — and
+        # the same `warnings[]` slot, empty here: every option this route
+        # accepts it honours, and the ones it cannot are already 400s per
+        # runner (`engine_options`). The key exists so a page reads one result
+        # shape across the five verbs.
+        "provider": "local",
+        "warnings": [],
         "prompt": request["prompt"],
         "width": request["width"],
         "height": request["height"],
@@ -1646,6 +1740,9 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     rejection = _reject_unknown(body, _VIDEO_SERVER_OPTIONS, "/api/ai/video")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "video")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1808,6 +1905,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # Canonical, like every other path this API hands back.
         "path": canonical_fs_path(path),
         "model": model,
+        "provider": "local",
+        "warnings": [],
         "prompt": request["prompt"],
         "width": width,
         "height": height,
@@ -1857,6 +1956,9 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     rejection = _reject_unknown(body, _TRANSCRIBE_SERVER_OPTIONS, "/api/ai/transcribe")
     if rejection is not None:
         return rejection
+    tier = _provider_rejection(body, "transcribe")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
 
     source = body.get("path")
     if not isinstance(source, str) or not source.strip():
@@ -2034,6 +2136,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # would be the one that broke there.
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
+        "provider": "local",
+        "warnings": [],
         "task": task,
     }
 
@@ -2094,6 +2198,9 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     if rejection is not None:
         message = json.loads(bytes(rejection.body))["error"]
         return _embed_error("bad_request", message, status=400)
+    tier = _provider_rejection(body, "embed")
+    if tier is not None:
+        return _embed_error(tier[0], tier[1], status=tier[2])
 
     # Same rule `generate()` enforces inside each worker's own venv
     # (`embed_common.request_kind`) — refused HERE too, before a model is even
@@ -2203,11 +2310,13 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     except supervisor.SupervisorError as e:
         return _embed_error("ai_error", str(e), status=502)
 
+    # The one result frame (`common.ai_result`, D632): `embeddings` is the
+    # payload, `values` the inputs they pair with (the SDK's `embedMany`
+    # shape), `dim` and the resolved `kind` under providerMetadata.
     return {
         "ok": True,
-        "result": {
-            "vectors": result.get("vectors") or [],
-            "dim": result.get("dim") or 0,
-            "model": model,
-        },
+        "result": ai_result(
+            {"embeddings": result.get("vectors") or [], "values": list(items)},
+            provider="local", model=model, usage=None,
+            metadata={"dim": result.get("dim") or 0, "kind": kind}),
     }

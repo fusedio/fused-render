@@ -1,0 +1,2 @@
+[tool.fused-render.app]
+main = "compute.py"

@@ -165,8 +165,12 @@ def test_a_resident_model_answers_with_vectors(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert body["result"] == {
-        "vectors": [[0.6, 0.8]], "dim": 2, "model": "org/embed-x"}
+    result = body["result"]
+    assert result["embeddings"] == [[0.6, 0.8]]
+    assert result["values"] == ["a cat"]
+    assert result["response"]["modelId"] == "org/embed-x"
+    assert result["providerMetadata"] == {"local": {"dim": 2, "kind": "document"}}
+    assert result["provider"] == "local" and result["warnings"] == []
     # `kind` is forwarded RESOLVED — the route decides it and the worker
     # validates the same value again, so the two cannot disagree about what a
     # caller who said nothing meant.

@@ -40,12 +40,28 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
-# The state machine. "running" is the only non-terminal state; the three
-# terminal ones differ in what the user has to do about them, which is what
-# decides how long each is kept (see `_sweep`).
+# The state machine. "running" and "waiting" are the two NON-terminal
+# states; the three terminal ones differ in what the user has to do about
+# them, which is what decides how long each is kept (see `_sweep`).
+#
+# `WAITING`: work has stopped and is not coming back on its own — it is
+# sitting on a QUESTION only the user can answer (today, the sole producer is
+# `envinstall._mirror_into_jobs`'s `needs_build` branch: uv's "Install
+# anyway" compile prompt). Not `RUNNING` — nothing is actually in flight, so
+# a bar or a spinner would be a lie. Not `TERMINAL` either, and deliberately
+# so: none of the three terminal states means "stopped, waiting on you" —
+# `done` and `cancelled` both read as the row having reached an end the user
+# does not need to act on, and `error` reads as "broken", which is worse than
+# wrong here, since the compile prompt this row is sitting in front of is
+# still an open, answerable question, not a failure. Kept OUT of
+# `TERMINAL_STATES` on purpose: `upsert`'s finished-transition bookkeeping
+# (`finished_at`, clearing `cancel_requested`) does not apply to a row that
+# has not actually finished, and `_sweep`'s age-out clock must not start
+# either — see `_sweep`'s own comment for how it is kept instead.
 RUNNING = "running"
+WAITING = "waiting"
 TERMINAL_STATES = ("done", "error", "cancelled")
-STATES = (RUNNING,) + TERMINAL_STATES
+STATES = (RUNNING, WAITING) + TERMINAL_STATES
 
 # What the record means for a progress bar: a download reads its numbers as
 # bytes and has a bar; a task may have no numbers at all and reads as a
@@ -255,6 +271,20 @@ class Job:
     # is exempt from the sweep that reads it — a per-state exception here
     # would buy nothing and cost a second code path to reason about.
     first_read_at: float | None = None
+    # The id of another row this row is currently blocked on, or "" for the
+    # ordinary case. Set by `ai/supervisor._wait_ready` while an image/video
+    # render's row is waiting on a shared model load: the manager hides
+    # whichever row this field names for as long as THAT row is running, so a
+    # single wait for one model shows as ONE row instead of two saying the
+    # same thing (SPEC §36 — one row per unit of work; D586's sibling case in
+    # jobs.ts `jobRows` is the scheduled-run precedent for the same rule).
+    # SERVER-ONLY (see `upsert`'s `server` gate below): this field HIDES a
+    # row, so a page allowed to set it could blank a live download's only row
+    # by falsely claiming to be waiting on it. Cleared the instant the wait
+    # ends (ready, error, evicted, cancelled, or timed out) so a load that
+    # THEN fails is not left invisible — D266's guarantee that both rows can
+    # show a real failure only holds if the merge does not outlive the wait.
+    waiting_for: str = ""
 
 
 _lock = threading.Lock()
@@ -407,6 +437,15 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
                                      "total_scope", job.total_scope)
         if "cancellable" in body:
             job.cancellable = bool(body.get("cancellable"))
+        if "waiting_for" in body and server:
+            # Silently dropped for a page report (no `server=True`) rather
+            # than rejected — see the field's own comment on `Job` for why a
+            # page is not allowed to set it at all. A falsy value (the normal
+            # tick, and the wait-ended report) clears it; a real value is run
+            # through `clean_id` so it stays a legal id and not a string that
+            # would break the manager's lookup silently.
+            value = body.get("waiting_for")
+            job.waiting_for = clean_id(value) if value else ""
         if page:
             job.page = _text(page, PAGE_MAX)
 
@@ -436,6 +475,14 @@ def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
     stays "running, cancelling…" until the work actually stops, which is the
     truth — a row that flips to "cancelled" while a 4-minute download carries
     on underneath it would be a lie the UI told to feel responsive.
+
+    Guarded on `RUNNING` alone, unchanged by `WAITING`'s arrival: a
+    `WAITING` row has nothing left running to signal a cancel TO (the worker
+    that wrote it already exited), so the client's own `canCancel` never
+    calls this route for one at all — the dock's ✕ on a `WAITING` row goes
+    through `dismiss`, below, exactly like it already does for `done` and
+    `cancelled`. Setting `cancel_requested` here for a state nothing is
+    listening for would only leave a flag standing that nothing ever clears.
     """
     now = time.time() if now is None else now
     with _lock:
@@ -444,6 +491,33 @@ def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
             return None
         if job.state == RUNNING:
             job.cancel_requested = True
+        return _public(job, now)
+
+
+def clear_cancel_requested(job_id: str, *, now: float | None = None) -> dict | None:
+    """Disown a flag a NEW attempt did not ask for. Returns the record, or
+    None if there isn't one.
+
+    `upsert`'s own body has no key for this — a reporter's tick legitimately
+    has nothing to say about a request it did not make, so there is no
+    "clear it" shape to put in a POST. This exists for the one caller that
+    genuinely needs to say it: a mirror thread opening a NEW attempt under an
+    id `upsert` reused from a previous one. `upsert` clears the flag itself
+    on a transition INTO a terminal state, but a mirror that dies mid-attempt
+    (its own `jobs.upsert` calls are best-effort) can leave the row `running`
+    with the flag still set — and because job ids are deterministic per venv
+    key, the next attempt's opening `upsert` inherits that row, sees no state
+    change (it was already `running`), and never runs the clearing branch.
+    Called once, right after that opening `upsert`, so a ✕ pressed from then
+    on (`request_cancel`, above) still sets the flag normally — this only
+    disowns what an attempt did not itself request.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return None
+        job.cancel_requested = False
         return _public(job, now)
 
 
@@ -628,8 +702,17 @@ def _sweep(now: float) -> None:
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:
                 _forget(job_id, now)
-        elif job.state == "error":
-            continue  # kept until dismissed — see FINISHED_TTL_S
+        elif job.state in ("error", WAITING):
+            # Both kept until dismissed, for the same reason `error` already
+            # was — see FINISHED_TTL_S. A `WAITING` row's reporter has
+            # already returned (the worker that wrote it has exited; nothing
+            # is polling any more), so there is no heartbeat left to keep it
+            # "fresh" the way a `RUNNING` row's own ticks do — aging it out
+            # on any clock would make the question it is sitting in front of
+            # (uv's "Install anyway" prompt, still open on the page) vanish
+            # from the dock while it is still exactly as open as when it
+            # appeared.
+            continue
         elif job.first_read_at is not None:
             if (now - job.first_read_at) > FINISHED_TTL_S:
                 _forget(job_id, now)

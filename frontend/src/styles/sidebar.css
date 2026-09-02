@@ -274,6 +274,12 @@ a.sidebar-rail-btn {
   text-decoration: none;
   cursor: pointer;
   font-size: 13.5px;
+  /* The expand glide lays these rows out at every width between the rail's
+     44px and the settled one; a label allowed to wrap ("AI Models") spends
+     those frames as two lines — a phantom extra row that flashes in and out
+     of the nav. Never wrap: mid-glide the text clips at the sidebar's edge
+     (overflow-x: hidden above) instead of reflowing. */
+  white-space: nowrap;
 }
 
 .sidebar-item:hover,

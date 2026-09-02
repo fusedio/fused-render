@@ -10,6 +10,7 @@ import {
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
+  mergedRows,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
@@ -38,6 +39,7 @@ function job(over: Partial<Job> = {}): Job {
     updated_at: 1000,
     finished_at: null,
     stalled: false,
+    waiting_for: "",
     ...over,
   };
 }
@@ -100,6 +102,17 @@ test("nothing reported reads as nothing, not as 0", () => {
 test("an error's message outranks whatever detail was last set", () => {
   const line = jobStatusLine(job({ state: "error", detail: "downloading", message: "disk full" }));
   expect(line).toBe("disk full");
+});
+
+test("a waiting row's message names the question, not a generic label", () => {
+  const line = jobStatusLine(
+    job({ state: "waiting", message: "waiting for your approval to compile foolib" })
+  );
+  expect(line).toBe("waiting for your approval to compile foolib");
+});
+
+test("a waiting row without a message still says something, not the raw detail", () => {
+  expect(jobStatusLine(job({ state: "waiting", detail: "installing" }))).toBe("Waiting for you");
 });
 
 test("a requested cancel says so — the ✕ must not read as broken", () => {
@@ -214,4 +227,42 @@ test("jobsAfterClear keeps every running row, stalled included", () => {
     job({ id: "done", state: "done" }),
   ];
   expect(jobsAfterClear(jobs).map((j) => j.id)).toEqual(["run", "stalled"]);
+});
+
+// -------------------------------------------------------------- mergedRows
+//
+// SPEC §36: a waiter and the model load it is blocked on used to open two
+// rows saying the same thing (`fused_render/ai/supervisor.py` `_wait_ready`'s
+// old "Two rows, two truths" behaviour). The merge mirrors the load's
+// progress onto the waiter's row and marks it `waiting_for`; `mergedRows` is
+// what makes the manager actually draw one row instead of two.
+
+test("mergedRows hides the row another RUNNING row is waiting on", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", title: "black-forest-labs/FLUX.2-klein-4B", state: "running" }),
+  ];
+  expect(mergedRows(jobs).map((j) => j.id)).toEqual(["waiter"]);
+});
+
+test("mergedRows keeps the referenced row once the waiter has gone terminal", () => {
+  // A wait that ends in a real failure has to show up as two rows again —
+  // one for the waiter's own failure, one for the load's, if it also failed
+  // (D266). A stale `waiting_for` from a wait that already ended must not
+  // keep hiding the load's row.
+  const jobs = [
+    job({ id: "waiter", state: "error", waiting_for: "load" }),
+    job({ id: "load", state: "error" }),
+  ];
+  expect(mergedRows(jobs).map((j) => j.id).sort()).toEqual(["load", "waiter"]);
+});
+
+test("mergedRows leaves unrelated rows alone", () => {
+  const jobs = [job({ id: "a" }), job({ id: "b" })];
+  expect(mergedRows(jobs).map((j) => j.id).sort()).toEqual(["a", "b"]);
+});
+
+test("mergedRows is a no-op when nothing has waiting_for set", () => {
+  const jobs = [job({ id: "a" }), job({ id: "b", waiting_for: "" })];
+  expect(mergedRows(jobs)).toEqual(jobs);
 });

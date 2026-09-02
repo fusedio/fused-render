@@ -75,8 +75,47 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     # page loaded before the engine preference was switched, or any direct API
     # call — and uncaught they become a 500 the loader shows as a bare
     # "HTTP 500", discarding the diagnostic that was the whole point.
+    # False unless the request says otherwise — the client only ever sets this
+    # on its explicit "install anyway" retry, after a first attempt's resolver
+    # error named a dependency with no matching wheel (`runtime.js`'s
+    # `startInstall`). Read straight off the body rather than trusted from
+    # `nonstandard` above: a source build can be needed by a dependency
+    # `nonstandard_dependencies_of` never flags at all — an ordinary-looking
+    # `foo>=1.0` that simply publishes no wheel for this platform is
+    # undetectable from the manifest, which is the whole reason this is a
+    # retry rather than something decided up front.
+    #
+    # CLIENT-ASSERTED, AND KNOWINGLY WORSE THAN THE REST OF THIS ENDPOINT'S
+    # ALREADY-ACCEPTED GAP. `_require_fused` above is not a containment
+    # boundary — `X-Fused` is explicitly not authentication (see
+    # `server/common.py`), and a page in an opened folder can set it like any
+    # other header — so ANY page can already POST here and get its declared
+    # dependencies installed with no consent prompt ever rendered (the plan's
+    # own accepted risk: "the prompt is not unforgeable"). `allow_build`
+    # escalates that from "install the packages you declared" to "run
+    # arbitrary build backends": a hostile `.html` can set it `true` on the
+    # very first request and have `uv` execute whatever `build-system` a
+    # dependency (or the project's OWN `[build-system]`, with
+    # `--no-install-project` narrowed to just that — see
+    # `_env_install_worker.py`'s `_build` docstring) names, with no failed
+    # `--no-build` attempt and no retry dialog ever standing between the
+    # request and the build.
+    #
+    # A narrowing that only honoured `allow_build=True` after a prior
+    # `--no-build` failure was recorded for this same project was considered
+    # and rejected as false comfort: the attacker who can POST here also
+    # authored the folder's `pyproject.toml`, so they can trivially produce
+    # that "prior failure" themselves with one extra request naming whatever
+    # source-only dependency they like, before sending the very request this
+    # would have gated. It would cost the attacker one round trip and give
+    # real defenders nothing. No cheap narrowing here actually holds against
+    # an attacker who controls both the manifest and the request; a real fix
+    # needs the unforgeable-prompt work the plan already defers (a native
+    # dialog in the supervisor — see DECISIONS-install-consent.md).
+    allow_build = bool(body.get("allow_build"))
+
     try:
-        record = envinstall.start(project)
+        record = envinstall.start(project, allow_build=allow_build)
         # The key comes back FROM `start`, never recomputed here: when this machine
         # has no pinned Python yet the install reports under
         # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a
@@ -84,6 +123,18 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
         key = record["key"]
     except (ImportError, RuntimeError) as e:
         return _error(str(e))
+    # No `nonstandard` field here (there was one; removed). The confirm
+    # dialog in `runtime.js` runs BEFORE this POST is ever made — it is built
+    # from `need.nonstandard`, the PRE-FLIGHT's answer (`/api/run`'s
+    # `needs_install`, via `engine.py`) — so nothing on the client ever read
+    # this response's copy, and a comment here once claimed otherwise. A
+    # manifest edited between the pre-flight and this call now re-asks on the
+    # NEXT run instead (`runtime.js`'s `approvedInstalls`, keyed on a
+    # fingerprint of the disclosure — see that fix's own commit), which
+    # covers the real-world case this field was meant to guard
+    # (edit-pyproject.toml-and-let-live-reload-rerun); the much narrower
+    # window between a click and this POST landing was never actually
+    # checked and is not worth a second confirm dialog mid-flow for.
     return JSONResponse({"ok": True, "key": key, "project": project,
                          "requirements": reqs, "progress": record})
 

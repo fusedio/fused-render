@@ -46,6 +46,11 @@ function healthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
     update_manager: null,
     update_blocked_reason: null,
     doctor: null,
+    // `null` is what a healthy source: "path" machine reports only on Windows;
+    // on POSIX it is `true` — but `null` is the never-produces-advice value,
+    // so the baseline stays the quiet one and a test opts into `false`.
+    on_shell_path: null,
+    path_fix_command: null,
     checked_at: 1_700_000_000,
     ...over,
   };

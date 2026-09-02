@@ -44,6 +44,7 @@ function job(extra: Partial<Job> = {}): Job {
     updated_at: 0,
     finished_at: null,
     stalled: false,
+    waiting_for: "",
     ...extra,
   };
 }

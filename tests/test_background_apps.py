@@ -2,11 +2,12 @@
 ([tool.fused-render.app] in pyproject.toml), the autostart store persisted
 at ~/.fused-render/background_apps.json, engine_id identity, and the version
 digest that retires a child when the manifest, daemon file, or interpreter
-changes. Also covers engine_host's "background" child kind: validated
+changes. Also covers engine_host's background-app children: validated
 against the folder's own manifest (independent of autostart, D511), and
 exempt from the warm-app idle reaper.
 """
 import os
+import shutil
 import sys
 import threading
 import time
@@ -21,8 +22,9 @@ from fused_render.shell import prefs as shell_prefs
 
 FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
 #: Same fixture daemon, but declared with a NESTED daemon path
-#: (`daemon = "src/daemon.py"`) — the shape `_validate_background` used to
-#: mishandle by re-deriving the folder as `os.path.dirname(daemon)`.
+#: (`daemon = "src/daemon.py"`) — `_validate_background` must resolve the
+#: declaring folder from the caller, not by re-deriving it as
+#: `os.path.dirname(daemon)`.
 FIXTURE_APP_NESTED = os.path.join(
     os.path.dirname(__file__), "fixtures", "background_app_nested")
 HDRS = {"X-Fused": "1"}
@@ -35,16 +37,16 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
-def _make_app(tmp_path, name="app", *, kind="background", daemon="daemon.py",
+def _make_app(tmp_path, name="app", *, daemon="daemon.py", main=None,
               daemon_outside=False, table=True):
     folder = tmp_path / name
     folder.mkdir()
     if table:
         lines = ["[tool.fused-render.app]"]
-        if kind is not None:
-            lines.append(f'kind = "{kind}"')
         if daemon is not None:
             lines.append(f'daemon = "{daemon}"')
+        if main is not None:
+            lines.append(f'main = "{main}"')
         (folder / "pyproject.toml").write_text("\n".join(lines) + "\n")
     else:
         (folder / "pyproject.toml").write_text("[tool.other]\nx = 1\n")
@@ -53,6 +55,8 @@ def _make_app(tmp_path, name="app", *, kind="background", daemon="daemon.py",
         outside.write_text("# daemon\n")
     else:
         (folder / (daemon or "daemon.py")).write_text("# daemon\n")
+    if main is not None:
+        (folder / main).write_text("def main(**params):\n    return {}\n")
     return folder
 
 
@@ -65,6 +69,61 @@ def test_load_manifest_accepts_valid_background_app(tmp_path):
     assert manifest is not None
     assert manifest.folder == os.path.abspath(str(folder))
     assert manifest.daemon == os.path.abspath(str(folder / "daemon.py"))
+    assert manifest.main == ""
+    assert manifest.idle_timeout_s == background_apps.DEFAULT_DAEMON_IDLE_TIMEOUT_S
+    assert manifest.retry_post is False
+
+
+def test_load_manifest_defaults_retry_post_to_false_for_a_main_app(tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is False
+
+
+def test_load_manifest_honors_explicit_retry_post(tmp_path):
+    folder = tmp_path / "retryable"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = true\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is True
+
+
+def test_load_manifest_rejects_non_bool_retry_post(tmp_path):
+    # A malformed value must not silently coerce to a truthy retry_post — the
+    # safe default (at-most-once) wins rather than a stray "yes" or 1.
+    folder = tmp_path / "badretry"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = "yes"\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.retry_post is False
+
+
+def test_load_manifest_accepts_valid_main_app(tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.folder == os.path.abspath(str(folder))
+    assert manifest.daemon == ""
+    assert manifest.main == os.path.abspath(str(folder / "compute.py"))
+    assert manifest.idle_timeout_s == background_apps.DEFAULT_MAIN_IDLE_TIMEOUT_S
+
+
+def test_load_manifest_main_app_honors_explicit_idle_timeout_s(tmp_path):
+    folder = tmp_path / "custom_idle"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nmain = "compute.py"\nidle_timeout_s = 30\n')
+    (folder / "compute.py").write_text("def main(**p):\n    return {}\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.idle_timeout_s == 30
 
 
 def test_load_manifest_rejects_missing_table(tmp_path):
@@ -78,8 +137,13 @@ def test_load_manifest_rejects_missing_pyproject(tmp_path):
     assert background_apps.load_manifest(str(folder)) is None
 
 
-def test_load_manifest_rejects_wrong_kind(tmp_path):
-    folder = _make_app(tmp_path, kind="template")
+def test_load_manifest_rejects_neither_daemon_nor_main(tmp_path):
+    folder = _make_app(tmp_path, daemon=None)
+    assert background_apps.load_manifest(str(folder)) is None
+
+
+def test_load_manifest_rejects_both_daemon_and_main(tmp_path):
+    folder = _make_app(tmp_path, daemon="daemon.py", main="compute.py")
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -102,7 +166,7 @@ def test_load_manifest_rejects_daemon_naming_a_directory(tmp_path):
     folder = tmp_path / "dir_daemon"
     folder.mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "."\n')
+        '[tool.fused-render.app]\ndaemon = "."\n')
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -111,7 +175,7 @@ def test_load_manifest_rejects_daemon_naming_a_subdirectory(tmp_path):
     folder.mkdir()
     (folder / "notadaemon").mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "notadaemon"\n')
+        '[tool.fused-render.app]\ndaemon = "notadaemon"\n')
     assert background_apps.load_manifest(str(folder)) is None
 
 
@@ -214,6 +278,30 @@ def test_version_for_does_not_collapse_symlinked_venv_pythons_via_realpath(tmp_p
     assert v1 != v2
 
 
+def test_version_for_changes_with_default_daemon_mtime_for_a_main_app(
+    tmp_path, monkeypatch
+):
+    # A `main =` manifest is served by engine_host.DEFAULT_DAEMON
+    # (engine_worker.py), not by anything inside the app's own folder — the
+    # digest stats manifest.main (the user's compute.py) but nothing
+    # identifies the shipped worker itself, so a changed engine_worker.py
+    # doesn't change the version digest, silently losing the guard the old
+    # (deleted) APP_WORKER_VERSION constant used to provide.
+    from fused_render.server import engine_host
+
+    folder = _make_app(tmp_path, "app", daemon=None, main="compute.py")
+    interpreter = sys.executable
+    fake_worker = tmp_path / "engine_worker.py"
+    fake_worker.write_bytes(b"# worker v1\n")
+    monkeypatch.setattr(engine_host, "DEFAULT_DAEMON", str(fake_worker))
+
+    v1 = background_apps.version_for(str(folder), interpreter)
+    new_time = time.time() + 5
+    os.utime(fake_worker, (new_time, new_time))
+    v2 = background_apps.version_for(str(folder), interpreter)
+    assert v1 != v2
+
+
 def test_version_for_raises_on_missing_interpreter(tmp_path):
     folder = _make_app(tmp_path)
     with pytest.raises(OSError):
@@ -228,7 +316,7 @@ def test_version_for_raises_on_missing_daemon_file(tmp_path):
 
 
 # --------------------------------------------------- interpreter resolution
-# D503 (2026-08-26 code review): interpreter_for must NOT walk past the app's
+# D503: interpreter_for must NOT walk past the app's
 # own folder looking for an ancestor project the way projectenv.project_env_for
 # does for a plain .py script — the app folder IS the project boundary.
 
@@ -251,8 +339,7 @@ def test_interpreter_for_manifest_only_app_nested_in_a_dependency_declaring_pare
     # folder sitting inside some unrelated ancestor project must still run on
     # sys.executable, never silently inherit that ancestor's venv — the
     # exact bug the fixture app hit nested inside the fused-render repo
-    # itself (a 409, since that ancestor venv isn't in the project-venv
-    # store).
+    # itself, whose ancestor venv is not the one this app would ever want.
     parent = tmp_path / "parent"
     parent.mkdir()
     (parent / "pyproject.toml").write_text(
@@ -261,7 +348,7 @@ def test_interpreter_for_manifest_only_app_nested_in_a_dependency_declaring_pare
     app = parent / "app"
     app.mkdir()
     (app / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (app / "daemon.py").write_text("# daemon\n")
 
     monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
@@ -279,7 +366,7 @@ def test_interpreter_for_app_declaring_its_own_deps_uses_its_own_venv(
     (folder / "pyproject.toml").write_text(
         '[project]\nname = "app_with_deps"\nversion = "0"\n'
         'dependencies = ["requests"]\n\n'
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (folder / "daemon.py").write_text("# daemon\n")
 
     monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
@@ -397,7 +484,7 @@ def test_start_then_simulated_restart_does_not_resurrect_without_autostart(monke
         "must not come back at the next server start")
 
 
-# ---------------------------------------------- engine_host: background kind
+# -------------------------------------------- engine_host: background apps
 
 
 def test_ensure_background_rejects_foreign_interpreter(tmp_path):
@@ -439,6 +526,56 @@ def test_ensure_background_rejects_daemon_not_matching_its_own_folders_manifest(
             str(tmp_path / "cache"), "v1")
 
 
+def test_ensure_background_stamps_last_used_after_spawn_not_before(
+    tmp_path, monkeypatch
+):
+    # _spawn can block up to BOOTSTRAP_TIMEOUT_S (120s) waiting for the child
+    # to answer its first ping. Child.last_used defaults to time.monotonic()
+    # at CONSTRUCTION, before _spawn runs — if ensure_background never
+    # re-stamps it afterward, a short idle_timeout_s can already be mostly
+    # (or entirely) exhausted before the child has ever served a real call,
+    # making it eligible for immediate idle reap the moment it comes up.
+    real_spawn = engine_host._spawn
+
+    def slow_spawn(child):
+        # Simulate a slow bring-up: time passes DURING _spawn, before it
+        # returns and (with the fix) last_used gets re-stamped.
+        child.last_used = time.monotonic() - 1000.0
+        real_spawn(child)
+
+    monkeypatch.setattr(engine_host, "_spawn", slow_spawn)
+
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version,
+        FIXTURE_APP, idle_timeout_s=900.0)
+    try:
+        assert (time.monotonic() - child.last_used) < 5.0
+    finally:
+        engine_host.stop(engine_id)
+
+
+def test_ensure_background_rejects_a_main_app_whose_module_is_not_the_manifests(
+    tmp_path
+):
+    # A `main =` manifest's DEFAULT_DAEMON exemption checks the daemon PATH
+    # (DEFAULT_DAEMON itself, outside every app folder) but must also check
+    # that the MODULE being served is the one this folder's manifest actually
+    # declares — otherwise any module path sails through validation as long
+    # as the folder merely declares SOME `main =`.
+    app = _make_app(tmp_path, "app", daemon=None, main="compute.py")
+    other_module = tmp_path / "elsewhere.py"
+    other_module.write_text("def main(**params):\n    return {}\n")
+    with pytest.raises(engine_host.EngineError):
+        engine_host.ensure_background(
+            "bg_wrongmodule", sys.executable, engine_host.DEFAULT_DAEMON,
+            str(tmp_path / "cache"), "v1", str(app),
+            module=str(other_module))
+
+
 def test_ensure_background_validates_against_the_callers_folder_not_dirname(tmp_path):
     # Regression: `_validate_background` used to re-derive the declaring
     # folder as `os.path.dirname(daemon)` instead of using the folder the
@@ -463,7 +600,6 @@ def test_ensure_background_validates_against_the_callers_folder_not_dirname(tmp_
         engine_id, sys.executable, manifest.daemon, cache, version,
         FIXTURE_APP_NESTED)
     try:
-        assert child.kind == "background"
         assert engine_host._ping(child)
     finally:
         engine_host.stop(engine_id)
@@ -483,23 +619,23 @@ def test_ensure_background_succeeds_for_a_valid_manifest_without_autostart():
     child = engine_host.ensure_background(
         engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
     try:
-        assert child.kind == "background"
+        assert engine_host._ping(child)
     finally:
         engine_host.stop(engine_id)
 
 
-def test_reap_idle_app_workers_skips_background_kind():
-    # A background child idle far past APP_IDLE_RETIRE_S must never be
-    # reaped — only kind == "app" is eligible (pattern: test_engine_app.py's
-    # idle-reaper tests).
+def test_reap_idle_children_skips_a_zero_idle_timeout():
+    # A child idle for a long time with idle_timeout_s == 0 (a `daemon =` app's
+    # default) is never reap-eligible — eligibility is the child's own policy,
+    # not its kind (pattern: test_daemon_lifetime.py's idle-reaper tests).
     eid = "bg_reapskip"
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon="/tmp/bg-daemon.py",
-        cache="unused", version="v1", kind="background")
-    child.last_used = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+        cache="unused", version="v1", idle_timeout_s=0.0)
+    child.last_used = time.monotonic() - 10_000
     engine_host._children[eid] = child
     try:
-        assert engine_host.reap_idle_app_workers() == 0
+        assert engine_host.reap_idle_children() == 0
         assert eid in engine_host._children
     finally:
         engine_host._children.pop(eid, None)
@@ -516,7 +652,6 @@ def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
     child = engine_host.ensure_background(
         engine_id, sys.executable, manifest.daemon, cache, version)
     try:
-        assert child.kind == "background"
         assert engine_host._ping(child)
 
         # A second call with the same identity reuses the live child rather
@@ -547,7 +682,7 @@ def test_ensure_background_stores_folder_on_the_child():
 
 def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
     # Regression: engine_host.restart() rebuilds the replacement Child field
-    # by field (the same shape `ensure_app`'s reuse-or-respawn already
+    # by field (the same shape `ensure_background`'s reuse-or-respawn already
     # takes), and the first cut of D505 forgot `folder` in that rebuild —
     # invisible in every ensure_background test above, since none of them
     # go through restart(). This is exactly the path a killed-and-healed
@@ -579,6 +714,45 @@ def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
         engine_host.stop(engine_id)
 
 
+def test_restart_restamps_last_used_after_the_new_child_finishes_bootstrap(
+        monkeypatch):
+    # `restart()`'s replacement Child's `last_used` defaults to the moment it
+    # is constructed (`field(default_factory=time.monotonic)`) — BEFORE
+    # `_spawn`/`_replay` run, both of which can take real time. Without a
+    # restamp after bring-up actually finishes, a child with a short
+    # `idle_timeout_s` could already be idle-eligible the instant it comes
+    # up. Simulate a slow bootstrap by sleeping after the real `_spawn`
+    # returns, and assert `last_used` reflects that delay rather than the
+    # instant `restart()` was called.
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        real_spawn = engine_host._spawn
+
+        # `_terminate`'s own kill-wait loop already burns ~0.05s polling the
+        # outgoing child's exit, so a naive small delay here would be lost
+        # in that noise and pass even against the unfixed code — 0.3s keeps
+        # the two clearly apart.
+        def slow_spawn(child):
+            real_spawn(child)
+            time.sleep(0.3)
+
+        monkeypatch.setattr(engine_host, "_spawn", slow_spawn)
+
+        before = time.monotonic()
+        restarted = engine_host.restart(engine_id)
+        assert restarted.last_used - before >= 0.2, (
+            "restart() stamped last_used at Child construction time, before "
+            "the slow bootstrap actually finished")
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_ensure_background_without_folder_defaults_to_empty_string():
     # The folder param is optional so existing direct callers that don't
     # care need not pass one.
@@ -598,7 +772,7 @@ def test_ensure_background_without_folder_defaults_to_empty_string():
 def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
     child = engine_host.Child(
         engine_id="bg_envtest", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="background", folder="/tmp/my-bg-app")
+        cache="c", version="v1", folder="/tmp/my-bg-app")
     env = engine_host._spawn_env(child)
     assert env["FUSED_RENDER_APP_DIR"] == "/tmp/my-bg-app"
 
@@ -606,20 +780,11 @@ def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
 def test_spawn_env_omits_app_dir_when_folder_is_empty():
     child = engine_host.Child(
         engine_id="bg_envtest2", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="background", folder="")
+        cache="c", version="v1", folder="")
     env = engine_host._spawn_env(child)
     assert "FUSED_RENDER_APP_DIR" not in env
 
 
-def test_spawn_env_omits_app_dir_for_non_background_kinds():
-    # Only kind="background" children carry a folder at all — a template or
-    # app-worker child spawned with a stray `folder` value (should never
-    # happen in production) still must not leak the var.
-    child = engine_host.Child(
-        engine_id="tmpl_envtest", python=sys.executable, daemon="/tmp/d.py",
-        cache="c", version="v1", kind="template", folder="/tmp/should-not-leak")
-    env = engine_host._spawn_env(child)
-    assert "FUSED_RENDER_APP_DIR" not in env
 
 
 def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, monkeypatch):
@@ -631,9 +796,10 @@ def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, 
     fake_child = engine_host.Child(
         engine_id="bg_folderfake", python=sys.executable,
         daemon=str(folder / "daemon.py"), cache="c", version="v1",
-        kind="background", pid=1)
+        pid=1)
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
         calls.append(folder)
         return fake_child
 
@@ -664,8 +830,24 @@ def _bg_folder(tmp_path, name="app"):
     folder = tmp_path / name
     folder.mkdir()
     (folder / "pyproject.toml").write_text(
-        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\n')
     (folder / "daemon.py").write_text("# daemon\n")
+    (folder / "index.html").write_text("<html></html>")
+    return folder
+
+
+def _retry_post_bg_folder(tmp_path, name="retryapp"):
+    """A real, spawnable background-app folder (the fixture daemon, copied
+    in rather than symlinked so each test gets its own manifest) whose
+    manifest declares `retry_post = true` — for tests that must exercise the
+    real `ensure_background` bring-up and check the flag actually reaches
+    the resulting `Child`, not a placeholder `# daemon\\n` stub that exits
+    immediately once spawned."""
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = true\n')
+    shutil.copy(os.path.join(FIXTURE_APP, "daemon.py"), folder / "daemon.py")
     (folder / "index.html").write_text("<html></html>")
     return folder
 
@@ -679,9 +861,10 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
     calls = []
     fake_child = engine_host.Child(
         engine_id="bg_fake", python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=4242)
+        cache="c", version="v1", pid=4242)
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
         calls.append((engine_id, python, daemon, cache, version))
         return fake_child
 
@@ -698,6 +881,29 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
     assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
+def test_api_start_threads_manifests_retry_post_into_ensure_background(
+        client, tmp_path, monkeypatch):
+    # Real, unmocked bring-up (manifest -> load_manifest -> ensure_background
+    # -> Child.retry_post): a manifest declaring `retry_post = true` must
+    # actually reach the spawned Child through the real endpoint, not just
+    # through a hand-built Child in a proxy test. Fails if
+    # api_background_start's ensure_background call ever drops the
+    # `retry_post=manifest.retry_post` kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    try:
+        child = engine_host.current(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_api_start_requires_x_fused_header(client, tmp_path):
     folder = _bg_folder(tmp_path)
     resp = client.post("/api/apps/background/start",
@@ -706,15 +912,59 @@ def test_api_start_requires_x_fused_header(client, tmp_path):
     assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_api_start_409_when_project_venv_not_built(client, tmp_path, monkeypatch):
+def test_api_start_falls_back_to_sys_executable_when_project_venv_not_built(
+        client, tmp_path, monkeypatch):
+    # No 409: a daemon whose declared interpreter is missing (project venv
+    # never built) still starts, on sys.executable, exactly like /api/run's
+    # builtin-engine fallback.
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
 
+    used = []
+    fake_child = engine_host.Child(
+        engine_id="bg_fallback", python=sys.executable,
+        daemon=str(folder / "daemon.py"), cache="c", version="v1",
+        pid=5150)
+
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
+        used.append(python)
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
     resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
-    assert resp.status_code == 409
-    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
+    assert resp.status_code == 200, resp.text
+    assert used == [sys.executable]
+
+
+def test_api_start_reports_an_actionable_error_when_the_sys_executable_fallback_crashes(
+        client, tmp_path, monkeypatch):
+    # The fallback above (sys.executable, when the project's own venv isn't
+    # built) still gets a real attempt, per D631 -- never a pre-emptive 409.
+    # But when that attempt then fails, the folder's own missing venv is the
+    # actual, knowable cause: the 502 should say so instead of surfacing
+    # ensure_background's generic "exited before it started" text, which
+    # names no fix a user could act on.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for",
+                        lambda f: "/definitely/not/a/real/python")
+
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
+        raise engine_host.EngineError(
+            f"the {engine_id} engine exited before it started (code 1)")
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 502
+    message = resp.json()["error"]
+    assert "not built" in message
+    assert "exited before it started" not in message
 
 
 def test_api_autostart_sets_the_flag_without_starting_or_stopping_anything(
@@ -801,9 +1051,10 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     ensured = []
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=9191)
+        cache="c", version="v1", pid=9191)
 
-    def fake_ensure(eid, python, daemon, cache, version, folder=""):
+    def fake_ensure(eid, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
         ensured.append(eid)
         return fake_child
 
@@ -815,6 +1066,31 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     assert body["ok"] is True
     assert body["pid"] == 9191
     assert ensured == [engine_id]  # fell back to a fresh bring-up, not engine_host.restart
+
+
+def test_api_restart_fresh_bring_up_threads_manifests_retry_post_into_ensure_background(
+        client, tmp_path, monkeypatch):
+    # Real, unmocked bring-up through restart's fresh-bring-up branch (no
+    # live child to hand to engine_host.restart): fails if that branch's
+    # ensure_background call ever drops the `retry_post=manifest.retry_post`
+    # kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    engine_id = background_apps.engine_id_for(str(folder))
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    monkeypatch.setattr(engine_host, "current", lambda eid: None)  # no live child
+
+    resp = client.post("/api/apps/background/restart", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    try:
+        # Read the registry directly rather than through `current` — that
+        # name is still monkeypatched to return None (simulating "no live
+        # child") for the duration of this test.
+        child = engine_host._children.get(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
 
 
 def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
@@ -836,7 +1112,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
     stale_version = "stale-version-from-before-the-edit"
     live_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version=stale_version, kind="background", pid=1)
+        cache="c", version=stale_version, pid=1)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: live_child if eid == engine_id else None)
 
@@ -847,7 +1123,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
         captured["version"] = version
         return engine_host.Child(
             engine_id=eid, python=sys.executable, daemon=str(folder / "daemon.py"),
-            cache="c", version=version or stale_version, kind="background", pid=2222)
+            cache="c", version=version or stale_version, pid=2222)
 
     monkeypatch.setattr(engine_host, "restart", fake_restart)
 
@@ -875,7 +1151,7 @@ def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
 
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon="d", cache="c",
-        version="v9", kind="background", pid=555)
+        version="v9", pid=555)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)
     monkeypatch.setattr(engine_host, "_alive", lambda c: True)
@@ -903,6 +1179,29 @@ def test_api_status_not_running_and_autostart_false_on_a_never_configured_app(
     assert body["pid"] is None
 
 
+def test_api_status_reports_daemon_protocol_for_a_daemon_folder(client, tmp_path):
+    folder = _bg_folder(tmp_path)  # daemon = "daemon.py"
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.json()["protocol"] == "daemon"
+
+
+def test_api_status_reports_main_protocol_for_a_main_folder(client, tmp_path):
+    folder = _make_app(tmp_path, daemon=None, main="compute.py")
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.json()["protocol"] == "main"
+
+
+def test_api_status_reports_null_protocol_for_a_folder_with_no_manifest(
+        client, tmp_path):
+    folder = _make_app(tmp_path, table=False)
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    assert resp.status_code == 200
+    assert resp.json()["protocol"] is None
+
+
 def test_api_start_leaves_autostart_false_on_status(client, tmp_path, monkeypatch):
     # The end-to-end proof of the opt-in default through the real API: start
     # the app, then read status() back — autostart must still read False.
@@ -912,7 +1211,7 @@ def test_api_start_leaves_autostart_false_on_status(client, tmp_path, monkeypatc
     engine_id = background_apps.engine_id_for(str(folder))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=321)
+        cache="c", version="v1", pid=321)
     monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)
@@ -943,7 +1242,7 @@ def test_status_agrees_on_autostart_and_running_through_a_symlinked_alias(
     engine_id = background_apps.engine_id_for(str(real))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(real / "daemon.py"),
-        cache="c", version="v9", kind="background", pid=777)
+        cache="c", version="v9", pid=777)
     monkeypatch.setattr(engine_host, "ensure_background",
                         lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
@@ -1002,6 +1301,25 @@ def test_autostart_set_through_one_alias_and_cleared_through_another_fully_clear
 # ---------------------------------------------------------------- resurrection
 
 
+def test_resurrect_autostart_threads_manifests_retry_post_into_ensure_background(
+        tmp_path, monkeypatch):
+    # Real, unmocked bring-up through the startup resurrection path: fails
+    # if resurrect_autostart's ensure_background call ever drops the
+    # `retry_post=manifest.retry_post` kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    background_apps.set_autostart(str(folder), True)
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    background_apps.resurrect_autostart()
+    try:
+        child = engine_host._children.get(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path, monkeypatch):
     good = _bg_folder(tmp_path, "good")
     bad = _bg_folder(tmp_path, "bad")
@@ -1012,12 +1330,13 @@ def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path,
 
     started = []
 
-    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
         if "bad" in daemon:
             raise engine_host.EngineError("boom")
         started.append(engine_id)
         return engine_host.Child(engine_id=engine_id, python=python, daemon=daemon,
-                                 cache=cache, version=version, kind="background")
+                                 cache=cache, version=version)
 
     monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
 
@@ -1073,9 +1392,10 @@ def test_resurrect_autostart_stops_a_child_that_finished_spawning_during_shutdow
     shutdown_event = threading.Event()
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background")
+        cache="c", version="v1")
 
-    def fake_ensure(eid, python, daemon, cache, version, folder=""):
+    def fake_ensure(eid, python, daemon, cache, version, folder="",
+                    idle_timeout_s=0.0, module="", retry_post=False):
         # Simulate shutdown landing WHILE this spawn was still running — by
         # the time it returns (registering the child), the server has
         # already started tearing down.
@@ -1132,11 +1452,11 @@ def test_start_through_the_api_reaches_the_fixture_daemon_via_proxy(
 
 
 def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatch):
-    # Code-review fix: a background app's proxied POST can run side-effecting
-    # daemon code (fused.daemon.call), the same shape as the warm /api/engine
-    # worker's own /call — which already guards a heal-restart from silently
-    # re-sending it via at_most_once=True. Pin the routing decision directly
-    # rather than relying on flaky real-network-failure simulation.
+    # A background app's proxied POST can run side-effecting daemon code
+    # (fused.daemon.call), so a heal-restart must not silently re-send it —
+    # the proxy guards that with at_most_once=True for any non-template
+    # child. Pin the routing decision directly rather than relying on flaky
+    # real-network-failure simulation.
     from fused_render.server.routers import engines as engines_router_mod
 
     captured = {}
@@ -1150,7 +1470,7 @@ def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatc
     monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
     bg_child = engine_host.Child(
         engine_id="bg_pin", python=sys.executable, daemon="/d.py",
-        cache="c", version="v1", kind="background")
+        cache="c", version="v1")
     monkeypatch.setattr(engine_host, "current", lambda eid: bg_child)
 
     resp = client.post("/api/engines/bg_pin/proxy/count", json={}, headers=HDRS)
@@ -1158,10 +1478,11 @@ def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatc
     assert captured["at_most_once"] is True
 
 
-def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monkeypatch):
-    # The other half of the same fix: a TEMPLATE daemon's POST traffic stays
-    # pooled/retry-friendly — the fix is scoped to background apps, not a
-    # blanket policy change for every engine kind.
+def test_proxy_does_not_mark_a_retry_post_daemon_at_most_once_on_post(client, monkeypatch):
+    # The other half of the same fix: a daemon whose manifest declares
+    # `retry_post = true` (the map template's own tile daemon is the first)
+    # stays pooled/retry-friendly — the fix is scoped to non-retry-safe
+    # daemons, not a blanket policy change for every child.
     from fused_render.server.routers import engines as engines_router_mod
 
     captured = {}
@@ -1173,14 +1494,71 @@ def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monk
                         media_type="application/json")
 
     monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
-    template_child = engine_host.Child(
+    retry_safe_child = engine_host.Child(
         engine_id="map_tiles", python=sys.executable, daemon="/d.py",
-        cache="c", version="v1", kind="template")
-    monkeypatch.setattr(engine_host, "current", lambda eid: template_child)
+        cache="c", version="v1", retry_post=True)
+    monkeypatch.setattr(engine_host, "current", lambda eid: retry_safe_child)
 
     resp = client.post("/api/engines/map_tiles/proxy/describe", json={}, headers=HDRS)
     assert resp.status_code == 200
     assert captured["at_most_once"] is False
+
+
+def test_proxy_call_timeout_follows_the_shipped_worker_not_idle_timeout_s(
+    client, monkeypatch
+):
+    # A `daemon =` author's own HTTP surface can opt into idle reaping
+    # (idle_timeout_s > 0) without also opting into the shipped worker's
+    # 60s-per-call budget — that budget exists for DEFAULT_DAEMON's known,
+    # short request shape (main =), not for an arbitrary daemon= route that
+    # may legitimately run longer. The two knobs (reap-eligibility and the
+    # call budget) are independent.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["call_timeout"] = call_timeout
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    # A daemon= app (own daemon.py, module="") that opted into an idle timeout.
+    own_daemon_child = engine_host.Child(
+        engine_id="bg_owndaemon", python=sys.executable, daemon="/d.py",
+        cache="c", version="v1", idle_timeout_s=60.0)
+    monkeypatch.setattr(engine_host, "current", lambda eid: own_daemon_child)
+
+    resp = client.post("/api/engines/bg_owndaemon/proxy/slow_route", json={},
+                       headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["call_timeout"] is None
+
+
+def test_proxy_call_timeout_still_applies_to_a_main_app(client, monkeypatch):
+    # The other half: a `main =` app (DEFAULT_DAEMON + a module) still gets
+    # the 60s budget, exactly as before.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["call_timeout"] = call_timeout
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    main_child = engine_host.Child(
+        engine_id="bg_main", python=sys.executable,
+        daemon=engine_host.DEFAULT_DAEMON, cache="c", version="v1",
+        module="/m.py", idle_timeout_s=900.0)
+    monkeypatch.setattr(engine_host, "current", lambda eid: main_child)
+
+    resp = client.post("/api/engines/bg_main/proxy/call", json={}, headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["call_timeout"] == engine_host.CALL_TIMEOUT_S
 
 
 # --------------------------------------------------- Python 3.10 compatibility
@@ -1235,7 +1613,7 @@ def test_running_reports_a_started_app_that_never_opted_into_autostart(
     engine_id = background_apps.engine_id_for(str(folder))
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=999, folder=str(folder))
+        cache="c", version="v1", pid=999, folder=str(folder))
     monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
     monkeypatch.setattr(engine_host, "current",
                         lambda eid: fake_child if eid == engine_id else None)

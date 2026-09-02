@@ -118,6 +118,8 @@ class FakeBase:
     def __init__(self):
         self.snapshot_calls = []
         self.file_calls = []
+        self.state_calls = []
+        self.serve_kwargs = None
         self.ticks = []
         self.CANCEL = _Flag()
         #: Set by a test to have the Nth tick answer "the ✕ was pressed".
@@ -143,9 +145,10 @@ class FakeBase:
         return f"/blobs/{filename}"
 
     def set_state(self, **fields):
-        pass
+        self.state_calls.append(fields)
 
     def serve(self, **kwargs):
+        self.serve_kwargs = kwargs
         return None
 
 
@@ -407,6 +410,463 @@ def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch
     assert worker._loaded["vae"] == "AutoencoderKLFlux2"
 
 
+# -- VAE tiling at load (closes the "VAE decode buffers" gap `_VRAM_HEADROOM_
+# BYTES` admits it cannot measure) -----------------------------------------------
+#
+# `Flux2KleinPipeline` has no `enable_vae_tiling`/`enable_vae_slicing`, so `load`
+# calls `enable_tiling()` on the VAE object itself, off the same `vae = getattr
+# (pipe, "vae", None)` the projection-table key above is captured from.
+
+
+def _load_with_pipe(monkeypatch, base, pipe):
+    """`load_worker` plus a `diffusers.AutoPipelineForText2Image.from_pretrained`
+    that hands back `pipe` — the no-recipe path, same as the projection-table
+    test above."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+    diffusers = types.ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = types.SimpleNamespace(
+        from_pretrained=lambda *a, **k: pipe)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    worker.load("some/other-model", None)
+    return worker
+
+
+def test_load_enables_tiling_on_the_pipelines_vae_when_it_has_the_method(monkeypatch, base):
+    """The whole point: a VAE that can tile gets asked to, at load time, so the
+    no-op-below-threshold gate inside `_decode` is what protects small renders
+    rather than this file trying to guess a resolution cutoff itself."""
+    calls = []
+    fake_vae = types.SimpleNamespace(enable_tiling=lambda: calls.append(1))
+    pipe = types.SimpleNamespace(to=lambda device: None, vae=fake_vae)
+
+    _load_with_pipe(monkeypatch, base, pipe)
+
+    assert calls == [1]
+
+
+def test_load_tolerates_a_pipeline_with_no_vae(monkeypatch, base):
+    """A pipeline shape with no `vae` attribute at all must still load —
+    the same "an optional capability's absence must not break loading"
+    convention `_register_extra_quantizers` follows for a missing backend."""
+    pipe = types.SimpleNamespace(to=lambda device: None)
+
+    worker = _load_with_pipe(monkeypatch, base, pipe)
+
+    assert worker._loaded["vae"] is None
+
+
+def test_load_tolerates_a_vae_without_enable_tiling(monkeypatch, base):
+    """A VAE class lacking `enable_tiling` (a fake in a test, some future
+    pipeline's autoencoder) must not stop the load either — unlike
+    `_load_quantization`'s quantization config, this was never something the
+    caller explicitly asked for and needs to be told failed."""
+    fake_vae = types.SimpleNamespace()  # no enable_tiling attribute
+    pipe = types.SimpleNamespace(to=lambda device: None, vae=fake_vae)
+
+    worker = _load_with_pipe(monkeypatch, base, pipe)
+
+    assert worker._loaded["vae"] == "SimpleNamespace"
+
+
+# -- the headroom env var's own edge cases (`_vram_headroom_bytes`) --------------
+#
+# No torch involved: the function reads only `os.environ`, so these exercise
+# it directly rather than through `_place`.
+
+
+def test_vram_headroom_negative_env_is_ignored(monkeypatch, base):
+    """A negative headroom would make `_place` plan into MORE VRAM than is
+    free — the opposite of what this knob exists to guard against — so it
+    must degrade to the documented default exactly like an unparsable string
+    does, not be accepted as "a very small margin"."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "-4")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
+def test_vram_headroom_infinite_env_is_ignored(monkeypatch, base):
+    """`float("inf")` parses without raising, and `int(inf * (1 << 30))`
+    raises `OverflowError` — a class the old `except ValueError:` did not
+    catch. It used to reach `_place`'s outer blanket `except`, which silently
+    turned the load into plain offload instead of the documented default;
+    this pins the direct, cheaper fix instead."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "inf")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
+def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
+    """Finite but not remotely a plausible headroom in GiB — the same
+    "sanity beats trust" reasoning as the negative case, at the other end."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "2000")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
+
+
+# -- size-aware GPU placement (`_place`) ------------------------------------------
+#
+# Measured on the user's machine: FLUX.2-klein-4B via the ROCm GGUF recipe, a
+# 15.9 GiB RX 9060 XT. Loaded and idle, `_place()`'s old unconditional
+# `enable_model_cpu_offload()` left `RssAnon` at 11.7 GiB (the weights, parked
+# in system RAM) and the worker's own VRAM (`drm-total-vram`) at 0.59 GiB —
+# HIP context and staging only — on a card that was otherwise 2.0 GiB used out
+# of 15.9. Component sizes on disk: text encoder bf16 8.05 GB, transformer
+# GGUF Q4_K_M 2.60 GB, VAE 0.17 GB.
+#
+# A third placement — pinning transformer+VAE resident while the text encoder
+# offloaded per call — was built, measured, and removed; see `_place`'s own
+# docstring for why (unreachable for this exact pipeline shape, and not
+# actually cheaper than all-gpu once accelerate's offload hook CHAIN is
+# accounted for). What's left below is the two-way decision only.
+
+
+class _FakeParam:
+    """Enough of a `torch.nn.Parameter`/buffer for `_place`'s byte count:
+    `numel() * element_size()`, nothing else is read."""
+
+    def __init__(self, numel, element_size=2):
+        self._numel = numel
+        self._element_size = element_size
+
+    def numel(self):
+        return self._numel
+
+    def element_size(self):
+        return self._element_size
+
+
+def _make_torch_nn():
+    """A `torch.nn` stand-in with just enough of `Module` for `isinstance`
+    checks — `_place` skips any `pipe.components` entry that is not one
+    (the tokenizer, the scheduler), same as the real pipeline's non-tensor
+    components."""
+    class Module:
+        pass
+    return types.SimpleNamespace(Module=Module)
+
+
+def _make_component(nn, param_bytes, buffer_bytes=0):
+    """A fake pipeline component: `param_bytes` split across two parameters
+    (so a component summing only the first would under-count) plus optional
+    buffer bytes, exercising whichever of parameters()/buffers() `_place`
+    reads."""
+    per_param = param_bytes // 2
+    params = [_FakeParam(per_param // 2, element_size=2),
+              _FakeParam(per_param - per_param // 2, element_size=2)]
+    buffers = [_FakeParam(buffer_bytes // 2, element_size=2)] if buffer_bytes else []
+
+    class Component(nn.Module):
+        def parameters(self):
+            return iter(params)
+
+        def buffers(self):
+            return iter(buffers)
+
+    return Component()
+
+
+class _FakePlacementPipe:
+    """Enough of a diffusers pipeline for `_place`'s size-aware branches to
+    exercise the REAL mechanics of `enable_model_cpu_offload`, not just count
+    calls to it.
+
+    `enable_model_cpu_offload` (`pipelines/pipeline_utils.py`, verified in the
+    installed package around line 1249-1283) runs TWO passes, in order:
+
+    1. Pop every name in `model_cpu_offload_seq.split("->")` out of the
+       component set and give it a hook — REGARDLESS of `_exclude_from_
+       cpu_offload`. A name still in this string never reaches step 2.
+    2. Whatever remains: `.to(device)` (placed, stays resident) if its name
+       is in `_exclude_from_cpu_offload`, a hook otherwise.
+
+    `_place` no longer has a branch that ever populates `_exclude_from_
+    cpu_offload` (the per-component pin this fixture was built to catch a
+    no-op fix for was removed — see `_place`'s docstring), so step 2 always
+    hooks everything here now. The two-pass emulation is kept anyway rather
+    than collapsed back to a call-counter: `hooked_names`/`placed_names`
+    still prove that plain offload actually hooks every component it should,
+    the same fidelity bar that caught the original no-op.
+    """
+
+    _exclude_from_cpu_offload = []
+
+    def __init__(self, nn, components, model_cpu_offload_seq, to_raises_on=None):
+        self.nn = nn
+        self.components = components
+        self.model_cpu_offload_seq = model_cpu_offload_seq
+        #: `.to(device)` raises when `device == to_raises_on` — simulating a
+        #: competing process (or an undercounted component) turning the
+        #: all-gpu MOVE itself into a failure, as opposed to the size PROBE
+        #: that `mem_get_info_raises` already covers.
+        self._to_raises_on = to_raises_on
+        for name, component in components.items():
+            setattr(self, name, component)
+        self.to_calls = []
+        self.offload_calls = 0
+        self.hooked_names = []
+        self.placed_names = []
+
+    def to(self, device):
+        self.to_calls.append(device)
+        if device == self._to_raises_on:
+            raise RuntimeError("HIP out of memory")
+
+    def enable_model_cpu_offload(self):
+        self.offload_calls += 1
+        remaining = {name: component for name, component in self.components.items()
+                     if isinstance(component, self.nn.Module)}
+        self.hooked_names = []
+        self.placed_names = []
+        for name in self.model_cpu_offload_seq.split("->"):
+            if remaining.pop(name, None) is not None:
+                self.hooked_names.append(name)
+        for name, component in remaining.items():
+            if name in self._exclude_from_cpu_offload:
+                self.placed_names.append(name)
+            else:
+                self.hooked_names.append(name)
+
+
+def _fake_torch_for_placement(free_bytes, mem_get_info_raises=False):
+    torch = fake_torch()
+    nn = _make_torch_nn()
+    torch.nn = nn
+
+    def mem_get_info():
+        if mem_get_info_raises:
+            raise RuntimeError("no ROCm device visible")
+        return free_bytes, free_bytes * 4  # (free, total) — total unused by _place
+
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True,
+                                       mem_get_info=mem_get_info)
+    torch.backends = types.SimpleNamespace(
+        mps=types.SimpleNamespace(is_available=lambda: False))
+    return torch, nn
+
+
+_GIB = 1 << 30
+
+
+def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
+                    to_raises_on=None):
+    """A 4-component pipeline (`text_encoder`, `transformer`, `vae`, plus a
+    non-Module `tokenizer` that `_place` must skip when summing bytes and
+    never mistake for something `enable_model_cpu_offload` places)."""
+    components = {
+        "text_encoder": _make_component(nn, text_encoder_bytes),
+        "transformer": _make_component(nn, transformer_bytes),
+        "vae": _make_component(nn, vae_bytes),
+        "tokenizer": object(),
+    }
+    seq = "->".join(name for name, component in components.items()
+                    if isinstance(component, nn.Module))
+    return _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on)
+
+
+def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
+    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.to_calls == ["cuda"]
+    assert pipe.offload_calls == 0
+    assert {"placement": "all-gpu"} in base.state_calls
+
+
+def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch, base):
+    """Below the all-gpu floor: today's unconditional `enable_model_cpu_
+    offload()`, and every component gets hooked — there is no pin to keep
+    any of them resident (see `_place`'s docstring for why that branch was
+    tried, measured, and removed)."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))  # < 3 GiB headroom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.offload_calls == 1
+    assert pipe.to_calls == []
+    assert pipe._exclude_from_cpu_offload == []
+    assert pipe.placed_names == []
+    assert set(pipe.hooked_names) == {"transformer", "vae", "text_encoder"}
+    assert {"placement": "offload"} in base.state_calls
+
+
+def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
+    """An older torch, or an exotic ROCm build missing `mem_get_info` —
+    the placement PROBE failing must never break loading; it degrades to
+    today's unconditional `enable_model_cpu_offload()`, the same reasoning
+    `release()`'s per-backend try/except documents."""
+    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB, mem_get_info_raises=True)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.offload_calls == 1
+    assert pipe._exclude_from_cpu_offload == []
+    assert pipe.placed_names == []
+
+
+def test_place_falls_back_to_offload_when_component_sizing_raises(monkeypatch, base):
+    """A component whose `.parameters()` raises (an exotic module type the
+    measurement did not anticipate) must degrade the same way a missing
+    `mem_get_info` does, not take the whole load down with it."""
+    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    class _Boom(nn.Module):
+        def parameters(self):
+            raise RuntimeError("not a real module")
+    pipe.components["broken"] = _Boom()
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.offload_calls == 1
+    assert pipe._exclude_from_cpu_offload == []
+    assert pipe.placed_names == []
+
+
+def test_place_falls_back_to_offload_when_the_all_gpu_move_itself_raises(
+    monkeypatch, base
+):
+    """Finding #3: the probe's own `try/except` covers the MEASUREMENT, but
+    `pipe.to("cuda")` used to run outside it — so a competing process
+    grabbing VRAM after `mem_get_info()` was sampled (or a component whose
+    true device cost exceeds `numel * element_size`, the same undercount
+    `_component_bytes` flags as possible) turned a load that used to succeed
+    via unconditional offload into a hard failure surfaced as `state:
+    error`. The probe already promises "must never break loading"; the
+    ACTION it authorizes has to keep that promise too."""
+    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB),
+                            to_raises_on="cuda")
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.to_calls == ["cuda"]  # the attempt happened
+    assert pipe.offload_calls == 1  # and fell back to it
+    assert pipe.placed_names == []
+    assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "all-gpu"} not in base.state_calls
+
+
+def test_place_mps_path_is_untouched_by_the_size_probe(monkeypatch, base):
+    """MPS never measures anything and never calls `enable_model_cpu_offload`
+    — unified memory makes offloading pure overhead there, per `_place`'s own
+    docstring, and this branch must be unreachable from the CUDA logic."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(
+        mps=types.SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("mps", "cpu")
+    assert pipe.to_calls == ["mps"]
+    assert pipe.offload_calls == 0
+
+
+def test_place_cpu_path_is_untouched_by_the_size_probe(monkeypatch, base):
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(_make_torch_nn(), transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cpu", "cpu")
+    assert pipe.to_calls == ["cpu"]
+    assert pipe.offload_calls == 0
+
+
+def test_place_headroom_env_override_is_honoured(monkeypatch, base):
+    """`FUSED_RENDER_AI_VRAM_HEADROOM_GB` overrides the 3 GiB default. total
+    (~10.82 GiB) + the 3 GiB default headroom is 13.82, which does not clear
+    12 GiB free — but total + a 0.5 GiB override is 11.32, which does
+    (all-gpu). Only that the override changes the outcome is asserted here."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "0.5")
+    torch, nn = _fake_torch_for_placement(free_bytes=12 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.to_calls == ["cuda"]
+    assert pipe.offload_calls == 0
+
+
+def test_place_unparsable_headroom_env_override_is_ignored(monkeypatch, base):
+    """The house pattern `prefs.ai_idle_unload_minutes_override` sets: a
+    *set, unparsable* env value is treated as absent rather than crashing
+    placement or silently becoming a headroom of `0`. total (~10.82 GiB): the
+    3 GiB default headroom puts the all-gpu bound at 13.82, which does NOT
+    clear 13 GiB free; a silently-zeroed headroom would put it at 10.82,
+    which WOULD — so an unparsable override falling through to `0` instead
+    of the documented default flips this test's outcome from offload to
+    all-gpu."""
+    monkeypatch.setenv("FUSED_RENDER_AI_VRAM_HEADROOM_GB", "soon")
+    torch, nn = _fake_torch_for_placement(free_bytes=13 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert pipe.offload_calls == 1
+    assert pipe.to_calls == []
+    assert {"placement": "offload"} in base.state_calls
+
+
 # -- releasing the allocator on an idle timer (D597) -----------------------------
 
 
@@ -485,6 +945,53 @@ def test_release_survives_both_backends_raising(monkeypatch, base):
 
     worker = load_worker(monkeypatch, base)
     worker.release()  # must not raise
+
+
+# -- the live-VRAM footprint hook (`worker_base.serve(footprint=...)`) ----------
+
+
+def test_main_wires_a_footprint_hook_into_serve(monkeypatch, base):
+    """`main()` is the one caller of `worker_base.serve` in this file — the
+    same wiring `memory=`/`release=` already get, plus the new fourth hook."""
+    worker = load_worker(monkeypatch, base)
+    worker.main()
+    assert base.serve_kwargs["footprint"] is worker._gpu_footprint
+
+
+def test_the_footprint_hook_reports_reserved_not_allocated_bytes(monkeypatch, base):
+    """RESERVED, not allocated: reserved is what the driver has actually been
+    asked for, and it is the figure `release()`'s `torch.cuda.empty_cache()`
+    call actually returns to the OS — so it is the number that visibly moves
+    when the idle release fires. `memory_allocated()` would keep reporting
+    only the tensors currently live and miss exactly the pool this hook
+    exists to show being reclaimed."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        memory_allocated=lambda: 111,
+        memory_reserved=lambda: 222)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._gpu_footprint() == 222
+
+
+def test_the_footprint_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, base):
+    """CUDA only, never MPS: on darwin `phys_footprint` (`os_footprint_bytes`
+    in `worker_base`) already counts the Metal pool a torch-on-MPS build
+    reports through, so adding an MPS figure on top would double-count the
+    same bytes. This hook must answer `None` on an MPS or CPU build, exactly
+    like the CPU/MPS branches of `_place` never call `enable_model_cpu_
+    offload` — same boundary, restated for the memory probe instead of the
+    placement decision."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._gpu_footprint() is None
 
 
 def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
@@ -686,3 +1193,96 @@ def test_a_pipeline_with_NO_sigma_schedule_still_RENDERS(monkeypatch, base, tmp_
     worker = loaded_worker(monkeypatch, base, pipe)
     worker.generate(_request(tmp_path))
     assert os.listdir(tmp_path) == ["fox.png"]
+
+
+# -- the NF4 text encoder, and the third-party quantizer registration ------------
+#
+# `_GGUF_RECIPES`' `quantize_4bit` halves what the klein recipe holds (measured
+# on an RX 9060 XT: `memory_allocated` 10.15GiB -> 5.10GiB at 512x512 / 4 steps,
+# with the warm render unchanged, 5.72s -> 5.76s). These pin the CONFIG rather
+# than the effect, since nothing here loads a real model.
+
+
+class _NoMonkey:
+    """`load_worker` wants a monkeypatch; these two calls need no patching."""
+
+    def setitem(self, *a):
+        pass
+
+    def syspath_prepend(self, *a):
+        pass
+
+
+def test_a_recipe_that_names_no_components_asks_for_no_quantization():
+    """`None` is the parameter's own default, so a recipe without the key
+    reaches exactly the `from_pretrained` call it reached before this
+    existed — including the empty-list case, which is a recipe that has been
+    edited down to nothing rather than one that never asked."""
+    worker = load_worker(_NoMonkey(), FakeBase())
+    assert worker._load_quantization(None) is None
+    assert worker._load_quantization({}) is None
+    assert worker._load_quantization({"quantize_4bit": []}) is None
+
+
+def test_the_klein_recipe_quantizes_its_TEXT_ENCODER_and_nothing_else(
+        monkeypatch, base):
+    """The transformer is already Q4_K_M and is passed to `from_pretrained` as a
+    BUILT object, so asking diffusers to quantize it too would be asking it to
+    re-quantize GGUF weights. The text encoder is the 7.5GB bf16 component that
+    made this worth doing — ~70% of what the worker held before."""
+    torch = fake_torch()
+    torch.bfloat16 = "bfloat16"
+    seen = {}
+
+    class FakeQuantConfig:
+        def __init__(self, quant_backend=None, quant_kwargs=None,
+                     components_to_quantize=None):
+            seen.update({"backend": quant_backend, "kwargs": quant_kwargs,
+                         "components": components_to_quantize})
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.PipelineQuantizationConfig = FakeQuantConfig
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    recipe = worker._recipe(MODEL)
+    assert recipe["quantize_4bit"] == ["text_encoder"]
+    assert worker._load_quantization(recipe) is not None
+
+    assert seen["components"] == ["text_encoder"]
+    assert seen["backend"] == "bitsandbytes_4bit"
+    # NF4 rather than bitsandbytes' fp4 default, double quant on, and a compute
+    # dtype matching the pipeline's `torch_dtype` — that last one defaults to
+    # float32, which would dequantize every matmul into the wrong dtype.
+    assert seen["kwargs"]["load_in_4bit"] is True
+    assert seen["kwargs"]["bnb_4bit_quant_type"] == "nf4"
+    assert seen["kwargs"]["bnb_4bit_use_double_quant"] is True
+    assert seen["kwargs"]["bnb_4bit_compute_dtype"] == torch.bfloat16
+
+
+def test_a_missing_sdnq_does_not_stop_an_ordinary_model_loading(monkeypatch, base):
+    """`_register_extra_quantizers` runs on EVERY load, including the many with
+    nothing to do with sdnq, so an absent optional backend has to be a no-op.
+    A model that genuinely needs it still fails loudly — diffusers raises on
+    the `quant_method` it cannot resolve, naming it — so this swallow hides
+    nothing, it just lets the other models through."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setitem(sys.modules, "sdnq", None)   # a None entry raises on import
+    worker._register_extra_quantizers()
+
+
+def test_a_missing_sdnq_still_writes_why_it_did_not_register(monkeypatch, base, capsys):
+    """The swallow above must not be a black hole: a load that genuinely
+    needed sdnq fails later with diffusers' own `Unknown quantization type,
+    got sdnq` ValueError, which names what is missing but not why it never
+    registered. `_register_extra_quantizers` has to leave that reason
+    somewhere a person debugging the later failure can find it."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setitem(sys.modules, "sdnq", None)   # a None entry raises on import
+    worker._register_extra_quantizers()
+    err = capsys.readouterr().err
+    assert "sdnq" in err
+    assert "did not register" in err

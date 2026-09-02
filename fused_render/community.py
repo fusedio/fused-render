@@ -64,8 +64,8 @@ REPO_URL = os.environ.get(
 )
 
 # Mirrors shell/storage.home_dir()'s FUSED_RENDER_HOME override (branch
-# nesting deliberately skipped — like core_apps/sessions, community state is
-# shared across branches).
+# nesting deliberately skipped — like routers/claude_sessions.py's STATE_DIR,
+# community state is shared across branches).
 STATE_DIR = os.path.join(
     os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render"),
     "community")

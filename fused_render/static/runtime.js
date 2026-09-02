@@ -14,23 +14,37 @@
  *     `pyproject.toml` naming a `daemon` file. Every method sends this page's
  *     own path so the server resolves which app folder it belongs to; none
  *     take a folder path. Run state and autostart are independent (D511):
- *     `status()` resolves {running, autostart, pid, version, engine_id} as
- *     two separate facts. `start()` spawns the daemon now and does NOT touch
- *     autostart (409 if its project venv isn't built yet — open the page
- *     once, or `fused.runPython`, to install it first). `stop()` kills the
- *     running daemon, also without touching autostart — if autostart is on
- *     the server's startup resurrection hook still brings it back next
- *     launch; if it's off (the default) it stays down until an explicit
- *     `start()`. `restart()` respawns it, autostart untouched either way.
- *     `setAutostart(bool)` is the ONLY thing that persists the "bring this
- *     back at every launch" flag — opt-in, never a side effect of `start()`.
+ *     `status()` resolves {running, autostart, pid, version, engine_id,
+ *     protocol} as separate facts — `protocol` is "main" for a folder that
+ *     declares `main =`, "daemon" for one that declares `daemon =`, or null
+ *     for a folder with no valid manifest at all. `start()` spawns the
+ *     daemon now and does NOT touch autostart (409 if its project venv
+ *     isn't built yet — open the page once, or `fused.runPython`, to
+ *     install it first). `stop()` kills the running daemon, also without
+ *     touching autostart — if autostart is on the server's startup
+ *     resurrection hook still brings it back next launch; if it's off (the
+ *     default) it stays down until an explicit `start()`. `restart()`
+ *     respawns it, autostart untouched either way. `setAutostart(bool)` is
+ *     the ONLY thing that persists the "bring this back at every launch"
+ *     flag — opt-in, never a side effect of `start()`.
+ *   fused.daemon.run(params) -> Promise<result>
+ *     The `main =` convenience: POSTs `params` to the shipped worker's one
+ *     route and unwraps the {ok, result, error, stdout, resolved_py}
+ *     envelope, throwing an Error carrying .type/.traceback/.stdout on a
+ *     python-side failure — the same shape `fused.runPython` throws.
+ *     Rejects, naming `call()` instead, if the folder declares `daemon =`.
+ *     Brings the daemon up transparently on the first call and re-warms it
+ *     after the idle reaper retires it — no explicit `start()` needed.
  *   fused.daemon.call(path, body?) -> Promise<any>
- *     Reach the running daemon directly, proxied through the same
- *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
- *     already rides. Resolves the engine_id from a cached status() first
- *     (calling status() itself if none is cached yet) — rejects if the app
- *     isn't running. Local-only, like the rest of fused.daemon — not
- *     available on hosted/exported pages (see the file header below).
+ *     Reach a `daemon =` folder's own routes directly, proxied through the
+ *     same stable-origin /api/engines/<id>/proxy a template daemon's traffic
+ *     already rides, and handed back RAW (no envelope — that shape is
+ *     entirely up to the author's own server). Resolves the engine_id from
+ *     a cached status() first (calling status() itself if none is cached
+ *     yet). Rejects, naming `run()` instead, if the folder declares
+ *     `main =`. Brings the daemon up transparently exactly like `run()`.
+ *     Local-only, like the rest of fused.daemon — not available on
+ *     hosted/exported pages (see the file header below).
  *   fused.daemon.watch(callback) -> unsubscribe()
  *     Learn that the daemon's state changed WITHOUT the page having caused
  *     it itself — the case a page's own start()/stop()/restart() calls
@@ -47,20 +61,53 @@
  *     listeners (see the preview note on start()/stop() below; watch()
  *     itself is read-only like status(), so it is not rejected, just kept
  *     inert).
- *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
+ *   EVERY fused.ai verb resolves with ONE frame (D632) plus its own payload:
+ *     {provider, finishReason, warnings, usage, response: {id, modelId,
+ *      timestamp}, providerMetadata: {<provider>: {...}}, ...payload}
+ *     Learn it once. `response.modelId` is the id that actually ran (there is
+ *     no top-level `model`); nothing you passed is echoed back at top level —
+ *     what the server snapped, clamped or invented (seed, size, steps, file
+ *     paths, seconds) is under providerMetadata[provider].
+ *   fused.ai.text({prompt, ...opts})
+ *     -> Promise<{text, ...frame}>  usage: {inputTokens, outputTokens, totalTokens}
+ *     Text is ONE capability among five (image, video, transcribe, embed), so
+ *     it is a verb like the others and takes ONE options object like the
+ *     others — `prompt` is a field, not a positional argument, exactly as
+ *     `.image({prompt})` and `.transcribe({path})` already read. `fused.ai`
+ *     itself is a namespace, not a function. The old callable
+ *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
+ *     it gets "fused.ai is not a function".
+ *     opts.provider: "local" | "claude" — which tier serves the call. Omitted,
+ *     the model's shape decides (a repo id or .gguf filename is weights on
+ *     this machine, anything else is a Claude alias), which IS the tier walk
+ *     local -> claude for the two tiers that exist. The reply's `provider`
+ *     names the tier that answered. The SAME option, same meaning, is on
+ *     .image/.video/.transcribe/.embed, and every reply carries `provider`;
+ *     those four have only a local tier today, so omitted means "local" and
+ *     "claude" rejects with `unavailable` (the CLI speaks text and nothing
+ *     else) rather than a 400 — the tier exists, it lacks the verb.
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
  *     opts.images: absolute paths to base images for a vision-language model,
  *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
- *     All five are LOCAL-MODEL ONLY and are refused (400) rather than dropped
- *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
- *     without unloading the model.
+ *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
+ *     Claude path — dropping them would answer a different question. The
+ *     sampling knobs (and `effort` on a local model) are TUNABLES: a tier
+ *     that lacks one drops it and says so in the result's `warnings[]`
+ *     ({type: "unsupported-setting", setting, message}) instead of failing
+ *     the call. `finishReason`: "stop" | "length" (hit maxTokens) |
+ *     "cancelled".
+ *     opts.abortSignal: a standard AbortSignal. Aborting rejects with
+ *     .type === "cancelled" and stops the work server-side (a streaming
+ *     call by disconnecting, a local generation via /api/ai/cancel). Every
+ *     verb on fused.ai takes it; on the job-backed ones it cancels the job.
+ *     fused.ai.cancel() remains the capability-wide form.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
- *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
- *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
- *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
+ *     (Claude Code) CLI or a resident local model. Resolves with the frame
+ *     above plus `text`; usage is the AI SDK's {inputTokens, outputTokens,
+ *     totalTokens} or null. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
  *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
@@ -68,9 +115,12 @@
  *     what it costs. load/download return {jobId} — a cold load is a multi-GB
  *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
  *     GENERATE TEXT with a local model there is no new call: pass its repo id
- *     as fused.ai(prompt, {model: "org/name"}).
- *   fused.ai.image({prompt, model, width, height, steps, guidance, seed,
- *                   onProgress}) -> Promise<{path, url, seed, ...}>
+ *     as fused.ai.text({prompt, model: "org/name"}).
+ *   fused.ai.image({prompt, model, provider, width, height, steps, guidance,
+ *                   seed, onProgress})
+ *     -> Promise<{images: [{path, url, mediaType}], ...frame}>
+ *     usage: {imagesGenerated}; providerMetadata.local: {seed, width, height,
+ *     steps, guidance, image, prompt, previewPath}; response.id = the job id.
  *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
@@ -82,9 +132,12 @@
  *     it is null on the last tick and on resolve, because the preview file is
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers, words,
- *                        onProgress, onSegment})
- *                  -> Promise<{output, url, text, segments, language, ...}>
+ *   fused.ai.transcribe({path, model, provider, language, task, diarize,
+ *                        speakers, words, onProgress, onChunk})
+ *     -> Promise<{text, segments: [{text, startSecond, endSecond, speaker?,
+ *                 words?}], language, durationInSeconds, ...frame}>
+ *     providerMetadata.local: {path, output, url, outputText, outputPartial,
+ *     task, speakers, estimatedSpeakers}; response.id = the job id.
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
  *     when relative, like readFile/rawUrl. Resolves with the
@@ -94,7 +147,7 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
- *     onSegment(segment) gives the transcript AS IT DECODES — every segment,
+ *     onChunk(segment) gives the transcript AS IT DECODES — every segment,
  *     in order, exactly once, without the page implementing any of it. It
  *     rides the poll onProgress already costs (no second loop, and no extra
  *     request at all for a caller that does not pass it), reading a
@@ -154,10 +207,11 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
- *   fused.ai.video({prompt, model, width, height, frames, steps, seed, image,
- *                   onProgress}) -> Promise<{path, url, model, prompt, width,
- *                                            height, frames, steps, seed,
- *                                            image}>
+ *   fused.ai.video({prompt, model, provider, width, height, frames, steps, seed,
+ *                   image, onProgress})
+ *     -> Promise<{videos: [{path, url, mediaType}], ...frame}>
+ *     usage: {videosGenerated}; providerMetadata.local: {seed, width, height,
+ *     frames, steps, image, prompt}; response.id = the job id.
  *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
  *     Silicon only (no fallback on other platforms: the first capability
  *     with no "everywhere" runner). Same shape as fused.ai.image minus
@@ -183,7 +237,9 @@
  *     an edit's default from its base image — pass width/height explicitly
  *     to override either one. Rejects with .type "bad_request" if `image`
  *     is missing, not a regular file, or anything but a single string.
- *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
+ *   fused.ai.embed({texts, paths, model, provider, abortSignal})
+ *     -> Promise<{embeddings: number[][], values, ...frame}>
+ *     providerMetadata.local: {dim, kind}.
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
  *     `paths` (files on this machine, resolved beside this page when
@@ -194,7 +250,7 @@
  *     no onProgress, no jobId on success. Rejects .type "bad_request" |
  *     "model_loading" (the model is not resident; .jobId is the load this
  *     call just started — watch it and retry, exactly like the first
- *     fused.ai(...) on a cold local model) | "ai_error" | "unavailable" (no
+ *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
  *     embedding runner on this machine).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
@@ -252,9 +308,9 @@
  *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
  *     Report a long-running operation THIS PAGE is running to the shell's
  *     download manager, so it stays visible after the page that started it is
- *     navigated away from (SPEC §36, D244). Model downloads used to be the
- *     motivating example; they are the server's job now (SPEC §40) and a page
- *     observes them with fused.job() instead of reporting them. Every
+ *     navigated away from (SPEC §36, D244). Model downloads are the server's
+ *     job (SPEC §40); a page observes them with fused.job() instead of
+ *     reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
@@ -499,11 +555,11 @@
   //     permanently: from then on everything works exactly as written. Clicking
   //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
-  // flag used to be, so a page could gate its own boot focus instead of being
-  // corrected — and the claude template was its only reader, gating a focus()
-  // the patch below was already dropping. One mechanism, applied to every page
-  // including the ones nobody has written yet, beats two that have to agree.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A per-page flag would let a
+  // page gate its own boot focus instead of being corrected, and every page
+  // that has not been written yet would need to opt in correctly. One
+  // mechanism, applied to every page including the ones nobody has written
+  // yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
@@ -667,12 +723,11 @@
       }
     }
 
-    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
-    // MutationObserver re-stripping as the document streamed. It never worked on
-    // its own — the browser queues the candidate when the element is inserted
-    // and removing the attribute afterwards does not dequeue it — so the blur
-    // above was already carrying that case, and for a card thumbnail the
-    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // `autofocus` IS NOT TOUCHED HERE: stripping the attribute would not work on
+    // its own — the browser queues the candidate when the element is inserted,
+    // so removing the attribute afterwards does not dequeue it — the blur
+    // above already carries that case, and for a card thumbnail the
+    // attribute does not apply at all (`sandbox` sets the sandboxed automatic
     // features flag, which has no re-enabling token — THUMB_SEAL). What is left
     // is one focus flicker in a pane preview before the bounce lands, against
     // an observer running over every mutation of every previewed document.
@@ -1390,14 +1445,14 @@
   // leaves in the same synchronous task as the abort — so `X-Fused-Supersedes`
   // on it reaches the server as early as anything can, with no extra round trip.
   //
-  // The separate POST below used to be the only path, deferred by setTimeout(0)
-  // to batch. Measured in Chromium against a local server, that landed ~19 ms
-  // after the abort — and any superseded call whose handler finished inside that
-  // window was written as `ok` and counted in the latency percentiles, which is
-  // the exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
-  // finish that fast, so a template re-querying per keystroke hit it often.
-  // Reported by Bugbot; the header closes the gap for every supersession that
-  // has a causing request, which is all of them.
+  // A separate POST, deferred by setTimeout(0) to batch, would arrive too late:
+  // measured in Chromium against a local server, an abort's POST lands ~19 ms
+  // after the abort, and any superseded call whose handler finishes inside that
+  // window is written as `ok` and counted in the latency percentiles — the
+  // exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
+  // finish that fast, so a template re-querying per keystroke hits it often.
+  // The header closes the gap for every supersession that has a causing
+  // request, which is all of them.
   //
   // The POST survives as the unload backstop: pagehide has ids with no request
   // left to carry them.
@@ -1564,10 +1619,10 @@
   // able to).
   //
   // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
-  // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
-  // one-shot by construction) and that shape had a hole no amount of caching
-  // fixed: ANY remount of that iframe for ANY reason — toggling the sidebar
-  // away and back, closing and reopening the folder pane, a panel/tab
+  // A `_fused_ask` query param baked into the claude iframe's URL, one-shot by
+  // construction, has a hole no amount of caching fixes: ANY remount of that
+  // iframe for ANY reason — toggling the sidebar away and back, closing and
+  // reopening the folder pane, a panel/tab
   // reattaching — rebuilds the src from the same cached value and replays the
   // ask into a brand new conversation. A src is not a message; it is a
   // document's ADDRESS, and an address that is only supposed to be visited
@@ -1654,15 +1709,14 @@
 
   // How long an install may run before the overlay appears at all.
   //
-  // The overlay used to mount synchronously, before anything was known about how
-  // long the install would take — so an install that finishes in tens of
-  // milliseconds still threw a full-screen modal over the page and tore it down
-  // again, which reads as a flicker/flash rather than as progress. Now that a
-  // declaration the app interpreter already satisfies installs NOTHING (see engine.py's
-  // `app_satisfies`), the installs that remain are either genuinely long (a real
-  // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
-  // cache, where the modal was pure noise). Delay separates the two without having
-  // to predict which one this is.
+  // The overlay must not mount synchronously: an install that finishes in tens
+  // of milliseconds would still throw a full-screen modal over the page and
+  // tear it down again, which reads as a flicker/flash rather than as progress.
+  // A declaration the app interpreter already satisfies installs NOTHING (see
+  // engine.py's `app_satisfies`), so the installs that remain are either
+  // genuinely long (a real download, where 600ms of delay is imperceptible) or
+  // genuinely short (a warm uv cache, where the modal would be pure noise).
+  // Delay separates the two without having to predict which one this is.
   const INSTALL_MOUNT_DELAY_MS = 600;
 
   let installUi = null;
@@ -1676,14 +1730,14 @@
   // carried N listeners, so a single click cancelled every install.
   //
   // The count is what lets the row outlive an individual waiter. It is normally 1
-  // now, because `installEnv` dedups by key before `showInstall` is ever reached
-  // (SPEC PY-16 makes five scripts in one folder ONE key, and they join one
-  // promise rather than each opening a row). It is kept rather than removed
+  // now, because `installEnv` dedups by key before `ensureInstallRow` is ever
+  // reached (SPEC PY-16 makes five scripts in one folder ONE key, and they join
+  // one promise rather than each opening a row). It is kept rather than removed
   // because the invariant it encodes — the row goes when the LAST waiter settles,
   // never when the first does — is the one that has to hold if anything ever
-  // reaches `showInstall` twice for a key, and it costs a single integer. Living
-  // inside the entry means "which row" and "how many waiters" are one piece of
-  // state that cannot disagree with itself.
+  // reaches `ensureInstallRow` twice for a key, and it costs a single integer.
+  // Living inside the entry means "which row" and "how many waiters" are one
+  // piece of state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
@@ -1783,10 +1837,10 @@
   //   * A LATE RESPONSE. A call answered before the install began but delivered
   //     after it finished is not a loop — it has not run at all yet — and must
   //     re-attempt rather than report a stale snapshot as a failure.
-  //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
-  //     editing dependencies minted a NEW key and a legitimate second install. It
-  //     is stable per project now, so a page-scoped set refused the install for a
-  //     user who had just fixed their `pyproject.toml`.
+  //   * A MANIFEST EDIT. The key is stable per project, not derived from the
+  //     requirement set, so editing dependencies does not mint a new key — a
+  //     page-scoped set would refuse the install for a user who had just fixed
+  //     their `pyproject.toml`.
   //
   // Deduplication — the actual "one install per page, not one per script" — lives
   // in `installEnv`'s `installInFlight` registry instead, which is the right
@@ -1799,9 +1853,9 @@
     return Boolean(need && need.key) && !installed.has(need.key);
   }
 
-  // The backdrop, and the container every install's row is appended to. It owns no
-  // title/detail/bar of its own any more — those belong to a row, because there is
-  // no longer one install to describe.
+  // The backdrop, and the container every install's row is appended to. It owns
+  // no title/detail/bar of its own — those belong to a row, since multiple
+  // installs can run concurrently, each needing its own to describe.
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -1819,18 +1873,19 @@
       "align-items:center", "width:100%",
     ].join(";");
     el.appendChild(rows);
-    // `mountTimer` is part of the state, not a local in `showInstall`: the delay has
-    // to be cancellable from `hideInstall` (an install that finishes inside the
-    // window must not mount an overlay afterwards) and must not be restarted by a
-    // second install arriving while it is still pending.
+    // `mountTimer` is part of the state, not a local in `ensureInstallRow`: the
+    // delay has to be cancellable from `hideInstall` (an install that finishes
+    // inside the window must not mount an overlay afterwards) and must not be
+    // restarted by a second install arriving while it is still pending.
     installUi = { el, rows, mounted: false, mountTimer: null };
     return installUi;
   }
 
-  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY in
-  // `showInstall` even though mounting is delayed: `installEnv` registers its cancel
-  // handler and paints its first record immediately, so the nodes have to exist
-  // before the overlay does. A row that is never mounted is simply never seen.
+  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY
+  // in `ensureInstallRow` even though mounting is delayed: `installEnv` registers
+  // its cancel handler and paints its first record immediately, so the nodes have
+  // to exist before the overlay does. A row that is never mounted is simply never
+  // seen.
   function installRow() {
     const el = document.createElement("div");
     el.style.cssText = [
@@ -1839,6 +1894,15 @@
     ].join(";");
     const title = document.createElement("div");
     title.style.cssText = "font-size:17px;font-weight:600;";
+    // Monospace by DEFAULT — this line's original job is uv's own verbatim
+    // resolver error, which is code-shaped output a monospace face makes easier
+    // to scan. `askRow` (the consent question, and its "install anyway" retry)
+    // overrides this to a proportional face for its own use: that text is prose
+    // a non-technical user reads, not output to parse, and monospace under a
+    // proportional bold title reads as a debug dump. `askRow`'s own `settle`
+    // restores the monospace default once the question is answered, since
+    // whatever paints next (the "preparing…" line, the resolver's own error) is
+    // squarely this line's original job again.
     const detail = document.createElement("div");
     detail.style.cssText =
       "opacity:0.8;max-width:60ch;white-space:pre-wrap;word-break:break-word;" +
@@ -1857,8 +1921,24 @@
       "border:1px solid #3a424e", "background:#1d222a", "color:#e6edf3",
       "font-size:13px", "cursor:pointer",
     ].join(";");
-    el.append(title, track, detail, cancel);
-    return { el, title, detail, bar, cancel };
+    // The consent question's other button. Built here rather than as a
+    // separate element the confirm step creates on demand, so the row's
+    // structure (and therefore `installing.get(key).row`, which tests reach
+    // into directly) is the same object whether or not this project has ever
+    // needed a confirm — hidden until `confirmAsk` shows it, and hidden again
+    // the moment a decision is made.
+    const install = document.createElement("button");
+    install.textContent = "Install";
+    install.style.cssText = [
+      "margin-top:6px", "padding:6px 16px", "border-radius:6px",
+      "border:1px solid #3a6ea8", "background:#2f5f9e", "color:#e6edf3",
+      "font-size:13px", "cursor:pointer", "display:none",
+    ].join(";");
+    const buttons = document.createElement("div");
+    buttons.style.cssText = "display:flex;gap:10px;";
+    buttons.append(cancel, install);
+    el.append(title, track, detail, buttons);
+    return { el, title, detail, bar, track, cancel, install };
   }
 
   // Mount after INSTALL_MOUNT_DELAY_MS, at most one timer at a time.
@@ -1877,7 +1957,13 @@
     }, INSTALL_MOUNT_DELAY_MS);
   }
 
-  function showInstall(need) {
+  // Get-or-create this key's { row, count } entry, incrementing count exactly
+  // once. Its own function (rather than inlined into `startInstall`) because
+  // the confirm step needs the row BEFORE anything is known about whether this
+  // call ends up preparing or asking a question first — the one place entry
+  // bookkeeping happens, so two increments for one call can never leave
+  // `hideInstall` decrementing past zero for whichever call never matched.
+  function ensureInstallRow(need) {
     const ui = installOverlay();
     let entry = installing.get(need.key);
     if (!entry) {
@@ -1886,30 +1972,32 @@
       ui.rows.appendChild(entry.row.el);
     }
     entry.count += 1;
-    mountInstallSoon(ui);
-    const row = entry.row;
-    // Name what is actually being prepared. The environment belongs to the
-    // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
-    // row is titled with the project — "Preparing my-app" — rather than with a
-    // joined package list that would (a) grow unbounded as a folder gains
-    // dependencies and (b) imply the row belongs to one script. The packages are
-    // demoted to the detail line, where the poller's own text takes over a beat
-    // later anyway.
-    //
-    // On the interpreter round (D214) the packages are NOT downloading yet, and
-    // titling that round with them is the kind of small lie that makes a
-    // four-minute wait feel broken — the user watches "Installing tensorflow"
-    // and nothing about tensorflow is happening. So that round keeps its own
-    // distinct title.
+    return { ui, row: entry.row };
+  }
+
+  // Name what is actually being prepared. The environment belongs to the
+  // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
+  // row is titled with the project — "Preparing my-app" — rather than with a
+  // joined package list that would (a) grow unbounded as a folder gains
+  // dependencies and (b) imply the row belongs to one script. The packages are
+  // demoted to the detail line, where the poller's own text takes over a beat
+  // later anyway.
+  //
+  // On the interpreter round (D214) the packages are NOT downloading yet, and
+  // titling that round with them is the kind of small lie that makes a
+  // four-minute wait feel broken — the user watches "Installing tensorflow"
+  // and nothing about tensorflow is happening. So that round keeps its own
+  // distinct title.
+  function paintPreparing(row, need) {
     const requirements = (need.requirements || []).join(", ");
     row.title.textContent = need.python
       ? "Installing Python " + need.python
       : "Preparing " + (need.name || "the environment");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
     // already in flight rather than duplicating it, so re-opening a page whose
-    // download is four minutes old used to paint 0% and then jump to 25% on the
-    // first poll — nothing was lost, but a user switching between apps saw
-    // 0% → 25% → freeze over and over and concluded it was looping. The initial
+    // download is four minutes old would otherwise paint 0% and then jump to
+    // 25% on the first poll — a user switching between apps would see
+    // 0% → 25% → freeze over and over and read it as looping. The initial
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
@@ -1917,7 +2005,6 @@
       ? "contacting the installer… (" + requirements + ")"
       : "contacting the installer…";
     installBarIndeterminate(row, true);
-    return row;
   }
 
   function hideInstall(key) {
@@ -2000,8 +2087,159 @@
     return promise;
   }
 
+  // Projects a user has already said yes to, THIS PAGE LOAD. No trust store and
+  // nothing persisted (see install-consent-plan.html's "no trust store"
+  // decision): the venv's READY_MARKER is already the real once-per-folder
+  // record, so `needs_install` simply stops firing once a folder is built, and
+  // this set only has to survive one page's lifetime.
+  //
+  // What it buys, narrowly: the D214 two-round Python bootstrap reports the
+  // SAME project under two DIFFERENT keys (the interpreter round, then the
+  // packages round), so `installEnv`'s per-key dedup cannot collapse them —
+  // without this, a user who had just clicked Install would be asked again,
+  // for the install they had already approved, before the first one had even
+  // reached the network.
+  //
+  // Keyed by `need.project` PLUS a fingerprint of what was actually
+  // DISCLOSED (`nonstandardFingerprint`, below) — not by project alone.
+  // Project-alone was a real disclosure gap: approve an all-PyPI install for
+  // project X, then add `foolib @ git+https://…` to its pyproject.toml —
+  // editing the manifest and letting live-reload re-run it is this app's own
+  // core workflow (see `startInstall`'s `activeKey` comment) — and the SAME
+  // project key would still read as approved, so `confirmInstall` would be
+  // skipped and the git source fetched with the user never having seen it.
+  // Folding the disclosure into the key makes a changed disclosure re-ask
+  // while an unrelated version bump (which never touches `nonstandard`)
+  // still reuses the earlier approval — the nagging this Set exists to
+  // avoid. Falls back to `need.key` when a caller has no `project` — a
+  // defensive floor, not the expected path, since every server-built
+  // `needs_install` carries one — so two genuinely different projects can
+  // never be conflated into one approval.
+  const approvedInstalls = new Set();
+
+  // A stable string naming exactly what the confirm dialog told the user —
+  // the same information `confirmInstall` renders, just serialized instead
+  // of joined into prose. Order-independent (sorted) so two reports of the
+  // same set in a different order do not read as a changed disclosure: nothing
+  // about `nonstandard_dependencies_of` promises a stable order (see its own
+  // docstring — "Order and duplicates are not contracts callers rely on").
+  function nonstandardFingerprint(need) {
+    const nonstandard = need.nonstandard || [];
+    return nonstandard
+      .map((d) => (d && d.name) + " " + (d && d.reason))
+      .sort()
+      .join("");
+  }
+
+  // The shared shape behind every yes/no this loader ever asks on a row:
+  // hide the progress track (there is no progress yet — or not yet AGAIN —
+  // to show), paint the question into the same title/detail nodes the
+  // eventual progress paint will reuse, reveal Install beside Cancel, and
+  // resolve/reject on whichever is clicked. One element identity throughout
+  // an install, never a modal swapped out from under the page.
+  //
+  // `installLabel` lets a caller relabel the affirmative button for its own
+  // question (`confirmBuildRetry`'s "Install anyway" reads very differently
+  // from the ordinary "Install") while still driving the exact same
+  // resolve/reject/mount plumbing.
+  function askRow(row, ui, title, detail, installLabel) {
+    return new Promise((resolve, reject) => {
+      row.track.style.display = "none";
+      row.title.textContent = title;
+      // Prose, not output: `detail` defaults to the monospace face its ORIGINAL
+      // job (uv's verbatim resolver error) wants, but a question is a sentence a
+      // non-technical user reads, not text to parse — rendered monospace under
+      // the proportional bold title, it looks like a debug dump landed in the
+      // middle of a plain-English question.
+      row.detail.style.fontFamily = "ui-sans-serif,system-ui,-apple-system,sans-serif";
+      row.detail.textContent = detail;
+      row.install.textContent = installLabel;
+      row.install.style.display = "";
+
+      const settle = (approved) => {
+        row.install.removeEventListener("click", onInstall);
+        row.cancel.removeEventListener("click", onCancel);
+        row.install.style.display = "none";
+        row.install.textContent = "Install";
+        row.track.style.display = "";
+        // Back to the monospace default: whatever paints `detail` next —
+        // `paintPreparing`'s "contacting the installer…", the resolver's own
+        // verbatim error — is this line's original job again.
+        row.detail.style.fontFamily = "ui-monospace,Menlo,Consolas,monospace";
+        if (approved) resolve();
+        else reject();
+      };
+      const onInstall = () => settle(true);
+      const onCancel = () => settle(false);
+      row.install.addEventListener("click", onInstall);
+      row.cancel.addEventListener("click", onCancel);
+
+      // A QUESTION must appear at once — `mountInstallSoon`'s delay exists to
+      // keep a merely-FAST install from flashing a modal open and shut (D213),
+      // which only makes sense once something is actually running. Nothing is
+      // running yet: the user has taken no action, so there is no "it might
+      // finish before anyone notices" case here to protect, and a delayed
+      // question would just read as a stuck page.
+      if (!ui.mounted) {
+        if (ui.mountTimer !== null) {
+          clearTimeout(ui.mountTimer);
+          ui.mountTimer = null;
+        }
+        document.body.appendChild(ui.el);
+        ui.mounted = true;
+      }
+    });
+  }
+
+  // "Install dependencies for X?" Resolves on Install, rejects on Cancel.
+  //
+  // Only ever called with a non-empty `need.nonstandard` — `startInstall`
+  // runs an all-PyPI install straight through with no prompt, since naming
+  // every ordinary PyPI dependency trains a reflexive click and there is
+  // nothing to disclose. The detail here is that disclosure: each entry
+  // names what did NOT classify as an ordinary released version and why.
+  function confirmInstall(need, row, ui) {
+    const nonstandard = need.nonstandard || [];
+    const detail = nonstandard.map((d) => d.name + " — " + d.reason).join("\n");
+    return askRow(
+      row, ui,
+      "Install dependencies for " + (need.name || "the environment") + "?",
+      detail, "Install"
+    );
+  }
+
+  // "`foolib` has to be compiled on this computer." The one dependency
+  // Task 1's static classification cannot see coming — whether a plain
+  // `foo>=1.0` publishes a wheel is a fact about the index, not the
+  // declaration — so it is caught here instead, at the resolver's own
+  // failure, and named individually rather than folded into the earlier
+  // question (which had already been answered by the time this exists to
+  // ask). Declining leaves the ORIGINAL resolver error standing — nothing
+  // about declining a build is itself a cancellation of the install.
+  //
+  // `pkg` comes from `needs_build` on the polled progress record — set by
+  // the worker (`_env_install_worker.py`'s `install`), the process that
+  // actually knows `--no-build` was passed and can tell this refusal apart
+  // from a genuine resolver failure. There is a single detector, and it
+  // lives where the fact actually originates.
+  //
+  // `appName` is `need.name` (same fallback `confirmInstall` uses): a
+  // non-expert reading this dialog cannot act on "no ready-to-use package"
+  // sitting next to a bare package name without knowing which app wants the
+  // dependency or what continuing costs.
+  function confirmBuildRetry(row, ui, pkg, appName) {
+    return askRow(
+      row, ui,
+      pkg + " has to be compiled on this computer",
+      appName + " needs it, but there's no prebuilt version for this system. " +
+        "Compiling runs code from " + pkg + " and can take several minutes or fail. " +
+        "Only continue if you trust it.",
+      "Install anyway"
+    );
+  }
+
   function startInstall(need, pyPath, ownPath) {
-    const row = showInstall(need);
+    const { ui, row } = ensureInstallRow(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
     // /api/env/install re-derives the project from the .py on disk and returns its
@@ -2040,82 +2278,219 @@
         })
         .catch(() => {});
     };
-    row.cancel.addEventListener("click", onCancel);
 
     const paint = (prog) => paintInstall(row, prog, notice);
 
-    // Measured from the click, not from the previous poll, so the fast window is a
-    // property of the INSTALL's age rather than of how many times we happened to
-    // poll — a slow first response would otherwise stretch the fast phase
-    // arbitrarily.
-    const startedAt = Date.now();
-    const pollDelay = () =>
-      Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
-        ? INSTALL_POLL_FAST_MS
-        : INSTALL_POLL_MS;
+    const poll = () => {
+      // Measured from the first poll, not from `startInstall`'s own call, so the
+      // fast window is a property of the DOWNLOAD's age rather than of how long
+      // the consent question happened to sit unanswered — a user who takes ten
+      // seconds to click Install must not spend the fast-poll budget on nothing
+      // having downloaded yet.
+      const startedAt = Date.now();
+      const pollDelay = () =>
+        Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
+          ? INSTALL_POLL_FAST_MS
+          : INSTALL_POLL_MS;
+      const step = () =>
+        fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
+          headers: { "X-Fused": "1" },
+        })
+          .then((res) => res.json())
+          .then((body) => {
+            const prog = body && body.progress;
+            paint(prog);
+            if (!prog) {
+              // The record vanished (or never landed). Treat as failure rather
+              // than polling forever — a silent loader is the failure mode this
+              // whole flow exists to remove.
+              throw new Error("the installer left no progress record");
+            }
+            if (!prog.done) {
+              return new Promise((r) => setTimeout(r, pollDelay())).then(step);
+            }
+            if (prog.error) {
+              const e = new Error(prog.error);
+              // Carried on the Error object rather than re-derived from its
+              // message: `needs_build` is the worker's own classification of
+              // this failure (`_env_install_worker.py`'s `install`), and the
+              // catch below reads it as-is instead of regexing `e.message`.
+              e.needsBuild = prog.needs_build || null;
+              // Mutually exclusive with `needsBuild` on the worker's own side
+              // (`_env_install_worker.py`'s `install`): a `--no-build` refusal
+              // is EITHER a question worth asking (`needsBuild`, no wheels
+              // published anywhere) OR a platform this app can never run on
+              // (wheels exist, just not for this machine) — never both. Carried
+              // the same way, as a field on the Error rather than re-derived
+              // from `e.message`, since `e.message` stays uv's raw stderr
+              // verbatim (SPEC PY-18).
+              e.platformIncompatible = prog.platform_incompatible || null;
+              throw e;
+            }
+            return prog;
+          });
+      return step();
+    };
 
-    const poll = () =>
-      fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
-        headers: { "X-Fused": "1" },
-      })
-        .then((res) => res.json())
-        .then((body) => {
-          const prog = body && body.progress;
-          paint(prog);
-          if (!prog) {
-            // The record vanished (or never landed). Treat as failure rather
-            // than polling forever — a silent loader is the failure mode this
-            // whole flow exists to remove.
-            throw new Error("the installer left no progress record");
+    // One POST + poll cycle. Split out of `runInstall` so the no-wheel retry
+    // below (Task 5) can run a SECOND cycle — with `allowBuild: true` — off
+    // the same row, the same `activeKey` handling and the same cancel
+    // handler, rather than a parallel copy of all three.
+    const tryInstall = (allowBuild) =>
+      envPost("/api/env/install", { py: pyPath, html: ownPath, allow_build: allowBuild })
+        .then(({ res, data }) => {
+          if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+          // The installer's key wins over the pre-flight's from here on (see
+          // `activeKey`). `hideInstall` still gets need.key — that is the entry
+          // `ensureInstallRow` counted.
+          if (data && typeof data.key === "string" && data.key) activeKey = data.key;
+          // Wake the jobs dock now, not before the POST: `envinstall.start()`
+          // creates the row SYNCHRONOUSLY, before this response comes back, so
+          // by the time this line runs the row is already there for the dock's
+          // resulting poll to find. A ping fired before the POST would have the
+          // dock poll, see nothing yet, and go back to sleep for a full idle
+          // interval — strictly worse than no ping. Covers every real start
+          // through this one call site: the plain first attempt, the
+          // `allow_build` "install anyway" retry, and each round of the D214
+          // two-round Python bootstrap (each round is its own `tryInstall` off
+          // its own key).
+          pingJobs();
+          paint(data && data.progress);
+          return poll();
+        })
+        .then(
+          (prog) => {
+            if (cancelled) {
+              // The install finished anyway — a cancel the server could not honour,
+              // or one that lost a race with the last poll. The user's intent still
+              // decides whether the SCRIPT runs: resolving here ran it, which is the
+              // one outcome pressing Cancel must never produce. The venv is built
+              // and stays built; only the run is abandoned.
+              const e = new Error("the install was cancelled");
+              e.type = "EnvInstallCancelled";
+              throw e;
+            }
+            return prog;
+          },
+          (err) => {
+            if (cancelled) {
+              const e = new Error("the install was cancelled");
+              e.type = "EnvInstallCancelled";
+              throw e;
+            }
+            // A resolver failure this run itself chose NOT to allow — never on
+            // the retry attempt, or a package with a genuinely missing wheel
+            // (not merely one this run refused to build) would loop forever
+            // offering the same question. `needsBuild` (set on the Error
+            // above from the worker's own `needs_build` field) is null for
+            // every other failure (bad pin, no network, a nonexistent name),
+            // which falls straight through to the ordinary error below.
+            // A platform-incompatible refusal is never a question — no retry,
+            // allowed or not, can ever satisfy it (the wheels this app needs
+            // simply are not published for this machine) — so it must not
+            // reach `confirmBuildRetry` at all. Falls straight through to the
+            // ordinary terminal-error path below, with `err.message` replaced
+            // by a plain-language sentence naming the app, the package and
+            // the platforms involved (uv's raw stderr is still what
+            // `envinstall._mirror_into_jobs` shows the jobs dock — this only
+            // changes what THIS caller's rejected promise carries).
+            if (err.platformIncompatible) {
+              const info = err.platformIncompatible;
+              const appName = need.name || "This app";
+              err.message =
+                appName +
+                " needs " +
+                info.package +
+                ", which only runs on " +
+                info.platform +
+                ". This app can't run on " +
+                info.current_platform +
+                ".";
+              err.type = "EnvInstallError";
+              err.traceback = err.message;
+              throw err;
+            }
+            const pkg = !allowBuild && err.needsBuild;
+            if (pkg) {
+              // The mid-install Cancel handler is unregistered for the
+              // question's duration — same reasoning as the very first
+              // confirm above: while this question is on screen nothing is
+              // running for `onCancel` to reach, and leaving it attached
+              // would fire both it and this question's own Cancel off one
+              // click.
+              row.cancel.removeEventListener("click", onCancel);
+              return confirmBuildRetry(row, ui, pkg, need.name || "the environment").then(
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  paintPreparing(row, need);
+                  return tryInstall(true);
+                },
+                () => {
+                  row.cancel.addEventListener("click", onCancel);
+                  // Declining a source build is not cancelling the install —
+                  // it is standing by the resolver's original answer, which is
+                  // what the client still needs to see.
+                  err.type = "EnvInstallError";
+                  err.traceback = err.message;
+                  throw err;
+                }
+              );
+            }
+            // Verbatim, and tagged so a page can tell an install failure from its
+            // script's own error.
+            err.type = "EnvInstallError";
+            err.traceback = err.message;
+            throw err;
           }
-          if (!prog.done) {
-            return new Promise((r) => setTimeout(r, pollDelay())).then(poll);
-          }
-          if (prog.error) throw new Error(prog.error);
-          return prog;
-        });
+        );
 
-    return envPost("/api/env/install", { py: pyPath, html: ownPath })
-      .then(({ res, data }) => {
-        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        // The installer's key wins over the pre-flight's from here on (see
-        // `activeKey`). `hideInstall` still gets need.key — that is the entry
-        // `showInstall` counted.
-        if (data && typeof data.key === "string" && data.key) activeKey = data.key;
-        paint(data && data.progress);
-        return poll();
-      })
-      .then(
+    // The actual install, run only once the question above (if any) is
+    // answered Install. Registers the REAL cancel handler here rather than
+    // for the whole of `startInstall`: while the question is still on screen
+    // nothing has started for `onCancel` to reach, and attaching it earlier
+    // would fire both it and the confirm's own Cancel off a single click.
+    const runInstall = () => {
+      row.cancel.addEventListener("click", onCancel);
+      mountInstallSoon(ui);
+      paintPreparing(row, need);
+      return tryInstall(false).then(
         (prog) => {
           row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
-          if (cancelled) {
-            // The install finished anyway — a cancel the server could not honour,
-            // or one that lost a race with the last poll. The user's intent still
-            // decides whether the SCRIPT runs: resolving here ran it, which is the
-            // one outcome pressing Cancel must never produce. The venv is built
-            // and stays built; only the run is abandoned.
-            const e = new Error("the install was cancelled");
-            e.type = "EnvInstallCancelled";
-            throw e;
-          }
           return prog;
         },
         (err) => {
           row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
-          if (cancelled) {
-            const e = new Error("the install was cancelled");
-            e.type = "EnvInstallCancelled";
-            throw e;
-          }
-          // Verbatim, and tagged so a page can tell an install failure from its
-          // script's own error.
-          err.type = "EnvInstallError";
-          err.traceback = err.message;
           throw err;
         }
       );
+    };
+
+    // Nothing to disclose (an all-PyPI manifest) means no prompt at all: a
+    // confirmation screen carrying no decision content only trains reflexive
+    // clicking. This never records an approval — there was no question to
+    // have approved — so if the manifest is later edited to add a
+    // non-standard dependency, `nonstandard` is no longer empty and the
+    // checks below run for real, with an `approvalKey` this silent install
+    // never added.
+    if ((need.nonstandard || []).length === 0) return runInstall();
+
+    const approvalKey = (need.project || need.key) + " " + nonstandardFingerprint(need);
+    if (approvedInstalls.has(approvalKey)) return runInstall();
+
+    return confirmInstall(need, row, ui).then(
+      () => {
+        approvedInstalls.add(approvalKey);
+        return runInstall();
+      },
+      () => {
+        hideInstall(need.key);
+        const e = new Error("the install was cancelled");
+        e.type = "EnvInstallCancelled";
+        throw e;
+      }
+    );
   }
 
   // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
@@ -2131,10 +2506,10 @@
   // would show CURRENT content under a heading that says otherwise.
   //
   // Closing it means the reader can no longer be handed a path: it needs the bytes
-  // (a temp materialization, which is exactly the on-disk snapshot this design
-  // removed) or a file-like object over the revision route (a Python-side shim
-  // every reader would have to accept). That is phase 2b, and it is a change to the
-  // `main()` contract rather than a patch here — hence the deferral.
+  // (a temp materialization) or a file-like object over the revision route (a
+  // Python-side shim every reader would have to accept). That is phase 2b, and
+  // it is a change to the `main()` contract rather than a patch here — hence
+  // the deferral.
   //
   // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
   // revision indicator names the limitation next to the sha (Preview.tsx —
@@ -2227,7 +2602,20 @@
       if (data.needs_install && data.needs_install.pyproject) {
         watchPath(data.needs_install.pyproject);
       }
-      if (shouldInstall(data.needs_install, installed)) {
+      // `IS_THUMBNAIL` already gates every `fused.daemon.*` call
+      // (`_daemonRejectPreview`, above) on the same principle — a picture of the
+      // page must not act like the page — and an install is the same case: a
+      // preview card boots the real `entry_html` in a sandboxed iframe purely to
+      // paint it (`AppPreviewCard.tsx`, hover included), and that boot must never
+      // reach `/api/env/install`, mount a row, or poll progress. Skipping
+      // `shouldInstall` here — rather than checking `IS_THUMBNAIL` inside it —
+      // means a preview's `needs_install` falls straight to the `!data.ok` branch
+      // below and rejects with the server's own verbatim message, the same
+      // rejection shape every other run failure already produces and every
+      // caller already catches. Nothing here starts a chain that could throw
+      // unhandled: `installEnv` (and everything downstream of it) is simply
+      // never called.
+      if (!IS_THUMBNAIL && shouldInstall(data.needs_install, installed)) {
         installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
           attempt().then((next) => handle(next, installed))
@@ -2269,131 +2657,30 @@
       );
   }
 
-  // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
-  // fused.engine(py) is the warm variant of runPython: the server keeps the
-  // script's worker alive between calls. Same wire body and result/error shape,
-  // and it shares runPython's latest-wins stale-cancel channel (keyed by the .py
-  // path), headers, and never-settle-on-supersede semantics. The hosted runtime
-  // aliases fused.engine to runPython; this local one falls back on a network
-  // error (see below), since a warm worker is only an optimization.
-  function engineCall(pyPath, params, opts) {
-    opts = opts || {};
-    const key = opts.key === undefined ? pyPath : opts.key;
-    const keyed = key !== null;
-    const controller = new AbortController();
-    controller._callId = newCallId();
-    if (keyed) {
-      const prev = inflightByKey.get(key);
-      if (prev) {
-        prev._supersededByKey = true;
-        reportSuperseded(prev._callId);
-        prev.abort();
-      }
-      inflightByKey.set(key, controller);
-    }
-    let detachSignal = null;
-    if (opts.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else {
-        const onAbort = () => controller.abort();
-        opts.signal.addEventListener("abort", onAbort);
-        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
-      }
-    }
-    const cleanup = () => {
-      if (detachSignal) detachSignal();
-      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
-    };
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-
-    const attempt = () =>
-      fetch("/api/engine", {
-        method: "POST",
-        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                             controller._callId),
-        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
-        signal: controller.signal,
-      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
-
-    const run = attempt().then(({ data, httpOk }) => {
-      // The script may have written anything; tell the shell even on failure.
-      noteFsChanged();
-      if (data && data.stdout) console.log("[python]", data.stdout);
-      // Watch the executed file for auto-reload, even on failure (LR-2).
-      if (data && data.resolved_py) watchPath(data.resolved_py);
-      if (!httpOk) {
-        // A server-level error ({"error": "..."}), not a script error envelope.
-        const err = new Error(
-          (data && typeof data.error === "string" && data.error) ||
-          "engine request failed");
-        err.type = "engine_error";
-        throw err;
-      }
-      if (!data.ok) {
-        const err = new Error(data.error && data.error.message);
-        err.type = data.error && data.error.type;
-        err.traceback = data.error && data.error.traceback;
-        err.stdout = data.stdout;
-        throw err;
-      }
-      return data.result;
-    });
-
-    return run.then(
-      (result) => {
-        cleanup();
-        if (controller._supersededByKey) return new Promise(() => {});
-        return result;
-      },
-      (err) => {
-        cleanup();
-        if (opts.signal && opts.signal.aborted) throw err;
-        if (controller._supersededByKey) return new Promise(() => {});
-        // Degrade to per-call runPython ONLY when the local server is
-        // unreachable — a fetch TypeError, never an HTTP status (a warm worker
-        // is pure optimization; the page must keep working). An HTTP-status
-        // failure means the server answered: the proxy may already have run
-        // main() (a post-heal 502) or the venv needs building (409), so
-        // re-running here could double-execute a side-effecting main(). Surface
-        // it instead. A script error carries the Python exception type and
-        // propagates the same way.
-        if (err && err.name === "TypeError")
-          return runPython(pyPath, params, opts);
-        throw err;
-      }
-    );
-  }
-
-  function engineForget(pyPath) {
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-    return fetch("/api/engine/forget", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify({ py: pyPath, html: ownPath }),
-    })
-      .then((res) => res.json())
-      .catch(() => ({ ok: true })); // best-effort teardown; never reject the page
-  }
-
-  function engine(pyPath, opts) {
-    opts = opts || {};
-    return {
-      call: (params, callOpts) =>
-        engineCall(pyPath, params, Object.assign({}, opts, callOpts || {})),
-      forget: () => engineForget(pyPath),
-    };
-  }
-
   // ---- background apps (fused.daemon, server/routers/background_apps.py) ---
   // fused.daemon is the browser control surface for a FOLDER's declared
   // long-running daemon, not this page's own script — every method sends the
-  // page's own path as `html` (same derivation as fused.engine above), and the
-  // server resolves which app folder that page belongs to, exactly like
-  // resolve_py does for runPython/fused.engine. `call` is the one that reaches
-  // the daemon itself: it proxies through the SAME stable-origin
+  // page's own path as `html`, and the server resolves which app folder that
+  // page belongs to, exactly like resolve_py does for runPython. `run` and
+  // `call` both reach the daemon itself, through the SAME stable-origin
   // /api/engines/<id>/proxy path a template daemon's traffic already rides
   // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
-  // call cached — a page never computes that id itself.
+  // call cached — a page never computes that id itself. `run(params)` is the
+  // `main =` convenience: POST /call with `params` as the body, unwrapping
+  // the {ok, result, error, stdout, resolved_py} envelope the shipped worker
+  // answers with. `call(path, body)` is for a `daemon =` folder's own routes,
+  // proxied and handed back raw — a `main =` folder's single route would
+  // just be `call("/call", ...)` minus the unwrap, which is why `call()`
+  // refuses a `main =` folder outright (use `run()`) and `run()` refuses a
+  // `daemon =` folder outright (use `call()`), each naming the folder's
+  // actual declared protocol and the method to use instead. Both bring the
+  // daemon up transparently — on a page's first call, and to re-warm it
+  // after the idle reaper retires it — rather than requiring an explicit
+  // `start()` first: the preview guard below (D507/D508), not a start-first
+  // gate, is what actually stops a card thumbnail or hover peek from
+  // spawning a daemon, and `engine_forward._forward` already heals a
+  // dead-but-running child on any proxied call regardless of which of the
+  // two methods reaches it.
   //
   // Run state and autostart are deliberately independent (D511): `stop`
   // kills the running daemon but never touches the persisted autostart flag
@@ -2404,13 +2691,21 @@
   // `_daemonEngineId` is a hash of the FOLDER, so `status()` always resolves one
   // whether or not the app is running — it names WHICH app, not whether one is
   // running. `_daemonKnownRunning` is the separate, actually-gating fact
-  // (`call()`'s guard reads this, never engine_id's presence, which is always
-  // truthy and so cannot tell "not running" from "running").
+  // (bring-up reads this, never engine_id's presence, which is always
+  // truthy and so cannot tell "not running" from "running"). `_daemonProtocol`
+  // is the folder's declared bring-up shape from that same status() payload
+  // ("main" | "daemon" | null for a folder with no valid manifest) — it is
+  // what lets `run()`/`call()` catch an author calling the wrong one of the
+  // two for their folder instead of silently 404ing (a `daemon =` folder
+  // under `run()`) or handing back a raw, unwrapped envelope (a `main =`
+  // folder under `call()`).
   let _daemonEngineId = null;
   let _daemonKnownRunning = false;
+  let _daemonProtocol = null;
 
   function _noteDaemonPayload(data, marksRunning) {
     if (data && data.engine_id) _daemonEngineId = data.engine_id;
+    if (data && "protocol" in data) _daemonProtocol = data.protocol;
     if (marksRunning !== undefined) {
       // start()/restart() succeeding means ensure_background returned a live
       // child (both 502 on any spawn failure, so a 200 here IS "running");
@@ -2432,11 +2727,13 @@
   // own `src` (fused_render/server/routers/render.py echoes it straight back
   // as the served document's own location), and `IS_THUMBNAIL` above already
   // climbs same-origin ancestors for the nested case. `start()`/`restart()`
-  // obviously spawn; `call()` is in scope too — engine_forward.py's
-  // `_forward` heals a dead-but-running child back to life on ANY proxied
-  // call, so a preview render that calls `call()` against an app some other
-  // session already started can resurrect its daemon exactly like `start()`
-  // would. `stop()` and `setAutostart()` are gated the same way, NOT left
+  // obviously spawn; `call()` and `run()` are in scope too — both bring the
+  // daemon up transparently when not known running, and even set aside
+  // that, engine_forward.py's `_forward` heals a dead-but-running child back
+  // to life on ANY proxied call, so a preview render that calls either
+  // against an app some other session already started can resurrect its
+  // daemon exactly like `start()` would. `stop()` and `setAutostart()` are
+  // gated the same way, NOT left
   // open (D508): a card thumbnail mounts `entry_html` live in a sandboxed
   // iframe with `allow-scripts`, so an app whose init path calls
   // `fused.daemon.stop()` (or flips autostart) would change a real user's
@@ -2513,39 +2810,59 @@
                        { autostart: !!autostart });
   }
 
-  function daemonCall(path, body) {
-    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
-    const doCall = () =>
+  // Shared bring-up-then-POST mechanics behind both `call()` and `run()`:
+  // learn engine_id/protocol/running from one status() fetch when nothing is
+  // cached yet, bring the daemon up when it isn't known running (a page's
+  // first-ever call, or an app the idle reaper retired since the last poll),
+  // then POST to the proxy path and hand back the raw response. Carries NO
+  // protocol check — that is each public method's own job, applied before
+  // delegating here, so that `run()`'s internal use of this helper can never
+  // reject itself against `run()`'s own check.
+  function _daemonProxyPost(path, body) {
+    const doPost = () =>
       fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
         method: "POST",
         headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
         body: JSON.stringify(body || {}),
       }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
 
-    // Nothing cached yet (no status()/start()/etc. call this page has made)
-    // — learn engine_id AND whether it's actually running from one status()
-    // fetch before deciding. Once something is cached, trust it rather than
-    // re-fetching on every call.
     const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
-    return ready.then(() => {
-      if (!_daemonKnownRunning) {
-        // Gated on the payload's own running fact, not on _daemonEngineId's
-        // presence — engine_id is a hash of the folder and is always
-        // populated by status(), running or not, so checking it alone can
-        // never catch "not running" (the proxy's own 409 in that case is a
-        // "start it first" message meaningless to an app author).
-        return Promise.reject(
-          new Error("fused.daemon.call: no running background app for this page " +
-                    "(call start() first)")
-        );
-      }
-      return doCall().then(({ data, httpOk }) => {
+    const bringUp = ready.then(() => (_daemonKnownRunning ? null : daemonStart()));
+    return bringUp.then(() =>
+      doPost().then(({ data, httpOk }) => {
         if (!httpOk) {
-          const err = new Error((data && data.error) || "fused.daemon.call failed");
+          const err = new Error((data && data.error) ||
+                                `fused.daemon: proxy call to ${path} failed`);
           throw err;
         }
         return data;
-      });
+      })
+    );
+  }
+
+  function _daemonWrongProtocolError(method, declared, wantMethod, wantArgs) {
+    return new Error(
+      `fused.daemon.${method}: refused — this folder declares \`${declared} =\` ` +
+      (declared === "daemon"
+        ? "and serves its own routes; use "
+        : "and the shipped worker serves exactly one route; use ") +
+      `fused.daemon.${wantMethod}(${wantArgs}) instead.`
+    );
+  }
+
+  function daemonCall(path, body) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (_daemonProtocol === "main") {
+        return Promise.reject(
+          _daemonWrongProtocolError("call", "main", "run", "params")
+        );
+      }
+      return _daemonProxyPost(path, body);
     });
   }
 
@@ -2648,6 +2965,43 @@
     };
   }
 
+  // `run(params)` is the shipped-worker convenience over the same
+  // `_daemonProxyPost` mechanics `call()` uses: a `main =` daemon speaks
+  // exactly one route, POST /call with the raw params object as the body,
+  // answering the same {ok, result, error, stdout, resolved_py} envelope
+  // runPython does — so `run` unwraps that envelope the way runPython does,
+  // instead of handing back the raw proxy response `call` gives a
+  // `daemon =` author talking to their own routes.
+  function daemonRun(params) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("run");
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway. Bring-up itself (spawning on the first call, re-warming
+    // after the idle reaper retires it) lives entirely in _daemonProxyPost
+    // now — run() adds nothing on top of it besides its own protocol check
+    // and the envelope unwrap `call()` deliberately leaves raw.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (_daemonProtocol === "daemon") {
+        return Promise.reject(
+          _daemonWrongProtocolError("run", "daemon", "call", "path, body")
+        );
+      }
+      return _daemonProxyPost("/call", params || {});
+    }).then((data) => {
+      if (data && data.stdout) console.log("[python]", data.stdout);
+      if (data && data.resolved_py) watchPath(data.resolved_py);
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    });
+  }
+
   const daemon = {
     status: daemonStatus,
     start: daemonStart,
@@ -2655,6 +3009,7 @@
     restart: daemonRestart,
     setAutostart: daemonSetAutostart,
     call: daemonCall,
+    run: daemonRun,
     watch: daemonWatch,
   };
 
@@ -2860,11 +3215,106 @@
       });
   }
 
-  // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
-  // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
-  // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
-  // "timeout"), mirroring runPython's rejection style. opts:
-  //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
+  // ---- shared by every fused.ai verb: abort handling -----------------------
+  //
+  // `opts.abortSignal` is the standard AbortSignal, the same one fetch takes
+  // — no bespoke token. Aborting rejects the verb's promise with
+  // .type === "cancelled" (the type the job-backed verbs already use for a ✕
+  // in the download manager, so a page has one branch for both). The server
+  // side stops too: a streaming /api/ai call stops on disconnect, a
+  // non-streaming local one through /api/ai/cancel, and a job-backed verb
+  // through the job's own cancel route — the same flag the manager's ✕ sets.
+  function abortSignalOf(opts) {
+    const s = opts && opts.abortSignal;
+    return s && typeof s.aborted === "boolean" && typeof s.addEventListener === "function"
+      ? s : null;
+  }
+  function cancelledError(what, jobId) {
+    const err = new Error(what + " was cancelled");
+    err.type = "cancelled";
+    if (jobId) err.jobId = jobId;
+    return err;
+  }
+  // fetch rejects an aborted request with a DOMException named AbortError;
+  // this is the one place that name is translated into the bridge's own type.
+  function rethrowAbort(what) {
+    return (e) => {
+      if (e && e.name === "AbortError") throw cancelledError(what);
+      throw e;
+    };
+  }
+  // The one result frame (D632) the three job-backed verbs assemble client
+  // side from the started reply + the record — the server's `/api/ai` and
+  // `/api/ai/embed` build the identical shape in `common.ai_result`.
+  function resultFrame(payload, f) {
+    const meta = {};
+    Object.keys(f.metadata || {}).forEach((k) => {
+      if (f.metadata[k] !== undefined) meta[k] = f.metadata[k];
+    });
+    return {
+      provider: f.provider || "local",
+      finishReason: f.finishReason || "stop",
+      warnings: f.warnings || [],
+      usage: f.usage === undefined ? null : f.usage,
+      // Seconds, Z — the server's format (`common.ai_result`), so the field
+      // reads the same on every verb.
+      response: { id: f.id || null, modelId: f.modelId,
+                  timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") },
+      providerMetadata: { [f.provider || "local"]: meta },
+      ...payload,
+    };
+  }
+  // A transcript segment as the file stores it -> as the frame speaks it
+  // (the AI SDK's {text, startSecond, endSecond}; `speaker` and `words` ride
+  // along, the words renamed the same way).
+  function frameSegment(s) {
+    if (!s || typeof s !== "object") return s;
+    const { start, end, words, ...rest } = s;
+    const out = { ...rest, startSecond: start, endSecond: end };
+    if (Array.isArray(words)) {
+      out.words = words.map((w) => ({ word: w.word, startSecond: w.start, endSecond: w.end }));
+    }
+    return out;
+  }
+  // Starting a job-backed verb. The start POST is NOT passed the signal: an
+  // abort that interrupted it could leave a job running whose id the page
+  // never received — orphaned work nobody can cancel. So the signal is
+  // checked before, the POST runs to completion, and an abort that landed
+  // meanwhile cancels the job BY ID (`addEventListener("abort")` does not
+  // fire for an already-aborted signal, so that window is handled here). A
+  // 200 with no jobId is an error, not a watch on `undefined` that never
+  // settles.
+  function startJob(path, body, signal, what) {
+    if (signal && signal.aborted) return Promise.reject(cancelledError(what));
+    return aiPost(path, body).then((started) => {
+      if (!started || typeof started.jobId !== "string" || !started.jobId) {
+        const err = new Error(path + " replied with no jobId");
+        err.type = "ai_error";
+        throw err;
+      }
+      if (signal && signal.aborted) {
+        cancelJob(started.jobId);
+        throw cancelledError(what, started.jobId);
+      }
+      return started;
+    });
+  }
+  function cancelJob(jobId) {
+    return fetch("/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {
+      method: "POST",
+      headers: callHeaders({ "X-Fused": "1" }),
+    }).catch(() => {});
+  }
+
+  // fused.ai.text — ask an AI model: the shell runs the claude (Claude Code)
+  // CLI locally, or a resident local model (server/ai.py /api/ai). Resolves
+  // with {text, model, usage, provider, finishReason, warnings}; rejects with
+  // an Error carrying
+  // `.type` ("bad_request" | "ai_unavailable" | "ai_error" | "timeout"),
+  // mirroring runPython's rejection style. ONE options object, like every
+  // other verb on `fused.ai` — the prompt is a field:
+  //   { prompt, provider: "local"|"claude", systemPrompt, model,
+  //     effort: "low"|"medium"|"high"|"xhigh", onChunk }
   // effort defaults to low = no extended thinking (fast, cheap); medium+
   // enables Claude Code's own effort/thinking semantics.
   // onChunk(text) opts the call into streaming: it fires per text delta as
@@ -2873,15 +3323,34 @@
   // plain JSON exchange it always was.
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
   // half-billed completion buys nothing — calls run fully concurrent.
-  function ai(prompt, opts) {
+  function aiText(opts) {
     opts = opts || {};
+    // Closed envelope (D413's rule, D633): an option this verb does not have
+    // is a 400 here, before any request — the same check the other four
+    // verbs already run, so a `systemprompt` typo cannot silently do nothing.
+    // Checked BEFORE `prompt`, like the others: a call with both an unknown
+    // option and a missing prompt must learn about the option, or "add a
+    // prompt" fixes the visible error and lands the same typo again.
+    const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
+                      "raw", "images", "temperature", "maxTokens", "topP"];
+    const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
+    if (textUnknownErr) return Promise.reject(textUnknownErr);
+    const prompt = opts.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
-      const err = new Error("fused.ai(prompt): prompt must be a non-empty string");
+      const err = new Error("fused.ai.text({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
       return Promise.reject(err);
     }
     const body = { prompt: prompt };
-    if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
+    // Which tier serves the call: "local" (weights on this machine) or
+    // "claude" (the Claude Code CLI). A SEPARATE field, not a prefix on the
+    // model string — the model id is the model's own name and stays so.
+    // Omitted, the server infers the tier from the model's shape, which is
+    // unambiguous while the two tiers' namespaces cannot overlap; the field
+    // exists now so a third tier (a hosted gateway, whose ids look like repo
+    // ids) is an added value rather than a new wire key.
+    if (opts.provider !== undefined) body.provider = opts.provider;
+    if (opts.systemPrompt !== undefined) body.systemPrompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
     // Prior turns, for a caller holding a conversation. `prompt` stays the
@@ -2902,22 +3371,55 @@
     // reason as history and raw: the Claude CLI has no notion of an
     // attachment, so it refuses this rather than silently answering as if
     // nothing had been sent.
-    if (opts.images !== undefined) body.images = opts.images;
+    if (opts.images !== undefined) {
+      body.images = opts.images;
+      // Page-relative, like every other file input on fused.ai (RH-1, D633):
+      // the page's own `?path=` rides along as `base` so "shot.png" means
+      // "beside this page". Only sent when there is something to resolve.
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) body.base = ownPath;
+    }
     // Sampling. Local models only, like history and raw — the Claude CLI
     // exposes no sampling knobs, so these are refused there rather than
-    // dropped. camelCase in, snake_case on the wire, because the wire shape is
-    // the worker's and every other runtime option makes the same trip
-    // (systemPrompt -> system_prompt).
+    // dropped. camelCase on the wire too (D633) — the worker's snake_case is
+    // the server's business, not the page's.
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
-    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
-    if (opts.topP !== undefined) body.top_p = opts.topP;
+    if (opts.maxTokens !== undefined) body.maxTokens = opts.maxTokens;
+    if (opts.topP !== undefined) body.topP = opts.topP;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the AI call"));
+    // Best-effort server-side stop on abort. A streaming call is stopped by
+    // the disconnect itself; a NON-streaming local generation is not — the
+    // relay's thread would run to completion for a reply nobody reads — so
+    // the capability-wide cancel is asked for too. One resident text model
+    // means the generation in flight is this one; on the Claude tier the
+    // route answers false and nothing happens.
+    //
+    // Scoped three ways so it cannot stop somebody else's generation: only a
+    // NON-streaming call (a stream is stopped by its own disconnect), only
+    // one that will land on the local tier (the same shape rule the server
+    // applies when `provider` is omitted — a Claude call has nothing to
+    // cancel there, and posting would hit whatever local generation another
+    // page has in flight), and only while THIS call is unsettled — the
+    // listener is removed once it resolves or rejects, so a reused signal
+    // aborted later does not reach back.
+    const looksLocal = body.provider === "local"
+      || (body.provider === undefined && typeof body.model === "string"
+          && (body.model.indexOf("/") !== -1 || /\.gguf$/i.test(body.model)));
+    const wantsServerCancel = !!signal && !onChunk && looksLocal;
+    const onAbort = () => { aiPost("/api/ai/cancel", {}).catch(() => {}); };
+    if (wantsServerCancel) signal.addEventListener("abort", onAbort, { once: true });
+    const settle = (promise) => wantsServerCancel
+      ? promise.finally(() => signal.removeEventListener("abort", onAbort))
+      : promise;
     const req = fetch("/api/ai", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
-    });
+      signal: signal || undefined,
+    }).catch(rethrowAbort("the AI call"));
     function fail(error) {
       const err = new Error(error && error.message);
       err.type = error && error.type;
@@ -2928,21 +3430,23 @@
       throw err;
     }
     if (!onChunk) {
-      return req
-        .then((res) => res.json())
+      // The body read is abortable too — an abort that lands while the
+      // completion is still downloading must still read as `cancelled`.
+      return settle(req
+        .then((res) => res.json().catch(rethrowAbort("the AI call")))
         .then((data) => {
           if (!data.ok) fail(data.error);
           return data.result;
-        });
+        }));
     }
     // Streaming: the body is NDJSON — {"type":"chunk","text"} lines, then a
     // terminal {"type":"done"}. A chunk may split across read() boundaries,
     // so buffer and cut on newlines. Errors BEFORE the stream starts arrive
     // as ordinary non-200 JSON; after, as an ok:false done frame.
-    return req.then((res) => {
+    return settle(req.then((res) => {
       const ct = (res.headers.get("Content-Type") || "").indexOf("x-ndjson");
       if (!res.ok || ct === -1) {
-        return res.json().then((data) => fail(data && data.error));
+        return res.json().catch(rethrowAbort("the AI call")).then((data) => fail(data && data.error));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -2967,10 +3471,10 @@
           buffer = lines.pop();
           lines.forEach(handleLine);
           return pump();
-        });
+        }, rethrowAbort("the AI call"));
       }
       return pump();
-    });
+    }));
   }
 
   // ---- background jobs / the download manager (SPEC §36, D244) --------------
@@ -3013,9 +3517,12 @@
   // context EXCEPT the one that wrote — which is exactly the shape here (an
   // iframe writes, the shell listens), and the same mechanism the appearance
   // theme already converges through. Purely an optimisation: the shell polls
-  // /api/jobs regardless, so a browser that drops the event (or a Python worker
-  // reporting straight to the API, which runs no JS at all) is only slower to
-  // notice, never wrong. Must stay in sync with frontend's lib/jobs.ts.
+  // /api/jobs regardless, so a browser that drops the event is only slower to
+  // notice, never wrong. Called from `trackJob`'s `send()` for client-reported
+  // jobs, and from the env-install path's `tryInstall` (its row is created
+  // server-side, but the POST that triggers that is still this same-origin
+  // page's own JS, so it can ping just the same). Must stay in sync with
+  // frontend's lib/jobs.ts.
   const JOB_PING_KEY = "fused-render:jobs-ping";
 
   function pingJobs() {
@@ -3319,7 +3826,7 @@
   // ---------------------------------------------------------------- local models
   //
   // fused.ai.models — the lifecycle half of the AI API (SPEC §40). Generation
-  // itself needs nothing new: fused.ai(prompt, {model: "org/name", onChunk})
+  // itself needs nothing new: fused.ai.text({prompt, model: "org/name", onChunk})
   // already reaches a local model, because a model id with a slash in it IS a
   // Hugging Face repo id and the server routes on that.
   //
@@ -3329,13 +3836,20 @@
   //
   // load() and download() return a JOB, not a finished model: a cold load is a
   // multi-GB download and nothing waits on it. Watch it with fused.job(id).
-  async function aiPost(path, body) {
+  async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body || {}),
+      signal: signal || undefined,
+    }).catch(rethrowAbort("the AI call"));
+    // A non-JSON body (proxy 502, HTML error page) reads as `{}` so the
+    // status below still produces a typed error; an ABORT mid-read is not
+    // that case and must surface as `cancelled`, never as an empty reply.
+    const data = await res.json().catch(rethrowAbort("the AI call")).catch((e) => {
+      if (e && e.type === "cancelled") throw e;
+      return {};
     });
-    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error((data && data.error) || res.statusText);
       err.type = res.status === 409 ? "unavailable" : "bad_request";
@@ -3390,7 +3904,7 @@
   // naming the API rather than the endpoint. `allowedKeys` is exactly the
   // whitelist array `aiImage`/`aiTranscribe` already loop over to build the
   // body; `extra` is the callbacks consumed above that loop (`onProgress`,
-  // `onSegment`) — real options, just not body fields, so they must not
+  // `onChunk`) — real options, just not body fields, so they must not
   // trip this check or every existing caller that passes one breaks.
   function rejectUnknownOptions(opts, allowedKeys, extra, apiName) {
     const allowed = new Set(allowedKeys.concat(extra));
@@ -3415,8 +3929,8 @@
     // the option it does not have, not about the field it also got wrong —
     // "add a prompt" would "fix" the error and land the caller right back
     // in the silent-drop illusion this whole change exists to end.
-    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed", "image"];
-    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
+    const imageKeys = ["prompt", "model", "provider", "width", "height", "steps", "guidance", "seed", "image"];
+    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress", "abortSignal"], "fused.ai.image");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
@@ -3438,8 +3952,15 @@
     // there is no array to normalise, on purpose.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/image", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/image", body, signal, "the image").then((started) => {
       const watcher = watchJob(started.jobId);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
       // `step` is the cache-buster and nothing more: the preview file is ONE
       // path overwritten in place, so a browser handed the same URL twice shows
       // the first frame forever. Keyed on the step rather than on Date.now() so
@@ -3458,7 +3979,13 @@
           : null;
       // Same fact on the resolved object: it names the real PNG through `url`,
       // and `previewUrl` is null because the file it would name is deleted.
-      const done = () => ({ ...started, url: rawUrl(started.path), previewUrl: null });
+      const done = () => resultFrame(
+        { images: [{ path: started.path, url: rawUrl(started.path), mediaType: "image/png" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { imagesGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      steps: started.steps, guidance: started.guidance, image: started.image,
+                      prompt: started.prompt, previewPath: started.previewPath } });
       // The record is COPIED rather than annotated: it is the same object the
       // job manager is drawing from, and a field written onto it here would
       // travel to every other watcher of that row.
@@ -3466,6 +3993,7 @@
         ? (job) => onProgress({ ...job, previewUrl: previewUrl(job) })
         : null;
       return watcher.watch(tick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the image", started.jobId);
         if (!record) {
           // The row aged out from under us — a backgrounded tab can sleep past
           // its retention on a render this long. The FILE is the other witness,
@@ -3501,8 +4029,8 @@
   // reasoning.
   function aiVideo(opts) {
     opts = opts || {};
-    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed", "image"];
-    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
+    const videoKeys = ["prompt", "model", "provider", "width", "height", "frames", "steps", "seed", "image"];
+    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress", "abortSignal"], "fused.ai.video");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.video({prompt}): prompt must be a non-empty string");
@@ -3520,11 +4048,25 @@
     // unused `base` the server simply never reads.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/video", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/video", body, signal, "the video").then((started) => {
       const watcher = watchJob(started.jobId);
-      const done = () => ({ ...started, url: rawUrl(started.path) });
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
+      const done = () => resultFrame(
+        { videos: [{ path: started.path, url: rawUrl(started.path), mediaType: "video/mp4" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { videosGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      frames: started.frames, steps: started.steps, image: started.image,
+                      prompt: started.prompt } });
       const tick = onProgress ? (job) => onProgress({ ...job }) : null;
       return watcher.watch(tick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the video", started.jobId);
         if (!record) {
           // The row aged out from under us — the same backgrounded-tab race
           // `aiImage` guards against, and more likely here: a video render can
@@ -3573,10 +4115,10 @@
     // accepts it — it is injected below from the page's own `?path=`, never
     // from the caller's own options object, so a caller passing it directly
     // is passing an option that does not exist from here.
-    const transcribeKeys = ["path", "model", "language", "task", "initialPrompt",
+    const transcribeKeys = ["path", "model", "provider", "language", "task", "initialPrompt",
                             "vad", "diarize", "speakers", "words"];
     const transcribeUnknownErr = rejectUnknownOptions(
-      opts, transcribeKeys, ["onProgress", "onSegment"], "fused.ai.transcribe");
+      opts, transcribeKeys, ["onProgress", "onChunk", "abortSignal"], "fused.ai.transcribe");
     if (transcribeUnknownErr) return Promise.reject(transcribeUnknownErr);
     if (typeof opts.path !== "string" || !opts.path.trim()) {
       const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
@@ -3644,7 +4186,10 @@
     // tidiness: every request made below is one that every existing
     // transcription would otherwise start making, once per poll, for a file
     // nobody is reading.
-    const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
+    // `onChunk`, the same name text uses for "a piece of the result arrived"
+    // (D633) — here the piece is a segment, not a string. One callback name
+    // to learn for partial results; `onProgress(job)` stays the row callback.
+    const onSegment = typeof opts.onChunk === "function" ? opts.onChunk : null;
     const body = {};
     for (const key of transcribeKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
@@ -3657,8 +4202,15 @@
     // whatever the error message says.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/transcribe", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/transcribe", body, signal, "the transcription").then((started) => {
       const watcher = watchJob(started.jobId);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
       // ---- the progressive transcript --------------------------------------
       //
       // `started.outputPartial` is a `.partial.jsonl` beside the transcript:
@@ -3689,7 +4241,8 @@
       let broken = false;
       const decoder = onSegment && typeof TextDecoder === "function"
         ? new TextDecoder("utf-8") : null;
-      const deliver = (segment) => {
+      const deliver = (raw) => {
+        const segment = frameSegment(raw);
         // Counted BEFORE the call, so a callback that throws cannot make the
         // final drain resend the segment it threw on.
         delivered += 1;
@@ -3823,24 +4376,30 @@
             }
             return written;
           })
-          .then((written) => ({
-            ...started,
-            url: rawUrl(started.output),
-            text: written.text,
-            segments: written.segments,
-            language: written.language,
-            duration: written.duration,
-            // The transcript's legend, and undefined unless `diarize` was
-            // asked for. Read from the FILE like everything else here, so a
-            // page never has to know which engine wrote it.
-            speakers: written.speakers,
-            // …and how many people the clustering decided there were, present
-            // only on a run that had to work it out (D318). A caller who
-            // passed `speakers` already has this number and gets undefined
-            // here, which is the honest shape: the field means "estimated",
-            // not "resolved".
-            estimatedSpeakers: written.estimatedSpeakers,
-          }))
+          .then((written) => resultFrame(
+            {
+              text: written.text,
+              segments: (written.segments || []).map(frameSegment),
+              language: written.language,
+              durationInSeconds: written.duration,
+            },
+            { provider: started.provider, modelId: started.model, id: started.jobId,
+              warnings: started.warnings, usage: null,
+              metadata: {
+                path: started.path,
+                output: started.output,
+                url: rawUrl(started.output),
+                outputText: started.outputText,
+                outputPartial: started.outputPartial,
+                task: started.task,
+                // The transcript's legend, undefined unless `diarize` was
+                // asked for. Read from the FILE like everything else here, so
+                // a page never has to know which engine wrote it.
+                speakers: written.speakers,
+                // …and how many people the clustering decided there were,
+                // present only on a run that had to work it out (D318).
+                estimatedSpeakers: written.estimatedSpeakers,
+              } }))
           .catch((cause) => {
             const err = new Error(
               "the transcript could not be read: " + ((cause && cause.message) || cause),
@@ -3859,22 +4418,20 @@
         ? (record) => { if (onProgress) onProgress(record); tail(); }
         : onProgress;
       return watcher.watch(onTick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the transcription", started.jobId);
         if (!record) {
-          // The row is gone — and since the manager stopped evicting live
-          // SERVER work under its cap, that no longer happens MID-RUN. It means
-          // the row finished and aged out while this tab was asleep, which a
-          // transcription long enough to background does easily.
+          // The row is gone. Live SERVER work under the manager's cap is never
+          // evicted, so this cannot happen MID-RUN — it means the row finished
+          // and aged out while this tab was asleep, which a transcription long
+          // enough to background does easily.
           //
           // The TRANSCRIPT is the other witness and the one that matters, so
           // reading it is both the answer and the check: if it is there, the
-          // work landed. An earlier cut tried to out-wait a mid-run absence
-          // here instead, resuming the watcher and polling for the file — and
-          // that machinery could hang forever (a re-entered `watch` that never
-          // SEES the row never gives up) while also turning one flaky
-          // `/api/jobs` fetch into a hard failure. Both were compensation for
-          // an eviction that should not have been happening; the fix belonged
-          // in the manager, and this is a backstop again rather than a state
-          // machine.
+          // work landed. Resuming the watcher and polling for the file instead
+          // would risk hanging forever (a re-entered `watch` that never SEES
+          // the row never gives up) while also turning one flaky `/api/jobs`
+          // fetch into a hard failure — so this stays a backstop rather than a
+          // state machine.
           return done().catch(() => {
             const err = new Error("the transcription job is no longer being reported");
             err.type = "ai_error";
@@ -4007,6 +4564,9 @@
     if (hasTexts) body.texts = opts.texts;
     if (hasPaths) body.paths = opts.paths;
     if (opts.model !== undefined) body.model = opts.model;
+    // Same `provider` every other verb takes (D631); forwarded only when set,
+    // and validated server-side like the rest of the envelope.
+    if (opts.provider !== undefined) body.provider = opts.provider;
     // Forwarded only when the caller set it, exactly like `model` above: the
     // server reads an absent key as "I did not say" and applies its own
     // default, while an explicit value on a model with no retrieval convention
@@ -4024,11 +4584,15 @@
       const ownPath = new URLSearchParams(window.location.search).get("path");
       if (ownPath) body.base = ownPath;
     }
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
+      signal: signal || undefined,
     })
+      .catch(rethrowAbort("the embedding"))
       // `.catch(() => ({}))` on the parse, and the status carried past it, for
       // `aiPost`'s reason: a reply that never reached this route's own handler
       // — a proxy's 502, a framework 500, an HTML error page — is not JSON, and
@@ -4078,17 +4642,27 @@
              typeof model === "string" || model == null
                ? { model } : { capability: model.capability }),
   };
-  ai.models = aiModels;
-  ai.image = aiImage;
-  ai.video = aiVideo;
-  ai.transcribe = aiTranscribe;
-  ai.embed = aiEmbed;
-  // Stop the generation in flight on a local model, keeping it loaded — the
-  // next message answers straight away. Resolves false when there was nothing
-  // to stop, which is not an error: a Stop pressed as the last token lands
-  // should be a no-op.
-  ai.cancel = (capability) =>
-    aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled);
+  // `fused.ai` is a NAMESPACE, not a function. Text used to be the callable
+  // and the other four capabilities hung off it as properties, which made text
+  // read as the special one; it is not, and a fifth verb hanging off a
+  // function is a shape no other part of the bridge has. `fused.ai(...)`
+  // now throws "fused.ai is not a function" — a hard break taken on purpose
+  // over `ai.text = ai` (D631): an alias keeps the old reading alive in every
+  // page written from now on.
+  const ai = {
+    text: aiText,
+    models: aiModels,
+    image: aiImage,
+    video: aiVideo,
+    transcribe: aiTranscribe,
+    embed: aiEmbed,
+    // Stop the generation in flight on a local model, keeping it loaded — the
+    // next message answers straight away. Resolves false when there was
+    // nothing to stop, which is not an error: a Stop pressed as the last token
+    // lands should be a no-op.
+    cancel: (capability) =>
+      aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled),
+  };
 
   // -------------------------------------------------------------- fused.watchJob
   //
@@ -4922,8 +5496,13 @@
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
+    // Which kind of client this runtime is driving. "desktop" here; the
+    // local-network listener appends static/lan/runtime-phone.js, which sets
+    // "phone-web" and swaps the members that mean something else on a phone
+    // (capture.*, fileIndex). A native shell would set "ios-app". Apps branch
+    // on this, never on user-agent sniffing.
+    device: "desktop",
     runPython,
-    engine,
     daemon,
     rawUrl,
     stat,

@@ -63,13 +63,16 @@ export function workloadNote(capability: string, workload: AiBenchmarkWorkload |
     case "text-generation":
       return `Decodes ${p.maxTokens} tokens from a fixed prompt, greedy (temperature ${p.temperature}) — ${provenance}.`;
     case "text-to-image":
-      // `steps` is deliberately ABSENT from `params` (ai/benchmark.py's own
-      // module docstring) — each model contributes its own catalog default,
-      // recorded per run rather than fixed here, and that omission is
-      // exactly the fact a reader comparing two image models needs, so it
-      // is said in words rather than silently leaving `steps` out of this
-      // sentence with no explanation.
-      return `Renders a fixed ${p.width}×${p.height} prompt at guidance ${p.guidance}, seed ${p.seed} — each model's own step count (not fixed here) is recorded per run — ${provenance}.`;
+      // `steps` is pinned in `params` like every other field here
+      // (ai/benchmark.py) — every model renders at the same step count, which
+      // is what makes total render time comparable across models. A run
+      // recorded before that pinning (revision 1) has no `steps` in its
+      // `params` at all — each model contributed its own count instead — so
+      // the sentence says exactly that rather than naming a number the run
+      // never fixed.
+      return typeof p.steps === "number"
+        ? `Renders a fixed ${p.width}×${p.height} prompt at ${p.steps} steps, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`
+        : `Renders a fixed ${p.width}×${p.height} prompt at each model's own step count, guidance ${p.guidance}, seed ${p.seed} — ${provenance}.`;
     case "automatic-speech-recognition":
       return `Transcribes ${p.audioSeconds}s of a generated ${p.toneHz} Hz tone at ${p.sampleRate} Hz — ${provenance}.`;
     case "embeddings":
@@ -144,12 +147,16 @@ const METRICS: Record<string, MetricSpec[]> = {
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],
   "text-to-image": [
-    // NOT total seconds as the PRIMARY: the step count is per-model by design
-    // (a distilled model runs at 4 where another needs 28), so the per-step
-    // figure is the only comparable one across models. Total render time is
-    // still worth its own series — see ai/benchmark.py.
-    { key: "secondsPerStep", label: "Per step", unit: "s/step", higherIsBetter: false, digits: 2 },
+    // Total seconds IS the primary now. It was not, while the step count was
+    // per-model: the two could not be compared, so per-step stood in. The
+    // workload fixes steps for every model (ai/benchmark.py), which makes the
+    // wall-clock figure directly comparable AND the one a person actually
+    // waits — while per-step, which divides a total that includes fixed text
+    // encoding and VAE decode, is the derived number rather than the honest
+    // one. Kept as its own series because it still separates a slow step from
+    // a slow load.
     { key: "totalSeconds", label: "Total render", unit: "s", higherIsBetter: false, digits: 1 },
+    { key: "secondsPerStep", label: "Per step", unit: "s/step", higherIsBetter: false, digits: 2 },
     { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],

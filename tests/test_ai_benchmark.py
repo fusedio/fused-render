@@ -322,7 +322,6 @@ def test_image_reports_seconds_per_step_at_the_catalog_default_steps(bench,
         return {"path": request["out"], "steps": request["steps"]}
 
     monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
     record = benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
     metrics = record["metrics"]
     assert len(seen) == 2  # warm-up, then timed
@@ -338,20 +337,6 @@ def test_image_reports_seconds_per_step_at_the_catalog_default_steps(bench,
     assert seen[1]["seed"] == workload.params["seed"]
     import os
     assert not os.path.exists(seen[1]["out"])
-
-
-def test_image_steps_fall_back_to_the_server_default_without_a_catalog_hint(
-        bench, monkeypatch):
-    """`_image_steps` is asked of the catalog, which is where the per-model hint
-    lives; a model with no entry keeps the server's generic default rather than
-    picking a number here."""
-    monkeypatch.setattr(benchmark.catalog, "for_capability", lambda cap: [
-        {"id": "known/model", "defaults": {"steps": 4}},
-        {"id": "hintless/model"},
-    ])
-    assert benchmark._image_steps("known/model") == 4
-    assert benchmark._image_steps("hintless/model") == benchmark.DEFAULT_IMAGE_STEPS
-    assert benchmark._image_steps("never/heard-of-it") == benchmark.DEFAULT_IMAGE_STEPS
 
 
 # -- speech to text -------------------------------------------------------------
@@ -1005,7 +990,6 @@ def test_a_generation_the_worker_needs_a_job_id_for_gets_the_measurement_row(
         return {"path": request["out"], "steps": request["steps"]}
 
     monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
     benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
     assert all(job for job in seen), "a falsy job id reaches the model's load row"
     # Never the model id, and never anything a page could write.
@@ -1397,7 +1381,6 @@ def test_a_cancelled_image_render_is_a_cancel_not_a_failed_model(bench, monkeypa
         raise benchmark.supervisor.SupervisorError("cancelled")
 
     monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
     with pytest.raises(benchmark.Cancelled):
         benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
     assert bench_store.read() == []
@@ -1765,7 +1748,6 @@ def test_a_cancelled_image_render_closes_its_row_as_cancelled(bench, monkeypatch
         raise benchmark.supervisor.SupervisorError("cancelled")
 
     monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
     with pytest.raises(benchmark.Cancelled):
         benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
     assert next(r for r in jobs.list_jobs()

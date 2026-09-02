@@ -77,8 +77,16 @@ export function modelName(id: string): string {
  *  looks like it is downloaded or something... you know the Meta Verified
  *  logo?"). A bare ✓ was the problem: a check beside a name is the universal
  *  mark for "done", and on a page whose cards are half about whether a download
- *  finished, it read as a second, quieter claim about the disk. The seal reads
- *  as an endorsement because that is the only thing the shape is ever used for.
+ *  finished, it read as a second, quieter claim about the disk. A seal is read
+ *  as a claim about the MODEL, which is what this marks.
+ *
+ *  What it claims is MEMBERSHIP of the curated shortlist for a capability —
+ *  every model this app suggests. Not the server catalog's `recommended` flag,
+ *  which is a narrower second axis: one row per capability and engine
+ *  (`catalog.py:123-152`), read only by the Playground's sidebar. The copy says
+ *  "Curated" rather than "Recommended" so the wider set is not wearing the
+ *  narrower word — a shortlist's small fast entry earns this mark without being
+ *  the row the app would put first.
  *
  *  Filled rather than stroked, for the same reason: at 13px a hairline check is
  *  a smudge, and a solid accent mark is the one thing on the card that pops
@@ -88,13 +96,13 @@ export function modelName(id: string): string {
  *  Focusable, and hinted rather than `title`d: what it means is hover-only prose
  *  nothing else on the card repeats, and it must arrive instantly.
  */
-export function RecommendedMark() {
+export function CuratedMark() {
   return (
     <span
       className="am-card-pick"
       tabIndex={0}
-      data-hint="Recommended by Fused — one of the models this app suggests for its capability."
-      aria-label="Recommended by Fused"
+      data-hint="Curated by Fused — one of the models this app suggests for its capability."
+      aria-label="Curated by Fused"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
         {/* The seal. Lucide's `badge-check` outline, filled instead of stroked. */}
@@ -148,10 +156,13 @@ function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
 // error (with what went wrong, because "it failed" sends people nowhere).
 /** Where a loaded model actually ended up, and — on a CPU — what that means.
  *
- *  **The CPU case is the one this exists for, and since the per-hardware runner
- *  split it is the DEFAULT case.** torch runs on whatever it can see, and the
- *  engine `auto` picks off Apple Silicon is the CPU-only build, so a perfectly
- *  healthy 4B model answers at a few words a second. Without this the
+ *  **The CPU case is the one this exists for.** `auto` prefers the accelerated
+ *  build when a machine has the matching GPU (D-less policy decision, see
+ *  `registry.py`'s block comment above `_RUNNERS`), so a resident model
+ *  reporting `cpu` now means either the machine has no supported GPU, or a
+ *  user chose the CPU build explicitly on the Engines tab — either way, a
+ *  perfectly healthy 4B model answers at a few words a second and that is
+ *  worth explaining rather than leaving as a mystery. Without this the
  *  page shows a green LOADED card and a memory figure, both of which say the
  *  model is fine, and leaves the user to conclude from the speed that it is not.
  *  A GPU is reported too — quietly, as a fact — because a chip that appears only
@@ -167,9 +178,9 @@ function DeviceNote({ device }: { device: string }) {
         cpu
           ? "This model is running on the processor, not a graphics card — it " +
             "works, but expect a few words a second rather than an instant " +
-            "answer. The CPU engine is the default off Apple Silicon — if this " +
-            "machine has a supported graphics card, a CUDA or ROCm engine can " +
-            "be chosen on the Engines tab."
+            "answer. This machine either has no supported graphics card, or " +
+            "the CPU engine was chosen deliberately — check the Engines tab " +
+            "to switch to a CUDA or ROCm engine if one is available."
           : "This model is running on the graphics card."
       }
     >
@@ -237,7 +248,7 @@ function RuntimeChip({
 export function RepoCard({
   repo,
   label,
-  recommended,
+  curated,
   loaded,
   job,
   busy,
@@ -266,8 +277,8 @@ export function RepoCard({
   label?: string;
   /** Whether the curation names this exact repo id — the tick beside the name.
    *  Decided by the page, which holds the catalog; a repo row itself has no
-   *  opinion about whether we recommend it. */
-  recommended: boolean;
+   *  opinion about its own membership in the shortlist. */
+  curated: boolean;
   /** The resident worker for this repo, when it is one. */
   loaded: AiLoadedModel | undefined;
   /** Its download-manager row, while a bring-up is running. */
@@ -410,7 +421,7 @@ export function RepoCard({
         >
           {label ?? modelName(repo.id)}
         </a>
-        {recommended && <RecommendedMark />}
+        {curated && <CuratedMark />}
         {loaded?.state === "ready" && <LoadedBadge loaded={loaded} />}
         {/* Only when the kind is NOT the one the page already promises. A page
             titled "AI Models" listing eight cards each tagged MODEL states the

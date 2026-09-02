@@ -7280,11 +7280,11 @@ function annRecAssign(ids, segments) {
   const units = [];
   for (const s of segments) {
     const ws = Array.isArray(s.words) ? s.words : [];
-    if (ws.length && ws.every((w) => w && typeof w.start === "number")) {
+    if (ws.length && ws.every((w) => w && typeof w.startSecond === "number")) {
       // `word`, not `text` — and it arrives with its leading space, which the
       // join below collapses like any other whitespace.
-      for (const w of ws) units.push({ start: w.start, text: w.word || "" });
-    } else units.push({ start: s.start, text: s.text });
+      for (const w of ws) units.push({ start: w.startSecond, text: w.word || "" });
+    } else units.push({ start: s.startSecond, text: s.text });
   }
   const intro = [];
   const words = new Map(timed.map((c) => [c.id, []]));

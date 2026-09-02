@@ -76,7 +76,7 @@ def parse_ts(ts) -> datetime | None:
 def tail_activity(path: str, mtime: float) -> tuple[float, datetime | None]:
     """(activity timestamp, last real activity time) from a 16KB tail read.
 
-    Same rule as core_apps/sessions' `_activity_mtime`: housekeeping appends
+    Same rule as the retired sessions inbox's `_activity_mtime`: housekeeping appends
     bump the file mtime but aren't activity, and a `turn_duration` entry newer
     than any real message means the turn just ended — the session is idle right
     now, so it reports 0.0 rather than letting the 45s window keep the badge

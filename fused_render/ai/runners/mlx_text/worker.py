@@ -295,6 +295,15 @@ def load(model_id, path):
     # its message format), and a request is not the place to be doing
     # filesystem reads this load already paid for.
     _loaded["config"] = config
+    # Any KV prompt cache from a PREVIOUS `load()` in this same process belongs
+    # to different weights and a different token vocabulary — reusing it here
+    # would feed this model hidden states it never produced. `load()` is only
+    # ever called once per production process (a model switch respawns this
+    # worker fresh — see `_pin_stream`'s docstring), so this is a no-op there;
+    # it exists for the case a test, or a future reload path, calls `load()`
+    # twice in one process. See `generate`'s own comment, just above the
+    # `stream_generate` call, for what this slot holds and why.
+    _loaded.pop("prompt_cache_state", None)
 
 
 def memory():
@@ -365,7 +374,21 @@ def release():
     `getattr` because a real but older mlx wheel, or this repo's stubbed
     `mlx.core` in tests, may not have `clear_cache` at all — absence is a
     no-op, matching every other MLX runner's guard.
+
+    **Also where the retained prompt-KV-cache (`generate`'s own comment, at
+    the `stream_generate` call, explains what it is) gets dropped.** That
+    cache is live MLX arrays this process holds a Python reference to — real
+    unified-memory bytes `clear_cache()` alone cannot reclaim, because nothing
+    has told the allocator they are free. So the reference is dropped FIRST,
+    here, in the same idle window that already exists for the weights'
+    allocator pool; `clear_cache()` right after is what actually hands the
+    now-unreferenced bytes back to the OS. A chat that resumes after the idle
+    window pays one full prompt reprocess for its next turn — exactly the
+    ordinary cold-start cost, and cheap next to leaking a growing KV cache for
+    every resident-but-idle chat this process ever sees.
     """
+    _loaded.pop("prompt_cache_state", None)
+
     import mlx.core as mx
 
     clear = getattr(mx, "clear_cache", None)
@@ -611,10 +634,109 @@ def generate(body, write):
     # wrong.
     prompt_tokens = None if images else _prompt_tokens(processor, text)
 
+    # **Prompt-cache reuse: the whole reason this exists.** Without it, every
+    # turn of a chat hands `stream_generate` the FULL templated conversation —
+    # `text`, built above from the WHOLE `messages` history — and it reprocesses
+    # every earlier turn's tokens from scratch before producing a single new
+    # one. On a long conversation that reprocessing, not the new turn's actual
+    # content, is what time-to-first-token is mostly paying for.
+    #
+    # mlx-vlm 0.6.15 (the floor of this folder's `mlx-vlm>=0.6.15,<0.7` pin —
+    # verified present at both that floor and the 0.6.17 ceiling-adjacent tag)
+    # ships exactly the mechanism this needs, built INTO `stream_generate`
+    # itself, not bolted on here:
+    # https://raw.githubusercontent.com/Blaizzy/mlx-vlm/v0.6.15/mlx_vlm/generate/dispatch.py
+    # https://raw.githubusercontent.com/Blaizzy/mlx-vlm/v0.6.15/mlx_vlm/generate/common.py
+    # A `PromptCacheState` (`mlx_vlm.PromptCacheState`, re-exported at the
+    # package root per `mlx_vlm/__init__.py`) is a tiny object holding the
+    # FULL TOKEN-ID LIST of the last processed prompt plus its live KV cache.
+    # Handed to `stream_generate` as `prompt_cache_state=`, `dispatch.py`'s own
+    # `find_prefix_length` walks the new turn's tokens against the stored ones
+    # and returns how many agree from position 0 — the EXACT prefix identity
+    # this needs, never a message count or a hash of a summary: any edit,
+    # regeneration, branch, or system-prompt change changes a token somewhere
+    # in that walk and the match stops exactly there, at worst returning 0.
+    # `stream_generate` then trims its retained KV cache back to that many
+    # tokens and prefills ONLY the new suffix — the old prefix's KV states are
+    # reused rather than recomputed. **The safe path is the automatic
+    # fallback, not a mode this file has to remember to choose**: a zero-length
+    # (or otherwise unusable — a wrapped rotating-window cache, e.g.) match
+    # falls straight through to `dispatch.py`'s own "ensure we have a
+    # prompt_cache" branch, which builds a fresh one and cold-prefills the
+    # whole prompt. Getting the match wrong in the OTHER direction — reusing a
+    # prefix that is not actually a match — is the failure this cannot have
+    # (text conditioned on the wrong conversation, silently), and it cannot
+    # happen here because the comparison is a literal token-by-token walk, not
+    # an approximation.
+    #
+    # **One `PromptCacheState`, kept across turns in `_loaded` for exactly as
+    # long as this process keeps its model** — same lifetime as `model` and
+    # `processor`, dropped in `release()` (this process's only mechanism for
+    # giving retained memory back between chat bursts) and cleared again at
+    # the top of `load()` in case a process ever loads a second model. Created
+    # lazily, the first time a text-only turn asks for it, rather than in
+    # `load()`: a model that only ever answers image turns should not pay for
+    # a `PromptCacheState` it will never populate.
+    #
+    # **TEXT-ONLY TURNS ONLY — never on the branch that built `text` with an
+    # attached image, above.** `dispatch.py` DOES carry its own image-turn
+    # guard for this (`_apc_suffix_is_text_only`, sourced from
+    # `mlx_vlm.apc.media_safe_prefix_min`: it refuses to reuse a cache whose
+    # trimmed suffix would cut through a media-placeholder token), but reading
+    # that guard's own source (`mlx_vlm/apc.py`) shows it only recognises
+    # placeholder ids named `image_token_id`/`image_token_index`/
+    # `video_token_id`/`video_token_index` in the checkpoint's config — and
+    # this file's own vision-tower gate, just above, already had to learn the
+    # hard way (its docstring: at least 18 real architectures) that mlx-vlm's
+    # naming is NOT standardised across its model zoo. A checkpoint that
+    # passes this file's OWN gate on `vision_config` alone, with none of those
+    # four id keys, would make `dispatch.py`'s guard a silent no-op — the
+    # exact "reusing a cache across turns with different attached images"
+    # correctness bug that must not happen, on an architecture this file
+    # cannot enumerate in advance. Excluding the whole image branch is
+    # the same discipline `prompt_tokens = None if images` already applies a
+    # few lines up: refuse to guess about the image path rather than trust a
+    # check whose coverage this file cannot fully verify, and report/behave
+    # honestly (a full reprocess) instead. This costs nothing on an ordinary
+    # text turn threaded between image turns, either — the stored state is
+    # simply left untouched by an image turn (never handed to
+    # `stream_generate` there, so `dispatch.py` never calls `.update()` on
+    # it), and the NEXT text-only turn still finds its own last text-only
+    # prefix waiting, since conversation history is text-only to begin with
+    # (this worker never re-attaches an image to a prior turn — see the
+    # `images` comment above).
+    cache_kwargs = {}
+    if not images:
+        from mlx_vlm import PromptCacheState
+
+        cache_state = _loaded.get("prompt_cache_state")
+        if cache_state is None:
+            cache_state = PromptCacheState()
+            _loaded["prompt_cache_state"] = cache_state
+        cache_kwargs["prompt_cache_state"] = cache_state
+
+    # One frame BEFORE the first token, naming the phase that is otherwise
+    # silent: `stream_generate` below does not yield at all until prefill has
+    # finished, which for a long context is itself seconds of real work with
+    # nothing to show for it. How much work varies — a text turn that reuses
+    # the prompt cache above prefills only the new suffix, while an image turn
+    # or a diverged prefix pays a forward pass over the whole prompt — which
+    # is the other reason to announce the phase rather than leave the caller
+    # guessing from silence.
+    # `input_tokens` rides along so the caller can say how much it is
+    # chewing on; `None` on the image path (see the comment above) is
+    # forwarded as-is rather than guessed at. A type no existing NDJSON
+    # reader recognises (`server/ai.py`'s `_local_relay`, `fused_ai.py`'s
+    # `_parse_ndjson` loop, `benchmark.py`'s own `event.get("type")` switch)
+    # so every one of them falls through it harmlessly — this is additive to
+    # the wire format, not a new branch every reader has to grow.
+    write({"type": "prefill", "input_tokens": prompt_tokens})
+
     count = 0
     started = time.time()
     for response in stream_generate(model, processor, text, image=images or None,
-                                    max_tokens=max_tokens, sampler=sampler):
+                                    max_tokens=max_tokens, sampler=sampler,
+                                    **cache_kwargs):
         if worker_base.CANCEL.is_set():
             write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
                    "input_tokens": prompt_tokens})

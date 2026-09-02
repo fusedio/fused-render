@@ -53,6 +53,10 @@ PREVIEW_PATH = os.path.join(_RUNNERS, "preview.py")
 #: reads it off `type(pipe.vae).__name__`, the MLX one off its variant recipe).
 KEY = "AutoencoderKLFlux2"
 
+#: The second entry: diffusers' shared VAE class, which for the curated
+#: `segmind/tiny-sd` is SD1.5's 4-channel latent space.
+SD15 = "AutoencoderKL"
+
 
 def _by_path(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -120,11 +124,64 @@ def test_an_empty_out_path_has_no_preview_path(preview):
 # -- the projection --------------------------------------------------------------
 
 
-def test_the_table_holds_a_128_TO_3_map_for_the_one_model_that_has_one(preview):
-    entry = preview.PROJECTIONS[KEY]
-    assert len(entry["factors"]) == 3
-    assert all(len(row) == 128 for row in entry["factors"])
-    assert len(entry["bias"]) == 3
+def test_every_entry_is_THREE_rows_of_its_own_channel_count(preview):
+    """One row per output channel, each as wide as that model's latent — 128 for
+    klein's patchified 32-channel VAE, 4 for SD1.5's. Three rows and a bias of
+    three is what `project`'s orientation depends on; the WIDTH is the model's
+    own and is read off the row."""
+    for key, entry in preview.PROJECTIONS.items():
+        assert len(entry["factors"]) == 3, key
+        assert len(entry["bias"]) == 3, key
+        width = len(entry["factors"][0])
+        assert all(len(row) == width for row in entry["factors"]), key
+    assert len(preview.PROJECTIONS[KEY]["factors"][0]) == 128
+    assert len(preview.PROJECTIONS[SD15]["factors"][0]) == 4
+
+
+def test_each_entry_declares_its_own_stride_and_estimate(preview):
+    """The two fields that make a second latent space possible at all: klein is
+    a patchified 8x VAE on a distilled schedule, SD1.5 an unpatchified 8x VAE on
+    an ordinary one."""
+    assert preview.PROJECTIONS[KEY]["stride"] == 16
+    assert preview.PROJECTIONS[KEY]["estimate"] == "extrapolate"
+    assert preview.PROJECTIONS[SD15]["stride"] == 8
+    assert preview.PROJECTIONS[SD15]["estimate"] == "raw"
+
+
+def test_the_SD15_numbers_are_the_ones_that_were_MEASURED(preview):
+    """The whole 4x3 fit, pinned — it is small enough to write down, so a
+    re-typed or transposed constant fails here rather than tinting every
+    thumbnail. Channel 3 is negative in all three rows: SD's darkness channel,
+    the signature an accidental transpose would destroy."""
+    entry = preview.PROJECTIONS[SD15]
+    assert entry["factors"][0] == pytest.approx(
+        [0.16860433707048778, 0.08881676484910431, -0.07116862129767207,
+         -0.12419647466837884], rel=1e-9)
+    assert entry["factors"][1] == pytest.approx(
+        [0.12687333013700466, 0.12679084904666216, 0.07522314872905711,
+         -0.1811777339597075], rel=1e-9)
+    assert entry["factors"][2] == pytest.approx(
+        [0.1250038400036917, 0.09710721219961786, 0.10332428963178521,
+         -0.22665953899464153], rel=1e-9)
+    assert entry["bias"] == pytest.approx(
+        [0.4768821440901692, 0.43719649267205124, 0.411639848596421])
+    assert all(row[3] < 0 for row in entry["factors"])
+
+
+def test_an_SD15_SHAPED_latent_goes_all_the_way_through(preview, tmp_path):
+    """`(1, 4, h, w)` is what an SD pipeline's callback holds — no packing, so
+    the grid IS the shape — and the whole path has to take it: unpack, project
+    against the 4-wide matrix, write a PNG of that grid. An all-zero latent
+    lands on the bias, which is the fit's mean colour."""
+    out = str(tmp_path / "sd.preview.png")
+    latents = numpy.zeros((1, 4, 8, 6), dtype=numpy.float32)
+    with preview.sink(out, SD15) as sink:
+        assert sink.wanted is True
+        sink.add(lambda: latents, sigma=1.0, grid=preview.token_grid(SD15, 48, 64))
+        assert _png_size(out) == (6, 8)
+        bias = preview.PROJECTIONS[SD15]["bias"]
+        expected = tuple(round(channel * 255) for channel in bias)
+        assert _pixels(out)[0] == pytest.approx(expected, abs=1)
 
 
 def test_the_fitted_numbers_are_the_ones_that_were_MEASURED(preview):
@@ -174,8 +231,65 @@ def test_the_projection_is_CLIPPED_to_a_displayable_range(preview):
 
 
 def test_a_model_with_no_entry_has_no_projection(preview):
-    assert preview.project(_tokens(0.0), "AutoencoderKL") is None
+    assert preview.project(_tokens(0.0), "AutoencoderKLWan") is None
     assert preview.project(_tokens(0.0), None) is None
+
+
+# -- generality: a second entry follows the TABLE, not a constant ----------------
+#
+# Nothing here renders SD1.5 — these fake entries only prove that `token_grid`
+# and `project` read a model's stride and channel count off `PROJECTIONS`
+# rather than off `TOKEN_STRIDE` or a hardcoded 128, which is what lets a real
+# 4-channel entry share this module with klein's 128-channel one.
+
+
+def _fake_entry(preview, monkeypatch, key, *, stride, channels, estimate):
+    """A `channels`-wide entry whose arithmetic is checkable by hand.
+
+    One distinct weight per output channel, all of them on latent channel 0,
+    and small enough that `bias + weight` stays inside [0, 1] — a row that
+    clipped would pass a transposed matrix just as happily as the right one.
+    """
+    monkeypatch.setitem(preview.PROJECTIONS, key, {
+        "factors": tuple([weight] + [0.0] * (channels - 1)
+                         for weight in (0.5, 0.25, 0.125)),
+        "bias": (0.1, 0.2, 0.3),
+        "stride": stride,
+        "estimate": estimate,
+    })
+
+
+def test_token_grid_follows_the_TABLES_stride_not_a_constant(preview, monkeypatch):
+    """klein's stride is 16 (8x VAE, 2x2 patchify); a fake 8x-only VAE with no
+    patchify is 8, and each model key must get ITS OWN division."""
+    _fake_entry(preview, monkeypatch, "FakeSD", stride=8, channels=4, estimate="raw")
+    assert preview.token_grid("FakeSD", 512, 512) == (64, 64)
+    assert preview.token_grid(KEY, 512, 512) == (32, 32)
+
+
+def test_project_reads_the_CHANNEL_COUNT_off_the_tables_own_factors(preview, monkeypatch):
+    """A 4-channel entry's tokens are `(n, 4)`, not `(n, 128)`, and `project`
+    has to size itself from `factors` rather than assume klein's width."""
+    _fake_entry(preview, monkeypatch, "FakeSD", stride=8, channels=4, estimate="raw")
+    tokens = numpy.zeros((2, 4), dtype=numpy.float32)
+    tokens[:, 0] = 1.0
+    rgb = preview.project(tokens, "FakeSD")
+    assert rgb.shape == (2, 3)
+    assert rgb[0] == pytest.approx([0.6, 0.45, 0.425], abs=1e-6)
+
+
+def test_a_RAW_LATENT_entry_gets_a_frame_on_STEP_1_where_EXTRAPOLATION_does_not(
+        preview, tmp_path, monkeypatch):
+    """An ordinary, non-distilled sigma schedule is legible from the raw latent
+    alone, so `"estimate": "raw"` needs no predecessor — unlike klein's
+    `"estimate": "extrapolate"`, which is why the fitted entry gets no preview
+    on step 1 (`test_the_FIRST_step_writes_nothing...` above)."""
+    _fake_entry(preview, monkeypatch, "FakeSD", stride=8, channels=4, estimate="raw")
+    out = str(tmp_path / "raw.preview.png")
+    with preview.sink(out, "FakeSD") as sink:
+        sink.add(lambda: numpy.zeros((4, 4), dtype=numpy.float32), sigma=1.0,
+                 grid=(2, 2))
+        assert os.path.exists(out)
 
 
 # -- the denoised estimate -------------------------------------------------------
@@ -293,11 +407,13 @@ def test_two_steps_at_the_SAME_sigma_leave_the_previous_frame_alone(preview, tmp
 
 
 def test_a_model_the_table_does_not_know_gets_NO_preview(preview, tmp_path):
-    """A pipeline whose latent space nobody has fitted a matrix for has to
-    render exactly as it did before this existed — no file, and no `if preview:`
-    branch in either denoising loop."""
+    """A pipeline whose latent space nobody has fitted a matrix for renders with
+    no preview file at all, and no `if preview:` branch in either denoising
+    loop. `AutoencoderKLWan` is a real diffusers VAE class with no entry here —
+    an unfitted key has to be one nothing has measured, so this cannot use the
+    two class names the table now holds."""
     out = str(tmp_path / "a.preview.png")
-    with preview.sink(out, "AutoencoderKL") as sink:
+    with preview.sink(out, "AutoencoderKLWan") as sink:
         assert sink.wanted is False
         sink.add(lambda: _tokens(0.0), sigma=1.0, grid=(4, 4))
         sink.add(lambda: _tokens(0.0), sigma=0.5, grid=(4, 4))

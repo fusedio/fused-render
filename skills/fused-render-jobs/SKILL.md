@@ -15,12 +15,13 @@ There is no per-call override, so design around it:
 - **Move the heavy job out of band.** For a genuinely long build, run it as a separate process that writes an output file, and have the view read the finished result.
 - **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
 
-State does not survive any of this: `fused.engine(py)`, the warm variant of
-`runPython` that keeps a worker's imports and globals alive between calls, still
-idle-retires that worker after 15 minutes with no calls. A folder that genuinely
-needs to keep running past that — a poll loop, a held connection, a tray or
-menu-bar presence — wants a resident daemon instead: see
-**`fused-render-background-apps`**.
+State does not survive any of this: a folder that opts into `[tool.fused-render.app]`
+with `main = "x.py"` gets a warm worker that keeps imports and globals alive
+between calls, but it's still reaped after `idle_timeout_s` idle seconds
+(default 900s / 15 min), reached from the page via `fused.daemon.run(params)`.
+A folder that genuinely needs to keep running past that — a poll loop, a held
+connection, a tray or menu-bar presence — wants its own resident daemon
+(`daemon = "x.py"`) instead: see **`fused-render-background-apps`**.
 
 ## Show it in the download manager (`fused.trackJob`)
 
@@ -49,14 +50,19 @@ job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
 - **Cancel is a request you honor**, not something the shell can do — it has no idea which process is doing the work. The ✕ sets a flag; your poll loop notices it, stops the worker, and reports `job.cancelled()`. If you cannot stop the work, leave `cancellable` off and no ✕ is offered.
 - **Omit `total` while you don't know it.** A job with no total draws a travelling "indeterminate" bar, which is the honest picture; a total of `0` is treated the same way rather than painted as complete.
 - **Report the finish.** Without a terminal call the row goes "stalled" after 30 s and says the page that started it was closed — accurate if that is what happened, misleading if the work just ended. Report `finish`/`fail`/`cancelled` on every exit path of your poll loop.
-- **A step longer than 30 s needs a tick of its own.** The stale window does not care that your work is fine, only that nothing has reported — so a row wrapped around a single long `await` (one `fused.ai()` call, one slow `runPython`) says "No longer reporting" partway through and then succeeds. Beat it: `const beat = setInterval(() => job.update({}), 10_000)` before the await, `clearInterval(beat)` in a `finally`. An empty `update({})` is exactly "still here" — it carries no fields, so it cannot move the bar or overwrite your detail.
+- **A step longer than 30 s needs a tick of its own.** The stale window does not care that your work is fine, only that nothing has reported — so a row wrapped around a single long `await` (one `fused.ai.text()` call, one slow `runPython`) says "No longer reporting" partway through and then succeeds. Beat it: `const beat = setInterval(() => job.update({}), 10_000)` before the await, `clearInterval(beat)` in a `finally`. An empty `update({})` is exactly "still here" — it carries no fields, so it cannot move the bar or overwrite your detail.
 - **One job per user-meaningful operation**, not per file: aggregate a multi-file download into one row (sum the bytes) and put the current filename in `detail`.
 - Reuse a **stable `id`** (`fused.trackJob({id: "flux:" + jobId, ...})`) when a page can be reloaded mid-work — the reopened page re-attaches to the existing row instead of opening a second one.
 - **Exports fine.** `fused.trackJob` is a no-op on a hosted page, so unlike `fused.ai` it does not block export.
 
 `fused.watchJob(id).watch(cb)` is the read side: it streams a row's updates to
 your page — used to show elapsed seconds for a `fused.capture` recording, or to
-follow a model download the runtime started for you.
+follow a model download the runtime started for you. A watched row's `job.state`
+can also read `"waiting"` — there's no way to set it yourself (`trackJob`'s
+methods only ever move a row to running or one of the terminal states); it
+shows up on a row you're only watching, such as an install parked on the
+build-consent prompt, and means the row is stalled on a question only the
+user can answer, not stuck and not an error.
 
 ## Report from the WORKER, not only the page — this is the one that bites
 

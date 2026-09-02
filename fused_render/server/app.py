@@ -69,7 +69,6 @@ from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
-from fused_render.server.routers.app_engine import router as app_engine_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
@@ -401,7 +400,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @on_startup
     async def _startup_prewarm_ai():
-        prewarm_ai()
+        prewarm_ai(app)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
     @on_startup
@@ -490,10 +489,10 @@ def create_app(start_dir: str) -> FastAPI:
 
     @on_shutdown
     async def _startup_shutdown_ai():
-        await shutdown_ai_session()
+        await shutdown_ai_session(app)
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
-    # nothing has used it for the configured window (default 10 min, 0 = off).
+    # nothing has used it for the configured window (default 5 min, 0 = off).
     # A startup event and deliberately not the create_app body, for the same
     # reason as `_startup_schedule` above: tests build apps with no lifespan,
     # and this starts a thread that lives for the process — building one per
@@ -564,8 +563,8 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.unload_all()
 
-    # Every managed engine dies with the app: template daemons and /api/engine
-    # warm workers alike (stop_all clears both).
+    # Every managed engine dies with the app: template daemons and
+    # background/daemon children alike (stop_all clears both).
     @on_shutdown
     async def _shutdown_engines():
         from fused_render.server import engine_host
@@ -639,6 +638,11 @@ def create_app(start_dir: str) -> FastAPI:
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
+    # Local-network sharing (lan.py): the desktop's pairing + device routes.
+    # Loopback only in effect — the LAN wrapper's allowlist never forwards them.
+    from fused_render.lan import router as lan_router
+
+    app.include_router(lan_router)
     app.include_router(recents_router)
     # The app call log (calls.py): GET /api/calls/config + the page-error
     # event POST. The records themselves are written by the middleware above.
@@ -691,8 +695,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(app_api_router)
     # Background apps (routers/background_apps.py): enable/disable/stop/
     # restart/status for a folder's declared long-running daemon, backed by
-    # engine_host's "background" child kind + background_apps.py's enabled
-    # store. See the startup resurrection hook below.
+    # engine_host's own per-child fields (`Child.folder`, `idle_timeout_s`,
+    # `retry_post`) + background_apps.py's enabled store. See the startup
+    # resurrection hook below.
     app.include_router(background_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
@@ -770,9 +775,8 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(claude_config_router)
     # Is Claude Code usable at all (routers/claude_health.py): found / version /
     # signed-in, so the first run can be TOLD rather than left to discover it by
-    # failing. Same doctrine as /api/config's sessions_mount_ready, which gates
-    # a link into a bundled mount so it is never dead — this is that gate for
-    # everything Claude-dependent. Its own endpoint, not a /api/config field:
+    # failing — the gate for everything Claude-dependent, so no surface is ever
+    # a dead link. Its own endpoint, not a /api/config field:
     # the facts behind it are process spawns, and /api/config is read on every
     # page load. The cache is warmed by the entry points (claude_health.
     # warm_in_background), never from here — importing the server in a test must
@@ -814,9 +818,6 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)
-    # The warm variant of /api/run (routers/app_engine.py): POST /api/engine
-    # keeps the script's worker alive between calls. Opt-in via fused.engine().
-    app.include_router(app_engine_router)
     # The script-venv install loader (routers/env.py): /api/env/install,
     # /api/env/progress, /api/env/cancel — what the page shell drives after
     # /api/run's pre-flight answers `needs_install` (PY-18 / D173).

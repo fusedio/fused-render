@@ -154,6 +154,26 @@ def _runner_folders():
     )
 
 
+def _declared_specifier(folder, distribution):
+    """The raw version-specifier string a runner declares for one distribution
+    (e.g. `">=0.15,<0.18"` for `torchao`), or None if it does not declare it."""
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    for spec in data.get("project", {}).get("dependencies", []):
+        bare = spec.split("[")[0].split(";")[0]
+        name = bare
+        cut = len(bare)
+        for operator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+            index = bare.find(operator)
+            if index != -1:
+                cut = min(cut, index)
+        name = bare[:cut]
+        if name.strip().replace("_", "-").lower() != distribution:
+            continue
+        return spec[cut:].strip()
+    return None
+
+
 def _declared(folder):
     """The distribution names a runner declares, normalized.
 
@@ -241,6 +261,152 @@ def test_a_runner_naming_a_split_distribution_names_its_other_half(folder):
         assert entry["companion"] in declared, (
             f"{os.path.basename(folder)} declares {primary} without "
             f"{entry['companion']}.\n\n{entry['reason']}")
+
+
+# -- the three diffusers_image* manifests' dependency parity -----------------
+#
+# Same shape as the onnx_embed four-way check below, for the same reason: these
+# three folders are declared, in their own header comments, to be one
+# dependency list with only `torch` (and ROCm's extra `triton-rocm`, which
+# rides in for the reason that folder's header explains) swapped per hardware.
+# A hand-maintained list that drifts between them would mean "which engine
+# row the user picked" quietly also means "which quantization backends are
+# available" — which is exactly the shape of the bitsandbytes omission this
+# suite exists to catch: it was missing from all three, so nothing here would
+# have caught it landing in only one or two either.
+_DIFFUSERS_IMAGE_FOLDERS = ("diffusers_image", "diffusers_image_cuda",
+                            "diffusers_image_rocm")
+
+#: Names legitimately absent from the comparison because they encode WHERE
+#: torch comes from rather than WHAT the runner needs: `torch` itself is
+#: pinned identically in all three but sourced from a different index per
+#: folder, and `triton-rocm` exists only because ROCm's torch wheel declares
+#: it as a transitive dependency PyPI cannot satisfy (see
+#: `diffusers_image_rocm/pyproject.toml`'s header) — it has no counterpart to
+#: agree with on the other two folders by construction, not by drift.
+_DIFFUSERS_IMAGE_HARDWARE_SPECIFIC = {"torch", "triton-rocm"}
+
+
+def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
+    """The guard the bitsandbytes bug needed and did not have.
+
+    `tonera/FLUX.2-klein-4B-int8-diffusers` — the sole `diffusers-image`
+    suggestion at the time, and then the recommended one — ships a torchao
+    transformer AND a bitsandbytes-NF4 text encoder, so all three folders
+    need both quantization backends or that model fails with an ImportError
+    raised before the transformer is ever built (see `catalog.py`'s entry).
+    The recommended flag has since moved to the SDNQ row, which does not
+    weaken this guard at all: the parity it checks is now needed by THREE
+    backends rather than two, since the default model's own quantizer is the
+    `sdnq` line and a folder that missed it would break the default rather
+    than an alternative. `bitsandbytes` could have been added to one
+    folder and forgotten in the other two — the venvs are built independently
+    on the user's machine, so nothing short of this comparison would notice —
+    and this test exists so that class of drift is a red CI line instead of a
+    hardware-specific failure report.
+    """
+    shared = None
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        declared = _declared(os.path.join(RUNNERS_DIR, name))
+        rest = sorted(d for d in declared
+                       if d not in _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC)
+        if shared is None:
+            shared = rest
+        assert rest == shared, name
+
+
+def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release():
+    """`tonera/FLUX.2-klein-4B-int8-diffusers` — a `diffusers-image`
+    suggestion, and the recommended one until the SDNQ row took that — fails
+    to load on torchao 0.18.0 with
+    `ValueError: Failed to create instance of Int8WeightOnlyConfig: version 1
+    of Int8WeightOnlyConfig has been removed, please use version 2`, because
+    that repo's `transformer/config.json` serializes its
+    `Int8WeightOnlyConfig` at `_version: 1` and 0.18.0 is the first torchao
+    release that refuses to deserialize that version at all (0.15.0 through
+    0.17.0 only warn). The `version: 1` lives in a third-party Hub repo, not
+    in this codebase, so there is nothing to fix here except keep torchao
+    below 0.18 — and no test in this suite loads a real model over the
+    network, so THIS specifier is the only thing standing between a future
+    `torchao<1`-style bump and a suggestion that cannot load — and it is the
+    only route to this pipeline for a user who cannot take the `sdnq`
+    dependency the recommended row now needs. See the
+    `torchao` entry in `diffusers_image/pyproject.toml`'s header for the
+    full account.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+    except ImportError:
+        SpecifierSet = None
+
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        folder = os.path.join(RUNNERS_DIR, name)
+        specifier = _declared_specifier(folder, "torchao")
+        assert specifier, f"{name} no longer declares torchao at all"
+        if SpecifierSet is not None:
+            assert "0.18.0" not in SpecifierSet(specifier), (
+                f"{name} declares torchao{specifier}, which admits 0.18.0 — "
+                f"that release deserializes the recommended diffusers-image "
+                f"model's Int8WeightOnlyConfig(version=1) into a ValueError "
+                f"instead of loading it. Keep the ceiling below 0.18."
+            )
+        else:
+            assert "<0.18" in specifier, (
+                f"{name} declares torchao{specifier}, which does not "
+                f"plainly exclude 0.18.0 — that release breaks the "
+                f"recommended diffusers-image model's quantized transformer."
+            )
+
+
+def test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_below_0_3():
+    """`Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` is a `diffusers-image`
+    suggestion whose every component config carries `"quant_method": "sdnq"`,
+    and diffusers 0.39 has no quantizer for that name — its
+    `quantizers/auto.py` mapping knows autoround, bitsandbytes, gguf, modelopt,
+    quanto and torchao. The package supplies one by MUTATING that mapping at
+    import (`AUTO_QUANTIZER_MAPPING["sdnq"] = SDNQQuantizer`, plus the
+    transformers twin), which `torch_image._register_extra_quantizers()`
+    triggers.
+
+    Two things are pinned here, for the same reason the torchao test above
+    pins one: no test in this suite loads a real model over the network, so a
+    specifier is the only guard.
+
+    * **Declared at all**, in all three folders — the parity test above only
+      proves the three AGREE, so removing the line from all three would sail
+      past it while making a suggested model unloadable everywhere at once.
+    * **Below 0.3.** The registration mutates a mapping that is not diffusers'
+      public API, and sdnq is a young project (0.2.1 through 0.2.6 at the time
+      of writing). A minor bump is where a project that young rearranges its
+      own module layout, and the failure mode is a silent no-registration
+      followed by an unknown-`quant_method` error at load — so this ceiling is
+      deliberately tighter than the `bitsandbytes<1` beside it.
+    """
+    try:
+        from packaging.specifiers import SpecifierSet
+    except ImportError:
+        SpecifierSet = None
+
+    for name in _DIFFUSERS_IMAGE_FOLDERS:
+        folder = os.path.join(RUNNERS_DIR, name)
+        specifier = _declared_specifier(folder, "sdnq")
+        assert specifier, (
+            f"{name} does not declare sdnq — without it "
+            f"`Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` fails to load with an "
+            f"unknown quantization method, on every platform at once."
+        )
+        if SpecifierSet is not None:
+            assert "0.3.0" not in SpecifierSet(specifier), (
+                f"{name} declares sdnq{specifier}, which admits 0.3.0 — that "
+                f"minor may move the module whose import registers the "
+                f"quantizer, and nothing here would notice until a load "
+                f"failed. Keep the ceiling below 0.3."
+            )
+        else:
+            assert "<0.3" in specifier, (
+                f"{name} declares sdnq{specifier}, which does not plainly "
+                f"exclude 0.3.0."
+            )
 
 
 def test_the_split_table_is_not_quietly_unused():

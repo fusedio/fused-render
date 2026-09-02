@@ -11,7 +11,15 @@
 // zero; a row that says "stalled" for work that finished).
 import { getJson, postJson } from "@platform/lib/api";
 
-export type JobState = "running" | "done" | "error" | "cancelled";
+// "waiting" — the two NON-terminal states are "running" and "waiting". Work
+// has stopped and is not coming back on its own: it is sitting on a QUESTION
+// only the user can answer (today, the sole producer is
+// `envinstall._mirror_into_jobs`'s `needs_build` branch: uv's "Install
+// anyway" compile prompt). Not "running" — nothing is actually in flight, so
+// a bar or a spinner would lie. Not terminal either: none of "done" / "error"
+// / "cancelled" means "stopped, waiting on you" (see `fused_render/jobs.py`'s
+// own state-machine comment for the fuller reasoning).
+export type JobState = "running" | "waiting" | "done" | "error" | "cancelled";
 export type JobKind = "download" | "task";
 // Who is running the work, which decides what ✕ can do (SPEC BG-4). "page" —
 // only the page knows what stopping means, so cancel is a request it honours.
@@ -44,7 +52,7 @@ export interface Job {
   // raise it (never-understate).
   total_scope: "download" | "phase";
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
-  message: string; // the error text, when state is "error"
+  message: string; // the error text when state is "error"; the question's caption when state is "waiting"
   page: string; // the .html that raised it (attribution)
   owner: JobOwner;
   cancellable: boolean;
@@ -55,6 +63,11 @@ export interface Job {
   // Server-computed: running, but nothing has reported in a while. The reporter
   // is gone (its page was closed); the work may well be carrying on.
   stalled: boolean;
+  // The id of another row this row is blocked on, or "" for the ordinary
+  // case — set server-side while an image/video render waits on a shared
+  // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
+  // `mergedRows` below for what the manager does with it.
+  waiting_for: string;
 }
 
 export interface JobsSnapshot {
@@ -221,6 +234,34 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
   });
 }
 
+/**
+ * `jobRows`'s sibling for the other place two rows can describe ONE unit of
+ * work (SPEC §36): an image/video render blocked on a shared model load used
+ * to open a SECOND row — "Waiting for FLUX.2-klein-4B — Loading weights…" —
+ * right beside the load's own "Loading weights…" row, both true, both saying
+ * the same thing. `_wait_ready` (`fused_render/ai/supervisor.py`) now merges
+ * the load's live progress onto the caller's row instead and marks it
+ * `waiting_for` the load's job id; this is the client half that acts on it —
+ * drop whichever row is NAMED by another row's `waiting_for`, for as long as
+ * that reference is live.
+ *
+ * "Live" is `isRunning`, deliberately, not "present": a reference from a row
+ * that has gone TERMINAL — most tellingly, an `error` — must not hide
+ * anything, because that is exactly the case the merge exists to still get
+ * right (D266) — a wait that ends in a real load failure has to show up as
+ * two rows again, one for each side's own failure, not stay collapsed into
+ * whichever tick last pointed at the other.
+ *
+ * `waiting_for` is server-only (`fused_render/jobs.py` `Job.waiting_for`), so
+ * a page cannot use this filter to hide a row it does not own.
+ */
+export function mergedRows(jobs: Job[]): Job[] {
+  const hidden = new Set(
+    jobs.filter((j) => j.waiting_for && isRunning(j)).map((j) => j.waiting_for),
+  );
+  return jobs.filter((j) => !hidden.has(j.id));
+}
+
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet
@@ -313,6 +354,13 @@ export function jobStatusLine(job: Job): string {
   if (job.state === "error") return job.message || "Failed";
   if (job.state === "cancelled") return job.detail || "Cancelled";
   if (job.state === "done") return job.detail || "Done";
+  // A question on the page, not a failure and not progress — the caption
+  // names what it is waiting on (e.g. "waiting for your approval to compile
+  // <pkg>"). Checked ahead of `stalled`/`cancel_requested` below: both of
+  // those describe a REPORTER that has gone quiet or been asked to stop, and
+  // a "waiting" row's reporter already exited on purpose the moment it wrote
+  // this state (see `fused_render/jobs.py`'s own comment on `WAITING`).
+  if (job.state === "waiting") return job.message || "Waiting for you";
   // Stalled outranks a pending cancel, and says so explicitly when both hold.
   // "Cancelling…" claims something is working on the request; if the reporter
   // died before honoring it, that claim would stand for the whole ten-minute
@@ -359,10 +407,14 @@ export interface QueueCount {
 // computes it, and the queue rows still need it.
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
-// discover is a job STARTED by some other document (a page in another browser
-// tab, or a Python worker reporting straight to the API, which runs no JS and
-// so writes no ping). The ping cuts the usual latency of that discovery to
-// nothing; this floor is what covers the cases it can't reach.
+// discover is a job started with no ping behind it: one reported from another
+// same-origin document (a page in another browser tab), or one a server-side
+// process reports on its own with no browser ever POSTing anything (a
+// scheduled message's timer tick, `schedule.py`'s `_report` — runs no JS, so
+// writes no ping). A row a page's own JS causes — the env-install path
+// included, even though the row itself is created server-side inside
+// `envinstall.start()` — is pinged the moment the triggering POST resolves.
+// This floor is what covers the cases a ping can't reach.
 export const POLL_ACTIVE_MS = 1000;
 export const POLL_IDLE_MS = 5000;
 

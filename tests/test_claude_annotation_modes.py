@@ -424,10 +424,10 @@ def test_speech_before_the_first_click_becomes_the_prompt_not_a_note(html):
 var annotations = [{id: "a", t: 10}, {id: "b", t: 20}];
 function annSave() {}
 const intro = annRecAssign(["a", "b"], [
-  {start: 1, text: "overall make it cleaner"},
-  {start: 4, text: "and use our colors"},
-  {start: 10.5, text: "this button is wrong"},
-  {start: 19, text: "this chart too"},
+  {startSecond: 1, text: "overall make it cleaner"},
+  {startSecond: 4, text: "and use our colors"},
+  {startSecond: 10.5, text: "this button is wrong"},
+  {startSecond: 19, text: "this chart too"},
 ]);
 console.log(JSON.stringify({intro: intro,
   a: annotations[0].content, b: annotations[1].content}));
@@ -448,15 +448,15 @@ def test_a_click_mid_sentence_splits_that_sentence_by_word_timings(html):
 var annotations = [{id: "a", t: 1.0}, {id: "b", t: 3.0}];
 function annSave() {}
 const intro = annRecAssign(["a", "b"], [
-  {start: 1.1, text: "this button is wrong and this chart too", words: [
-    {start: 1.1, end: 1.4, word: " this"},
-    {start: 1.4, end: 1.8, word: " button"},
-    {start: 1.8, end: 2.0, word: " is"},
-    {start: 2.0, end: 2.4, word: " wrong"},
-    {start: 3.1, end: 3.3, word: " and"},
-    {start: 3.3, end: 3.5, word: " this"},
-    {start: 3.5, end: 3.9, word: " chart"},
-    {start: 3.9, end: 4.2, word: " too"},
+  {startSecond: 1.1, text: "this button is wrong and this chart too", words: [
+    {startSecond: 1.1, endSecond: 1.4, word: " this"},
+    {startSecond: 1.4, endSecond: 1.8, word: " button"},
+    {startSecond: 1.8, endSecond: 2.0, word: " is"},
+    {startSecond: 2.0, endSecond: 2.4, word: " wrong"},
+    {startSecond: 3.1, endSecond: 3.3, word: " and"},
+    {startSecond: 3.3, endSecond: 3.5, word: " this"},
+    {startSecond: 3.5, endSecond: 3.9, word: " chart"},
+    {startSecond: 3.9, endSecond: 4.2, word: " too"},
   ]},
 ]);
 console.log(JSON.stringify({intro: intro,
@@ -475,14 +475,14 @@ def test_words_before_the_first_click_are_the_intro_at_word_grain(html):
 var annotations = [{id: "a", t: 2.0}];
 function annSave() {}
 const intro = annRecAssign(["a"], [
-  {start: 0.0, text: "make this cleaner this button is wrong", words: [
-    {start: 0.0, end: 0.4, word: " make"},
-    {start: 0.4, end: 0.7, word: " this"},
-    {start: 0.7, end: 1.2, word: " cleaner"},
-    {start: 2.1, end: 2.3, word: " this"},
-    {start: 2.3, end: 2.7, word: " button"},
-    {start: 2.7, end: 2.9, word: " is"},
-    {start: 2.9, end: 3.3, word: " wrong"},
+  {startSecond: 0.0, text: "make this cleaner this button is wrong", words: [
+    {startSecond: 0.0, endSecond: 0.4, word: " make"},
+    {startSecond: 0.4, endSecond: 0.7, word: " this"},
+    {startSecond: 0.7, endSecond: 1.2, word: " cleaner"},
+    {startSecond: 2.1, endSecond: 2.3, word: " this"},
+    {startSecond: 2.3, endSecond: 2.7, word: " button"},
+    {startSecond: 2.7, endSecond: 2.9, word: " is"},
+    {startSecond: 2.9, endSecond: 3.3, word: " wrong"},
   ]},
 ]);
 console.log(JSON.stringify({intro: intro, a: annotations[0].content}));
@@ -500,14 +500,14 @@ def test_a_reply_with_no_word_timings_still_matches_by_segment(html):
 var annotations = [{id: "a", t: 1.0}, {id: "b", t: 3.0}];
 function annSave() {}
 const intro = annRecAssign(["a", "b"], [
-  {start: 1.1, text: "worded segment splits here", words: [
-    {start: 1.1, end: 1.5, word: " worded"},
-    {start: 1.5, end: 1.9, word: " segment"},
-    {start: 3.1, end: 3.4, word: " splits"},
-    {start: 3.4, end: 3.6, word: " here"},
+  {startSecond: 1.1, text: "worded segment splits here", words: [
+    {startSecond: 1.1, endSecond: 1.5, word: " worded"},
+    {startSecond: 1.5, endSecond: 1.9, word: " segment"},
+    {startSecond: 3.1, endSecond: 3.4, word: " splits"},
+    {startSecond: 3.4, endSecond: 3.6, word: " here"},
   ]},
-  {start: 1.2, text: "no words at all", words: []},
-  {start: 1.3, text: "words with no times",
+  {startSecond: 1.2, text: "no words at all", words: []},
+  {startSecond: 1.3, text: "words with no times",
    words: [{word: " words"}, {word: " with"}]},
 ]);
 console.log(JSON.stringify({intro: intro,

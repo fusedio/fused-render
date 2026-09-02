@@ -491,7 +491,7 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         _server_ai, "_local_relay",
-        lambda model, prompt, system_prompt, stream, body:
+        lambda model, prompt, system_prompt, stream, body, warnings=None:
             _server_ai.JSONResponse({"ok": True, "result": {
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
@@ -668,8 +668,8 @@ def test_relay_happy_path(monkeypatch):
     data = _data(resp)
     assert data["ok"] is True
     assert data["result"]["text"] == "hi there"
-    assert data["result"]["model"] == "claude-haiku-4-5-20251001"
-    assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert data["result"]["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert data["result"]["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
     # One CLI spawn: stream-json in and out (the D169 persistent-instance
     # spawn shape; --verbose is mandatory with stream-json output), the
     # prompt over stdin as a JSON user message (argv has an OS size cap),
@@ -733,7 +733,7 @@ def test_relay_options_become_reconfiguration_requests(monkeypatch):
     fake = _cli_ok(monkeypatch)
     proc = _FakeProc(turns=[_result_lines(), _result_lines()])
     _seed_session(proc)  # live instance
-    _relay({"prompt": "hello", "system_prompt": "be terse",
+    _relay({"prompt": "hello", "systemPrompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
     assert fake.calls == []  # reconfigured, not respawned
 
@@ -868,7 +868,7 @@ def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
     # or malformed block degrades to null rather than leaking through.
     _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
     usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
-    assert usage == {"input_tokens": 3, "output_tokens": 2}
+    assert usage == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
 
     for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
                 {"input_tokens": "3", "output_tokens": 2},        # wrong type
@@ -889,7 +889,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
-    assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
+    assert _data(resp)["result"]["response"]["modelId"] == "claude-sonnet-5-20250929"
 
 
 def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
@@ -916,9 +916,14 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     done = frames[-1]
     assert done["type"] == "done" and done["ok"] is True
     # Same result schema as the non-streaming response.
-    assert done["result"] == {
-        "text": "hi there", "model": "claude-haiku-4-5-20251001",
-        "usage": {"input_tokens": 3, "output_tokens": 2}}
+    result = done["result"]
+    assert result["text"] == "hi there"
+    assert result["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert result["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
+    assert result["provider"] == "claude"
+    assert result["finishReason"] == "stop" and result["warnings"] == []
+    assert set(result) == {"text", "provider", "finishReason", "warnings", "usage",
+                           "response", "providerMetadata"}
 
 
 def test_relay_stream_skips_thinking_deltas(monkeypatch):
@@ -1040,7 +1045,7 @@ def test_relay_control_error_respawns_with_argv_config(monkeypatch):
     live = _FakeProc(control_error={
         "set_model": "unexpected field: system_prompt"})
     _seed_session(live)
-    resp = _relay({"prompt": "hello", "system_prompt": "be terse",
+    resp = _relay({"prompt": "hello", "systemPrompt": "be terse",
                    "model": "claude-sonnet-5"})
     assert _data(resp)["ok"] is True
     assert live.killed  # the control error discarded the instance
@@ -1426,8 +1431,8 @@ def test_posix_candidates_are_the_documented_install_locations():
     """The three canonical locations, canonical-first — and nothing hand-written.
 
     This used to pin the tuple exactly, which is what let the list here drift
-    from the three OTHER lists the app kept (claude_config/lib.py, the learn
-    content's check_env.py, core_apps/sessions/analyze.py): each was
+    from the OTHER lists the app kept (claude_config/lib.py, the retired
+    learn and sessions bundled content): each was
     correct against its own test and none agreed with the others, so a CLI in
     `~/.bun/bin` was found by the Claude-config tab and not by fused.ai. The
     union lives in claude_health now; the identity assertion is what keeps this
@@ -1654,7 +1659,8 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
 
 
 def test_runtime_ships_ai():
-    assert "function ai(prompt, opts)" in RUNTIME
+    assert "function aiText(opts)" in RUNTIME
+    assert "text: aiText," in RUNTIME
     assert '"/api/ai"' in RUNTIME
     assert "ai," in RUNTIME  # registered on window.fused
 
@@ -1678,7 +1684,93 @@ def test_runtime_ai_streams_on_onchunk():
 
 
 def test_export_rejects_ai(tmp_path):
-    html = "<script>fused.ai('summarize this');</script>"
+    html = "<script>fused.ai.text({prompt: 'summarize this'});</script>"
     plan = plan_export(html, str(tmp_path))
-    assert any("fused.ai() is not supported on a hosted page" in e
+    assert any("fused.ai.text() is not supported on a hosted page" in e
                for e in plan.errors)
+
+
+# -- one AI session per app build, never shared across event loops ----------
+# `asyncio.Lock` binds itself to whichever event loop first CONTENDS it (an
+# uncontended acquire/release never binds at all) and permanently raises on
+# any later contended acquire from a different loop.  `_AiSession.lock` is
+# touched by both `prewarm_default()` and `shutdown()`, so a session object
+# reused across two independent app builds - each with its own event loop -
+# risks exactly that cross-loop RuntimeError the moment its lock is ever
+# contended in one of those builds.
+
+
+def test_a_contended_asyncio_lock_raises_when_reused_from_another_loop():
+    import asyncio
+
+    lock = asyncio.Lock()
+
+    async def hold_then_release():
+        async with lock:
+            await asyncio.sleep(0.02)
+
+    async def contend():
+        async with lock:
+            pass
+
+    async def first_loop():
+        await asyncio.gather(hold_then_release(), contend())
+
+    asyncio.run(first_loop())  # contended acquire binds `lock` to this loop
+
+    with pytest.raises(RuntimeError, match="different event loop"):
+        # An UNCONTENDED acquire never calls the loop-binding check at all
+        # (that's the fast path `Lock.acquire()` takes when nobody else
+        # holds it) - only a second contended acquire, from this second
+        # loop, exercises the check that finds the stale binding.
+        asyncio.run(first_loop())
+
+
+def test_prewarm_ai_gives_each_app_build_its_own_session(monkeypatch):
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    first = _server_ai._AI_SESSION
+    _server_ai.prewarm_ai()
+    second = _server_ai._AI_SESSION
+    assert second is not first
+    assert isinstance(second, _server_ai._AiSession)
+
+
+def test_shutdown_closes_the_shutting_down_apps_own_session(monkeypatch):
+    """Two overlapping app builds each get their own `_AiSession` (the test
+    above), but a shared module global still leaves shutdown reading
+    whichever session happens to be current rather than the one its own app
+    built. Simulate the interleaving directly: app A prewarms, app B
+    prewarms (the global now points at B's session), then A shuts down.
+    A's shutdown must close A's own session, and must leave B's session
+    alone — not close it, and not close it twice when B later shuts down
+    its own."""
+    import types
+
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    closed = []
+
+    async def _recording_shutdown(self):
+        closed.append(self)
+
+    monkeypatch.setattr(_server_ai._AiSession, "shutdown", _recording_shutdown)
+
+    app_a = types.SimpleNamespace(state=types.SimpleNamespace())
+    app_b = types.SimpleNamespace(state=types.SimpleNamespace())
+
+    _server_ai.prewarm_ai(app_a)
+    session_a = getattr(app_a.state, "ai_session", None)
+    assert session_a is not None, (
+        "prewarm_ai(app) must stash the session it built on app.state, "
+        "not only on the module global")
+
+    _server_ai.prewarm_ai(app_b)
+    session_b = app_b.state.ai_session
+    assert session_b is not session_a
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_a))
+    assert closed == [session_a], (
+        "shutting down app A must close A's own session, not whatever the "
+        "module global currently points at")
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_b))
+    assert closed == [session_a, session_b]

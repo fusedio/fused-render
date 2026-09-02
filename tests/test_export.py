@@ -632,6 +632,20 @@ def test_manifest_recursive_glob(tmp_path):
     assert {a.name for a in plan.assets} == {"tiles/0/0.png", "tiles/1/2/3.png"}
 
 
+def test_manifest_glob_does_not_traverse_the_pages_own_venv(tmp_path):
+    # A page's folder now holds an in-tree .venv once it has been installed (D630).
+    # A broad `**/*.py` include must not sweep tens of thousands of site-packages
+    # files into the export, and even a narrow glob still pays a full venv
+    # traversal per pattern if it isn't pruned from the walk.
+    html = _manifest_block('{"include": ["**/*.py"]}')
+    _write(tmp_path, "reader.py", "x = 1")
+    _write(tmp_path, ".venv/lib/python3.12/site-packages/numpy.py", "leak")
+    _write(tmp_path, ".venv/bin/python", "#!/bin/sh")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert {a.name for a in plan.assets} == {"reader.py"}
+
+
 def test_manifest_literal_include_missing_is_error(tmp_path):
     # A literal (non-glob) manifest entry that isn't on disk is a blocking error,
     # exactly like an explicit /api/export include.

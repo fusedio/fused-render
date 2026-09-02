@@ -421,7 +421,13 @@ def test_image_wait_true_returns_reply_on_done(monkeypatch):
     monkeypatch.setattr(
         fused_ai, "_wait_job",
         lambda job_id, on_progress=None, timeout=None: {"state": "done"})
-    assert fused_ai.image("a cat") == reply
+    result = fused_ai.image("a cat")
+    # The one result frame (D632): the payload is `images`, the job id is
+    # `response.id`, and nothing from the started reply sits at top level.
+    assert result["images"] == [{"path": "/tmp/x.png", "mediaType": "image/png"}]
+    assert result["response"]["id"] == "sys:img:1"
+    assert result["usage"] == {"imagesGenerated": 1}
+    assert "jobId" not in result and "path" not in result
 
 
 def test_models_load_waits_by_default(monkeypatch):

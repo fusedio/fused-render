@@ -508,7 +508,7 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "A voice-memo notebook. Left: a memo list (title, date, duration) with New memo (pick " +
       "an audio file, or record with fused.capture.audio when fused.capture.sources() says " +
       "it is available) and a search box. Right: an audio player, then the transcript as " +
-      "segments streaming in through fused.ai.transcribe's onSegment with a timestamp " +
+      "segments streaming in through fused.ai.transcribe's onChunk with a timestamp " +
       "gutter; clicking a timestamp seeks the player, the current segment highlights during " +
       "playback, and the text becomes editable once the job resolves. Save each memo's " +
       "transcript JSON beside its audio and the list as memos.json in the app folder; " +
@@ -528,7 +528,7 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "A searchable transcript reader for podcasts and lectures. Top: a Pick file button " +
       "(audio or video) and a search box. Left: the media player with a progress bar that " +
       "marks search hits. Right: the transcript as paragraphs built from " +
-      "fused.ai.transcribe's {start, end, text} segments, streaming in via onSegment, with " +
+      "fused.ai.transcribe's {text, startSecond, endSecond} segments, streaming in via onChunk, with " +
       "the current segment highlighted and auto-scrolled during playback; clicking any " +
       "segment seeks. Search filters to matching segments with the match highlighted and " +
       "Prev/Next hit buttons. Cache the transcript as <file>.transcript.json beside the " +
@@ -547,7 +547,7 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     prompt:
       "A subtitle maker. Left: a video player with the current cue drawn over the bottom as " +
       "a live preview. Right: a cue table from fused.ai.transcribe's {start, end, text} " +
-      "segments, streaming in via onSegment, with editable text, editable start/end fields, " +
+      "segments, streaming in via onChunk, with editable text, editable start/end fields, " +
       "and nudge buttons (-/+ 100ms), plus Split and Merge on the selected cue. The active " +
       "cue follows playback and clicking a cue seeks. Export writes valid .srt and .vtt " +
       "next to the source video with fused.writeFile, and a language select passes language " +
@@ -565,7 +565,7 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     ),
     prompt:
       "A spoken-capture inbox. Top: drop or pick a voice note; fused.ai.transcribe turns it " +
-      "into {start, end, text} segments. Middle: an Inbox of candidate tasks — each " +
+      "into {text, startSecond, endSecond} segments. Middle: an Inbox of candidate tasks — each " +
       "sentence containing an imperative or a need to / should / remind me pattern — as " +
       "rows with a checkbox to accept, an editable text field, and a discard button, each " +
       "showing its source timestamp which seeks a small audio player. Bottom: the accepted " +

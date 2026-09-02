@@ -23,6 +23,7 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 
 import {
   DownloadManagerView,
+  engineLabel,
   type EnginesSlot,
   type QueueSlot,
 } from "@platform/ui/DownloadManager";
@@ -67,6 +68,7 @@ const BASE: Job = {
   updated_at: 0,
   finished_at: 0,
   stalled: false,
+  waiting_for: "",
 };
 
 
@@ -331,6 +333,63 @@ test("cancelled and done rows do NOT move — only failures did", () => {
   const done: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
   const tree = renderCard([done]);
   expect(findAll(tree, "dl-row")).toHaveLength(1);
+});
+
+// ----------------------------------------- the model-load merge (SPEC §36) —
+// a render waiting on a shared model load used to open a second row right
+// beside the load's own, both saying the same thing ("Waiting for
+// FLUX.2-klein-4B — Loading weights into memory……" next to "Loading weights
+// into memory…"). `_wait_ready` (fused_render/ai/supervisor.py) now mirrors
+// the load's own progress onto the waiter's row and marks it `waiting_for`;
+// `jobs.ts` `mergedRows` (applied in `DownloadManagerView`'s `jobs` computation)
+// is what makes the card actually draw one row instead of two.
+
+test("a waiter and the load it is blocked on render as ONE row, carrying the load's detail", () => {
+  const waiter: Job = {
+    ...BASE,
+    id: "sys:ai-image:x",
+    title: "a ginger cat in a hand-stitched astronaut suit",
+    model: "black-forest-labs/FLUX.2-klein-4B",
+    state: "running",
+    detail: "Loading weights into memory…",
+    done: null,
+    total: null,
+    waiting_for: "sys:ai-model:black-forest-labs--FLUX.2-klein-4B",
+  };
+  const load: Job = {
+    ...BASE,
+    id: "sys:ai-model:black-forest-labs--FLUX.2-klein-4B",
+    title: "black-forest-labs/FLUX.2-klein-4B",
+    model: "black-forest-labs/FLUX.2-klein-4B",
+    kind: "download",
+    state: "running",
+    detail: "Loading weights into memory…",
+    done: null,
+    total: null,
+  };
+  const tree = renderCard([waiter, load]);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(findAll(rows[0], "dl-title")[0])).toBe(waiter.title);
+  expect(text(findAll(rows[0], "dl-status")[0])).toBe("Loading weights into memory…");
+});
+
+test("once the waiter goes terminal, the load's row reappears — a stale waiting_for does not keep hiding it", () => {
+  // `error` is excluded from THIS card entirely (D586 — a failure moves to
+  // Notifications), so `cancelled` is what exercises "terminal, still drawn
+  // here" without that unrelated filter also removing the row. The pure-
+  // function case for a real failure (both rows visible, D266) is covered in
+  // jobs.test.ts, where `isFailure`'s D586 re-route is not in the way.
+  const waiter: Job = {
+    ...BASE,
+    id: "sys:ai-image:x",
+    title: "a ginger cat",
+    state: "cancelled",
+    waiting_for: "sys:ai-model:m",
+  };
+  const load: Job = { ...BASE, id: "sys:ai-model:m", title: "org/m", state: "running" };
+  const tree = renderCard([waiter, load]);
+  expect(findAll(tree, "dl-row")).toHaveLength(2);
 });
 
 // -------------------------------------------------- the collapse toggle (D562)
@@ -888,13 +947,12 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
 
 const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
   engine_id: "e1",
-  kind: "template",
   pid: 1,
   version: "",
   folder: "",
   module: "",
   ...over,
-} as RunningEngine);
+});
 
 function renderActivity(props: {
   reported?: Job[];
@@ -922,17 +980,34 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(circleFilled(tree)).toBe(false);
   });
 
-  test("draws the engine's label and kind, with a Stop button", () => {
+  test("draws the engine's label, with a Stop button", () => {
     const tree = renderActivity({
       engines: {
-        engines: [runningEngine({ engine_id: "e2", kind: "background", folder: "/apps/geotiff" })],
+        engines: [runningEngine({ engine_id: "e2", folder: "/apps/geotiff" })],
         onStop: async () => {},
       },
     });
     const row = findAll(tree, "dl-row")[0];
     expect(text(findAll(row, "dl-title")[0])).toBe("geotiff");
-    expect(text(findAll(row, "dl-amount")[0])).toBe("background");
     expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop");
+  });
+
+  test("the row carries no wire field beyond what RunningEngine declares", () => {
+    // Guards against the class of defect where a fixture supplies a field
+    // (`kind`, say) the server no longer sends and the panel silently
+    // depends on it: `runningEngine()` has no `as RunningEngine` escape
+    // hatch, so an extra property here is a real excess-property error at
+    // build time, not just a missing assertion.
+    const engine = runningEngine();
+    expect(Object.keys(engine).sort()).toEqual(
+      ["engine_id", "folder", "module", "pid", "version"].sort(),
+    );
+  });
+
+  test("falls back to the module when a background engine has no folder recorded", () => {
+    expect(engineLabel(runningEngine({ module: "compute.py" }))).toBe(
+      "compute.py",
+    );
   });
 
   test("pressing Stop calls onStop with the engine id", async () => {

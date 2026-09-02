@@ -238,7 +238,7 @@ def load(model_id, fetched):
             "whisper's own config.json, and this repo is in another format "
             "(CTranslate2 repos carry model.bin; transformers repos carry "
             "model.safetensors with a transformers config). Try "
-            "mlx-community/whisper-large-v3-turbo or "
+            "mlx-community/whisper-large-v3-turbo-q4 or "
             # Named models a refusal points at, and they must be models the
             # CATALOG actually offers — a refusal naming a repo the page no
             # longer suggests sends the user to a Hub search, which is the whole

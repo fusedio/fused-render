@@ -60,12 +60,21 @@
   text-decoration: underline;
 }
 
-/* "Open app" and "Deploy to Workbench" sit opposite the title, centred on
-   their line — so the deploy button takes the same box as its neighbour and
-   no margin of its own, or the pair would sit off each other. */
+/* "Open app" and "Deploy to Workbench" sit in the head's button group, each
+   taking the same box and no margin of its own — .app-page-actions below owns
+   the spacing between them. */
 .app-page-open,
 .app-page-deploy {
   flex: 0 0 auto;
+}
+
+/* The head's right-hand group: the fused-API "Migrate" button (only when the
+   app is behind the runtime) beside "Open app". */
+.app-page-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .workbench-deploy-stack {

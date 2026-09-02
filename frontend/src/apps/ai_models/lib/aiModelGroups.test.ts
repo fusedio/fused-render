@@ -8,6 +8,7 @@ import {
   PARTIAL_TAG,
   UNRECOGNISED,
   type DiskCard,
+  curatedRepoIds,
   diskCards,
   emptyShell,
   jobFraction,
@@ -629,6 +630,29 @@ describe("a curated entry keyed by filename rather than by repo id", () => {
     expect(textRow([], noRepo)?.recommended.map((m) => m.id)).toEqual([
       "mlx-community/Qwen3.5-9B-OptiQ-4bit",
     ]);
+  });
+
+  // The seal beside a card's name, and the same identity the two assertions
+  // above ride on. A set of `m.id` holds filenames, a disk card holds a repo id,
+  // and the two never meet — which is the whole of the llama.cpp shortlist
+  // sitting on a disk unmarked while the whisper cards beside it wear the seal.
+  it("marks a downloaded GGUF repo as one the curation names", () => {
+    const curatedIds = curatedRepoIds(GGUF_CATALOG);
+    expect(curatedIds.has(GGUF_ON_DISK.id)).toBe(true);
+    expect(curatedIds.has("LiquidAI/LFM2.5-8B-A1B-GGUF")).toBe(true);
+  });
+
+  it("marks nothing when the curation has not answered", () => {
+    expect(curatedRepoIds(null).size).toBe(0);
+  });
+
+  // Same fallback as the recommendation filter, for the same stale server: an
+  // entry whose id IS its repo id needs no translation.
+  it("marks by the id itself when the server sends no repo", () => {
+    const marks = curatedRepoIds([
+      capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
+    ]);
+    expect([...marks]).toEqual(["mlx-community/Qwen3.5-9B-OptiQ-4bit"]);
   });
 });
 

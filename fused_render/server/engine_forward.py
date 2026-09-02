@@ -2,11 +2,11 @@
 
 The layer between the server's HTTP surfaces and the child processes engine_host
 supervises: it owns the per-child keep-alive connection pool, the heal-on-failure
-retry, cancel-on-client-hangup, and the per-call budget. Both engine routers use
-it — `routers/engines.py` for template daemons (`/api/engines/{id}/*`) and
-`routers/app_engine.py` for the warm app worker (`/api/engine`) — so neither has
-to reach into the other. Nothing here is template- or app-aware: the engine_id
-and the proxied paths are opaque.
+retry, cancel-on-client-hangup, and the per-call budget. `routers/engines.py`
+uses it for every managed child — a template daemon and a folder's own
+`daemon =`/`main =` background child alike — under `/api/engines/{id}/*`.
+Nothing here is template- or background-aware: the engine_id and the proxied
+paths are opaque.
 """
 import asyncio
 import contextlib

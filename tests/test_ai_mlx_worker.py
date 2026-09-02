@@ -341,6 +341,7 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
 
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.stream_generate = lambda *a, **kw: iter([_Response(), _Response()])
+    mlx_vlm.PromptCacheState = _FakePromptCacheState
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
@@ -367,10 +368,40 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
 # -- the MLX stream pin, shared with mlx_whisper and mflux_image --------------
 
 
+class _FakePromptCacheState:
+    """`mlx_vlm.generate.common.PromptCacheState`, verbatim (0.6.15): a token
+    list plus its KV cache, and an EXACT literal-prefix walk — never a message
+    count or a hash of a summary. Every fake `mlx_vlm` module below carries
+    one at `.PromptCacheState`, matching the real package's own root export
+    (`mlx_vlm/__init__.py`), so `generate`'s `from mlx_vlm import
+    PromptCacheState` succeeds exactly as it does against the real package —
+    most tests never touch its behaviour (a text-only turn just gets one
+    handed to `stream_generate` and ignores it); the reuse/discard/release
+    tests further down are what actually exercise the walk."""
+
+    def __init__(self):
+        self.cache = None
+        self.token_ids = None
+
+    def find_prefix_length(self, new_ids):
+        if self.token_ids is None:
+            return 0
+        max_len = min(len(self.token_ids), len(new_ids))
+        for i in range(max_len):
+            if self.token_ids[i] != new_ids[i]:
+                return i
+        return max_len
+
+    def update(self, token_ids, kv_cache):
+        self.token_ids = list(token_ids)
+        self.cache = kv_cache
+
+
 def _fake_mlx_vlm(monkeypatch, responses=()):
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.load = lambda path, lazy=False: (_FakeVlmModel(), _ProcessorWrappingATokenizer())
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    mlx_vlm.PromptCacheState = _FakePromptCacheState
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
     utils = types.ModuleType("mlx_vlm.utils")
@@ -428,6 +459,7 @@ def _fake_mlx_vlm_with_config(monkeypatch, config=None, responses=()):
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.load = lambda path, lazy=False: (_FakeVlmModel(), _ProcessorWrappingATokenizer())
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    mlx_vlm.PromptCacheState = _FakePromptCacheState
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
     utils = types.ModuleType("mlx_vlm.utils")
@@ -767,6 +799,163 @@ def test_input_tokens_is_none_on_the_image_path_rather_than_an_undercount(
     done = frames[-1]
     assert done["ok"] is True
     assert done["input_tokens"] is None
+
+
+# -- prompt-cache reuse: one KV cache carried across text-only turns ---------
+# `stream_generate` itself owns the prefix match and the trim/cold-prefill
+# decision (mlx-vlm 0.6.15, `mlx_vlm/generate/dispatch.py`) — this worker's
+# only job is to hand it ONE `PromptCacheState` per loaded model, reused by
+# IDENTITY across calls, dropped on `release()`, and never handed in at all
+# on a turn that carries an image (see `generate`'s own comment at the
+# `stream_generate` call for why). `_FakePromptCacheState` (defined above,
+# next to `_fake_mlx_vlm`, since every fake `mlx_vlm` module carries one) is
+# that real class's own `find_prefix_length`/`update`, copied verbatim from
+# `mlx_vlm/generate/common.py`, so these tests exercise the real prefix-match
+# semantics rather than inventing a laxer stand-in.
+
+
+def _fake_mlx_vlm_with_cache(monkeypatch, config=None):
+    """`_fake_mlx_vlm_with_config`, plus a `stream_generate` that actually
+    consults a handed-in `prompt_cache_state` the same way `dispatch.py`
+    does: find the shared prefix (by character here — a stand-in
+    tokenisation, exact-match is all these tests are about), report how much
+    of it was reused in the response text, and update the state for the next
+    call. Every call's kwargs are recorded in `calls` so a test can check
+    whether `prompt_cache_state` was offered at all.
+    """
+    calls = _fake_mlx_vlm_with_config(monkeypatch, config=config)
+
+    mlx_vlm = sys.modules["mlx_vlm"]
+    mlx_vlm.PromptCacheState = _FakePromptCacheState
+    stream_calls = []
+
+    def _stream_generate(model, processor, text, image=None, max_tokens=None,
+                          sampler=None, **kwargs):
+        stream_calls.append(kwargs)
+        state = kwargs.get("prompt_cache_state")
+        new_ids = list(text)
+        reused = 0
+        if state is not None and state.cache is not None:
+            reused = state.find_prefix_length(new_ids)
+
+        class _Response:
+            pass
+
+        response = _Response()
+        response.text = f"reused={reused}"
+        if state is not None:
+            state.update(new_ids, ["FAKE-KV-CACHE"])
+        yield response
+
+    mlx_vlm.stream_generate = _stream_generate
+    return calls, stream_calls
+
+
+def _text_only_body(*contents):
+    return {"messages": [{"role": "user" if i % 2 == 0 else "assistant",
+                          "content": c} for i, c in enumerate(contents)]}
+
+
+def test_a_cache_is_reused_when_the_new_prompt_strictly_extends_the_previous_one(
+        worker, monkeypatch):
+    """The whole point: a second turn that only APPENDS to the first turn's
+    conversation must reuse that first turn's KV cache rather than reprocess
+    it — proven here by the SAME `PromptCacheState` object being handed to
+    `stream_generate` both times, so its own real prefix walk finds one."""
+    _fake_mlx_vlm_with_cache(monkeypatch)
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(_text_only_body("hi"), frames.append)
+    assert frames[-2]["text"] == "reused=0", "nothing to reuse on the very first turn"
+
+    frames = []
+    worker.generate(_text_only_body("hi", "there", "more"), frames.append)
+    assert frames[-2]["text"] != "reused=0", (
+        "the second turn's prompt extends the first turn's — its shared "
+        "prefix must have been found and reused")
+
+
+def test_a_cache_is_discarded_and_the_full_prompt_reprocessed_when_the_prefix_diverges(
+        worker, monkeypatch):
+    """The important one. A diverging prefix — an edit, a regenerate, a
+    branch, anything that changes an earlier token — must NOT reuse the old
+    KV cache past the point of divergence: doing so would condition the
+    answer on the WRONG conversation, silently. The real `PromptCacheState`'s
+    exact literal walk is what makes this safe: it returns 0 the moment
+    position 0 itself disagrees, which is exactly what a full history rewrite
+    does here."""
+    _fake_mlx_vlm_with_cache(monkeypatch)
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(_text_only_body("hi"), frames.append)
+    assert frames[-2]["text"] == "reused=0"
+
+    # A second turn whose history does NOT extend the first — the user
+    # edited/regenerated the very first message rather than continuing it.
+    frames = []
+    worker.generate(_text_only_body("bye", "there"), frames.append)
+    assert frames[-2]["text"] == "reused=0", (
+        "a diverging prefix must fall back to a full reprocess, never reuse "
+        "a cache built for a different conversation")
+
+
+def test_the_image_path_never_receives_a_prompt_cache_state(worker, monkeypatch, tmp_path):
+    """Excluded deliberately (see `generate`'s own comment): mlx-vlm's own
+    image-safety guard for cache reuse is keyed on config attribute names
+    this file already knows are not standardised across its model zoo
+    (`vision_config` alone, with none of the four token-id keys, would make
+    that guard a silent no-op) — so this worker never offers a cache on a
+    turn that attaches an image, the same refuse-rather-than-guess discipline
+    `prompt_tokens = None if images` already applies just above it."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+
+    _calls, stream_calls = _fake_mlx_vlm_with_cache(
+        monkeypatch, config={"model_type": "qwen3_5", "image_token_id": 151655})
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5", "image_token_id": 151655})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [str(photo)]},
+        frames.append)
+
+    assert frames[-1]["ok"] is True
+    assert len(stream_calls) == 1
+    assert "prompt_cache_state" not in stream_calls[0], (
+        "an image-bearing turn must never be offered a prompt cache to reuse "
+        "or update")
+
+
+def test_release_drops_the_retained_cache_so_the_next_turn_cold_starts(worker, monkeypatch):
+    """`release()` is this worker's only chance to hand retained memory back
+    between chat bursts (`worker_base`'s idle window) — a KV cache left alive
+    across it would leak unified memory for every resident-but-idle chat.
+    Proven here the same way reuse is proven above: after `release()`, even a
+    prompt that WOULD extend the previous one finds nothing to reuse, because
+    the state itself is gone and a fresh one was created."""
+    _fake_mlx_vlm_with_cache(monkeypatch)
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(_text_only_body("hi"), frames.append)
+    frames = []
+    worker.generate(_text_only_body("hi", "there", "more"), frames.append)
+    assert frames[-2]["text"] != "reused=0", "sanity: reuse works before release"
+
+    worker.release()
+    assert "prompt_cache_state" not in worker._loaded
+
+    frames = []
+    worker.generate(_text_only_body("hi", "there", "more"), frames.append)
+    assert frames[-2]["text"] == "reused=0", (
+        "release() must drop the cache — the very next turn has nothing to "
+        "reuse even though its prompt would have extended the pre-release one")
 
 
 def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):

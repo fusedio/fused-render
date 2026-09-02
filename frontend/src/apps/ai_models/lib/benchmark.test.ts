@@ -115,8 +115,8 @@ describe("primaryMetric", () => {
       higherIsBetter: true,
     });
     expect(primaryMetric("text-to-image")).toMatchObject({
-      key: "secondsPerStep",
-      unit: "s/step",
+      key: "totalSeconds",
+      unit: "s",
       // The one capability where LOWER wins, which is exactly why the flag
       // exists rather than "bigger is greener" being assumed everywhere.
       higherIsBetter: false,
@@ -209,10 +209,10 @@ describe("latestByModel", () => {
     expect(rows[1]!.delta).toBeNull(); // b has only ever run once
   });
 
-  it("counts a smaller seconds-per-step as better", () => {
+  it("counts a smaller total render time as better", () => {
     const rows = latestByModel([
-      run({ capability: "text-to-image", startedAt: 1, metrics: { secondsPerStep: 4 } }),
-      run({ capability: "text-to-image", startedAt: 2, metrics: { secondsPerStep: 3 } }),
+      run({ capability: "text-to-image", startedAt: 1, metrics: { totalSeconds: 4 } }),
+      run({ capability: "text-to-image", startedAt: 2, metrics: { totalSeconds: 3 } }),
     ]);
     expect(rows[0]!.delta!.percent).toBeCloseTo(-25);
     expect(rows[0]!.delta!.better).toBe(true);
@@ -725,12 +725,12 @@ describe("leaderboard", () => {
   });
 
   it("gives the SMALLER number the full bar when lower is better", () => {
-    // text-to-image's seconds-per-step: the fastest model has the smallest
+    // text-to-image's total render time: the fastest model has the smallest
     // number, and the bar has to read "longer is better" on every section —
     // including this one, where that means inverting the ratio.
     const latest = latestFor([
-      run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { secondsPerStep: 4 } }),
-      run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { secondsPerStep: 1 } }),
+      run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { totalSeconds: 4 } }),
+      run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { totalSeconds: 1 } }),
     ]);
     const rows = leaderboard(primaryMetric("text-to-image"), [
       { model: "slow", row: latest.get("slow")! },
@@ -807,12 +807,12 @@ describe("comparisonBars", () => {
     // This is the whole point of the fix: a naive value-proportional bar
     // chart reads correctly ONLY if the order already puts the best model
     // first, because bar length here is the RAW value (a real, honest axis),
-    // not an inverted "goodness" fraction. seconds-per-step's winner has the
+    // not an inverted "goodness" fraction. Total render time's winner has the
     // SMALLEST number and therefore the SHORTEST bar — which is exactly
     // "shortest bar wins" for this metric, not a bug.
     const latest = latestFor([
-      run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { secondsPerStep: 4 } }),
-      run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { secondsPerStep: 1 } }),
+      run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { totalSeconds: 4 } }),
+      run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { totalSeconds: 1 } }),
     ]);
     const metric = primaryMetric("text-to-image");
     const ranked = leaderboard(metric, [
@@ -1494,17 +1494,26 @@ describe("workloadNote", () => {
     expect(note).not.toContain("…");
   });
 
-  it("names the size, guidance and seed for image generation, and says steps are per-model", () => {
+  it("names the size, step count, guidance and seed for image generation", () => {
     const note = workloadNote(
       "text-to-image",
-      workload({ prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 }),
+      workload({ prompt: "…", width: 512, height: 512, steps: 4, seed: 0, guidance: 4.0 }),
     );
     expect(note).toContain("512");
+    expect(note).toContain("4 steps");
     expect(note).toContain("guidance");
     expect(note).toContain("seed");
-    // `steps` is deliberately absent from the server's own params — the
-    // note has to say THAT in words, not just quietly omit it.
-    expect(note?.toLowerCase()).toContain("step");
+  });
+
+  it("says each model's own step count for a revision-1 record with no steps param", () => {
+    const note = workloadNote("text-to-image", {
+      name: "image-512-4-steps",
+      revision: 1,
+      params: { prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 },
+    });
+    expect(note).toContain("512");
+    expect(note).toContain("each model's own step count");
+    expect(note).not.toContain("undefined");
   });
 
   it("names the duration, tone and sample rate for speech", () => {

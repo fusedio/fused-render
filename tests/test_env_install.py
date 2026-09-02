@@ -134,19 +134,69 @@ def test_the_key_does_not_move_when_the_dependencies_do(tmp_path):
     assert envinstall.venv_key_for(proj) == before
 
 
-def test_the_venv_lives_in_our_home_dir_never_in_the_project(tmp_path):
-    """MD-7: derived state goes to the home dir, source travels with the file.
+def test_the_venv_lives_in_the_project_by_default(tmp_path):
+    """A writable user folder gets the standard `<project>/.venv` layout --
+    what `uv run`, VS Code, and our own notebook kernel picker already expect.
 
-    An in-folder `.venv` for a core template would be destroyed by the
-    release-time re-stage, costing a full re-download of numpy/pyproj/imagecodecs
-    on every upgrade.
+    `envinstall.venv_dir_for` is a thin pass-through to `projectenv`'s
+    placement rule; the point of this test is that the loader reads that
+    rule rather than any home-dir shape of its own.
     """
     proj = _project(tmp_path)
     venv = envinstall.venv_dir_for(proj)
 
     assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
+
+
+def test_an_in_package_runner_folder_still_uses_the_home_store(tmp_path):
+    """MD-7 survives for exactly the case it was written for: a folder that
+    ships INSIDE the installed `fused_render` package — an AI runner folder,
+    never staged anywhere, always read directly from the package tree — is
+    read-only in every shape the app actually ships (the AppImage squashfs
+    mount, a Windows `Program Files` install), so nothing can be written
+    there at all and its venv has to live under our own home dir instead
+    (D376).
+
+    A STAGED core template is a different folder with a different reason for
+    its placement: it is copied to a writable location
+    (`core_templates.core_templates_dir()`) and takes the ordinary in-tree
+    path like any other writable project —
+    `test_a_staged_core_template_resolves_to_an_in_tree_venv` pins that. This
+    test is deliberately a real runner folder rather than a synthetic staged
+    one, so the two cases cannot be conflated.
+    """
+    import fused_render
+
+    package_dir = os.path.dirname(os.path.abspath(fused_render.__file__))
+    proj = os.path.join(package_dir, "ai", "runners", "faster_whisper")
+
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
     assert venv.startswith(str(tmp_path / "home"))
     assert not venv.startswith(proj + os.sep)
+
+
+def test_a_staged_core_template_resolves_to_an_in_tree_venv(tmp_path, monkeypatch):
+    """A core template staged under `~/.fused-render/.core-templates/<name>`
+    is a writable folder like any other project (D630): it takes the ordinary
+    in-tree path, `<staged>/<name>/.venv`, rather than the home store. A
+    release-time re-stage wiping that `.venv` is an accepted cost — the uv
+    cache lives outside the staged tree, on the same filesystem, so the
+    rebuild is a hardlink relink rather than a re-download (D630) — and is
+    not a reason to route a staged template through the home store the way an
+    in-PACKAGE runner folder has to be
+    (`test_an_in_package_runner_folder_still_uses_the_home_store`).
+    """
+    core_dir = str(tmp_path / "home" / ".core-templates")
+    proj = os.path.join(core_dir, "geotiff")
+    os.makedirs(proj)
+
+    venv = envinstall.venv_dir_for(proj)
+
+    assert venv == projectenv.venv_dir_for(proj)
+    assert venv == os.path.join(proj, ".venv")
 
 
 def test_the_interpreter_handed_to_the_run_is_the_projects_own(tmp_path):
@@ -806,6 +856,665 @@ def test_start_says_whether_THIS_CALL_claimed_the_install(
     assert "claimed" not in (envinstall.progress(first["key"]) or {})
 
 
+# --- Bug B: a permanently-failed install must not be retried on a loop --------
+#
+# Each remount is a fresh JS context with no memory of the last attempt — a
+# preview card cycling through `preview-start.ts`'s 2 live iframes, or just the
+# user navigating — so a client-side "already tried this" set dies with the
+# page. The memory has to be server-side: `start()`'s own progress record,
+# keyed by whether the manifest that produced it has since changed
+# (`projectenv.state_digest`).
+
+
+@requires_fused
+def test_a_permanently_incompatible_install_is_not_retried_on_the_same_manifest(
+    tmp_path, monkeypatch
+):
+    """A prior attempt's `platform_incompatible` verdict (OpenWhisper's
+    `pyobjc-framework-applicationservices` on Linux, in the wild) must make the
+    NEXT `start()` call for the same key, against the same manifest, report the
+    existing terminal record rather than spawn attempt N+1 — this is what stops
+    the toast-every-few-seconds loop a torn-down-and-remounted preview card
+    (or any other repeated `/api/run`) would otherwise drive forever."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `pyobjc-framework-applicationservices` "
+                 "can't be installed because it is marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    def never(*a, **kw):
+        raise AssertionError("a poisoned key must not spawn attempt N+1")
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    rec = envinstall.start(proj)
+    assert rec["key"] == key
+    assert rec["platform_incompatible"] == poisoned["platform_incompatible"]
+    assert rec["done"] is True and rec["error"], (
+        "the caller must see the REAL reason, not a synthetic in-flight state"
+    )
+
+
+@requires_fused
+def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
+    """The poison record's whole point is to be invalidated by the one thing
+    that makes a retry legitimate: the user fixed `pyproject.toml`. A digest
+    that does not match the CURRENT manifest must not gate anything — recorded
+    here as a digest that simply disagrees with `state_digest(proj)` now,
+    standing in for "the poisoned record predates an edit"."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": "stale-digest-from-before-the-edit",
+    }
+    envinstall._write(key, poisoned)
+
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
+    rec = envinstall.start(proj)
+    assert spawned, "an edited manifest must let the next attempt actually run"
+    assert rec["claimed"] is True
+
+
+@requires_fused
+def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`)
+    must always reach a real worker — a user who chose to compile from source
+    must not be told "no" by a record left over from a `--no-build` run that
+    never even tried that."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
+    rec = envinstall.start(proj, allow_build=True)
+    assert spawned, "allow_build=True must bypass the poison record"
+    assert rec["claimed"] is True
+    assert spawned[0][2].get("allow_build") is True
+
+
+# --- a jobs-dock row for every venv install -----------------------------------
+#
+# `start()`'s claiming call spawns a short daemon thread mirroring
+# `progress(key)` into `jobs.upsert(..., server=True)` — the mechanism that
+# keeps a build visible after the page that started it navigates away or
+# closes (a page-driven report cannot survive that; see `_mirror_into_jobs`'s
+# own docstring). Real threads, polled fast (`_JOB_MIRROR_POLL_S` monkeypatched
+# down) rather than mocked away, because the thing actually at stake is that a
+# SEPARATE thread converges on the SAME state `progress()` reports — mocking
+# that boundary would test nothing.
+
+
+@pytest.fixture(autouse=True)
+def _clean_jobs_registry():
+    """The registry is process-global — empty it before and after, the same
+    discipline test_jobs_api.py's `clean_registry` fixture uses, so a mirror
+    thread left running past one test's assertions cannot leave a row for the
+    next test to trip over."""
+    from fused_render import jobs
+
+    jobs.reset()
+    yield
+    jobs.reset()
+
+
+def _job(job_id):
+    from fused_render import jobs
+
+    return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+
+
+def _wait_until(predicate, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError(f"condition never became true within {timeout}s")
+
+
+@requires_fused
+def test_start_mirrors_the_install_into_a_jobs_dock_row(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A row appears under the deterministic `sys:env-install:<key>` id and
+    reaches `done` once the worker's own record does — the dock's view of an
+    install a page-driven report could not have survived watching."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+
+    row = _wait_until(lambda: _job(job_id))
+    assert row["kind"] == "task"
+    assert row["owner"] == jobs.OWNER_SERVER
+    assert row["state"] == jobs.RUNNING
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+    assert row["state"] == "done"
+
+
+@requires_fused
+def test_dismissing_the_dock_row_cancels_the_real_install(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The mirror thread is what turns the dock's ✕ into a real cancel: it
+    reads `cancel_requested` back off its own `upsert` call and turns it into
+    the SAME `envinstall.cancel(key)` the loader's own Cancel button reaches —
+    one cancellation path underneath both surfaces, not two.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    # This test's own pid, so `_pid_alive` reads it as genuinely alive and
+    # `_recorded_progress`'s crash diagnosis (a not-done record whose pid is
+    # NOT alive) never fires and races the assertion below. `_kill` is
+    # stubbed so `cancel()`'s real effect — marking the record — is what gets
+    # exercised, without this test process actually signalling itself.
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    jobs.request_cancel(job_id)
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    prog = envinstall.progress(key)
+    assert prog["error"] == "the install was cancelled", (
+        "the dock's cancel request never reached envinstall.cancel"
+    )
+
+
+@requires_fused
+def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The `--no-build` refusal (`_env_install_worker.py`'s `install`, which
+    sets `needs_build` alongside uv's verbatim `error`) is a QUESTION on the
+    page — `confirmBuildRetry`'s "Install anyway" — not a genuine resolver
+    failure. It must not reach the jobs dock as a sticky red `error` row
+    carrying uv's raw stderr; `jobs.py`'s `WAITING` state exists for exactly
+    this: non-terminal, kept until dismissed, with a short plain-language
+    message naming the package instead of uv's text.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    raw_error = (
+        "RuntimeError: Failed to build the environment: error: Distribution "
+        "`foolib==1.2.3 @ registry+https://pypi.org/simple` can't be "
+        "installed because it is marked as `--no-build` but has no binary "
+        "distribution"
+    )
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": raw_error, "needs_build": "foolib",
+        "pid": os.getpid(), "ts": time.time(),
+    })
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
+    assert row["state"] == jobs.WAITING, row
+    assert row.get("message") == "waiting for your approval to compile foolib", row
+    assert "Distribution" not in (row.get("message") or ""), (
+        "uv's raw stderr must never reach the jobs-dock message"
+    )
+
+
+@requires_fused
+def test_a_platform_incompatible_refusal_mirrors_as_a_plain_language_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Unlike `needs_build`, `platform_incompatible` (set by
+    `_env_install_worker.py`'s `install` once `_incompatible_platform_name`
+    determines no wheel anywhere targets this machine) is a genuine, terminal
+    failure — there is no retry that could ever satisfy it. It mirrors as an
+    ordinary sticky `error` row, but with a friendly sentence naming the app,
+    the package and the platforms, not uv's raw stderr — that verbatim text
+    stays only in `envinstall.progress(key)["error"]` (SPEC PY-18)."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    raw_error = (
+        "RuntimeError: Failed to build the environment: error: Distribution "
+        "`pyobjc-framework-applicationservices==10.3.1` can't be installed "
+        "because it is marked as `--no-build` but has no binary distribution"
+    )
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": raw_error,
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS",
+            "current_platform": "Linux",
+        },
+        "pid": os.getpid(), "ts": time.time(),
+    })
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "error" and j)
+    assert row["state"] == "error", row
+    app_name = projectenv.display_name(proj)
+    assert row.get("message") == (
+        f"{app_name} needs pyobjc-framework-applicationservices, which only "
+        "runs on macOS. This app can't run on Linux."
+    ), row
+    assert "Distribution" not in (row.get("message") or ""), (
+        "uv's raw stderr must never reach the jobs-dock message"
+    )
+    prog = envinstall.progress(key)
+    assert "Distribution" in prog["error"], "uv's raw stderr must stay verbatim in progress"
+
+
+@requires_fused
+def test_a_needs_build_row_flips_back_to_running_on_the_retry(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`confirmBuildRetry`'s "Install anyway" re-POSTs to `/api/env/install`
+    naming the same project, which re-derives the SAME key and the SAME job
+    id (`sys:env-install:<key>`) — so the retry must genuinely restart the
+    row back to `running`, not leave the earlier "cancelled" row stuck.
+    The first mirror thread already exited (it returns the moment its
+    `progress(key)` reports `done`), so this only holds if `start()`'s claim
+    is takeable again after a finished install and the retry spawns a fresh
+    mirror thread under the identical id — exercised here via two real
+    `start()` calls, not by hand-writing progress records.
+    """
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `foolib==1.2.3 @ registry+https://pypi.org/simple` "
+                 "can't be installed because it is marked as `--no-build` but has no "
+                 "binary distribution",
+        "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
+
+    # "Install anyway" -> the retry POST, same project, allow_build=True.
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key, "the retry must reuse the same key"
+
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.RUNNING and j)
+    assert row["state"] == jobs.RUNNING
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+
+
+@requires_fused
+def test_a_successful_retry_clears_the_needs_build_row_caption(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The `needs_build` branch sets `message` to "waiting for your approval
+    to compile <pkg>" on the cancelled row. The retry's mirror thread reuses
+    the SAME job id, and `jobs.upsert`'s `"message" in body` guard leaves a
+    key that is absent untouched — so a retry that goes on to succeed must
+    clear `message` itself on its opening upsert, or the done row keeps
+    captioning a question that was already answered."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "error: Distribution `foolib==1.2.3 @ registry+https://pypi.org/simple` "
+                 "can't be installed because it is marked as `--no-build` but has no "
+                 "binary distribution",
+        "needs_build": "foolib", "pid": os.getpid(), "ts": time.time(),
+    })
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.WAITING and j)
+    assert row.get("message") == "waiting for your approval to compile foolib", row
+
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key
+
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == jobs.RUNNING and j)
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+    assert not row.get("message"), (
+        "a successful retry's row must not still caption a previous "
+        f"attempt's approval question: {row!r}"
+    )
+
+
+@requires_fused
+def test_a_joining_caller_starts_no_second_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Only the call that CLAIMS the key may open a row for it — a joiner
+    reporting its own copy would race the owner's thread over the same id,
+    each unaware of the other's writes."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    started = []
+    real_thread = threading.Thread
+
+    class _CountingThread(real_thread):
+        def __init__(self, *a, **kw):
+            started.append(1)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(envinstall.threading, "Thread", _CountingThread)
+
+    first = envinstall.start(proj)  # claims — spawns the mirror
+    envinstall.start(proj)  # joins — must not spawn a second one
+
+    assert len(started) == 1, f"expected exactly one mirror thread, saw {len(started)}"
+
+    # Let the one real thread this test did start run to completion rather
+    # than leaving a daemon polling forever behind a `jobs.reset()` for the
+    # rest of the suite to trip over.
+    key = first["key"]
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(f"sys:env-install:{key}")) and j["state"] == "done" and j)
+
+
+@requires_fused
+def test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A mirror thread that dies without writing a terminal state (its own
+    `jobs.upsert` calls are best-effort) can leave the row `running` with
+    `cancel_requested` still set — `upsert`'s state-transition rule only
+    clears it on a transition INTO a terminal state, which a dead thread
+    never reaches. Because the job id is deterministic per venv key, a
+    fresh attempt on that key must not inherit that flag as its own cancel;
+    only a ✕ pressed against ITS OWN row does that."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+    # This test is about a stale `cancel_requested` surviving into a fresh
+    # attempt on the SAME key — not about D214's bootstrap. `venv_key_for`
+    # has to be precomputed here (the stale row is seeded under it before
+    # `start()` runs at all), so the interpreter state is pinned rather than
+    # left to the machine: without this, a machine with no script Python
+    # pinned yet has `start()` claim `PYTHON_BOOTSTRAP_KEY` for its first
+    # round instead, and the precomputed key would name a row `start()`
+    # never touches — two different, both-legitimate keys, not a bug in
+    # either one.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+
+    key = envinstall.venv_key_for(proj)
+    job_id = f"sys:env-install:{key}"
+
+    # A previous attempt's dead mirror, simulated directly: the row exists,
+    # running, with a cancel request nobody ever cleared.
+    jobs.upsert({"id": job_id, "title": "Preparing x", "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True}, server=True)
+    jobs.request_cancel(job_id)
+    assert jobs.list_jobs()[0]["cancel_requested"] is True
+
+    rec = envinstall.start(proj)
+    assert rec["key"] == key
+
+    _wait_until(lambda: (j := _job(job_id)) and j["cancel_requested"] is False and j)
+    # A few more ticks — long enough that a wrongly-honored stale flag would
+    # already have cancelled the fresh install.
+    time.sleep(0.1)
+    prog = envinstall.progress(key)
+    assert prog is not None and prog.get("error") != "the install was cancelled"
+
+    # A FRESH ✕ against this attempt's own row still cancels it for real.
+    jobs.request_cancel(job_id)
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    prog = envinstall.progress(key)
+    assert prog["error"] == "the install was cancelled"
+
+
+@requires_fused
+def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Finding D's race: the retry's takeover (unlink `progress.json`, take
+    over the claim) can land inside the first mirror thread's sleep, so its
+    NEXT tick used to read the fresh claim's synthetic "spawn" record
+    instead of ever observing a terminal one — and kept looping forever
+    beside the new thread. The claim-token check at the top of each tick
+    must retire the superseded thread before it gets that far."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.2)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    # `env-install-jobs-mirror` is a process-global thread name: other tests
+    # in this file leave their own mirror threads alive well past their own
+    # test function returning (they only stop once their job reaches a
+    # terminal state on their own poll schedule). Filtering by name alone
+    # counts those too, so this snapshots the threads that exist BEFORE this
+    # test starts its own and only ever counts the difference — this test's
+    # own threads, not whichever unrelated ones happen to still be running.
+    baseline_idents = {t.ident for t in threading.enumerate()}
+
+    rec = envinstall.start(proj, allow_build=False)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    def alive_mirrors():
+        return [t for t in threading.enumerate()
+                if t.name == "env-install-jobs-mirror" and t.is_alive()
+                and t.ident not in baseline_idents]
+
+    assert len(alive_mirrors()) == 1
+
+    # Both land inside the SAME poll window: the worker's needs_build
+    # refusal, then the user's retry — well before thread A's next tick.
+    envinstall._write(key, {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "no-build refusal", "needs_build": "foolib",
+        "pid": os.getpid(), "ts": time.time(),
+    })
+    retry = envinstall.start(proj, allow_build=True)
+    assert retry["key"] == key
+
+    # Thread A's next tick lands after the retry: it must retire itself
+    # rather than keep looping beside thread B.
+    _wait_until(lambda: len(alive_mirrors()) <= 1, timeout=3.0)
+    time.sleep(0.3)
+    assert len(alive_mirrors()) <= 1, "two mirror threads are both driving this job id"
+
+    row = _job(job_id)
+    assert row["state"] == jobs.RUNNING, row
+
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
+
+
+@requires_fused
+def test_a_vanished_progress_record_and_claim_ends_the_mirror_thread(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`prog = progress(key) or {}` used to make `finished` permanently
+    False once BOTH the record and the claim disappeared — the whole
+    `progress_dir(key)` lives under `home_dir()/cache/_env_install`,
+    reachable by any cache-clearing path — spinning forever and
+    resurrecting a phantom "Preparing X" dock row instead of ending it."""
+    import shutil
+
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+    _wait_until(lambda: _job(job_id))
+
+    shutil.rmtree(envinstall.progress_dir(key), ignore_errors=True)
+
+    row = _wait_until(
+        lambda: (j := _job(job_id)) and j["state"] in jobs.TERMINAL_STATES and j
+    )
+    assert row["state"] == "error"
+    assert "disappeared" in (row.get("message") or "")
+
+
+@requires_fused
+def test_the_bootstrap_rounds_jobs_row_is_titled_for_the_interpreter(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """D214's two rounds (interpreter, then packages) each mirror into their
+    own jobs-dock row under a DIFFERENT id (the key differs — bootstrap vs.
+    venv), so this is not the duplicate-row bug `report_job=False` fixes.
+    But both rounds used to share the exact SAME title
+    (`f"Preparing {display_name}"`), which reads as one row finishing and
+    instantly restarting rather than as two distinct downloads — and round
+    1's title was wrong on its own terms besides: it downloads a Python
+    interpreter, not the project. Round 1 must get an accurate title of its
+    own; round 2 keeps the existing one.
+    """
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    bootstrap = envinstall.start(proj)
+    bootstrap_row = _wait_until(lambda: _job(f"sys:env-install:{bootstrap['key']}"))
+    assert bootstrap_row["title"] != f"Preparing {projectenv.display_name(proj)}", (
+        "the interpreter round must not be titled as if it were preparing the project"
+    )
+    assert "Python" in bootstrap_row["title"], bootstrap_row["title"]
+    envinstall._write(bootstrap["key"], {
+        "stage": "done", "pct": 100, "detail": "downloaded", "done": True,
+        "error": None, "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(f"sys:env-install:{bootstrap['key']}"))
+                and j["state"] == "done" and j)
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+    envinstall.reset_venv_validation_cache()
+    packages = envinstall.start(proj)
+    assert packages["key"] != bootstrap["key"], "the two rounds must report under different ids"
+    packages_row = _wait_until(lambda: _job(f"sys:env-install:{packages['key']}"))
+    assert packages_row["title"] == f"Preparing {projectenv.display_name(proj)}"
+    envinstall._write(packages["key"], {
+        "stage": "done", "pct": 100, "detail": "installed", "done": True,
+        "error": None, "pid": os.getpid(), "ts": time.time(),
+    })
+    _wait_until(lambda: (j := _job(f"sys:env-install:{packages['key']}"))
+                and j["state"] == "done" and j)
+
+
+@requires_fused
+def test_report_job_false_opts_out_of_the_generic_mirror(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`ai/supervisor.py`'s bring-up mirrors an AI model's env build into its
+    OWN jobs-dock row (`job_id_for(model)`, titled with the model) — without
+    an opt-out, `start()`'s unconditional `_mirror_into_jobs` would open a
+    SECOND, generic row (`sys:env-install:<key>`, titled with the project) for
+    the identical `uv sync`, and a user watching a model load for the first
+    time would see two progress rows for one thing happening.
+    `report_job=False` is that opt-out: the install itself proceeds exactly as
+    before, but no generic row ever appears.
+    """
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    proj = _project(tmp_path, deps=["pip"])
+
+    rec = envinstall.start(proj, report_job=False)
+    key = rec["key"]
+    envinstall._write(key, {"stage": "done", "pct": 100, "detail": "installed",
+                            "done": True, "error": None, "pid": os.getpid(),
+                            "ts": time.time()})
+    # No mirror thread was ever started, so there is nothing to wait on — a
+    # short, real sleep is what proves absence here rather than `_wait_until`,
+    # which only proves presence eventually shows up.
+    time.sleep(0.1)
+    assert _job(f"sys:env-install:{key}") is None, (
+        "report_job=False must not open the generic jobs-dock row"
+    )
+
+
 @requires_fused
 def test_the_resolved_script_interpreter_reaches_the_worker(
     tmp_path, monkeypatch, _fresh_script_python
@@ -889,6 +1598,27 @@ def test_editing_the_declaration_makes_a_ready_venv_report_not_installed(
     assert (venv_dir / envinstall.READY_MARKER).exists(), (
         "a stale venv is re-synced, not condemned — `uv sync` reconciles in place"
     )
+
+
+@requires_fused
+def test_renaming_a_project_keeps_its_venv_installed_no_rebuild(tmp_path, monkeypatch):
+    """The in-tree venv travels with the folder, so a rename is not an orphan.
+
+    Under the old home-dir key (the folder's absolute path, hashed), a rename
+    changed the key and abandoned the venv on disk (SPEC PY-16 called that a
+    feature). In-tree, `venv_dir_for` is `<project>/.venv` -- moving the folder
+    moves the venv with it, `os.rename` included -- so the same environment is
+    still there, still marked, and `is_installed` sees it without a rebuild.
+    """
+    proj = _project(tmp_path, name="before", deps=["cowsay"])
+    _marked_venv(proj, runnable=True)
+    assert envinstall.is_installed(proj) is True
+
+    moved = str(tmp_path / "after")
+    os.rename(proj, moved)
+
+    assert envinstall.venv_dir_for(moved) == os.path.join(moved, ".venv")
+    assert envinstall.is_installed(moved) is True
 
 
 @requires_fused
@@ -1629,6 +2359,12 @@ def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatc
 @requires_fused
 def test_a_declared_project_with_no_venv_asks_for_an_install(tmp_path, monkeypatch):
     """The pre-flight answers instead of blocking on a download."""
+    # `_needs_install_dict` (engine.py) keys its answer on `venv_key_for`
+    # only once a script Python is pinned — on a machine without one yet
+    # (D214) it answers `PYTHON_BOOTSTRAP_KEY` instead, by design. Pinned
+    # here because this test is about the ordinary packages case, not the
+    # bootstrap round.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     proj = _project(tmp_path, "needy", deps=["imagecodecs", "pyproj"])
     target = Path(proj) / "needs.py"
     target.write_text("def main():\n    return 1\n")
@@ -1741,8 +2477,11 @@ def test_the_worker_builds_the_venv_and_reports_done(tmp_path, monkeypatch):
     uv resolves it from cache — this test is about the loader, not the network.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
-    envinstall.start(proj)
+    # Not precomputed: a machine with no script Python pinned yet (D214) has
+    # `start()` claim `PYTHON_BOOTSTRAP_KEY` for this call instead of the
+    # venv key, and polling the precomputed key would wait on a progress
+    # file the worker never writes.
+    key = envinstall.start(proj)["key"]
     prog = _wait_done(key, timeout=300)
     assert prog["error"] is None, prog
     assert prog["done"] is True
@@ -1762,8 +2501,9 @@ def test_a_resolver_failure_reaches_the_user_verbatim(tmp_path, monkeypatch):
     # A name PyPI cannot have: no index lookup can succeed, and the failure is
     # the resolver's, which is exactly the class of error being surfaced.
     proj = _project(tmp_path, deps=["fused-render-no-such-distribution-9e3f1c"])
-    key = envinstall.venv_key_for(proj)
-    envinstall.start(proj)
+    # Not precomputed — see test_the_worker_builds_the_venv_and_reports_done
+    # just above.
+    key = envinstall.start(proj)["key"]
     prog = _wait_done(key, timeout=300)
     assert prog["done"] is True
     assert prog["error"], prog
@@ -2074,6 +2814,7 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
 
     assert seen["cmd"] == [
         "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12",
+        "--no-build", "--no-install-project",
     ]
     assert "--frozen" not in seen["cmd"], "no lock yet, so uv must resolve and write one"
     assert seen["cwd"] == proj
@@ -2259,6 +3000,100 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
     assert "--no-default-groups" in seen["cmd"]
 
 
+def _fake_build_run(seen, venv_dir):
+    def _fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    return _fake_run
+
+
+@requires_fused
+def test_no_build_is_the_default(tmp_path, monkeypatch):
+    """A dependency with no matching wheel must fail resolution, not silently
+    run that package's own build backend with no consent asked for it —
+    static detection (projectenv.nonstandard_dependencies_of) has no way to
+    see a missing wheel coming, so the safe default has to be enforced here,
+    at the one place that actually resolves against the index.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_build_default")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert "--no-build" in seen["cmd"]
+
+
+@requires_fused
+def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch):
+    """`--no-build` alone refuses to build the LOCAL PROJECT too, not just its
+    dependencies — a plain `uv init` scaffold declares `[build-system]` with
+    zero dependencies of its own, and fails outright
+    ("Distribution `x==0.1.0 @ editable+.` can't be installed because it is
+    marked as `--no-build` but has no binary distribution") with wording that
+    does not match `_NO_BUILD_HINT` (`_env_install_worker.py`), so no retry is
+    ever offered and the folder is permanently stuck. Verified against real
+    uv 0.12.5.
+
+    `--no-install-project` must ride along with `--no-build` to prevent this.
+    The trade-off (a src-layout project's own package is no longer installed
+    editable into the venv) is documented in `_build`'s docstring and in
+    DECISIONS-install-consent.md.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_build_no_install_project")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert "--no-install-project" in seen["cmd"]
+
+
+@requires_fused
+def test_allow_build_drops_no_build(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (runtime.js, after a no-wheel
+    resolver error) sets `allow_build=True`, and that must be the ONLY way
+    `--no-build` is absent — silence must never be the thing that allows a
+    source build.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_allow_build")
+    seen = {}
+
+    monkeypatch.setattr(worker.subprocess, "Popen",
+                        _fake_popen(_fake_build_run(seen, venv_dir)))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12",
+                  allow_build=True)
+
+    assert "--no-build" not in seen["cmd"]
+    assert "--no-install-project" not in seen["cmd"]
+
+
 @requires_fused
 def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
     """`--frozen` turns a manifest edit into an error instead of reconciling it.
@@ -2366,18 +3201,26 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
 
 @requires_fused
 def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypatch):
-    """D212\'s repair has to be a replacement, not a reconcile.
+    """D212\'s repair has to be a replacement, not a reconcile — for a directory
+    that has no usable interpreter to reconcile in the first place.
 
     The failure it exists for is a venv whose recorded base prefix is gone, which
     `uv sync` would happily leave in place because the packages inside it are
-    already correct. The marker\'s absence is the only signal the directory is not
-    to be trusted.
+    already correct. Here the directory has no `bin/python` at all, so the
+    readiness probe reports a definite False and the marker\'s absence is not
+    the only signal — its own interpreter cannot even start.
     """
     proj = _project(tmp_path, deps=["pip"])
     venv_dir = envinstall.venv_dir_for(proj)
     os.makedirs(venv_dir)
     open(os.path.join(venv_dir, "leftover"), "w").close()
     worker = _worker_module("_env_install_worker_rmtree")
+    # The probe itself is a genuine `subprocess.run` spawn — stubbed here so
+    # the `subprocess.Popen` fake below (built for uv's `sync` invocation,
+    # with no `communicate()`) never has to answer for it too;
+    # `test_venv_runs_reports_false_for_a_missing_interpreter` covers the
+    # real spawn against a directory exactly like this one.
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: False)
 
     def _fake_run(cmd, **kw):
         os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
@@ -2401,6 +3244,137 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
     assert not os.path.exists(os.path.join(venv_dir, "leftover"))
+
+
+@requires_fused
+def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, monkeypatch):
+    """A hand-built venv — `uv venv`, `python -m venv`, a plain `uv sync` run
+    by the developer themselves in their own project folder — has no
+    `_READY_MARKER` (we never wrote one) but a perfectly good interpreter.
+
+    Destroying it on sight, the old behaviour, silently deleted dev-group
+    packages, editable installs and anything `uv pip install`ed by hand, with
+    no prompt and no log line the user could ever see. The readiness probe
+    (`worker._venv_runs`, restated from `envinstall._venv_runs` per D152) is
+    what tells the two cases apart: an interpreter that runs is left in place
+    for `uv sync` to reconcile, which is what makes adopting a hand-built
+    `.venv` real instead of merely advertised in the module docstring.
+
+    The probe itself (a real subprocess spawn) is stubbed here rather than
+    exercised end to end: `_build`'s own `subprocess.Popen` fake below answers
+    for uv's `sync` invocation and has no `communicate()`, which is what a real
+    `subprocess.run` probe needs — `test_venv_runs_reports_a_real_interpreter`
+    covers the genuine spawn instead.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_adopt")
+
+    os.makedirs(venv_dir)
+    hand_built_marker = os.path.join(venv_dir, "pyvenv.cfg")
+    open(hand_built_marker, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: True)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(hand_built_marker), (
+        "an unmarked venv whose own interpreter runs must be left for "
+        "`uv sync` to reconcile, not destroyed"
+    )
+
+
+@requires_fused
+def test_an_unmarked_venv_whose_probe_is_inconclusive_is_left_alone(tmp_path, monkeypatch):
+    """A timeout or a transient `OSError` from the readiness probe is not
+    evidence about the venv — `_venv_runs`\' own three-valued discipline, and
+    the worker must not act on `None` any more than `envinstall._venv_runs`\'
+    caller does.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = envinstall.venv_dir_for(proj)
+    worker = _worker_module("_env_install_worker_inconclusive")
+
+    os.makedirs(venv_dir)
+    survivor = os.path.join(venv_dir, "pyvenv.cfg")
+    open(survivor, "w").close()
+    monkeypatch.setattr(worker, "_venv_runs", lambda d: None)
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert os.path.exists(survivor), (
+        "an inconclusive probe must not be read as a verdict either way"
+    )
+
+
+def test_venv_runs_reports_a_real_interpreter(tmp_path):
+    """`_venv_runs` True, for a genuine `-c ""` spawn against a real python —
+    not a stub script that exits 0, which would also pass a probe that had
+    regressed into `os.path.exists`.
+    """
+    worker = _worker_module("_env_install_worker_probe_true")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    assert worker._venv_runs(venv_dir) is True
+
+
+def test_venv_runs_reports_false_for_a_missing_interpreter(tmp_path):
+    """No `bin/python` at all is definite evidence, not a non-answer — the
+    exact `FileNotFoundError` case a base-prefix-gone venv also produces.
+    """
+    worker = _worker_module("_env_install_worker_probe_false")
+    assert worker._venv_runs(str(tmp_path / "nonexistent-venv")) is False
+
+
+def test_venv_runs_reports_none_on_timeout(tmp_path, monkeypatch):
+    """A timeout is INCONCLUSIVE, not a False — the same three-valued
+    discipline `envinstall._venv_runs` documents, restated here because the
+    caller (`_build`) destroys a directory on a definite False.
+    """
+    worker = _worker_module("_env_install_worker_probe_none")
+    venv_dir = str(tmp_path / "venv")
+    exe = worker._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+
+    def _stall(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0] if a else "python", timeout=5)
+
+    monkeypatch.setattr(worker.subprocess, "run", _stall)
+
+    assert worker._venv_runs(venv_dir) is None
 
 
 @requires_fused
@@ -2916,6 +3890,35 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
 
 
 @requires_fused
+def test_a_bundled_runner_resolves_to_the_home_store_and_still_gets_a_mirror(tmp_path, monkeypatch):
+    """The two mechanisms compose: package identity picks the STORE, writability
+    picks whether the SYNC needs a mirror. A synthetic package layout (the same
+    fake `_PACKAGE_DIR` the sidecar-identity test above uses) is made read-only,
+    which is what the real AppImage squashfs mount and Program Files install both
+    are — `_sync_root` does not know or care about package identity, only
+    writability, so this pins that the two questions still land on the same
+    folder correctly rather than only in isolation.
+    """
+    pkg = tmp_path / ".mount_FusedRaaaaaa" / "fused_render"
+    runner = _project(pkg / "ai" / "runners", name="faster_whisper", deps=["pip"])
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    worker = _worker_module("_env_install_worker_bundled_mirror")
+
+    venv_dir = envinstall.venv_dir_for(runner)
+    assert venv_dir.startswith(str(tmp_path / "home" / "venvs" / ""))
+
+    os.chmod(runner, 0o555)
+    try:
+        if worker._writable_dir(runner):
+            pytest.skip("running as root: a read-only directory is still writable")
+        root = worker._sync_root(runner, venv_dir)
+    finally:
+        os.chmod(runner, 0o755)
+
+    assert root == venv_dir + ".src", "a read-only runner folder must sync through its mirror"
+
+
+@requires_fused
 def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, monkeypatch):
     """The identity only relativises what is genuinely inside the package.
 
@@ -2977,7 +3980,7 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     )
     d = str(tmp_path / "prog")
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "cache"), "", "", ""])
 
     assert seen == [sys.executable], (
         "an empty interpreter slot must mean this worker's own python — the one "
@@ -3067,7 +4070,7 @@ def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "install",
                         lambda *a, **k: order.append("install"))
     worker.main(["k", str(tmp_path / "prog"), str(tmp_path / "proj"),
-                 str(tmp_path / "venv"), str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "venv"), str(tmp_path / "cache"), "", "", ""])
 
     assert order == ["setsid", "install"]
 
@@ -3251,6 +4254,13 @@ def _worker_module(name="_env_install_worker_hb"):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Every call loads its own fresh module object, so patching the network
+    # seam HERE — rather than in each test — is what keeps the whole suite
+    # offline by default: a `needs_build` test that has nothing to do with
+    # platform detection must not spend its run on a real PyPI lookup (or
+    # depend on network being reachable at all). Tests exercising
+    # `_incompatible_platform_name` override this with their own fake.
+    module._fetch_pypi_json = lambda *a, **k: None
     return module
 
 
@@ -3378,6 +4388,320 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     rec = _record(bad_dir)
     assert rec["done"] is True
     assert "no wheels for imagecodecs" in rec["error"]
+    assert rec.get("needs_build") is None, (
+        "a genuine resolver failure (a bad pin, no network, a nonexistent "
+        "package) must never be misread as a --no-build refusal"
+    )
+
+
+def test_needs_build_is_set_for_the_resolution_time_hint(tmp_path, monkeypatch):
+    """The worker, not the client, classifies the `--no-build` refusal: it is
+    the process that actually knows `--no-build` was passed. `_build` raises
+    a plain `RuntimeError` carrying uv's own resolution-time wording — the
+    `hint:` line — and `install`'s except block must add `needs_build` with
+    the BARE package name alongside the verbatim `error` text (SPEC PY-18
+    requires `error` stay untouched).
+    """
+    worker = _worker_module("_env_install_worker_needs_build_hint")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "foolib", rec
+    assert "hint: Wheels are required for `foolib`" in rec["error"], (
+        "error must still carry uv's verbatim text"
+    )
+
+
+def test_needs_build_is_set_for_the_install_time_distribution_wording(tmp_path, monkeypatch):
+    """The SAME refusal, in the shape uv uses once a `uv.lock` already exists
+    (resolution succeeds against the lock, and the refusal happens later, at
+    install time, with no `hint:` line at all). `needs_build` must carry the
+    bare name — no `==version` or ` @ source` attached.
+    """
+    worker = _worker_module("_env_install_worker_needs_build_dist")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple` "
+            "can't be installed because it is marked as `--no-build` but has no "
+            "binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "uwsgi", rec
+    assert "==2.0.31" in rec["error"], "error must still carry uv's verbatim text"
+
+
+def test_allow_build_true_never_sets_needs_build(tmp_path, monkeypatch):
+    """The retry itself (`allow_build=True`) must never loop back into another
+    build-retry prompt — even if `_build` somehow still raised text shaped
+    like the refusal, a run that already got explicit permission to build
+    must not have `needs_build` set for it.
+    """
+    worker = _worker_module("_env_install_worker_needs_build_allowed")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=True)
+    rec = _record(d)
+    assert rec.get("needs_build") is None, rec
+
+
+# --- platform-incompatible --no-build refusals ---------------------------------
+#
+# Dogfooding on Linux found a `--no-build` refusal Task 4/5's retry prompt
+# cannot honestly offer: a macOS-only wheel set (no `sys_platform` marker to
+# have warned about it earlier) that will never compile here no matter how
+# long the user waits. `_incompatible_platform_name` tells this apart from a
+# genuine source-only project by looking the package up on PyPI — these
+# tests inject `_fetch_pypi_json` so every branch is covered without a
+# socket, per the module's own fail-open contract.
+
+def _wheel_url(filename, packagetype="bdist_wheel"):
+    return {"filename": filename, "packagetype": packagetype}
+
+
+def test_incompatible_platform_name_is_none_when_a_wheel_covers_this_platform(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_ok")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", None, fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_names_the_platform_wheels_are_published_for(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_mac_only")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl"),
+    ]}
+    name = worker._incompatible_platform_name(
+        "pyobjc-framework-applicationservices", "10.3.1", fetch=lambda n, v: payload)
+    assert name == "macOS"
+
+
+def test_incompatible_platform_name_joins_more_than_one_platform(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_two")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-py3-none-win_amd64.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name == "macOS and Windows"
+
+
+def test_incompatible_platform_name_is_none_for_a_source_only_project(monkeypatch):
+    """No wheels at all — an sdist-only package — is a LEGITIMATE build, not
+    an incompatibility: the plain compile prompt must still be offered."""
+    worker = _worker_module("_env_install_worker_platform_sdist")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [_wheel_url("foolib-1.0.tar.gz", packagetype="sdist")]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_is_none_when_a_pure_python_wheel_exists(monkeypatch):
+    worker = _worker_module("_env_install_worker_platform_any")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    payload = {"urls": [
+        _wheel_url("foolib-1.0-py3-none-macosx_10_9_x86_64.whl"),
+        _wheel_url("foolib-1.0-py3-none-any.whl"),
+    ]}
+    name = worker._incompatible_platform_name("foolib", "1.0", fetch=lambda n, v: payload)
+    assert name is None
+
+
+def test_incompatible_platform_name_is_none_when_the_lookup_fails(monkeypatch):
+    """The mandatory fail-open path: a timeout, an offline machine, a 404 for
+    a version PyPI never published, or a malformed body must ALL read as
+    "cannot tell" — never as "this platform is unsupported"."""
+    worker = _worker_module("_env_install_worker_platform_unreachable")
+    for fake_fetch in (
+        lambda n, v: None,             # timeout / offline / 404 / non-JSON body
+        lambda n, v: [],               # malformed: not even a dict
+        lambda n, v: {},               # malformed: no "urls" key
+        lambda n, v: {"urls": "nope"}, # malformed: "urls" is not a list
+        lambda n, v: {"urls": [{"packagetype": "bdist_wheel", "filename": 123}]},
+    ):
+        assert worker._incompatible_platform_name("foolib", "1.0", fetch=fake_fetch) is None
+
+
+def test_fetch_pypi_json_fails_open_on_every_network_error(monkeypatch):
+    """`_fetch_pypi_json` itself — the module's one real network seam — must
+    swallow every failure mode rather than let one escape as an exception
+    the caller has to remember to catch."""
+    worker = _worker_module("_env_install_worker_fetch_errors")
+
+    class _Boom:
+        def __init__(self, exc):
+            self._exc = exc
+
+        def __enter__(self):
+            raise self._exc
+
+        def __exit__(self, *a):
+            return False
+
+    for exc in (
+        TimeoutError("timed out"),
+        OSError("network unreachable"),
+        worker.urllib.error.URLError("no route to host"),
+    ):
+        monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *a, **k: _Boom(exc))
+        assert worker._fetch_pypi_json("foolib", None) is None
+
+    # A 200 with a body that isn't valid JSON must also fail open, not raise.
+    class _BadJSON:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"not json"
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *a, **k: _BadJSON())
+    assert worker._fetch_pypi_json("foolib", None) is None
+
+
+def test_needs_build_stays_set_when_the_platform_check_cannot_complete(tmp_path, monkeypatch):
+    """`install()`'s except block: the mandatory fail-open path end to end.
+    When `_incompatible_platform_name` cannot reach a confident answer (the
+    default fake in `_worker_module` always returns None, simulating an
+    unreachable PyPI), `needs_build` must be left set exactly as Task
+    4/5 already tested — the ordinary "Install anyway" prompt, not a
+    fabricated hard error.
+    """
+    worker = _worker_module("_env_install_worker_platform_fails_open")
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "hint: Wheels are required for `foolib` because building from "
+            "source is disabled for all packages (i.e., with `--no-build`)"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["needs_build"] == "foolib", rec
+    assert rec.get("platform_incompatible") is None, rec
+    assert rec.get("manifest_digest") is None, (
+        "an ordinary --no-build refusal (this run's own retry, a flaky "
+        "network) must not be tagged with a digest — only a proven-permanent "
+        "platform_incompatible verdict is"
+    )
+
+
+def test_install_sets_platform_incompatible_and_clears_needs_build(tmp_path, monkeypatch):
+    """The platform-incompatible case, end to end through `install()`: a
+    macOS-only refusal must clear `needs_build` (so `envinstall`/`runtime.js`
+    never offer the futile "Install anyway" retry) and set
+    `platform_incompatible` with the package, the platform wheels ARE
+    published for, and this machine's own platform name — `error` still
+    carries uv's raw text verbatim (SPEC PY-18)."""
+    worker = _worker_module("_env_install_worker_platform_incompatible_e2e")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    worker._CURRENT_PLATFORM_NAME = "Linux"
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `pyobjc-framework-applicationservices==10.3.1 "
+            "@ registry+https://pypi.org/simple` can't be installed because it "
+            "is marked as `--no-build` but has no binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    seen = []
+
+    def _fetch(name, version):
+        seen.append((name, version))
+        return {"urls": [_wheel_url(
+            "pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl")]}
+
+    monkeypatch.setattr(worker, "_fetch_pypi_json", _fetch)
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec.get("needs_build") is None, (
+        "a platform-incompatible refusal must not also read as a compile question"
+    )
+    assert rec["platform_incompatible"] == {
+        "package": "pyobjc-framework-applicationservices",
+        "platform": "macOS",
+        "current_platform": "Linux",
+    }, rec
+    assert "marked as `--no-build`" in rec["error"], "error must still carry uv's verbatim text"
+    # The version uv named in its own refusal text was threaded through to
+    # the PyPI lookup, not dropped in favour of a name-only (latest-release)
+    # query that could answer for the WRONG version.
+    assert seen == [("pyobjc-framework-applicationservices", "10.3.1")]
+
+
+def test_platform_incompatible_record_carries_the_manifest_digest(tmp_path, monkeypatch):
+    """Bug B's poison key: a `platform_incompatible` terminal record must carry
+    the `pyproject.toml` digest it was reached against, so `envinstall.start()`
+    can tell "the same doomed manifest, asked again" from "the user edited it,
+    let this retry run" without re-invoking uv. Set only on THIS branch —
+    `test_needs_build_stays_set_when_the_platform_check_cannot_complete` (above)
+    is the control: an ordinary `--no-build` refusal must carry no digest at all,
+    since that one is meant to retry freely (an "Install anyway" click, a
+    flaky-network resolve)."""
+    worker = _worker_module("_env_install_worker_manifest_digest")
+    worker._CURRENT_PLATFORM_FAMILY = "linux"
+    worker._CURRENT_PLATFORM_NAME = "Linux"
+
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
+        raise RuntimeError(
+            "error: Distribution `pyobjc-framework-applicationservices==10.3.1 "
+            "@ registry+https://pypi.org/simple` can't be installed because it "
+            "is marked as `--no-build` but has no binary distribution"
+        )
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    monkeypatch.setattr(worker, "_fetch_pypi_json", lambda name, version: {"urls": [_wheel_url(
+        "pyobjc_framework_ApplicationServices-10.3.1-py2.py3-none-macosx_10_9_universal2.whl")]})
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    d = str(tmp_path / "prog")
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, proj, str(tmp_path / "venv"),
+                       str(tmp_path / "cache"), allow_build=False)
+    rec = _record(d)
+    assert rec["platform_incompatible"], rec
+    assert rec["manifest_digest"] == worker._state_digest(proj)
+    assert rec["manifest_digest"], "must not be the empty-string 'no pyproject.toml' digest"
 
 
 def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):
@@ -3519,12 +4843,12 @@ def test_the_worker_maps_an_EMPTY_acquire_slot_back_to_no_acquisition(tmp_path, 
         lambda *a, **kw: seen.update(args=a, kwargs=kw),
     )
     worker.main(["k", str(tmp_path), str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", ""])
+                 str(tmp_path / "cache"), "", "", ""])
     assert seen["kwargs"]["acquire_python"] is None
 
     seen.clear()
     worker.main(["k", str(tmp_path), str(tmp_path / "proj"), str(tmp_path / "venv"),
-                 str(tmp_path / "cache"), "", "3.12"])
+                 str(tmp_path / "cache"), "", "3.12", ""])
     assert seen["kwargs"]["acquire_python"] == "3.12"
 
 
@@ -3645,10 +4969,10 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     )
     d = str(tmp_path / "prog")
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                str(tmp_path / "cache"), "", ""])
+                str(tmp_path / "cache"), "", "", ""])
     assert seen == [sys.executable]
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
-                str(tmp_path / "cache"), "/usr/bin/python3", ""])
+                str(tmp_path / "cache"), "/usr/bin/python3", "", ""])
     assert seen == [sys.executable, "/usr/bin/python3"]
 
 
@@ -3751,11 +5075,12 @@ def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
 
     monkeypatch.setattr(envinstall, "_spawn", fake_spawn)
     errors = []
+    results = []
 
     def go(py):
         try:
             barrier.wait(timeout=30)
-            envinstall.start(projectenv.project_env_for(py))
+            results.append(envinstall.start(projectenv.project_env_for(py)))
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
@@ -3772,7 +5097,12 @@ def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
     assert len(spawned) == 1, (
         f"{len(spawned)} workers spawned for one project — the loser must JOIN"
     )
-    assert spawned == [envinstall.venv_key_for(proj)]
+    # Compared against whichever key `start()` itself reports (D214's bootstrap
+    # round claims `PYTHON_BOOTSTRAP_KEY` instead on a machine with no script
+    # Python pinned yet) — not a fresh, independent `venv_key_for(proj)` call,
+    # which would name a different, equally legitimate key on such a machine.
+    assert results, "neither call reported a result"
+    assert spawned == [results[0]["key"]]
 
 
 @requires_fused
@@ -3784,12 +5114,13 @@ def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch
     un-installable with no way back short of deleting a cache directory by hand.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     spawned = []
     monkeypatch.setattr(
         envinstall, "_spawn", lambda k, r, **kw: spawned.append(k) or (2 ** 31 - 1)
     )
-    envinstall.start(proj)
+    # Read off `start()`'s own return, not recomputed independently — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    key = envinstall.start(proj)["key"]
     assert len(spawned) == 1
     assert os.path.exists(os.path.join(envinstall.progress_dir(key), "claim"))
 
@@ -3880,6 +5211,12 @@ def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeyp
     here the key is right and the record simply had not been written yet.
     """
     proj = _project(tmp_path, deps=["pip"])
+    # The claim below has to be taken under the exact key `start()` will try
+    # next, so the interpreter state is pinned rather than left to the
+    # machine — on one with no script Python pinned yet (D214), `start()`
+    # would claim `PYTHON_BOOTSTRAP_KEY` instead, and this test's join
+    # scenario would never trigger at all.
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     key = envinstall.venv_key_for(proj)
     monkeypatch.setattr(
         envinstall, "_spawn", lambda *a: pytest.fail("the loser must not spawn")
@@ -3914,7 +5251,6 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     the interleaving a fast worker produces.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     worker_record = {
         "stage": "error", "pct": 100, "detail": "", "done": True,
         "error": "RuntimeError: Failed to install: no such distribution",
@@ -3930,7 +5266,10 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     monkeypatch.setattr(envinstall, "_spawn", _spawn_then_report)
     record = envinstall.start(proj)
     assert record["error"] == worker_record["error"], record
-    prog = envinstall.progress(key)
+    # Polled under the key `start()` actually reports, not a freshly
+    # recomputed `venv_key_for(proj)` — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    prog = envinstall.progress(record["key"])
     assert prog["error"] == worker_record["error"], (
         "the worker's own outcome must survive the parent's spawn record"
     )
@@ -3948,9 +5287,10 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     perfectly well behind it.
     """
     proj = _project(tmp_path, deps=["pip"])
-    key = envinstall.venv_key_for(proj)
     monkeypatch.setattr(envinstall, "_spawn", lambda k, r, **kw: 2 ** 31 - 1)
-    envinstall.start(proj)
+    # Read off `start()`'s own return, not recomputed independently — see
+    # test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt.
+    key = envinstall.start(proj)["key"]
     assert envinstall.progress(key)["error"], "the first attempt reads as crashed"
 
     # Age the claim so the retry may take it over, exactly as a real retry does.

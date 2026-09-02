@@ -673,7 +673,8 @@ def generate(body):
     # is reporting about THIS request and no other.
     _request.clear()
     _request.update({"job": job, "steps": steps, "step_times": [], "last": started,
-                     "preview": frames, "grid": preview.token_grid(width, height)})
+                     "preview": frames,
+                     "grid": preview.token_grid(_loaded.get("vae"), width, height)})
     # Step 0 is the one tick with no frame behind it, and that is not the
     # ordering rule the reporter documents: a frame needs two latents, so
     # nothing exists to write until the second step.

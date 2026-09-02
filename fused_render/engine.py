@@ -1111,6 +1111,11 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
     # loader row and the error message could promise a package (a
     # `sys_platform == 'darwin'` entry on Linux) that the install would skip.
     requirements = projectenv.applicable_dependencies_of(project_dir)
+    # The subset the install-consent prompt is allowed to name — everything
+    # else in `requirements` is an ordinary PyPI dependency the prompt stays
+    # silent about. Computed here rather than by the client so the pre-flight
+    # and the confirm dialog can never disagree about what counts.
+    nonstandard = projectenv.nonstandard_dependencies_of(project_dir)
     name = projectenv.display_name(project_dir)
 
     # Two rounds are possible (D214): with no pinned Python on this machine the
@@ -1154,6 +1159,11 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
             # it is not downloading yet. Absent (not false) on the ordinary path, so
             # a client that ignores it is unaffected.
             **({"python": envinstall.SCRIPT_PYTHON_VERSION} if needs_python else {}),
+            # The one thing the install-consent prompt is allowed to name. Absent
+            # (not `[]`) for the ordinary all-PyPI case, matching `python` above —
+            # `runtime.js` treats a missing key and an empty list the same, but an
+            # absent key is the honest shape for "nothing to say here".
+            **({"nonstandard": nonstandard} if nonstandard else {}),
         },
         "error": {
             "type": "EnvNotInstalled",

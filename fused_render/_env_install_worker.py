@@ -55,11 +55,16 @@ cannot be written to, in a manifest-only mirror of it beside the venv — see
 packaged builds). The declaration is the
 folder's `pyproject.toml`; `uv sync` is the command that turns one into an
 environment, resolves it, and writes the `uv.lock` the user commits. It is
-pointed at a venv OUTSIDE the folder through `UV_PROJECT_ENVIRONMENT` (see
-`projectenv` for why derived state never lands in the user's tree) and at a
-cache on the same filesystem through `UV_CACHE_DIR`, which is what lets uv
-hardlink wheels instead of silently copying them. `UV_LINK_MODE` is deliberately
-left UNSET — uv's default already prefers hardlinks and falls back on its own.
+pointed at `<venv_dir>` through `UV_PROJECT_ENVIRONMENT` rather than trusting
+uv's own default resolution of that path — `<venv_dir>` arrived in argv already
+computed by `projectenv.venv_dir_for`, which puts it INSIDE the folder for one
+this app can write to (`<project_dir>/.venv`, the common case now) and under
+our own home dir for one it cannot (a read-only in-package runner folder, an
+unwritable mount, `FUSED_RENDER_VENV_IN_TREE=0`) — and at a cache on the same
+filesystem through `UV_CACHE_DIR` whenever the caller asked for one, which is
+what lets uv hardlink wheels instead of silently copying them. `UV_LINK_MODE`
+is deliberately left UNSET — uv's default already prefers hardlinks and falls
+back on its own.
 
 **The ready marker and the source sidecar are written HERE, in that order.**
 The sidecar records what the venv was built from and is what makes a later
@@ -88,6 +93,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 try:
     import fcntl  # POSIX only; Windows raises ImportError, handled below.
@@ -201,7 +209,8 @@ def _uv_env(**overrides):
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None,
-           activity=None, bytes_done=None, bytes_total=None):
+           activity=None, bytes_done=None, bytes_total=None, needs_build=None,
+           platform_incompatible=None, manifest_digest=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
     # same file (envinstall._write) and two writers racing on one temp means the
     # first os.replace consumes the second's file, whose replace then fails.
@@ -219,13 +228,41 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
     # `python`/`create`/`done`/`error` stages, and `install` before uv has
     # printed its first `Downloading` line — leaves them `None`, which is
     # indistinguishable from the record this function wrote before they existed.
+    #
+    # `needs_build`: set only on the terminal `error` record of a `--no-build`
+    # refusal (see `_no_build_package`, below) — the bare package name uv
+    # refused to build from source, so `envinstall._mirror_into_jobs` can tell
+    # this apart from a genuine resolver failure, and `runtime.js` can offer
+    # the "Install anyway" retry off this field instead of re-parsing `error`'s
+    # text itself. `error` still carries uv's message verbatim (SPEC PY-18) —
+    # this is an ADDITIONAL field, not a replacement for it.
+    #
+    # `platform_incompatible`: set instead of (never alongside) `needs_build`
+    # when `_incompatible_platform_name` (below) determines the refused
+    # package can never build HERE — a dict of `{"package", "platform",
+    # "current_platform"}`, or None. `error` is still uv's verbatim text
+    # either way; this is what lets `envinstall._mirror_into_jobs` and
+    # `runtime.js` each render their own plain-language sentence instead of
+    # uv's jargon, and skip the "Install anyway" retry entirely for a
+    # platform nothing will ever satisfy.
+    #
+    # `manifest_digest`: set only alongside `platform_incompatible` — the
+    # `pyproject.toml` digest (`_state_digest`, below) this verdict was reached
+    # against. `envinstall.start()` reads it back to decide whether a NEW call
+    # for this key is a legitimate retry (the manifest changed — the user
+    # dropped the offending dependency) or the same permanently-doomed request
+    # arriving again (a preview remount, `preview-start.ts` cycling its 2 live
+    # iframes across many cards, an idle re-poll). None on every other stage
+    # and on an ordinary resolver failure, both of which are retried freely.
     path = os.path.join(progress_dir, "progress.json")
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": pct, "detail": detail, "done": done,
                    "error": error, "pid": os.getpid(), "ts": time.time(),
                    "activity": activity, "bytes_done": bytes_done,
-                   "bytes_total": bytes_total}, f)
+                   "bytes_total": bytes_total, "needs_build": needs_build,
+                   "platform_incompatible": platform_incompatible,
+                   "manifest_digest": manifest_digest}, f)
     os.replace(tmp, path)
 
 
@@ -1131,6 +1168,56 @@ def _venv_python(venv_dir):
     return os.path.join(venv_dir, "bin", "python")
 
 
+#: Budget for `_venv_runs`'s probe, in seconds. Kept in step with
+#: `envinstall._VENV_PROBE_TIMEOUT_S`; restated rather than imported (D152). Cold
+#: start on a slow volume is why this is not tighter — see that constant.
+_VENV_PROBE_TIMEOUT_S = 5
+
+
+def _venv_runs(venv_dir):
+    """Can this venv's own interpreter start at all? One subprocess, no imports.
+
+    Restated from `envinstall._venv_runs` rather than imported — this worker
+    must not import `fused_render` (D152) — with the SAME three-valued answer,
+    for the same reason: the caller here destroys a directory on a False, so a
+    transient failure misread as one would delete a venv that was never broken.
+
+      True  — the probe completed and the interpreter exited 0.
+      False — DEFINITE evidence there is no usable interpreter here: a non-zero
+              exit, or the spawn failed on the executable itself.
+      None  — INCONCLUSIVE (a timeout, another `OSError`, or a child killed by a
+              signal). Not a fact about the venv — the caller must not act on it.
+
+    `-c ""`: the question is "does this interpreter reach the point of executing
+    a program", not "are its requirements importable" — a venv whose base prefix
+    is gone dies before that, which is the property this exists to catch.
+
+    Run with `_uv_env()`'s scrubbed environment (PYTHONHOME/PYTHONPATH/etc.
+    stripped) so a poisoned ambient env cannot make a broken interpreter look
+    fine, the same reasoning `envinstall._venv_runs` gives for borrowing
+    `engine._child_env()` on its side.
+    """
+    exe = _venv_python(venv_dir)
+    try:
+        proc = subprocess.run(
+            [exe, "-c", ""],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=_VENV_PROBE_TIMEOUT_S, env=_uv_env(),
+            close_fds=False,
+        )
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode < 0:
+        # Killed by a signal — no verdict, same as a timeout (D277's other half).
+        return None
+    if proc.returncode != 0:
+        return False
+    return True
+
+
 def _state_digest(project_dir):
     """sha256 of `pyproject.toml` — the declaration this environment was built from.
 
@@ -1380,7 +1467,8 @@ def _sync_root(project_dir, venv_dir):
     return mirror
 
 
-def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None):
+def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
+           allow_build=False):
     """`uv sync` the project into `venv_dir`; returns that venv's interpreter.
 
     `tracker` is a `_UvProgress` that every line of uv's stderr is fed into as
@@ -1390,21 +1478,44 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     caller of `_build` (this module's own tests, mainly) keeps working
     unchanged; nothing reads a tracker nobody handed in.
 
-    An UNMARKED but existing venv directory is removed first. That is the D212
-    repair, and it has to be a removal rather than a reconcile: the failure it
-    exists for is a venv whose recorded base prefix does not exist, which
-    `uv sync` would happily leave in place because the packages inside it are
-    already correct. The marker's absence is the only signal that the directory
-    is not to be trusted, and `envinstall.is_installed` is what unlinks it.
+    An UNMARKED existing venv directory is PROBED, not removed on sight: the
+    D212 failure this guards is a venv whose recorded base prefix no longer
+    exists, which `uv sync` would happily leave in place because the packages
+    inside it are already correct — but a missing marker is no longer taken as
+    proof of that on its own. Since the venv's own location is now the project's
+    `.venv` (`projectenv.venv_dir_for`), a folder with no marker is just as
+    often a venv a developer built by hand — `uv sync`, `uv venv`, a plain
+    `python -m venv` run in their own project — with dev-group packages,
+    editable installs and manually `uv pip install`ed extras that this worker
+    has no business deleting. `_venv_runs` (this module's own restatement of
+    `envinstall._venv_runs`, per D152) answers "does the directory's own
+    interpreter start at all": a False destroys it (the D212 case — `uv sync`
+    below then rebuilds it from scratch), a True leaves it in place for `uv
+    sync` to reconcile (the adoption case), and an inconclusive probe leaves it
+    alone too, on the same "do not act on a non-answer" discipline `_venv_runs`
+    documents. `envinstall.is_installed` is what unlinks the marker that puts a
+    venv in this unmarked state to begin with.
 
     Environment, not flags, for the two directories, because uv reads both itself
     and a flag would only cover the invocation we remember to put it on:
 
-      UV_PROJECT_ENVIRONMENT  the venv lives in the home dir, never in the user's
-                              folder (MD-7). Without it uv writes `<project>/.venv`,
-                              which for a core template would be destroyed by the
-                              release-time re-stage and cost a full re-download of
-                              numpy/pyproj/imagecodecs on every upgrade.
+      UV_PROJECT_ENVIRONMENT  `venv_dir` is always stated explicitly rather than
+                              left to uv's own default resolution, even though for
+                              the common in-tree case (`projectenv.venv_dir_for`
+                              already answered `<project_dir>/.venv`) that happens
+                              to be the same path uv would have picked on its own —
+                              worth setting anyway, because the one case this
+                              worker cannot tell apart from here still needs it: a
+                              read-only in-package runner folder cannot hold a
+                              `.venv` at all, so its build has to land in the home
+                              store instead (D376). A staged core template's
+                              folder is writable and takes the in-tree path like
+                              any other project; a release-time re-stage wipes its
+                              `.venv` along with the rest of the staged tree, and
+                              the rebuild is a hardlink relink from the uv cache
+                              (which lives outside the staged tree) rather than a
+                              re-download — an accepted cost, not a reason to
+                              route it through the home store (D630).
       UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
                               only when the caller asked for isolation
                               (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).
@@ -1434,6 +1545,45 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     has to run `uv sync` by hand (doing so would create an in-folder `.venv` and
     diverge from the home-dir store). Without a lock at all uv resolves and
     WRITES one, which is how a folder gains reproducibility by being run once.
+
+    `allow_build=False` (the default) adds `--no-build`, which fails resolution
+    outright rather than letting uv fall back to a source build for a
+    dependency with no matching wheel. Static detection
+    (`projectenv.nonstandard_dependencies_of`) can only read the manifest — it
+    has no way to know a plain `foo>=1.0` happens to publish no wheel for this
+    platform until uv actually tries to resolve it, and a source build runs
+    that package's OWN `build-system` backend with no consent asked for it.
+    `--no-build` turns that into a clean resolver error the client can catch
+    and re-offer as an explicit "install anyway" (`runtime.js`'s retry to
+    `/api/env/install` with `allow_build: true`), rather than a build silently
+    proceeding with no consent asked for it.
+
+    `--no-install-project` rides along with `--no-build`, not on its own: uv's
+    `--no-build` forbids building ANY sdist-only distribution, and the LOCAL
+    PROJECT ITSELF is one such distribution the instant it declares
+    `[build-system]` at all — which a bare `uv init` scaffold does by default
+    (`uv_build`), with zero dependencies of its own. Without
+    `--no-install-project`, `--no-build` therefore fails EVERY such folder
+    outright ("can't be installed because it is marked as `--no-build` but has
+    no binary distribution", naming the project itself, not a dependency), and
+    that failure's wording does not match `NO_BUILD_HINT` in runtime.js, so no
+    "Install anyway" retry is ever offered — the folder is permanently stuck.
+    Verified against real `uv 0.12.5`: a fresh `uv init` folder fails on
+    `uv sync --no-default-groups --no-build` alone, and succeeds with
+    `--no-install-project` added; a folder with a genuinely wheel-less
+    dependency (`uwsgi`) still gets refused, and the refusal still carries the
+    `hint: Wheels are required for ...` line `NO_BUILD_HINT` matches, so the
+    retry path is unaffected.
+
+    The trade-off this accepts: the project's own package is no longer
+    installed editable into the venv, so a SRC-LAYOUT folder whose scripts
+    `import mypkg` (relying on that editable install to put `mypkg` on
+    `sys.path`) would lose that import. Flat-layout script folders — the norm
+    here, and what PY-16 describes — are unaffected: Python already puts a
+    script's own directory on `sys.path`, with no editable install involved at
+    all. A src-layout project that wants its own package importable would need
+    to either declare it as an ordinary dependency (so uv builds *a* wheel for
+    it, not skip the build) or run `uv sync` by hand outside this app.
     """
     uv = shutil.which("uv")
     if uv is None:
@@ -1454,7 +1604,24 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
             "happens in a source checkout.)" % project_dir
         )
     if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
-        shutil.rmtree(venv_dir, ignore_errors=True)
+        verdict = _venv_runs(venv_dir)
+        if verdict is False:
+            print(
+                "install worker: destroying %s — unmarked, and its own "
+                "interpreter will not run" % venv_dir,
+                file=sys.stderr,
+            )
+            shutil.rmtree(venv_dir, ignore_errors=True)
+        elif verdict is True:
+            print(
+                "install worker: adopting %s — unmarked, but its own "
+                "interpreter runs; uv sync will reconcile it" % venv_dir,
+                file=sys.stderr,
+            )
+        # else: inconclusive (a timeout, a signal, a transient OSError) — not
+        # evidence about the venv, so nothing is destroyed and nothing is
+        # logged as a verdict that was never reached; `uv sync` below will
+        # surface any real problem itself.
 
     # `--no-default-groups` because PY-16 makes `[project].dependencies` the whole
     # declaration, and without it uv also installs the default dependency-groups
@@ -1466,6 +1633,13 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     # place. A folder whose dependencies live only in a group installs nothing,
     # which is the same answer PY-16 already gives it.
     cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
+    if not allow_build:
+        # See the docstring above for why these two are never split: `--no-build`
+        # alone refuses to build the LOCAL PROJECT too, bricking any folder with
+        # a `[build-system]` table (every `uv init` scaffold) and zero
+        # dependencies of its own.
+        cmd.append("--no-build")
+        cmd.append("--no-install-project")
 
     # `_uv_env` scrubs PYTHON* and VIRTUAL_ENV: without the first, every
     # dependency uv has to BUILD rather than download as a wheel failed inside
@@ -1559,8 +1733,238 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     return venv_python
 
 
+# The resolver's OWN wording for "this can only be satisfied by building from
+# source", raised by `_build` as a `RuntimeError` when `allow_build=False`
+# (the default) refuses uv permission to do so. Detected HERE, in the worker
+# that actually knows `--no-build` was passed, rather than by the client
+# regexing uv's stderr after the fact (that used to live in runtime.js's
+# `NO_BUILD_HINT` — moved here so there is one detector, not two that can
+# disagree). See `_build`'s own `--no-build` comment for why the flag exists;
+# the two wordings below are transcribed with their reasoning intact.
+#
+# Anchored on the hint line rather than the "Because … has no usable wheels"
+# line above it: the hint is the one sentence uv writes FOR THIS SITUATION
+# SPECIFICALLY (it names `--no-build` itself), where the other line's wording
+# changes shape between "all versions of X" and "X==1.2.3" depending on
+# whether the requirement carries a pin — one pattern to keep in sync with
+# uv's output instead of several.
+#
+# Verified against a real `uv sync --no-build` failure (uv 0.12.5):
+#   hint: Wheels are required for `uwsgi` because building from source is
+#   disabled for all packages (i.e., with `--no-build`)
+_NO_BUILD_HINT = re.compile(
+    r"hint: Wheels are required for `([^`]+)` because building from source is disabled")
+
+# The SAME refusal, in a different shape, when a `uv.lock` already exists.
+# `_NO_BUILD_HINT` matches only the RESOLUTION-time `hint:` line, which uv
+# prints while it is still resolving the dependency graph — but `_sync_root`
+# deliberately preserves `uv.lock` across builds, and a folder gains one just
+# by being run once. Once a lock exists, resolution succeeds against it and
+# the refusal happens later, at INSTALL time, with no hint line at all:
+#
+#   error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+#   can't be installed because it is marked as `--no-build` but has no
+#   binary distribution
+#
+# Verified against real uv 0.12.5 (`uv lock && uv sync --no-default-groups
+# --no-build --no-install-project`). The package name sits before the
+# `==version @ source` — `[^`=]+` stops at the first `=` so a name is never
+# captured with its pin attached. The second group captures everything
+# between `==` and the closing backtick — uv writes `X==1.2.3 @
+# registry+https://…` inside them, so `_no_build_pinned_version` (below)
+# still has to trim the ` @ source` suffix off itself; the hint wording
+# never carries a pin at all, since it fires during resolution, before uv
+# has settled on one version to try.
+_NO_BUILD_DISTRIBUTION = re.compile(
+    r"Distribution `([^`=]+)==([^`]*)` can't be installed because it is marked as `--no-build`")
+
+
+def _no_build_package(message):
+    """The bare package name uv refused to build from source, or None.
+
+    None both when `message` does not match either wording at all (a plain
+    resolver failure — a bad pin, no network, a genuinely nonexistent
+    package — must fall through to the ordinary error path unchanged, not be
+    swallowed into a retry prompt that names nothing) and when the caller
+    already allowed builds (checked by the caller, not here, since this
+    function only knows about text — `allow_build=True` should never even
+    have produced this failure, but a caller must not go looking for it).
+    """
+    if not isinstance(message, str):
+        return None
+    hint = _NO_BUILD_HINT.search(message)
+    if hint:
+        return hint[1]
+    dist = _NO_BUILD_DISTRIBUTION.search(message)
+    return dist[1] if dist else None
+
+
+def _no_build_pinned_version(message):
+    """The exact version uv refused to build, when the refusal came from the
+    install-time `_NO_BUILD_DISTRIBUTION` wording (a `uv.lock` already pins
+    one). None for the resolution-time `hint:` wording, which names no
+    version at all, and None whenever `_no_build_package` itself would —
+    callers only ever call this once that already matched.
+    """
+    if not isinstance(message, str):
+        return None
+    dist = _NO_BUILD_DISTRIBUTION.search(message)
+    if not dist:
+        return None
+    return dist[2].split()[0] if dist[2].split() else None
+
+
+# Dogfooding on Linux surfaced a refusal `_no_build_package` correctly
+# detects but that the "Install anyway" prompt cannot honestly offer:
+# `pyobjc-framework-applicationservices`, a macOS-only wheel set with no
+# `sys_platform` marker in the manifest to have warned about it earlier.
+# Compiling it here needs Objective-C frameworks this machine will never
+# have — the prompt is not a real choice, only a guaranteed multi-minute
+# wait ending in the same failure. uv's own refusal text cannot tell the two
+# cases apart (`_NO_BUILD_HINT`/`_NO_BUILD_DISTRIBUTION` are byte-identical
+# for "no wheels exist" and "wheels exist, but not for this platform"), so
+# this looks the fact up independently, on PyPI.
+#
+# Modelled on `ai/hub_metadata.py`'s `_fetch_raw` rather than
+# `update/common.py`'s manifest fetch: the update path is security-critical
+# and correctly fails CLOSED (raises, refuses to trust an unverifiable
+# manifest) — but a platform-incompatibility check that cannot complete must
+# fail OPEN, to the ordinary compile prompt, exactly like `hub_metadata`
+# already does for its own best-effort catalog enrichment. Same shape here:
+# one broad exception tuple, a short timeout, a byte cap, no exception ever
+# escapes this function.
+_PYPI_TIMEOUT_S = 3.0
+_PYPI_MAX_BYTES = 2 * 1024 * 1024
+_PYPI_PROJECT_URL = "https://pypi.org/pypi/{name}/json"
+_PYPI_RELEASE_URL = "https://pypi.org/pypi/{name}/{version}/json"
+_PYPI_UNREACHABLE = (urllib.error.URLError, OSError, ValueError, TimeoutError)
+
+
+def _fetch_pypi_json(name, version):
+    """The PyPI JSON body for `name`==`version` (`_NO_BUILD_DISTRIBUTION` case),
+    or for the project's latest release when `version` is None
+    (`_NO_BUILD_HINT` gives no version at all) — or None on ANY failure:
+    offline, unreachable, a timeout, a 404 for a version PyPI never
+    published, a non-JSON body, anything. This is the one network seam
+    `_incompatible_platform_name` calls through, and the only one this
+    module has — kept to a single injectable function so tests can cover
+    every branch (wheels-elsewhere-only, no-wheels, timeout, malformed JSON,
+    404) by swapping this one thing, without a socket.
+    """
+    url = (_PYPI_RELEASE_URL.format(name=urllib.parse.quote(name),
+                                     version=urllib.parse.quote(version))
+           if version else _PYPI_PROJECT_URL.format(name=urllib.parse.quote(name)))
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=_PYPI_TIMEOUT_S) as response:
+            raw = response.read(_PYPI_MAX_BYTES + 1)
+        if len(raw) > _PYPI_MAX_BYTES:
+            return None
+        return json.loads(raw)
+    except _PYPI_UNREACHABLE:
+        return None
+
+
+def _wheel_platform_tags(filename):
+    """The platform compatibility tag(s) a `.whl` filename declares (PEP 427:
+    `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`) — a wheel
+    naming multiple compatible platform tags dot-joins them in that last
+    field, e.g. `macosx_10_9_x86_64.macosx_11_0_arm64`, so this returns a
+    set. None when `filename` is not shaped like a wheel at all: no `.whl`
+    suffix, or fewer than the five dash-separated fields PEP 427 always
+    writes (name/version themselves never contain a dash — the spec
+    requires `-` be normalized to `_` in both — so the LAST field is always
+    the platform tag regardless of how many dashes precede it).
+    """
+    if not filename.endswith(".whl"):
+        return None
+    parts = filename[: -len(".whl")].split("-")
+    if len(parts) < 5:
+        return None
+    return set(parts[-1].split("."))
+
+
+# A tag's PLATFORM FAMILY, not its exact tag — `macosx_10_9_universal2` and
+# `macosx_11_0_arm64` are both just "macOS" for this purpose, and treating
+# them as distinct would make two wheels for the same OS look like coverage
+# of two different ones.
+_PLATFORM_TAG_PREFIXES = (
+    ("macosx", "macosx"),
+    ("win", "win"),
+    ("manylinux", "linux"),
+    ("musllinux", "linux"),
+    ("linux", "linux"),
+)
+_PLATFORM_DISPLAY_NAME = {"macosx": "macOS", "win": "Windows", "linux": "Linux"}
+_CURRENT_PLATFORM_FAMILY = {"darwin": "macosx", "win32": "win", "linux": "linux"}.get(sys.platform)
+_CURRENT_PLATFORM_NAME = _PLATFORM_DISPLAY_NAME.get(_CURRENT_PLATFORM_FAMILY, sys.platform)
+
+
+def _platform_tag_family(tag):
+    if tag == "any":
+        return "any"  # a pure-python wheel: runs everywhere, no platform to name
+    for prefix, family in _PLATFORM_TAG_PREFIXES:
+        if tag.startswith(prefix):
+            return family
+    return None  # an unrecognized tag — never trusted to mean "not this platform"
+
+
+def _incompatible_platform_name(name, version, *, fetch=None):
+    """The human platform name (e.g. `"macOS"`) when PyPI publishes wheels
+    for `name`[`==version`] but NONE of them can ever run on this machine —
+    or None, which callers MUST treat as "fall back to the ordinary compile
+    prompt", in every one of these cases:
+
+    - no wheels at all (a source-only project — compiling is legitimate);
+    - a wheel exists that DOES cover this platform, or is pure-python
+      (`any`), or carries a tag this function does not recognize — the last
+      one on purpose: a future platform tag this code has never seen is not
+      evidence the current platform is unsupported, only that this function
+      is not yet current;
+    - the lookup itself could not reach a confident answer at all (`fetch`
+      returned None — see `_fetch_pypi_json`'s own docstring for the full
+      list of ways that happens).
+
+    Deriving the name from the tags actually found, never from a hardcoded
+    package list: this must work for the next macOS-only (or Windows-only,
+    or Linux-only) package nobody has heard of yet, not only the one that
+    was dogfooded.
+
+    `fetch` defaults to `_fetch_pypi_json`; tests inject a fake so every
+    branch is covered without a socket.
+    """
+    fetch = fetch or _fetch_pypi_json
+    payload = fetch(name, version)
+    if not isinstance(payload, dict):
+        return None
+    urls = payload.get("urls")
+    if not isinstance(urls, list) or not urls:
+        return None
+    families = set()
+    for entry in urls:
+        if not isinstance(entry, dict) or entry.get("packagetype") != "bdist_wheel":
+            continue
+        filename = entry.get("filename")
+        if not isinstance(filename, str):
+            continue
+        tags = _wheel_platform_tags(filename)
+        if tags:
+            families.update(_platform_tag_family(tag) for tag in tags)
+    if not families:
+        return None
+    if "any" in families or None in families or _CURRENT_PLATFORM_FAMILY in families:
+        return None
+    names = sorted({_PLATFORM_DISPLAY_NAME.get(family, family) for family in families},
+                   key=str.casefold)
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + ", and " + names[-1]
+
+
 def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
-            python_executable=None, acquire_python=None):
+            python_executable=None, acquire_python=None, allow_build=False):
     os.makedirs(progress_dir, exist_ok=True)
     summary = os.path.basename(os.path.abspath(project_dir)) or project_dir
     # None means "the backend's own interpreter", and this worker was spawned
@@ -1584,12 +1988,15 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
     finished = []
 
     def write(stage, pct, detail="", done=False, error=None,
-              activity=None, bytes_done=None, bytes_total=None):
+              activity=None, bytes_done=None, bytes_total=None, needs_build=None,
+              platform_incompatible=None, manifest_digest=None):
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
             _write(progress_dir, stage, pct, detail, done, error,
-                   activity=activity, bytes_done=bytes_done, bytes_total=bytes_total)
+                   activity=activity, bytes_done=bytes_done, bytes_total=bytes_total,
+                   needs_build=needs_build, platform_incompatible=platform_incompatible,
+                   manifest_digest=manifest_digest)
             # Latched only once the record is actually ON DISK. Latching before the
             # write would make a FAILED terminal write shut the file anyway, and the
             # `except` path's error record — the one carrying the reason — would
@@ -1694,7 +2101,8 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         venv_python = with_heartbeat(
             "install", _INSTALL_PCT,
             f"resolving and installing the dependencies of {summary}",
-            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker),
+            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker,
+                           allow_build=allow_build),
             progress=tracker,
         )
         write("done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
@@ -1704,7 +2112,45 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         # names the real problem (a platform with no wheel, a bad pin, no
         # network). Only the exception class is prefixed, so the page can tell a
         # resolver failure from a disk-quota RuntimeError.
-        write("error", 100, "", done=True, error=f"{type(e).__name__}: {e}")
+        message = f"{type(e).__name__}: {e}"
+        # `allow_build` gates the lookup, not just the field: this run already
+        # asked uv for permission to build from source, so an unrelated
+        # RuntimeError that happens to mention "--no-build" in passing (there
+        # is no such real case today, but the check costs nothing and removes
+        # the possibility) must never be misread as the refusal this run
+        # itself opted out of.
+        needs_build = _no_build_package(str(e)) if not allow_build else None
+        # A `--no-build` refusal splits further: is this platform ever going
+        # to satisfy it, or is compiling a real (if slow, if risky) option?
+        # Checked only once `needs_build` is already set — a plain resolver
+        # failure never reaches this lookup at all — and the lookup itself
+        # can never turn a genuine refusal into something else: it can only
+        # downgrade `needs_build` to `platform_incompatible`, never invent
+        # either from nothing.
+        platform_incompatible = None
+        if needs_build:
+            incompatible = _incompatible_platform_name(
+                needs_build, _no_build_pinned_version(str(e)))
+            if incompatible:
+                platform_incompatible = {
+                    "package": needs_build,
+                    "platform": incompatible,
+                    "current_platform": _CURRENT_PLATFORM_NAME,
+                }
+                # Not a compile QUESTION any more — a platform FACT. Clearing
+                # `needs_build` here (rather than leaving both fields set) is
+                # what keeps this out of `envinstall._mirror_into_jobs`'s
+                # "waiting for your approval" branch and out of runtime.js's
+                # `confirmBuildRetry`: both key off `needs_build` alone, so a
+                # refusal this platform can never satisfy must not carry it.
+                needs_build = None
+        # The digest travels only with a permanent verdict — `envinstall.start()`
+        # is the sole reader, and it only ever looks at this field once
+        # `platform_incompatible` is already set (see its own comment).
+        manifest_digest = _state_digest(project_dir) if platform_incompatible else None
+        write("error", 100, "", done=True, error=message, needs_build=needs_build,
+              platform_incompatible=platform_incompatible,
+              manifest_digest=manifest_digest)
         raise
 
 
@@ -1737,23 +2183,28 @@ def _detach():
 
 def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
-    <python_executable> <acquire_python>`
+    <python_executable> <acquire_python> <allow_build>`
 
-    The empty string means None in ALL THREE optional slots (argv cannot carry
-    it): translated here and nowhere else, so `install` receives the real
+    The empty string means None in the first THREE optional slots (argv cannot
+    carry it): translated here and nowhere else, so `install` receives the real
     values. Read as the literal `""` instead, `uv_cache_dir` would hand `_build`
     a directory named nothing to create and point `UV_CACHE_DIR` at, and the
-    last slot would have this worker try to download a Python version called
-    nothing on every ordinary install.
+    `acquire_python` slot would have this worker try to download a Python
+    version called nothing on every ordinary install.
+
+    `allow_build` is not that idiom — argv already gives every slot a string,
+    so there is no "missing" case to disambiguate — it is just truthy/falsy on
+    the literal text: `"1"` for True, `""` for the (default) False.
     """
     _detach()
-    if len(args) < 7:
+    if len(args) < 8:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
     (key, progress_dir, project_dir, venv_dir, uv_cache_dir,
-     python_executable, acquire_python) = args[:7]
+     python_executable, acquire_python, allow_build) = args[:8]
     install(key, progress_dir, project_dir, venv_dir, uv_cache_dir or None,
-            python_executable or None, acquire_python=acquire_python or None)
+            python_executable or None, acquire_python=acquire_python or None,
+            allow_build=bool(allow_build))
 
 
 if __name__ == "__main__":

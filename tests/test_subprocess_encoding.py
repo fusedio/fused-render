@@ -22,10 +22,9 @@ import os
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Every one of these is shipped/executed source: the main package, its
+# Every one of these is shipped/executed source: the main package and its
 # templates (child processes that can't import fused_render at all, D166,
-# so they pin the kwargs inline rather than sharing a constant), and the
-# core_apps that ship as builtin html+py apps. Dev-only tooling (scripts/,
+# so they pin the kwargs inline rather than sharing a constant). Dev-only tooling (scripts/,
 # prototypes/) is deliberately excluded — it runs from a developer's own
 # terminal, which has a real LANG, not the GUI-launched server this bug
 # needs.
@@ -39,7 +38,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # repo cannot fix. CI has no runner venv, so the failure only ever appeared on
 # developer machines. `test_git_posix_spawn._NOT_OUR_SOURCE` carries the same set
 # for the same reason.
-ROOTS = ["fused_render", "core_apps"]
+ROOTS = ["fused_render"]
 SKIP_DIRS = {".venv", "__pycache__", "node_modules", "vendor", "shell-dist"}
 
 # Documented exceptions, `<relpath>: <reason>`. Keep this EMPTY if you

@@ -6,9 +6,8 @@
 // invites a prompt. The app folder gets created, the session fails, and the
 // TroubleCard explains it well — but the user has already typed a brief and
 // watched a folder appear before learning that the thing the app is built around
-// was never set up. `/api/config` had the right doctrine all along: it publishes
-// `sessions_mount_ready` so a link into a bundled mount renders only when it works,
-// "so it's never a dead link". This is that gate for everything Claude-dependent.
+// was never set up. The doctrine: a surface renders only when it works, "so
+// it's never a dead link". This is that gate for everything Claude-dependent.
 //
 // **It is not a wizard and not a gate.** The file explorer is completely useful
 // without Claude Code, and nothing here blocks it: the strip is a row above the
@@ -24,6 +23,7 @@ import {
   getClaudeHealth,
   getClaudeInstall,
   getClaudeLogin,
+  linkClaudePath,
   refreshClaudeHealth,
   runClaudeDoctor,
   startClaudeInstall,
@@ -144,6 +144,7 @@ function IssueRow({
   onCancelLogin,
   busy,
   actionError,
+  doneNote,
 }: {
   issue: ClaudeIssue;
   install: ClaudeInstallStatus | null;
@@ -153,6 +154,9 @@ function IssueRow({
   onCancelLogin: () => void;
   busy: boolean;
   actionError: string | null;
+  /** A sentence about a fix that already worked — the PATH line landed, and
+      the part the user still has to know is that only NEW terminals see it. */
+  doneNote?: string | null;
 }) {
   // The install record belongs to whichever issue asked for it — a running
   // install is about `missing`, a running update about `outdated` — so a row
@@ -163,7 +167,9 @@ function IssueRow({
   const mine = Boolean(install && issue.action && install.action === issue.action.kind);
   const running = Boolean(mine && install!.state === "running");
   const failed = Boolean(mine && install!.state === "error");
-  const finished = Boolean(mine && install!.state === "done");
+  // `doneNote` is the inline action's way of saying it worked — link-path runs
+  // in a single request and never goes through the install record.
+  const finished = Boolean(mine && install!.state === "done") || Boolean(doneNote);
 
   // The sign-in is tracked in its own record, for the reason it has its own
   // endpoints: it waits on a person rather than running to completion, so a
@@ -233,6 +239,11 @@ function IssueRow({
         />
       )}
       {actionError && <p className="claude-health-error">{actionError}</p>}
+      {doneNote && (
+        <p className="claude-health-progress" role="status">
+          {doneNote}
+        </p>
+      )}
       {doctor && <DoctorReport doctor={doctor} />}
 
       {/* Still a command to copy, even where a button exists: a user on a
@@ -283,6 +294,13 @@ export function ClaudeHealthStrip() {
   // rewording it would throw that away.
   const [actionError, setActionError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
+  // The PATH line landed. Held HERE rather than refreshing the snapshot away,
+  // because the row's last job is a sentence the user still needs: only NEW
+  // terminal windows read the rc file, and closing the strip the instant the
+  // button worked would leave an already-open terminal saying "command not
+  // found" with no explanation on screen. The server's cache is refreshed, so
+  // the next natural re-check (focus, navigation) retires the row.
+  const [linkedNote, setLinkedNote] = useState<string | null>(null);
 
   const load = useCallback((force: boolean) => {
     lastCheck.current = Date.now();
@@ -425,6 +443,25 @@ export function ClaudeHealthStrip() {
         });
         return;
       }
+      if (issue.action.kind === "link-path") {
+        linkClaudePath().then(
+          (res) => {
+            done();
+            setLinkedNote(
+              `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
+                "opened from now on will find `claude` — one that is already " +
+                "open needs a new tab or window.",
+            );
+          },
+          (e) => {
+            done();
+            // The server's own refusal — "this shell's profile isn't one the
+            // app can safely edit", or the write error verbatim.
+            setActionError(String(e?.message || e));
+          },
+        );
+        return;
+      }
       if (issue.action.kind === "login") {
         startClaudeLogin().then(
           (rec) => {
@@ -549,6 +586,7 @@ export function ClaudeHealthStrip() {
             onCancelLogin={cancelLogin}
             busy={acting}
             actionError={issue.action ? actionError : null}
+            doneNote={issue.id === "not-on-path" ? linkedNote : null}
           />
         ))}
       </ul>

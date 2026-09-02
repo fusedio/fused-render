@@ -443,7 +443,7 @@ export function HubResults({
             <HubResultCard
               key={m.id}
               model={m}
-              recommended={curated.has(m.id)}
+              curated={curated.has(m.id)}
               runner={runners.get(m.capability) ?? null}
               disk={resultDisk(m.id, cards)}
               authenticated={authenticated}

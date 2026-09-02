@@ -32,10 +32,11 @@ them.
 
 ---
 
-## Why the raw latent is not the picture
+## Why a model's `estimate` strategy matters
 
-FLUX.2 klein is step-wise **distilled**, and its sigma schedule is nothing like
-a normal flow-matching one. A real 16-step render walked
+A denoising loop's raw latent is not always the picture. FLUX.2 klein is
+step-wise **distilled**, and its sigma schedule is nothing like a normal
+flow-matching one. A real 16-step render walked
 
     1.0, 0.991, 0.98, 0.968, 0.955, 0.939, 0.921, 0.9, 0.875, 0.845,
     0.808, 0.761, 0.7, 0.617, 0.5, 0.318, 0.0
@@ -50,20 +51,35 @@ consecutive latents and extrapolate it to sigma 0.
     v      = (x_next - x_prev) / (s_next - s_prev)
     x1_hat = x_next - s_next * v
 
-Step 1 has no predecessor and so gets no preview. That is correct rather than a
-gap to paper over — a first frame projected from the raw latent is exactly the
-static this approach exists to avoid.
+klein's entry in `PROJECTIONS` therefore carries `"estimate": "extrapolate"`.
+Step 1 has no predecessor and so gets no preview under this strategy — that is
+correct rather than a gap to paper over, because a first frame projected from
+the raw latent is exactly the static extrapolation exists to avoid.
 
-## Why the projection is a fitted constant
+An ordinary, non-distilled sigma schedule does not have that problem: its raw
+latent is legible from early on, which is how every other UI previews a normal
+diffusion model. An entry for a model like that carries `"estimate": "raw"`,
+and the sink projects the latent it is handed directly, with no predecessor
+needed — so step 1 DOES get a frame, unlike an extrapolating entry's gap.
 
-FLUX.1's published 16-channel latent-RGB factors do not apply here. klein's VAE
-is `AutoencoderKLFlux2`: 32 latent channels, a 2x2 patchify (so 128 channels per
-token), 8x spatial, and a normalisation that is a **BatchNorm**
-(`vae.bn.running_mean` / `running_var` + `vae.config.batch_norm_eps`) rather
-than the usual `scaling_factor`/`shift_factor` pair. A denoising callback holds
-`(1, H*W, 128)` row-major packed tokens with a grid side of `image side / 16`.
+## Why the projection is a fitted constant, and why it is per-model
 
-So the map was fitted, once, by `fit_factors.py`: encode the three sample jpgs
+Each entry's `factors`/`bias` pair is a fitted affine map from that model's own
+packed latent-token space to sRGB, and nothing about the map generalises across
+latent spaces: FLUX.1's published 16-channel latent-RGB factors do not apply to
+klein, and klein's 128-wide matrix does not apply to a 4-channel VAE either. The
+channel width a `project()` call uses comes from the entry's own `factors`, not
+from a module constant, which is what lets one code path serve every fitted
+model regardless of its channel count.
+
+klein's VAE is `AutoencoderKLFlux2`: 32 latent channels, a 2x2 patchify (so 128
+channels per token), 8x spatial (so `"stride": 16`), and a normalisation that is
+a **BatchNorm** (`vae.bn.running_mean` / `running_var` +
+`vae.config.batch_norm_eps`) rather than the usual `scaling_factor`/
+`shift_factor` pair. A denoising callback holds `(1, H*W, 128)` row-major
+packed tokens with a grid side of `image side / 16`.
+
+klein's map was fitted, once, by `fit_factors.py`: encode the three sample jpgs
 that ship in the FLUX.2 repo through the torch VAE, patchify and BN-normalise to
 land in **exactly the space the callback sees**, box-downsample each source
 image 16x to one pixel per token, and least-squares a 128->3 affine map between
@@ -71,17 +87,25 @@ them. R² = 0.911 / 0.912 / 0.891 per channel, residual RMS 0.083 in [0,1]. The
 numbers are written down here rather than derived at runtime because deriving
 them needs the VAE weights, which is the one thing a preview must not wait for.
 
-**One matrix serves both engines.** `bn.running_mean` and `bn.running_var` are
-bit-identical (max|diff| = 0.0) between `black-forest-labs/FLUX.2-klein-4B` and
-`mlx-community/FLUX.2-Klein-4B-4bit`, and mflux's `decode_packed_latents`
-applies the same `packed * bn_std + bn_mean` with the same unpatchify
-permutation that diffusers' id-scatter produces for text2image. That is why the
-table below is keyed by the VAE's class name and not by the repo id: the two
-runners reach the same row from opposite directions (`type(pipe.vae).__name__`
-on one side, `formats.MFLUX_VARIANTS[...]["vae"]` on the other), and a model
-whose latent space nobody has fitted gets **no preview at all** — a working
-no-op sink, so a render without an entry behaves exactly as it did before this
-existed. That is what keeps this additive.
+Stable Diffusion 1.5's map was fitted the same way, and the method is the part
+worth copying for a third model: five 512² images through the model's own
+`AutoencoderKL`, scaled by the config's `scaling_factor` (0.18215) so the fit
+lands in the space the callback holds, box-downsampled 8x to one pixel per
+token, least-squares over the 20,480 tokens that gives. R² = 0.885 / 0.923 /
+0.876, residual RMS 0.097. Four channels rather than 128, no patchify — hence
+`"stride": 8` — and an ordinary schedule, hence `"estimate": "raw"`.
+
+**One matrix serves both engines, per entry.** `bn.running_mean` and
+`bn.running_var` are bit-identical (max|diff| = 0.0) between
+`black-forest-labs/FLUX.2-klein-4B` and `mlx-community/FLUX.2-Klein-4B-4bit`,
+and mflux's `decode_packed_latents` applies the same `packed * bn_std + bn_mean`
+with the same unpatchify permutation that diffusers' id-scatter produces for
+text2image. That is why the table below is keyed by the VAE's class name and
+not by the repo id: the two runners reach the same row from opposite directions
+(`type(pipe.vae).__name__` on one side, `formats.MFLUX_VARIANTS[...]["vae"]` on
+the other), and a model whose latent space nobody has fitted gets **no preview
+at all** — a working no-op sink, so a render without an entry behaves exactly as
+it did before this module existed. That is what keeps this additive.
 """
 
 from __future__ import annotations
@@ -103,16 +127,6 @@ SUFFIX = ".preview.png"
 #: blurring a picture of a picture either way.
 MAX_SIDE = 32
 
-#: Pixels per latent token, per axis: FLUX.2's VAE downsamples 8x and its 2x2
-#: patchify folds another 2. So a 1024² render denoises a 64x64 token grid.
-#:
-#: Here rather than beside the projection because both runners need it to say
-#: what shape the packed tokens they hold are, and one of them (`(B, N, C)`)
-#: cannot tell from the array. Strictly it is a fact about klein's autoencoder
-#: like the matrix is, so a second entry in `PROJECTIONS` with a different
-#: packing would have to move it into the table — worth doing then, not now.
-TOKEN_STRIDE = 16
-
 #: Consecutive failed frames before a sink switches itself off.
 #:
 #: A preview never costs a render (see `Sink.add`), so a failure is swallowed —
@@ -125,14 +139,27 @@ TOKEN_STRIDE = 16
 MAX_FAILURES = 3
 
 
-def token_grid(width, height) -> tuple:
-    """The `(h, w)` token grid a render of `width` x `height` denoises in.
+def token_grid(model_key: str | None, width, height) -> tuple:
+    """The `(h, w)` token grid a render of `width` x `height` denoises in,
+    for `model_key`'s entry in `PROJECTIONS`.
 
     Both workers know their pixel size and neither can read the grid off the
     packed `(B, N, C)` tokens, so the division lives here — a runner doing its
-    own `// 16` is a second copy of a fact about the VAE.
+    own `// stride` is a second copy of a fact about the VAE. The stride is
+    `PROJECTIONS[model_key]["stride"]` rather than one constant because it is a
+    fact about that model's autoencoder — klein's 8x VAE plus 2x2 patchify is
+    16, an unpatchified 8x VAE like SD1.5's is 8 — and a second entry with a
+    different packing must not silently reuse the first one's number.
+
+    A `model_key` absent from `PROJECTIONS` returns a grid nobody will ever
+    read: both callers compute this before they know whether their sink is
+    `wanted`, and an unfitted model's no-op sink discards `grid` unopened. `1`
+    keeps the division defined rather than teaching this function to guess at
+    a stride nothing has measured.
     """
-    return (int(height) // TOKEN_STRIDE, int(width) // TOKEN_STRIDE)
+    entry = PROJECTIONS.get(model_key or "")
+    stride = entry["stride"] if entry else 1
+    return (int(height) // stride, int(width) // stride)
 
 
 def preview_path(out: str | None) -> str | None:
@@ -292,14 +319,48 @@ _FLUX2_FACTORS = (
 
 _FLUX2_BIAS = (0.4698728024959564, 0.4328208565711975, 0.4053916037082672)
 
+#: Stable Diffusion 1.5's fitted map: three rows of FOUR, one weight per latent
+#: channel, in the same `rgb = tokens @ factors.T + bias` orientation as klein's
+#: above. Small enough to read, unlike the 128-wide table — and the shape of it
+#: is legible too: every row's last channel is strongly negative and the first
+#: three positive, which is SD's fourth latent channel carrying darkness.
+_SD15_FACTORS = (
+    (0.16860433707048778, 0.08881676484910431, -0.07116862129767207,
+     -0.12419647466837884),
+    (0.12687333013700466, 0.12679084904666216, 0.07522314872905711,
+     -0.1811777339597075),
+    (0.1250038400036917, 0.09710721219961786, 0.10332428963178521,
+     -0.22665953899464153),
+)
 
-#: Model key -> the fitted 128->3 affine map from packed latent tokens to sRGB.
+_SD15_BIAS = (0.4768821440901692, 0.43719649267205124, 0.411639848596421)
+
+
+#: Model key -> everything a preview needs for that model's latent space.
 #:
-#: `rgb = tokens @ factors.T + bias`, then clip to [0, 1]. Keyed by the VAE's
-#: CLASS NAME because that is the thing the two engines can both name (see the
-#: module docstring), and a TABLE rather than a heuristic for the reason
-#: `_GGUF_RECIPES` and `MFLUX_VARIANTS` are: which projection is right for a
-#: latent space is a measurement somebody took, not something to infer.
+#: * `"factors"` / `"bias"` — the fitted `C -> 3` affine map from packed latent
+#:   tokens to sRGB: `rgb = tokens @ factors.T + bias`, then clip to [0, 1].
+#:   `factors` is three rows (R, G, B) of `C` weights each, one per latent
+#:   channel — `C` is read off `len(factors[0])`, never assumed, so a 4-channel
+#:   entry and klein's 128-channel one run through the same `project()`.
+#: * `"stride"` — pixels per latent token, per axis, for `token_grid`: the
+#:   VAE's spatial downsample times its patchify factor (1 when a VAE is not
+#:   patchified).
+#: * `"estimate"` — which of the two strategies below `Sink._add` uses to turn
+#:   what the callback holds into a frame:
+#:     - `"extrapolate"`: recover the velocity between the previous and current
+#:       latent and extrapolate it to sigma 0 (see the module docstring for
+#:       why a distilled schedule needs this). Step 1 has no predecessor and
+#:       gets no frame.
+#:     - `"raw"`: project the current latent as it stands. An ordinary,
+#:       non-distilled sigma schedule is legible from the first step, so this
+#:       strategy needs no predecessor and DOES write a frame on step 1.
+#:
+#: Keyed by the VAE's CLASS NAME because that is the thing the two engines can
+#: both name (see the module docstring), and a TABLE rather than a heuristic
+#: for the reason `_GGUF_RECIPES` and `MFLUX_VARIANTS` are: which projection is
+#: right for a latent space is a measurement somebody took, not something to
+#: infer.
 #:
 #: A model absent from here is not broken — it renders exactly as it did before
 #: this module existed, with no preview file and no branch in its denoising loop.
@@ -308,19 +369,52 @@ PROJECTIONS = {
         # FLUX.2 klein 4B. Fitted by `fit_factors.py` against the torch VAE's
         # own encode of the repo's three sample jpgs; R² 0.911 / 0.912 / 0.891,
         # residual RMS 0.083 in [0,1]; validated end-to-end on a real GGUF
-        # render. See the module docstring for the derivation in full.
+        # render. See the module docstring for the derivation in full. An 8x
+        # VAE with a 2x2 patchify is a stride of 16, and the distilled sigma
+        # schedule is why this is the one entry that extrapolates.
         "factors": _FLUX2_FACTORS,
         "bias": _FLUX2_BIAS,
+        "stride": 16,
+        "estimate": "extrapolate",
+    },
+    "AutoencoderKL": {
+        # Stable Diffusion 1.5, which is `segmind/tiny-sd` here. Fitted the same
+        # way klein's was: encode five images (two renders from this app, three
+        # of the FLUX repo's sample jpgs) at 512² through tiny-sd's own VAE,
+        # scale by the config's `scaling_factor` of 0.18215 so the fit lands in
+        # the space the denoising callback holds, box-downsample each source to
+        # one pixel per latent token, and least-squares a 4->3 affine over the
+        # 20,480 tokens that makes. R² 0.885 / 0.923 / 0.876, residual RMS 0.097
+        # in [0,1] — a hair better than klein's, on 4 channels rather than 128.
+        #
+        # An unpatchified 8x VAE is a stride of 8, and an ordinary SD schedule
+        # is legible from the raw latent, so this entry needs neither klein's
+        # 16 nor its extrapolation.
+        #
+        # **`AutoencoderKL` is diffusers' SHARED class name, so this key is
+        # broader than the fit behind it.** SDXL's VAE is the same class with a
+        # different `scaling_factor` (0.13025) and its own colour statistics, so
+        # an SDXL repo loaded here gets a preview drawn with SD1.5's numbers:
+        # recognisable, and off in hue. That is the trade the class-name key
+        # makes — it is the one string both engines can name — and the fix when
+        # a second 4-channel model is worth serving properly is a key with the
+        # scaling factor in it, not a heuristic here.
+        "factors": _SD15_FACTORS,
+        "bias": _SD15_BIAS,
+        "stride": 8,
+        "estimate": "raw",
     },
 }
 
 
 def project(tokens, model_key: str | None):
-    """`(n, 128)` latent tokens -> `(n, 3)` RGB in [0, 1], or None.
+    """`(n, C)` latent tokens -> `(n, 3)` RGB in [0, 1], or None.
 
-    None when nothing has been fitted for `model_key`, which is the same answer
-    the sink turns into "no preview": the caller is never handed a projection
-    computed with somebody else's matrix.
+    `C` is `model_key`'s own channel count, read off its `factors` row rather
+    than assumed, so this serves every fitted model's channel width through one
+    path. None when nothing has been fitted for `model_key`, which is the same
+    answer the sink turns into "no preview": the caller is never handed a
+    projection computed with somebody else's matrix.
 
     **Clipped**, and not as tidiness. The map is affine and unbounded, and an
     early estimate sits well outside the range it was fitted over, so the raw
@@ -342,8 +436,9 @@ def denoised(previous, current, sigma_previous, sigma_current):
 
     `x1_hat = x_next - s_next * (x_next - x_prev) / (s_next - s_prev)` — the
     velocity between two consecutive latents, extrapolated to sigma 0. This is
-    the whole reason a preview of klein is legible at all; see the module
-    docstring for the sigma schedule that makes the raw latent useless.
+    the arithmetic behind `"estimate": "extrapolate"`, and the whole reason a
+    preview of klein is legible at all; see the module docstring for the sigma
+    schedule that makes its raw latent useless.
 
     None when the two sigmas are equal, which is a division by zero and not a
     frame. Nothing in either scheduler repeats a sigma mid-render, so this is a
@@ -361,14 +456,16 @@ def denoised(previous, current, sigma_previous, sigma_current):
 
 
 def _tokens(latents, grid):
-    """Whatever a callback holds -> `((n, 128) tokens, (h, w))`.
+    """Whatever a callback holds -> `((n, C) tokens, (h, w))`, `C` whatever the
+    model's own latent channel count is.
 
     Both shapes both engines produce, in one place, because a runner reshaping
     its own latents first would be a second copy of the unpack rule:
 
     * `(B, N, C)` — diffusers' packed tokens, and mflux's before its
-      unpatchify. Row-major over the token grid, which is `image side / 16` per
-      axis, so the grid has to be told rather than inferred.
+      unpatchify. Row-major over the token grid, which is `image side /
+      stride` per axis for that model's `PROJECTIONS` entry, so the grid has
+      to be told rather than inferred.
     * `(B, C, h, w)` — already unpatchified, where the grid IS the shape.
 
     A grid that cannot be resolved raises rather than silently guessing a
@@ -484,16 +581,29 @@ class Sink:
             self._failures = 0
 
     def _add(self, latents, sigma, grid) -> None:
-        """`add` without the guard — everything that is allowed to raise."""
+        """`add` without the guard — everything that is allowed to raise.
+
+        Which array gets projected depends on `self.model_key`'s `"estimate"`
+        strategy (see the `PROJECTIONS` docstring): `"raw"` projects the latent
+        this step just produced, `"extrapolate"` recovers `denoised()`'s guess
+        from this latent and the one before it. `self.wanted` being true is
+        what guarantees an entry exists here — `add` never reaches this method
+        otherwise.
+        """
+        entry = PROJECTIONS[self.model_key or ""]
         tokens, grid = _tokens(latents(), grid)
         sigma = float(sigma)
         previous, self._previous = self._previous, (tokens, sigma)
-        if previous is None:
-            # Step 1: a velocity needs two points. No frame, by design.
-            return
-        estimate = denoised(previous[0], tokens, previous[1], sigma)
-        if estimate is None:
-            return
+        if entry["estimate"] == "raw":
+            estimate = tokens
+        else:
+            if previous is None:
+                # Step 1: a velocity needs two points. No frame under
+                # extrapolation, by design.
+                return
+            estimate = denoised(previous[0], tokens, previous[1], sigma)
+            if estimate is None:
+                return
         self._write(project(estimate, self.model_key), grid)
 
     def _write(self, rgb, grid) -> None:

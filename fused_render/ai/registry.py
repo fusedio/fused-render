@@ -65,6 +65,7 @@ from __future__ import annotations
 import glob
 import os
 import platform
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -853,6 +854,20 @@ def _cuda() -> Availability:
     wheel pins, this module cannot read that from a file it does not have, and
     guessing high disables machines that work. The wheel's own error is the
     better reporter of a driver that is genuinely too old.
+
+    **That trade is now made at DEFAULT-SELECTION level too, since the
+    GPU-first policy decision (code review finding).** Before this row could
+    lead its capability, a too-old driver's failure only reached someone who
+    had picked CUDA deliberately from the Engines tab — now `auto` can hand
+    it to an NVIDIA box on a first-run load, behind the multi-gigabyte
+    accelerated download, with no chance to back out first. Still acceptable
+    for the same reason `llamacpp-text`'s own corrupt-wheel comment gives for
+    an analogous risk: the failure is LOUD and at install/load — `uv sync` or
+    `import torch` reports the driver mismatch verbatim — not a wrong answer
+    served quietly later. Adding a floor here to soften that would reintroduce
+    exactly the guessing-disables-working-machines cost the paragraph above
+    already rejects; the download size is the one part of this trade a driver
+    floor could not fix anyway.
     """
     system = platform.system()
     if system == "Linux":
@@ -935,6 +950,19 @@ VULKAN_LOADER_PATHS = (
 #: a container image commonly bind-mounts a driver in, so both are checked
 #: rather than only the share directory a bare-metal install uses.
 VULKAN_ICD_DIRS = ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+#: Manifest-basename markers for a Vulkan ICD that is SOFTWARE, not a GPU —
+#: matched against the filename `_vulkan` finds under `VULKAN_ICD_DIRS`,
+#: exactly the way the loader's own directory search works, not by opening
+#: and parsing the JSON. Mesa's lavapipe (LLVMpipe rasterizing behind a
+#: Vulkan front door) registers as `lvp_icd.<arch>.json` — this is the one
+#: that matters in practice, since `mesa-vulkan-drivers` ships it on stock
+#: Ubuntu/Debian desktops alongside every hardware ICD, so a machine with NO
+#: GPU at all still has a `*.json` in this directory. Google's SwiftShader
+#: (`vk_swiftshader_icd.json`) is the other software implementation anyone
+#: installs on purpose, included for the same reason. Both markers are
+#: substrings of the filenames the projects themselves publish, checked
+#: case-insensitively so a distro repackaging that changes case still matches.
+SOFTWARE_VULKAN_ICD_MARKERS = ("lvp_icd", "swiftshader")
 #: The Windows analogue of `NVCUDA_DLL`: the loader DLL a GPU driver installer
 #: places in `System32`, the same "hint, not proof" the CUDA gate already
 #: documents (installed by the display driver, not proof a device answers it).
@@ -1000,6 +1028,61 @@ def _vulkan() -> Availability:
     backend loading behaves like a plugin system, which it does NOT here: the
     Vulkan backend is linked in, not `dlopen`ed at runtime.
 
+    **A registered ICD is not the same claim as a GPU, and the GPU-first
+    reorder is what makes the difference matter (code review finding).** This
+    function's own earlier revision argued a loose "any `*.json` present"
+    check was fine BECAUSE `auto` could never reach this row — a user picking
+    it explicitly from the Engines tab had already accepted whatever showed
+    up. That argument is gone now that this row LEADS `llamacpp-text` in
+    `_RUNNERS`: Mesa's lavapipe registers `lvp_icd.<arch>.json` under
+    `mesa-vulkan-drivers`, which stock Ubuntu/Debian desktops ship alongside
+    every hardware ICD, so a machine with **no GPU at all** still has a
+    `*.json` here — and `auto` would hand it the 182MB Vulkan wheel for
+    inference on llvmpipe, materially SLOWER than the 22.5MB CPU wheel behind
+    it. So the Linux half of this gate now REFUSES when every ICD manifest
+    found is a known software rasterizer (`SOFTWARE_VULKAN_ICD_MARKERS`,
+    matched against the manifest FILENAME the same way the loader's own
+    directory search works — not by opening and parsing the JSON, which would
+    need trusting a driver-supplied file's schema this module has no reason
+    to depend on). A hardware ICD sitting beside a software one still passes
+    — lavapipe is a fallback Mesa registers unconditionally, so plenty of
+    real GPU machines have both, and refusing there would disqualify a
+    working GPU over an unrelated fallback entry.
+
+    **Windows now gets an adapter check layered on top of the DLL hint, not
+    a replacement for it (code review follow-up).** The loader call is still
+    ruled out for the same reason as before: `vkCreateInstance`/
+    `vkEnumeratePhysicalDevices` genuinely initializes the loader and every
+    registered ICD, which is exactly the kind of call `hw_detect.py`'s own
+    module docstring keeps off any path that runs per page-render/per
+    resolve, and this module's own header ("stdlib only, no subprocess")
+    rules out doing that call in a short-lived subprocess the way a
+    slow/risky probe belongs (`hw_detect.py` draws precisely that line
+    already). An in-process call that could hang or crash the server on a
+    bad ICD is still worse than the check it would replace — that half of
+    the earlier reasoning holds. But it only rules out the LOADER question,
+    and this row's `_directml` neighbour already answered a narrower
+    question — "is there a real display adapter, or only Microsoft's
+    software one?" — without going anywhere near the loader:
+    `_windows_display_adapter_ids` reads the Display class registry key
+    `hw_detect.py`'s own `AdapterRAM` fix already trusts for per-adapter
+    facts, no COM call and no new failure mode. That question is exactly
+    the one worth asking here too, so `_vulkan` now asks it the same way:
+    `vulkan-1.dll` presence is still checked FIRST and is still necessary —
+    a machine with a real GPU but no Vulkan-capable driver installed has no
+    loader at all, and only the DLL check catches that — and on a machine
+    that clears it, every adapter being the Microsoft Basic Render Driver
+    (`_directml`'s own headless/RDP/VM case: vendor `0x1414`, device `0x8c`)
+    now refuses too, for the identical reason `_directml` refuses: a claim
+    of GPU acceleration with no hardware behind it. This does not become
+    proof a device answers `vkCreateInstance` — it only rules out the one
+    case the registry can rule out, a box with no non-software adapter at
+    all, which is as far as a registry read can honestly reach; `_vulkan`
+    still cannot tell an NVIDIA card from an AMD one, or a Vulkan-capable
+    driver from a stale one, the way `_cuda`/`_rocm` can on their own
+    platforms. No real device was exercised against this code either way —
+    no NVIDIA, AMD, or Windows machine was available while writing it.
+
     **Not cached, for `_rocm`'s reasons exactly** — a loader package or a
     driver installed while the app is running is a fix that must be seen
     without a restart.
@@ -1014,16 +1097,32 @@ def _vulkan() -> Availability:
                 "distribution's usual library paths; install "
                 "`vulkan-loader`/`libvulkan1`)",
             )
-        if not any(
-            os.path.isdir(d) and glob.glob(os.path.join(d, "*.json"))
-            for d in VULKAN_ICD_DIRS
-        ):
+        manifests = [
+            path
+            for directory in VULKAN_ICD_DIRS
+            if os.path.isdir(directory)
+            for path in glob.glob(os.path.join(directory, "*.json"))
+        ]
+        if not manifests:
             return Availability(
                 False,
                 "needs a Vulkan GPU driver (the loader is installed but no "
                 "driver ICD is registered under /etc/vulkan/icd.d or "
                 "/usr/share/vulkan/icd.d; install your GPU vendor's Vulkan "
                 "driver, e.g. `mesa-vulkan-drivers`)",
+            )
+        if all(
+            any(marker in os.path.basename(path).lower()
+                for marker in SOFTWARE_VULKAN_ICD_MARKERS)
+            for path in manifests
+        ):
+            return Availability(
+                False,
+                "needs a hardware Vulkan GPU (only a software rasterizer — "
+                "lavapipe/llvmpipe — is registered under /etc/vulkan/icd.d "
+                "or /usr/share/vulkan/icd.d; that runs on the CPU, slower "
+                "than `llama.cpp (CPU)`'s smaller download, so it does not "
+                "count as a usable GPU here)",
             )
         return Availability(True)
     if system == "Windows" and machine == "AMD64":
@@ -1033,6 +1132,19 @@ def _vulkan() -> Availability:
                 f"needs a GPU with its Vulkan driver installed (the loader "
                 f"library is not at {VULKAN_DLL})",
             )
+        adapters = _windows_display_adapter_ids()
+        if adapters and all(
+            vendor == MS_BASIC_RENDER_VENDOR and device == MS_BASIC_RENDER_DEVICE
+            for vendor, device in adapters
+        ):
+            return Availability(
+                False,
+                "needs a real GPU (vulkan-1.dll is present, but the only "
+                "display adapter registered is the Microsoft Basic Render "
+                "Driver — this looks like a headless, RDP, or VM session "
+                "with no Direct3D 12 adapter passthrough, so there is no "
+                "hardware behind the loader)",
+            )
         return Availability(True)
     return Availability(
         False,
@@ -1041,27 +1153,124 @@ def _vulkan() -> Availability:
     )
 
 
+#: Read straight off the Display class registry key (see
+#: `_windows_display_adapter_ids`'s own docstring): a `MatchingDeviceID` of
+#: `SW\{D3D12-VENDOR-ID}&DEV_008C` — Microsoft's software-only WARP-backed
+#: Direct3D 12 adapter, the one every Windows box registers whether or not it
+#: has a real GPU (a headless server, an RDP session, or a VM with no GPU
+#: passthrough shows ONLY this one). `0x1414` is Microsoft's own PCI-SIG
+#: vendor id, reused here for a device that isn't PCI at all — Microsoft's
+#: own convention, not this module's.
+MS_BASIC_RENDER_VENDOR = 0x1414
+MS_BASIC_RENDER_DEVICE = 0x8C
+#: The Display class GUID `hw_detect.py`'s `AdapterRAM`-cap fix already
+#: trusts for the true VRAM figure — the same key names every display
+#: adapter's `MatchingDeviceID` (`PCI\VEN_xxxx&DEV_yyyy&...` for a real GPU,
+#: `SW\{...}&DEV_008C` for the Basic Render Driver), so `_directml` reads it
+#: for the same reason `hw_detect.py` does: nothing this module ships can
+#: safely call into DXGI/D3D12 itself (see `_directml`'s docstring), and the
+#: registry already carries the answer as plain data.
+DISPLAY_CLASS_REGISTRY_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+_PCI_VEN_DEV_RE = re.compile(r"VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})")
+
+
+def _windows_display_adapter_ids() -> list[tuple[int, int]] | None:
+    """Every display adapter's `(vendor_id, device_id)`, read off the Display
+    class registry key — or `None` when it cannot be read at all (any OS but
+    Windows, where `winreg` does not exist; a permissions failure; a registry
+    shape this function does not recognise), which `_directml` treats as
+    "could not determine" rather than "determined and it's software-only".
+
+    **Registry over DXGI, deliberately.** `_directml`'s own docstring already
+    established that enumerating D3D12 adapters directly needs a `ctypes` COM
+    call into `dxgi.dll` (`CreateDXGIFactory1` + `IDXGIFactory1::
+    EnumAdapters1`), and this module's header rule ("stdlib only, no
+    subprocess") does not by itself forbid a `ctypes` DLL call the way it
+    forbids shelling out — but a hand-rolled COM vtable walk is exactly the
+    kind of code this module cannot verify without the hardware to run it on
+    (no NVIDIA/AMD/Windows machine was available while writing this), and a
+    wrong vtable OFFSET crashes the process rather than returning a wrong
+    answer. `hw_detect.py`'s own `Win32_VideoController.AdapterRAM` fix
+    already establishes that this exact registry key is trustworthy for
+    per-adapter facts (there: the true VRAM size past the `uint32` cap; here:
+    the same subkeys' `MatchingDeviceID`), so reading it via stdlib `winreg`
+    answers the same question with no COM call, no new failure mode, and a
+    precedent already trusted elsewhere in this codebase.
+
+    Subkeys are enumerated numerically (`"0000"`, `"0001"`, …); a
+    non-numeric name (`"Properties"`, and other reserved subkeys Windows adds
+    under this class) is skipped rather than treated as a malformed adapter
+    entry.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    ids: list[tuple[int, int]] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             DISPLAY_CLASS_REGISTRY_KEY) as class_key:
+            index = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(class_key, index)
+                except OSError:
+                    break
+                index += 1
+                if not subkey_name.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(class_key, subkey_name) as adapter_key:
+                        matching_id, _ = winreg.QueryValueEx(
+                            adapter_key, "MatchingDeviceID")
+                except OSError:
+                    continue
+                match = _PCI_VEN_DEV_RE.search(matching_id)
+                if match:
+                    ids.append((int(match.group(1), 16), int(match.group(2), 16)))
+    except OSError:
+        return None
+    return ids
+
+
 def _directml() -> Availability:
-    """`onnx-embed-directml`'s platform — Windows on x86_64, and that is all.
+    """`onnx-embed-directml`'s platform — Windows on x86_64 — plus a real
+    Direct3D 12 adapter, since the GPU-first reorder (code review finding).
 
-    **The simplest probe in this section, and that is the right answer rather
-    than an omission.** `_vulkan` beside it is long because a Vulkan wheel
-    supplies neither the loader nor the driver ICD, so `import llama_cpp` HARD
-    FAILS on a machine missing either — there is a real, catastrophic failure to
-    gate against. DirectML has no equivalent: `onnxruntime-directml` links
-    against `DirectML.dll` and `d3d12.dll`, both of which ship with Windows
-    itself from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
+    **Platform half unchanged.** `onnxruntime-directml` links against
+    `DirectML.dll` and `d3d12.dll`, both of which ship with Windows itself
+    from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
     adapter — a discrete NVIDIA or AMD card, Intel Arc, or the integrated GPU
-    every desktop Windows machine has. There is no "no driver installed" state
-    to detect and nothing to `dlopen`-check.
+    every desktop Windows machine has. There is no "no driver installed"
+    state to detect and nothing to `dlopen`-check, so `_vulkan`'s loader/ICD
+    split has no equivalent here.
 
-    **So "plus a present GPU" is not modelled as a second probe.** Enumerating
-    D3D12 adapters needs a `ctypes` call into `dxgi.dll` — a system binary
-    question SPEC.md's rule keeps out of a per-page-render path — and every
-    answer it could give on a machine that reaches this row is "yes". A probe
-    that always answers yes is a probe whose failure mode is entirely its own
-    bugs. The row is also OPT-IN from the Engines tab and sits below the CPU row,
-    so `auto` never reaches it: nobody lands here without choosing to.
+    **The adapter half is new, and its old absence was a documented
+    trade-off that stopped holding.** This function's earlier revision
+    argued no adapter check was needed BECAUSE the row was opt-in from the
+    Engines tab and sat below `onnx-embed`, so `auto` never reached it —
+    "every answer it could give on a machine that reaches this row is yes"
+    was true only because reaching it meant a user had already chosen it
+    with eyes open. The GPU-first reorder made this row the embeddings
+    default on EVERY Windows x86_64 machine `auto` resolves on, including a
+    headless server, an RDP session, or a VM with no GPU passthrough — none
+    of which has anything but the Microsoft Basic Render Driver (`vendor
+    0x1414`, `device 0x8c`, WARP-backed software rasterization), on which
+    `onnxruntime-directml`'s own session creation fails at load. A machine
+    whose only adapter is that one is refused here for the same reason
+    `_vulkan`'s software-ICD check refuses lavapipe-only Linux: a claim of
+    GPU acceleration that the hardware cannot back up.
+
+    **Fails OPEN on anything the registry read cannot settle** — `None`
+    (non-Windows test env, a permissions failure, a registry shape this
+    function does not recognise) or an empty list (enumerated successfully,
+    found nothing) both pass rather than refuse, the same asymmetry `_cuda`'s
+    "no driver-version floor" docstring argues for: refusing a machine that
+    might well work, on a probe that failed to read it correctly, is a worse
+    mistake than the loose check this replaces. Only an EXPLICIT, exclusively
+    software adapter list refuses.
 
     `win_amd64` only, from the distribution's own wheel list (checked against
     `onnxruntime-directml` 1.24.4, which publishes `cp311`-`cp314` for
@@ -1075,43 +1284,67 @@ def _directml() -> Availability:
     """
     system = platform.system()
     machine = platform.machine()
-    if system == "Windows" and machine == "AMD64":
-        return Availability(True)
-    if system == "Windows":
+    if system != "Windows":
+        return Availability(
+            False,
+            f"needs Windows (this is {system.lower()}/{machine})",
+        )
+    if machine != "AMD64":
         return Availability(
             False,
             "needs an x86_64 machine (onnxruntime-directml publishes "
             "win_amd64 only, no win_arm64)",
         )
-    return Availability(
-        False,
-        f"needs Windows (this is {system.lower()}/{machine})",
-    )
+    adapters = _windows_display_adapter_ids()
+    if adapters and all(
+        vendor == MS_BASIC_RENDER_VENDOR and device == MS_BASIC_RENDER_DEVICE
+        for vendor, device in adapters
+    ):
+        return Availability(
+            False,
+            "needs a real GPU (only the Microsoft Basic Render Driver is "
+            "registered — this looks like a headless, RDP, or VM session "
+            "with no Direct3D 12 adapter passthrough)",
+        )
+    return Availability(True)
 
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
-# TWO runners serve one: MLX takes Apple Silicon when available, and the row
-# below it serves Windows and Linux plus the Apple Silicon fallback. All four
-# multi-runner capabilities (text generation, image generation, speech to text,
-# embeddings) are arranged that way. The ordering is the whole mechanism, so the rows are
+# MULTIPLE runners serve one: MLX takes Apple Silicon when available, and the
+# row(s) below it serve Windows and Linux plus the Apple Silicon fallback. The
+# GPU-first policy decision below made this more than a two-row split for
+# three of the four multi-runner capabilities — text generation's non-Apple
+# rows are `llamacpp-text-vulkan` then `llamacpp-text`, image generation's are
+# `diffusers-image-cuda`, `-rocm` then `diffusers-image`, and embeddings' are
+# `onnx-embed-directml`, `-cuda`, `-rocm` then `onnx-embed` — each an
+# accelerated row (or several, ordered by which vendor wins a tie) followed by
+# the CPU/cross-platform fallthrough; speech to text stays MLX-then-CTranslate2,
+# the one capability with no accelerated non-Apple variant. The ordering is
+# the whole mechanism, so the rows are
 # not sorted alphabetically and must not be — it is also the DEFAULT that a
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
 #
-# **A capability's rows are split PER HARDWARE, and the unaccelerated build is
-# the default.** One `diffusers-image` row that installed whichever wheel index
-# a manifest happened to pin made the accelerator an invisible property of the
-# build: a machine got CUDA or it got the CPU and nothing on the page said
-# which, so the name was honest on exactly one class of hardware. There are now
-# three Diffusers rows — CPU, CUDA, ROCm — and two llama.cpp ones; the
-# unaccelerated one sits FIRST in each family and is what every "auto" machine
-# resolves to, and the accelerated ones are opt-in from the Engines tab and
-# gated on the device actually being there (`_cuda`, `_rocm`, `_vulkan`).
-# Unaccelerated-by-default is the conservative half of that decision: the
-# accelerated wheels are much larger downloads with a hardware requirement, and
-# a default that silently required one would fail on the machines least able to
-# explain why. `code` on each family's original row is UNCHANGED, so a stored
-# preference naming `diffusers-image` keeps meaning what it meant.
+# **A capability's rows are split PER HARDWARE, and the accelerated build now
+# LEADS the family.** One `diffusers-image` row that installed whichever wheel
+# index a manifest happened to pin made the accelerator an invisible property
+# of the build: a machine got CUDA or it got the CPU and nothing on the page
+# said which, so the name was honest on exactly one class of hardware. There
+# are now three Diffusers rows — CPU, CUDA, ROCm — and two llama.cpp ones; the
+# accelerated ones sit FIRST in each family, gated on the device actually
+# being there (`_cuda`, `_rocm`, `_vulkan`), and it is what every "auto"
+# machine resolves to WHEN that device is present — the unaccelerated row
+# behind it is the fallthrough for a machine with none, not the default with
+# the accelerator as an opt-in on top of it. That is a reversal of this
+# table's original policy, made deliberately: GPU-backed inference beats
+# CPU-backed inference on every capability that has both, and a user who wants
+# the CPU build back can still ask for it BY CODE from the Engines tab (D302).
+# The cost this reversal accepts, and does not hide: the accelerated wheels
+# are much larger downloads with a hardware requirement, and that download now
+# happens on a machine that never explicitly asked for it — it asked for
+# "auto" and got whichever build the hardware probe says will actually run.
+# `code` on each family's original (unaccelerated) row is UNCHANGED, so a
+# stored preference naming `diffusers-image` keeps meaning what it meant.
 #
 # **A code that is REMOVED is a different matter, and `resolve()` is where it is
 # handled rather than here** (D416): the three `transformers-text*` codes were
@@ -1152,24 +1385,70 @@ _RUNNERS: tuple[Runner, ...] = (
              "including vision weights it doesn't use.",
         _available=_apple_silicon,
     ),
-    # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
-    # local text engine on Windows and Linux, so this row is what a bare "auto"
-    # resolves to there.
+    # The Vulkan variant of `llamacpp-text` below — GPU acceleration on NVIDIA
+    # and AMD under Windows and Linux, where that row's CPU-index pin is
+    # CPU-only (Apple Silicon already gets Metal acceleration through that
+    # same CPU-index wheel, which is why this variant does not also cover
+    # macOS). This row now LEADS `llamacpp-text`, by the policy decision
+    # recorded in the block comment above the table: GPU-backed inference is
+    # preferred over CPU-backed wherever both are possible, so `auto` on a
+    # Windows or Linux machine with a usable Vulkan GPU resolves HERE, and the
+    # CPU row behind it is the fallthrough for a machine `_vulkan` refuses.
     #
-    # **That is a change of role this comment used to argue against, and the
-    # argument is worth keeping rather than deleting.** The row shipped BELOW
-    # three `transformers-text*` rows precisely so `auto` could never reach it:
-    # `llamacpp_text/pyproject.toml` records that the maintainer's wheel index
-    # is a coin-flip per release on macOS arm64 (4 of 16 sampled releases fail
-    # `testzip()`), and a capability whose INSTALL can silently fail is a poor
-    # thing to hand a machine that did not ask for it. D416 removed the rows
-    # that made "never a fallthrough" possible, on a measurement this engine won
-    # outright — 4.2x the throughput of transformers on this GPU tier, 2.4x on
-    # CPU, at a third of the download and a third of the memory — so the choice
-    # was between a default that is much better and occasionally uninstallable,
-    # and keeping an engine that lost on every axis in order to preserve a
-    # safety property. The default moved. What makes that affordable rather than
-    # reckless is that the failure is LOUD and at install time: `uv sync`
+    # **That is a further reversal of a role this comment used to argue
+    # against, and the hazard the old argument raised is an ACCEPTED risk now
+    # rather than a reason to keep this row opt-in.** `_offload_schedule`'s
+    # over-commit backoff is known not to engage on AMD — radv evicts other
+    # clients instead of erroring, which took a desktop session down during
+    # testing (PR #706) — so an over-large model on this row can still cost a
+    # user their session rather than a slow load. That hazard has been shown
+    # to the user directly and the reversal was chosen anyway: GPU-backed
+    # inference wins by default, and a radv over-commit crash is one of the
+    # costs that decision knowingly accepts rather than an argument still
+    # standing against it.
+    Runner(
+        code="llamacpp-text-vulkan",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
+        # Both names equal, for the reason the torch hardware variants' are
+        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
+        # rather than a platform aside, and the short name is what the Local
+        # card and the job row print, so two rows both reading "llama.cpp"
+        # would render as one engine everywhere but the picker.
+        label="llama.cpp (Vulkan)",
+        short_label="llama.cpp (Vulkan)",
+        family_label="llama.cpp",
+        note="Runs GGUF models on NVIDIA and AMD GPUs. Much faster than the "
+             "CPU build; much larger download.",
+        _available=_vulkan,
+        hub_filter_tags=("gguf",),
+    ),
+    # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
+    # unaccelerated local text engine on Windows and Linux. It now sits BELOW
+    # `llamacpp-text-vulkan`: GPU-backed inference is preferred over
+    # CPU-backed by policy decision (see the block comment above the table),
+    # so this is what "auto" resolves to on Windows/Linux only when the
+    # machine has no usable Vulkan GPU — `_vulkan` refuses for a missing
+    # loader, a missing driver ICD, or a platform its wheel does not ship for
+    # (see that function) — and it is what Apple Silicon falls to once
+    # `mlx-text` is unavailable, since the Vulkan wheel does not cover macOS
+    # at all.
+    #
+    # **This row's own history is worth keeping rather than deleting.** It
+    # shipped BELOW three `transformers-text*` rows precisely so `auto` could
+    # never reach it: `llamacpp_text/pyproject.toml` records that the
+    # maintainer's wheel index is a coin-flip per release on macOS arm64 (4 of
+    # 16 sampled releases fail `testzip()`), and a capability whose INSTALL can
+    # silently fail is a poor thing to hand a machine that did not ask for it.
+    # D416 removed the rows that made "never a fallthrough" possible, on a
+    # measurement this engine won outright — 4.2x the throughput of transformers
+    # on this GPU tier, 2.4x on CPU, at a third of the download and a third of
+    # the memory — so the choice was between a default that is much better and
+    # occasionally uninstallable, and keeping an engine that lost on every axis
+    # in order to preserve a safety property. The default moved onto this row
+    # then, and has since moved again onto the Vulkan row above it wherever the
+    # hardware is there. What makes both moves affordable rather than reckless
+    # is that the failure is LOUD and at install time: `uv sync`
     # reports a corrupt wheel verbatim through `envinstall` (PY-18), which is a
     # first-run error with a message, not a wrong answer later. The pinned
     # `0.3.29` Linux and Windows wheels were verified intact; macOS arm64 keeps
@@ -1219,37 +1498,6 @@ _RUNNERS: tuple[Runner, ...] = (
         # `hub_filter_tags`'s own docstring for why this is a runner field.
         hub_filter_tags=("gguf",),
     ),
-    # The Vulkan variant of the row above — GPU acceleration on NVIDIA and AMD
-    # under Windows and Linux, where `llamacpp-text`'s CPU-index pin is
-    # CPU-only (Apple Silicon already gets Metal acceleration through that
-    # same CPU-index wheel, which is why this variant does not also cover
-    # macOS). Immediately BELOW `llamacpp-text`, so reaching this row is always
-    # a CHOICE made on the Engines tab and never something `auto` falls into —
-    # the same relationship the accelerated Diffusers rows have to
-    # `diffusers-image`, and for the same reason (a much larger download with a
-    # hardware requirement). D416 moved the DEFAULT onto `llamacpp-text`; it did
-    # not move it onto this row, and must not: `_offload_schedule`'s over-commit
-    # backoff is known not to engage on AMD (radv evicts other clients instead
-    # of erroring, which took a desktop session down during testing — PR #706),
-    # so an over-large model on this row can cost a user their session rather
-    # than a slow load.
-    Runner(
-        code="llamacpp-text-vulkan",
-        capability=TEXT_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
-        # Both names equal, for the reason the torch hardware variants' are
-        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
-        # rather than a platform aside, and the short name is what the Local
-        # card and the job row print, so two rows both reading "llama.cpp"
-        # would render as one engine everywhere but the picker.
-        label="llama.cpp (Vulkan)",
-        short_label="llama.cpp (Vulkan)",
-        family_label="llama.cpp",
-        note="Runs GGUF models on NVIDIA and AMD GPUs. Much faster than the "
-             "CPU build; much larger download.",
-        _available=_vulkan,
-        hub_filter_tags=("gguf",),
-    ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
     # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured
@@ -1283,26 +1531,13 @@ _RUNNERS: tuple[Runner, ...] = (
              "Diffusers; untested below 32 GB.",
         _available=_apple_silicon,
     ),
-    Runner(
-        code="diffusers-image",
-        capability=IMAGE_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
-        # "(CPU)" for the reason `llamacpp-text` above states about its own:
-        # the qualifier names the BUILD — the wheel with no accelerator
-        # libraries in it — never a prediction about the device.
-        label="Diffusers (CPU)",
-        short_label="Diffusers (CPU)",
-        family_label="Diffusers",
-        # SAID OF THE CPU rather than of the row, because `torch_image._place()`
-        # moves the pipeline to `mps` on a Mac (D382), and a flat "minutes per
-        # image" contradicted the `mps` the loaded card reports on the very
-        # machine this row exists to catch when MLX FLUX is unavailable.
-        note="Renders on Apple Silicon's GPU, or on the CPU elsewhere. "
-             "Minutes per image on CPU.",
-        _available=_always,
-    ),
-    # The accelerated image variants, below the CPU row for the reason the text
-    # variants are below theirs.
+    # The accelerated image variants — LEADING `diffusers-image` below, by the
+    # same policy decision that reorders the llama.cpp and ONNX Embeddings
+    # families (see the block comment above the table): GPU-backed inference
+    # is preferred over CPU-backed wherever both are possible, so `auto`
+    # resolves to whichever of these two an NVIDIA or AMD machine can actually
+    # run, and `diffusers-image` behind them is the fallthrough for a machine
+    # with neither.
     Runner(
         code="diffusers-image-cuda",
         capability=IMAGE_GENERATION,
@@ -1338,10 +1573,14 @@ _RUNNERS: tuple[Runner, ...] = (
     # this app — CU masking, queue priority, rendering on a card that is not
     # driving the display — none verified, and an unverified mitigation is a
     # promise made on the driver's behalf. Naming the cost and letting the user
-    # choose is the bargain the download size already gets (D383). It is
-    # documented HERE and not in the manifest on purpose: `state_digest` hashes
-    # `pyproject.toml` whole, so a comment there would mark every already-built
-    # ROCm env stale and charge existing users a resync for a paragraph.
+    # choose is the bargain the download size already gets (D383), and it is a
+    # bargain this row's own machines now make by DEFAULT under the GPU-first
+    # policy rather than only when a user opted in from the Engines tab — the
+    # ring-stall hazard is accepted at that same level, not a reason this row
+    # stays behind `diffusers-image`. It is documented HERE and not in the
+    # manifest on purpose: `state_digest` hashes `pyproject.toml` whole, so a
+    # comment there would mark every already-built ROCm env stale and charge
+    # existing users a resync for a paragraph.
     Runner(
         code="diffusers-image-rocm",
         capability=IMAGE_GENERATION,
@@ -1354,6 +1593,24 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Renders in seconds per image on an AMD GPU under Linux. Larger "
              "download; a long render can stall the desktop.",
         _available=_rocm,
+    ),
+    Runner(
+        code="diffusers-image",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
+        # "(CPU)" for the reason `llamacpp-text` above states about its own:
+        # the qualifier names the BUILD — the wheel with no accelerator
+        # libraries in it — never a prediction about the device.
+        label="Diffusers (CPU)",
+        short_label="Diffusers (CPU)",
+        family_label="Diffusers",
+        # SAID OF THE CPU rather than of the row, because `torch_image._place()`
+        # moves the pipeline to `mps` on a Mac (D382), and a flat "minutes per
+        # image" contradicted the `mps` the loaded card reports on the very
+        # machine this row exists to catch when MLX FLUX is unavailable.
+        note="Renders on Apple Silicon's GPU, or on the CPU elsewhere. "
+             "Minutes per image on CPU.",
+        _available=_always,
     ),
     # Speech to text, and the capability that finally USED the two-runner
     # ordering this table was built for. MLX takes the Macs; CTranslate2 below
@@ -1450,34 +1707,15 @@ _RUNNERS: tuple[Runner, ...] = (
     # licensed the swap: it asserts ≥0.999 cosine between the two engines'
     # vectors on real weights, both towers.
     #
-    # Same four-row shape the torch family had: an unaccelerated build first —
-    # what every `auto` machine off Apple Silicon resolves to — then the
-    # accelerated ones, opt-in from the Engines tab and gated on the device
-    # actually being there. DirectML leads those three because it is the only
-    # one Windows can take, and unlike the CUDA/ROCm pair it is vendor-neutral,
-    # so ONE row covers every Windows GPU rather than a folder per vendor.
-    Runner(
-        code="onnx-embed",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
-        # "(CPU)" on every row of a family with siblings, the discipline
-        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
-        # `onnxruntime`, which has no GPU provider compiled in — never a
-        # prediction about the device, and a family missing it on one row prints
-        # two engines under one name.
-        label="ONNX Embeddings (CPU)",
-        short_label="ONNX Embeddings (CPU)",
-        # The format claim with the hardware taken out: these weights are the
-        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
-        family_label="ONNX Embeddings",
-        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
-        # describes the DEFAULT off a Mac, so what it leads with is what most
-        # readers get: a workload that is already fast, on an engine that is a
-        # small download.
-        note="Embeds on any machine's CPU. Tens of megabytes rather than "
-             "gigabytes.",
-        _available=_onnx_platform,
-    ),
+    # Same four-row shape the torch family had, but now LEADING with the
+    # accelerated builds rather than trailing them — the policy decision the
+    # block comment above the table records: GPU-backed inference beats
+    # CPU-backed wherever both are possible, so `auto` off Apple Silicon
+    # resolves to whichever of these three the machine can actually run, and
+    # `onnx-embed` behind them is the fallthrough for a machine with none.
+    # DirectML leads those three because it is the only one Windows can take,
+    # and unlike the CUDA/ROCm pair it is vendor-neutral, so ONE row covers
+    # every Windows GPU rather than a folder per vendor.
     Runner(
         code="onnx-embed-directml",
         capability=EMBEDDINGS,
@@ -1519,6 +1757,27 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Embeds on an AMD GPU under Linux. Larger download for a "
              "workload already fast on the CPU.",
         _available=_rocm,
+    ),
+    Runner(
+        code="onnx-embed",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
+        # "(CPU)" on every row of a family with siblings, the discipline
+        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
+        # `onnxruntime`, which has no GPU provider compiled in — never a
+        # prediction about the device, and a family missing it on one row prints
+        # two engines under one name.
+        label="ONNX Embeddings (CPU)",
+        short_label="ONNX Embeddings (CPU)",
+        # The format claim with the hardware taken out: these weights are the
+        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
+        family_label="ONNX Embeddings",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
+        # describes the FALLTHROUGH off a Mac now rather than the default: what
+        # a reader gets only once every accelerated row above has refused.
+        note="Embeds on any machine's CPU. Tens of megabytes rather than "
+             "gigabytes.",
+        _available=_onnx_platform,
     ),
     # Video generation, the fifth capability and the first with no
     # "everywhere" row: its one engine is MLX, so this capability is

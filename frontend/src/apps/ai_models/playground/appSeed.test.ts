@@ -98,6 +98,29 @@ describe("an older server's payload, with neither field", () => {
   });
 });
 
+describe("the text-to-image seed's guidance", () => {
+  // `defaults.guidance` follows the exact shape `defaults.steps` already has
+  // here: a curated value is offered as the option's fallback, `readParam`
+  // still wins when the user actually moved the Playground's slider, and
+  // absence of both means the key is left out entirely rather than seeded as
+  // a guess — the same "server-shaped extra, or nothing" contract as steps.
+  const seedImage = (over: Partial<AiCatalogModel>) =>
+    buildAppAnnotation(model(over), "text-to-image").detail;
+
+  it("a model whose curated defaults declare a guidance seeds it", () => {
+    const detail = seedImage({
+      id: "segmind/tiny-sd",
+      defaults: { steps: 16, guidance: 7.5 },
+    });
+    expect(detail).toContain("guidance: 7.5");
+  });
+
+  it("a model that declares none, and whose URL carries none either, omits the key", () => {
+    const detail = seedImage({ id: "black-forest-labs/FLUX.2-klein-4B" });
+    expect(detail).not.toContain("guidance:");
+  });
+});
+
 describe("what every embeddings seed says regardless", () => {
   const detail = seed({ id: "org/thing", acceptsPaths: true, promptScheme: "e5" });
 

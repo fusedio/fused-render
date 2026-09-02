@@ -91,7 +91,7 @@ _SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
 # no editing surface behind it, so the instructions file stays home.
 _SKIP_FILES = frozenset({"CLAUDE.md"})
 
-# fused.ai() is deliberately ALLOWED in a .fused, unlike the hosted exporter
+# fused.ai.text() is deliberately ALLOWED in a .fused, unlike the hosted exporter
 # (RH-11): a hosted page has no runtime behind it, but an opened .fused runs
 # inside the recipient's full local fused-render, where /api/ai exists. A
 # recipient without the claude CLI or a resident local model gets the API's

@@ -31,6 +31,9 @@ def _declare(folder, deps='"pyproj"'):
 
 HEADERS = {"X-Fused": "1"}
 
+# Must match `JOB_PING_KEY` in both runtime.js and frontend/src/platform/lib/jobs.ts.
+JOB_PING_KEY_PY = "fused-render:jobs-ping"
+
 # Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
 # `requirements_venv_id`/`venv_key` — deliberately, so the loader's key is the
 # backend's key and not a re-derivation. That makes `fused` a real requirement
@@ -121,7 +124,7 @@ def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkey
         # `key` included because `start` reports the key it used and the endpoint
         # hands that straight to the client (D214) — a double that omits it is not
         # standing in for the real function.
-        lambda project: started.append(project) or {"stage": "spawn", "done": False,
+        lambda project, allow_build=False: started.append(project) or {"stage": "spawn", "done": False,
                                                     "key": "0" * 16},
     )
     resp = client.post(
@@ -146,7 +149,7 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     _declare(tmp_path / "sub", '"pyproj"')
     _py(tmp_path / "sub", "rel.py", "def main():\n    return 1\n")
     monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda project: {"done": False, "key": "0" * 16})
+                        lambda project, allow_build=False: {"done": False, "key": "0" * 16})
     resp = client.post(
         "/api/env/install",
         json={"py": "rel.py", "html": str(tmp_path / "sub" / "page.html")},
@@ -439,13 +442,45 @@ _KEY_A = "a" * 16   # what /api/run's needs_install carried
 _KEY_B = "b" * 16   # what /api/env/install re-derived off the .py on disk
 
 _JS_PRELUDE = """
+// `globalThis.__autoInstall` defaults to true: the consent question
+// `confirmInstall` (runtime.js) asks before every install is answered
+// Install automatically the moment its button gets a click listener, which is
+// how a page-shaped stub document can click a button it never renders. This
+// is what lets every install test written BEFORE the confirm step existed
+// keep asserting on the install itself rather than on a question none of them
+// know to answer. A test that wants to see Cancel win sets
+// `globalThis.__autoInstall = false` first and clicks the row's own Cancel
+// button, exactly as the mid-install cancel tests already do for the
+// running-install Cancel button.
+//
+// `__installPrompts` counts how many times that auto-click fired — the one
+// external signal this harness has for "the question was asked", since the
+// dialog itself is never rendered to anything a test can see.
+globalThis.__installPrompts = 0;
 function makeEl() {
   return {
     style: { cssText: "" }, textContent: "", children: [], _h: {}, dataset: {},
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { this.children.push(...c); },
     remove() { this.removed = true; },
-    addEventListener(t, f) { (this._h[t] = this._h[t] || []).push(f); },
+    addEventListener(t, f) {
+      (this._h[t] = this._h[t] || []).push(f);
+      if (t === "click" && this.textContent === "Install" && globalThis.__autoInstall !== false) {
+        globalThis.__installPrompts += 1;
+        // A MACROTASK, not `queueMicrotask`: a real click lands whenever the
+        // user gets to it — long after `askRow` returns, on its own turn of
+        // the event loop — never in the SAME microtask flush that just wired
+        // the listener up. `queueMicrotask` used to sit here instead, and it
+        // could not have caught Defect 1 (the Install button doing nothing in
+        // a real browser) even in principle: firing the handler before the
+        // attaching call stack ever unwinds is a strictly EARLIER, easier
+        // case than any real click, so every test built on it only ever
+        // proved "the handler works when invoked immediately", not "the
+        // handler is still the live listener by the time a real click
+        // reaches it".
+        setTimeout(f, 0);
+      }
+    },
     removeEventListener(t, f) {
       const a = this._h[t] || []; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1);
     },
@@ -462,6 +497,49 @@ globalThis.document = {
     return this.head.children.find((c) => c.id === id) || null;
   },
 };
+// Records every key `pingJobs()` writes, so tests can assert the env-install
+// path wakes the jobs dock exactly when — and only when — a start actually
+// posts. A bare no-op stub would leave that half of the fix unchecked.
+globalThis.__localStorageWrites = [];
+globalThis.localStorage = {
+  setItem(key, value) { globalThis.__localStorageWrites.push(key); },
+  getItem() { return null; },
+  removeItem() {},
+};
+// `pingJobs`/`JOB_PING_KEY` (runtime.js:3344-3352) live well past both
+// `_loader_js`'s and `_loader_and_runpython_js`'s slices, so — the same
+// pattern Round 9 used for `IS_THUMBNAIL` — they're recreated here verbatim
+// rather than stubbed away, since the mechanism under test IS whether
+// `tryInstall` calls this. Shared here (rather than in `_RUNPYTHON_PRELUDE`)
+// because `tryInstall` itself is part of the narrower `_loader_js` slice too.
+var JOB_PING_KEY = "fused-render:jobs-ping";
+function pingJobs() {
+  try {
+    localStorage.setItem(JOB_PING_KEY, String(Date.now()));
+  } catch (e) {
+    /* private mode / disabled storage — the shell's poll still covers it */
+  }
+}
+"""
+
+
+# `showInstall` used to be runtime.js's own convenience wrapper around
+# `ensureInstallRow` + `mountInstallSoon` + `paintPreparing` (get-or-create the
+# row, arm the mount timer, paint the "preparing" state). `startInstall` now
+# calls those three directly — it needs the row BEFORE deciding whether this
+# install asks a question first — so `showInstall` had no callers left and was
+# deleted as dead code. These tests still want it: it is the one call that
+# exercises exactly that trio together, which is what most of the tests below
+# are actually testing (row reuse across concurrent installs, the mount delay,
+# the indeterminate bar). Recreated here rather than resurrected in the
+# shipped runtime.
+_SHOW_INSTALL_TEST_HELPER = """
+function showInstall(need) {
+  const { ui, row } = ensureInstallRow(need);
+  mountInstallSoon(ui);
+  paintPreparing(row, need);
+  return row;
+}
 """
 
 
@@ -517,6 +595,10 @@ function watchPath(p) { watched.push(p); }
 var fsChanges = 0;
 function noteFsChanged() { fsChanges += 1; }
 globalThis.window = { location: { search: "?path=/page.html" } };
+// Real opens: false, matching every test below that never sets it. Preview-gate
+// tests reassign it (it's a bare `var`, so the sliced runtime's own `handle`
+// closes over this same binding) before calling `runPython`.
+var IS_THUMBNAIL = false;
 """
 
 
@@ -532,7 +614,7 @@ def _run_runpython(scenario):
         pytest.skip("node is needed to run runPython's own JS")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
                                      encoding="utf-8") as f:
-        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + scenario)
+        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + _SHOW_INSTALL_TEST_HELPER + scenario)
         harness = f.name
     try:
         out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
@@ -544,6 +626,12 @@ def _run_runpython(scenario):
 
 # The scenario every concurrency test below shares: /api/run answers
 # `needs_install` for one project until the install lands, then succeeds.
+#
+# Carries a `nonstandard` entry (rather than an all-PyPI manifest) on purpose:
+# several tests below reach the confirm question itself — clicking its Cancel
+# button, clicking its Install button after a real delay, reading its detail
+# line's font — and a manifest with nothing to disclose is never asked about
+# at all, so it would never build the row those tests need.
 _CONCURRENT_RUNS = """
 let installs = 0, runs = 0, installed = false;
 globalThis.fetch = (url, opts) => {
@@ -557,7 +645,8 @@ globalThis.fetch = (url, opts) => {
       snapshot
         ? { ok: true, result: 42 }
         : { ok: false,
-            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay", "foolib"],
+                             nonstandard: [{ name: "foolib", reason: "from a git repository" }] },
             error: { type: "EnvNotInstalled",
                      message: "my-app declares dependencies that are not installed yet" },
             stdout: "" })});
@@ -600,7 +689,7 @@ Promise.allSettled([
     states: settled.map((r) => r.status),
     values: settled.map((r) => r.value),
     reasons: settled.map((r) => r.reason && r.reason.message),
-    installs, runs, fsChanges,
+    installs, runs, fsChanges, prompts: globalThis.__installPrompts,
   }));
 });
 """) % {"a": _KEY_A})
@@ -608,6 +697,14 @@ Promise.allSettled([
     assert result["values"] == [42] * 5
     assert result["installs"] == 1, (
         f"one project must mean one install POST, saw {result['installs']}"
+    )
+    # The confirm question is asked once too, not once per script — the same
+    # per-key dedup in `installEnv` that already collapses the five POSTs into
+    # one collapses the five confirms into one for the identical reason: all
+    # five calls join the ONE `startInstall` promise, and `confirmInstall`
+    # only ever runs inside it.
+    assert result["prompts"] == 1, (
+        f"one project must mean one confirm, saw {result['prompts']}"
     )
     # Every run that came back told the shell the filesystem may have moved.
     #
@@ -621,6 +718,224 @@ Promise.allSettled([
     assert result["fsChanges"] == result["runs"], (
         "each /api/run that came back must report an fs change, "
         f"saw {result['fsChanges']} for {result['runs']} runs"
+    )
+
+
+def test_a_previewed_page_never_triggers_an_install():
+    """Bug A: a home-page preview card boots the real app in a sandboxed
+    iframe just to paint it (AppPreviewCard.tsx's `entry_html` fallback,
+    live on hover too) — and that boot must never install anything, no
+    matter what the previewed page's own dependencies are.
+
+    `IS_THUMBNAIL` is the signal `_daemonRejectPreview` already uses for the
+    identical "a picture of a page must not act like the real page" call —
+    this reassigns the same `var` the sliced `handle()` closes over, exactly
+    as a real preview iframe's ancestor-climbing `selfOrAncestorHasFlag`
+    would resolve to true for a `_preview=1` URL.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+IS_THUMBNAIL = true;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs, prompts: globalThis.__installPrompts })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, type: err.type,
+                                        installs, prompts: globalThis.__installPrompts }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0, (
+        f"a preview must never POST to /api/env/install, saw {result['installs']}"
+    )
+    assert result["prompts"] == 0, (
+        f"a preview must never ask the install-consent question, saw {result['prompts']}"
+    )
+    assert "declares dependencies that are not installed yet" in result["message"]
+
+
+def test_a_successful_install_start_pings_the_jobs_dock():
+    """The dock's own idle poll (`POLL_IDLE_MS`, frontend/src/platform/lib/
+    jobs.ts:415) can take up to 5s to discover a row nothing else nudges it
+    about. The row itself lands synchronously inside `envinstall.start()`,
+    well before `/api/env/install`'s response reaches this page, so pinging
+    once that response comes back (`tryInstall`, runtime.js) is guaranteed to
+    find the row already there — never a ping that finds nothing and costs a
+    full idle interval for no reason.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["installs"] == 1
+    assert result["pings"].count(JOB_PING_KEY_PY) == 1, (
+        f"a real install start must ping the jobs dock exactly once, saw {result['pings']}"
+    )
+
+
+def test_cancelling_the_confirm_never_pings_the_jobs_dock():
+    """Declining the consent question means `/api/env/install` is never
+    POSTed — nothing started, so nothing must wake the dock. A ping fired
+    here would have the dock poll, find no new row (there is none), and go
+    back to sleep for a full idle interval: strictly worse than no ping.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+(function clickCancelOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry) return setTimeout(clickCancelOnceAsked, 0);
+  entry.row.cancel._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0
+    assert result["pings"] == [], (
+        f"cancelling the confirm must never ping the jobs dock, saw {result['pings']}"
+    )
+
+
+def test_a_previewed_page_never_pings_the_jobs_dock():
+    """Bug A's gate (above) means a preview iframe never POSTs
+    `/api/env/install` at all, so it must never ping either — a picture of
+    the page must not wake the dock any more than it may start an install.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+IS_THUMBNAIL = true;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs,
+                                            pings: globalThis.__localStorageWrites })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs,
+                                        pings: globalThis.__localStorageWrites }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 0
+    assert result["pings"] == [], (
+        f"a preview must never ping the jobs dock, saw {result['pings']}"
+    )
+
+
+def test_cancelling_the_confirm_makes_no_install_post_and_rejects():
+    """The gate this whole feature adds: a POST must never happen before the
+    question in front of it is answered Install.
+
+    `__autoInstall = false` turns off the harness's default (every other test
+    in this file answers the question Install so it can go on testing the
+    installer plumbing the confirm sits in front of) — this is the one test
+    that answers it Cancel instead, by finding the row `startInstall` built
+    and clicking its Cancel button directly, the same way the mid-install
+    cancel tests reach a running install's Cancel button.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+// The row does not exist until /api/run's mocked fetch resolves (a real
+// Promise tick, unlike `installEnv` reached directly), so — unlike the
+// mid-install cancel tests, which reach the row from inside a later poll —
+// this polls for it rather than assuming it is there the instant
+// `runPython` is called.
+(function clickCancelOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry) return setTimeout(clickCancelOnceAsked, 0);
+  entry.row.cancel._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result.get("type") == "EnvInstallCancelled", result
+    assert result["installs"] == 0, (
+        f"cancelling the confirm must never POST to /api/env/install, saw {result['installs']}"
+    )
+
+
+def test_the_confirm_questions_detail_line_is_proportional_not_monospace():
+    """Defect 4 (manual browser testing): the question's detail line (the
+    disclosed non-standard dependency and why) rendered in the same monospace
+    face `detail` uses for uv's own verbatim resolver error — a code font
+    under a proportional bold title, on a sentence a non-technical user is
+    meant to just read. `askRow`
+    now switches `detail` to a proportional face while the question is up and
+    restores the monospace default the moment it settles, since whatever
+    paints next (`paintPreparing`, a real resolver error) is that line's
+    original job again.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+let duringFont = null;
+let capturedRow = null;
+runPython("a.py", {}, { key: "a" }).then(() => {
+  // The row is gone from `installing` by now (`hideInstall` removes it once
+  // the install settles) — read the SAME node this test captured earlier
+  // rather than looking it up again.
+  console.log(JSON.stringify({ duringFont, afterFont: capturedRow.detail.style.fontFamily }));
+});
+(function clickOnceAsked() {
+  const entry = installing.get("%(a)s");
+  if (!entry || entry.row.install.style.display !== "") return setTimeout(clickOnceAsked, 0);
+  capturedRow = entry.row;
+  duringFont = entry.row.detail.style.fontFamily;
+  entry.row.install._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert "monospace" not in result["duringFont"], (
+        f"the consent QUESTION must not render in the monospace error/progress "
+        f"face, saw {result['duringFont']!r}"
+    )
+    assert "monospace" in result["afterFont"], (
+        "the detail line must go back to monospace once the question is "
+        f"answered (paintPreparing's own text follows), saw {result['afterFont']!r}"
+    )
+
+
+def test_a_real_delayed_click_on_install_still_posts():
+    """Defect 1 (manual browser testing): clicking Install did nothing — no
+    `/api/env/install` POST ever fired, and `askRow`'s promise never settled.
+    Every OTHER test in this file answers the confirm through the harness's
+    `__autoInstall` stub, which used to fire the click handler via
+    `queueMicrotask` the INSTANT `addEventListener` registered it — strictly
+    earlier than any real click could ever land, and unable in principle to
+    catch a listener that stops working by the time a real, later click
+    reaches it. This test answers Install the way a human does instead: it
+    turns the stub off, waits for several real macrotask ticks (standing in
+    for the seconds a person spends reading the question) before the button
+    even exists, keeps waiting once it does, and only then clicks it — the
+    same `_h.click[0]()` path the existing cancel tests already use to reach
+    a button the fake DOM never renders.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+globalThis.__autoInstall = false;
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+let ticks = 0;
+(function clickInstallAfterADelay() {
+  const entry = installing.get("%(a)s");
+  // Ten real macrotask turns before the row even exists, then ten more once
+  // it does — standing in for the reading time a real click waits out, which
+  // `queueMicrotask` firing inside `addEventListener` itself could never
+  // model.
+  if (!entry || ticks < 10) { ticks += 1; return setTimeout(clickInstallAfterADelay, 0); }
+  entry.row.install._h.click[0]();
+})();
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["result"] == 42, result
+    assert result["installs"] == 1, (
+        f"a real, delayed click on Install must still POST to /api/env/install, "
+        f"saw {result['installs']}"
     )
 
 
@@ -721,14 +1036,226 @@ def test_the_projects_manifest_is_watched_so_a_fix_triggers_a_reload():
     "I fixed my dependencies" is a stale error overlay.
     """
     result = _run_runpython((_CONCURRENT_RUNS.replace(
-        'requirements: ["cowsay"] }',
-        'requirements: ["cowsay"], pyproject: "/proj/pyproject.toml" }',
+        'nonstandard: [{ name: "foolib", reason: "from a git repository" }] },',
+        'nonstandard: [{ name: "foolib", reason: "from a git repository" }], '
+        'pyproject: "/proj/pyproject.toml" },',
     ) + """
 runPython("a.py", {}, { key: "a" }).then(() => {
   console.log(JSON.stringify({ watched }));
 });
 """) % {"a": _KEY_A})
     assert "/proj/pyproject.toml" in result["watched"], result["watched"]
+
+
+def test_a_manifest_gaining_a_nonstandard_dependency_prompts_where_the_silent_install_did_not():
+    """An all-PyPI manifest installs with no prompt at all — nothing about it
+    is disclosed, so there is nothing to have approved, and `approvedInstalls`
+    gains no entry for it. The user then adds `foolib @ git+https://…` to
+    pyproject.toml; live-reload re-runs (editing a manifest and letting
+    live-reload pick it up is this app's own core workflow) — `needs_install`
+    fires again, this time carrying a `nonstandard` entry naming the git
+    dependency. That must bring up `confirmInstall`: nothing here may read a
+    project that was never asked about as "already approved".
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const allPyPI = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay"], nonstandard: [] };
+const withGitDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+installEnv(allPyPI, "a.py", "a.html")
+  .then(() => installEnv(withGitDep, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2
+    assert result["prompts"] == 1, (
+        "the silent all-PyPI install must not prompt, and the manifest gaining "
+        f"a nonstandard dependency must, saw {result['prompts']} prompts"
+    )
+
+
+def test_a_changed_nonstandard_disclosure_re_asks_even_for_an_already_approved_project():
+    """`approvedInstalls` is keyed on the project PLUS a fingerprint of what
+    was disclosed, not on the project alone: approve a project's git
+    dependency, then have the SAME project disclose a DIFFERENT reason (the
+    dependency moved from a git URL to a local path, say) — the project key
+    alone would still read as approved, so `confirmInstall` would be skipped
+    and the new source fetched with the user never having seen it.
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const withGitDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+const withLocalPathDep = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a local path" }] };
+installEnv(withGitDep, "a.py", "a.html")
+  .then(() => installEnv(withLocalPathDep, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2
+    assert result["prompts"] == 2, (
+        "a new nonstandard disclosure on an already-approved project must re-ask, "
+        f"saw {result['prompts']} prompts"
+    )
+
+
+def test_an_unrelated_version_bump_does_not_re_ask():
+    """The other half of the same fix: a version bump never touches
+    `nonstandard` (ordinary PyPI requirements are never named there), so the
+    SAME project with the SAME disclosure must still reuse the earlier
+    approval — re-asking on every unrelated manifest edit is exactly the
+    nagging this feature exists to avoid. Both manifests here carry a
+    nonstandard entry (not an all-PyPI one) so this actually exercises
+    `approvedInstalls`/the fingerprint dedup rather than the separate,
+    unconditional silence of an all-PyPI install.
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const before = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay==5.0", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+const afterBump = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay==6.0", "foolib"],
+  nonstandard: [{ name: "foolib", reason: "from a git repository" }] };
+installEnv(before, "a.py", "a.html")
+  .then(() => installEnv(afterBump, "a.py", "a.html"))
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 2, "a re-run still installs the bumped version"
+    assert result["prompts"] == 1, (
+        f"an unrelated version bump must not re-ask, saw {result['prompts']} prompts"
+    )
+
+
+def test_an_all_pypi_install_never_prompts():
+    """Invariant: a manifest with nothing to disclose must never bring up
+    `confirmInstall` — a confirmation screen with no decision content in it
+    only trains reflexive clicking. `nonstandard` is absent here, matching
+    what the server actually sends for the ordinary all-PyPI case (engine.py
+    only includes the key when it is non-empty).
+    """
+    result = _run_loader("""
+let posts = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const allPyPI = { key: "%(a)s", project: "/proj", name: "my-app",
+  requirements: ["cowsay"] };
+installEnv(allPyPI, "a.py", "a.html")
+  .then(() => console.log(JSON.stringify({ posts, prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A})
+    assert result["posts"] == 1
+    assert result["prompts"] == 0, (
+        f"an all-PyPI install must never prompt, saw {result['prompts']} prompts"
+    )
+
+
+def test_the_no_build_retry_prompt_still_fires_even_though_the_initial_install_was_silent():
+    """Invariant 2: `confirmBuildRetry` — the `--no-build` "has to be
+    compiled on this computer" question — is a risk-bearing screen (it gates
+    a source build, which can run arbitrary `setup.py` code) and must never be
+    skipped, even for a manifest whose initial install ran silently because it
+    had nothing to disclose. The initial `installEnv` here carries no
+    `nonstandard` at all, so the first POST (`allow_build: false`) fires with
+    no confirm prompt in front of it — and the retry prompt still has to come
+    up once the worker reports `needs_build`.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts, prompts: globalThis.__installPrompts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts,
+                                      prompts: globalThis.__installPrompts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "the retry must re-POST naming allow_build: true"
+    # The harness's auto-click stub only counts a click on a button whose
+    # `textContent === "Install"` — the retry's own "Install anyway" button is
+    # clicked by hand above, so this is purely the INITIAL confirm's count,
+    # which must be zero: nothing was disclosed for it to ask about.
+    assert result["prompts"] == 0, (
+        f"the initial silent install must not have prompted, saw {result['prompts']}"
+    )
 
 
 def _run_loader(scenario):
@@ -742,7 +1269,7 @@ def _run_loader(scenario):
         pytest.skip("node is needed to run the loader's own JS")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
                                      encoding="utf-8") as f:
-        f.write(_JS_PRELUDE + _loader_js() + scenario)
+        f.write(_JS_PRELUDE + _loader_js() + _SHOW_INSTALL_TEST_HELPER + scenario)
         harness = f.name
     try:
         out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
@@ -784,6 +1311,270 @@ installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
     assert _KEY_A not in result["polled"], (
         "the loader polled the pre-flight key instead of the installer's own"
     )
+
+
+def test_a_no_wheel_failure_offers_install_anyway_and_retries_with_allow_build():
+    """The gap static detection cannot see: a plain-looking dependency that
+    turns out to publish no wheel for this platform, caught only at resolve
+    time. `--no-build` (Task 4) is what turns that into this exact uv wording
+    instead of a silent source build; this is the retry it exists to make
+    non-fatal.
+
+    Detection lives on the SERVER now (`_env_install_worker.py`'s `install`,
+    the process that actually knows `--no-build` was passed): the progress
+    record it writes carries a `needs_build` field naming the bare package,
+    and `runtime.js` reads that field directly rather than regexing `error`'s
+    text itself — `error` here is only what the page would show if the user
+    declined the retry, no longer what drives it.
+
+    The harness's default auto-click (`__autoInstall`, see _JS_PRELUDE) only
+    fires for a button whose `textContent === "Install"` — this retry's
+    button reads "Install anyway", so it is deliberately NOT auto-approved,
+    and the scenario clicks it itself once it appears.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+// Polls specifically for the RETRY question, not the ordinary confirm above
+// it (which the harness's default auto-click already answers Install for) —
+// both show the same `install` button, just relabelled, so the label is
+// what tells the two apart.
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "the retry must re-POST naming allow_build: true"
+
+
+def test_a_locked_project_no_wheel_failure_also_offers_install_anyway():
+    """The worker's install-time wording (`_NO_BUILD_DISTRIBUTION`, once a
+    `uv.lock` exists — `_sync_root` preserves it across builds, and a folder
+    gains one just by being run once — resolution succeeds against the lock
+    and the refusal happens at INSTALL time instead, in a different shape
+    with no hint line at all):
+
+        error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple`
+        can't be installed because it is marked as `--no-build` but has no
+        binary distribution
+
+    Verified against real uv 0.12.5. This is the second of the worker's two
+    detectors (`_env_install_worker.py`'s `_no_build_package`) — without it a
+    locked project's build-from-source refusal would never set `needs_build`,
+    and the client (which now only reads that field) would never offer the
+    retry prompt at all.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "uwsgi",
+          error: "error: Distribution `uwsgi==2.0.31 @ registry+https://pypi.org/simple` " +
+                 "can't be installed because it is marked as `--no-build` but has no " +
+                 "binary distribution" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["uwsgi"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "a locked project's install-time refusal must also trigger the retry"
+
+
+def test_the_retry_prompt_is_driven_by_the_field_not_by_regexing_error():
+    """The client no longer parses uv's stderr at all — `needs_build` is the
+    ONLY signal `installEnv` looks at. An `error` string that would never
+    have matched either of the old client-side regexes (`NO_BUILD_HINT` /
+    `NO_BUILD_DISTRIBUTION`, both deleted) still has to trigger the retry as
+    long as `needs_build` is set, proving detection genuinely moved server-
+    side rather than merely being duplicated there.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "RuntimeError: Failed to build the environment for /proj" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", requirements: ["foolib"] }, "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["posts"] == [
+        {"py": "a.py", "html": "a.html", "allow_build": False},
+        {"py": "a.py", "html": "a.html", "allow_build": True},
+    ], "needs_build alone must be enough to trigger the retry"
+
+
+def test_an_unrelated_resolver_failure_never_offers_a_retry():
+    """A genuine resolver failure (a bad pin, no network, a nonexistent
+    package) never carries `needs_build` — the worker only sets it for
+    uv's own `--no-build` refusal. Without that field, `installEnv` must
+    fail outright rather than ever offering "Install anyway", and it must
+    never re-POST a second time.
+    """
+    result = _run_loader("""
+const posts = [];
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true,
+        error: "RuntimeError: No solution found when resolving dependencies: " +
+               "because nonexistentpkg was not found in the package registry" } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+installEnv({ key: "%(a)s", requirements: ["nonexistentpkg"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ ok: true, posts })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, type: e.type, posts })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is False, result
+    assert result["type"] == "EnvInstallError"
+    assert result["posts"] == [{"py": "a.py", "html": "a.html", "allow_build": False}], (
+        "a genuine failure must never trigger a second, allow_build:true POST"
+    )
+
+
+def test_the_retry_prompt_names_the_app_not_jargon():
+    """Defect from real dogfooding: the old copy ("has no ready-to-use
+    package for this computer… trust <pkg>") never says which app wants the
+    dependency and leans on jargon a non-expert can't act on. The new copy
+    names the app (`need.name`, same fallback `confirmInstall` already uses)
+    and says what continuing costs.
+    """
+    result = _run_loader("""
+const posts = [];
+let progressCalls = 0;
+let promptTitle = null, promptDetail = null;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    progressCalls += 1;
+    if (progressCalls === 1) {
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "done", pct: 100, done: true, needs_build: "foolib",
+          error: "hint: Wheels are required for `foolib` because building " +
+                 "from source is disabled for all packages (i.e., with `--no-build`)" } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const p = installEnv({ key: "%(a)s", name: "OpenWhisper", requirements: ["foolib"] },
+                      "a.py", "a.html");
+(function clickInstallAnywayOnceAsked() {
+  const entry = installing.get("%(a)s");
+  const row = entry && entry.row;
+  if (!row || row.install.textContent !== "Install anyway" || row.install.style.display !== "") {
+    return setTimeout(clickInstallAnywayOnceAsked, 0);
+  }
+  promptTitle = row.title.textContent;
+  promptDetail = row.detail.textContent;
+  row.install._h.click[0]();
+})();
+p.then(
+  () => console.log(JSON.stringify({ ok: true, posts, promptTitle, promptDetail })),
+  (e) => console.log(JSON.stringify({ ok: false, message: e.message, posts,
+                                      promptTitle, promptDetail })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert result["promptTitle"] == "foolib has to be compiled on this computer", result
+    assert result["promptDetail"] == (
+        "OpenWhisper needs it, but there's no prebuilt version for this system. "
+        "Compiling runs code from foolib and can take several minutes or fail. "
+        "Only continue if you trust it."
+    ), result
 
 
 def test_cancelling_cancels_the_install_that_is_actually_running():
@@ -1438,14 +2229,21 @@ const waiters = [
   installEnv(need, "b.py", "p.html"),
   installEnv(need, "c.py", "p.html"),
 ];
-const row = installing.get("%(a)s").row;
-const listeners = (row.cancel._h.click || []).length;
-row.cancel._h.click.forEach((f) => f());
+// A macrotask, not read straight off `installEnv`'s synchronous return: the
+// harness's default auto-click of Install (see _JS_PRELUDE) fires on a
+// MICROTASK, and the real cancel listener this test wants to count is only
+// attached once that resolves and `runInstall` runs — both of which finish
+// before any `setTimeout` callback gets a turn.
 setTimeout(() => {
-  Promise.allSettled(waiters).then(() => {});
-  console.log(JSON.stringify({ cancels, listeners, posts }));
-  process.exit(0);
-}, 50);
+  const row = installing.get("%(a)s").row;
+  const listeners = (row.cancel._h.click || []).length;
+  row.cancel._h.click.forEach((f) => f());
+  setTimeout(() => {
+    Promise.allSettled(waiters).then(() => {});
+    console.log(JSON.stringify({ cancels, listeners, posts }));
+    process.exit(0);
+  }, 50);
+}, 0);
 """) % {"a": _KEY_A})
     assert result["listeners"] == 1, (
         f"{result['listeners']} cancel listeners on one row — a click fires that many"

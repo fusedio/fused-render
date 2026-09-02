@@ -89,7 +89,6 @@
     /* Hidden for now (Akshil, 2026-08-28): the pulsing "fused" wordmark is
        parked; the boot stays a plain themed ground until the shell paints. */
     #boot {
-      display: none;
       position: fixed;
       inset: 0;
       display: flex;
@@ -100,6 +99,8 @@
       color: #9aa0a6;
       animation: boot-pulse 1.4s ease-in-out infinite;
     }
+    /* Last word in the rule set: parks the wordmark (see above). */
+    #boot { display: none; }
     html[data-theme="light"] #boot { color: #61656c; }
     @keyframes boot-pulse { 50% { opacity: 0.45; } }
     @media (prefers-reduced-motion: reduce) {

@@ -1,112 +1,41 @@
-"""Built-in mounts ("sessions"), each staged from a bundled zip and
-attached automatically at startup."""
+"""Cleanup for the retired builtin mounts.
 
-import json
+The app used to ship bundled content as read-only zip mounts attached at
+startup (D123 `learn`, D227 `sessions`, each an rclone `:archive:` over a zip
+in the bundle). Both are retired — learn moved to the community catalog
+(D419), and the sessions inbox was superseded by the native Tasks/Schedule
+surface (routers/claude_sessions.py reads ~/.claude/projects directly). No
+builtin mounts remain.
+
+What must survive their retirement is the prune: installs that ran an older
+version still carry a `builtin: <name>` record in mounts.json, and
+delete_mount refused builtin records for as long as the concept existed — so
+without this startup pass the stale record strands forever as a broken mount
+in the UI (the exact failure D419's prune was added to prevent).
+"""
+
 import logging
-import os
-import re
-import signal
-import sys
-import threading
-import time
-import uuid
 
 from .store import _ismount, _store_lock, _write, mountpoint
 
 logger = logging.getLogger(__name__)
 
 
-SESSIONS_MOUNT_NAME = "sessions"
+def prune_builtin_mounts() -> None:
+    """Remove every mount record carrying a `builtin` marker — all builtins
+    are retired, so any such record is a leftover from an older version.
 
-# Every builtin mount: bundled zip basename + the env var that overrides its
-# location for dev/testing. Adding a builtin = one row here plus the packaging
-# steps (build_dmg.sh, build_windows_installer.ps1, supervisor/paths.py,
-# scripts/dev.sh).
-BUILTIN_MOUNTS = {
-    SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
-}
-
-
-# Attach-owned readiness per builtin (see builtin_mount_ready); True only for a mount THIS run attached, since the frontend sticky-caches the first True it sees.
-_builtin_ready_lock = threading.Lock()
-_builtin_ready: dict[str, bool] = {name: False for name in BUILTIN_MOUNTS}
-
-
-def set_builtin_ready(name: str, ready: bool) -> None:
-    with _builtin_ready_lock:
-        _builtin_ready[name] = ready
-
-
-def builtin_zip_path(name: str) -> str | None:
-    """Path to a builtin's bundled zip, or None outside the packaged app.
-
-    The env var overrides for dev/testing (a dev checkout has the loose
-    content dir, not a zip — build_dmg.sh only creates the zip at DMG
-    build time). Packaged (same sys.frozen check as rclone_bin) it lives at
-    Contents/Resources/<name>.zip (build_dmg.sh step 4e) on macOS; on the
-    Windows/Linux payload layouts it sits next to the bundled runtime
-    (payload/python/pythonw.exe -> payload/assets/<name>.zip), resolved from
-    sys.executable so the server finds it without depending on the
-    supervisor-injected env var. Existence-checked either way so a stale env
-    var or a hand-pruned bundle yields None, not a mount record pointing at
-    nothing."""
-    zip_name, env_var = BUILTIN_MOUNTS[name]
-    override = os.environ.get(env_var)
-    if override:
-        return override if os.path.isfile(override) else None
-    if getattr(sys, "frozen", None) == "macosx_app":
-        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        bundled = os.path.join(contents, "Resources", zip_name)
-        if os.path.isfile(bundled):
-            return bundled
-    runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-    adjacent = os.path.join(runtime_root, "assets", zip_name)
-    if os.path.isfile(adjacent):
-        return adjacent
-    return None
-
-
-def ensure_builtin_mounts() -> None:
-    """Upsert every builtin mount record (BUILTIN_MOUNTS), after dropping the
-    records of builtins a PREVIOUS version shipped and this one doesn't."""
-    _prune_retired_builtin_mounts()
-    for name in BUILTIN_MOUNTS:
-        _ensure_builtin_mount(name)
-
-
-def _prune_retired_builtin_mounts() -> None:
-    """Remove every record marked `builtin: <name>` for a name that is no
-    longer a row in BUILTIN_MOUNTS — a builtin the app used to ship.
-
-    Retiring a builtin (D419 dropped `learn`) otherwise strands its record
-    forever on every install that already had one. `_ensure_builtin_mount`'s
-    remove-when-the-zip-is-gone branch only ever runs for names still IN
-    BUILTIN_MOUNTS, so nothing visits the retired one: run_automount keeps
-    trying to attach it every startup and fails once the upgrade removed its
-    zip from the bundle, and delete_mount refuses any record carrying a
-    `builtin` marker — so the broken row can't be cleared by the user either.
-    D123's promise, that the record goes when its zip is absent "so it can't
-    linger as a broken mount in the UI", has to hold for a builtin the app
-    retired just as much as for one whose zip vanished.
-
-    Unlike that branch this does NOT check whether the remote's file is still
-    on disk: a retired builtin is retired whether or not an older bundle is
-    still sitting in /Applications. The same-home-two-versions case stays
-    symmetric with every other removal here — an older app re-creates its own
-    record on ITS next startup.
-
-    Same lock discipline as _ensure_builtin_mount: the store read-modify-write
-    happens entirely under `_store_lock`, and the rcd-touching force-detach
-    (which can block for a full rc timeout) is only PLANNED there and executed
-    after the `with` block. Never raises — a storage failure here must not
-    break the user's own mounts."""
+    Same lock discipline the old upsert path used: the store
+    read-modify-write happens entirely under `_store_lock`, and the
+    rcd-touching force-detach (which can block for a full rc timeout) is only
+    PLANNED there and executed after the `with` block. Never raises — a
+    storage failure here must not break the user's own mounts."""
     from fused_render.shell.mounts import list_mounts
     try:
         detach_targets: list[tuple[dict, str]] = []
         with _store_lock:
             mounts = list_mounts()
-            retired = [m for m in mounts
-                       if m.get("builtin") and m["builtin"] not in BUILTIN_MOUNTS]
+            retired = [m for m in mounts if m.get("builtin")]
             if retired:
                 retired_ids = {id(m) for m in retired}
                 _write([m for m in mounts if id(m) not in retired_ids])
@@ -114,8 +43,7 @@ def _prune_retired_builtin_mounts() -> None:
                     logger.info("dropped retired builtin mount record %r (%r)",
                                 m.get("name"), m.get("builtin"))
                     # The live mount and its serve are keyed to the remote the
-                    # record carried — same as _ensure_builtin_mount's
-                    # zip-gone path.
+                    # record carried.
                     detach_targets.append((m, m.get("remote", "")))
         for target in detach_targets:
             _force_detach_builtin_mount(*target)
@@ -123,168 +51,38 @@ def _prune_retired_builtin_mounts() -> None:
         logger.exception("pruning retired builtin mount records failed")
 
 
-def _ensure_builtin_mount(name: str) -> None:
-    """Upsert a builtin mount record: rclone's archive backend
-    (v1.74) mounts the bundled zip read-only through the same mounts
-    surface as any remote (D123).
-
-    Builtin records carry `"builtin": <name>` so they're distinguishable
-    from a user-created mount that happens to share the name — that user
-    mount is never touched. The remote embeds the zip's absolute path inside
-    the app bundle, which changes across versions/relocations, so an existing
-    record's remote is refreshed every startup; the record is removed only
-    when the zip it points at is actually gone (uninstall, downgrade) so it
-    can't linger as a broken mount in the UI — a process that merely can't
-    RESOLVE a zip (a dev checkout sharing the real home) leaves a valid
-    record alone. read_only_user pins the flag: the archive backend is
-    inherently read-only, and pinning keeps attach-time detection from ever
-    reconsidering it — mount, serve, and kernel all get read-only baked in
-    via the existing read_only plumbing.
-
-    Never raises — this runs on the automount path and a storage failure
-    must not break the user's own mounts.
-
-    BUGBOT (2026-07-21): rcd survives server restarts (module docstring), so
-    an already-live mount at a builtin mountpoint is never naturally
-    refreshed. Two staleness paths that opened:
-      - the bundle relocates (remote string changes) — a live mount still
-        serves the OLD fs, and attach_mount would then reject the new record
-        outright (fs mismatch — see attach_mount's already-mounted branch);
-      - an in-place app upgrade overwrites the builtin zip at the SAME path — the
-        remote string never changes, so nothing signalled a refresh was
-        needed at all, and the live VFS + on-disk cache kept serving last
-        version's bytes indefinitely.
-    Fixed the same way for both: whenever a live rcd mount already sits at
-    a builtin mountpoint, force-detach it here (best-effort) so run_automount's
-    normal per-mount loop right after this call does a fresh attach_mount —
-    unconditionally, not just when the remote string happens to differ, since
-    content can change under an unchanged path. Cheap: this is a small local
-    archive, not a network remote.
-
-    BUGBOT (2026-07-21): the force-detach talks to rcd (mounted_paths,
-    detach_mount's busy-unmount retry, _stop_serve_for) and can block for the
-    full rc timeout window. That must never happen while _store_lock is
-    held — every mount create/delete/update takes the same lock, and rcd I/O
-    under it would stall them all on every startup. So the store
-    read-modify-write happens entirely inside `with _store_lock`, and
-    whatever forced-detach is needed is only PLANNED there (captured as
-    `detach_target`) and executed after the `with` block exits."""
-    from fused_render.shell.mounts import list_mounts
-    try:
-        path = builtin_zip_path(name)
-        detach_target: tuple[dict, str] | None = None
-        with _store_lock:
-            mounts = list_mounts()
-            builtin = next(
-                (m for m in mounts if m.get("builtin") == name), None
-            )
-            if path is None:
-                # Removal is gated on the RECORD's zip being gone from disk,
-                # not on this process failing to resolve one: a dev-checkout
-                # server sharing the real home resolves nothing but must not
-                # delete the packaged app's perfectly valid record.
-                if builtin is not None and not os.path.isfile(
-                        builtin["remote"].partition(":archive:")[2]):
-                    old_remote = builtin["remote"]
-                    _write([m for m in mounts if m is not builtin])
-                    detach_target = (builtin, old_remote)
-            else:
-                remote = f":archive:{path}"
-                if builtin is not None:
-                    # Captured BEFORE any mutation below: the live mount/serve
-                    # (if any) are keyed to whatever fs string was in effect
-                    # at the end of the LAST run, not the one we're about to
-                    # write.
-                    old_remote = builtin["remote"]
-                    if old_remote != remote:
-                        builtin["remote"] = remote
-                        _write(mounts)
-                    # Force a fresh mount every startup, changed or not (see
-                    # the upgrade-same-path staleness case above).
-                    detach_target = (builtin, old_remote)
-                elif any(m["name"] == name for m in mounts):
-                    logger.warning(
-                        "not adding the builtin %r mount: a user mount "
-                        "named %r already exists", name, name,
-                    )
-                else:
-                    mounts.append({
-                        "id": uuid.uuid4().hex[:12],
-                        "name": name,
-                        "remote": remote,
-                        "read_only": True,
-                        "read_only_user": True,
-                        "builtin": name,
-                    })
-                    _write(mounts)
-        if detach_target is not None:
-            _force_detach_builtin_mount(*detach_target)
-    except Exception:
-        logger.exception("ensure_builtin_mount(%r) failed", name)
-
-
-def sessions_mount_ready() -> bool:
-    return builtin_mount_ready(SESSIONS_MOUNT_NAME)
-
-
-def builtin_mount_ready(name: str) -> bool:
-    """I/O-free read of the attach-owned _builtin_ready flag (a live _ismount here blocked /api/config ~60s mid-attach on a Windows cold start)."""
-    with _builtin_ready_lock:
-        return _builtin_ready.get(name, False)
-
-
 def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
-    """Best-effort unmount of a builtin mountpoint if rcd (or the
-    kernel) still has one live from a prior server run, so the caller's
-    upserted record gets a genuinely fresh mount/mount instead of being
-    silently adopted with stale fs/content — see _ensure_builtin_mount's BUGBOT
-    note. Runs OUTSIDE any lock the caller already holds being irrelevant
-    here since detach_mount only talks to rcd/the kernel, never mounts.json.
+    """Best-effort unmount of a retired builtin's mountpoint if rcd (or the
+    kernel) still has one live from a prior server run, plus a stop of the
+    HTTP serve keyed to `old_remote` (rcd shares ONE VFS between a mount and
+    its serve — tearing down the mount leaves the serve wedged, and
+    sync_serves would then reuse the wedged serve instead of noticing the
+    remote is gone).
 
-    Also stops the HTTP serve for `old_remote` (BUGBOT: rcd shares ONE VFS
-    between a mount and its serve — mount/unmount tears that VFS down but
-    leaves the serve pointed at it, so a leftover serve is wedged exactly
-    like reconnect_mount's own _stop_serve_for call documents). Without
-    this, sync_serves sees the OLD remote/options still "in use" by that
-    wedged serve and reuses it instead of starting a fresh one bound to the
-    new mount, so /api/fs/raw reads of Learn hang. `old_remote` — not
-    `builtin["remote"]`, which may already have been rewritten to the NEW
-    fs by the time this runs — is what the live serve is actually keyed to.
-
-    Swallows everything: a failed detach/stop just means run_automount's
-    subsequent attach_mount adopts (or errors on) whatever is still there,
-    exactly like before this fix — never worse.
+    Swallows everything: a failed detach/stop just means whatever is still
+    there lingers until the next restart — never worse than doing nothing.
 
     BUGBOT: detach_mount's default (force=False) deliberately leaves a
     non-busy failure (rcd down but a kernel mount survives, a busy-retry
     that still fails, ...) in place — "failing loudly beats corrupted
     reads" is the right call for an explicit user unmount, but it defeats
-    the very point of THIS call: attach_mount treats a still-kernel-mounted
-    path with no matching rcd record as a foreign mount and adopts it
-    as-is, silently keeping stale content across the refresh this path
-    exists to guarantee. force=True escalates every dead end to
-    _force_unmount instead, so a genuinely fresh mount/mount follows.
+    the very point of THIS call. force=True escalates every dead end to
+    _force_unmount instead.
 
     BUGBOT: force=True alone still isn't enough — detach_mount only
     escalates to _force_unmount when the rc `mount/unmount` call itself
     FAILS; it never re-checks os.path.ismount after a call that reports
-    success. reconnect_mount already has to guard against exactly this on
-    macOS (a builtin is attached via nfsmount): rc's mount/unmount can report
-    success while the kernel NFS mount lingers, and reconnect_mount
-    re-checks os.path.ismount afterward for that reason. Mirror that same
-    re-check here, rather than trusting detach_mount's return value alone.
+    success. reconnect_mount already guards against exactly this on macOS
+    (rc can report success while the kernel NFS mount lingers) — mirror
+    that same re-check here.
 
     BUGBOT: _force_unmount operates purely at the kernel level (umount /
     diskutil) — it never tells rcd anything, so a successful force-unmount
     can leave rcd's OWN mount/listmounts bookkeeping still claiming the
-    mountpoint. run_automount's loop treats exactly that combination (rcd
-    still lists it, kernel does not) as the split-brain case and
-    `continue`s PAST attach_mount for it — leaving the builtin mount never
-    remounted after the very refresh this whole path exists to perform.
-    reconnect_mount avoids this by re-issuing rc mount/unmount a second
-    time after its own force-unmount, purely to clear rcd's bookkeeping (a
-    "mount not found" failure at that point is expected and fine, since the
-    kernel mount is already gone) — mirror that same follow-up call here."""
+    mountpoint, which run_automount treats as the split-brain case. Mirror
+    reconnect_mount's follow-up rc mount/unmount call purely to clear rcd's
+    bookkeeping (a "mount not found" failure at that point is expected and
+    fine, since the kernel mount is already gone)."""
     from fused_render.shell.mounts import (
         _force_unmount,
         _live_rcd_port,

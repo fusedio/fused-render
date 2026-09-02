@@ -100,6 +100,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   updated_at: 0,
   finished_at: 0,
   stalled: false,
+  waiting_for: "",
   ...over,
 });
 

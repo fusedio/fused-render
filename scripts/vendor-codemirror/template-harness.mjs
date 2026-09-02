@@ -69,15 +69,37 @@ const stub = () => new Proxy({}, {
 // Enough of an element for a widget builder to fill in and for us to read back.
 // Not a DOM: no layout, no events, no tree semantics beyond appendChild.
 export function fakeElement(tag) {
-  return {
+  const el = {
     tagName: tag.toUpperCase(),
-    className: "", title: "", textContent: "", href: "", src: "", alt: "",
+    className: "", title: "", href: "", src: "", alt: "",
     type: "", checked: false, disabled: false,
     dataset: {}, style: {}, children: [],
     classList: { add() {}, remove() {}, toggle() {} },
     appendChild(child) { this.children.push(child); return child; },
     addEventListener() {},
   };
+  // `textContent` is a real accessor, not a stored string, because the table
+  // widget's click resolver maps a hit back to a source offset through the
+  // TEXT NODE inside a `<code>` — a node that only exists if assigning
+  // `textContent` actually creates one. `children` doubles as childNodes
+  // here (serializeNode in live-preview-probe.mjs already walks text nodes
+  // out of it), so clearing with `textContent = ""` empties the element the
+  // way the real thing does.
+  Object.defineProperty(el, "textContent", {
+    get() {
+      return this.children
+        .map((c) => (c.nodeType === 3 ? c.nodeValue : c.textContent))
+        .join("");
+    },
+    set(value) {
+      const text = String(value);
+      this.children = text ? [document.createTextNode(text)] : [];
+    },
+  });
+  Object.defineProperty(el, "firstChild", {
+    get() { return this.children[0] || null; },
+  });
+  return el;
 }
 
 // A stand-in for graph.py's `note` answer, so the SCANNED state can be probed
@@ -157,6 +179,11 @@ export function loadTemplateScript(templatePath, options = {}) {
     getElementById: stub, createElement: fakeElement, addEventListener() {},
     querySelectorAll: () => [], documentElement: { getAttribute: () => "dark" },
     visibilityState: "visible",
+    // The table widget's inline renderer mixes text runs in with elements
+    // (a decoration cannot do that for it — see template.html's
+    // `renderInline`), so building it needs a real-enough text node, unlike
+    // the other widgets, which only ever set `textContent` wholesale.
+    createTextNode: (text) => ({ nodeType: 3, nodeValue: text, textContent: text }),
   };
   globalThis.window = {
     addEventListener() {}, top: { location: { pathname: "/view/x" } },

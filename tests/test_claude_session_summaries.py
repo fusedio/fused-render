@@ -3,8 +3,8 @@ one row per Claude Code session for the React shell's Schedule page — name,
 folder, start/last-active times, live "running" flag and triage status,
 newest activity first.
 
-Mirrors the bundled sessions inbox app (core_apps/sessions), so the rules
-under test are its rules: the 45s running window, housekeeping tail entries
+The rules came from the retired bundled sessions inbox app, which this router
+replaced: the 45s running window, housekeeping tail entries
 that bump the file mtime without being activity, and the session_names.json /
 triage.json overlays.
 """

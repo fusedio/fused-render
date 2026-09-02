@@ -18,10 +18,19 @@ stray `readers/pyproject.toml` inside an app must not quietly give `readers/`
 its own environment while the rest of the app uses another. Inside a container
 the container always wins; outside one, the outermost declaration wins.
 
-Storage follows MD-7: the declaration (`pyproject.toml`, `uv.lock`) is source
-and lives with the user's code; the venv is derived and lives in the home dir at
-`<home_dir()>/venvs/<sha256(abs path)[:16]>`, never as a sidecar in the user's
-tree. The uv cache sits beside it under the same home dir ONLY when
+Storage follows MD-7 for the declaration (`pyproject.toml`, `uv.lock`): it is
+source and lives with the user's code. The venv, unlike the declaration, is
+derived state, and for a folder the app can write to it now lives INSIDE that
+folder, at `<project_dir>/.venv` — the layout `uv run`, VS Code and this app's
+own notebook kernel picker (`templates/notebook/kernel.py`'s `.venv` walk)
+already expect, for free. "Derived state never lands in the user's tree" was
+MD-7's original reading of this and is now the fallback rather than the rule:
+a folder that cannot hold a `.venv` — a read-only in-package runner folder
+(D376), an unwritable mount, or `FUSED_RENDER_VENV_IN_TREE=0` — still gets one
+at `<home_dir()>/venvs/<sha256 of the folder's identity>[:16]>`, never as a
+sidecar dropped into a tree that cannot take it. See `venv_dir_for` for the
+exact predicate and its order. The uv cache sits beside the home store under
+the same home dir ONLY when
 `FUSED_RENDER_HOME` is explicitly set (see `uv_cache_dir()`) — that used to
 be unconditional and fragmented the cache per branch/worktree as a result;
 ordinarily uv is left to pick its own default cache instead, trading the
@@ -32,12 +41,21 @@ The path is hashed AS GIVEN (abspath, not realpath), with ONE exception: a proje
 folder that ships inside the app (the AI runner folders) is keyed on its path
 relative to the `fused_render` package, because the app's own path is not stable —
 the AppImage's mount directory is fresh on every launch. See `_venv_identity`.
+That hash — `venv_key_for` — is no longer the storage path for the common,
+in-tree case, but it is still the ONE per-folder identifier everything else
+names a venv by: the install-progress directory, the `/api/env/progress?key=`
+and `/api/env/cancel` parameters, and the install-dedup lock key all still want
+a stable string that survives a request across a folder they cannot always
+re-derive from scratch, and only the home-store fallback still uses it as a
+literal directory name.
 
 Hashing the path as given is a deliberate
-divergence from MD-7's canonicalisation: moving or renaming a folder yields a
-fresh environment, which is a requested feature, and the orphaned venv is
-reclaimed by `gc()`. The dangerous direction — two different folders colliding
-on one key — remains impossible.
+divergence from MD-7's canonicalisation: renaming a folder in the home store
+yields a fresh environment there, which is a requested feature for that case,
+and the orphaned venv is reclaimed by `gc()`. An in-tree venv needs no such
+rule — it lives inside the folder it belongs to, so a rename carries it along
+for free; see `venv_dir_for`. The dangerous direction — two different folders
+colliding on one key — remains impossible either way.
 
 Staleness is a DIGEST comparison, never an mtime chain: `.fused-source.json`
 inside the venv records the path and the sha256 of the `pyproject.toml` it was
@@ -56,9 +74,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import threading
+import urllib.parse
 
 from fused_render.shell.storage import home_dir
 
@@ -242,7 +262,16 @@ def _venv_identity(project_dir: str) -> str:
 
 
 def venv_key_for(project_dir: str) -> str:
-    """The directory name of *project_dir*'s venv: sha256 of its identity.
+    """*project_dir*'s stable per-folder identifier: sha256 of its identity.
+
+    Not the storage path any more — see `venv_dir_for`, which now answers
+    `<project_dir>/.venv` for the common, writable case, and only falls back to
+    naming a directory with this key in the home store. What this key remains
+    the one answer for is everything ELSE that has to name a project without
+    ambiguity across a request boundary: the install-progress directory, the
+    `/api/env/progress?key=` and `/api/env/cancel` parameters, and the
+    install-dedup lock. A second derivation of any of those is how a progress
+    row and its cancel button end up naming two different projects.
 
     The identity is the absolute path for every folder of the user's, and the
     PACKAGE-RELATIVE path for a folder that ships inside the app — see
@@ -251,9 +280,105 @@ def venv_key_for(project_dir: str) -> str:
     return hashlib.sha256(_venv_identity(project_dir).encode("utf-8")).hexdigest()[:_KEY_LEN]
 
 
+# Set to exactly "0" to force every project onto the home store, bypassing the
+# in-tree default below. The hazard this whole change creates is real and this
+# is the way out of it: a project folder under cloud sync or on a network mount
+# would otherwise sync a multi-gigabyte venv along with the user's files, on
+# every dependency change.
+_IN_TREE_ESCAPE_HATCH = "FUSED_RENDER_VENV_IN_TREE"
+
+# project dir (absolute) -> "can a file actually be created in it". A
+# process-local memo, same shape as `_digest_cache` above: `venv_dir_for` runs
+# on the `/api/run` pre-flight path via `envinstall.is_installed`, and an
+# unmemoised create-exclusive probe per request is filesystem churn nothing
+# needs — the answer does not change without a remount or a permissions edit,
+# neither of which happens mid-process.
+_writable_cache: dict[str, bool] = {}
+_writable_lock = threading.Lock()
+
+
+def _probe_writable(path: str) -> bool:
+    """Can a file actually be CREATED in *path*? Answered by doing it, not by
+    `os.access(path, os.W_OK)` — that call is wrong for the exact case this
+    predicate exists to catch: on Windows it reports the read-only ATTRIBUTE,
+    which says nothing about an ACL-protected `Program Files` install, and on
+    POSIX it consults mode bits and misses a directory denied by an ACL entry
+    or SELinux. Same probe `_env_install_worker._writable_dir` already uses for
+    the same reason, restated rather than shared because that module must not
+    import `fused_render` (D152) — two copies of the technique is correct here.
+
+    `O_CREAT|O_EXCL` so it can never truncate something of the user's; the pid
+    in the name so two processes probing one folder at once cannot collide.
+    """
+    probe = os.path.join(path, ".fused-render-write-probe.%d" % os.getpid())
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+    return True
+
+
+def _is_writable_dir(project_dir: str) -> bool:
+    """Memoised per absolute project dir for the life of the process. See
+    `_writable_cache` for why memoising matters here and `_probe_writable` for
+    why a probe rather than `os.access`."""
+    ap = os.path.abspath(project_dir)
+    with _writable_lock:
+        cached = _writable_cache.get(ap)
+    if cached is not None:
+        return cached
+    result = os.path.isdir(ap) and _probe_writable(ap)
+    with _writable_lock:
+        _writable_cache[ap] = result
+    return result
+
+
+def reset_writable_cache() -> None:
+    """Forget every memoised writability verdict. A test seam, mirroring
+    `reset_state_digest_cache`."""
+    with _writable_lock:
+        _writable_cache.clear()
+
+
+def _use_home_store(project_dir: str) -> bool:
+    """Does *project_dir*'s venv belong in the home store rather than in the
+    folder itself? Three reasons, checked in this order because the first two
+    are free (an env var, a string comparison already computed for the sidecar)
+    and the third is a filesystem probe:
+
+    1. The escape hatch (`FUSED_RENDER_VENV_IN_TREE=0`) — see its docstring.
+    2. The folder ships inside the installed `fused_render` package (an AI
+       runner folder) — its own tree is read-only on the AppImage's squashfs
+       mount and under a Windows `Program Files` install (D376), so nothing
+       can be written there at all. Reuses `_venv_identity` rather than a
+       second derivation of "is this in the package": that duplication is
+       exactly the mistake this function's sibling, `venv_key_for`, already
+       warns against.
+    3. The folder fails the writability probe for any other reason — a
+       read-only mount, a permissions-denied directory. Same failure mode as
+       (2), generalised past the one case that always has it.
+    """
+    if os.environ.get(_IN_TREE_ESCAPE_HATCH) == "0":
+        return True
+    if _venv_identity(project_dir).startswith(_PACKAGE_IDENTITY):
+        return True
+    return not _is_writable_dir(project_dir)
+
+
 def venv_dir_for(project_dir: str) -> str:
-    """Absolute path of *project_dir*'s venv, under the home dir."""
-    return os.path.join(venvs_root(), venv_key_for(project_dir))
+    """Absolute path of *project_dir*'s venv: `<project_dir>/.venv` for a
+    folder the app can write to, else a home-store path keyed on the folder's
+    identity (`<home_dir()>/venvs/<key>`) — see `_use_home_store` for exactly
+    which folders take the second path, and the module docstring for why the
+    in-tree layout is the default rather than the exception now."""
+    if _use_home_store(project_dir):
+        return os.path.join(venvs_root(), venv_key_for(project_dir))
+    return os.path.join(os.path.abspath(project_dir), ".venv")
 
 
 # --------------------------------------------------------------------------
@@ -447,6 +572,10 @@ def pyproject_path(project_dir: str) -> str:
     return os.path.join(project_dir, "pyproject.toml")
 
 
+def uv_toml_path(project_dir: str) -> str:
+    return os.path.join(project_dir, "uv.toml")
+
+
 def lock_path(project_dir: str) -> str:
     return os.path.join(project_dir, "uv.lock")
 
@@ -464,16 +593,15 @@ def has_lock(project_dir: str) -> bool:
     return os.path.isfile(lock_path(project_dir))
 
 
-def _load_manifest(project_dir: str) -> dict | None:
-    """Parse `<project_dir>/pyproject.toml`, or None when absent/unreadable.
+def _load_toml(path: str) -> dict | None:
+    """Parse a TOML file, or None when absent/unreadable.
 
     tomllib is 3.11+ stdlib and `requires-python` is now >=3.11, so the `tomli`
     arm below is unreachable in this interpreter; it is kept because this helper
     is copied into template backends that may run elsewhere, and it costs a
-    single failed import. Unlike the PEP 723 reader this replaces, a
-    missing parser is NOT an error the user can act on — every install of
-    fused-render has one — so both names are tried and anything else reads as
-    "no manifest".
+    single failed import. A missing parser is NOT an error the user can act
+    on — every install of fused-render has one — so both names are tried and
+    anything else reads as "no such file".
     """
     try:
         import tomllib
@@ -483,20 +611,45 @@ def _load_manifest(project_dir: str) -> dict | None:
         except ImportError:
             logger.warning(
                 "neither tomllib (Python 3.11+) nor tomli is available; "
-                "pyproject.toml files cannot be read"
+                "%s cannot be read", path
             )
             return None
     try:
-        with open(pyproject_path(project_dir), "rb") as f:
+        with open(path, "rb") as f:
             return tomllib.load(f)
     except OSError:
         return None
     except tomllib.TOMLDecodeError as e:
-        # Not raised: a broken manifest must not 500 the request. It reads as
-        # "no environment", which lands the script on the app interpreter and
-        # fails with a real ImportError naming the package it wanted.
-        logger.warning("invalid TOML in %s: %s", pyproject_path(project_dir), e)
+        # Not raised: a broken file must not 500 the request. For the
+        # manifest this reads as "no environment", which lands the script on
+        # the app interpreter and fails with a real ImportError naming the
+        # package it wanted; for uv.toml (see `_load_uv_toml`) it reads as
+        # "no project-wide index configuration to disclose", the same
+        # fail-open the manifest gets.
+        logger.warning("invalid TOML in %s: %s", path, e)
         return None
+
+
+def _load_manifest(project_dir: str) -> dict | None:
+    """Parse `<project_dir>/pyproject.toml`, or None when absent/unreadable."""
+    return _load_toml(pyproject_path(project_dir))
+
+
+def _load_uv_toml(project_dir: str) -> dict | None:
+    """Parse `<project_dir>/uv.toml`, or None when absent/unreadable.
+
+    Real config uv itself obeys for the folder — `_env_install_worker.py`'s
+    `_MIRRORED_NAMES` copies it into a read-only project's mirror precisely
+    because `uv sync` reads it — so `nonstandard_dependencies_of` (below) has
+    to read it too, for the same project-wide index shapes it already reads
+    out of `pyproject.toml`'s `[tool.uv]`. `uv.toml` uses the SAME key names
+    at the TOP LEVEL rather than nested under `[tool.uv]`, since the file is
+    itself a dedicated uv config file with no other section to nest under.
+    Left unread, a folder shipping `uv.toml` with a private `index-url` would
+    route every package through it while the prompt still said "a one-time
+    download" — the exact thing this classifier exists to prevent.
+    """
+    return _load_toml(uv_toml_path(project_dir))
 
 
 def has_project_env(project_dir: str) -> bool:
@@ -601,6 +754,201 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     stripping them would lose information for no gain.
     """
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
+
+
+# [tool.uv.sources] entry key -> why it makes that dependency non-standard.
+# Checked in this order so an entry carrying more than one key (uv allows
+# `git = ... , subdirectory = ...`, for instance) still gets ONE reason rather
+# than being reported twice.
+_UV_SOURCE_REASONS = (
+    ("git", "from a git repository"),
+    ("url", "from a URL"),
+    ("path", "from a local path"),
+    ("workspace", "from a workspace member"),
+    ("index", "from a custom index"),
+)
+
+
+def nonstandard_dependencies_of(project_dir: str) -> list[dict[str, str]]:
+    """Dependencies that will NOT be installed as a released version from the
+    default index, as `{"name", "reason"}` pairs — the one thing the install
+    prompt is allowed to name (see `runtime.js`'s `startInstall`). Everything
+    else in the manifest is an ordinary PyPI requirement, and the prompt shows
+    NONE of those: naming the common case is what turns a question into a
+    reflex, so silence here is deliberate, not a gap.
+
+    Three shapes, all readable from the manifest (and, for shape 3, from
+    `uv.toml` alongside it — see that shape's own note) — no network, no
+    resolution, so this can run on the request path:
+
+    1. A PEP 508 direct reference right in `[project].dependencies`
+       (`foo @ https://.../foo.whl`, or a VCS form `foo @ git+https://...`).
+       The requirement names its own source; there is no "a released version
+       of foo" for it to mean.
+    2. A `[tool.uv.sources]` entry that routes a plain-looking `dependencies`
+       name (`foolib`) to a `git`/`url`/`path`/`workspace`/`index`. Read
+       `dependencies` alone and this looks like an ordinary PyPI name — only
+       the sources table says otherwise, which is exactly why a name-only
+       prompt would otherwise miss it. uv also accepts a LIST of source
+       tables for one name (platform-conditional sources, each with its own
+       `marker`) — every entry in the list is checked, not just a first one
+       assumed to be a dict, so a git/url/path/workspace source confined to
+       one platform's entry is still named rather than silently skipped.
+    3. A project-wide custom index: `[tool.uv]`'s `index-url`/`default-index`/
+       `extra-index-url`, or a `[[tool.uv.index]]` table with no
+       `explicit = true` — read from `uv.toml` too (same key names, at the
+       top level rather than nested under `[tool.uv]` — see
+       `_load_uv_toml`), since `uv sync` obeys either file for this folder
+       and a private index declared only in `uv.toml` is exactly as capable
+       of routing every package somewhere else as one declared in
+       `pyproject.toml`. This is not a fact about any one dependency — it is
+       a candidate source for EVERY requirement in the graph — so it is
+       reported once, under the index's host, instead of against whichever
+       dependencies happen to resolve from it. An `explicit` index is the
+       opposite case: confined to whatever `[tool.uv.sources]` routes to it
+       by name, so it carries no risk beyond what shape 2 already reports for
+       that one entry, and is left out here.
+
+    Order and duplicates are not contracts callers rely on; this only ever
+    feeds a one-line-per-entry prompt.
+    """
+    meta = _load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return []
+
+    found: list[dict[str, str]] = []
+
+    # Shape 1: a direct reference inside `dependencies` itself. Filtered
+    # through `applicable_dependencies_of` so a direct reference behind a
+    # marker that doesn't hold here (PY-17's platform case, one more time)
+    # is not named for a package this platform will never try to install.
+    for requirement in applicable_dependencies_of(project_dir):
+        req = requirement.split(";", 1)[0]  # the marker plays no part below
+        if "@" not in req:
+            continue
+        name, _, url = req.partition("@")
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            continue
+        reason = "from a git repository" if url.startswith("git+") else "from a URL"
+        found.append({"name": name, "reason": reason})
+
+    tool = meta.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    uv = uv if isinstance(uv, dict) else {}
+
+    # Shape 2: [tool.uv.sources] entries that redirect a plain name elsewhere.
+    # A source is either a single table, or (uv's platform-conditional form) a
+    # LIST of tables, each usually carrying its own `marker`:
+    #
+    #   [tool.uv.sources]
+    #   httpx = [{ git = "...", marker = "sys_platform == 'darwin'" }]
+    #
+    # Normalised to a list of tables either way, so both shapes are checked
+    # identically. A bare `isinstance(entry, dict)` guard here used to skip
+    # the list form entirely — uv still fetches from git for it, just never
+    # named in the prompt.
+    sources = uv.get("sources")
+    if isinstance(sources, dict):
+        for name, source in sources.items():
+            if not isinstance(name, str):
+                continue
+            if isinstance(source, dict):
+                entries = [source]
+            elif isinstance(source, list):
+                entries = [e for e in source if isinstance(e, dict)]
+            else:
+                continue
+            # One reason per name, from the FIRST matching key in the FIRST
+            # entry that has one — same "checked in this order" rule
+            # `_UV_SOURCE_REASONS` documents for a single table, extended
+            # across every platform variant so a name is still reported once
+            # rather than once per marker it happens to carry.
+            for entry in entries:
+                reason = next(
+                    (reason for key, reason in _UV_SOURCE_REASONS if key in entry),
+                    None,
+                )
+                if reason:
+                    found.append({"name": name, "reason": reason})
+                    break
+
+    # Shape 3: a project-wide custom index, reported once under its host —
+    # it redirects every package, not just the one it happens to be named
+    # after. Collected from BOTH `pyproject.toml`'s `[tool.uv]` and
+    # `uv.toml` (same key names, top level in the latter — see
+    # `_load_uv_toml`): uv itself reads either, or both, for this folder, so
+    # a private index declared only in `uv.toml` must be disclosed exactly
+    # like one declared in `[tool.uv]` — leaving it out would let a folder
+    # shipping `uv.toml` route every package through an attacker's index
+    # with no consent prompt at all.
+    index_urls = _tool_uv_index_urls(uv)
+    uv_toml = _load_uv_toml(project_dir)
+    if isinstance(uv_toml, dict):
+        index_urls += _tool_uv_index_urls(uv_toml)
+    for url in index_urls:
+        host = _index_host(url)
+        found.append({"name": host, "reason": "a custom package index for everything"})
+
+    return found
+
+
+def _index_host(url: str) -> str:
+    """The disclosable name for a project-wide index/`find-links` URL:
+    hostname plus port when there is one, with any userinfo stripped.
+
+    `urlparse(url).netloc` includes userinfo (`user:token@host`), so using
+    it directly would render a credential straight into the consent prompt
+    AND into `/api/run`'s `needs_install` payload — the one thing this
+    disclosure must never do. The port is informative (it can be the only
+    thing distinguishing a private mirror from the public index at the same
+    host) and carries no secret, so it stays.
+
+    A value with no scheme (`urlparse` then finds no netloc at all — uv
+    still accepts it as an index) falls back to the raw text, but that text
+    can itself be `user:token@host/path` with no `//` to make `urlparse`
+    recognise it as authority; the regex strips a leading `userinfo@` from
+    it exactly like the normal case does, so the fallback never leaks what
+    the normal path already protects against.
+    """
+    host = urllib.parse.urlparse(url).hostname
+    if host:
+        port = urllib.parse.urlparse(url).port
+        return f"{host}:{port}" if port else host
+    return re.sub(r"^[^/@]*@", "", url)
+
+
+def _tool_uv_index_urls(uv: dict) -> list[str]:
+    """The project-wide index/download-source URLs named in a
+    `[tool.uv]`-shaped table: `index-url`/`default-index`,
+    `extra-index-url` (string or list), any `[[index]]` table with no
+    `explicit = true`, and `find-links` (string or list) — uv prefers
+    wheels from a `find-links` host exactly like a custom index, so leaving
+    it undisclosed would let a folder route every wheel-less package
+    through an attacker's host while the prompt still said "a one-time
+    download." Shared between `pyproject.toml`'s `[tool.uv]` and
+    `uv.toml`'s top level, which use identical keys (see `_load_uv_toml`)."""
+    index_urls: list[str] = []
+    for key in ("index-url", "default-index"):
+        value = uv.get(key)
+        if isinstance(value, str):
+            index_urls.append(value)
+    for key in ("extra-index-url", "find-links"):
+        value = uv.get(key)
+        if isinstance(value, str):
+            index_urls.append(value)
+        elif isinstance(value, list):
+            index_urls.extend(u for u in value if isinstance(u, str))
+    tables = uv.get("index")
+    if isinstance(tables, list):
+        for table in tables:
+            if (
+                isinstance(table, dict)
+                and not table.get("explicit")
+                and isinstance(table.get("url"), str)
+            ):
+                index_urls.append(table["url"])
+    return index_urls
 
 
 # Top-level import name -> distribution name, for the pairs where the two DIFFER
@@ -766,13 +1114,17 @@ def state_digest(project_dir: str) -> str:
 
     That the manifest is hashed at all — rather than the lock, on the reasoning
     that the lock is the resolved truth — is the requirement this exists for: a
-    user adding a dependency must have it picked up without ever running
-    `uv sync` by hand, because doing that would create an in-folder `.venv` and
-    diverge from the home-dir store. Hashing the lock instead meant such an edit
-    changed nothing, `sidecar_matches` said fresh, no install was offered, and
-    the run failed later on an ImportError with no loader and no explanation. The
-    cost in the other direction is a resync for a comment edit, which is a fast
-    no-op through uv's cache — a silently ignored dependency edit is a broken app.
+    user adding a dependency must have it picked up by OUR OWN install flow, not
+    only by a `uv sync` they happen to have run by hand. An in-tree venv sits
+    exactly where a hand `uv sync` would build it, but a hand build writes no
+    marker and no sidecar (`envinstall.READY_MARKER`, `write_sidecar`) — those
+    are what `is_installed` actually trusts — so hashing the lock would let a
+    hand-built `uv.lock` read as "already resolved for this manifest" and skip
+    the marker step forever. Hashing the lock instead meant such an edit changed
+    nothing, `sidecar_matches` said fresh, no install was offered, and the run
+    failed later on an ImportError with no loader and no explanation. The cost in
+    the other direction is a resync for a comment edit, which is a fast no-op
+    through uv's cache — a silently ignored dependency edit is a broken app.
 
     The intended consequence: a hand-edit to `uv.lock` ALONE does not trigger a
     resync. The lock is generated; the manifest is the declaration. (The sync it
@@ -876,10 +1228,13 @@ def _sidecar_source_dir(source: str) -> str:
     keeps sidecars written the OLD way (a plain absolute path, and there are
     installed copies with those on disk) reading correctly: `_PACKAGE_IDENTITY` is
     deliberately unspellable as a path, so no real recorded path can start with it
-    and be misread as an in-app one, and a bundled venv from before this change
-    simply keeps the behaviour it had — never reclaimed until its next rebuild
-    rewrites the sidecar. The one thing that must never happen, reclaiming a venv
-    whose source is alive, is impossible either way.
+    and be misread as an in-app one. Such a sidecar is no longer immune to `gc()`
+    the way it once was: the RELOCATED arm reads its unchanged path like any
+    other source directory, and reclaims it the moment `venv_dir_for` disagrees
+    about where its venv belongs (D630 made that disagreement the common case,
+    not a rebuild-only event). The one thing that must never happen, reclaiming
+    a venv whose source is alive AND still agrees with policy, is impossible
+    either way.
     """
     if source == _PACKAGE_IDENTITY:
         return _PACKAGE_DIR
@@ -912,11 +1267,23 @@ def _source_is_deleted(source: str) -> bool:
 
 
 def gc() -> int:
-    """Delete venvs whose sidecar names a folder that no longer exists.
+    """Delete venvs whose sidecar names a folder that is gone, or that
+    `venv_dir_for` no longer agrees belongs in the home store.
 
-    Load-bearing, not housekeeping: keying on the path means moving or renaming
-    a project orphans its venv by design, so without this the store grows by one
-    full environment every rename. Returns the number removed.
+    Load-bearing, not housekeeping, for two separate reasons now:
+
+      * keying a home-store venv on the path means moving or renaming a project
+        orphans it by design, so without this the store grows by one full
+        environment every rename;
+      * the in-tree default (`venv_dir_for`) means a venv that was built back
+        when everything lived in the home store now has a project that
+        disagrees about where its venv belongs — the folder is writable, is
+        not in the package, and the escape hatch is not set, so every fresh
+        request for it gets `<project>/.venv` instead. The home-store copy is
+        then a directory nothing will ever read again. RELOCATED, in the
+        return value's log line, names this second case; the first stays GONE.
+
+    Returns the number removed either way.
 
     Two things are deliberately LEFT ALONE, both because this runs unattended at
     every server startup and a wrong deletion costs the user a full re-download:
@@ -924,7 +1291,16 @@ def gc() -> int:
       * a venv with no readable sidecar — it may be an install in flight, and
         deleting one out from under a running worker is worse than leaking it;
       * a venv whose source is merely UNREACHABLE rather than deleted, e.g. on an
-        unplugged external drive. See `_source_is_deleted`.
+        unplugged external drive. See `_source_is_deleted`. This is also what
+        keeps the relocation arm safe: an unreachable folder fails the
+        writability probe (it cannot even be statted), so `venv_dir_for`
+        answers the home store for it too — the same directory this loop is
+        looking at — and it is therefore never read as "relocated". Reordering
+        this so relocation were checked before existence would delete a
+        multi-gigabyte venv the instant its volume is unplugged, which is
+        exactly the failure `_source_is_deleted` exists to prevent; a test
+        pins this (`test_gc_keeps_a_home_store_venv_whose_source_folder_is_
+        unreachable`).
 
     A manifest mirror (`<key>.src`) is reclaimed in two situations, and only
     those: with the venv it belongs to, and when there is NO `<key>` directory at
@@ -980,7 +1356,19 @@ def gc() -> int:
         source = info.get("path")
         if not isinstance(source, str):
             continue
-        if not _source_is_deleted(_sidecar_source_dir(source)):
+        source_dir = _sidecar_source_dir(source)
+        if _source_is_deleted(source_dir):
+            reason = "source %s is gone" % source
+        elif os.path.isdir(source_dir) and venv_dir_for(source_dir) != venv:
+            # The source is alive and reachable, and policy points its venv
+            # somewhere else now — almost always `<source_dir>/.venv`, since
+            # a folder has to be writable and outside the package to have
+            # landed in the home store as a stray in the first place. Not
+            # reached for an unreachable source: `os.path.isdir` is False for
+            # those, same as the deleted case above, and reaching this branch
+            # at all already required `_source_is_deleted` to answer False.
+            reason = "relocated: %s now uses %s" % (source, venv_dir_for(source_dir))
+        else:
             continue
         try:
             shutil.rmtree(venv)
@@ -993,6 +1381,6 @@ def gc() -> int:
         # KB, but it holds the lock that venv was built from — so it is reclaimed
         # WITH the venv and never on its own account.
         shutil.rmtree(venv + MIRROR_SUFFIX, ignore_errors=True)
-        logger.info("reclaimed venv %s (source %s is gone)", venv, source)
+        logger.info("reclaimed venv %s (%s)", venv, reason)
         removed += 1
     return removed

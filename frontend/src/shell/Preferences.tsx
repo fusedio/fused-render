@@ -45,19 +45,25 @@ import {
   getHfAuth,
   hfLogout,
   putCanvasesEnabled,
+  putLanEnabled,
+  getLanPairToken,
+  getLanDevices,
+  revokeLanDevice,
+  revokeAllLanDevices,
   putDefaultModel,
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
+import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import type { CallsParamsMode, HfAuth, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 
-type PrefsTab = "render" | "ai" | "indexing";
+type PrefsTab = "render" | "ai" | "indexing" | "lan";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -206,6 +212,201 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
+  );
+}
+
+// Local-network sharing (lan.py): off by default, this is the only place it
+// turns on. Same one-checkbox section shape as Canvases above. While the
+// listener is up it shows the QR code a phone scans to pair (the ONLY way in —
+// no PIN, no approval dialog), and the devices that have, with revoke.
+function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lan = prefs.lan;
+  const enabled = lan?.enabled ?? false;
+  const running = enabled && !!lan?.running;
+  const [devices, setDevices] = useState<LanDevice[]>(lan?.devices ?? []);
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putLanEnabled(!enabled);
+      onChange(next);
+      setDevices(next.lan?.devices ?? []);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // While the QR is on screen, watch for the phone to pair: the list grows,
+  // and the spent code is replaced with a fresh one (tokens are single-use).
+  useEffect(() => {
+    if (!running) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const { devices: next } = await getLanDevices();
+        if (!alive) return;
+        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
+      } catch {
+        /* the next tick retries */
+      }
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [running]);
+
+  const revoke = async (id: string | null) => {
+    setError(null);
+    try {
+      const { devices: next } = id ? await revokeLanDevice(id) : await revokeAllLanDevices();
+      setDevices(next);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Share on local network</h2>
+      <p className="deploy-muted">
+        Open your apps — everything under <code>~/Fused</code> and every linked folder — from a
+        phone on the same Wi-Fi. Only devices you pair by scanning the code below get in; a paired
+        device can open and run those apps and read or change their files, and nothing else on this
+        computer is reachable. Plain http: on iPhone the live microphone and clipboard paste stay off,
+        and on an open (password-less) network the pairing cookie travels in the clear.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Share my apps</b> on this network.
+        </span>
+      </label>
+      {running && lan.url && (
+        <LanPairing url={lan.url} deviceCount={devices.length} />
+      )}
+      {running && (
+        <LanDevices devices={devices} onRevoke={revoke} />
+      )}
+      {enabled && !lan?.running && (
+        <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
+      )}
+      {/* The listener can be up while a piece of it failed — zeroconf missing
+          (no render.fused.local name), no network address, or the https
+          listener down. Those must not hide behind a working QR. */}
+      {enabled && lan?.running && lan.error && (
+        <ErrorBanner>{`Sharing, but: ${lan.error}`}</ErrorBanner>
+      )}
+      {enabled && lan?.running && !lan.error && lan.tls_error && (
+        <ErrorBanner>{`The app's https listener is down (browsers unaffected): ${lan.tls_error}`}</ErrorBanner>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// The QR code: a pairing URL good for five minutes and ONE device. A new one
+// replaces it the moment a pairing lands (the device count changes — the
+// section polls it) and when the old one runs out.
+function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [ipUrl, setIpUrl] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    setNonce((n) => n + 1);
+  }, [deviceCount]);
+
+  useEffect(() => {
+    let alive = true;
+    let timer: number | null = null;
+    getLanPairToken()
+      .then((t) => {
+        if (!alive) return;
+        const qr = qrcode(0, "M");
+        qr.addData(t.url);
+        qr.make();
+        setSvg(qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }));
+        setIpUrl(t.ip_url);
+        // Rotate just before the server forgets this one.
+        timer = window.setTimeout(() => alive && setNonce((n) => n + 1), Math.max(5, t.ttl_s - 5) * 1000);
+      })
+      .catch(() => alive && setSvg(null));
+    return () => {
+      alive = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [nonce]);
+
+  return (
+    <div className="lan-pair">
+      <div
+        className="lan-pair-qr"
+        aria-label="Pairing QR code"
+        dangerouslySetInnerHTML={{ __html: svg ?? "" }}
+      />
+      <div className="lan-pair-text">
+        <p>
+          <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center
+          scanner, whose in-app browser can't pair Safari). Each code pairs one device; a new code
+          appears right after, and every five minutes. A paired phone then opens{" "}
+          <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+        </p>
+        <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
+          New code
+        </button>
+        {ipUrl && (
+          <p className="deploy-muted" style={{ marginTop: 8 }}>
+            If the phone can't resolve the name, open this once instead:{" "}
+            <code style={{ wordBreak: "break-all" }}>{ipUrl}</code>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function agoLabel(ts: number): string {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+
+function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
+  if (!devices.length) {
+    return <p className="deploy-muted">No paired devices yet.</p>;
+  }
+  return (
+    <div className="lan-devices">
+      <div className="lan-devices-head">
+        <b>Paired devices</b>
+        <button type="button" className="btn btn-secondary" onClick={() => onRevoke(null)}>
+          Forget all
+        </button>
+      </div>
+      <ul>
+        {devices.map((d) => (
+          <li key={d.id}>
+            <span className="lan-device-name">{d.name}</span>
+            <span className="deploy-muted">
+              paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
+            </span>
+            <button type="button" className="btn btn-secondary" onClick={() => onRevoke(d.id)}>
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -580,7 +781,10 @@ export default function Preferences() {
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
   const tab: PrefsTab =
-    requested === "indexing" ? "indexing" : requested === "ai" ? "ai" : "render";
+    requested === "indexing" ? "indexing"
+    : requested === "ai" ? "ai"
+    : requested === "lan" ? "lan"
+    : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -629,6 +833,17 @@ export default function Preferences() {
             >
               Indexing
             </button>
+            {/* Render local network — sharing apps with phones on the Wi-Fi
+                (lan.py): the switch, the pairing QR and the paired devices.
+                Its own tab because pairing is a task you come here to DO with
+                a phone in hand, not a setting you glance at. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "lan" ? " active" : "")}
+              onClick={() => setTab("lan")}
+            >
+              Render local network
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -639,6 +854,7 @@ export default function Preferences() {
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
             {tab === "ai" && (
               <>
                 <ModelSection prefs={prefs} onChange={setPrefs} />

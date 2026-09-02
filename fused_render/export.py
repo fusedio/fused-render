@@ -93,11 +93,16 @@ _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITER
 # entry maps to the reason a hosted page can't have it (writeFile/stat: no
 # filesystem behind a served artifact; ai: it runs the claude CLI on the
 # author's own machine, which a hosted page can't reach).
-_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai)\s*\(")
+# `ai.text`, not `ai`: since D631 `fused.ai` is a namespace and text is a verb
+# on it like image/transcribe/embed. Only the text verb is caught, as only the
+# bare call was before — the other dotted calls stay a `fused.env` gating
+# obligation (docs/EXPORT.md, an open call rather than an oversight).
+_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai\.text)\s*\(")
 _UNSUPPORTED_REASON = {
     "writeFile": "a served artifact is immutable and has no filesystem",
     "stat": "a served artifact is immutable and has no filesystem",
-    "ai": "it runs the claude CLI on the local machine, which a hosted page cannot reach",
+    "ai.text": "it runs the claude CLI, or a model resident on the local machine, "
+               "neither of which a hosted page can reach",
 }
 
 # Bundle v2 payload directory. Every bundled file lives at ``<PAYLOAD>/<page-relative
@@ -378,7 +383,12 @@ def _glob_in_page(page_dir: str, pattern: str) -> list[str]:
     is still yielded (cheap) and rejected downstream by the caller's gauntlet, as before."""
     pat_segs = [s for s in pattern.replace(os.sep, "/").split("/") if s != ""]
     hits: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(page_dir, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(page_dir, followlinks=False):
+        # A page's folder now holds an in-tree `.venv` once it has been installed
+        # (D630): pruned so a broad `**/*.py` include can't sweep tens of
+        # thousands of site-packages files into the export, and so a narrow glob
+        # doesn't still pay a full venv traversal per pattern.
+        dirnames[:] = [d for d in dirnames if d != ".venv"]
         rel_dir = os.path.relpath(dirpath, page_dir).replace(os.sep, "/")
         for fn in filenames:
             rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"

@@ -95,6 +95,45 @@ def note_file(tmp_path_factory):
     return str(path)
 
 
+# A second note, kept apart from NOTE: two tests above assert NOTE's table's
+# exact source text, so a table exercising more of `tableWidget` needs its
+# own fixture rather than growing NOTE's.
+TABLE_NOTE = r"""top
+
+| **Bold** | `code` | [lbl](https://x.com) | Plain |
+| :--- | ---: | :-: | --- |
+| a\|b | plain | text | |
+"""
+
+# The Table node's own range — header, delimiter and one data line, with
+# neither the leading `top` paragraph nor a trailing newline — which is what
+# `at(..., TABLE_SOURCE, "widget")` has to match exactly (see how
+# `tableWidget` is invoked in buildDecorations, off `node.from`/`node.to`).
+TABLE_SOURCE = (
+    "| **Bold** | `code` | [lbl](https://x.com) | Plain |\n"
+    "| :--- | ---: | :-: | --- |\n"
+    r"| a\|b | plain | text | |"
+)
+
+
+@pytest.fixture(scope="module")
+def table_note_file(tmp_path_factory):
+    path = tmp_path_factory.mktemp("mdtbl") / "table.md"
+    path.write_text(TABLE_NOTE, encoding="utf-8")
+    return str(path)
+
+
+def table_dom(table_note_file):
+    """The table widget's DOM, walked all the way down.
+
+    A cell's inline markup nests — `**bold**` becomes `td > span.lp-bold >
+    text` — so this needs more than the one level of children the other
+    widget tests read; see `serializeNode` in
+    scripts/vendor-codemirror/live-preview-probe.mjs.
+    """
+    return dom(decorate(table_note_file, caret=0), TABLE_SOURCE)
+
+
 def decorate(note_file, caret=0, scanned=False, params=None, writable=None):
     """The decoration set the template would render, with the caret at `caret`.
 
@@ -255,6 +294,216 @@ def test_a_table_and_a_rule_yield_to_the_caret(note_file):
     assert not at(inside, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     # A different line's rule is unaffected — reveal is per-line, not per-doc.
     assert at(inside, "---", "widget")
+
+
+# ----------------------------------------------- inline markup inside a cell
+
+
+def test_a_cell_s_inline_markup_renders_as_dom_not_literal_syntax(table_note_file):
+    """A cell cannot be reached by a tree decoration — a decoration cannot
+    address into a widget's DOM — so `tableWidget` renders a cell's markup
+    itself, through `renderInline`. `**Bold**` must come out as a real
+    `lp-bold` element wrapping a text node, not as the literal asterisks
+    a caret would see in the source.
+    """
+    bold_th, code_th, link_th, plain_th = table_dom(table_note_file)["children"][0]["children"]
+
+    bold = bold_th["children"][0]
+    assert bold["tag"] == "span" and bold["cls"] == "lp-bold"
+    assert bold["children"][0] == {"tag": "#text", "text": "Bold"}
+
+    code = code_th["children"][0]
+    assert code["tag"] == "code" and code["cls"] == "lp-code"
+    assert code["text"] == "code"
+
+    link = link_th["children"][0]
+    assert link["tag"] == "a" and link["cls"] == "lp-link"
+    assert link["text"] == "lbl"
+    assert link["href"] == "https://x.com"
+
+    # And a cell with no markup at all is still a text node, not a bare
+    # string sitting directly on the <th> — the same renderer runs for it.
+    assert plain_th["children"][0] == {"tag": "#text", "text": "Plain"}
+
+
+def test_the_delimiter_row_s_alignment_reaches_the_cells(table_note_file):
+    """`:---` / `---:` / `:-:` in the delimiter row (`rowAlignment`) becomes
+    each column's `text-align`.
+
+    A column is aligned whole, HEADER INCLUDED — a heading sitting left over a
+    right-aligned column of numbers is not what the delimiter row asked for,
+    and it is the reason the alignment row is read in a pass of its own rather
+    than as the row loop reaches it (the header line comes first in source
+    order, so a single pass would build it before the answer was known).
+    """
+    rows = table_dom(table_note_file)["children"]
+    for row in (rows[0], rows[1]):
+        left, right, center, unaligned = row["children"]
+        assert left["style"].get("textAlign") == "left"
+        assert right["style"].get("textAlign") == "right"
+        assert center["style"].get("textAlign") == "center"
+        # The fourth column's `---` delimiter cell carries no colon, so
+        # `rowAlignment` gives it no alignment at all.
+        assert not unaligned["style"].get("textAlign")
+
+
+def test_an_escaped_pipe_stays_inside_one_cell(table_note_file):
+    r"""`\|` is how a literal pipe survives inside a cell: `splitRow` steps
+    over a backslash-escaped bar rather than treating it as a column
+    boundary. Without that, "a\|b" would read as two columns and turn this
+    four-column row into five.
+    """
+    data_row = table_dom(table_note_file)["children"][1]["children"]
+    assert len(data_row) == 4
+    # And the escape itself does not survive into what is shown — `\|`
+    # renders as a plain `|`, the same unescaping every other inline escape
+    # in a cell gets.
+    assert data_row[0]["children"][0] == {"tag": "#text", "text": "a|b"}
+
+
+def test_the_delimiter_row_is_not_rendered_as_a_table_row(table_note_file):
+    """The delimiter line is structure — it sets alignment — not a row of
+    cells to display, so `tableWidget` must skip it entirely: a table with a
+    header and one data row has exactly two `<tr>`s, never a third full of
+    dashes in between.
+    """
+    table = table_dom(table_note_file)
+    assert len(table["children"]) == 2
+    for tr in table["children"]:
+        for cell in tr["children"]:
+            assert cell["data"]["cellRaw"] != ":---" and not \
+                (cell["data"]["cellRaw"].strip(":- ") == "" and cell["data"]["cellRaw"] != "")
+
+
+def test_a_cell_carries_no_bare_data_line_only_the_namespaced_keys(table_note_file):
+    """`td.dataset.line/.col/.raw/.index` would collide with the document-level
+    delegated click handler's `closest("[data-line]")`, which treats ANY
+    element carrying that attribute as an outline row and scrolls the note
+    instead of letting the cell (or a link inside it) handle the click. The
+    widget's own bookkeeping is namespaced as `data-cell-row` /
+    `data-cell-col` / `data-cell-raw` / `data-cell-index` so it cannot be
+    mistaken for that selector.
+    """
+    for tr in table_dom(table_note_file)["children"]:
+        for cell in tr["children"]:
+            for bare in ("line", "col", "raw", "index"):
+                assert bare not in cell["data"], (bare, cell["data"])
+            for namespaced in ("cellRow", "cellCol", "cellRaw", "cellIndex"):
+                assert namespaced in cell["data"], (namespaced, cell["data"])
+
+
+def test_the_cell_source_map_reaches_inside_a_code_span_and_a_link(table_note_file):
+    r"""`_cellSpans` is what turns a click's rendered hit into a RAW offset,
+    and the walk stops at the first node it has an entry for. An entry only
+    for the `<code>` element would therefore collapse every click inside a
+    code span onto the opening backtick, because an element entry contributes
+    no character offset — so the body's own text node is recorded too, at the
+    offset one past the fence. Same for a link label that came through
+    unescaped: `[lbl](...)` puts its text at 1, past the `[`.
+    """
+    bold_th, code_th, link_th, plain_th = table_dom(table_note_file)["children"][0]["children"]
+
+    assert [(s["tag"], s["text"], s["from"]) for s in code_th["spans"]] == [
+        ("code", "code", 0),   # the construct, for a hit on the element itself
+        ("#text", "code", 1),  # its body, one past the backtick
+    ]
+    assert [(s["tag"], s["text"], s["from"]) for s in link_th["spans"]] == [
+        ("a", "lbl", 0),
+        ("#text", "lbl", 1),
+    ]
+    # Emphasis needs no second entry: `renderInline` recurses into its body
+    # and the text run it emits there is already the recorded node.
+    assert [(s["tag"], s["text"], s["from"]) for s in bold_th["spans"]] == [
+        ("#text", "Bold", 2),
+    ]
+    assert [(s["tag"], s["text"], s["from"]) for s in plain_th["spans"]] == [
+        ("#text", "Plain", 0),
+    ]
+
+
+# A destination containing a balanced paren (SPEC.md MD-31b), in a table cell:
+# its own fixture rather than growing TABLE_NOTE, since TABLE_SOURCE pins that
+# fixture's exact source text against two tests above and both index into a
+# fixed four-column row.
+PAREN_LINK_NOTE = "top\n\n| [wiki](https://en.wikipedia.org/wiki/Foo_(bar)) |\n| --- |\n| x |\n"
+
+PAREN_LINK_TABLE_SOURCE = (
+    "| [wiki](https://en.wikipedia.org/wiki/Foo_(bar)) |\n"
+    "| --- |\n"
+    "| x |"
+)
+
+
+def test_a_link_with_a_balanced_paren_in_its_url_still_renders_as_a_link(tmp_path):
+    """`INLINE_SRC`'s url group must allow one level of balanced parens, or a
+    Wikipedia-shaped destination like `Foo_(bar)` stops matching at the inner
+    `(` and the whole `[label](url)` is left as literal, unrendered source.
+    """
+    path = tmp_path / "paren.md"
+    path.write_text(PAREN_LINK_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), PAREN_LINK_TABLE_SOURCE)
+    th = table["children"][0]["children"][0]
+    link = th["children"][0]
+    assert link["tag"] == "a" and link["cls"] == "lp-link"
+    assert link["text"] == "wiki"
+    assert link["href"] == "https://en.wikipedia.org/wiki/Foo_(bar)"
+
+
+# An escaped marker, and a table nested in a blockquote — both their own
+# fixtures for the same reason as PAREN_LINK_NOTE above.
+ESCAPED_NOTE = "top\n\n| \\*not italic\\* | \\[not a link\\](x) |\n| --- | --- |\n| y |\n"
+
+ESCAPED_TABLE_SOURCE = (
+    "| \\*not italic\\* | \\[not a link\\](x) |\n"
+    "| --- | --- |\n"
+    "| y |"
+)
+
+QUOTED_NOTE = "top\n\n> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n"
+
+# The first line's `> ` is hidden by the quote decoration and so falls outside
+# the table's own range; every CONTINUATION line keeps its marker, which is
+# exactly where the phantom column came from.
+QUOTED_TABLE_SOURCE = (
+    "| a | b |\n"
+    "> | --- | --- |\n"
+    "> | 1 | 2 |"
+)
+
+
+def test_an_escaped_marker_in_a_cell_starts_no_construct(tmp_path):
+    r"""`\*` and `\[` are how an author says "show this character". The cell
+    renderer's alternation is tried before anything looks at escapes, so
+    without an escape alternative of its own `\*not italic\*` renders as real
+    emphasis wearing a stray backslash, and `\[not a link\](x)` becomes a
+    genuinely clickable link the author escaped away. Both must come out as
+    one plain text run with the backslashes stripped.
+    """
+    path = tmp_path / "escaped.md"
+    path.write_text(ESCAPED_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), ESCAPED_TABLE_SOURCE)
+    emph_th, link_th = table["children"][0]["children"]
+
+    assert emph_th["children"] == [{"tag": "#text", "text": "*not italic*"}]
+    assert link_th["children"] == [{"tag": "#text", "text": "[not a link](x)"}]
+
+
+def test_a_table_inside_a_blockquote_grows_no_column_of_quote_markers(tmp_path):
+    """The `>` on every line belongs to the blockquote, not the table. Left in
+    the split it is not blank, so it survives as a first column whose cell
+    text is the marker itself — and since a cell is editable, typing in that
+    phantom column rewrites the quote marker and breaks the block. It also
+    hides `| --- |` from `rowAlignment`, which then renders the delimiter row
+    as a visible row of dashes.
+    """
+    path = tmp_path / "quoted.md"
+    path.write_text(QUOTED_NOTE, encoding="utf-8")
+    table = dom(decorate(str(path), caret=0), QUOTED_TABLE_SOURCE)
+
+    # Two rows, not three: the delimiter row is recognised and skipped.
+    assert len(table["children"]) == 2
+    for row, texts in zip(table["children"], (["a", "b"], ["1", "2"])):
+        assert [cell["data"]["cellRaw"] for cell in row["children"]] == texts
 
 
 # ------------------------------- unknown is not missing (MD-11) --------------

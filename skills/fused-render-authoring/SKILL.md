@@ -21,7 +21,7 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    │
    ├─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
    │
-   ├─ fused.ai("...")          ← the claude CLI, or a local model; {text, model, usage}
+   ├─ fused.ai.text({prompt})  ← the claude CLI, or a local model; {text, ...result frame}
    │
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
@@ -32,7 +32,10 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <head>
 <meta charset="utf-8" />
 <meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
 ```
+
+**Declare the fused API version beside it: `<meta name="fused-api-version" content="N" />`** — copy the value from the starter's `index.html`, which always carries the current one. It records which shape of the `fused` runtime the page was authored against. A page without the tag is version 0. When the API changes in a breaking way, the app page shows a **Migrate** button that opens a task on the entry page; that task invokes **`fused-render-api-migration`**, which reads the per-version notes (`docs/v{N}.md` beside that skill), updates the code and bumps the tag. Authoring a new page: use the current version. Adding a breaking change to the runtime: add a `docs/vN.md` to that skill and bump the starter's tag — the procedure is in its SKILL.md.
 
 **Optional app icon: `icon.svg`.** An `icon.svg` next to the entry page becomes the app's sidebar glyph and tab favicon, rendered as is. Designing one (own background, both themes, 14–16 px legibility) → **`fused-render-app-icon`**.
 
@@ -101,9 +104,9 @@ Four things to know before you write one:
 - **The declaration is the COMPLETE list.** The venv contains exactly what you name — the bundled set is *not* unioned in. Declare numpy if you import numpy, even though the app ships it.
 - **It is all-or-nothing per folder.** One extra package means every import in every `.py` under that folder must be listed. That is why a folder with no manifest — which gets the whole bundled set free — is still the better default.
 - **Only the project root counts.** That's the app folder, a template folder, or the *topmost* ancestor holding a `pyproject.toml`. One in a subfolder is inert; the inspector flags it.
-- **First render triggers an install.** The user sees a loader while `uv sync` runs, then the run is retried automatically. Commit the `uv.lock` it writes — that's what makes the folder resolve identically elsewhere.
+- **First render triggers an install** — unless the render is a preview thumbnail, which never installs at all; see "Reserved params and preview mode" below. An all-PyPI manifest installs straight away with no prompt: the user sees a loader while `uv sync` runs, then the run is retried automatically. A dependency that will not arrive as a released version from the default index — a `[tool.uv.sources]` git/url/path pin, a PEP 508 direct URL, a workspace member, or a custom index (`[tool.uv]`/`uv.toml`, `find-links`) — raises a consent prompt naming those dependencies before anything installs. A dependency with no matching wheel stops rather than running its build backend, offering an explicit "install anyway" retry; one whose wheels exist only for another platform stops with that explained and no retry offered. Commit the `uv.lock` it writes — that's what makes the folder resolve identically elsewhere.
 
-Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and the environment is reconciled. Never run `uv sync` by hand in the folder — it would create an in-folder `.venv` that diverges from the one the app actually uses (venvs live centrally under `~/.fused-render/`).
+Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and the environment is reconciled. Never run `uv sync` by hand in the folder — a hand-run sync writes no readiness marker and no digest sidecar (`envinstall.READY_MARKER`, `.fused-source.json`; see `projectenv.state_digest`), so the app's own install flow can't tell it already ran; it also skips the consent prompt for a non-PyPI dependency, and runs a source build the app's own install would instead refuse by default (`--no-build`).
 
 **Per-file `# /// script` headers are not read.** A leftover block is an ordinary comment — silently ignored, not merged and not warned about. Never write one; if you see one, move its `dependencies` into the project root's `pyproject.toml` and delete it, because the packages it names are not being installed.
 
@@ -207,7 +210,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `await fused.stat(path)` | `{path, name, is_dir, size, mtime, writable, remote, templates}`. Use it for a size guard before reading something big, to capture `mtime` before editing, to check `writable` before offering an edit UI, and to notice `remote` (a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). |
 | `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: a file changed on disk since that mtime rejects with `.type === "conflict"` (and `.mtime` = the current value) instead of clobbering. `opts.create` writes only if the path is absent — an existing path rejects with `.type === "exists"` and nothing is written, which is how you create a file without a stat-then-write race. A read-only file rejects with `.type === "readonly"`. Resolves with a fresh stat; keep its `.mtime` to re-arm the lock. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL serving the file's raw bytes — for `<img src>`, `<video src>`, `<embed>`, download links. |
-| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Local-only. See **"AI calls"** below. |
+| `await fused.ai.text({prompt, ...opts})` | Ask an AI model; resolves with `text` plus the result frame every `fused.ai` verb shares (`provider, finishReason, warnings, usage, response, providerMetadata`). Every verb takes `abortSignal`. Local-only. See **"AI calls"** below. |
 | `await fused.fileIndex.search({root, q, limit})` / `.query({sql, limit})` | Read the machine-wide **file index** — one folder's corpus, or one read-only SQL statement over the `files`/`dirs` views (totals, per-extension breakdowns, path matches). Both resolve with `ready: {indexed, scanning, stale, reason}`, so an empty result is never mistaken for "no matches" when the truth is "no index yet". Use this instead of walking the filesystem in Python. Details, and the Python direct-parquet reader for bulk reads: **`fused-render-index`**. |
 | `await fused.capture.screen(opts)` / `.audio(opts)` / `.screenshot(opts)` / `.sources()` | Record the screen, record the microphone, grab a still — **natively**, so the result is a FILE on this machine, not a `MediaRecorder` blob. See **`fused-render-capture`**. |
 | `fused.trackJob(spec)` | Report a long-running operation to the shell's **download manager**, so it stays visible after the user browses away. Returns a handle; see **`fused-render-jobs`**. Never throws, never rejects. |
@@ -242,17 +245,17 @@ try {
 
 ## AI calls (`fused.ai`)
 
-`await fused.ai(prompt, opts?)` resolves with **exactly** `{text, model, usage}` — the server normalizes, so no guarding is needed. `model` is the full id that actually ran; `usage` is `null` or `{input_tokens, output_tokens}` (Anthropic-style names — `prompt_tokens` reads `undefined`). The model id picks the destination: an id containing a `/` or ending in `.gguf` runs on **this machine**, anything else goes to the **`claude` (Claude Code) CLI** on the user's own login. Common options are `systemPrompt`, `model`, `effort` and `onChunk`.
+`fused.ai` is a namespace of verbs (`.text`, `.image`, `.video`, `.transcribe`, `.embed`, `.models`, `.cancel`), not a function. `await fused.ai.text({prompt, ...opts})` — one options object, `prompt` a field like `.image({prompt})` — resolves with `text` plus **the result frame every verb shares**: `{provider, finishReason, warnings, usage, response: {id, modelId, timestamp}, providerMetadata}`. The server normalizes, so no guarding is needed. `response.modelId` is the full id that actually ran (no top-level `model`); `usage` is `null` or `{inputTokens, outputTokens, totalTokens}`; `provider` is the tier that answered. Two tiers, fixed order: `opts.provider: "local" | "claude"` pins one; omitted, the model id picks — an id containing a `/` or ending in `.gguf` runs on **this machine**, anything else goes to the **`claude` (Claude Code) CLI** on the user's own login. Common options are `provider`, `systemPrompt`, `model`, `effort` and `onChunk`.
 
 Three things decide whether a page using it behaves:
 
-- **It is local-only, and the exporter enforces that textually.** Any page containing the string `fused.ai(` is rejected for export (SPEC RH-11) — an `if (fused.env === "local")` guard does not help. Keep AI out of a view that must export.
+- **It is local-only, and the exporter enforces that textually.** Any page containing the string `fused.ai.text(` is rejected for export (SPEC RH-11) — an `if (fused.env === "local")` guard does not help. Keep AI out of a view that must export.
 - **Feed it aggregates, not the dataset.** Compute in Python, reduce to a compact summary, and hand the model that. A full table blows the token budget and drowns the signal.
 - **There is no stale-cancel channel.** Calls run fully concurrent, so a double-click fires two paid calls — disable the button while one is in flight.
 
 Rejections carry `.type`: `model_loading` (a local model is loading — `err.jobId` is the download it just started, not a failure), `ai_unavailable` (show a friendly state, not a raw overlay), `bad_request`, `ai_error`, `timeout`.
 
-Everything else — the full options and rejection tables, `fused.ai.models.*`, `.image()`, `.video()`, `.transcribe()`, `.embed()`, `.cancel()`, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
+Everything else — the result frame, per-verb option lists, recipes for `.image()`, `.video()`, `.transcribe()`, `.embed()`, the `fused.ai.models.*` picker, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
 
 ## The canonical wiring pattern
 
@@ -310,7 +313,7 @@ Why this shape:
 
 The shell renders pages nobody asked to *open*: `/apps` cards, listing-pane peeks, hover previews. Those frames are stamped `_preview=1` (usually with `_nofocus=1`), they mount and unmount as the pointer moves, and **many boot at once on a home or listing page** for apps the user has not opened and may never open. A page that boots identically in a preview turns that listing into N simultaneous cold starts — the most common way an app folder makes the home page unusable.
 
-**Read the flag at boot and return early**, rendering something cheap and static — a title, a cached thumbnail, an inert placeholder. Under preview, start none of: `runPython` calls that import something heavy, scan a directory or hit the network; model loads and downloads; daemon starts; `fused.capture.*`, `writeFile`, `trackJob`; polling loops, `setInterval`, websockets, EventSource; anything that records an "open", mutates state, or unpacks on first use.
+**Read the flag at boot and return early**, rendering something cheap and static — a title, a cached thumbnail, an inert placeholder. Under preview, start none of: `runPython` calls that import something heavy, scan a directory or hit the network; model loads and downloads; daemon starts; `fused.capture.*`, `writeFile`, `trackJob`; polling loops, `setInterval`, websockets, EventSource; anything that records an "open", mutates state, or unpacks on first use; the dependency install a run against a not-yet-installed environment would otherwise trigger — a previewed page fails to run instead.
 
 Read it by climbing, because the flag is **inherited** — your page may be framed by a template that was the one stamped, and only the ancestor's URL carries it (this mirrors the runtime's own `selfOrAncestorHasFlag`). This is safe only because the shell stamps `_preview` exclusively on non-interactive frames — a companion pane the user types into carries `_noopen=1` instead, precisely so a climbing `isPreview()` does not see it.
 
@@ -440,7 +443,7 @@ Every `fused.runPython` call runs `main()` in a fresh subprocess the server **ki
 
 Work that outlives one call needs to be *visible* once the user browses away, because the shell replaces your page's frame: report it to the download manager with `fused.trackJob`, from the detached worker as well as from the page. The strategies, the job API, and the worker-side reporter → **`fused-render-jobs`**.
 
-Nothing here holds state indefinitely — even `fused.engine(py)`, the warm variant of `runPython`, idle-retires its worker after 15 minutes. A folder that must keep running past that wants a resident daemon: **`fused-render-background-apps`**.
+Nothing here holds state indefinitely — `/api/run` never persists it. A folder that wants warm state opts into `[tool.fused-render.app]`: `main = "x.py"` gets a warm worker that's still reaped after `idle_timeout_s` (default 900s / 15 min), `daemon = "x.py"` gets its own resident daemon. See **`fused-render-background-apps`**.
 
 ## Pitfalls checklist
 

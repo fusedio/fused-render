@@ -22,6 +22,10 @@ classifiers = [
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # mDNS advertising of render.fused.local for local-network app sharing
+    # (fused_render/lan.py). Pure Python (+ ifaddr); optional at runtime — the
+    # listener still binds without it, the friendly name just does not resolve.
+    "zeroconf>=0.130",
     # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
     # implementation, so the ws library is a hard dependency, not an extra.
     "websockets>=12",

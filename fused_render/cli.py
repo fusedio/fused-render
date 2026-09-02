@@ -141,6 +141,12 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render import meta_migration
 
     meta_migration.run_once_in_background(fused_ws)
+    # One-time migration: fold the per-app repos under <workspace>/local into
+    # the single shared repo at the tag root (D626; local_monorepo docstring
+    # carries the rules).
+    from fused_render import local_monorepo
+
+    local_monorepo.run_once_in_background(fused_ws)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community
@@ -183,6 +189,12 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port))
     app.state.uvicorn_server = server
+    # Local-network sharing of ~/Fused/local (lan.py): a second listener the
+    # `lan_enabled` preference controls; this loopback bind is not touched.
+    from fused_render import lan
+
+    lan.attach(app)
+    lan.start_if_enabled()
     server.run()
 
 

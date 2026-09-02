@@ -7,7 +7,11 @@ top-level `.html` next to it — one entry file is what makes the folder open
 as an app). Keep the `<meta name="fused-app" />` tag near the top of its
 `<head>`: the marker is the ONLY thing that identifies this page as a fused
 app's entry — without it the app disappears from the apps hub (detection reads
-only the first 4 KiB of the file, so keep the tag near the top).
+only the first 4 KiB of the file, so keep the tag near the top). Right after
+it sits `<meta name="fused-api-version" content="N" />` — the version of the
+`fused` page API this app was written against. Leave it as is; the app page
+offers a "Migrate" task that updates the code and the tag together when the
+API moves on. A page without the tag is version 0.
 
 The page runs inside the explorer, which injects a `fused` runtime bridge:
 `fused.params` (URL-synced view state), `fused.runPython("./file.py", args)`
@@ -62,14 +66,21 @@ app needs in order to work on a fresh machine.
 
 ## Version control
 
-This folder is a local git repository (initialised at creation with the
-starter as its first commit). **Commit as you work, in small chunks** — after
-every coherent change, even tiny ones (a copy tweak, a single style fix, one
-function). Never batch a whole task into one commit, and never leave the tree
-dirty at the end of a turn: finish every turn with `git add -A` and a commit.
+This folder lives inside the workspace apps repository — one local git repo
+at the parent `local/` folder, shared by every app beside this one (the
+starter landed as this folder's first commit). **Commit as you work, in small
+chunks** — after every coherent change, even tiny ones (a copy tweak, a
+single style fix, one function). Never batch a whole task into one commit,
+and never leave this folder dirty at the end of a turn.
+
+**Always scope git to this folder.** Stage with `git add -A -- .` and commit
+with `git commit -m "…" -- .`, run from this directory. Never run a bare
+`git add -A`, `git commit -a`, or an unscoped `git commit` — sibling apps
+share the repository, and an unscoped command sweeps their in-progress work
+into your commit. (`git status -- .` and `git log -- .` are the scoped reads.)
 Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
-Don't push, don't add remotes, don't rewrite history — this repo is purely
-local undo history for the app.
+Don't push, don't add remotes, don't rewrite history, don't touch paths
+outside this folder — the repo is purely local undo history for the apps.
 
 If the app reads the machine-wide **file index** — a file search box, a
 disk-usage or file-type breakdown, a repos list, SQL over the filesystem —

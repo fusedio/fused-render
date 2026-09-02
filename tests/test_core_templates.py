@@ -66,6 +66,56 @@ def test_editing_a_packaged_template_restages_without_a_version_bump(staged):
     assert staged.served() == '<html data-fused-theme>light + dark</html>'
 
 
+def test_a_dev_checkouts_venv_is_never_staged(staged):
+    """`venv_dir_for` never puts a `.venv` inside the package -- a bundled
+    folder is keyed to the home store precisely because that tree is
+    read-only -- but a developer running `uv sync` by hand in
+    `fused_render/templates/<name>/` would create one, and without the
+    copytree ignore it would be swept into staging on every release-digest
+    change: a multi-gigabyte tree neither the release nor a real user asked
+    for."""
+    venv = staged.package / "csv" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("not a real interpreter", encoding="utf-8")
+
+    ensure_core_templates()
+
+    assert not os.path.exists(os.path.join(staged.core, "csv", ".venv"))
+    assert staged.served() == "<html>dark only</html>"
+
+
+def test_a_dev_checkouts_venv_is_never_digested(staged, monkeypatch):
+    """`_tree_digest` skips `.venv` the same way `copytree`'s `ignore` does.
+
+    The copytree exclusion alone leaves the digest walking and sha256'ing
+    every file under a dev checkout's `fused_render/templates/<name>/.venv`
+    on every server start — a full multi-GB content hash paid for a
+    directory that is never even staged — and any change inside that venv
+    (a `uv add`, a rebuild) would flip the marker and force a full wipe +
+    re-stage of every OTHER template too, since the marker is one digest over
+    the whole packaged tree.
+    """
+    venv = staged.package / "csv" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("not a real interpreter", encoding="utf-8")
+
+    ensure_core_templates()
+    marker_before = staged.marker()
+    core_templates._reset_expected_marker_cache()
+
+    (venv / "bin" / "python").write_text("a different fake interpreter, still not real",
+                                          encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("re-staged over a change confined to .venv")
+
+    monkeypatch.setattr(core_templates.shutil, "copytree", boom)
+    monkeypatch.setattr(core_templates.shutil, "rmtree", boom)
+
+    ensure_core_templates()
+    assert staged.marker() == marker_before
+
+
 def test_a_legacy_bare_version_marker_restages(staged):
     """Heals every install staged by the version-only marker logic."""
     from fused_render import __version__

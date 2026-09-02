@@ -12,7 +12,8 @@
 // step-distilled and was benchmarked at 4 steps (D310) — the generic 28-step
 // default turned a ~30-second first image into minutes, which is the
 // difference between a playground and a demo that appears broken. A model
-// with no hint keeps the server's 28.
+// with no CATALOG hint falls back to `FALLBACK_STEPS`, not to the server's
+// 28 — see that constant.
 //
 // A model that can be handed a BASE IMAGE (AI-9f) also gets an attachment row
 // at the top of the composer: pick a file, or take one with the webcam. Which
@@ -59,8 +60,21 @@ import {
   type Size,
 } from "./imageInput";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+import { SERVER_STEPS, middleSteps } from "./speedChips";
 
-const SERVER_STEPS = 28;
+// What an UNCATALOGUED image model starts at. Not the server's 28, which is a
+// generic diffusion default and wrong for everything this app actually ships:
+// the shortlist is step-distilled (FLUX.2 klein was benchmarked at 4, D310),
+// and the catalog says so per model. But the fallback is what a repo the
+// curation has no row for gets, and those are overwhelmingly the same family
+// under a different id -- `black-forest-labs/FLUX.2-klein-4B` is the base repo
+// of the very entry that declares `steps: 4`, and it landed here on 28: seven
+// times the denoising work for a model distilled not to need it, which reads
+// as "the GPU path is slow" rather than "the default is wrong". 4 makes the
+// unknown-model case start fast and be dragged up, instead of starting slow
+// and having to be diagnosed. The rail and the Max chip still reach
+// `SERVER_STEPS`; only the STARTING point moved.
+const FALLBACK_STEPS = 4;
 // Small, fast AND wide on purpose: 480x272 renders in a fraction of 1024²'s
 // time and is plenty to judge a prompt by — the first picture arriving quickly
 // IS the playground's pitch — and 16:9 is the shape the result reads best at
@@ -68,9 +82,12 @@ const SERVER_STEPS = 28;
 // 2048 for anyone who wants a big one. 272, not the 275 the height was asked
 // for: the route floors every side to a multiple of 16 (`side - side % 16`,
 // ai_runtime.py), so 275 RENDERS as 272 and a default saying 275 would be a
-// control lying about what runs. Guidance 1 because the shortlist's defaults
-// are guidance-distilled (FLUX.2 klein bakes the prompt-following in — CFG on
-// top only slows it down and overcooks the colours).
+// control lying about what runs. Guidance 1 is the fallback for a model that
+// declares no guidance of its own — the right starting point for a
+// guidance-distilled model like FLUX.2 klein (CFG on top only slows it down
+// and overcooks the colours), and wrong for an ordinary model like SD1.5,
+// which is exactly why a model that DOES declare a guidance in the catalog
+// (`entry.defaults?.guidance`) overrides this rather than using it.
 const DEFAULTS = { width: 480, height: 272, guidance: 1.0 };
 // The rail's slider bounds, in one place so a URL value and a dragged value
 // cannot disagree about what the control's scale is.
@@ -276,12 +293,24 @@ interface Run {
 
 export function ImageStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
   // The model's own benchmarked step count, when the curation measured one.
-  const modelSteps = entry.defaults?.steps ?? SERVER_STEPS;
+  const modelSteps = entry.defaults?.steps ?? FALLBACK_STEPS;
+  // The model's own curated guidance scale, where the curation names one —
+  // same shape as `modelSteps`, but the fallback is `DEFAULTS.guidance` (1)
+  // rather than a constant of its own: a model the catalog says nothing about
+  // gets the guidance-distilled assumption, which is what most of this
+  // shortlist is. A model that DOES name one (tiny-sd's 7.5, ordinary SD1.5
+  // CFG) overrides it here.
+  const modelGuidance = entry.defaults?.guidance ?? DEFAULTS.guidance;
+  // The middle rung is dropped rather than duplicated where a model's own count
+  // leaves no distinct number between it and the ceiling (`middleSteps`).
+  const middle = middleSteps(modelSteps);
   const speedChips =
     entry.defaults?.steps != null
       ? [
           { value: "quick", label: `Quick · ${modelSteps}`, title: `${modelSteps} steps — what this model was benchmarked at`, steps: modelSteps },
-          { value: "balanced", label: `Finer · ${Math.min(modelSteps * 3, SERVER_STEPS)}`, title: "More denoising steps — slower, sometimes cleaner", steps: Math.min(modelSteps * 3, SERVER_STEPS) },
+          ...(middle != null
+            ? [{ value: "balanced", label: `Finer · ${middle}`, title: "More denoising steps — slower, sometimes cleaner", steps: middle }]
+            : []),
           { value: "fine", label: `Max · ${SERVER_STEPS}`, title: `${SERVER_STEPS} steps — the server's generic default`, steps: SERVER_STEPS },
         ]
       : null;
@@ -298,7 +327,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [aspect, setAspect] = useState<string>(() => aspectOf(width, height));
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [guidance, setGuidance] = useState(() =>
-    numParam("guidance", DEFAULTS.guidance, ...GUIDANCE_RANGE),
+    numParam("guidance", modelGuidance, ...GUIDANCE_RANGE),
   );
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
   const [run, setRun] = useState<Run | null>(null);
@@ -347,7 +376,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         w: width !== DEFAULTS.width ? String(width) : null,
         h: height !== DEFAULTS.height ? String(height) : null,
         steps: steps !== modelSteps ? String(steps) : null,
-        guidance: guidance !== DEFAULTS.guidance ? String(guidance) : null,
+        guidance: guidance !== modelGuidance ? String(guidance) : null,
         seed: seed ? seed : null,
         // Written only where this model could use one. The key is OMITTED
         // rather than nulled on a model that cannot edit — nulling would
@@ -357,7 +386,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [prompt, width, height, steps, guidance, seed, modelSteps, editable, attachment]);
+  }, [prompt, width, height, steps, guidance, seed, modelSteps, modelGuidance, editable, attachment]);
 
   const abortRef = useRef<AbortController | null>(null);
   const { ref: boxRef } = useAutoGrow(prompt);
@@ -591,10 +620,11 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       const started = await startImage({
         prompt: wanted,
         model,
-        // `steps`/`guidance` always: the stage's defaults are its own (the
-        // model's benchmarked steps, guidance 1), and leaving either off would
-        // hand the server its generic 28 / 4.0. The SIZE is the one pair that
-        // can be left to the server, and only with an image attached — then
+        // `steps`/`guidance` always: the stage's defaults are its own
+        // (`modelSteps`/`modelGuidance`, the model's own curated pair), and
+        // leaving either off would hand the server its generic 28 / 4.0. The
+        // SIZE is the one pair that can be left to the server, and only with
+        // an image attached — then
         // the base image's own size is the better default than any of this
         // stage's, and the controls say so instead of showing a number that
         // will not be used.
@@ -885,12 +915,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         />
         <RailSlider
           label="Guidance"
-          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+          hint={
+            entry.defaults?.guidance != null
+              ? `This model wants ${modelGuidance} — raise it for stricter prompt-following, lower it for more variety.`
+              : "How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+          }
           min={GUIDANCE_RANGE[0]}
           max={GUIDANCE_RANGE[1]}
           step={0.5}
           value={guidance}
-          fallback={DEFAULTS.guidance}
+          fallback={modelGuidance}
           onChange={setGuidance}
         />
         <RailField

@@ -858,7 +858,12 @@ def test_shutdown_is_a_single_handler_reaping_every_background_pid():
     # character count: a fixed window spills into whatever follows, so the
     # assertions below could be satisfied by unrelated code further down.
     body = src[start : src.index("\n}\n", start)]
-    for var in ("WATCH_PID", "CORE_WATCH_PID", "OPENER_PID", "SERVER_PID"):
+    # `CORE_WATCH_PID` is deliberately absent: #945 removed the core_apps
+    # watcher along with the rest of the retired builtin-mount machinery, and
+    # dropped it from the roots list here. The script no longer starts that
+    # process, so requiring `dev_shutdown` to reap it asserts a pid that cannot
+    # exist. Every pid the script DOES background is still required below.
+    for var in ("WATCH_PID", "OPENER_PID", "SERVER_PID"):
         assert var in body, f"{var} is not reaped by dev_shutdown"
     # Every trap installs the same handler.
     traps = re.findall(r"^\s*trap\s+'([^']*)'\s+EXIT", src, re.M)

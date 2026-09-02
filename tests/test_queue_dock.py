@@ -355,7 +355,7 @@ def test_the_job_half_is_told_which_runs_the_queue_draws(dock, card):
     So the ids travel through the same slot the rows do, and they come off the same
     array the rows are rendered from."""
     assert "drawn: string[]" in card, "the slot has to carry the ids, not just the rows"
-    assert "jobRows(reported, queue?.drawn)" in card
+    assert "jobRows(mergedRows(reported), queue?.drawn)" in card
     assert "drawn: drawnIds(rows)" in dock
     # and the guess is gone from the rule itself
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))

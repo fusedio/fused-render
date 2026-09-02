@@ -80,6 +80,73 @@ HERE = os.path.dirname(os.path.abspath(fused_render.__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 
+#: The tiers an AI call can name, in FIXED order (SPEC RH-11, D631) — shared by
+#: `/api/ai` (server/ai.py) and the four capability routes (routers/ai_runtime.py)
+#: so the two can never disagree about the vocabulary. Local first: the boundary
+#: between the entries is where a prompt leaves the machine, and that is not a
+#: preference a user reorders. A hosted gateway is appended here when it arrives.
+AI_PROVIDERS = ("local", "claude")
+
+
+def ai_result(payload: dict, *, provider: str, model: str, warnings=None,
+              usage: dict | None = None, finish_reason: str = "stop",
+              request_id: str | None = None, metadata: dict | None = None) -> dict:
+    """The ONE result frame every `fused.ai` verb resolves with (RH-11, D632).
+
+    Learn it once: `payload` is the verb's own output key(s) — `text`,
+    `images`, `videos`, `text`+`segments`, `embeddings` — and everything
+    else is the same on all five. The frame is the AI SDK's `generateText`
+    return contract, because that is the shape page authors already know:
+
+      provider          which tier answered ("local" | "claude")
+      finishReason      "stop" | "length" | "cancelled"
+      warnings          [{type: "unsupported-setting", setting, message}]
+      usage             per-verb token/unit counts, camelCase, or null
+      response          {id, modelId, timestamp} — what actually ran, when
+      providerMetadata  {<provider>: {...}} — everything tier-specific that
+                        used to sit at top level (seed, snapped size, file
+                        paths, seconds). Read it when you need it; the
+                        frame does not change shape because of it.
+
+    No top-level `model` and no echoed inputs: `response.modelId` is the
+    resolved id, and the SDK's rule that inputs are not echoed is kept —
+    what the server snapped, clamped or invented lives in providerMetadata.
+    """
+    import datetime as _dt
+    frame = {
+        "provider": provider,
+        "finishReason": finish_reason,
+        "warnings": list(warnings or []),
+        "usage": usage,
+        "response": {
+            "id": request_id,
+            "modelId": model,
+            # One format on every verb and both sides of the wire: seconds, Z
+            # (`runtime.js`'s `resultFrame` trims toISOString() to the same).
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+        "providerMetadata": {provider: dict(metadata or {})},
+    }
+    frame.update(payload)
+    return frame
+
+
+def ai_usage_tokens(usage: dict | None) -> dict | None:
+    """Internal snake-case token counts -> the frame's camelCase `usage`.
+
+    The counter (`ai_metrics`) keeps `input_tokens`/`output_tokens`; the
+    wire speaks the SDK's `inputTokens`/`outputTokens`/`totalTokens`. One
+    conversion, here, at the boundary — never two vocabularies in one object.
+    """
+    if not usage:
+        return None
+    i, o = usage.get("input_tokens"), usage.get("output_tokens")
+    if i is None and o is None:
+        return None
+    return {"inputTokens": i, "outputTokens": o,
+            "totalTokens": (i or 0) + (o or 0)}
+
+
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 

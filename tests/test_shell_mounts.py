@@ -19,6 +19,7 @@ from _thread_scoped import this_thread_only
 
 import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
+import fused_render.shell.mounts.store as store_mod
 import fused_render.shell.mounts.rcd as rcd_mod
 
 
@@ -1601,7 +1602,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin", "restart_reason", "uploads"}
+                      "read_only", "restart_reason", "uploads"}
 
 
 def test_get_mounts_surfaces_the_upload_queue(client, rcd):
@@ -1692,24 +1693,6 @@ def test_delete_unmounts_and_removes(client, rcd):
     assert client.delete(f"/api/mounts/{cid}", headers=FUSED).status_code == 200
     assert client.get("/api/mounts").json()["mounts"] == []
     assert any(m == "mount/unmount" for m, _ in rcd.calls)
-
-
-def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
-    # BUGBOT: nothing stopped a shipped builtin mount from being deleted like
-    # any other mount — the record only reappears at the next full SERVER
-    # restart, while an already-open surface's cached readiness state never
-    # rechecks once true, leaving a dead link for the rest of the
-    # session. Bundled read-only content shouldn't be removable by a user
-    # action in the first place.
-    zp = tmp_path / "sessions.zip"
-    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
-    monkeypatch.setenv("FUSED_RENDER_SESSIONS_ZIP", str(zp))
-    mounts_mod.ensure_builtin_mounts()
-    builtin = next(m for m in mounts_mod.list_mounts() if m.get("builtin"))
-    r = client.delete(f"/api/mounts/{builtin['id']}", headers=FUSED)
-    assert r.status_code == 400
-    assert "bundled" in r.json()["error"].lower()
-    assert any(m["id"] == builtin["id"] for m in mounts_mod.list_mounts())
 
 
 def test_create_s3_remote_uses_rc_not_argv(client, rcd, monkeypatch):
@@ -3841,27 +3824,39 @@ def test_run_automount_skips_already_mounted(home, rcd):
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
 
 
-def test_run_automount_syncs_serves_after_builtin_removal(home, rcd, tmp_path, monkeypatch):
-    # BUGBOT: when a builtin's zip disappears and it was the only mount,
-    # ensure_builtin_mounts removes the record (and stops its rc serve
-    # directly via _force_detach_builtin_mount), but serves.json on disk is
-    # ONLY ever rewritten by sync_serves — an early return before it (the
-    # old run_automount behavior, taken because list_mounts() is now empty)
+def test_run_automount_prunes_retired_builtin_records(home, rcd):
+    # An older version's builtin record (marked `builtin: <name>`) must be
+    # dropped at startup: no builtins remain, and delete_mount used to refuse
+    # such records, so without the prune it strands forever as a broken
+    # mount in the UI. serves.json must lose its entry too — it is ONLY ever
+    # rewritten by sync_serves, and an early return (list_mounts() empty)
     # would leave a stale {mountpoint: dead_url} entry that serve_url_for
     # keeps resolving forever.
-    zp = tmp_path / "sessions.zip"
-    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
-    monkeypatch.setenv("FUSED_RENDER_SESSIONS_ZIP", str(zp))
-    mounts_mod.run_automount()
-    builtin_mp = mounts_mod.mountpoint({"name": "sessions"})
+    c = mounts_mod.add_mount("sessions", ":archive:/nonexistent/sessions.zip")
+    assert mounts_mod.attach_mount(c) is None  # writes serves.json
+    builtin_mp = mounts_mod.mountpoint(c)
     with open(mounts_mod.serves_path()) as f:
         assert builtin_mp in json.load(f)
+    ms = mounts_mod.list_mounts()
+    next(m for m in ms if m["id"] == c["id"])["builtin"] = "sessions"
+    store_mod._write(ms)
 
-    zp.unlink()
-    monkeypatch.delenv("FUSED_RENDER_SESSIONS_ZIP")
-    mounts_mod.run_automount()  # the builtin was the only mount -> list_mounts() is now empty
+    mounts_mod.run_automount()
+    assert mounts_mod.list_mounts() == []
     with open(mounts_mod.serves_path()) as f:
         assert builtin_mp not in json.load(f)
+
+
+def test_prune_leaves_user_mounts(home, rcd):
+    user = mounts_mod.add_mount("data", "remote:bucket")
+    ms = mounts_mod.list_mounts()
+    ms.append({"id": "deadbeef0000", "name": "sessions",
+               "remote": ":archive:/gone/sessions.zip", "read_only": True,
+               "read_only_user": True, "builtin": "sessions"})
+    store_mod._write(ms)
+    mounts_mod.prune_builtin_mounts()
+    remaining = mounts_mod.list_mounts()
+    assert [m["id"] for m in remaining] == [user["id"]]
 
 
 # -- http serves (the duckdb reader's mounted-parquet fast path) -----------------

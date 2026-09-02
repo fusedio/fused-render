@@ -866,10 +866,10 @@ def test_a_declared_project_runs_in_its_own_venv(
     into a second no-project test.
 
     The hatch keeps the assertion this test is FOR — build a venv, run the script
-    inside it, land under `venvs` — rather than trading it for a weaker one. Which
-    declaration routes where is covered separately, on the fake backend, by
-    `test_one_missing_package_sends_the_whole_project_to_the_venv_path` and
-    `test_a_declaration_the_app_already_satisfies_builds_no_venv`.
+    inside it, land in `venv_dir_for`'s own venv — rather than trading it for a
+    weaker one. Which declaration routes where is covered separately, on the
+    fake backend, by `test_one_missing_package_sends_the_whole_project_to_the_venv_path`
+    and `test_a_declaration_the_app_already_satisfies_builds_no_venv`.
     """
     monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
     monkeypatch.setattr(engine, "_backend", None)
@@ -881,7 +881,7 @@ def test_a_declared_project_runs_in_its_own_venv(
     out = asyncio.run(engine.run_python(target, {}))
     assert out["ok"] is True, out
     assert out["result"]["prefix"] != sys.prefix
-    assert "venvs" in out["result"]["prefix"]
+    assert out["result"]["prefix"] == envinstall.venv_dir_for(warm_fused_backend_venv)
 
 
 @requires_tomllib

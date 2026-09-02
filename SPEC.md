@@ -215,8 +215,12 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 // Runtime identity — "local" here, "hosted" on a deployed artifact (§18, RH-10)
 fused.env
 
-// Ask an AI model via the local claude (Claude Code) CLI (RH-11). Local-only.
-const { text, model, usage } = await fused.ai(prompt, {
+// Ask an AI model — the local claude (Claude Code) CLI, or a model resident on
+// this machine (RH-11, §40). Local-only. `fused.ai` is a namespace of verbs
+// (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
+const { text, usage, response, provider } = await fused.ai.text({
+  prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
+  provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
@@ -229,26 +233,81 @@ const { text, model, usage } = await fused.ai(prompt, {
   §18). It lets a page branch on where it runs — gating any local-only behaviour when
   `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
   it, so the check is a positive signal, not the absence of an API.
-- **RH-11** `fused.ai(prompt, opts?)` asks an AI model through the shell: the server's
-  `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** — the user's
-  existing Claude Code login is the credential; no API key or proxy to configure
-  (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on PATH). The
-  CLI runs as a pure one-shot completion (no tools, no settings/CLAUDE.md, no session
-  persistence, one turn). Resolves with exactly this shape — the server normalizes it,
-  so a page may read the fields without guarding:
+- **RH-11** `fused.ai.text({prompt, ...opts})` asks an AI model through the shell: the
+  server's `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** —
+  the user's existing Claude Code login is the credential; no API key or proxy to
+  configure (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on
+  PATH) — or through a model resident on this machine (§40). The CLI runs as a pure
+  one-shot completion (no tools, no settings/CLAUDE.md, no session persistence, one
+  turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
+  `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
+  (`prompt` is a field, never a positional argument), and the former callable
+  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
+  pins the **tier** that serves the call; omitted, the model's shape decides (a repo
+  id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
+  is the fixed tier walk local → claude. The three omitted-`model` cases: no
+  `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
+  the same; `"local"` → the catalog's default text model for this machine
+  (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
+  `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
+  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe` and
+  `.embed`** (their D413 envelopes grow that one key), and every reply of the five
+  carries `provider`; those four have only a local tier today, so omitted means
+  `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
+  against a tier that lacks the verb, not a malformed one — which becomes a real
+  path the day a gateway serves them, with no page changing. Resolves with exactly
+  this shape — the server normalizes it, so a page may read the fields without
+  guarding:
 
   ```json
   {
     "text": "the completion",
-    "model": "claude-haiku-4-5-20251001",
-    "usage": { "input_tokens": 544, "output_tokens": 73 }
+    "provider": "claude",
+    "finishReason": "stop",
+    "warnings": [],
+    "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
+    "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
+    "providerMetadata": { "claude": { "seconds": 3.1 } }
   }
   ```
 
-  `text` string; `model` the **full model id that ran** (an alias request like
-  `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
-  `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
-  `prompt_tokens`/`completion_tokens`). Rejects with
+  **This is THE result frame (D632): every `fused.ai` verb resolves with these six
+  keys plus its own payload** — `text` here; `images: [{path, url, mediaType}]`,
+  `videos: [...]`, `text` + `segments: [{text, startSecond, endSecond, speaker?,
+  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`. Learn it once.
+  It is the AI SDK's `generateText` return contract, chosen because it is the shape
+  page authors already know: **`provider`** the tier that answered, so which side of
+  the machine boundary a call landed on is always inspectable; **`response`**
+  `{id, modelId, timestamp}` — `modelId` the **full model id that ran** (an alias
+  request like `"sonnet"` echoes the resolved id; there is NO top-level `model`), `id`
+  the job id on the job-backed verbs and the activity-row id on text; **`usage`**
+  per-verb, camelCase, or `null` — text is `{inputTokens, outputTokens, totalTokens}`
+  (the SDK's names; the counter keeps Anthropic's snake-case internally and converts
+  once at the wire), image/video `{imagesGenerated}`/`{videosGenerated}`, transcribe
+  and embed `null`; **`providerMetadata`** `{<provider>: {...}}` holds everything
+  tier-specific that is not part of the contract — the seed, snapped size and steps,
+  file paths (`previewPath`, transcript `output`/`outputText`/`outputPartial`),
+  `seconds` — so **no input is echoed at top level** (the SDK's rule), and the frame
+  never changes shape because a tier learned a new fact;
+  **`finishReason`** `"stop" | "length" | "cancelled"` (`length` = a local model
+  produced exactly `maxTokens`; the Claude CLI reports no stop reason, so that tier
+  always says `stop`); **`warnings`** an array, usually empty, of
+  `{type: "unsupported-setting", setting, message}` — a **tunable** the serving tier
+  cannot honour (`temperature`/`maxTokens`/`topP` on Claude, `effort` on a local
+  model) is DROPPED and named here rather than refused, so one page carries one
+  options object across tiers. The semantic flags `history`/`raw`/`images` stay
+  400s on the Claude tier: dropping those answers a different question. Every
+  verb's reply carries `warnings` (empty on the four local-only verbs today) and
+  every verb takes **`opts.abortSignal`**, a standard `AbortSignal`: aborting
+  rejects with `.type === "cancelled"` and stops the work server-side (disconnect
+  for a stream, `/api/ai/cancel` for a local text generation, the job's own cancel
+  route for image/video/transcribe). **Inputs are learn-once too (D633):** every
+  verb's envelope is closed (an unknown option is a 400 naming it — text
+  included), the partial-result callback is `onChunk` on every verb that streams
+  (a string on text, a segment on transcribe; `onProgress(job)` is the job-row
+  callback), every file input resolves beside the calling page (text's `images`
+  included), and the wire speaks the page's camelCase on `/api/ai` as on the
+  other routes (`systemPrompt`, `maxTokens`, `topP`). Rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
@@ -265,7 +324,7 @@ const { text, model, usage } = await fused.ai(prompt, {
   latest-wins channel (an AI call is never a slider scrub).
   **Streaming**: `opts.onChunk(text)` fires per text delta as the model produces it
   (the server relays `{"stream": true}` NDJSON chunks); the promise still resolves
-  with the same `{text, model, usage}` at the end, so streaming only changes when
+  with the same result frame at the end, so streaming only changes when
   the text arrives, not what the call returns. Errors after the first chunk reject
   the promise with the same `.type` values. **Warm process** (D168/D169): the
   server keeps ONE persistent claude CLI process and resets it between calls
@@ -402,9 +461,9 @@ Deferred to later milestones (needed for data templates):
 - **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), a script whose folder declares no `pyproject.toml` running on the app's own interpreter (PY-17) and one whose folder does getting that folder's cached venv, built from exactly what it declares (PY-16), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
 - **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
-- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). **The uv cache uv hardlinks wheels out of is NOT forced onto that same home dir any more** (it was, unconditionally, until this cost per-branch/worktree users a multi-gigabyte redownload of the SAME wheel `~/.cache/uv` already held — composition fallout from `home_dir()` quietly becoming branch-aware under an already-shipped `uv_cache_dir()`, not a decision anyone made): `projectenv.uv_cache_dir()` now answers `None` unless `FUSED_RENDER_HOME` is set, and `_env_install_worker._build` leaves `UV_CACHE_DIR` unset in that ordinary case, deferring to uv's own platform default. That is a deliberate trade, stated rather than hidden: the one-filesystem guarantee that made cache-target hardlinking work BY CONSTRUCTION is given up wherever a user's app home and their default uv cache happen to sit on different mounts, in exchange for the guaranteed redownload never happening again. `FUSED_RENDER_HOME` still gets the old, explicit sibling cache — not only the test suite's own isolation, but also the packaged Linux/Windows desktop app, which sets it unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131); the deferred-to-uv's-default behaviour above therefore only actually reaches a macOS packaged build or a source/dev checkout, and `_build` still overrides whatever `UV_CACHE_DIR` the desktop app's own supervisor environment set. Whether the packaged app should get the shared cache too is a separate, open decision, not a side effect of this one. The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. **One class of folder is keyed differently: one that ships inside the app** (the AI runner folders of §40) is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D376). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
+- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **in the project itself**, at `<root>/.venv` — the layout `uv run`, VS Code and every other Python tool already expect, and one our own notebook kernel picker already looked for. `FUSED_RENDER_VENV_IN_TREE=0` is an escape hatch back to the old central store, for a project folder that is itself cloud-synced or network-mounted, where a multi-gigabyte `.venv` would otherwise get swept into that sync (D630). The folder additionally gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7); `.venv/` itself is gitignored. **The uv cache uv hardlinks wheels out of is NOT forced onto that same home dir any more** (it was, unconditionally, until this cost per-branch/worktree users a multi-gigabyte redownload of the SAME wheel `~/.cache/uv` already held — composition fallout from `home_dir()` quietly becoming branch-aware under an already-shipped `uv_cache_dir()`, not a decision anyone made): `projectenv.uv_cache_dir()` now answers `None` unless `FUSED_RENDER_HOME` is set, and `_env_install_worker._build` leaves `UV_CACHE_DIR` unset in that ordinary case, deferring to uv's own platform default. That is a deliberate trade, stated rather than hidden: the one-filesystem guarantee that made cache-target hardlinking work BY CONSTRUCTION is given up wherever a user's app home and their default uv cache happen to sit on different mounts, in exchange for the guaranteed redownload never happening again. `FUSED_RENDER_HOME` still gets the old, explicit sibling cache — not only the test suite's own isolation, but also the packaged Linux/Windows desktop app, which sets it unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131); the deferred-to-uv's-default behaviour above therefore only actually reaches a macOS packaged build or a source/dev checkout, and `_build` still overrides whatever `UV_CACHE_DIR` the desktop app's own supervisor environment set. Whether the packaged app should get the shared cache too is a separate, open decision, not a side effect of this one. Renaming or moving a project folder no longer orphans its environment: the in-tree venv travels with the folder, so the same `.venv` is found at its new location and `is_installed` needs no rebuild (D630) — this reverses the prior behaviour, which hashed the path **as given**, not canonicalised, so a rename yielded a fresh environment by design. That hash lives on as `venv_key_for`'s **key**, unrelated to storage now: it still names the progress directory, the `/api/env/progress?key=`/`/api/env/cancel` parameter, and the install-dedup lock, and is still taken as given rather than canonicalised for exactly the reason it always was — a folder need not exist yet to get a stable key. **One class of folder keeps the central home-dir store: one that ships inside the app** (the AI runner folders of §40, D376) — that tree is read-only (the AppImage squashfs mount, a Windows `Program Files` install), so an in-tree `.venv` is impossible there regardless of the general rule, and a non-writable folder discovered by probing falls back to the same store for the same reason (D630). It is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D376). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
 - **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. **`uv sync` is streamed, not captured** (`_UvProgress` in `_env_install_worker.py`): uv writes plain-text download progress to stderr as it runs (`Downloading numpy (15.9MiB)` / ` Downloaded numpy`), line-buffered even off a tty, so `progress.json` additionally carries `activity` (a compact phrase that never restates the byte pair the row itself already renders — `"downloading torch (2m14s)"`), `bytes_done` and `bytes_total` — the last two `null` until uv has announced its first download, and `bytes_total` a **lower bound that can only rise** as uv announces more concurrent downloads (its own default concurrency is 50). **Package-level alone was not enough**: a venv dominated by one huge wheel (the ROCm/CUDA torch install this shipped for) has no SECOND download to move the aggregate, so it sat flat for the entire multi-minute fetch even with the above. Measuring uv's own cache-directory growth for that was tried and rejected — it tracks UNPACKED size, several times the compressed transfer, with no single file to stat as "bytes so far". What works instead: uv prints per-package IN-FLIGHT bytes when it believes stdout is a terminal (never Downloading/Downloaded lines there — the live redraw replaces them) and suppresses that entirely for a pipe — confirmed empirically with `pty.openpty()` against a real `uv sync`. So on POSIX, `_build` now runs uv under a pty first (`_run_uv_via_pty`) and parses that live multi-package bar for the SAME `bytes_done`/`bytes_total`, falling back to the ordinary pipe path (`_run_uv_piped`, unchanged) whenever a pty cannot be set up — Windows always, or a POSIX sandbox with no `/dev/ptmx` — with the fallback only ever taken BEFORE uv is spawned, so a setup failure can never double-run the sync. **The pty is given a tall winsize** (`_set_pty_winsize`, `TIOCSWINSZ`): `pty.openpty()` alone leaves uv falling back to an 80x24 terminal, which clamps its bar to ~23 rows while up to 50 wheels download concurrently — a package still downloading simply scrolls out of view, and a naive "name vanished from the frame" confirmation reads that as done. Measured on a real 149-package capture: 44 names wrongly vanished under 90% complete, 4 of them still downloading when they reappeared. A tall winsize is the fix at the cause; a package is still only confirmed by elimination when its last reading was AT OR NEAR its own announced total (`_PTY_NEAR_TOTAL_FRACTION`), as a second, independent layer that holds even if the winsize assumption ever breaks. The ring buffer that keeps PY-18's verbatim-error guarantee holds only lines classified as genuine, not chrome — a live redraw is split from a permanent line by a bare CR, not by a newline (a real capture measured 4,586 CRs against 35 LFs), decoded and ANSI-stripped only once a CR/LF-delimited fragment is complete (stripping per read, before the halves are rejoined, leaks a torn escape straight into the ring), and recognised as chrome by any of: a progress row, a spinner glyph, the "Preparing packages…"/"Resolving dependencies…"/"Installing wheels…" headers, or the install-phase bar's own `[n/m]` counter — so merging stdout+stderr through the pty does not degrade a resolver failure's text. The generic `runtime.js` loader still renders the `install` stage as a plain indeterminate bar (stage/pct/detail are unchanged in meaning and format) — the fused.ai model loader (`supervisor._ensure_venv`) is what reads `activity`/`bytes_done`/`bytes_total` onto its own job row so `ModelProgress` can draw a measured bar during a runner's first environment build. `error` still reaches `progress.json` **verbatim**: uv's stderr is teed into a bounded ring buffer (last ~400 lines) while streaming, so a resolver failure's own text is unchanged and a pathological or chatty uv run cannot make the reporter itself expensive. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. **`uv sync` is streamed, not captured** (`_UvProgress` in `_env_install_worker.py`): uv writes plain-text download progress to stderr as it runs (`Downloading numpy (15.9MiB)` / ` Downloaded numpy`), line-buffered even off a tty, so `progress.json` additionally carries `activity` (a compact phrase that never restates the byte pair the row itself already renders — `"downloading torch (2m14s)"`), `bytes_done` and `bytes_total` — the last two `null` until uv has announced its first download, and `bytes_total` a **lower bound that can only rise** as uv announces more concurrent downloads (its own default concurrency is 50). **Package-level alone was not enough**: a venv dominated by one huge wheel (the ROCm/CUDA torch install this shipped for) has no SECOND download to move the aggregate, so it sat flat for the entire multi-minute fetch even with the above. Measuring uv's own cache-directory growth for that was tried and rejected — it tracks UNPACKED size, several times the compressed transfer, with no single file to stat as "bytes so far". What works instead: uv prints per-package IN-FLIGHT bytes when it believes stdout is a terminal (never Downloading/Downloaded lines there — the live redraw replaces them) and suppresses that entirely for a pipe — confirmed empirically with `pty.openpty()` against a real `uv sync`. So on POSIX, `_build` now runs uv under a pty first (`_run_uv_via_pty`) and parses that live multi-package bar for the SAME `bytes_done`/`bytes_total`, falling back to the ordinary pipe path (`_run_uv_piped`, unchanged) whenever a pty cannot be set up — Windows always, or a POSIX sandbox with no `/dev/ptmx` — with the fallback only ever taken BEFORE uv is spawned, so a setup failure can never double-run the sync. **The pty is given a tall winsize** (`_set_pty_winsize`, `TIOCSWINSZ`): `pty.openpty()` alone leaves uv falling back to an 80x24 terminal, which clamps its bar to ~23 rows while up to 50 wheels download concurrently — a package still downloading simply scrolls out of view, and a naive "name vanished from the frame" confirmation reads that as done. Measured on a real 149-package capture: 44 names wrongly vanished under 90% complete, 4 of them still downloading when they reappeared. A tall winsize is the fix at the cause; a package is still only confirmed by elimination when its last reading was AT OR NEAR its own announced total (`_PTY_NEAR_TOTAL_FRACTION`), as a second, independent layer that holds even if the winsize assumption ever breaks. The ring buffer that keeps PY-18's verbatim-error guarantee holds only lines classified as genuine, not chrome — a live redraw is split from a permanent line by a bare CR, not by a newline (a real capture measured 4,586 CRs against 35 LFs), decoded and ANSI-stripped only once a CR/LF-delimited fragment is complete (stripping per read, before the halves are rejoined, leaks a torn escape straight into the ring), and recognised as chrome by any of: a progress row, a spinner glyph, the "Preparing packages…"/"Resolving dependencies…"/"Installing wheels…" headers, or the install-phase bar's own `[n/m]` counter — so merging stdout+stderr through the pty does not degrade a resolver failure's text. The generic `runtime.js` loader still renders the `install` stage as a plain indeterminate bar (stage/pct/detail are unchanged in meaning and format) — the fused.ai model loader (`supervisor._ensure_venv`) is what reads `activity`/`bytes_done`/`bytes_total` onto its own job row so `ModelProgress` can draw a measured bar during a runner's first environment build. `error` still reaches `progress.json` **verbatim**: uv's stderr is teed into a bounded ring buffer (last ~400 lines) while streaming, so a resolver failure's own text is unchanged and a pathological or chatty uv run cannot make the reporter itself expensive. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so its **location is the backend's business, not the caller's**: an in-tree `.venv`, a home-dir store, or a manifest mirror's venv directory all work identically from here (D630).
 
 - **PY-19** **A Python client for `fused.ai`, mirroring `runtime.js`'s surface, for a process that is not a rendered page (D470-D472).** `fused_render/templates/shared/fused_ai.py` — stdlib only (`json`/`os`/`socket`/`time`/`urllib`), no `fused_render` import (same rule as PY-15), imports its sibling `appenv.py` for the shell-home-dir contract rather than re-deriving it. Surface: `ai.text`/`ai.stream`/`ai.transcribe`/`ai.image`/`ai.embed`/`ai.models.{list,catalog,load,download,unload}`/`ai.cancel` — same names and option names as `fused.ai`, pinned against the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`/`_EMBED_OPTIONS` (`routers/ai_runtime.py`) by a test, the same drift guard `runtime.js` already has. `ai.embed` carries `kind=` (`"query"`/`"document"`) beside `texts=`/`paths=`/`model=`, and it is in that pinned set for a sharper reason than the others: `kind` is refused per MODEL rather than per endpoint (a dual encoder has no retrieval convention), so a client that could not send it would leave every retrieval model embedding queries as documents — unit-length vectors of the right dimension, and worse, with nothing a caller could measure to say so. **The reply carries the `model` it actually used beside `vectors`/`dim`, and a caller that persists the vectors is expected to persist that too, refusing a query embedded under a different one**: two models on a SINGLE engine's curated list can share a dimension — `nomic-ai/nomic-embed-text-v1.5` and `onnx-community/siglip2-base-patch16-384-ONNX` are both 768 — so an index built under one and searched under the other has the right shape, raises nothing, and ranks plausible neighbours out of two unrelated spaces; a `dim` check cannot see it, and neither can the endpoint, which holds one call's context and no knowledge of what the index was built with (this is why the field is RETURNED rather than enforced). The module does not re-validate the request envelope itself (D413 stands — an unknown option is the server's 400 to raise). `ServerNotRunning` is a distinct exception from `AiError` (carries `type`/`message`/`status` off the `{ok, error:{type, message}}` wire shape, or the plainer `{"error": "..."}` a job-backed endpoint's own validation returns) — the two want different caller responses ("start the app" vs. "the call failed"). **Blocking by default**: `transcribe`/`image`/`models.load`/`models.download` POST to a job-backed endpoint and by default poll `GET /api/jobs` for that id until terminal before returning — `wait=False` returns the immediate `{jobId, ...}` reply, `on_progress=` observes each polled row, `timeout=` bounds the wait; a `stalled` row (`jobs.py`'s reporter-died flag) raises immediately rather than being polled out to the registry's ten-minute eviction. Relative paths are resolved with `os.path.abspath()` locally rather than sent with a `base` — the server's `base` names a calling *page*, and `_child.py` already chdirs a running `.py` to its own directory (RH-1), so a relative path already means "beside this file". Every POST carries `X-Fused: 1`, set by the module so no caller has to know why.
   - **Discovery for a process the server did not spawn.** A server child inherits `FUSED_RENDER_ORIGIN` (PY-15 above); a user-launched process does not and cannot compute the port (the desktop launcher auto-picks a free one). The server writes `<home_dir()>/server.json` (`{origin, pid, shared, version, started}`) at the same lifecycle point as `set_server_origin_env`/`export_app_env` — before it starts serving — and removes it on ordinary shutdown; the write is best-effort and non-fatal, since this runs before the socket bind and a failed write must not read as a failed start. A stale file (a crashed server) is expected and is the CLIENT's problem: `resolve_origin()` connect-probes the file's origin before trusting it, rather than the server maintaining a heartbeat. Resolution order: `FUSED_RENDER_ORIGIN` -> `server.json` (probed) -> `ServerNotRunning`. No `branch_port()` fallback — this module cannot re-derive branch-ref resolution without importing `fused_render`, and a guessed-but-wrong port is worse than a clear failure.
@@ -1297,9 +1356,9 @@ never imports server).
   `=auto` after a mid-session install (an earlier startup-frozen resolution
   let those drift).
   **Both engines are local**: the fused engine instantiates the package's
-  `LocalPythonComputeBackend` directly (engine.py — project venvs under
-  `<home_dir()>/venvs`, ours not the backend's store, PY-16), never resolving a
-  named environment; `envs.json`,
+  `LocalPythonComputeBackend` directly (engine.py — project venvs stored by
+  `projectenv.venv_dir_for`, ours not the backend's store, PY-16), never
+  resolving a named environment; `envs.json`,
   the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
   *environments* are exclusively deploy targets for the `fused` CLI, run
   directly by the user *(formerly documented as DP-5, before §19 was
@@ -3787,6 +3846,81 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   character for the trailing `\)$` recovers the whole destination correctly
   either way, without needing to balance parens by hand. Also pre-existing,
   also unrelated to D620.
+- **MD-32** **A table renders its cells' markup, and a click edits ONE cell.**
+  A table is the one construct MD-18a's per-line bargain cannot express: the
+  widget replaces the whole `Table` node, several lines at once, so "reveal the
+  line the caret is on" reveals the entire table as pipe markup — a lot of note
+  to re-read in order to change one word — and a decoration cannot reach into a
+  widget's DOM to style what is inside a cell.
+  - **A cell renders its own inline markup** (`renderInline`), because a
+    decoration addresses *document positions* and a widget's DOM is not the
+    document. Deliberately not a second markdown parser: it knows the shapes a
+    cell actually carries — code spans, `[label](url)`, `[[wikilinks]]`,
+    emphasis, `<br>`, the inline escapes — and leaves anything else as literal
+    text. Links go through the same `applyLinkTarget` the prose link widget
+    uses, so one delegated handler still opens every link on the page (MD-31).
+    Underscore emphasis does not fire intraword, or every `snake_case_name` in
+    a table would come out half italic.
+  - **The widget is OPAQUE, so a click never lands the caret in the source.**
+    Editing happens in a `contenteditable` island scoped to the clicked cell,
+    which shows *that one cell* as raw text while every other cell stays
+    rendered — MD-18a's bargain struck per cell instead of per line. Three
+    facts about CM make this safe rather than clever: a DOM mutation inside a
+    widget is ignored by its observer, `onSelectionChange` returns early unless
+    the content DOM itself holds focus, and an opaque widget receives no CM
+    event handling at all. So the document's selection does not move, and the
+    table does not un-render while a cell is open.
+  - **A commit rewrites exactly one cell's range**, addressed by the offsets
+    `splitRow` records per cell (an escaped `\|` is cell text, not a column
+    boundary) and resolved through `posAtDOM` at commit time, never an offset
+    captured at build time — the same rule `taskWidget` follows, and for the
+    same reason: an edit above the table moves it. `Enter`/blur commit,
+    `Escape` cancels, `Tab` commits and opens the neighbour — which can only
+    exist after the commit's own dispatch has rebuilt the widget, so the move
+    is replayed on the far side of that rebuild. A commit re-verifies its
+    range before writing, the same check that gates opening: a cell can stay
+    open across a reload it never saw, and `posAtDOM` answers 0 for a table
+    that has since been detached rather than failing, so an unguarded commit
+    would overwrite an unrelated line.
+  - **A click opens the cell at the character it landed on**, resolved through
+    the source map `renderInline` records beside the DOM (`_cellSpans`): the
+    hit is measured in *rendered* text but the caret is placed in *raw*
+    source, so counting rendered characters would skew by every marker the
+    cell renders away. The map reaches *inside* a construct whose rendered
+    text is a verbatim slice of the source — a code span's body, an unescaped
+    link label — since an entry for the wrapping element alone carries no
+    character offset and would collapse every click in a code span onto the
+    opening backtick. The cell's own bookkeeping is namespaced
+    (`data-cell-row` and friends): a bare `data-line` is the outline rail's
+    selector, and the delegated handler would claim the click as a jump to a
+    heading before the cell — or a link inside it — ever saw it. The offset
+    survives a hand-off, too: a click arriving while a different cell is open
+    commits that one first, and the character it landed on is carried across
+    the rebuild rather than lost to end-of-cell.
+  - **A cell renders no construct the author escaped.** `\*` and `\[` are how
+    a marker is shown rather than obeyed, and the cell's alternation is tried
+    before anything examines escapes — so the escape is an alternative of its
+    own, first in the list, matching the pair and emitting nothing so it folds
+    into the surrounding plain run. Otherwise `\[not a link\](x)` renders as
+    a genuinely clickable link the author escaped away.
+  - **A container's marker is not a column.** A table inside a blockquote
+    carries `>` on each of its continuation lines; split with it in place that
+    segment is non-blank and survives as a phantom first column whose text is
+    the marker — editable, so typing there rewrites the quote out from under
+    the block — and it hides the delimiter row from the alignment pass. The
+    prefix is measured and skipped, not stripped, so every offset still
+    indexes the real line.
+  - **The alignment row is read in a pass of its own.** It sits *below* the
+    header it aligns, so a single pass would build the header's cells before
+    the answer was known and leave a heading sitting left over a right-aligned
+    column.
+  - **Arrowing in still reveals the whole source**, which is how a row is added
+    or removed: in-place editing covers a cell's *text*, not the table's shape.
+    A read-only note stays inert, cursor included — `writable` is the only gate
+    here as everywhere else (MD-1a/MD-15). Inert is not *dead*: the press
+    handler suppresses the browser's native selection only when a cell could
+    actually open, or a read-only table's text would stop being selectable
+    and copyable.
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 
@@ -6269,10 +6403,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   `model` parameter already existed, and a value containing a **slash** is a
   Hugging Face repo id and therefore local, while one without is a Claude alias.
   That is not a heuristic — a Hub id is always `org/name` and no Claude alias
-  contains a slash. So `fused.ai(prompt, {model})` reaches a local model with no
-  new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
+  contains a slash. So `fused.ai.text({prompt, model})` reaches a local model with
+  no new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
-  which is what keeps every page written before this working.
+  which is what keeps every page written before this working. Since D631 the shape
+  rule is the **default**, not the only route: an explicit `provider: "local" |
+  "claude"` (RH-11) pins the tier without consulting the model's shape, and the
+  reply's `provider` names the tier that answered on both paths and in both shapes.
 - **AI-1a** **A conversation and a stop, because a chat client needs both.**
   `prompt` stays the thing being asked NOW, and `history` carries the turns
   before it — so adding it changes no existing call, and the turns reach the
@@ -6290,7 +6427,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   and the CLI does not expose one — dropping it would answer a raw continuation
   as a chat turn, which is plausible text that is silently not what was asked.
 - **AI-1b** **The terminal frame carries the RESULT, on both tiers and in both
-  shapes.** `fused.ai()` resolves with `{text, model, usage}` whether or not the
+  shapes.** `fused.ai.text()` resolves with the RH-11 result frame whether or not the
   caller passed `onChunk`, so a page can stream and still use the return value —
   and a streamed local reply that closed with a bare `{"type":"done","ok":true}`
   is why this is a written rule rather than an obvious one: every token had
@@ -7692,8 +7829,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   merely 404, it caches the PREVIOUS frame's bytes under a URL that is never
   requested again, so that step shows a stale picture for its whole duration.
   The cost is that the ✕ is learned one frame-write later, still on the same
-  callback. `previewUrl` is **null on the terminal tick and on the resolved
-  object**, because the file is discarded as the render unwinds and a page that
+  callback. `previewUrl` is **null on the terminal tick and absent from the
+  resolved frame** (D632: the resolved object carries `images[0].url` and
+  `providerMetadata.local.previewPath`, never a live preview address), because
+  the file is discarded as the render unwinds and a page that
   followed the last `previewUrl` would end every render on a 404 exactly where
   the finished picture belongs. Blurring and upscaling it is the page's taste, not this
   API's. **Always on, no flag**: measured at 68ms/step (1.25% of a 512²/16-step
@@ -8141,7 +8280,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   rebuilds each line key by key rather than copying the segment — deliberately,
   so an engine's logprobs and temperatures never reach a file a page reads — so a
   public field is dropped unless it is named there. It was, and the symptom was
-  `onSegment` handing pages timing-less segments while the final `.json` had
+  `onChunk` (then `onSegment`) handing pages timing-less segments while the final `.json` had
   them, permanently: the reader counts DELIVERED LINES, so a segment sent live
   without its words is never re-sent with them. Anything added to a segment that
   a caller is meant to see has to be named in `partial.py` as well.
@@ -8621,7 +8760,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
-  keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
+  keystroke, a render loop calling `fused.ai.text()` per frame, and an idle machine
   were the same picture — as were a working chat box and one whose every call
   timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
   covering one hour, plus since-start totals, and `/ai-models/usage` draws
@@ -8717,7 +8856,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   persisting it would make a guess look like a setting the app stands behind.
 - **AI-13** **A resident local model's tenancy is TIME-BOUNDED: a model
   nothing has used for ten minutes (default) unloads itself, and the next
-  `fused.ai(...)` reloads it exactly as a cold first call already does.**
+  `fused.ai.text(...)` reloads it exactly as a cold first call already does.**
   Before this, the one way a model's gigabytes came back was the user closing
   the app or picking a different one — a page opened once at 9am and never
   used again holds its weights until quit. `fused_render/ai/supervisor.py`
@@ -10337,7 +10476,7 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   filter; loud `AppFileError`s.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
-- **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
+- **AF-3** `fused.ai.text()` SHIPS, unlike the hosted exporter (RH-11 does not
   apply — D388 reversed D385's original stance): an opened `.fused` runs
   inside the recipient's full local runtime, where `/api/ai` exists. A
   recipient without the claude CLI or a resident local model gets the API's
@@ -10468,8 +10607,10 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   through `appfile._slug` (no separator, dot or drive letter survives it,
   shared with the extract cache key); an empty name falls back to the FILE
   STEM, not a shared `app` literal, so two unnamed app files do not collide on
-  one folder. Plain files — no `git init`, unlike the showcase Clone, which
-  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  one folder. Plain files — no repo of its own (D626: `local/` is one shared
+  repo; the clone lands untracked and the first turn commit about it adopts
+  it), and no upstream to diff against, unlike the showcase Clone.
+  Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
 
@@ -10898,19 +11039,27 @@ browser control surface, `static/runtime.js`) and `fused_render/background_apps.
 + `server/routers/background_apps.py` (the server side) turn engine_host's
 existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
 general "keep this running" primitive, rather than a special case wired for
-one built-in template. The map viewer's tile daemon and a warm `/api/engine`
-worker are the two existing engine_host child kinds (template, app);
-background apps are the third.
+one built-in template. `engine_host` has no child-kind tag at all — a
+built-in template's own tile daemon and a folder's own declared daemon are
+both just a `Child`, distinguished only by which of its fields are set:
+`folder` (the declaring app folder, empty for a template), `module` (the
+warm-worker module a `main =` app serves, empty otherwise), `idle_timeout_s`
+(the reap rule — `0` for a resident daemon, positive for a `main =` app),
+and `retry_post` (whether a proxied POST to it is safely re-runnable).
 
 - **Manifest.** A folder opts in with `[tool.fused-render.app]` in its own
-  `pyproject.toml`: `kind = "background"` and `daemon = "<file>"`, a filename
-  resolved inside the folder — never a path that can climb out of it
+  `pyproject.toml`, declaring its protocol with exactly one of two keys:
+  `daemon = "<file>"` (the author's own HTTP surface, resident by default) or
+  `main = "<file>"` (the shipped `engine_worker.py` imports it once and
+  answers by calling its `main(**params)`, reaped after `idle_timeout_s`
+  idle seconds, default 900s). Either way the file is a filename resolved
+  inside the folder — never a path that can climb out of it
   (`background_apps.load_manifest`'s realpath containment check, the same
   posture `registered_apps.py`'s folder guards already take). Nothing else
   reads this table; it is greenfield.
-- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`
-  — same shape as the warm-worker's `app_engine_id`, a distinct prefix so the
-  two can never collide. `version_for(folder, interpreter)` digests the
+- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`,
+  a distinct prefix so a background child's id can never collide with a
+  template's. `version_for(folder, interpreter)` digests the
   manifest's own bytes, the daemon file's mtime/size, and the interpreter
   path (D514) — any of the three changing retires the running child rather
   than reusing it.
@@ -10955,20 +11104,21 @@ background apps are the third.
   `background_apps.load_manifest` enforces containment, not flatness), and
   such a daemon's own dirname has no `pyproject.toml` of its own, so
   re-deriving would refuse to ever start it. Reused/spawned with the same
-  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
-  child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
-  now gates on `kind == "app"`, not the `module` field's truthiness) —
-  sitting idle is the entire point of a background app, unlike a warm script
-  worker that idle-retires after `APP_IDLE_RETIRE_S`. Every managed child
-  (template, app, background) dies together on the server's ASGI shutdown
+  double-checked dance `ensure` already uses. `idle_timeout_s` is a plain
+  float on `Child`, not derived from kind: a `daemon =` background child
+  defaults to `0` (never reaped, sitting idle is the entire point of a
+  resident daemon) while a `main =` background child defaults to 900s,
+  reaped by `reap_idle_children` on the same sweeper thread that reaps any
+  other bounded child. Every managed child (template, background) dies
+  together on the server's ASGI shutdown
   event (`engine_host.stop_all()`, already wired at `server/app.py`'s
   `_shutdown_engines` and reached by the packaged macOS app's `quit_teardown`
   server-drain step, which sets `should_exit` and lets uvicorn's own shutdown
   sequence run the ASGI lifespan shutdown — no separate rung was needed).
 - **The API** (`server/routers/background_apps.py`) takes `html` — the
   page's own path — on every endpoint, never a raw folder path, and resolves
-  the app folder from it server-side exactly as `/api/run`/`/api/engine`
-  resolve `py` (D500): this adds no code-execution surface and no
+  the app folder from it server-side exactly as `/api/run` resolves
+  `py` (D500): this adds no code-execution surface and no
   path-typed API to defend. `_folder_for` REALPATH's the resolved folder
   (D509, 2026-08-26 code review — it used to only `abspath` it): folder
   identity across every endpoint now agrees with `engine_id_for`'s own
@@ -10980,10 +11130,11 @@ background apps are the third.
   entries for it. `enable`/`disable` are gone — no back-compat aliases
   (D511; this feature was unmerged when the split landed). `GET /status`
   reports `{running, autostart, pid, version, engine_id}` as two independent
-  facts; `POST /start` spawns the daemon now WITHOUT touching autostart
-  (409 if the folder's project venv isn't built yet — the same stance
-  `/api/engine` already takes, D500: building one inside a POST would block
-  for minutes, so opening the page once installs it first); `POST /stop`
+  facts; `POST /start` spawns the daemon now WITHOUT touching autostart —
+  `_resolve` falls back to `sys.executable` when the folder's project venv
+  isn't built yet, the same fallback `/api/run`'s builtin engine takes
+  (D500), rather than blocking a POST for the minutes a venv build can take;
+  `POST /stop`
   kills the running daemon, also without touching autostart — if it's on,
   the startup hook (or a later `start`/`restart`) brings it back; if it's
   off (the default), it stays down until an explicit `start`; `POST
@@ -11006,33 +11157,34 @@ background apps are the third.
   a daemon started without opting into autostart — now the DEFAULT path —
   had no row there and the badge stayed off for it even while genuinely
   running). `engine_host.background_running_folders()` enumerates the
-  in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
+  in-memory `_children` dict directly (`c.folder` truthy, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
 - **The status bar's Engines section (D591).** Two routes on
   `server/routers/engines.py` let the user see and stop what is running,
-  across ALL THREE child kinds rather than background apps only:
+  across every live child rather than background apps only:
   - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
-    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
-    (`kind="background"` only) and `module` (warm app workers only) so a row
-    can be labelled without guessing each kind's conventions. Read-only and
-    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
-    this router's proxied GETs. The work is
-    `engine_host.running_engines()`, which keeps the same lock discipline
-    `background_running_folders` established — snapshot under `_lock`,
-    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
-    lock or the private `_children` dict.
+    child with `engine_id`, `pid`, `version`, `folder` (set for a background
+    app's own daemon, empty for a template) and `module` (set for a `main =`
+    warm worker, empty otherwise) so a row can be labelled without guessing
+    which fields a given child populated. Read-only and UNGUARDED, the same
+    posture as `GET /api/apps/background/running` and as this router's
+    proxied GETs. The work is `engine_host.running_engines()`, which keeps
+    the same lock discipline `background_running_folders` established —
+    snapshot under `_lock`, `_alive()`'s `Popen.poll()` outside it — so the
+    router never touches the lock or the private `_children` dict.
   - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
     like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
     executing side. Calls `engine_host.stop`, which is idempotent (it pops
     with a default), so a stale row clicked after the engine already exited
-    is a no-op rather than an error. NOT a destructive route: a `template`
-    engine respawns on the next `ensure`, a warm `app` worker on its next
-    call (and is idle-reaped on a timer regardless, `APP_IDLE_RETIRE_S`), and
-    a `background` daemon going down is exactly the documented "quit this app
+    is a no-op rather than an error. NOT a destructive route: a template
+    engine respawns on the next `ensure`, a `main =` background child on its
+    next call (and is idle-reaped on a timer regardless, `idle_timeout_s`),
+    and a `daemon =` background daemon going down is exactly the documented "quit this app
     right now" action. Deliberately NOT routed through
     `POST /api/apps/background/stop`, which takes an `html` PAGE path and
     derives the folder with a `dirname()` — handing it a folder resolves to
-    the folder's PARENT — and which covers `kind="background"` only.
+    the folder's PARENT — and which covers a background app's own folder
+    only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
@@ -11042,13 +11194,26 @@ background apps are the third.
   store ever come back here — a folder that was only `start()`ed, with
   autostart never turned on, does not.
 - **`fused.daemon`** (`static/runtime.js`) is the browser's control surface for
-  a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
-  variant of `runPython` for the PAGE's own script: `status()` / `start()` /
+  a FOLDER's declared daemon, whichever protocol it chose: `status()` / `start()` /
   `stop()` / `restart()` / `setAutostart(bool)` all send the page's own path
   as `html`; `call(path, body)` reaches the daemon directly, proxied through the
   same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
-  `engine_id` from a cached `status()` call. `watch(callback)` (D515) is the
+  `engine_id` from a cached `status()` call; `run(params)` is the `main =`
+  convenience over the same proxy mechanics — POST `/call` with `params` as
+  the body, the `{ok, result, error, stdout, resolved_py}` envelope
+  unwrapped the way `runPython` unwraps `/api/run`'s. Both bring the daemon
+  up transparently when it isn't known to be running (a page's first call,
+  or after the idle reaper has retired it) rather than requiring an explicit
+  `start()` first — `engine_forward._forward` already heals a
+  dead-but-running child on any proxied call, and the preview guard
+  (D507/D508) is what actually stops an uninvited spawn, not a start-first
+  gate. `status()`'s payload carries `protocol` (`"main"` | `"daemon"` |
+  `null` for a folder with no valid manifest), and `call`/`run` each reject
+  against the OTHER folder shape, naming the method to use instead — `run()`
+  against a `daemon =` folder, `call()` against a `main =` folder — rather
+  than silently 404ing or handing back a raw, unwrapped envelope.
+  `watch(callback)` (D515) is the
   push-shaped wrapper over `status()` a page needs to learn its daemon's
   state changed for a reason OUTSIDE its own control (another tab, the
   server's own resurrection, or — the case that motivated it — a native
@@ -11064,7 +11229,8 @@ background apps are the third.
   `fused.capture` and the rest of the local-only surface named in the file
   header — not available on hosted/exported pages. Named `fused.app` through
   D505; renamed to `fused.daemon` (D506) to resolve a three-way collision on
-  "app" (an app-tagged folder, `ensure_app`'s warm worker, the `/apps` hub) —
+  "app" (an app-tagged folder, the warm-worker endpoint that has since been
+  folded into this same background-app machinery, and the `/apps` hub) —
   the HTTP endpoints (`/api/apps/background/*`) and the Python modules
   (`background_apps.py`, `background_app.py`) deliberately kept their
   "background" naming; only the author-facing JS name changed.
@@ -11080,17 +11246,17 @@ background apps are the third.
   symlinked app folder's badge no longer silently fails to match its
   daemon's (realpath-keyed) running folder.
 - **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
-  `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
-  `Child.folder`) into a `kind="background"` child's environment only — the
-  one affordance the API above doesn't otherwise offer, since every endpoint
-  keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
+  `FUSED_RENDER_APP_DIR` into any child whose `Child.folder` is set (the
+  manifest's declaring folder) — the one affordance the API above doesn't
+  otherwise offer, since every endpoint keys off a page's `html` path and a
+  daemon has none. `templates/shared/background_app.py`
   is the stdlib-only client that reads it: `status()`/`stop()`/`set_autostart(bool)`/`restart()`
   against the calling daemon's own app, resolving the origin the same ladder
   `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
   `NotUnderEngine` when the env var is absent (not running as an
   engine-spawned background daemon at all). `engine_host.restart()` carries
   `folder` over onto its replacement `Child` the same as `python`/`daemon`/
-  `cache`/`version`/`kind` — a healed or manually-restarted background
+  `cache`/`version` — a healed or manually-restarted background
   child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
   bring-up.
 - **Resurrection has three triggers, not one, and they are not equally

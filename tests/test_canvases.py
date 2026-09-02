@@ -1745,8 +1745,20 @@ def test_opening_a_canvas_retires_the_legacy_fused_plugin(harness, tmp_path,
     deadline = time.time() + 5
     enabled = {}
     while time.time() < deadline:
-        with open(lib.SETTINGS_PATH, encoding="utf-8") as f:
-            enabled = (json.load(f).get("enabledPlugins") or {})
+        try:
+            with open(lib.SETTINGS_PATH, encoding="utf-8") as f:
+                enabled = (json.load(f).get("enabledPlugins") or {})
+        except PermissionError:
+            # Windows only, and the reason this test flaked there. What we are
+            # waiting FOR is `lib.write_json` replacing this very file (sibling
+            # temp + `os.replace`), and Windows leaves a window where opening
+            # the target is denied. POSIX `rename` never fails a reader, so
+            # only test-python-windows ever saw it. This loop was always going
+            # to poll again; it just has to survive the window it polls across.
+            # A torn file still raises: the replace is atomic, so half a file
+            # would be a real bug rather than this one.
+            time.sleep(0.05)
+            continue
         if enabled.get(skill_plugin.LEGACY_PLUGIN_ID) is False:
             break
         time.sleep(0.05)

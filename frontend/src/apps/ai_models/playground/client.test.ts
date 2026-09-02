@@ -51,6 +51,7 @@ const JOB: Job = {
   updated_at: 0,
   finished_at: null,
   stalled: false,
+  waiting_for: "",
 };
 
 /** Drive one watch over a scripted sequence of polls. A string entry is a

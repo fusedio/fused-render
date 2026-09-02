@@ -459,6 +459,19 @@ def test_kv_cache_matches_the_hand_computed_formula():
     assert kv == pytest.approx(expected)
 
 
+def test_kv_cache_q8_0_kv_dtype_halves_the_fp16_byte_count():
+    """`KV_BYTES_PER_ELEMENT["q8_0"]` is 1.0 against fp16's 2.0 — the only two
+    values `llamacpp-text`'s loader ever actually requests (`llama_text.
+    _kv_cache_kwargs`), so this is the one comparison that matters for the
+    runner `ai_runtime._kv_geometry_kwargs` now tells to say `kv_dtype=
+    "q8_0"`."""
+    fp16 = fit._kv_cache_bytes(num_hidden_layers=32, num_key_value_heads=8,
+                               head_dim=128, context_tokens=8192, kv_dtype="fp16")
+    q8_0 = fit._kv_cache_bytes(num_hidden_layers=32, num_key_value_heads=8,
+                               head_dim=128, context_tokens=8192, kv_dtype="q8_0")
+    assert q8_0 == pytest.approx(fp16 / 2)
+
+
 def test_kv_cache_head_dim_derives_from_hidden_size_and_attention_heads():
     """`head_dim` absent (the Hub did not publish it — `hub_metadata.py`'s
     own docstring assigns this derivation to `fit.py`): `hidden_size /
