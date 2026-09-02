@@ -854,6 +854,20 @@ def _cuda() -> Availability:
     wheel pins, this module cannot read that from a file it does not have, and
     guessing high disables machines that work. The wheel's own error is the
     better reporter of a driver that is genuinely too old.
+
+    **That trade is now made at DEFAULT-SELECTION level too, since the
+    GPU-first policy decision (code review finding).** Before this row could
+    lead its capability, a too-old driver's failure only reached someone who
+    had picked CUDA deliberately from the Engines tab — now `auto` can hand
+    it to an NVIDIA box on a first-run load, behind the multi-gigabyte
+    accelerated download, with no chance to back out first. Still acceptable
+    for the same reason `llamacpp-text`'s own corrupt-wheel comment gives for
+    an analogous risk: the failure is LOUD and at install/load — `uv sync` or
+    `import torch` reports the driver mismatch verbatim — not a wrong answer
+    served quietly later. Adding a floor here to soften that would reintroduce
+    exactly the guessing-disables-working-machines cost the paragraph above
+    already rejects; the download size is the one part of this trade a driver
+    floor could not fix anyway.
     """
     system = platform.system()
     if system == "Linux":
@@ -1263,10 +1277,17 @@ def _directml() -> Availability:
 
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
-# TWO runners serve one: MLX takes Apple Silicon when available, and the row
-# below it serves Windows and Linux plus the Apple Silicon fallback. All four
-# multi-runner capabilities (text generation, image generation, speech to text,
-# embeddings) are arranged that way. The ordering is the whole mechanism, so the rows are
+# MULTIPLE runners serve one: MLX takes Apple Silicon when available, and the
+# row(s) below it serve Windows and Linux plus the Apple Silicon fallback. The
+# GPU-first policy decision below made this more than a two-row split for
+# three of the four multi-runner capabilities — text generation's non-Apple
+# rows are `llamacpp-text-vulkan` then `llamacpp-text`, image generation's are
+# `diffusers-image-cuda`, `-rocm` then `diffusers-image`, and embeddings' are
+# `onnx-embed-directml`, `-cuda`, `-rocm` then `onnx-embed` — each an
+# accelerated row (or several, ordered by which vendor wins a tie) followed by
+# the CPU/cross-platform fallthrough; speech to text stays MLX-then-CTranslate2,
+# the one capability with no accelerated non-Apple variant. The ordering is
+# the whole mechanism, so the rows are
 # not sorted alphabetically and must not be — it is also the DEFAULT that a
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
