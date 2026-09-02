@@ -728,11 +728,20 @@ def reap_idle_children(now: float | None = None) -> int:
     record: that IS the "quit this app right now, stay down" contract a
     `daemon =` app's explicit stop makes, which idle retirement (an invisible,
     resumable pause) must not share.
+
+    Candidate selection also requires `_alive(c)`: a record left behind by an
+    earlier sweep (or by `stop()`'s sibling paths) still carries its stale
+    `last_used`, so without this check every later sweep would re-match the
+    same already-dead child, re-log its retirement, and re-signal a pid the
+    OS may since have recycled. `_alive` is a local `Popen.poll()`, not I/O,
+    so it is checked here under `_lock` alongside the rest of the cheap
+    candidate filter, unlike `_inflight`'s network ping below.
     """
     now = time.monotonic() if now is None else now
     with _lock:
         candidates = [c for c in _children.values()
-                      if c.idle_timeout_s > 0 and _busy.get(c.engine_id, 0) == 0
+                      if c.idle_timeout_s > 0 and _alive(c)
+                      and _busy.get(c.engine_id, 0) == 0
                       and (now - c.last_used) >= c.idle_timeout_s]
     # A call that outran its budget got a 504 but its main() may still be running
     # in the worker (we never kill it); the worker reports that, so skip a worker

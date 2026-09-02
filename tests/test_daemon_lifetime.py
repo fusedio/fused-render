@@ -25,6 +25,23 @@ def _isolate_cwd_and_syspath():
         sys.path[:] = path
 
 
+class _FakeProc:
+    """A stand-in for `Popen` so a hand-built `Child` (never actually spawned)
+    can still answer `_alive()`'s `proc is not None and proc.poll() is None`
+    check like a real live process would. `kill()` flips `poll()` to report
+    exited, the same transition a real `_terminate()` produces by actually
+    signalling the process."""
+
+    def __init__(self):
+        self._dead = False
+
+    def poll(self):
+        return None if not self._dead else 0
+
+    def kill(self):
+        self._dead = True
+
+
 def _load_engine_worker():
     # engine_worker.py is spawned as a script (its dir on sys.path[0]) so it can
     # `from _binding import bind_params`; import it the same way to test _Target.
@@ -81,6 +98,7 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/reaper-test/app.py",
         idle_timeout_s=idle_timeout_s)
+    child.proc = _FakeProc()  # reap candidacy now also requires _alive()
     stale = time.monotonic() - (idle_timeout_s + 10)
     child.last_used = stale
     reaped = []
@@ -113,6 +131,7 @@ def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/inflight-test/app.py",
         idle_timeout_s=idle_timeout_s)
+    child.proc = _FakeProc()  # reap candidacy now also requires _alive()
     child.last_used = time.monotonic() - (idle_timeout_s + 10)
     reaped = []
     monkeypatch.setattr(engine_host, "_terminate",
@@ -143,12 +162,53 @@ def test_reap_keeps_the_child_record_so_the_next_call_can_heal_it(monkeypatch):
         engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
         cache="unused", version="v1", module="/tmp/reapheal-test/app.py",
         idle_timeout_s=idle_timeout_s)
+    child.proc = _FakeProc()  # reap candidacy now also requires _alive()
     child.last_used = time.monotonic() - (idle_timeout_s + 10)
     monkeypatch.setattr(engine_host, "_terminate", lambda c: None)
     engine_host._children[eid] = child
     try:
         assert engine_host.reap_idle_children() == 1
         assert engine_host.current(eid) is child  # still findable, just not alive
+    finally:
+        engine_host._children.pop(eid, None)
+        engine_host._reinit.pop(eid, None)
+
+
+def test_reap_does_not_re_terminate_an_already_dead_child(monkeypatch):
+    # Candidate selection used to filter only on idle_timeout_s/busy/elapsed,
+    # never on _alive — so a child a previous sweep already terminated (the
+    # Child record is deliberately left in `_children`, dead but present, for
+    # restart() to revive) stayed a candidate forever: its stale `last_used`
+    # never advances, so every later sweep re-matched it, logged another
+    # "retiring idle child" line, and called _terminate on it again — signalling
+    # a pid the OS may since have recycled.
+    eid = "app_reapdead"
+    idle_timeout_s = 900.0
+    child = engine_host.Child(
+        engine_id=eid, python=sys.executable, daemon=engine_host.DEFAULT_DAEMON,
+        cache="unused", version="v1", module="/tmp/reapdead-test/app.py",
+        idle_timeout_s=idle_timeout_s)
+    child.proc = _FakeProc()
+    child.last_used = time.monotonic() - (idle_timeout_s + 10)
+    terminated = []
+
+    def fake_terminate(c):
+        terminated.append(c.engine_id)
+        c.proc.kill()  # a real _terminate would actually kill the process
+
+    monkeypatch.setattr(engine_host, "_terminate", fake_terminate)
+    engine_host._children[eid] = child
+    try:
+        assert engine_host.reap_idle_children() == 1
+        assert terminated == [eid]
+        assert engine_host.current(eid) is child  # record kept for restart()
+
+        # child.last_used is still stale and nothing revived it — the exact
+        # state a real dead-but-retained record sits in between sweeps.
+        assert engine_host.reap_idle_children() == 0
+        assert terminated == [eid], (
+            "an already-dead child must not be re-matched and re-terminated "
+            "by a later sweep")
     finally:
         engine_host._children.pop(eid, None)
         engine_host._reinit.pop(eid, None)
