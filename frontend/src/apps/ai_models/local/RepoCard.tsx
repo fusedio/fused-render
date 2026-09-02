@@ -35,7 +35,7 @@ import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgre
 import { unloadCountdown } from "@apps/ai_models/lib/engines";
 import { type AiLoadedModel, type AiModelRepo } from "@platform/lib/api";
 import { isRunning, type Job } from "@platform/lib/jobs";
-import { formatSize, formatMtimeFull, timeAgo } from "@platform/lib/format";
+import { formatSize, formatMtimeFull, hasKnownMemorySplit, timeAgo } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
 import {
   PARTIAL_TAG,
@@ -225,15 +225,10 @@ function RuntimeChip({
     // running — and the page has no reason to tell those apart, since none
     // of them counts down.
     const countdown = unloadCountdown(loaded.unloadsInSeconds);
-    // RAM/VRAM (D670): known exactly when a host reading AND a device
-    // reading are both in hand — same gate `ModelsDock.tsx`'s `MemoryCell`
-    // uses, and for the same reason: a device figure with no host reading
-    // must not be presented as if it were RAM. Without a known split (the
-    // common case: CPU, mmap'd runners, unified-memory MLX/mflux and
-    // torch-on-MPS) this renders exactly as before — one "in memory" figure.
-    const hasKnownSplit =
-      loaded.hostResidentBytes !== null &&
-      (loaded.deviceAllocatedBytes !== null || loaded.deviceReservedBytes !== null);
+    // Without a known split (the common case: CPU, mmap'd runners,
+    // unified-memory MLX/mflux and torch-on-MPS) this renders exactly as
+    // before — one "in memory" figure.
+    const hasKnownSplit = hasKnownMemorySplit(loaded);
     return (
       <div className="am-card-runtime am-card-runtime-ready">
         {hasKnownSplit ? (

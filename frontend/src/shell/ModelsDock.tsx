@@ -53,7 +53,7 @@
 // directly with a fixed model list rather than mocking `useAiRuntime`.
 import { useRef, useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
-import { formatSize, repoName } from "@platform/lib/format";
+import { formatSize, hasKnownMemorySplit, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
@@ -128,19 +128,11 @@ function MemoryCell({
   model: AiLoadedModel;
   ceilingBytes: number | null;
 }) {
-  // THE RAM/VRAM SPLIT (D670): known exactly when a runner reported BOTH a
-  // host RSS reading and at least one device-allocator reading — a device
-  // figure with no host reading falls through to the unsplit rendering below
-  // rather than inventing a RAM figure this row cannot back up (mirrors
-  // supervisor._worker_footprint_bytes's own fallback: unknown must never
-  // look like zero). A host reading with no device figure is the common case
-  // (CPU, mmap'd GGUF/llama.cpp, unified-memory MLX/mflux and torch-on-MPS)
-  // and is not a split at all — there is nothing to hold apart, and the
-  // unsplit rendering below is exactly correct for it.
-  if (
-    model.hostResidentBytes !== null &&
-    (model.deviceAllocatedBytes !== null || model.deviceReservedBytes !== null)
-  ) {
+  // A host reading with no device figure is the common case (CPU, mmap'd
+  // GGUF/llama.cpp, unified-memory MLX/mflux and torch-on-MPS) and is not a
+  // split at all — there is nothing to hold apart, and the unsplit rendering
+  // below is exactly correct for it.
+  if (hasKnownMemorySplit(model)) {
     return <SplitMemoryCell model={model} ceilingBytes={ceilingBytes} />;
   }
 
