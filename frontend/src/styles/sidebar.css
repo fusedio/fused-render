@@ -237,21 +237,6 @@ a.sidebar-rail-btn {
    sidebar IS --bg-alt and the chip would be an invisible ring on its own color.
    Monospace + tabular figures so the pill doesn't change width when a digit
    does. */
-.version-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(var(--tint), 0.05);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 9.5px;
-  line-height: 14px;
-  letter-spacing: 0.01em;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
 
 .sidebar-section {
   padding: 8px;
@@ -536,33 +521,6 @@ button.sidebar-prefs-trigger {
   font-size: 13.5px;
 }
 
-/* The pop-up it opens: the shared .context-menu chassis, pinned by its
-   bottom edge just above the trigger (inline style), growing upward. */
-.sidebar-prefs-menu {
-  min-width: 180px;
-}
-
-.sidebar-prefs-menu .context-menu-item.active {
-  background: rgba(var(--tint), 0.08);
-}
-
-/* The Tours flyout: the shared .context-submenu chassis (context-menu.css), with
-   one thing changed — it hangs from its parent row's BOTTOM edge, not its top.
-   This is the app's one menu that grows UPWARD out of the sidebar's bottom edge,
-   and its last row sits a few pixels off the floor, so a flyout aligned to that
-   row's top ran its own rows straight off the bottom of the window. Aligning the
-   bottom edges opens it the way the menu it belongs to opens: rightward and up.
-   Rightward always — the sidebar is against the left edge, so there is no side
-   to flip to and no `.left` case to carry. */
-.sidebar-prefs-menu .context-submenu {
-  top: auto;
-  bottom: -5px;
-  transform-origin: left bottom;
-  /* Narrower than the parent: the flyout holds four short titles, and the
-     parent's 180px floor would leave them swimming. */
-  min-width: 150px;
-}
-
 /* There is no `.sidebar-prefs-menu .account-signedin-dot` rule any more
    (2026-08-24). It un-absolute-positioned that dot for the one place it appeared
    in flow — a menu entry rather than an icon corner — and no element in this
@@ -611,16 +569,6 @@ button.sidebar-prefs-trigger {
   padding: 6px 10px;
   color: var(--fg-muted);
   font-size: 12px;
-}
-
-/* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
-   Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
-   metrics; heading click toggles the fold. */
-.sidebar-recents {
-  flex: 0 0 auto;
-  /* The bookmarks section above already ends in its own 8px padding — start
-     at 0 so the two sections sit one section-gap apart, not two. */
-  padding-top: 0;
 }
 
 /* A foldable section heading (Projects, Bookmarks). Since 2026-08-26 it is set
@@ -677,18 +625,6 @@ button.sidebar-prefs-trigger {
    collapsed section's leaves, the Tasks entry's unread — are one shape stated
    once. */
 
-.recent-row {
-  text-decoration: none;
-}
-
-.recent-row .recent-glyph {
-  /* The glyph slot is inert here (bookmarks use it as the icon-picker
-     button); keep the width so names align with bookmark rows. */
-  cursor: inherit;
-  display: inline-flex;
-  justify-content: center;
-}
-
 .bookmark-row {
   position: relative;
   display: flex;
@@ -740,18 +676,6 @@ button.sidebar-prefs-trigger {
    the name keeps its normal color; a small warning glyph sits between the
    name and the (hover-only) action buttons — always visible, unlike the
    actions, so a broken bookmark reads at a glance without hovering. */
-.bookmark-missing-badge {
-  flex: 0 0 auto;
-  color: var(--error);
-  font-size: 11px;
-  cursor: help;
-  /* a.bookmark-name::after stretches over the whole row (see below); without
-     its own stacking context this badge would sit under that overlay and
-     never receive the hover/title it needs — same reason .bookmark-glyph
-     carries position+z-index. */
-  position: relative;
-  z-index: 1;
-}
 
 .bookmark-row.dragging {
   opacity: 0.4;
@@ -998,193 +922,6 @@ a.bookmark-name::after {
   border-radius: 12px;
   box-shadow: 0 8px 24px var(--shadow-lg);
   padding: 8px;
-}
-
-.icon-picker-head {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.icon-picker-search {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 8px;
-}
-
-.icon-picker-search:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.icon-picker-remove {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11.5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 8px;
-}
-
-.icon-picker-remove:hover {
-  color: var(--fg);
-  background: var(--bg);
-}
-
-.icon-picker-body {
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.icon-picker-cat {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-  padding: 6px 4px 3px;
-}
-
-.icon-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-}
-
-.icon-picker-cell {
-  font: inherit;
-  font-size: 15px;
-  line-height: 1;
-  background: none;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  padding: 5px 0;
-  text-align: center;
-}
-
-.icon-picker-cell:hover,
-.icon-picker-cell.active {
-  background: rgba(var(--tint), 0.09);
-}
-
-.icon-picker-cell.active {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.icon-picker-empty {
-  color: var(--fg-muted);
-  font-size: 12px;
-  padding: 10px 4px;
-}
-
-
-/* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
-
-.update-badge {
-  margin: 2px 8px;
-  font-size: 12px;
-}
-
-.update-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(var(--tint), 0.07);
-  color: var(--fg);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.update-badge-row:hover {
-  background: rgba(var(--tint), 0.12);
-}
-
-/* Installed state: the row is a status line, not a toggle — nothing to click. */
-.update-badge-row-static,
-.update-badge-row-static:hover {
-  background: rgba(var(--tint), 0.07);
-  cursor: default;
-}
-
-.update-badge-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-.update-badge-panel {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.update-badge-text {
-  color: var(--fg-muted);
-  line-height: 1.4;
-}
-
-.update-badge-error {
-  color: var(--fg);
-}
-
-.update-badge-action {
-  align-self: flex-start;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.update-badge-command {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.update-badge-command code {
-  /* Not flex:1 — that stretched the plate to fill the row (the trouble card
-     is up to 640px wide) leaving the copy button stranded far past the end
-     of a short command. Sized to its own content instead, shrinking with
-     min-width:0 so a command too long for the row scrolls inside the plate
-     rather than pushing the button off it. */
-  flex: 0 1 auto;
-  min-width: 0;
-  padding: 4px 6px;
-  border-radius: 4px;
-  background: rgba(var(--tint), 0.09);
-  font-size: 11px;
-  overflow-x: auto;
-  white-space: nowrap;
-}
-
-.update-badge-copy {
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-muted);
-  font-size: 11px;
-  cursor: pointer;
 }
 
 /* Projects (D487, "Current apps" until 2026-08-26): the apps on the desk, above

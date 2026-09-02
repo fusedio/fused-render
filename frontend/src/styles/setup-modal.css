@@ -24,8 +24,7 @@
   align-items: end;
 }
 
-.mount-panel-grid .field-control,
-.mount-panel-grid .field-select-wrap {
+.mount-panel-grid .field-control {
   width: 100%;
 }
 
@@ -230,11 +229,6 @@
     width: 100%;
   }
 
-  .mounts-actions .mounts-restart {
-    width: 100%;
-    justify-content: center;
-  }
-
   /* On a broken mount the Open/Reconnect + Remove row wraps below the name;
      stretch it full-width so the buttons aren't cramped against the edge. */
   .mount-card-actions {
@@ -290,28 +284,6 @@
 }
 
 /* Registry table: pattern -> template chips (+ source badge). */
-.prefs-registry-table {
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.prefs-registry-table td {
-  padding: 5px 10px 5px 0;
-  border-top: 1px solid var(--border);
-  vertical-align: top;
-}
-
-.prefs-registry-table .registry-templates code + code {
-  margin-left: 5px;
-}
-
-.prefs-registry-table .default-mode {
-  border-color: var(--accent);
-}
-
-.prefs-registry-table .registry-error {
-  color: var(--error);
-}
 
 .registry-source {
   display: inline-block;

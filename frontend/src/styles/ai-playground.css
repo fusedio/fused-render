@@ -138,11 +138,6 @@
   line-height: 1.45;
   color: var(--fg-muted);
 }
-
-/* A downloaded model nothing here runs. Same card, three differences that all
- * say the same thing: no pointer (there is nothing to select), a dimmed body,
- * and a dashed border — the shape a reader already reads as "present but not
- * active" everywhere else in this app. */
 /* Both classes on purpose: `.pg-model` is declared LOWER in this file, so a
  * single-class selector here loses the cascade and its border shorthand
  * quietly wins — which is how the dashed edge stopped drawing at all. */
@@ -183,14 +178,6 @@
   line-height: 1.45;
   color: var(--fg-muted);
 }
-
-/* The card fills live in tokens.css with every other colour (--pg-card-bg,
- * --pg-card-bg-hover). They were declared HERE, as literals scoped to
- * .pg-side, which is the one thing this stylesheet may not do: a value written
- * outside the palettes cannot be repainted by the other theme, and the palette
- * is also where the light-mode override belongs rather than in a
- * `:root[data-theme="light"]` block of this file's own. The reasoning for the
- * pair itself is with them. */
 
 /* A CARD, reversing the old "row, not a card" call (D428): one line — nickname,
  * the Download CTA when there is one, size — carried by a fill, not an outline.
@@ -261,7 +248,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 
 /* Was inheriting the foot's type; now that it lives on the name line it says
  * so itself. `flex: none` is the whole point of the slot — the size is the one
@@ -453,7 +439,6 @@
   margin: 1px auto 16px;
 }
 
-
 /* The running pull, standing where the Download button stood — icon, ring,
  * bytes, sized by its own content. It replaced a bar-and-sentence borrowed from
  * the /ai-models cards, which needed a fixed 240px lane in a row of buttons and
@@ -553,18 +538,6 @@
   white-space: nowrap;
 }
 
-.pg-error {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--error);
-}
-
-.pg-status {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-}
-
 /* The work area: one centered column on the hero card's own gutter, so every
    stage lines up under the header it belongs to. */
 
@@ -596,43 +569,6 @@
   letter-spacing: -0.01em;
 }
 
-/* Quiet until wanted: a muted glyph that lights on hover and stays lit while
-   the panel it opened is on screen. */
-.pg-cog {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.pg-cog:hover {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.07);
-}
-
-.pg-cog.active {
-  color: var(--accent);
-}
-
-/* The glyph turns one notch while the panel opens. 45deg and not some other
-   angle because the gear has eight lobes: the shape it RESTS in is identical to
-   the shape it left, so the turn is motion the eye catches and never a tilted
-   icon left behind. */
-.pg-cog svg {
-  transition: transform var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1);
-}
-.pg-cog.active svg {
-  transform: rotate(45deg);
-}
-
 /* The settings, as a narrow card of their own. A card and not a bare band
    because at anything but a phone width it sits BESIDE the column — the two
    centered together — and a floating stack of sliders with no edge would read
@@ -646,10 +582,6 @@
   display: flex;
   flex-direction: column;
 }
-
-/* The inner box's chrome (border, radius, background, padding) is the shadcn
-   Card's now — `pg-config-inner` stays on it purely as the hook the sticky,
-   fold and reduced-motion rules below target. */
 
 /* The numbers the placement below is built from, declared OUT here on the
    container itself: a `@container` rule can never target its own container —
@@ -832,8 +764,7 @@
    leaving the card in its final state for those 160ms instead of flashing a
    frame of the keyframes. */
 @media (prefers-reduced-motion: reduce) {
-  .pg-work,
-  .pg-cog svg {
+  .pg-work {
     transition: none;
   }
   .pg-config-inner,
@@ -914,13 +845,6 @@
 }
 
 /* Enter hint inside the Run button: a faded glyph, not a boxed chip. */
-.pg-kbd {
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  margin-left: 6px;
-  opacity: 0.55;
-}
 
 .pg-composer textarea,
 .pg-composer input {
@@ -994,33 +918,6 @@
   gap: 8px;
 }
 
-/* 32px matches .btn (buttons-modal.css), so Clear reads as the same weight of
-   control as the Run below it. Top-aligned by DEFAULT — `margin-bottom: auto`
-   takes whatever slack there is, which in a row-flex parent is the same auto
-   margin working across the axis, so Clear is at the top wherever it appears.
-   Inert in the button stack above, whose height is exactly its two buttons. */
-.pg-clear {
-  flex: none;
-  height: 32px;
-  margin-bottom: auto;
-  /* Held off the edge Run's border sits on. Flush, the two right edges lined up
-     exactly — and a bare label squared off against a filled button's corner
-     reads as a mis-set pair, not as alignment: the button has a box holding its
-     own edge, the label has nothing but the glyphs. 8px lands its last letter
-     just inside Run's ⏎. */
-  margin-right: 8px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 6px;
-}
-
-/* The one place that opts out: the recording's own row is a horizontal toolbar
-   around an <audio> element, not a composer — its Clear belongs on that line
-   with the buttons beside it, not lifted off it. */
-.pg-audio-row .pg-clear {
-  margin-bottom: 0;
-}
-
 /* -- the image stage's attachment row (D467) ---------------------------------
    A composer that takes a base image STACKS — attached photo, prompt, then a
    floor holding the attach controls on the left and the Clear/Run column on the
@@ -1032,25 +929,6 @@
   align-items: stretch;
   /* The containing block for the floating Clear below. */
   position: relative;
-}
-
-/* Clear in the box's top-right corner, out of flow: in a stacked composer the
-   button column is one button tall, and putting Clear back into it would add
-   its 32px plus the gap to the composer's height for good — a row of chrome for
-   a control that only exists once there is a result. Absolute costs nothing, and
-   the corner is where a dismiss is looked for. The margins `.pg-clear` sets for
-   its in-flow life are undone here. */
-.pg-clear-corner {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  height: auto;
-  margin: 0;
-  /* Padding rather than offset: the word needs room around it (flush to the
-     box's rounded corner it read as cropped), and giving the padding to the
-     button means the hit area grows with it instead of just the gap. */
-  padding: 5px 10px;
-  border-radius: 8px;
 }
 
 /* The prompt keeps a lane clear for it — ALWAYS, not only while Clear is on
@@ -1067,10 +945,6 @@
      overrode the inline height useAutoGrow writes and the box sat at its
      three-line min-height with everything past line three scrolled away. */
   flex: none;
-}
-
-.pg-clear-corner:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.08);
 }
 
 /* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,
@@ -1144,38 +1018,6 @@
   color: var(--fg);
 }
 
-/* Both ways in wear the same pill — one is a <label> over a hidden file input,
-   the other a <button>, and a person reading the row must not be able to tell
-   which is which. */
-.pg-attach-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pg-attach-btn:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-.pg-attach-btn.active {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.pg-attach-btn input[type="file"] {
-  display: none;
-}
-
 /* The thumbnail is a button, because it opens the picture at full size — no
    frame of its own, so what is drawn is still just the photo. */
 .pg-attach-open {
@@ -1236,11 +1078,6 @@
   background: var(--scrim-chip-bg-hover);
 }
 
-.pg-attach-note {
-  font-size: 11.5px;
-  color: var(--fg-muted);
-}
-
 /* The webcam overlay's inner column: viewfinder, then Capture. Swallows the
    backdrop's click-to-close (and its zoom-out cursor) the way the lightbox's
    img does. */
@@ -1266,25 +1103,6 @@
   max-height: calc(100vh - 180px);
   border-radius: 8px;
   box-shadow: 0 18px 48px var(--scrim-lift);
-}
-
-.pg-ghost-btn {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.pg-ghost-btn:hover:not(:disabled) {
-  color: var(--fg);
-}
-
-.pg-ghost-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .pg-bar {
@@ -1349,75 +1167,6 @@
   overflow: hidden;
 }
 
-.pg-starter-card {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: inherit;
-  font-size: 12.5px;
-  padding: 7px 14px;
-  text-align: left;
-  white-space: nowrap;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition:
-    color 0.12s ease,
-    border-color 0.12s ease;
-}
-
-/* Border and text only — no fill. The row is eight pills side by side; a tinted
-   plate under the hovered one reads as a selected state rather than a pointer. */
-.pg-starter-card:hover {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-
-.pg-starter-icon {
-  display: flex;
-  flex: none;
-  /* A shade quieter than the name at rest — the glyph is for scanning the row,
-     the name is what is being read. */
-  opacity: 0.75;
-}
-
-.pg-starter-card:hover .pg-starter-icon {
-  opacity: 1;
-  color: var(--accent);
-}
-
-/* Round, and the pill's own height: it is chrome on the row, not a ninth
-   example. Sized in one place — the pills' 12.5px line box plus their padding
-   and border — so the circle sits on the same baseline band as the row. */
-.pg-starter-rotate {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 33px;
-  height: 33px;
-  padding: 0;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.pg-starter-rotate:hover {
-  color: var(--fg);
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
-}
-
-.pg-starter-rotate svg {
-  width: 15px;
-  height: 15px;
-}
-
 /* Label above, card below. Text and image stages both use it. */
 .pg-answer-block {
   display: flex;
@@ -1453,51 +1202,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* The same block, before anything has run: the result canvas idle (ResultSlot
-   in controls.tsx). Dashed, not solid — a solid card at this size reads as a
-   real surface that failed to fill, while a dashed one reads as a slot. No
-   background either, for the same reason: it stays quieter than .pg-answer and
-   .pg-image-frame, which are the boxes with something in them.
-
-   One height for all five stages. */
-.pg-slot {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 200px;
-  padding: 24px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  text-align: center;
-}
-
-/* The capability's own sidebar glyph, at a size that carries a 200px box —
-   `capabilityIcon` draws at 16px, which is a section-header size, not a
-   centrepiece. Dimmed, because an empty state should not be the loudest mark
-   on the column. */
-.pg-slot-icon {
-  display: grid;
-  place-items: center;
-  color: var(--fg-muted);
-  opacity: 0.5;
-}
-.pg-slot-icon svg {
-  width: 26px;
-  height: 26px;
-}
-
-.pg-slot-note {
-  margin: 0;
-  max-width: 34ch;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--fg-muted);
-}
-
-/* -- text ---------------------------------------------------------------------- */
 
 /* The one reply, rendered — the text stage's output card. */
 .pg-answer {
@@ -2219,15 +1923,5 @@
   .pg-frame {
     width: 100%;
   }
-}
-
-/* The URL asked for a capability this machine cannot run, and the stage below
- * is the substitute. Quiet, not alarming: nothing failed, and the sidebar is
- * already showing the same reason against the group that is out. */
-.pg-blocked-ask {
-  margin: 0 0 10px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--fg-muted);
 }
 

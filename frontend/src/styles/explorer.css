@@ -136,11 +136,6 @@
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 12px;
 }
-
-/* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
-   .panel-crumbs below). The scrollbar is hidden (scrollbar-width +
-   ::-webkit-scrollbar) so the wheel-scrollable strip carries no chrome; the tail
-   is pinned into view from JS on every path change. */
 /* Shrink-to-fit, not grow-to-fill: the strip stops at the width of the path it
    holds, so the folder's search row can pin itself to the bar's right end. The
    leftover room becomes bar background — which is click-to-edit exactly like the
@@ -427,12 +422,6 @@
   margin-left: 0;
 }
 
-/* It used to have to take a zone divider with it, so a static page (or a view
-   still resolving its stat) showed no stray hairline floating in the bar. The
-   crumb bar has no layout zone left to divide from — the splits are items in the
-   path `⋮` now (Breadcrumb.tsx) — so that pair, and the `.bar-rule` margin reset
-   that went with it, are gone. The panel bar below still needs both. */
-
 /* Same pair for the panel pane bar, whose mode menu (PaneModeMenu) renders
    nothing on a single-mode path and while the pane is still statting — the
    hairline used to stay behind either way, dividing the crumbs from nothing.
@@ -444,7 +433,6 @@
 .panel-mode-slot:empty + .bar-rule {
   display: none;
 }
-
 
 /* ---- One control recipe for the explorer's bars --------------------------
    The title bar, the listing search row, the preview-pane header and the
@@ -497,33 +485,6 @@
    `.btn-primary` states the house rule twice over: "reads strongest through
    contrast, not accent — accent stays for focus/selection". A filled --fg button is
    already the loudest thing in a strip of ghost controls. */
-.bar-ctl.bar-ctl-strong {
-  background: var(--fg);
-  color: var(--bg);
-  font-weight: 600;
-}
-
-.bar-ctl.bar-ctl-strong:hover:not(:disabled) {
-  /* NOT var(--on-fg) — that moved --fg one step FURTHER toward the same
-     extreme (near-black to pure black in light, near-white to pure white in
-     dark), which is a luminance delta of ~0.01–0.02 and reads as no hover at
-     all. This instead steps --fg back TOWARD --bg — the same "mix off --fg"
-     idiom `.apps-tag-chip.is-active` / `.apps-filter-mode-btn.is-active` use
-     (apps.css) to get a background that shifts visibly in BOTH themes while
-     keeping a --bg label legible on it, because the mix moves each theme's
-     fill away from that theme's own extreme rather than further into it.
-     82% keeps it reading as the same filled/strong button (still mostly
-     --fg, not washed toward a ghost tint) while giving a clearly visible
-     step: ~0.28 luminance delta in dark, ~0.05 in light — both an order of
-     magnitude bigger than --on-fg's. */
-  background: color-mix(in srgb, var(--fg) 82%, var(--bg));
-  /* The generic .bar-ctl:hover rule right below sets color: var(--fg), which
-     was already illegible against the old --on-fg hover and would be no
-     better against this one. Restate --bg explicitly so the label stays
-     high-contrast through the hover (>9:1 in both themes against the mix
-     above). */
-  color: var(--bg);
-}
 
 .bar-ctl:hover:not(:disabled) {
   background: rgba(var(--tint), 0.08);
@@ -539,32 +500,6 @@
 .bar-ctl-icon {
   width: 28px;
   padding: 0;
-}
-
-/* The one thing in these bars that gets chrome: the mode control. There used
-   to be a second recipe beside it, .bar-ctl-primary, for "the row's single
-   primary action" — a bordered, semibold label. Its last consumer was the
-   preview pane's "Open", now a muted glyph like everything else it sits
-   beside, and a bar with no primary in it turns out to be the point: these
-   rows are chrome, and the subject is what the view is showing. */
-.bar-ctl-bordered {
-  border: 1px solid var(--border);
-  /* The app's hairline for the ring, and a THEME-CHOSEN fill (tokens.css):
-     `--bg` under a `--bg-alt` bar is a white plate in light mode, which is the
-     look, and a darker well in dark mode — which, ringed by a lighter border,
-     turned the quietest control in the app into a chip. Dark resolves this to
-     transparent, so the hairline alone says "this one is a menu". */
-  background: var(--ctl-plate-bg);
-  color: var(--fg);
-}
-
-.bar-ctl-bordered:hover:not(:disabled) {
-  background: var(--ctl-plate-bg);
-  /* Not `--fg-muted` directly: that is the light INK in dark mode, so hovering
-     lit the ring to near-white. The token is --fg-muted in light and a step up
-     from the resting border in dark. */
-  border-color: var(--ctl-quiet-border-hover);
-  color: var(--fg);
 }
 
 /* Hairline between the mode control and the layout group. A zone divider, not
@@ -634,56 +569,9 @@
   display: inline-flex;
 }
 
-/* No metrics of its own: the mode trigger sits on the plain .bar-ctl recipe
-   (28px tall, 0 8px padding, 6px gap, 6px radius) like every other control in
-   these bars. It used to override with `padding: 0 10px; gap: 7px`, which —
-   with the 1px border only this control carries — put 11px of inset either
-   side and read as the one over-padded thing in the bar. */
-
-.mode-menu-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-}
-
-.mode-menu-icon svg,
-.mode-menu-icon .mode-icon-mask,
-.mode-menu-icon .mode-icon-placeholder {
-  width: 16px;
-  height: 16px;
-}
-
-.mode-menu-icon .mode-icon-spinner {
-  width: 12px;
-  height: 12px;
-  border-width: 1.5px;
-}
-
 /* One grid cell, every mode name stacked in it: the hidden ghosts set the
    slot's width to the WIDEST name, so the trigger (and the popup floored to
    it) keeps one width no matter which mode is active. */
-.mode-menu-label {
-  font-weight: 500;
-  display: inline-grid;
-  text-align: left;
-}
-
-.mode-menu-label > span {
-  grid-area: 1 / 1;
-  white-space: nowrap;
-}
-
-.mode-menu-label-ghost {
-  visibility: hidden;
-}
-
-.bar-caret {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-}
 
 .bar-overflow {
   position: relative;
@@ -717,89 +605,10 @@
   min-width: 120px;
 }
 
-.bar-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 8px;
-  background: none;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.bar-menu-item:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.08);
-}
-
-.bar-menu-item:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* Plain glyph, no box: the row's own hover/active wash carries the state,
-   and a bordered well around every icon made the list read as a grid of
-   buttons rather than a set of choices. */
-.bar-menu-item-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  color: var(--fg-muted);
-}
-
-.bar-menu-item-icon svg,
-.bar-menu-item-icon .mode-icon-mask,
-.bar-menu-item-icon .mode-icon-placeholder {
-  width: 16px;
-  height: 16px;
-}
-
-.bar-menu-item-icon .mode-icon-spinner {
-  width: 12px;
-  height: 12px;
-}
-
-.bar-menu-item-label {
-  flex: 1 1 auto;
-}
-
-/* The active row is the mode you are looking at — semibold, brighter glyph,
-   and an accent wash over the whole row (it replaced a trailing checkmark:
-   the row itself now carries the state). That wash is the last accent left
-   in this chrome, and it still means exactly one thing: the active view
-   mode. Kept stronger than the 8% hover tint so the two never blur. */
-.bar-menu-item.active {
-  font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.bar-menu-item.active:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.bar-menu-item.active .bar-menu-item-icon {
-  color: var(--fg);
-}
-
 /* Group divider inside an overflow popup (the path `⋮` separates what it does
    to the FILE — reveal, copy path — from what it does to the WINDOW: the two
    splits). Inset to the rows' own padding so it reads as a break in the list
    rather than a line drawn across the box. */
-.bar-menu-sep {
-  flex: 0 0 auto;
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--border);
-}
 
 .star-btn {
   flex: 0 0 auto;
@@ -1109,51 +918,6 @@
   background: var(--bg);
 }
 
-/* Placeholder / metadata card centered in the pane. */
-.listing-pane .pane-center {
-  margin: auto;
-  text-align: center;
-  color: var(--fg-muted);
-  padding: 32px;
-}
-
-.listing-pane .pane-big-icon {
-  display: inline-flex;
-  margin-bottom: 12px;
-}
-
-.listing-pane .pane-big-icon .file-icon {
-  width: 48px;
-  height: 48px;
-  stroke-width: 1.5;
-}
-
-.listing-pane .pane-title {
-  color: var(--fg);
-  font-size: 15px;
-  margin-bottom: 4px;
-  word-break: break-all;
-}
-
-.listing-pane .pane-hint {
-  font-size: 12.5px;
-}
-
-.listing-pane .pane-open-btn {
-  margin-top: 14px;
-  font: inherit;
-  padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.listing-pane .pane-open-btn:hover {
-  background: var(--bg-alt);
-}
-
 /* The pane's chrome strip: the RIGHT COLUMN'S TOP BAR, since the pane now runs
    the full height of the window with nothing above it. Directly across the
    divider from the crumb bar (over a folder) or the search row (the
@@ -1190,61 +954,6 @@
   box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-}
-
-/* Folder preview fallback: the folder's own entries, read-only. Narrower
-   padding than the main table since it lives in the smaller pane. */
-.listing-pane .pane-mini-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-table.pane-mini-list {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-table.pane-mini-list td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-table.pane-mini-list tr.row {
-  cursor: pointer;
-}
-
-table.pane-mini-list tr.row:hover {
-  background: var(--sel);
-}
-
-table.pane-mini-list tr.row.ignored td.name {
-  opacity: 0.5;
-}
-
-table.pane-mini-list td.name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-table.pane-mini-list td.name .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-table.pane-mini-list td.size {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  width: 1%;
-}
-
-table.pane-mini-list td.status-message {
-  padding: 14px 10px;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
@@ -1291,15 +1000,6 @@ table.listing-table tr.skel-row:hover {
   gap: 10px;
   max-width: 420px;
   padding: 6px 0;
-}
-
-.listing-pane .pane-skel {
-  flex: 1 1 auto;
-  margin: 14px;
-  border-radius: 8px;
-  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
-  background-size: 200% 100%;
-  animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
 /* Row 1 of the listing column in the hosts that have NO crumb bar (the app
@@ -2161,28 +1861,6 @@ table.listing-table tr.row.selected {
  * jump on a keystroke (the no-jumpy-lists rule). Out of flow it costs zero
  * layout. Accepted edge case: a filename long enough to define the column's
  * width runs under the badge; the badge is on top and stays readable. */
-.clip-mark {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  line-height: 1;
-  /* 2px + the 1px border = the 3px the pill reads as */
-  padding: 2px 5px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  background: var(--bg-alt);
-  cursor: default;
-  user-select: none;
-}
-.clip-mark.cut {
-  border-style: dashed;
-}
 
 table.listing-table .icon {
   flex: 0 0 auto;

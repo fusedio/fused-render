@@ -43,21 +43,6 @@
    on the fill in both palettes and --accent-hover is its only hover step.
    (Supersedes the earlier ink-filled primary: the approved comps render the
    primary as a lime fill, and the surface brief records the call.) */
-.btn-primary,
-.deploy-body .btn-primary,
-.prefs-section .btn-primary {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--on-accent);
-  font-weight: 600;
-}
-
-.btn-primary:hover:not(:disabled),
-.deploy-body .btn-primary:hover:not(:disabled),
-.prefs-section .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: transparent;
-}
 
 .btn-secondary,
 .deploy-body .btn-secondary,
@@ -72,39 +57,6 @@
 .prefs-section .btn-secondary:hover:not(:disabled) {
   background: transparent;
   border-color: var(--fg-muted);
-}
-
-.btn-danger,
-.deploy-body .btn-danger,
-.prefs-section .btn-danger {
-  background: rgba(var(--error-rgb), 0.1);
-  border-color: var(--error);
-  color: var(--error);
-}
-
-.btn-danger:hover:not(:disabled),
-.deploy-body .btn-danger:hover:not(:disabled),
-.prefs-section .btn-danger:hover:not(:disabled) {
-  background: rgba(var(--error-rgb), 0.18);
-  border-color: var(--error);
-}
-
-/* Text-only destructive action; margin-right:auto anchors it to the far left of
-   a footer row so the primary/cancel stay right-aligned. */
-.btn-danger-text,
-.deploy-body .btn-danger-text,
-.prefs-section .btn-danger-text {
-  background: none;
-  border-color: transparent;
-  color: var(--error);
-  margin-right: auto;
-}
-
-.btn-danger-text:hover:not(:disabled),
-.deploy-body .btn-danger-text:hover:not(:disabled),
-.prefs-section .btn-danger-text:hover:not(:disabled) {
-  background: rgba(var(--error-rgb), 0.12);
-  border-color: transparent;
 }
 
 /* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the

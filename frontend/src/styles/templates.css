@@ -145,7 +145,6 @@
   color: var(--error);
 }
 
-
 /* Delete-confirm modal options (D109): the two default-checked checkboxes. */
 .templates-delete-opts {
   display: flex;

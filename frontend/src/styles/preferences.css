@@ -1,57 +1,5 @@
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
-/* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
-   centered icon over a small muted label. Deliberately understated (D80) —
-   the label just disambiguates the icons. Fused account (D125) no longer
-   gets its own column — its signed-in dot moved onto Preferences — which is
-   what keeps this back down to a single row instead of the 2×2 grid a 4th
-   entry needed. */
-.sidebar-footer {
-  margin-top: auto;
-  padding: 6px;
-  border-top: 1px solid var(--border);
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-}
-
-.sidebar-footer .prefs-link {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 4px;
-  border-radius: 8px;
-  background: none;
-  border: none;
-  font: inherit;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.sidebar-footer .prefs-link .icon {
-  margin: 0;
-  display: flex;
-}
-
-.sidebar-footer .prefs-label {
-  font-size: 10.5px;
-  line-height: 1;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-footer .prefs-link:hover,
-.sidebar-footer .prefs-link.active {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.06);
-}
-
 /* Shell-ctx settings list (super-app step 2): Templates / Mounts /
    Preferences as regular sidebar rows pinned to the bottom edge — the same
    list treatment as the sub-app list at the top. */
@@ -205,12 +153,6 @@
   font-size: 12px;
   color: var(--fg-muted);
 }
-
-/* The "indexing…" caveat, rendered at the end of that same line rather than as
-   a banner of its own: it is a footnote on the count next to it, and an index
-   is always a little behind the filesystem, so a louder treatment would cry
-   wolf permanently. Same two messages as the listing's search chip
-   (listing/index-caveat) — one claim, one wording, two boxes. */
 /* "· Searching…" appended to the count while a request outlives
    PENDING_INDICATOR_MS. Deliberately as quiet as the count it follows: the rows
    underneath are still the previous query's answer, and a loud indicator over
@@ -261,18 +203,6 @@
 /* "enable it in Preferences" — a quiet inline link-button inside the result
    note, same pattern as .mount-link (setup-modal.css): no border/background
    of its own, so it reads as part of the sentence rather than a control. */
-.fh-link-button {
-  border: none;
-  background: none;
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  color: var(--fg-muted);
-  text-decoration: underline;
-}
-.fh-link-button:hover {
-  color: var(--fg);
-}
 
 .fh-result-note kbd {
   font: inherit;
@@ -286,10 +216,6 @@
 .fh-section {
   margin-top: 30px;
 }
-
-/* -- Home page sections (shell/Home.tsx) --------------------------------------
-   Title row with the "See all" action on its right edge, over a one-row strip
-   of the same cards the full pages use. */
 /* The Home page alone runs full-bleed: its strips are meant to fill the
    window's width with cards, so the 1120px launcher clamp stays on the
    explorer home only. The search hero keeps a readable line on its own
@@ -342,11 +268,6 @@
 .home-sec-more:hover {
   color: var(--fg);
 }
-
-/* One plain row of full-size cards. The page computes how many whole cards
-   fit (Home.tsx useStripCount — its CARD_W/CARD_GAP must match the width and
-   gap here) and renders exactly that many, so nothing wraps, clips, or
-   scrolls. The full lists live behind "See all". */
 /* The centered column holding the three sections — exactly as wide as the
    cards that fit (Home.tsx sets the pixel width inline). */
 .home-strips {
@@ -429,9 +350,6 @@
 .home-skel-text {
   flex: 1 1 auto;
 }
-
-/* The two shimmer bars in a skeleton head — reuses `.skel-bar` (explorer.css)
-   as-is; only the widths are per-instance (inline style in Home.tsx). */
 
 /* Shimmer wash for a whole panel — same gradient/animation recipe as
    `.skel-bar`'s (explorer.css: the shared `@keyframes skel-shimmer` is
@@ -745,11 +663,6 @@
   border-bottom: 1px solid var(--border);
 }
 
-.fh-tablist {
-  display: flex;
-  gap: 4px;
-}
-
 .fh-tab {
   padding: 0 2px 10px;
   margin-right: 14px;
@@ -871,11 +784,6 @@
 .fhb-card .fh-card-name {
   font-size: 14px;
   font-weight: 650;
-}
-
-.fhb-card-head .bookmark-missing-badge {
-  flex: 0 0 auto;
-  margin-left: auto;
 }
 
 /* File body: the live preview filling the card bottom. */
@@ -1143,28 +1051,6 @@
   display: block;
 }
 
-
-/* The MAX_CARDS fold's "Show more": a quiet pill centered under the grid. */
-.fhb-more {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 14px auto 0;
-  padding: 5px 14px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
-
-.fhb-more:hover {
-  color: var(--fg);
-  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
-}
-
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
 .driver-popover {
   background: var(--bg-popover);
@@ -1257,11 +1143,6 @@
 
 /* Render preferences / Indexing tabs (D125) — same look as the
    Templates page's bindings/library tabs. */
-.prefs-tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-}
 
 .prefs-tab {
   font: inherit;
@@ -1352,29 +1233,6 @@
   align-items: center;
 }
 
-/* Free-text list editor (the index's skip rules). Monospace because every line
-   is a path or glob, where a mistaken space matters. */
-.prefs-textarea {
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  line-height: 1.5;
-  padding: 8px 10px;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  resize: vertical;
-}
-
-/* The Hugging Face authorize link. An <a>, not a button, because it opens a URL
-   in a new tab and must survive a middle-click and a copy-link — but it is the
-   primary action of the section while a login is pending, so it wears .btn and
-   needs the inline-block and centring an <a> does not have. */
-.hf-authorize-link {
-  display: inline-block;
-  text-decoration: none;
-}
-
 /* Safety net for unmigrated selects only — .field-control selects carry their
    own canonical skin + custom chevron. */
 .prefs-section select:not(.field-control) {
@@ -1384,18 +1242,6 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 7px 10px;
-}
-
-/* ---- the index Query panel (shell/Indexing.tsx) ------------------------- */
-
-/* A statement is wider than a skip rule and wrapping one mid-identifier is
-   unreadable, so this box does not wrap — it scrolls, like an editor. */
-.index-query-input {
-  width: 100%;
-  box-sizing: border-box;
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
 }
 
 /* The SQL a question compiled to. Shown above the results so the user can see

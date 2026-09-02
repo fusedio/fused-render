@@ -47,8 +47,7 @@
   outline-offset: 6px;
 }
 
-.mount-grid .field-control,
-.mount-grid .field-select-wrap {
+.mount-grid .field-control {
   width: 100%;
 }
 
@@ -101,24 +100,6 @@
   font-size: 12px;
   color: var(--fg-muted);
 }
-
-/* ---- Mounts type scale ---------------------------------------------------
-   Two text sizes across the mounts page and all six setup modals, both taken
-   from the shell's existing scale rather than invented here:
-
-     13px  body — the .deploy-body/.modal-body base. Step sentences, buttons,
-           inputs, card names. Set by inheritance; rules below simply don't
-           override it.
-     12px  secondary — hints, closing notes, <summary>, inline qualifiers,
-           card status. Already the size of .field-label and .prefs-section
-           code, so a hint next to a field caption matches it.
-
-   ABSOLUTE px, never `em`. Every one of these used to be 0.8/0.85/0.9em, and
-   they nested: a 0.8em hint inside .mount-step-body (0.9em) inside
-   the 13px modal body measured 9.36px, and a .mount-link inside that hint came
-   out at 7.96px. The Drive modal rendered nine distinct sizes. `em` is what
-   made a size depend on where the element happened to sit, so the scale could
-   not be reasoned about from the rule. */
 /* Vertical rhythm, in three steps rather than 10px everywhere: 24px between
    sections (from .prefs-page), 14px between the blocks inside one, and the
    6-10px the blocks use internally. The page previously ran everything at the
@@ -162,12 +143,6 @@
   display: flex;
   gap: 8px;
   flex-shrink: 0;
-}
-
-/* Refresh glyph in the Restart button — sized independently of the label. */
-.mounts-restart-icon {
-  font-size: 14px;
-  line-height: 1;
 }
 
 /* Callout card — the rclone-not-found notice and the recovery prompt share
@@ -233,38 +208,9 @@
   transition: border-color 0.12s ease;
 }
 
-.mount-card:not(.mount-card--skeleton):hover {
-  border-color: var(--fg-muted);
-}
-
 /* Loading placeholder rows shown while getMounts() is in flight — a shimmer
    sweep over an empty card, so the list area reserves its space instead of
    the page jumping when data lands. */
-.mount-card--skeleton {
-  height: 60px;
-  position: relative;
-  overflow: hidden;
-}
-
-.mount-card--skeleton::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(var(--tint), 0.04),
-    transparent
-  );
-  animation: mount-shimmer 1.2s ease-in-out infinite;
-}
-
-@keyframes mount-shimmer {
-  to {
-    transform: translateX(100%);
-  }
-}
 
 .mount-card-main {
   display: flex;
@@ -290,28 +236,6 @@
   gap: 8px;
   align-items: center;
   margin-left: auto;
-}
-
-/* No generic `.mount-card button` skin any more. Every button inside a card is
-   now a .btn — Open/Reconnect, Remove, and the setup panels' "Use" — and the
-   old element-scoped rule (0,1,1) silently outranked `.btn` (0,1,0) inside a
-   modal, overriding its height and padding while .btn-primary's colours still
-   won at (0,2,0). Half-skinned buttons were the visible result. */
-
-/* Remove: a LABELLED ghost button, not a bare "✕". Quiet until hovered, where
-   it turns destructive-red — the glyph it replaced gave no clue whether it
-   unmounted the folder or deleted data on the remote (it does the former).
-   Specificity ties with `.prefs-section .btn` and wins by order. */
-.mount-card .mount-remove {
-  background: none;
-  border-color: transparent;
-  color: var(--fg-muted);
-}
-
-.mount-card .mount-remove:hover:not(:disabled) {
-  color: var(--error);
-  border-color: var(--error);
-  background: rgba(var(--error-rgb), 0.12);
 }
 
 /* The mount card's mark — the same column the provider cards use, at the size
@@ -371,10 +295,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* Labeled form field: a small uppercase caption over a native control, so
-   the add-mount row and the custom-remote modal read as named fields rather
-   than a line of bare placeholders. */
 
 /* Live preview of the rclone spec the Add button will mount. */
 .mount-spec {

@@ -10,19 +10,6 @@
   gap: 12px;
 }
 
-.schedule-quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-/* The submit button sits at the end of the quick-pick row, so push it away from
-   the chips that only stage a time. */
-.schedule-quick .btn-primary {
-  margin-left: auto;
-}
-
 /* -- Width ---------------------------------------------------------------------
    This page is built out of the settings vocabulary, and `.prefs-page > *`
    caps every child at 760px — a good measure for prose, far too narrow for a
@@ -120,7 +107,6 @@
 
 /* The three views, each filling what the toolbar leaves and scrolling inside. */
 .schedule-page .schedule-main > .schedule-cal,
-.schedule-page .schedule-main > .schedule-tv-tree,
 .schedule-page .schedule-main > .schedule-tv-board {
   flex: 1 1 auto;
   min-height: 0;
@@ -131,27 +117,10 @@
   flex-direction: column;
 }
 
-.schedule-page .schedule-main > .schedule-tv-tree {
-  overflow-y: auto;
-}
-
 /* The card grid this section used to declare is gone — the List/Board views
    are now the flow-app tree + kanban (see "-- Task views" below). What
    survives is the card's INNER vocabulary (-head, -when, -why, -actions,
    .schedule-state): the calendar popover still describes a run with it. */
-
-.schedule-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.schedule-card-when {
-  margin-left: auto;
-  white-space: nowrap;
-}
 
 .schedule-card-why {
   font-size: 12px;
@@ -222,10 +191,6 @@
 .schedule-toolbar .schedule-form-seg {
   margin-right: auto;
 }
-
-/* Segmented pair built from .btn-secondary: the active half gets the quiet
-   pressed look rather than a new component. Shared by the view toggle and the
-   New job form's Once / On a schedule choice. */
 /* The container owns the pill's outline; buttons are borderless inside it and
    share border-left dividers. Per-button borders + negative-margin overlap
    could not survive the page's two hover skins — `.prefs-section button:hover`
@@ -318,23 +283,6 @@
 .schedule-form-seg .btn:focus-visible,
 .prefs-section .schedule-form-seg .btn:focus-visible {
   outline-offset: -2px;
-}
-
-/* -- New job form -------------------------------------------------------------- */
-
-.schedule-form-row {
-  display: flex;
-  gap: 10px;
-}
-
-.schedule-form-row .field {
-  flex: 1;
-  min-width: 0;
-}
-
-.schedule-form-message {
-  resize: vertical;
-  min-height: 64px;
 }
 
 /* A hint that is refusing something (a past time), in the error voice. */
@@ -667,12 +615,6 @@
   display: none;
 }
 
-/* -- Chip tones ------------------------------------------------------------------
-   The task's colour says WHICH task; the tone says how the day went. The tone
-   never takes the whole chip — it moves the wash and, where it matters, the
-   bar — so a failed run is still recognisably the same task as the clean ones
-   beside it. */
-
 /* Work in flight: the wash deepens toward the accent, the colour the whole app
    uses for "now". */
 .schedule-cal .schedule-cal-chip--sending {
@@ -766,10 +708,6 @@
   opacity: 0.85;
 }
 
-/* No local prefers-reduced-motion block: styles/reduced-motion.css collapses
-   every animation-duration and transition-duration to 0.01ms !important
-   globally, so per-component repeats were dead weight (audit 2026-08-16). */
-
 /* -- The chip popover -----------------------------------------------------------
    The chip popover is the MITIGATION for the one accepted cost of the
    one-chip-per-task-per-day rule: a task's 7pm run has no chip at 7pm, and this
@@ -820,8 +758,6 @@
   }
 }
 
-/* (No local reduced-motion block — see styles/reduced-motion.css.) */
-
 /* Pinned: the head names the task and carries its status, and neither may be
    scrolled away by a long thread. */
 .schedule-cal-pop-head {
@@ -847,14 +783,6 @@
   letter-spacing: 0.4px;
   color: var(--fg-muted);
 }
-
-/* No `.schedule-cal-pop-rep` any more (Akshil, 2026-08-19): the ↻ beside the
-   task id was decorative on its own admission, and the recurrence it hinted at
-   is spelled out in the meta line below the title. */
-
-/* The pill sits AGAINST THE ID it labels (Akshil, 2026-08-19) — swatch, id,
-   status as one left-aligned statement — so the head's one auto margin moved to
-   the tool rail below, which claims the right edge instead. */
 
 /* The head's quiet tools: the pencil, and the one lifecycle verb the component
    decides (Archive today; the Delete arm waits on a server verb — see the
@@ -1110,36 +1038,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* No `.schedule-cal-msg-body` any more (Akshil, 2026-08-19). A popover row is
-   ring + time now, nothing else: the body's first line was most often the
-   panel's own title echoed — and when it genuinely wasn't, the transcript the
-   row opens is one click away. The row stopped being a sentence. */
-
-/* No `.schedule-cal-msg-unread` any more (2026-08-18). It was a 6px accent disc
-   after the body, and it was this view speaking its OWN dialect: the List and the
-   Board marked the same fact with a different colour, in a different place, on a
-   different element. Unread is the status ring's filled centre now, everywhere
-   (see `.schedule-ring--unread` below and ScheduleTaskViews.StatusIcon). */
-
-/* No `.schedule-cal-msg-note` in the ink either (Akshil, 2026-08-19). Its
-   words — "queued", "ran 2 days late", "too late to cancel" — still exist and
-   schedule-lib.msgNote still writes them; they moved into the row's title
-   tooltip, next to the exact time and the status word that already lived there.
-   The fact survives, the row's third column does not.
-
-   `.schedule-cal-msg-state` (the printed status word) went the same way on
-   2026-08-18 — the ring carries it — and its orphaned rule left with this
-   batch. */
-
-/* The per-row ⊗ skip / ✕ cancel is HIDDEN for now (Akshil, 2026-08-19: "let
-   us hide skip for now") — `.schedule-cal-msg-act` and its hover/disabled rules
-   left with the button. `.schedule-cal-msg-held`, the turning glyph on a
-   claimed row, left with them: its whole argument was holding the SAME 24px box
-   so the row did not jump sideways when the button vanished queued → sending,
-   and there is no box to hold any more. Sending itself was never the spinner's
-   fact to carry — the ring and the tooltip's note still say it. The List still
-   offers both cancels; a popover row's only press is the row itself. */
-
 /* The action row: pinned to the foot of the card, never scrolled with the
    thread. `.schedule-card-actions` already carries `margin-top: auto`; what it
    needs here is the refusal to SHRINK, or a 24-row thread squeezes the buttons
@@ -1202,26 +1100,6 @@
   border-color: var(--accent);
   border-style: dashed;
 }
-
-/* -- The one status vocabulary on a pill ----------------------------------------
-   Upcoming / In Progress / Done / Failed / Archive — the app's five words, worn
-   by the calendar popover's header.
-
-   Their HUES are at the end of this file, with the rule that gives each of the
-   five its own tint. They used to be here, and only two of them existed: In
-   Progress borrowed the accent and Failed the error red, on the argument that a
-   badge on every task says nothing. It said too little instead — Done, Archive
-   and Upcoming were one grey badge between them, while the RING two lines under
-   the pill had already been painting all five for a round. One vocabulary means
-   one palette as well as one word. */
-
-/* NO `.schedule-state.is-projected` any more (Akshil, 2026-08-19). The popover
-   header's pill used to go dashed when the clicked chip was projected, but the
-   dashes are the GRID's day-scoped cue — projected chips and the ghost rings on
-   occurrence rows wear them — and a pill is a word about status, not a drawing
-   of a day. It stopped reaching the pill at the source (the component no longer
-   passes the chip's `projected` into the pill's class), so the pill's border is
-   solid in every state; a projected occurrence simply reads "Upcoming". */
 
 /* The LIST cards' own tone vocabulary (schedule-lib.stateTone), which is a
    different question — "what did the scheduler do with this entry" — and keeps
@@ -1342,11 +1220,6 @@
   margin-bottom: 10px;
 }
 
-/* Reference-card refinements (Akshil, 2026-08-14, Google new-event screenshot):
-   quiet text-like controls that surface on hover, a pill Save. (The thick accent
-   bar this section used to put under the title is gone with the box — see the
-   note above.) */
-
 /* Controls stay VISIBLY controls. The first pass borrowed Google's
    text-until-hovered treatment and it read as "not an input" (Akshil,
    2026-08-14) — so the fields keep their box and only the focus ring takes
@@ -1354,11 +1227,6 @@
 .schedule-form .field-control:focus {
   border-color: var(--accent);
 }
-
-/* The accent override that used to sit here is GONE (2026-08-18). "More
-   options" was styled as the reference card's accent text-button, and on this
-   card that made the one control the user rarely needs the brightest mark in
-   the panel. Its whole treatment is the muted disclosure block above. */
 
 /* The Inbox-style row list this section once styled is gone — the List view is
    now the flow-app tree (see "-- Task views" below). Only the calendar
@@ -1564,21 +1432,6 @@ input.schedule-when-field {
 /* Errors point AT the field, not just at prose under the form — the message
    alone was "very easy to miss" (Akshil, 2026-08-16). Restated for :focus
    and hover so touching the bad field doesn't repaint it healthy. */
-.schedule-when-field.is-invalid,
-.deploy-body .schedule-when-field.is-invalid,
-.deploy-body .schedule-when-field.is-invalid:hover:not(:disabled),
-.deploy-body .schedule-when-field.is-invalid:focus,
-.prefs-section .schedule-when-field.is-invalid,
-.schedule-when-field.is-invalid:hover:not(:disabled),
-.schedule-when-field.is-invalid:focus,
-.prefs-section .schedule-when-field.is-invalid:focus {
-  border-color: var(--error);
-}
-
-.schedule-form .field-control.is-invalid,
-.schedule-form .field-control.is-invalid:focus {
-  border-color: var(--error);
-}
 
 .schedule-when-field:hover:not(:disabled),
 .deploy-body .schedule-when-field:hover:not(:disabled),
@@ -1781,8 +1634,6 @@ input.schedule-when-field {
   background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
-
-/* Month grid, Google's anatomy: title + chevrons, S-M-T-W-T-F-S, discs. */
 /* 224px = 7 × 32px columns exactly. The card was 232 against a 224 grid, and
    the 8px of slack pooled on one side — the month title, the chevrons and the
    last column all stopped short of the card's edge (audit 2026-08-16). */
@@ -1942,8 +1793,6 @@ input.schedule-when-field {
   background: rgba(var(--tint), 0.05);
   font-weight: 600;
 }
-
-/* -- Custom recurrence (Google's dialog) ----------------------------------- */
 
 /* A side panel like Browse's, not a section inside the card — "this also
    should be like browse, come to the side" (Akshil, 2026-08-16). Same
@@ -2210,10 +2059,6 @@ input.schedule-when-field {
   background: var(--bg);
   padding: 10px;
 }
-
-/* Crumbs replace the old ‹-plus-path head: every ancestor is a click, the
-   current folder is the bold unclickable tail (Akshil, 2026-08-15 — the
-   single Up chevron read as "ugly and not intuitive"). */
 /* One line, always. A deep path wrapping to three rows moved the filter, the
    listing and the foot down with it — the panel's whole geometry hung off how
    long the current path happened to be (audit 2026-08-16). The middle
@@ -2324,8 +2169,6 @@ input.schedule-when-field {
   pointer-events: none;
 }
 
-/* (No local reduced-motion block — see styles/reduced-motion.css.) */
-
 /* One folder row: full-width, quiet, hover surface — a listing, not a form.
    align-self restated because the settings page's `.prefs-section button`
    skin pins every button to flex-start, which shrink-wraps a row (and its
@@ -2390,12 +2233,6 @@ input.schedule-when-field {
   gap: 8px;
 }
 
-/* -- Naming a folder that does not exist yet ------------------------------
-   Two surfaces say the same thing: this row inside the picker, and the
-   new-folder row in the path field's dropdown (.schedule-recents-new, up with
-   the rest of that list). Neither writes to disk — the folder is created by
-   the save. The badge at the bottom of this block is shared by both. */
-
 /* Pushed to the far edge, away from Cancel / Use this folder: it acts on the
    folder you are standing IN, not on the errand the pair finishes. */
 .schedule-picker-newbtn {
@@ -2445,9 +2282,7 @@ input.schedule-when-field {
 /* One shape for "this is the commit": the modal's Save, the explorer's "Use
    this folder" and the recurrence section's Done are the same promise, so they
    are the same pill (audit 2026-08-16). */
-.schedule-save,
-.schedule-picker-foot .btn-primary,
-.deploy-body .schedule-picker-foot .btn-primary {
+.schedule-save {
   border-radius: 999px;
   padding: 0 22px;
 }
@@ -2480,21 +2315,6 @@ input.schedule-when-field {
 .schedule-save-key-plus {
   font-size: 9px;
   opacity: 0.7;
-}
-
-/* The description hangs from a top-aligned icon (multi-line row), and grows
-   only by the user's hand. */
-.schedule-form-line--top {
-  align-items: flex-start;
-}
-
-.schedule-form-line--top svg {
-  margin-top: 9px;
-}
-
-.schedule-form-description {
-  resize: vertical;
-  min-height: 66px;
 }
 
 /* -- Focus ring: one, and ours ---------------------------------------------
@@ -2537,23 +2357,6 @@ input.schedule-when-field {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-
-/* -- Task views: the tree (List) and the kanban (Board) ------------------------
-   shell/ScheduleTaskViews.tsx — a port of the flow app's task-board widget
-   (TreeView/TreeRows, KanbanColumn/BoardView, StatusIcon, LivePulse, the
-   search + status toolbar) into this app's plain CSS. Flow is Tailwind, so
-   every utility it composes is spelled out here against the theme tokens; the
-   numbers (16px ring, 20px indent, 52px collapsed rail, 260px lane, the 8px
-   inner dot) are its numbers, kept so the two products describe a unit of work
-   the same way.
-
-   Two house rules this whole section obeys. First, everything below lives
-   inside `.prefs-section`, whose `button` skin (a bordered 5px/12px pill) out-
-   specifies a single class — so every custom button here is written with the
-   `.prefs-section` scope as well, or the page repaints it. Second: no
-   `transition: all` anywhere. It animates the border-color the hover skin sets
-   AND the width the layout sets, which reads as a flash; each rule names the
-   one property it means. */
 
 /* -- The status ring — the vocabulary both views are read by ------------------
    Bordered circle, hue by column, and an inner dot on the terminal state so
@@ -2723,55 +2526,6 @@ input.schedule-when-field {
   transition-delay: 0.3s;
 }
 
-/* THE TASK ROW'S MARKS ARE NOT `data-tip` USERS, and were for exactly one day
-   (2026-08-24). The row's title, the scope glyph, the folder chip, the message
-   count and the times all wore this panel for one pass — consistency was the
-   argument — and it took FOUR support rules to keep honest: a z-index lift so a
-   later sibling could not paint over the panel, a right-edge anchor so the last
-   cell's panel was not clipped by the scroller, a `:has()` so the row's caption
-   and a mark's did not draw six pixels apart, and a per-class fast-delay list.
-   Even with all four it drew DISPLACED: the panel is positioned under its
-   ELEMENT, so on the list's first row it opened over the row below, captioning
-   a different task's title (Akshil, screenshot: "it is displaced completely
-   from the title" — "I don't want you to use custom tooltip").
-   So the marks carry native `title`s instead. The browser's tooltip follows the
-   POINTER, which is the one placement that cannot caption the wrong row, and it
-   needs none of the four rules — what fixed the original wrong-tooltip bug was
-   never the panel, it was each mark having a title OF ITS OWN so the browser
-   stops walking up to the row's. This panel stays for what it was built for:
-   the status ring's unread count, a fast tip on a COLUMN of identical marks,
-   where the 300ms guard above is the point. */
-
-/* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
-   that was one blink too many (Akshil, 2026-08-17): the lane is a column of
-   them, so a full board flickered, and the ring already says "in progress" by
-   being the only yellow one on the page. Nothing on this page animates at rest
-   any more — the live ping, the last thing that did, went on 2026-08-18 (below).
-   Nothing to undo in styles/reduced-motion.css: that file never named this
-   animation (its blanket `animation-duration: 0.01ms` covered it), so removing
-   the rule leaves nothing dangling. */
-/* No `.schedule-tv-pulse` any more, and no `@keyframes` for it (2026-08-18).
-
-   It was the live ping: a solid `--activity` dot under a larger translucent one
-   that breathed on a 1.6s loop (flow LivePulse), following a live task's title on
-   the List row and standing in the Board card's head. It said "a turn is in flight
-   right now" — genuinely finer than the In Progress lane, which also holds a
-   queued turn that has not started.
-
-   It went because of its FORM, not its meaning. On 2026-08-17 the row ended in two
-   filled discs of nearly the same size and the fix chosen was colour: "grey after
-   the title means unread, blue means live". Then the grey one left the row
-   altogether — unread is the status ring's filled centre now — and that left this
-   as the only free-standing dot on the page, in the one position and the one shape
-   that mean unread in this app and every other. Akshil, 2026-08-18, on a
-   screenshot of "…sk workflow analysis ●": the blue dot should not be there.
-
-   Nothing about `task.live` changed; only this rendering of it. The In Progress
-   ring's yellow, the queue dock and the row's own relative time are what carry
-   "happening" now. Nothing in styles/reduced-motion.css named the animation (its
-   blanket `animation-duration: 0.01ms` covered it), so removing it leaves nothing
-   dangling there either. */
-
 /* -- Folder chip: WHERE the row's work happened ------------------------------
    Was flow's initials-in-a-circle avatar, which in flow stands for an AGENT.
    A directory is not a person, so the circle was claiming something untrue
@@ -2785,14 +2539,6 @@ input.schedule-when-field {
   flex: 0 1 auto;
 }
 
-.schedule-tv-folder-icon {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  opacity: 0.75;
-}
-
 .schedule-tv-id-name {
   font-size: 11px;
   color: var(--fg-muted);
@@ -2801,11 +2547,6 @@ input.schedule-when-field {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-/* -- Toolbar: search + status filter ------------------------------------------
-   Given `flex: 1` so the view toggle and + New task keep the right-hand
-   positions they already had; on the calendar this block is not rendered at
-   all and the toolbar falls back to its old layout untouched. */
 /* Right-aligned, riding immediately left of "+ New task" (Akshil,
    2026-08-16). The free space is pushed by the VIEW TOGGLE's `margin-right:
    auto` (see .schedule-toolbar .schedule-form-seg below), not by an auto
@@ -2821,129 +2562,6 @@ input.schedule-when-field {
   min-width: 0;
 }
 
-.schedule-tv-search {
-  position: relative;
-  display: flex;
-  width: 260px;
-  max-width: 100%;
-  min-width: 0;
-}
-
-.schedule-tv-search-icon {
-  position: absolute;
-  left: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: inline-flex;
-  pointer-events: none;
-  color: var(--fg-muted);
-}
-
-.schedule-tv-search .schedule-tv-search-input {
-  width: 100%;
-  min-width: 0;
-  padding-left: 28px;
-  font-size: 12px;
-}
-
-.schedule-tv-pop-wrap {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.schedule-tv-filter-btn,
-.prefs-section .schedule-tv-filter-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  align-self: center;
-  transition: border-color 0.08s ease, background-color 0.08s ease;
-}
-
-.schedule-tv-filter-btn:hover:not(:disabled),
-.prefs-section .schedule-tv-filter-btn:hover:not(:disabled) {
-  background: var(--bg-alt);
-  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
-}
-
-.schedule-tv-filter-btn svg {
-  color: var(--fg-muted);
-}
-
-.schedule-tv-filter-count {
-  min-width: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(var(--accent-rgb), 0.16);
-  color: var(--accent-soft);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-}
-
-/* Absolute, and nothing between it and the page clips: the toolbar is a plain
-   flex row with no overflow of its own. */
-.schedule-tv-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
-  width: 190px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  background: var(--bg-popover);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px var(--shadow-md);
-}
-
-.schedule-tv-pop-item,
-.prefs-section .schedule-tv-pop-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  align-self: stretch;
-  box-sizing: border-box;
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  color: var(--fg);
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background-color 0.08s ease;
-}
-
-.schedule-tv-pop-item:hover:not(:disabled),
-.prefs-section .schedule-tv-pop-item:hover:not(:disabled) {
-  background: var(--row-bg-hover);
-  border-color: transparent;
-}
-
-.schedule-tv-pop-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  flex: 0 0 13px;
-  color: var(--accent-soft);
-}
-
 /* The sessions feed failing is a missing HALF, not a broken page. */
 .schedule-tv-note,
 .schedule-page .prefs-section > p.schedule-tv-note {
@@ -2951,164 +2569,6 @@ input.schedule-when-field {
   font-size: 11px;
   color: var(--fg-muted);
 }
-
-/* -- Tree (List view) ---------------------------------------------------------
-   One bordered card, hairlines between TOP-LEVEL nodes only: a rule and its
-   runs are one thing, and ruling between them would break the group up. */
-.schedule-tv-tree {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.schedule-tv-tree > .schedule-tv-node + .schedule-tv-node {
-  border-top: 1px solid var(--border);
-}
-
-.schedule-tv-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background-color 0.08s ease;
-}
-
-.schedule-tv-row:hover {
-  background: var(--row-bg-hover);
-}
-
-.schedule-tv-indent {
-  flex: 0 0 auto;
-}
-
-.schedule-tv-caret,
-.prefs-section .schedule-tv-caret {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  padding: 0;
-  align-self: center;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  cursor: pointer;
-  /* transform, not `all`: the row's own background is transitioning too, and
-     one rule owning both made the caret smear on hover. */
-  transition: transform 0.12s ease, color 0.08s ease;
-}
-
-.schedule-tv-caret.is-open {
-  transform: rotate(90deg);
-}
-
-.schedule-tv-caret:hover:not(:disabled),
-.prefs-section .schedule-tv-caret:hover:not(:disabled) {
-  color: var(--fg);
-  background: transparent;
-  border-color: transparent;
-}
-
-.schedule-tv-caret-gap {
-  width: 16px;
-  flex: 0 0 16px;
-}
-
-.schedule-tv-label {
-  flex: 0 0 auto;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-.schedule-tv-title {
-  min-width: 0;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.schedule-tv-grow {
-  flex: 1 1 auto;
-}
-
-.schedule-tv-meta {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-
-/* The scheduler's own writes — quiet until the row is pointed at, because they
-   apply to a minority of rows and a permanent column of icons would out-shout
-   the work itself. Kept reachable by keyboard: focus-within reveals them. */
-.schedule-tv-acts {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  opacity: 0;
-  transition: opacity 0.08s ease;
-}
-
-.schedule-tv-row:hover .schedule-tv-acts,
-.schedule-tv-row:focus-within .schedule-tv-acts {
-  opacity: 1;
-}
-
-.schedule-tv-act,
-.prefs-section .schedule-tv-act {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  align-self: center;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background-color 0.08s ease, color 0.08s ease;
-}
-
-.schedule-tv-act:hover:not(:disabled),
-.prefs-section .schedule-tv-act:hover:not(:disabled) {
-  color: var(--fg);
-  background: var(--bg-alt);
-  border-color: var(--border);
-}
-
-.schedule-tv-act:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* A failed Cancel/Unskip says so under its own row — the 404 race is a real
-   answer ("it already sent"), not a page-level fault. */
-.schedule-tv-row-error {
-  margin: 0;
-  padding: 0 12px 8px 56px;
-  font-size: 11px;
-  color: var(--error);
-}
-
-.schedule-tv-empty {
-  margin: 0;
-  padding: 40px 12px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--fg-muted);
-}
-
-/* -- Kanban (Board view) ------------------------------------------------------ */
 /* The board is a PANE, not a run of page: it takes the window's remaining
    height and each lane scrolls inside it (flow's `h-full min-h-0` plus the
    per-lane `overflow-y-auto`). Without the height the lanes all stretch to the
@@ -3513,11 +2973,6 @@ input.schedule-when-field {
    clamp's removal that made the flow work stays — see `.schedule-tv-card-title`
    above, which still needs `overflow-wrap` for its own sake. */
 
-.schedule-tv-card-next {
-  font-size: 10.5px;
-  color: var(--fg-muted);
-}
-
 .schedule-tv-card-foot {
   display: flex;
   align-items: center;
@@ -3647,23 +3102,14 @@ input.schedule-when-field {
 }
 
 /* -- Focus: the page's own ring, on every bespoke control added above --------- */
-.schedule-tv-row:focus-visible,
-.schedule-tv-caret:focus-visible,
-.schedule-tv-act:focus-visible,
 .schedule-tv-card:focus-visible,
 .schedule-tv-lane-head:focus-visible,
 .schedule-tv-rail:focus-visible,
 .schedule-tv-more:focus-visible,
-.schedule-tv-filter-btn:focus-visible,
-.schedule-tv-pop-item:focus-visible,
-.prefs-section .schedule-tv-caret:focus-visible,
-.prefs-section .schedule-tv-act:focus-visible,
 .prefs-section .schedule-tv-card:focus-visible,
 .prefs-section .schedule-tv-lane-head:focus-visible,
 .prefs-section .schedule-tv-rail:focus-visible,
-.prefs-section .schedule-tv-more:focus-visible,
-.prefs-section .schedule-tv-filter-btn:focus-visible,
-.prefs-section .schedule-tv-pop-item:focus-visible {
+.prefs-section .schedule-tv-more:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

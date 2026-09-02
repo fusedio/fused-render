@@ -31,12 +31,6 @@
   --am-engine-col-gap: 12px;
 }
 
-/* NO INTRO PARAGRAPH ANY MORE. What "Automatic" means used to be the tab's one
-   sentence above the cards (`.am-engines-note`); it is now the Automatic
-   option's own description inside each control's popup
-   (`EngineSelect.tsx`'s `buildOptions`), read at the moment it answers a
-   question instead of skimmed past above three closed controls. */
-
 /* Capability, control, reality — one line, and a real GRID rather than three
    rows that each size themselves.
 
@@ -67,14 +61,6 @@
 .am-engine-cap {
   font-weight: 600;
 }
-
-/* .field-control carries the app's canonical select skin (styles/fields.css) —
-   its own border/height/radius — which is what makes `EngineSelect`'s trigger
-   look like every other field in the app instead of like the platform's
-   default button. `.am-engine-select` used to be the native <select> itself;
-   it is now the trigger BUTTON inside `EngineSelect`'s root, and it keeps this
-   class for the same skin. What is left here is only how it behaves in this
-   row. */
 /* `width: 100%` on both the root and the trigger fills the grid's control
    column, which is what makes all three controls the same width no matter
    which option is showing — a control left to size itself grows to fit
@@ -248,22 +234,6 @@
     margin-left: 0;
   }
 }
-
-/* -- section headings -------------------------------------------------------
-   Every section on the page: the Local tab's two ("User downloaded models" by
-   capability, and "Fetched by engines") and the one a query puts in their place
-   ("Search results"), each with its capabilities as subgroups inside where it
-   has them. The bucketing itself is lib/aiModelGroups.ts; what is here is the
-   hierarchy that makes it readable: a section title over a rule, and a
-   capability title one step quieter and with NO rule of its own.
-
-   The right-hand slot of a head carries the ONE secondary fact about the group
-   — a byte subtotal on a capability row, "via MLX LM" where a runner is being
-   named, and on the search results row the count and where it came from. The
-   section rows carry nothing there: three levels of arithmetic on one page
-   (caption total, section subtotal, capability subtotal) meant every figure was
-   correct and none of them was the one being looked for. The rule stays
-   regardless — it is what separates a heading from the cards under it. */
 
 /* One vertical scale for both tabs, ascending, so the page's gaps say what
    they mean instead of landing on four similar numbers. Read only by the
@@ -765,12 +735,6 @@
   margin-left: auto;
 }
 
-/* NO `.am-card-explore` RULE (2026-08-24): the local door — this folder's own
-   model card view — is a NAMED link inside the (i) panel ("Know more") rather
-   than a third unlabelled glyph in the actions strip. `.am-card-explore-link`
-   further down is a different control, on the Hub search card, and is
-   untouched. */
-
 /* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
  * chrome beside Explore, widened for a word instead of a glyph.
  *
@@ -819,32 +783,6 @@
   border-color: var(--accent);
 }
 
-/* No `outline-color` override any more, and that is a consequence of the fill
-   going rather than an oversight. `.cc-iconbtn:focus-visible` draws a 2px
-   --accent outline; on an --accent PLATE that was an invisible focus ring and
-   had to be forced to --fg. On a transparent plate it is the highest-contrast
-   ring available and needs nothing said about it — so the rule that said it is
-   deleted rather than kept pointing at a fill that no longer exists.
-   `outline-offset` from .cc-iconbtn keeps the ring clear of the new border. */
-
-/* A card's controls are ALWAYS visible — the delete ✕ and the revisions
-   chevron included, which were hidden at `opacity: 0` until the card was
-   hovered or focused.
-
-   The argument for hiding them was that a grid of ✕ buttons reads as a page
-   about deleting. What it actually produced was an icon that appeared on
-   exactly one card at a time, following the mouse rather than describing a
-   repo: in a screenshot, in a screen share, or to anyone scanning the grid
-   before touching the pointer, eleven cards had no controls and one did. That
-   is not a quieter page, it is a page whose controls have to be discovered
-   one at a time, and it made "which of these can I delete?" unanswerable
-   without hovering all of them.
-
-   Quieting them stays, by COLOUR rather than by presence: `.cc-iconbtn` is
-   already muted at rest and lights on hover, which says "secondary" without
-   saying "absent". Delete is still confirmed through the modal, so a
-   permanently visible ✕ cannot destroy anything by itself. */
-
 /* A disabled icon button, now that "at rest" is a state the user actually sees.
    It must not read as merely muted — the enabled ones are muted too — so it
    drops further and takes the pointer with it, and `cursor: not-allowed` is
@@ -866,8 +804,6 @@
   background: none;
   color: var(--fg-muted);
 }
-
-/* -- what the model is for -------------------------------------------------- */
 /* One line above the facts: the task, the parameter count, the library. The
    task carries the emphasis because it is the answer to "what IS this" that a
    repo id only hints at. */
@@ -906,20 +842,6 @@
   text-overflow: ellipsis;
 }
 
-/* NO HUE, AND NO `-family` / `-off` / `-none` TAGS (2026-08-25).
-   Three of the five engine-tag states are gone from the page along with the
-   `--am-eng` hue that separated them: which backend reads a model's weights is
-   IDENTITY, so it is a row in the (i) panel now, on all three kinds of card. A
-   hue exists to make "all the MLX LM ones" findable by sweeping a row — inside
-   a panel opened deliberately, about one model, there is nothing to tell apart.
-
-   What survives are the two tags that are STATE rather than identity, below:
-   `partly downloaded` (why the button says Continue downloading) and `part of X`
-   (why there is no Load at all). The reason a Load or a Download is REFUSED
-   survives too, as the amber `Switch engines` link in the actions strip — that
-   was the second job the `-off` tag had been doing, and it is the half a reader
-   can act on. */
-
 /* The reason lives in the title attribute, and a tag nobody can focus is a
    tooltip that only exists for a mouse. The unavailable states take a tab stop
    (see AiModels.tsx) and this is what makes landing on one visible. */
@@ -927,7 +849,6 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-
 
 /* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
    ends above, because something really is missing; WARNING-coloured rather than
@@ -952,39 +873,6 @@
   color: var(--fg-muted);
   border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
   background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
-}
-
-/* Sentence case, not Title Case: `capitalize` would render the Hub's
-   "text-to-image" as "Text To Image". inline-block is what makes ::first-letter
-   apply to a span at all. */
-.am-card-task {
-  display: inline-block;
-  color: var(--fg);
-  font-weight: 500;
-}
-
-.am-card-task::first-letter {
-  text-transform: uppercase;
-}
-
-.am-card-params {
-  font-variant-numeric: tabular-nums;
-}
-
-/* The stored weight width — the difference between a 7GB download and a 24GB
-   one of the same model, so it reads as a property, not an aside. */
-.am-card-quant {
-  padding: 1px 6px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.am-card-library::before {
-  /* A separator that belongs to the optional item, so the line has no dangling
-     middot when the library is unknown. */
-  content: "·";
-  margin-right: 10px;
 }
 
 /* -- the (i) panel: everything the face gave up (2026-08-24) -----------------
@@ -1072,31 +960,6 @@
   transform: translateY(0.5px);
 }
 
-/* NO DRAWER, AND NO REVISION LIST (2026-08-24). The chevron's drawer
-   (`.am-drawer*`) and the per-revision rows inside it (`.am-rev*`) went with
-   their markup. The drawer held a file count, a branch name, an added date and
-   a list of git commits: the added date is a row in the (i) panel now, and the
-   rest were dropped as facts nobody brings a question about to this page —
-   picking a commit off a folder whose only real question is what it costs
-   (Akshil: "does the user need to know this? if not, abstract it away"). See
-   `RepoCard`'s headstone for the whole argument. */
-
-/* -- the tab strip ----------------------------------------------------------
-   Cards on every tab are the same .cc-mdcard/.am-card — one model should not
-   look like two different things depending on which tab listed it — so what
-   lives here is only the strip itself.
-
-   The strip is the ONLY thing in the page head (D256): with Prune and Refresh
-   gone, the toggle sits in the same place in every state instead of sliding as
-   buttons appear and disappear beside it. */
-.am-tabs {
-  display: inline-flex;
-  margin-right: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
 /* Worn by two different elements: the page's tab strip, whose tabs are <a>
    since D420 made each one an address, and the Usage tab's window picker,
    which is still <button>. So it resets BOTH defaults — the button's border
@@ -1133,13 +996,6 @@
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-
-/* The empty Local tab used to carry a control as well as a sentence (HF-8) — a
-   door to the old Discover tab rather than a dead end — and `.am-empty p` existed to
-   sit the sentence on top of the button. Both are gone: a machine with no models
-   now gets a capability row with recommended cards in it, so the sentence is
-   only reached when the curation is empty too, and there is nowhere left to send
-   anybody from there. `.cc-empty` alone centres it. */
 
 /* -- the Hub search ---------------------------------------------------------
    At the TOP of the Local tab, above everything it has to say about this
@@ -1225,79 +1081,9 @@
   outline-offset: -1px;
 }
 
-/* The two menus' TRIGGERS (D426). They were native selects wearing
-   .field-control, the app's canonical select skin; a select renders as the
-   PLATFORM's control rather than as this app's, and — the reason these two
-   changed — it cannot carry an icon, which is the whole of what makes a task
-   filter and five orderings readable at a glance. So: a button holding the
-   active option's glyph, its label and a caret, opening
-   @platform/ui/ContextMenu.
-   The metrics here are .field-control's to the pixel (32px tall, 13px text, 1px
-   border, 6px radius, 10px inset), so this row's height and rhythm are
-   unchanged and a trigger beside the search box reads as its sibling rather
-   than as a new species of control. */
-.am-hub-menu {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 10px;
-  font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-/* Hover and open both raise the border to the weight select.field-control's own
-   :focus uses. Deliberately NOT a fill: these are two quiet controls in a row
-   whose loud element is the page of results they produce. */
-.am-hub-menu:hover,
-.am-hub-menu.open {
-  border-color: var(--fg-muted);
-}
-
-.am-hub-menu:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-/* The glyph, at the 16px every other menu icon in the app is drawn at, and
-   muted — it identifies the option rather than asking to be pressed. It
-   brightens with the trigger so the whole control lights as one thing. */
-.am-hub-menu-icon {
-  flex: 0 0 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
-}
-
-.am-hub-menu:hover .am-hub-menu-icon,
-.am-hub-menu.open .am-hub-menu-icon {
-  color: var(--fg);
-}
-
-/* Truncates rather than stretching the row: a task label is the server's
-   (HS-7), so its length is not this stylesheet's to promise. */
-.am-hub-menu-label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 /* Same muted grey, stroke weight and 12px box as the chevron
    select.field-control paints as a background image, so a menu trigger and a
    select elsewhere in the app wear one affordance. */
-.am-hub-menu-caret {
-  flex: 0 0 12px;
-  color: var(--fg-muted);
-}
 
 .am-hub-search:focus-visible {
   outline: 2px solid var(--accent);
@@ -1340,28 +1126,6 @@
    controls it would push the text off the button's baseline. */
 .am-hub-login .cc-caption {
   margin: 0;
-}
-
-/* "Explore" on a search result — a word, beside the Download button, where the
-   Local tab's version is an icon among icons. Sized to sit on the same line as
-   the button rather than to match it: this navigates, the other spends
-   gigabytes, and they should not read as a matched pair of actions. */
-.am-card-explore-link {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  text-decoration: none;
-  font-size: 12px;
-}
-
-.am-card-explore-link:hover {
-  color: var(--fg);
-  text-decoration: underline;
-}
-
-.am-card-explore-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 3px;
 }
 
 /* -- what a model is doing right now (SPEC §40) ------------------------------
@@ -1409,24 +1173,6 @@
 
 .am-card-runtime-ready { color: var(--fg); }
 .am-card-runtime-error { color: var(--error); }
-
-/* WHY LOAD IS DISABLED — in the actions strip, beside the button it explains.
-   It was a `<p>` below the strip with a warning rail down its leading edge, and
-   it was allowed to WRAP, on the argument that ellipsising a long refusal would
-   put the answer back behind a hover. On a 300px card that meant three lines of
-   grey prose under two buttons — taller than the model's own name, on the cards
-   that can do the least (Akshil, 2026-08-24: "reduce this message more, and it
-   should be next to load button").
-
-   So it takes whatever width the buttons leave and ellipsises into it. Nothing
-   is lost by that: the whole sentence is still on this span's hover AND on the
-   disabled button's accessible name, which is where a screen reader was always
-   going to find it — and the REMEDY, the half that says what to do, is a
-   separate element that never shrinks.
-
-   MUTED, and now with no rail: the line sits inside a row of controls, and a
-   coloured edge in that row would read as a fourth control rather than as a
-   caption on the third. */
 /* -- and the shape it takes when there IS something to do (2026-08-25) -------
    `Switch engines`, in the warning hue, on the amber wash this app uses for a
    state that wants a decision. It replaced `Set to MLX FLUX` beside a separate
@@ -1478,13 +1224,6 @@
   color: var(--fg-muted);
 }
 
-.am-card-why-text {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 /* …and the two ancestors that have to ALLOW that shrink. A flex item's floor is
    its content width unless something says otherwise, so `min-width: 0` on the
    sentence alone is not enough: the strip holding it kept its full intrinsic
@@ -1522,17 +1261,6 @@
    `flex: 0 0 auto` is load-bearing: splitting the cause from the remedy is only
    worth anything if the half telling somebody what to DO is never the half that
    gets cut off. */
-.am-card-refusal-link {
-  flex: 0 0 auto;
-  color: var(--accent);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.am-card-refusal-link:hover,
-.am-card-refusal-link:focus-visible {
-  text-decoration: underline;
-}
 
 .am-runtime-mem {
   margin-left: auto;
@@ -1580,19 +1308,6 @@
   flex-wrap: wrap;
   row-gap: 2px;
 }
-
-/* -- loaded, said loudly -----------------------------------------------------
-   The user's complaint, verbatim: "Loaded bullet on a model is too subtle (not
-   bright enough) to indicate it is running". Two changes, because the grid is
-   read two ways — swept, and then read.
-
-   Swept: the CARD changes. A green rail down its left edge and a wash over the
-   whole surface, so a loaded model is findable among a dozen without reading a
-   word of any of them.
-
-   Read: a filled BADGE beside the name, in the same green as the sidebar's live
-   dot (--success-bright). One colour means "running" across this app rather
-   than one colour per surface. */
 /* ONE wash for both states, and the difference is the BORDER and the RAIL. Two
    strengths of the same green was the wrong instrument: read side by side the
    pair looked like two shades of one thing rather than two things, and a reader
@@ -1660,20 +1375,6 @@
   border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
   box-shadow: inset 3px 0 0 var(--success-bright);
 }
-
-/* -- on this disk, and how much of it (D436) ---------------------------------
-   The card's own surface answers the question the grid is read for. Three of
-   this page's four states are facts about the disk and the background stated
-   exactly one of them; these are the other two.
-
-   BACKGROUND ONLY — no border, no rail, no radius, no padding. A card changing
-   state must not change size: these sit in a horizontal carousel, and a
-   finished download that nudged its card's box would shift every card to the
-   right of it mid-scroll.
-
-   Downloaded shares loaded's wash exactly (declared with it above) and differs
-   in the two channels that are categorical rather than a matter of degree: the
-   tinted border and the 3px rail, which only a resident model wears. */
 
 /* Partly downloaded, drawn as the FRACTION that is here: a hard-stop gradient at
    `--am-part` (set inline; see `aiModelGroups.partialFraction`). A wash at 14%
@@ -1798,69 +1499,6 @@
   line-height: 1;
 }
 
-/* Load / Unload. A word, not an icon: this is the one control on the page that
-   spends MEMORY rather than disk, and an unlabelled glyph for "put 8GB of
-   weights in RAM" is a guess the user should not have to make. Always visible
-   for the same reason.
-
-   Full `--fg`, not muted: it is the one action on the card worth spending
-   memory on, and it sat at the same dimness as the quiet icon row beside it
-   — Explore, the chevron, Delete — with nothing to tell an eye that this one
-   is the primary action rather than a fourth quiet control. `:disabled`'s
-   opacity still dims it for a refused or busy card. */
-.am-card-power {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-/* Only the background moves: the text is already `--fg` at rest, so repeating
-   that here would be a no-op dressed up as a hover rule. */
-.am-card-power:hover:not(:disabled) {
-  background: var(--bg-alt);
-}
-
-/* `not-allowed`, not `default`. This used to mean "busy for a moment" and now
-   means "this repo cannot be loaded here" on cards that will never offer it —
-   the button is permanently visible and permanently disabled there, so the
-   pointer has to say refused rather than idle. The `title` says why. */
-.am-card-power:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Only the border changes here now — `color: var(--fg)` used to be this rule's
-   own job, back when the resting state below it was muted. */
-.am-card-power-on {
-  border-color: var(--accent);
-}
-
-/* The dead end's way out (D437): the primary control on a partly downloaded repo
-   whose fetch cannot be resumed. Error-coloured TEXT on the ordinary button
-   shell, not a filled danger button — it destroys nothing on its own (the
-   confirm dialog does the deleting), and the loudest thing on a card should not
-   be the card nobody wants. */
-.am-card-power-discard {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
-}
-
-.am-card-power-discard:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-}
-
-.am-card-power:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 /* -- a recommended card ------------------------------------------------------
    A model this machine does NOT have, sitting in the same row as the ones it
    does. It has almost NOTHING here on purpose: it is `.cc-mdcard.am-card` with
@@ -1887,16 +1525,6 @@
   flex: 0 0 auto;
 }
 
-/* -- the search results' own chrome (SPEC §39) --------------------------------
-   Laid out in the vocabulary of the sections it replaces — .am-section, and the
-   .am-section-head / .am-subgroup-title pair for the heading — so a group of
-   cards means the same thing whichever face of the page drew it. What is left
-   here is only the things that hang off that heading.
-
-   The `am-discover-*` names below predate the move (D426) and are kept as
-   stable selectors rather than churned; what they style is the results heading
-   of the Local tab. */
-
 /* How many, and from where — the right-hand slot of the heading that names
    which face of the page is on screen. This is the half of the distinction a
    title alone cannot carry: '"whisper" · 24 on huggingface.co' says in one line
@@ -1918,64 +1546,6 @@
   align-items: baseline;
   gap: 12px;
   min-width: 0;
-}
-
-/* "← Back to models", beside the count. Deliberately LOUDER than the
-   count it sits next to — it is the only control in that row and the answer to
-   the question somebody reading unwanted results is asking, so it takes the
-   foreground colour where the count stays muted. Still a text button and not a
-   filled one: it undoes, and an undo should not look like the page's main
-   action. */
-.am-hub-back {
-  flex: 0 0 auto;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  color: var(--fg);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.am-hub-back:hover {
-  text-decoration: underline;
-}
-
-.am-hub-back:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 3px;
-}
-
-/* Why a capability cannot run here, and which backend serves it when it can.
-   Both live in the head's right-hand slot, where the Local tab puts a byte
-   subtotal: quiet, qualifying the heading rather than competing with it. */
-.am-suggested-why,
-.am-suggested-runner {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-/* What running on that backend is like — the MLX image runner's memory
-   ceiling, MLX Whisper's GPU speed — above the cards, where it can still
-   change a decision.
-
-   MUTED, and it used to be `--warning`. Three orange paragraphs down one page
-   is how a reader learns that orange on this page means nothing; none of these
-   sentences reports a problem, they describe what a backend is LIKE, which is
-   context for a choice and not an alarm about one.
-
-   It rides .am-group-note for everything INCLUDING its spacing and the measure
-   — the 62ch override that used to be here made these the narrowest prose on
-   the page, and they are the longest sentences on it, and the -2px nudge that
-   was here is now the `:has` rule's job for every note on both tabs. */
-
-.am-suggest-note {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
 }
 
 /* The checkmark is the whole reason this list is here rather than in a doc:
@@ -2003,16 +1573,6 @@
   border-radius: 999px;
   color: var(--fg-muted);
   white-space: nowrap;
-}
-
-/* "Accept terms" / "Request access" — the Download button's twin, because it
-   is the same act from the card's point of view (start getting this model) and
-   only the first step differs. It rides .am-card-power for its metrics and
-   drops only what a link does not have. */
-.am-card-gate-link {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
 }
 
 /* -- the Usage tab ----------------------------------------------------------
@@ -2056,10 +1616,6 @@
 
 /* The picker rides .am-tabs, but it is a control inside a card rather than the
    page's own strip: no right margin, and it must not grow to fill the row. */
-.am-usage-ranges {
-  margin-right: 0;
-  flex: 0 0 auto;
-}
 
 .am-usage-chart {
   position: relative;
@@ -2370,19 +1926,6 @@
 .am-bench-section-head {
   flex-wrap: wrap;
 }
-
-/* The Metric select's own row — a smaller, quieter sibling of the page-level
-   capability select (same select skin via `.am-bench-capsel-input`, reused
-   rather than redeclared), visually subordinate to the `<h3>` beside it
-   because IT chooses within a section the heading already named, not a
-   sibling heading in its own right. Unlabelled on screen, like the capability
-   select — an option's own text names the metric, so a "Metric" caption was
-   repeating it — and now UNBADGED as well: the unit and direction cue live
-   inside the option text (`metricOptionLabel`, lib/benchmark.ts), so this is a
-   one-child flex box today. It stays a flex box rather than becoming a bare
-   `<select>`: `.am-bench-headtools` above already spaces the head's controls,
-   and this wrapper is what keeps the select a group of its own if a per-metric
-   mark ever earns its place beside it again. */
 /* The heading plus its info glyph (D483), as one group — the same reason
    `.am-bench-headtools` below is one group for the Metric select and Share:
    `.am-section-head`'s `justify-content: space-between` expects exactly TWO
@@ -2393,35 +1936,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* The info glyph itself — icon-only, the same reset every other icon-only
-   control on this tab uses (no border/background of its own, sized to its
-   16×16 svg). Muted at rest, same as `.am-bench-rowdetail-chevron`'s own
-   ink: this is reference material, not a call to action, and should not
-   outweigh the `<h3>` it sits beside. `data-hint`/`aria-label` carry the
-   actual explanation (BenchmarkTab.tsx) — nothing here draws it, this is
-   layout and colour only. */
-.am-bench-workload-info {
-  display: inline-flex;
-  align-items: center;
-  border: none;
-  background: none;
-  padding: 0;
-  margin: 0;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.am-bench-workload-info:hover,
-.am-bench-workload-info:focus-visible {
-  color: var(--fg);
-}
-
-.am-bench-workload-info:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 999px;
 }
 
 /* The section head's control group — the Metric select and the Share button.
@@ -2640,49 +2154,11 @@
   font-size: 12px;
 }
 
-/* The idle Run All button (D479) — see the long comment in BenchmarkTab.tsx
-   above this button's JSX for the full rationale; this is just the chrome
-   that carries it out. `--fg` border and text, transparent plate: no accent
-   (that ink is spoken for as chart/value/selection data on this tab) and no
-   fill (reserved by the D475 precedent for the one truly consequential
-   action beside a cheaper one — here Run All has no cheaper sibling to sit
-   next to, but it IS the single most expensive press on this page, so it
-   gets the same restraint a fill would violate). Glyph then label, one
-   inline-flex row, so `MenuIcons.play` sits on the same baseline as the
-   text rather than floating above or below it. */
-.am-bench-runall-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px 5px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  background: transparent;
-  color: var(--fg);
-  border: 1px solid var(--fg);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
 /* Hover/focus wash in `--fg` at the same 12% a Try button's accent hover
    uses (`.am-card-try:hover` in this file's Models-tab neighbour) — the
    fill stays a wash, never solid, for the identical reason: a solid --fg
    fill here would BECOME the filled plate the comment above just rejected.
    `disabled` gets no hover at all; `busy`'s title already explains why. */
-.am-bench-runall-btn:hover:not(:disabled),
-.am-bench-runall-btn:focus-visible:not(:disabled) {
-  background: color-mix(in srgb, var(--fg) 12%, transparent);
-}
-
-.am-bench-runall-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.am-bench-runall-btn svg {
-  flex: none;
-}
 
 .am-bench-runall-progress {
   display: inline-flex;
@@ -3300,8 +2776,6 @@ button.am-bench-model:focus-visible {
   color: var(--fg-muted);
 }
 
-/* -- the run archive -------------------------------------------------------- */
-
 /* Collapsed by default. The rows above are the answer and this is the evidence,
    so it opens on request — the summary says how many runs are folded, which is
    what keeps "collapsed" from meaning "hidden". */
@@ -3383,25 +2857,4 @@ button.am-bench-model:focus-visible {
 .am-bench-rev {
   color: var(--warning-soft);
   font-size: 11px;
-}
-
-.am-bench-forget {
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-muted);
-  font: inherit;
-  line-height: 1.6;
-  cursor: pointer;
-}
-
-.am-bench-forget:hover {
-  color: var(--error);
-  border-color: var(--border);
-}
-
-.am-bench-forget:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }

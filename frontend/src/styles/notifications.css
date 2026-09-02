@@ -21,11 +21,6 @@
 .notif-host > * {
   pointer-events: auto;
 }
-
-/* ---- Transient toast ----------------------------------------------------- */
-/* Default is the error variant (red border); .toast-info is the neutral
-   confirmation variant (e.g. "Path copied"). Capped at the column's width so
-   the stack reads as one system rather than a ragged pile. */
 /* One row of the stack. The card fades/slides; the SLOT is what collapses its
    height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
    column's 8px gap), so dismissing a toast makes the ones below it glide up
@@ -83,22 +78,11 @@
     transform var(--dur-med) var(--ease-out);
 }
 
-.toast-info {
-  border-color: var(--border);
-}
-
 /* Wraps instead of ellipsising to one line. These messages are sentences —
    "no mount covers s3://<bucket> — add one from the Mounts page in the
    sidebar" — and a single-line clip cuts exactly the half that says what to
    do, which was already true at the old 520px and is worse in a 360px column.
    Clamped so a pathological message still can't own the screen. */
-.toast-msg {
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-height: 1.45;
-}
 
 .toast-close {
   flex: 0 0 auto;
@@ -129,34 +113,6 @@
 .toast-action:hover {
   border-color: var(--fg-muted);
 }
-
-/* ---- Status bar (SPEC §36, D563, redesigned D565, D573, status-bar merge) - */
-/* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
-   column`), as its LAST child — so it reserves height for free and every page's
-   content ends above it, unlike the old fixed floating column this replaced,
-   which overlaid page content even collapsed. THREE entries now (used to be
-   four — `models`/`engines`/`activity`/`repoUpdates` — until Models and
-   Engines folded into `activity`, then Models split back out into its own
-   entry again; StatusBar.tsx's own doc has the full story): `models`,
-   `activity` and `repoUpdates`, each a `.dl-host` chip+panel pair. ALWAYS
-   PRESENT (D565, user verdict: "different categories of status bar should be
-   always present") — there used to be a `:empty { display: none }` rule
-   collapsing the strip to nothing when both sections were empty; the
-   categories are a fixed readout now, so that rule is gone and `#main` is
-   permanently shorter by this bar's height, which is the accepted cost of the
-   call. `tabular-nums` here, not per element, so every ticking figure in the
-   bar's SUBTREE inherits it — no chip carries a digit any more (D588/D590
-   took the counts, D589 Models' size), but a `.dl-panel` is a descendant of
-   this element, and a row's `.dl-pct`/`.dl-amount`/status line tick
-   constantly where proportional digits would twitch.
-
-   D573 (user: "the chevron doesn't belong to the status bar. lets follow
-   vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
-   LABEL you click, not a tree/accordion row with a disclosure triangle — the
-   only affordance is a hover wash across the item's own hit area, at rest
-   there is nothing. `min-height` drops 34px -> 24px (VS Code's own bar is
-   ~22px) and the chip text drops to 11px (below, `.dl-toggle`) to bring the
-   whole strip toward that density — it is a status bar, not a toolbar. */
 /* `justify-content: flex-end` (D569, user: "the items must be right
    aligned.") — left unset in round 2, chips packed left and left a large
    void on the right in every screenshot the user showed. See `.dl-panel`
@@ -182,8 +138,6 @@
   border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
-
-/* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
    further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling
@@ -473,15 +427,6 @@
    line across the panel's very top, doubled against `.dl-panel`'s own border.
    As a `border-top` here it does the job it always did — divide actions from
    content — from the correct side. */
-.dl-head {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  border-top: 1px solid var(--border);
-}
 
 .dl-summary {
   overflow: hidden;
@@ -556,45 +501,6 @@
   background: currentColor;
 }
 
-/* The panel's own EMPTY state — `No models loaded` / `No engines running` /
-   `No jobs` / `No notifications` (D579, D591) — for a section with nothing to
-   show (D573). This text used to live in the CHIP itself (a separate
-   unpressable `.dl-idle` span, no button, no panel behind it) — the user's own
-   words moved it: "lets have simpler stuff like models (x count) |
-   notifications | downloads etc and the no xyz part in the popover thing that
-   opens". The chip now shows a category name and its one circle, and is always
-   a real button; this is what its panel draws instead of rows when there is
-   nothing to list. (Models' size was dropped in D589 — the aggregate was a sum
-   of worker RSS and inaccurate — so no chip carries a number any more.) */
-/* THE FLOOR LIVES HERE AND ON `.dl-row`, NOT ON `.dl-panel` (D610). `238px`,
-   not 240: `box-sizing` is border-box globally (base.css) and this box is a
-   direct child of the panel's content area, so a 238px floor plus the panel's
-   own 1px borders is the same 240px card D608 drew — the empty states are
-   pixel-unchanged, which is the point. The viewport guard loses the same 2px
-   for the same reason.
-
-   Why the empty sentence needs a floor at all: hugging it is genuinely bad.
-   Measured with the panel floor removed, "No jobs" collapsed to a 65px card —
-   narrower than the `Jobs` chip that opens it, reading as a fragment rather
-   than a panel. ("No models loaded" came to 124px and "No engines running" to
-   132px; the same problem, less far along.) A sentence is not a row: it has no
-   controls to anchor its right edge and nothing to justify a shape, so it is
-   exactly the content that must be given a card rather than allowed to define
-   one. */
-.dl-panel-empty {
-  min-width: min(238px, calc(100vw - 34px));
-  padding: 10px;
-  /* Centred (D592, user: "also make the 'no jobs' etc text center aligned in
-     the popover"). One rule covers all four sections because they already
-     share this class — `No models loaded` / `No engines running` / `No jobs` /
-     `No notifications`. A one-line sentence in a 340px panel reads as a
-     stranded fragment left-aligned; centred it reads as the panel's own
-     state. */
-  text-align: center;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
 /* IDLE CHIP TEXT: the section has nothing in it (D573) — the chip is still a
    real button (hover wash, opens the panel above to show the empty state),
    only its text goes muted. This is now the ONLY signal in the bar that a
@@ -615,47 +521,6 @@
    the count inside it. */
 .dl-toggle.is-failure {
   color: var(--error);
-}
-
-.dl-clear {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--fg-muted);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.dl-clear:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-/* ---- Activity's own labelled sections (status-bar merge) ------------------ */
-/* One `.dl-section` per non-empty group — Running, Background tasks, Models —
-   wrapping that group's own `.dl-rows`/footer. Plain block, no border of its
-   own: the hairline between two sections is the same `.dl-rows > * + *` rule
-   already draws between two rows, applied one level up so Running's last row
-   and Background tasks' first one read as continuing one list rather than two
-   pasted-together boxes. */
-.dl-section + .dl-section {
-  border-top: 1px solid var(--border);
-}
-
-/* Rendered only when 2+ sections are present at once (DownloadManagerView's
-   own doc) — a lone section carrying a label nobody needed to tell it apart
-   from a sibling is a redundant header, the same "PLURALITY, NOT PRESENCE"
-   principle D604 already applied to Clear/Cancel queued. Quiet on purpose:
-   this is a sub-heading inside an already-labelled chip, not a second chip. */
-.dl-section-head {
-  padding: 6px 10px 0;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
 }
 
 /* Scrolls rather than growing without bound: the registry caps live records
@@ -1087,14 +952,6 @@
   transition: width var(--dur-med) var(--ease-out);
 }
 
-.dl-bar.is-done .dl-bar-fill {
-  background: var(--success);
-}
-
-.dl-bar.is-error .dl-bar-fill {
-  background: var(--error);
-}
-
 .dl-bar.is-stalled .dl-bar-fill {
   background: var(--warning);
 }
@@ -1119,14 +976,6 @@
     transform: translateX(410%);
   }
 }
-
-/* ---- Queue rows in that card (shell/ActivityDock.tsx) ----------------------- */
-/* Work that is about to run or running now: past-due scheduled messages waiting
-   to be claimed, and the turns already in flight. These are ROWS, not a card —
-   they sit in .dl-rows above the job rows, which is where the same run lands once
-   its turn has ended, so one scheduled message moves down one list instead of
-   hopping between two boxes. There is no .q-host any more, and no .q-head: the
-   plate, the header, the count and the collapse are the card's. */
 
 /* Cancel all, in the card's header beside Clear. The same quiet outline .dl-clear
    wears — a secondary action, not the card's subject — and a different promise
@@ -1183,72 +1032,15 @@
   font-weight: 600;
 }
 
-/* The reason this card exists: a run parked on a permission prompt was
-   unreachable. The icon is the row's way THERE, so it sits beside the ✕ that is
-   the row's way out.
-
-   One 16px box for every slot occupant (.q-spin below, and .dl-x on a job row
-   above), because the ✕ is a text glyph and the others are 12px icons: without the
-   min-width, a row swapping its ✕ for the claimed-state spinner drags Open ~4px
-   sideways as the entry moves queued → sending — measured, and fixed twice. */
-.q-open,
-.q-x {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  padding: 0 2px;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease-out);
-}
-
-.q-open:hover:not(:disabled),
-.q-x:hover:not(:disabled) {
-  color: var(--fg);
-}
-
-.q-x:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* The queue row's half of D609's edge pin — see `.dl-x`'s comment for the rule
-   and the reasoning. Stated apart from the `.q-open, .q-x` block above because
-   `.q-open` MUST NOT get it: the Open icon is not last in the head, and an auto
-   margin there would eat the slack before the ✕ ever saw it and strand the ✕
-   back beside it. `.q-spin` shares the pin because it stands in the ✕'s slot on
-   a claimed row, and the whole point of that stand-in is that the trailing
-   control does not move as the entry goes queued -> sending.
-
-   This does put spare width BETWEEN the row's actions and its ✕, which is a
-   void D573 removed from the other side of the same row (it had been between
-   the title and the action group, caused by a `flex: 1 1 auto` title). That fix
-   is untouched and still correct — the title still does not grow, the actions
-   still follow the text. What moved is only where the leftover goes: to the ✕'s
-   left, on purpose, because a per-row dismiss belongs at the row's boundary. */
-.q-x,
-.q-spin {
-  margin-left: auto;
-}
-
 /* The one ring the app uses (buttons-modal.css's .btn), stated here because these
    controls carry no .btn class and a 12px glyph button is exactly the kind a
    keyboard user loses. Every control in the card, both row kinds and the header:
    one list means one tab order, and a ring that stopped at the queue rows would
    make the job rows below them look unreachable. */
 .dl-toggle:focus-visible,
-.dl-clear:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
-.q-all:focus-visible,
-.q-open:focus-visible,
-.q-x:focus-visible {
+.q-all:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1262,23 +1054,6 @@
    press; the sentence in .q-status is what explains it (roleText). Full turns, so
    the blanket prefers-reduced-motion rule (styles/reduced-motion.css) leaves it
    parked at 0deg rather than mid-tilt. */
-.q-spin {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  padding: 0 2px;
-  line-height: 1;
-  color: var(--fg-muted);
-  animation: q-spin 0.8s linear infinite;
-}
-
-@keyframes q-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 .q-status {
   margin-top: 4px;
@@ -1357,8 +1132,6 @@
   color: var(--fg-muted);
   border-top: 1px solid var(--border);
 }
-
-/* ---- Server-status card (foot of the notification stack) ----------------- */
 /* Shown by ServerStatusBanner after two failed /api/config probes; the green
    -reconnected variant auto-dismisses. Placement and stacking belong to
    .notif-host — this only describes the card. */
@@ -1385,68 +1158,7 @@
   }
 }
 
-.server-status-title {
-  font-weight: 600;
-  color: var(--error);
-  margin-bottom: 4px;
-}
-
-.server-status-body {
-  color: var(--fg-muted);
-  line-height: 1.5;
-}
-
-.server-status-retry,
-.server-status-launch {
-  margin-top: 8px;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--fg);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.server-status-retry:hover,
-.server-status-launch:hover {
-  border-color: var(--fg-muted);
-}
-
-/* The "Start fused-render" fused-render://launch link (D128): an anchor
-   dressed as the sibling button; inline-block so padding/margin apply. */
-.server-status-launch {
-  display: inline-block;
-  margin-right: 8px;
-  color: inherit;
-  text-decoration: none;
-}
-
-.server-status-reconnected {
-  border-color: var(--success);
-  color: var(--fg);
-}
-
-/* Update variants (server-status.ts): a newer version is available — either
-   the tab is stale (refresh) or the running server is (restart the app).
-   Informational, not an outage, so warning tones instead of error red. */
-.server-status-update {
-  border-color: var(--warning-strong);
-}
-
-.server-status-update .server-status-title {
-  color: var(--warning-strong);
-}
-
 /* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
-.fda-steps {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.fda-steps li {
-  margin: 1px 0;
-}
 
 .tab-add {
   flex: 0 0 auto;

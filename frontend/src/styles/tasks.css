@@ -183,19 +183,6 @@
   background: transparent;
 }
 
-/* NO TINT ON AN OPEN TASK. It used to keep `rgba(var(--tint), 0.04)` under its
-   header, on the argument that the thread beneath needed to read as belonging to
-   that row rather than floating between two. In a long list that argument loses
-   to what it costs: an expanded task became a darker block among its neighbours,
-   which reads as a state the row is IN — selected, active, different — rather
-   than as one that is merely open (Akshil, screenshot, 2026-08-18).
-
-   The belonging was never carried by the tint anyway. The chevron says the row
-   is open, and the thread's rows are indented a whole ring slot to the right of
-   their task's (see the geometry block at the top of this file) — a structural
-   answer that survives at a glance and in a screenshot, where a 4% wash does
-   not. One background for every row in the list, and expansion is a shape. */
-
 /* THE DISCLOSURE, AND ITS HITBOX — which is much bigger than it looks, on
    purpose (2026-08-18).
 
@@ -436,59 +423,6 @@ button.tasks-caret,
   opacity: 0.85;
 }
 
-/* -- Unread ------------------------------------------------------------------
-   THERE IS NO `.tasks-dot` ANY MORE (2026-08-18), and no mark of unread's own on
-   this page at all. Read-state is the STATUS RING's shape — filled centre while
-   something inside is unread, hollow once it is not — and the rule and the whole
-   argument for it live with the ring, in schedule.css
-   (`.schedule-ring--done.schedule-ring--unread`). One mark per unit of work, hue
-   for the state and shape for whether anybody has looked.
-
-   Four marks died to get here and the sequence is worth keeping, because each one
-   was a fix for the last and the last fix was to stop adding marks:
-
-     * A blue dot at the far RIGHT of a message row, beside the time, with the
-       word "unread" after it. Missed entirely (Akshil, 2026-08-16: "on the right
-       hand I missed it, I did not even see it") — a column is scanned down its
-       left edge.
-     * So it led the row, in a reserved rail slot drawn even when empty. And a
-       neutral numeric pill (`.tasks-count`) led the TASK row, for the thread's
-       total.
-     * Both moved to the END of their title (2026-08-17): a mark in front of every
-       line announces the marks before the words they are about, which "breaks the
-       reading priority" (Akshil).
-     * The number went ("only show a single dot like the notification that we
-       show"), the two marks became one 7px dot, and it went grey rather than blue
-       because a column of blue dots reads as a page full of alerts.
-     * And then the dot itself went, into the ring. A row carrying a ring AND a dot
-       is two glyphs to pair up before either means anything, and the ring was
-       already in the one column all three views agree on.
-
-   `--activity` keeps everything it was split out for — the live ping, Run now, the
-   drag-to-run outline, the calendar's run button — and no new colour ever entered
-   the page for unread, which is now painted in the status hue it belongs to.
-
-   THE COUNT is not lost, only unprinted: it is the ring's tooltip and part of its
-   accessible name on any CONTAINER (a task row over its thread, a lane header over
-   its cards) — tasks-lib.taskUnreadLabel, "3 unread". A leaf gets no such name,
-   because a dot that already means unread does not need a caption. */
-
-/* No reserved slot at the head of a MESSAGE row any more. There was one — the ring
-   slot's width, contents centred, drawn even when empty so the dots could not
-   shunt the unread rows sideways — and the dot's move to the end of the title is
-   what retired it. The width it used to contribute has NOT been dropped, only
-   moved into the geometry: `--tasks-msg-ring-x` above is the rail plus that slot
-   plus a gap, so the thread's rings stay in the column the slot used to push them
-   into. Deleting the slot without that would have slid every message row 24px left
-   into the task row's own column. */
-
-/* No `.tasks-count` any more. It was a 16px neutral pill printing the task's
-   unread total after its title — position and weight both hard-won (it led the row
-   for a day, in `--activity`, and inverted the reading priority) — and then the
-   number itself was dropped: a total nobody acts on per unit, where `.tasks-dot`
-   above already answers the only question asked of it. The pill's own history is
-   kept there rather than here, with the mark that replaced it. */
-
 /* The time a task ROW prints, beside its folder chip (2026-08-17: "let's show the
    time as well for like besides the folder. Let's do that for every task"). Until
    then a time was only ever visible inside an expanded thread, so a one-message
@@ -577,13 +511,6 @@ button.tasks-caret,
   margin-inline: -5px;
 }
 
-/* The folder tag grows too, VERTICALLY ONLY — and it does it in its own rule
-   further down (`.schedule-tv-id--tag`), not here, because that rule already owns
-   this chip's padding/margin pair and a second declaration of them would be
-   decided by source order. Its horizontal padding is already a pill's and
-   growing it sideways would push its zone under the message count beside it,
-   which would make the two trade tooltips: the bug, not the fix. */
-
 /* HOW MANY MESSAGES the task holds — the chip between the folder and the time
    (2026-08-23). Sized and spaced as the folder chip's twin: same 11px, same
    muted register, same `flex: 0 0 auto` so the TITLE is still the only thing
@@ -665,10 +592,6 @@ button.tasks-caret,
   padding-left: 4px;
   margin-right: -4px;
 }
-/* NO HOVER SKIN OF ITS OWN (Akshil, 2026-08-27: "when I hover over the file
-   icon, it changes color and it feels like a button"). It is a caption on the
-   row, and a mark that brightens under the pointer promises a press the row's
-   press does not make. The row's own hover is the only hover here. */
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like
@@ -1427,13 +1350,6 @@ button.tasks-caret,
   margin-inline: -5px;
 }
 
-/* No `.tasks-msg-ran` any more. It printed "ran 07:12 today" beside the due time
-   whenever the two were different facts, and it went on 2026-08-17 with the rest of
-   the evening's trimming: "I don't think I need this as well, the RAND Today stuff"
-   (Akshil). A row carrying two absolute times is the crowding, and the surviving
-   time is now one relative unit with the full story in its tooltip — both instants,
-   named, whenever they differ (tasks-lib.messageWhenTitle). */
-
 /* The message row's own unread mark is its status RING (schedule.css
    `.schedule-ring--unread`), the same one the task row above it wears — see the
    Unread block near the top of this file for the four marks that came before it
@@ -1511,64 +1427,6 @@ button.tasks-caret,
   font-size: 11.5px;
   color: var(--fg-muted);
 }
-
-/* -- The filter popovers -------------------------------------------------------
-   schedule.css draws these `position: absolute` with a note claiming nothing
-   above them clips. Two things do: `.prefs-page { overflow-y: auto }` and
-   `.schedule-page { overflow: hidden }`, and the Project menu shipped sliced
-   off at the bottom with a handful of its 28 folders showing (Akshil,
-   screenshot). The panel is now FIXED and measured off its trigger in
-   ScheduleTaskViews.popStyle — the same answer NewJobModal's date, time and
-   repeat menus already use — so `top`/`bottom`/`left`/`max-height` all arrive
-   as inline style and this rule only has to undo the absolute placement and
-   let the panel scroll.
-
-   No height and no min-height: a two-item Status menu is two items tall. The
-   cap is the inline `max-height`, and it is what makes 28 projects a scroller
-   rather than a column taller than the window. */
-.schedule-tv-pop.tasks-pop {
-  position: fixed;
-  top: auto;
-  left: auto;
-  overflow-y: auto;
-  /* The panel is the scroller; a flex column only shrinks below its content
-     when it is allowed to. */
-  min-height: 0;
-}
-
-/* Items keep their own height inside that scroller — a constrained flex column
-   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers. */
-.schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
-.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item {
-  flex: 0 0 auto;
-}
-
-/* The project menu's own label — the folder's name, ellipsised rather than
-   widening a popover that is sized for status words. */
-.tasks-pop-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* -- Failed, the fifth lane ----------------------------------------------------
-   schedule.css already paints `.schedule-ring--failed` red — it was the modifier
-   that repainted a Done ring — so this column needs no hue of its own.
-
-   AND NO CENTRE OF ITS OWN EITHER, since 2026-08-18. There was a rule here that
-   widened `.schedule-ring--done::after` to cover Failed, because the dot meant
-   "settled" and Failed is settled. The dot means UNREAD now, and its rule names
-   no lane at all — `.schedule-ring--unread::after`, one gate for every ring on
-   the page — so a copy scoped to one lane would be a duplicate whose only future
-   is to go stale. Deleted rather than restated.
-
-   Why the gate is not the terminal columns, which is the part worth not
-   re-deriving: an Upcoming task can hold unread output from a past run (a
-   recurring rule whose next fire is ahead of it), so `--upcoming --unread` is a
-   real combination and gating the dot on Done/Failed drew it hollow under a
-   tooltip that said "1 unread". The full reasoning lives once, beside the rule,
-   in schedule.css. */
 
 /* -- The one drop that is not filing ------------------------------------------
    Upcoming → In Progress sends the task's next scheduled message immediately
@@ -1673,103 +1531,4 @@ button.tasks-caret,
   font-size: 10px;
   line-height: 1;
   white-space: nowrap;
-}
-
-/* -- dropping ONE filter, from the control that set it (D448) -----------------
-   `[ ⊙ Project 1 | ✕ ]`: the menu trigger and an attached ✕, drawn as one pill
-   with a divider rather than as two controls that happen to be adjacent.
-
-   It replaces a lone "Clear" button on the bar, which had two problems. It could
-   only mean ALL of it — there is no room for three Clears — so dropping a project
-   filter also threw away a status filter and a half-typed search; and it was a
-   fourth box in a row of three menus, a different kind of thing at a different
-   height, which is what read as misalignment.
-
-   The geometry: the trigger keeps its own border and gives up its right corners,
-   the ✕ carries the right corners and NO left border, so the two boxes share one
-   1px line and it lands as the divider. Nothing here sets a height — the ✕ takes
-   the trigger's 32px by being in the same inline-flex row, which is what keeps
-   the pair aligned with the menus beside it however that height changes. */
-.schedule-tv-filter-group {
-  display: inline-flex;
-  align-items: stretch;
-}
-
-.schedule-tv-filter-btn.is-split {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-/* The doubled selector is the same trick `.schedule-tv-filter-btn` uses beside it,
-   and against the same opponent: `.prefs-section button` (preferences.css) skins
-   EVERY button on this page — `padding: 5px 12px; align-self: flex-start` — and at
-   (0,1,1) it outranks a lone class. Unqualified, this chip came out 28px tall and
-   top-aligned against its 32px trigger, which is the exact misalignment this
-   control exists to remove. `.deploy-body` is listed too because the same toolbar
-   is drawn inside the deploy shell, whose fields.css carries an identical skin. */
-.schedule-tv-filter-x,
-.prefs-section .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-x {
-  appearance: none;
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  /* Written as a width shorthand rather than `border-left: 0`, and that is not a
-     style preference: `tasks-lib.test.ts` greps this whole stylesheet for the
-     string "border-left" to hold the thread rows' no-vertical-rule geometry, and
-     the check has no way to tell a filter chip from a message row. Same result,
-     and the guard it protects stays exact. */
-  border-width: 1px 1px 1px 0;
-  border-radius: 0 8px 8px 0;
-  cursor: pointer;
-  transition: color 0.08s ease, background-color 0.08s ease;
-}
-
-/* ONE CONTROL, ONE HOVER. The trigger and its ✕ are two boxes for geometry only
-   — a divider needs two borders — and the reader is looking at a single pill, so
-   the pointer landing anywhere on it lights the whole thing. Per-half hovers were
-   the first shape and were wrong twice over: the two halves lit in different
-   colours (`.prefs-section button:hover:not(:disabled)` paints any hovered button
-   `border-color: var(--accent)`, which the trigger dodges with its own
-   `:not(:disabled)` rule and the ✕ did not), and even matched they made one
-   control blink in halves as the pointer crossed the divider.
-
-   So the hover lives on the GROUP and paints both children. The doubled
-   `.prefs-section`/`.deploy-body` selectors are what outrank that accent rule:
-   3 classes + `:hover` is (0,4,0) against its (0,3,1). The ✕ restates its border
-   WIDTH because a `border-color` alone would repaint the left edge that must stay
-   absent — the divider is the trigger's own right border, and it brightens with
-   everything else because it belongs to a child this rule covers.
-
-   FOCUS stays per-half, deliberately: hover is about the control, but a keyboard
-   ring has to say which half will answer the Return key. */
-.schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
-  color: var(--fg);
-  background: var(--bg-alt);
-  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
-}
-
-.schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
-  border-width: 1px 1px 1px 0;
-}
-
-.schedule-tv-filter-x:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
 }

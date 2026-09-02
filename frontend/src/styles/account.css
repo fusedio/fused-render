@@ -5,8 +5,7 @@
    a horizontal scrollbar, and with it 15px of 100vh, which costs a second,
    vertical one on every page. Also used for the AI Models resident-model dot
    (GlobalSidebar.tsx) — same signal shape, a different thing is loaded. */
-.sidebar-settings .icon,
-.sidebar-footer .icon {
+.sidebar-settings .icon {
   position: relative;
 }
 

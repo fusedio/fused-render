@@ -35,10 +35,7 @@
   /* The global sidebar's ground: a step DARKER than --bg, per the approved
      comps — the pane is the lit surface, the rail recedes. */
   --bg-rail: #08090b;
-  --sel: #22304a;
   --accent: #E5FF44;
-  /* The lime fill's hover: one step brighter, same hue. */
-  --accent-hover: #eeff70;
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
@@ -85,10 +82,8 @@
   --ctl-quiet-bg-hover: rgba(var(--tint), 0.08);
   --ctl-quiet-border: #2e3238;
   --ctl-quiet-border-hover: #464b53;
-  --ctl-plate-bg: transparent;
 
   --on-accent: #10131a; /* text/glyph on an --accent fill */
-  --on-fg: #ffffff; /* one step further from --bg than --fg */
   --accent-soft: #cede5e; /* the accent as readable body text */
   --success-bright: #3fca6b; /* live/signed-in dots */
   --success-soft: #86d786;
@@ -102,7 +97,6 @@
   --series-3: #3fca6b;
   --series-4: #cf8bf3;
   --series-5: #4fd1c5;
-  --series-6: #ff8f8f;
 
   /* Full-page failure card (.status-message.error). */
   --error-page-bg: rgba(26, 6, 6, 0.9);
@@ -142,7 +136,6 @@
   --icon-code: #7fb2a6;
   --icon-data: #a898cb;
   --icon-json: #c3a96b;
-  --icon-html: #c9d95e;
   --icon-image: #cd93b6;
   --icon-doc: #8b9096;
   --icon-media: #d0939b;
@@ -186,12 +179,10 @@
   /* Rail: a step darker than the page, preserving the dark ordering's
      "rail recedes, pane leads" on white. */
   --bg-rail: #eff0f3;
-  --sel: #cfe0f7;
   /* The brand lime is unreadable as text on white, so light mode uses a
      deep olive-lime of the same hue: clears 4.5:1 against --bg as text,
      border, fill and wash from the one token. */
   --accent: #5f7300;
-  --accent-hover: #4d5e00;
   --error: #c62828;
   --success: #1a7f37;
   --warning: #8f6a10;
@@ -233,10 +224,8 @@
   --ctl-quiet-bg-hover: rgba(var(--fg-muted-rgb), 0.16);
   --ctl-quiet-border: rgba(var(--fg-muted-rgb), 0.35);
   --ctl-quiet-border-hover: var(--fg-muted);
-  --ctl-plate-bg: var(--bg);
 
   --on-accent: #ffffff;
-  --on-fg: #000000;
   --accent-soft: #5f7300;
   --success-bright: #1a8f45;
   --success-soft: #1f7a3a;
@@ -250,7 +239,6 @@
   --series-3: #1a7f37;
   --series-4: #7a3fa8;
   --series-5: #0f7c74;
-  --series-6: #b03030;
 
   --error-page-bg: rgba(255, 236, 236, 0.95);
   --error-page-border: #c0392b;
@@ -284,7 +272,6 @@
   --icon-code: #2f7a6b;
   --icon-data: #6b57a0;
   --icon-json: #8a6d1f;
-  --icon-html: #6f7c14;
   --icon-image: #9c4d78;
   --icon-doc: #676c73;
   --icon-media: #a34a56;

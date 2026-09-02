@@ -389,8 +389,6 @@
 .home-section {
   margin-top: 36px;
 }
-
-/* ---- AI Playground strip cards ------------------------------------------- */
 /* One card per playground task (Home.tsx PlaygroundPreviewCard). Reuses the
    .fhb-card shell so the row sits level with the app/session cards; what's
    specific here is the body — no live preview to embed, so it's a quiet
@@ -479,13 +477,6 @@
 
 .home-pg-card:hover .home-pg-blurb {
   color: var(--fg);
-}
-
-/* Empty voice. */
-.home-empty {
-  color: var(--fg-muted);
-  font-size: 13px;
-  padding: 18px 0;
 }
 
 /* The ask-for-a-name row (HomeHero.tsx, phase "askName"): shown in the

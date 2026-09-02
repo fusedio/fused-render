@@ -62,7 +62,6 @@
    outranked (0,3,1 against its 0,2,0) until the `:not()` stopped it MATCHING
    rather than trying to outrank it. That button is gone (D264); the mechanism
    it taught is why the two above are named and not re-asserted. */
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -74,13 +73,6 @@
   cursor: pointer;
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
@@ -145,13 +137,6 @@
   }
 }
 
-
-
-.pane-mode-item.pending {
-  opacity: 0.55;
-  cursor: default;
-}
-
 /* Body placeholder while a URL-requested gated mode (or an all-conditional
    list) is still resolving. */
 .preview-resolving {
@@ -163,7 +148,6 @@
   color: var(--fg-muted);
   font-size: 13px;
 }
-
 
 .preview-body {
   flex: 1 1 auto;
@@ -458,23 +442,6 @@ html.side-reopening iframe {
   font-size: 12px;
   border-top: 1px solid var(--border);
 }
-.listing-load-more {
-  margin-left: 10px;
-  padding: 3px 10px;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.listing-load-more:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.listing-load-more:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 
 /* Error panel: dark maroon card + red border + mono red text, matching the
    fused_render/static/runtime.js overlay reference. Canonical error style —
@@ -585,7 +552,6 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
-
 /* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
    Modeled on the reference grid-viewer's pane styles, using our palette. The
    root is position:relative so a maximized pane fills the panel area (inside
@@ -685,23 +651,6 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
    bare `.panel-bar .bar-ctl > svg` outweighed `.panel-bar .bar-caret` on
    specificity — the mode menu's caret silently kept the 14px icon size it was
    explicitly excluded from. */
-.panel-bar .bar-ctl > svg:not(.bar-caret) {
-  width: 14px;
-  height: 14px;
-}
-
-.panel-bar .mode-menu-icon,
-.panel-bar .mode-menu-icon svg,
-.panel-bar .mode-menu-icon .mode-icon-mask,
-.panel-bar .mode-menu-icon .mode-icon-placeholder {
-  width: 14px;
-  height: 14px;
-}
-
-.panel-bar .bar-caret {
-  width: 11px;
-  height: 11px;
-}
 
 .panel-bar .bar-rule {
   margin: 0 6px;
@@ -837,44 +786,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   background: rgba(var(--tint), 0.08);
 }
 
-/* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
-   dropdown lists icon + name per mode. Dropdown is position:fixed (inline
-   top/left from the trigger's rect) — .panel-pane clips overflow, and the tab
-   bar would too. */
-.pane-mode-menu {
-  display: inline-flex;
-  flex: 0 0 auto;
-}
-
-.pane-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 5px;
-  border-radius: 4px;
-}
-
-.pane-mode-btn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
 /* Inside a tab button: match the tab-open-plain / tab-close chrome sizing. */
-.tab .pane-mode-btn {
-  width: 15px;
-  height: 15px;
-  padding: 0;
-}
-
-.tab .pane-mode-btn .mode-icon-mask,
-.tab .pane-mode-btn .mode-icon-placeholder,
-.tab .pane-mode-btn svg {
-  width: 13px;
-  height: 13px;
-}
 
 .pane-mode-dropdown {
   position: fixed;
@@ -888,26 +800,5 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 4px 16px var(--shadow-md);
-}
-
-.pane-mode-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.pane-mode-item:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
-.pane-mode-item.active {
-  color: var(--fg);
 }
 

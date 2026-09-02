@@ -47,17 +47,6 @@ select.field-control {
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
 }
 
-.field-select-wrap {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.field-select-wrap > select {
-  min-width: 0;
-  max-width: 100%;
-}
-
 /* De-nativize the select: drop the platform chevron/metrics, draw our own
    (muted-gray inline SVG) so it sits flush with sibling inputs. */
 select.field-control {
@@ -104,10 +93,6 @@ select.field-control:has(option[value=""]:checked) {
 .deploy-body button:disabled {
   opacity: 0.55;
   cursor: default;
-}
-
-.deploy-muted {
-  color: var(--fg-muted);
 }
 
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):

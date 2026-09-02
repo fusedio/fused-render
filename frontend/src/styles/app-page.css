@@ -409,7 +409,6 @@
   flex-direction: column;
 }
 
-.app-files-stage > .skeleton-lines,
 .app-files-stage > .error-banner {
   margin: 16px;
 }
@@ -446,7 +445,6 @@
 }
 
 /* The page-level banners / skeleton sit in the header's gutter, not flush. */
-.app-page-body > .error-banner,
-.app-page-body > .skeleton-lines {
+.app-page-body > .error-banner {
   margin: 0;
 }
