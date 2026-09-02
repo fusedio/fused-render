@@ -25,7 +25,7 @@
 // already had the cards, the download plumbing and, crucially, the LISTING: the
 // join that makes an in-app Hub search worth having is "you already have this
 // one", and the page's own walk is the only honest source for it.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { ControlMenu } from "./SearchControls";
 import { HubResultsTable } from "./HubResultsTable";
 import { type DiskCard, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
@@ -125,14 +125,14 @@ function HubFilterBar({
   return (
     <div className="am-hub-controls am-hub-facets">
       <ControlMenu
-        icon={MenuIcons.info as ReactNode}
+        icon={MenuIcons.info}
         label={activeFit.label}
         title={activeFit.title}
         ariaLabel={"Filter by fit: " + activeFit.label}
         items={fitLevelItems}
       />
       <ControlMenu
-        icon={MenuIcons.drive as ReactNode}
+        icon={MenuIcons.drive}
         label={activeParams.label}
         title={activeParams.title}
         ariaLabel={"Filter by parameter count: " + activeParams.label}
@@ -171,7 +171,7 @@ export interface SettledQuery {
   /** Ask for models this machine likely cannot run too — off by default. */
   includeUnfit: boolean;
   /** Part B's three server-side filters over `fit`/`params`, plus the Hub's
-   *  own `author` parameter — see `SearchControls.tsx` for the controls and
+   *  own `author` parameter — see `HubFilterBar` (above) for the controls and
    *  `hub_models.py`'s own `api_hub_search` for how each is applied. "any"/""
    *  is every filter's no-op default. */
   fitLevel: HubFitLevel;
