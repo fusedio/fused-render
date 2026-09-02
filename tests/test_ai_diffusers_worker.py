@@ -1098,6 +1098,20 @@ class _SpillTensor:
     def to(self, dtype):
         return self
 
+    def set_(self, source):
+        """The real `Tensor.set_(source)`: mutates THIS object's own
+        storage/shape/dtype in place from `source`, rather than returning a
+        new object — `_TensorSetter.apply` relies on that in-place mutation
+        to rebind a tensor-subclass's leaf without ever touching the
+        subclass's own attribute dict (see `_TensorSetter`'s docstring in
+        `mmap_spill.py`)."""
+        self.values = list(source.values)
+        self.shape = source.shape
+        self.dtype = source.dtype
+        self._contiguous = source._contiguous
+        self._storage_ptr = source._storage_ptr
+        return self
+
 
 def _fake_torch_for_spill():
     torch = types.ModuleType("torch")
@@ -1228,6 +1242,138 @@ def test_enumerate_spillable_includes_untracked_tensors(monkeypatch):
 
     keys = {slot.key for slot in slots}
     assert keys == {"transformer.param.weight", "transformer.untracked.weight.absmax"}
+
+
+def test_enumerate_spillable_recurses_through_a_tensor_subclass(monkeypatch):
+    """A parameter that IS a tensor subclass (the torchao shape: the
+    parameter itself, not some nested attribute, is the thing with no
+    plain storage) is invisible as a single tensor — `enumerate_spillable`
+    has to reach through `__tensor_flatten__` to its plain leaves."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    int_data = _SpillTensor([1, 2, 3])
+    scale = _SpillTensor([0.1])
+    weight = _FakeSubclassTensor({"int_data": int_data, "scale": scale})
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    keys = {slot.key for slot in slots}
+    assert keys == {
+        "transformer.param.weight.int_data",
+        "transformer.param.weight.scale",
+    }
+    tensors = {slot.key: slot.tensor for slot in slots}
+    assert tensors["transformer.param.weight.int_data"] is int_data
+    assert tensors["transformer.param.weight.scale"] is scale
+
+
+def test_enumerate_spillable_recurses_through_a_nested_tensor_subclass(monkeypatch):
+    """`AffineQuantizedTensor` -> `tensor_impl` -> `int_data`/`scale`/
+    `zero_point`: two layers of subclass wrapping before a plain leaf. The
+    recursion has to walk through BOTH layers, not just the outer one."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    int_data = _SpillTensor([1, 2])
+    scale = _SpillTensor([9])
+    tensor_impl = _FakeSubclassTensor({"int_data": int_data, "scale": scale})
+    weight = _FakeSubclassTensor({"tensor_impl": tensor_impl})
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    keys = {slot.key for slot in slots}
+    assert keys == {
+        "transformer.param.weight.tensor_impl.int_data",
+        "transformer.param.weight.tensor_impl.scale",
+    }
+
+
+def test_enumerate_spillable_skips_a_subclass_with_no_tensor_flatten(monkeypatch):
+    """A subclass this generic mechanism cannot see through at all (no
+    `__tensor_flatten__`) must be skipped, not raise — it is simply not
+    spillable by this route."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    opaque = _FakeOpaqueSubclass()
+    component = _SpillComponent(params=[("weight", opaque)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    assert slots == []
+
+
+def test_enumerate_spillable_skips_a_non_cpu_tensor_subclass(monkeypatch):
+    """The CPU-resident-only rule holds for a subclass too — a quantized
+    weight already moved to the accelerator is not a spill candidate."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _FakeSubclassTensor(
+        {"int_data": _SpillTensor([1], device="cuda")}, device="cuda")
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    assert slots == []
+
+
+class _FakeSubclassTensor:
+    """Stands in for a torch tensor SUBCLASS implementing `__tensor_flatten__`
+    — `torchao`'s `AffineQuantizedTensor`, or its own `tensor_impl`, which is
+    itself one of these one level down. `type(self) is not torch.Tensor`
+    (the fake `torch.Tensor` here is `_SpillTensor`, a different class
+    entirely) is what makes `_is_flatten_subclass` treat this the way
+    `enumerate_spillable` needs to: not a leaf, something to recurse
+    through. `inner` maps each flattened attribute name to the tensor (or
+    further `_FakeSubclassTensor`) it holds — real values for a real
+    `__tensor_flatten__()` call, `(names, ctx)`."""
+
+    def __init__(self, inner, device="cpu"):
+        self._inner = dict(inner)
+        for name, value in self._inner.items():
+            setattr(self, name, value)
+        self.device = types.SimpleNamespace(type=device)
+
+    def __tensor_flatten__(self):
+        return list(self._inner.keys()), None
+
+
+class _FakeOpaqueSubclass:
+    """A tensor subclass with NO `__tensor_flatten__` at all — bnb's
+    `Params4bit` shape, or any future quantizer this generic mechanism was
+    never taught about. Not spillable by `iter_subclass_leaves`; the
+    contract is that this is skipped silently, never raises."""
+
+    def __init__(self, device="cpu"):
+        self.device = types.SimpleNamespace(type=device)
+
+
+class _RaisingStorage:
+    """`.untyped_storage()`'s return value for a `_SpillTensor` standing in
+    for a tensor subclass `iter_subclass_leaves`' generic walk still could
+    not fully resolve — `.data_ptr()` raises exactly the error the live
+    worker logged."""
+
+    def data_ptr(self):
+        raise RuntimeError(
+            "Attempted to access the data pointer on an invalid python "
+            "storage.")
+
+
+def _make_unspillable_tensor(values):
+    """A `_SpillTensor` (so `type(t) is torch.Tensor` — this presents as an
+    ordinary, already-a-leaf tensor to `enumerate_spillable`, exactly like a
+    plain resident weight) whose `untyped_storage()` raises the moment
+    `spill()`'s write-prep loop tries to compute a storage key for it — the
+    one-bad-tensor case `spill()` must now survive rather than abandon the
+    whole pass over."""
+    tensor = _SpillTensor(values)
+    tensor.untyped_storage = lambda: _RaisingStorage()
+    return tensor
 
 
 class _FakeSafetensorsTorch:
@@ -1381,6 +1527,56 @@ def test_spill_rebind_failure_names_the_offending_key_and_progress(monkeypatch, 
     assert "transformer.param.b" in message
     assert "1" in message  # "a" was already rebound when "b" failed
     assert isinstance(excinfo.value.__cause__, KeyError)
+
+
+def test_spill_skips_one_unspillable_slot_and_still_spills_the_rest(
+        monkeypatch, tmp_path):
+    """The observed live failure: one tensor `enumerate_spillable` found but
+    cannot actually be touched (a subclass leaf whose `untyped_storage()`
+    raises) must not abandon the whole pass — it is counted and skipped,
+    every other CPU-resident tensor still spills."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    good = _SpillTensor([1, 2, 3])
+    bad = _make_unspillable_tensor([4, 5])
+    component = _SpillComponent(params=[("good", good), ("bad", bad)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 1
+    assert stats["skipped"] == 1
+    assert "transformer.param.bad" in stats["skipped_reason"]
+    assert "invalid python storage" in stats["skipped_reason"]
+    # the good tensor still rebound to the reloaded mmap'd object
+    assert component.good.data is not good
+    assert component.good.data is not None
+    # the bad slot's owner is untouched — no partial/garbage rebind attempt
+    assert component.bad is bad
+
+
+def test_spill_reports_all_skipped_without_writing_when_every_slot_fails(
+        monkeypatch, tmp_path):
+    """Every slot failing write-prep must not call `save_file` with an
+    empty dict, or crash trying to — it degrades to the same empty-write
+    shape `_EMPTY_STATS` describes, only with `skipped` telling the truth
+    about why nothing was written."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    fake_st = _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    bad = _make_unspillable_tensor([1])
+    component = _SpillComponent(params=[("bad", bad)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 0
+    assert stats["skipped"] == 1
+    assert stats["skipped_reason"] is not None
+    assert fake_st.save_calls == []
 
 
 def test_spill_path_is_unique_across_calls(monkeypatch, tmp_path):

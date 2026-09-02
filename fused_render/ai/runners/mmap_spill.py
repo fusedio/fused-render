@@ -108,6 +108,123 @@ def has_untracked_tensor(obj, registered_ids):
     return next(iter_untracked_tensors(obj, registered_ids), None) is not None
 
 
+def _is_plain_tensor(tensor):
+    """True when `tensor` is exactly `torch.Tensor` — never a subclass,
+    flatten-capable or not. The other half of the three-way split every
+    call site below needs: a plain tensor is appended directly (unchanged
+    from before this fix), a `__tensor_flatten__` subclass is recursed
+    through, and anything else — a subclass this module has no protocol for
+    reaching into at all — is neither: not spillable, skipped silently.
+    """
+    import torch
+
+    return type(tensor) is torch.Tensor
+
+
+def _is_flatten_subclass(tensor):
+    """True when `tensor` is a torch tensor SUBCLASS (not a plain `torch.
+    Tensor`) that implements `__tensor_flatten__` — the protocol every
+    subclass participating in `torch.compile`/serialization implements to
+    name its own inner tensors (`torchao`'s `AffineQuantizedTensor` ->
+    `tensor_impl` -> `int_data`/`scale`/`zero_point`, each layer its own
+    subclass or a plain leaf). `type(tensor) is not torch.Tensor` rather
+    than `isinstance` — a subclass instance passes `isinstance(t, torch.
+    Tensor)` too (that is what makes it a *tensor* subclass), so `type`
+    identity is the only check that tells "this object IS the plain class"
+    from "this object is something wrapping it."
+    """
+    return not _is_plain_tensor(tensor) and hasattr(tensor, "__tensor_flatten__")
+
+
+def iter_subclass_leaves(tensor, key_prefix):
+    """Yield `(key, leaf_tensor, setter)` for every plain leaf `torch.Tensor`
+    reachable from `tensor` — which may itself already be a plain tensor, or
+    a (possibly nested) tensor SUBCLASS reached through `__tensor_flatten__`.
+
+    **Generic on purpose — this is the whole fix for quantizers whose
+    weights are not plain tensors at all.** `AffineQuantizedTensor` (torchao)
+    has no single contiguous storage of its own; calling `.untyped_storage
+    ().data_ptr()` on it directly raises `RuntimeError: Attempted to access
+    the data pointer on an invalid python storage`, because that call is
+    only meaningful on a LEAF. `__tensor_flatten__()` returns the attribute
+    names an object's own inner tensors are held under (`(names, ctx)` per
+    the documented protocol, though this only ever reads `names` — `ctx` is
+    metadata for reconstructing the subclass, irrelevant to spilling its
+    bytes to disk and back) — recursing through those names, at each level
+    checking again whether the value found is itself a plain tensor or a
+    further subclass, reaches every real leaf regardless of how many layers
+    of wrapping a given quantizer's layout stacks (`AffineQuantizedTensor`
+    -> `tensor_impl` -> `int_data`, two layers for the plain layout torchao
+    logged in the observed failure; a future layout nesting one layer
+    deeper needs no change here, since the recursion has no depth bound the
+    way `iter_untracked_tensors`'s plain-attribute walk deliberately does).
+
+    A subclass with no `__tensor_flatten__` anywhere in its chain is not
+    spillable by this mechanism — it yields nothing for that branch, never
+    raises. Nothing here is specific to torchao, or to any other quantizer:
+    the only thing read off `tensor` is the standard subclass protocol.
+
+    **CPU-resident only, at every level**, same rule `enumerate_spillable`
+    already applies to plain tensors: a subclass instance already moved to
+    an accelerator (or wrapping inner tensors that have been) is skipped
+    without descending further, so this recursion stays correct after any
+    placement `torch_image._place()` might choose, exactly as the plain
+    tensor path already is.
+
+    Each yielded leaf's `setter` is a `_TensorSetter`, never an `_AttrSetter`
+    — see that class's own docstring for why owner-level `setattr` is not
+    the mechanism used to rebind a nested subclass's inner tensor.
+    """
+    device = getattr(tensor, "device", None)
+    if device is not None and getattr(device, "type", None) != "cpu":
+        return
+    if not _is_flatten_subclass(tensor):
+        yield key_prefix, tensor, _TensorSetter(tensor)
+        return
+    names, _ctx = tensor.__tensor_flatten__()
+    for attr_name in names:
+        inner = getattr(tensor, attr_name, None)
+        if inner is None:
+            continue
+        yield from iter_subclass_leaves(inner, f"{key_prefix}.{attr_name}")
+
+
+class _TensorSetter:
+    """Rebinds one spilled LEAF tensor's storage IN PLACE, via `Tensor.set_
+    (...)`, rather than reassigning any attribute on whatever object holds
+    it.
+
+    This exists because `_AttrSetter`'s move — reassign `.data` on the
+    tensor reached by walking a DOTTED PATH off a stable owner — assumes
+    every step of that path is an ordinary attribute a caller can safely
+    `getattr` through to a settable `.data` slot. A tensor subclass breaks
+    that assumption at the attribute-holding end: `AffineQuantizedTensor`'s
+    `tensor_impl` (itself a further subclass) is not guaranteed to permit
+    `setattr` for whatever future layout torchao ships, and this module
+    cannot special-case every layout's storage rules — it does not import
+    torchao at all, by design (see this module's own docstring).
+
+    `Tensor.set_(source)` sidesteps the question entirely: it mutates the
+    LEAF tensor's own storage/shape/stride in place, so the exact same
+    Python object the subclass already holds a reference to (`tensor_impl.
+    int_data`, found by `iter_subclass_leaves`'s recursion) keeps that
+    identity — nothing upstream of the leaf (`tensor_impl`, the outer
+    `AffineQuantizedTensor`, the `nn.Parameter` wrapping it) is ever
+    written to. A NESTED subclass (`AffineQuantizedTensor` -> `tensor_impl`
+    -> `int_data`) rebinds correctly for exactly this reason: only the
+    bottom-most object changes, and every object above it goes on holding
+    the reference it always held.
+    """
+
+    __slots__ = ("_target",)
+
+    def __init__(self, target):
+        self._target = target
+
+    def apply(self, tensor):
+        self._target.set_(tensor)
+
+
 class _AttrSetter:
     """Rebinds the `.data` of the tensor reached by walking `owner`'s
     (possibly dotted) `path` — a `named_parameters()`/`named_buffers()` name
@@ -174,6 +291,26 @@ def enumerate_spillable(components):
     pipeline happens to carry — a tokenizer, a scheduler) is skipped, same
     as `torch_image._group_offload_exclusions` used to skip it for the same
     reason before this replaced it.
+
+    **A parameter or buffer that is itself a tensor SUBCLASS** (a torchao
+    `AffineQuantizedTensor`, in place of an ordinary `torch.Tensor`) is
+    routed through `iter_subclass_leaves` instead of appended directly —
+    the plain-leaf tensors that recursion finds become the `TensorSlot`s,
+    named by the attribute path that reaches them (`"<comp>.param.<name>.
+    tensor_impl.int_data"`), each rebound by its own `_TensorSetter`. An
+    ordinary parameter/buffer (`_is_flatten_subclass` false) is untouched by
+    any of this — same single `TensorSlot`, same `_AttrSetter`, as before
+    this fix.
+
+    The untracked-attribute walk below (`iter_untracked_tensors`, bnb's
+    `quant_state.absmax` and neighbours) is skipped for a parameter/buffer
+    that is itself a `__tensor_flatten__` subclass — `iter_subclass_leaves`
+    already reaches everything that recursion could, and running both would
+    double-count the same underlying storage under two different keys. A
+    subclass with NO `__tensor_flatten__` (bnb's `Params4bit`, which predates
+    and does not implement this protocol) still goes through the untracked
+    walk exactly as before — this rung of the fix is additive, not a
+    replacement for the mechanism the untracked walk exists for.
     """
     slots = []
     for comp_name, component in components.items():
@@ -185,35 +322,59 @@ def enumerate_spillable(components):
         registered_ids |= {id(t) for _, t in named_bufs}
 
         for pname, t in named_params:
-            if t.device.type == "cpu":
+            if t.device.type != "cpu":
+                continue
+            if _is_plain_tensor(t):
                 slots.append(TensorSlot(
                     f"{comp_name}.param.{pname}", t,
                     _AttrSetter(component, pname)))
+            elif _is_flatten_subclass(t):
+                for key, tensor, setter in iter_subclass_leaves(
+                        t, f"{comp_name}.param.{pname}"):
+                    slots.append(TensorSlot(key, tensor, setter))
+            # else: a subclass with no `__tensor_flatten__` — not spillable
+            # by any mechanism this module has, skipped silently.
         for bname, t in named_bufs:
-            if t.device.type == "cpu":
+            if t.device.type != "cpu":
+                continue
+            if _is_plain_tensor(t):
                 slots.append(TensorSlot(
                     f"{comp_name}.buffer.{bname}", t,
                     _AttrSetter(component, bname)))
+            elif _is_flatten_subclass(t):
+                for key, tensor, setter in iter_subclass_leaves(
+                        t, f"{comp_name}.buffer.{bname}"):
+                    slots.append(TensorSlot(key, tensor, setter))
 
         for pname, t in named_params + named_bufs:
-            if t.device.type != "cpu":
+            if t.device.type != "cpu" or _is_flatten_subclass(t):
                 continue
             for owner, attr_name, tensor in iter_untracked_tensors(
                     t, registered_ids):
                 if tensor.device.type != "cpu":
                     continue
-                slots.append(TensorSlot(
-                    f"{comp_name}.untracked.{pname}.{attr_name}", tensor,
-                    _AttrSetter(owner, attr_name)))
+                if _is_plain_tensor(tensor):
+                    slots.append(TensorSlot(
+                        f"{comp_name}.untracked.{pname}.{attr_name}", tensor,
+                        _AttrSetter(owner, attr_name)))
+                elif _is_flatten_subclass(tensor):
+                    for key, leaf, setter in iter_subclass_leaves(
+                            tensor,
+                            f"{comp_name}.untracked.{pname}.{attr_name}"):
+                        slots.append(TensorSlot(key, leaf, setter))
     return slots
 
 
 #: `spill()`'s empty-input answer — nothing found, nothing written. A plain
 #: dict literal rather than a dataclass: every caller either logs this or
 #: ignores it, nothing indexes into it structurally enough to want a type.
+#: `skipped`/`skipped_reason` extend this the same way every other key here
+#: does — present and zero/`None` even when nothing ran, so a caller never
+#: has to check for the key's existence before reading it.
 _EMPTY_STATS = {
     "tensors": 0, "bytes": 0, "contiguous_copies": 0,
     "dedup_count": 0, "write_seconds": 0.0,
+    "skipped": 0, "skipped_reason": None,
 }
 
 
@@ -247,6 +408,25 @@ def spill(components, path):
     attributes, not weight-sized work), and every tensor here needs a fresh
     write regardless — `save_file` cannot append or patch a subset of keys
     in an existing file, it always writes the whole set it is given.
+
+    **Per-slot fault tolerant: one bad tensor skips itself, not the whole
+    pass.** The observed failure this guards against is a single slot whose
+    tensor cannot actually be touched the way a plain tensor can — the
+    `RuntimeError` a torchao tensor subclass's `.untyped_storage().data_ptr
+    ()` raises when `enumerate_spillable`'s subclass recursion still lands
+    on something that is not a genuine leaf (a future layout this module's
+    generic `__tensor_flatten__` walk cannot see all the way through) is the
+    one that was actually observed, but this loop treats ANY exception from
+    the contiguity check or the storage-key computation the same way: count
+    it, remember one representative message, move on to the next slot. A
+    slot that fails here contributes nothing to `to_save` and is excluded
+    from the rebind pass below — its owner is left pointing at whatever
+    tensor it already held, exactly as if `enumerate_spillable` had never
+    found it, rather than the ENTIRE pass losing every OTHER tensor's
+    reclaimable bytes over one that could not be reached. Only the first
+    failure's message is kept in `skipped_reason` — logging one line per
+    bad tensor is exactly what this is trying not to do; the caller's own
+    breadcrumb (`torch_image._spill_idle_weights`) is the summary line.
     """
     from safetensors.torch import load_file, save_file
 
@@ -259,21 +439,39 @@ def spill(components, path):
     dedup_map = {}
     contiguous_copies = 0
     total_bytes = 0
+    skipped = 0
+    skipped_reason = None
+    prepared = []
     for slot in slots:
         tensor = slot.tensor
-        if not tensor.is_contiguous():
-            tensor = tensor.contiguous()
-            contiguous_copies += 1
-        storage_key = (
-            tensor.untyped_storage().data_ptr(), tensor.storage_offset(),
-            tuple(tensor.shape), str(tensor.dtype),
-        )
+        try:
+            if not tensor.is_contiguous():
+                tensor = tensor.contiguous()
+                contiguous_copies += 1
+            storage_key = (
+                tensor.untyped_storage().data_ptr(), tensor.storage_offset(),
+                tuple(tensor.shape), str(tensor.dtype),
+            )
+        except Exception as error:
+            skipped += 1
+            if skipped_reason is None:
+                skipped_reason = (
+                    f"{slot.key}: {error.__class__.__name__}: {error}")
+            continue
         if storage_key in seen_storage:
             dedup_map[slot.key] = seen_storage[storage_key]
+            prepared.append(slot)
             continue
         seen_storage[storage_key] = slot.key
         to_save[slot.key] = tensor
         total_bytes += tensor.numel() * tensor.element_size()
+        prepared.append(slot)
+
+    if not to_save:
+        stats = dict(_EMPTY_STATS)
+        stats["skipped"] = skipped
+        stats["skipped_reason"] = skipped_reason
+        return stats
 
     tmp_path = f"{path}.{os.getpid()}.tmp"
     started = time.time()
@@ -282,7 +480,7 @@ def spill(components, path):
     write_seconds = time.time() - started
 
     loaded = load_file(path, device="cpu")
-    for index, slot in enumerate(slots):
+    for index, slot in enumerate(prepared):
         source_key = dedup_map.get(slot.key, slot.key)
         try:
             slot.setter.apply(loaded[source_key])
@@ -295,17 +493,23 @@ def spill(components, path):
             # `index` slots already rebound and the rest untouched. Values
             # are correct either way — rebinding only swaps `.data` for a
             # byte-identical mmap'd copy — so this names the slot and the
-            # progress rather than rolling anything back.
+            # progress rather than rolling anything back. This is a
+            # DIFFERENT failure mode from the per-slot skip above — a slot
+            # that made it this far already proved itself spillable (its
+            # bytes are safely on disk), so a rebind failure here is a real
+            # bug, not an unreachable tensor, and stays fatal to the whole
+            # call rather than being swallowed the same way.
             raise RuntimeError(
-                f"mmap_spill rebind failed on slot {index + 1}/{len(slots)} "
-                f"(key={slot.key!r}); {index} of {len(slots)} slots were "
+                f"mmap_spill rebind failed on slot {index + 1}/{len(prepared)} "
+                f"(key={slot.key!r}); {index} of {len(prepared)} slots were "
                 f"already rebound before this one"
             ) from error
 
     return {
-        "tensors": len(slots), "bytes": total_bytes,
+        "tensors": len(prepared), "bytes": total_bytes,
         "contiguous_copies": contiguous_copies,
         "dedup_count": len(dedup_map), "write_seconds": write_seconds,
+        "skipped": skipped, "skipped_reason": skipped_reason,
     }
 
 

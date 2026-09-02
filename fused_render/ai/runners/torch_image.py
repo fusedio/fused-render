@@ -589,7 +589,13 @@ def _spill_idle_weights(pipe):
     own stats dict to stderr too: it is the only way to tell "spilled 6 GB"
     from "spilled 400 MB of an 8 GB model", the latter being what
     `enumerate_spillable` missing most of a component's tensors would look
-    like from the outside.
+    like from the outside. When `stats["skipped"]` is nonzero — some
+    individual tensor `mmap_spill.spill` found but could not reach (a
+    tensor-subclass leaf its generic `__tensor_flatten__` walk could not
+    resolve) — a second breadcrumb line names the count and one
+    representative reason, never one line per tensor; the rest of that
+    spill still ran, so this is a partial win, not the all-or-nothing
+    failure the first breadcrumb above reports.
     """
     if pipe is None:
         return
@@ -609,6 +615,11 @@ def _spill_idle_weights(pipe):
         f"{stats['tensors']} tensors, {stats['bytes']} bytes, "
         f"{stats['contiguous_copies']} contiguous copies, "
         f"{stats['dedup_count']} deduped, {stats['write_seconds']:.2f}s\n")
+    if stats.get("skipped"):
+        sys.stderr.write(
+            "[fused] mmap spill: "
+            f"{stats['skipped']} slot(s) could not be spilled and stayed "
+            f"resident, e.g. {stats.get('skipped_reason')}\n")
 
 
 def load(model_id, fetched):
