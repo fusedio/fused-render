@@ -1,22 +1,22 @@
 ---
 name: fused-render-theming
-description: Use when a fused-render view must follow the app's light/dark appearance, or looks wrong in the opposite theme.
+description: Use when fused-render view must follow app light/dark, or looks wrong in opposite theme.
 ---
 
 # Theming a view
 
-The iframe is a blank canvas (nothing injected by default), but the shell follows OS light/dark with a Preferences override. Pick ONE strategy; the failure mode is half-following.
+Iframe = blank canvas (nothing injected by default), but shell follows OS light/dark with Preferences override. Pick ONE strategy; failure mode = half-following.
 
-1. **Fixed palette** — fine for a strong own look (dark map, photo grid). Don't pretend to follow.
-2. **Follow the app** (the usual right answer): `data-fused-theme="shell"` on `<html>`. The runtime writes `data-theme="light"|"dark"` there before your stylesheet parses and keeps it in step (pin, OS flip, other-window change). Author two `:root` token blocks against `[data-theme]` + `color-scheme`. What built-in templates use — see SPEC.md §30 (AP-8/AP-9) and any `fused_render/templates/*/template.html`.
-3. **Follow the desktop only**: `@media (prefers-color-scheme)` around the second token block, no attribute. Doesn't see an in-app pin.
-4. **Own switcher**: choice in a param (`fused.params.set("theme", …)`), drive `data-theme` yourself. INSTEAD of option 2, never alongside — the runtime re-applies and your button loses.
+1. **Fixed palette** — fine for strong own look (dark map, photo grid). Don't pretend to follow.
+2. **Follow the app** (usual right answer): `data-fused-theme="shell"` on `<html>`. Runtime writes `data-theme="light"|"dark"` there before stylesheet parses, keeps it in step (pin, OS flip, other-window change). Author two `:root` token blocks against `[data-theme]` + `color-scheme`. Built-in templates do this — SPEC.md §30 (AP-8/AP-9), any `fused_render/templates/*/template.html`.
+3. **Follow desktop only**: `@media (prefers-color-scheme)` around second token block, no attribute. Blind to in-app pin.
+4. **Own switcher**: choice in param (`fused.params.set("theme", …)`), drive `data-theme` yourself. INSTEAD of option 2, never alongside — runtime re-applies, your button loses.
 
-Two rules that make a second palette work:
+Two rules making second palette work:
 
-- **Every colour from a token.** Same token set in both blocks; zero colour literals elsewhere — a stray hex is a smear the other mode can't repaint.
-- **Colours handed to JS don't follow.** Canvas/chart/maplibre values: read via `getComputedStyle` at draw time, redraw on a `MutationObserver` over `data-theme`.
+- **Every colour from a token.** Same token set both blocks; zero colour literals elsewhere — stray hex = smear other mode can't repaint.
+- **Colours handed to JS don't follow.** Canvas/chart/maplibre values: read via `getComputedStyle` at draw time, redraw on `MutationObserver` over `data-theme`.
 
-Never read the app's own localStorage key — private, drifts. Options 2/3 give the answer without it.
+Never read app's own localStorage key — private, drifts. Options 2/3 give answer without it.
 
 Rest of page authoring → `fused-render-authoring`.

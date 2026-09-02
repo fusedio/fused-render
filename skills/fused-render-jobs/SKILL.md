@@ -1,15 +1,15 @@
 ---
 name: fused-render-jobs
-description: Use on a runPython 60 s timeout, when work outlives one call, or when a download-manager progress row goes stalled — fused.trackJob from page and worker.
+description: Use on runPython 60 s timeout, work outliving one call, or stalled download-manager progress row — fused.trackJob.
 ---
 
 # Long work and the 60 s timeout
 
-`runPython` kills `main()` at 60 s (`DEFAULT_TIMEOUT`, `fused_render/executor.py`); no per-call override. Strategies: cache to `.fused/cache/` (see `fused-render-authoring`); chunk behind an `offset` param; move a long build into a detached process that writes an output file; import lazily + debounce sliders. Warm state between calls → `[tool.fused-render.app]` `main =` (reaped after 15 min idle) or `daemon =` → `fused-render-background-apps`.
+`runPython` kills `main()` at 60 s (`DEFAULT_TIMEOUT`, `fused_render/executor.py`); no per-call override. Strategies: cache to `.fused/cache/` (`fused-render-authoring`); chunk behind `offset` param; move long build into detached process writing output file; import lazy + debounce sliders (~150 ms). Warm state between calls → `[tool.fused-render.app]` `main =`, page calls it via `fused.daemon.run(params)` (reaped after 15 min idle) or `daemon =` → `fused-render-background-apps`.
 
 ## `fused.trackJob`
 
-The shell replaces your page's frame on navigation — in-page progress bars die. Report long work to the download manager instead:
+Shell replaces page frame on navigation — in-page progress bars die. Report long work to download manager:
 
 ```js
 const job = fused.trackJob({ title, kind: "download"|"task", unit: "bytes"?, cancellable: true?, id? });
@@ -20,21 +20,21 @@ if (job.cancelRequested) stopTheWork();
 
 Rules:
 
-- Fire-and-forget, never rejects, can't break the page. No-op on exported pages (doesn't block export).
-- **Cancel is a request YOU honor** — the ✕ sets a flag; your loop notices, stops, reports `cancelled()`. Can't stop it? omit `cancellable`.
-- Omit `total` while unknown (indeterminate bar); 0 is treated the same.
-- **Report a terminal call on every exit path** — otherwise the row goes "stalled" after 30 s.
-- A single await longer than 30 s trips the stall window even when fine — heartbeat with `setInterval(() => job.update({}), 10_000)`, clear in `finally`.
-- One row per user-meaningful operation, current filename in `detail`. Stable `id` lets a reloaded page re-attach instead of opening a second row.
+- Fire-and-forget, never rejects, can't break page. No-op on exported pages (doesn't block export).
+- **Cancel = request YOU honor** — ✕ sets flag; loop notices, stops, reports `cancelled()`. Can't stop? omit `cancellable`.
+- Omit `total` while unknown (indeterminate bar); 0 treated same.
+- **Terminal call on every exit path** — else row goes "stalled" after 30 s.
+- Single await >30 s trips stall window even when fine — heartbeat `setInterval(() => job.update({}), 10_000)`, clear in `finally`.
+- One row per user-meaningful operation, current filename in `detail`. Stable `id` → reloaded page re-attaches, no second row.
 
-`fused.watchJob(id).watch(cb)` = read side (follow a model download, a recording's elapsed seconds). A watched row's `state: "waiting"` = parked on a user question (e.g. build consent), not stuck.
+`fused.watchJob(id).watch(cb)` = read side (follow model download, recording's elapsed seconds). Watched row `state: "waiting"` = parked on user question (e.g. build consent), not stuck.
 
 ## Report from the WORKER too
 
-Page-only reporting freezes the row the moment the user navigates. The detached worker outlives the page: POST plain JSON to `{FUSED_RENDER_ORIGIN}/api/jobs` with headers `Content-Type: application/json` and `X-Fused: 1`, body `{id, title, kind, state, done, total, detail}`. The reply carries `cancel_requested` — the worker is the only thing that can honor ✕ once the page is gone. Best-effort: swallow all errors, rate-limit ~1/s. **Same job id on both sides** (derive from something both know) = one row, not two. Keep the page reporting too — it's the only reporter alive during a first-run env build.
+Page-only reporting freezes row when user navigates. Detached worker outlives page — and runs own venv, no `import fused_render`, so it speaks plain JSON over HTTP: POST `{FUSED_RENDER_ORIGIN}/api/jobs`, headers `Content-Type: application/json` + `X-Fused: 1`, body `{id, title, kind, state, done, total, detail}`. Reply carries `cancel_requested` — worker is only thing able to honor ✕ once page gone. Best-effort: swallow all errors, short timeout (~3 s), rate-limit ~1/s. **Same job id both sides** (derive from something both know) = one row, not two. Keep page reporting too — only reporter alive during first-run env build.
 
 ## Pitfalls
 
-- No terminal call → stalled row lying about a closed page.
+- No terminal call → stalled row lying about closed page.
 - Page-only reporting; two rows from mismatched ids; one row per file.
-- Job started under `_preview=1` → every listing card starts the work (gate boot — `fused-render-authoring`).
+- Job started under `_preview=1` → every listing card starts work (gate boot — `fused-render-authoring`).
