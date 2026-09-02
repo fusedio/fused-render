@@ -588,25 +588,6 @@ COMPONENT_REPOS = {
             "again on its next load."
         ),
     },
-    # `Qwen/Qwen3-4B` in GGUF, not a FLUX repo at all — `black-forest-labs/
-    # FLUX.2-klein-4B`'s `text_encoder/` is byte-identical to stock Qwen3-4B
-    # (matching shape, dtype, size and content hash, verified by range-reading
-    # both repos' safetensors headers), so a GGUF quant of the stock model is
-    # the same weights this recipe already used, in the format that makes them
-    # disk-offloadable — see `torch_image._GGUF_RECIPES` for why this component
-    # needed to move off bitsandbytes to reach that at all.
-    "unsloth/Qwen3-4B-GGUF": {
-        "file": "Qwen3-4B-Q4_K_M.gguf",
-        "of": "black-forest-labs/FLUX.2-klein-4B",
-        "owner": "FLUX.2 klein 4B",
-        "part": "quantized text encoder",
-        "what": (
-            "The 4-bit text encoder FLUX.2 klein 4B loads instead of its own "
-            "7.5GB bf16 one — fetched by the Diffusers image engine, not a "
-            "model you can load on its own. Deleting it makes that model "
-            "download it again on its next load."
-        ),
-    },
     "onnx-community/silero-vad": {
         "file": "onnx/model.onnx",
         "of": None,

@@ -71,17 +71,20 @@ REPO_FILES = [
 ]
 
 #: What `from_pretrained` actually opens for this pipeline: the index, every
-#: component subfolder it still names, and the transformer's CONFIG (the GGUF
-#: is a bare tensor file — `from_single_file(config=…, subfolder=
-#: "transformer")` reads this to know what it is building, which is why "skip
-#: the subfolder" was never an option). `text_encoder/` is absent on purpose:
-#: `keep` never allow-lists it, because `load()` builds that component from
-#: its OWN GGUF repo (`text_encoder_repo`) and passes it into `from_pretrained`
-#: as a built object, the same way the transformer already arrives — so this
-#: repo's bf16 `text_encoder/` files are never opened at all.
+#: component subfolder it names, and the transformer's CONFIG (the GGUF is a
+#: bare tensor file — `from_single_file(config=…, subfolder="transformer")`
+#: reads this to know what it is building, which is why "skip the subfolder"
+#: was never an option). `text_encoder/` IS allow-listed: `_load_quantization`
+#: quantizes it to NF4 at load time, in this process, but `from_pretrained`
+#: still has to read the bf16 shards off disk first to have anything to
+#: quantize.
 READ_BY_THE_PIPELINE = {
     "model_index.json",
     "transformer/config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors.index.json",
+    "text_encoder/model-00001-of-00002.safetensors",
+    "text_encoder/model-00002-of-00002.safetensors",
     "tokenizer/tokenizer.json",
     "tokenizer/tokenizer_config.json",
     "tokenizer/vocab.json",
@@ -232,34 +235,21 @@ def test_the_transformer_config_survives_the_filter(base, monkeypatch, selects):
     assert "transformer/config.json" in landed
 
 
-def test_the_split_now_costs_about_five_gigabytes_not_eighteen(base, monkeypatch,
-                                                                selects):
-    """The GGUF transformer used to be the only quantized component, landing
-    around 10.8GB against an 18.6GB unfiltered download (the figure `catalog.
-    py`'s `size_gb` promised and D310's benchmark assumed, back when the text
-    encoder was still fetched as its own bf16 shards through the snapshot
-    filter below). Now the text encoder is ALSO a GGUF, fetched as one ~2.33
-    GiB file via a separate `download_file` call rather than through the
-    snapshot's `keep` allow-list at all — `landed` below no longer includes
-    it, only the snapshot's config/tokenizer/scheduler/VAE bytes, so both
-    GGUFs have to be added back in by hand to get the true total. Bounded
-    rather than exact — the repo may gain a config file — but tight enough
-    that either copy of the transformer, or the old bf16 text encoder,
-    reappearing breaks it."""
+def test_the_split_costs_about_ten_gigabytes_not_eighteen(base, monkeypatch,
+                                                          selects):
+    """The figure `catalog.py`'s `size_gb` promises and D310's benchmark
+    assumed. Bounded rather than exact — the repo may gain a config file — but
+    tight enough that either copy of the transformer reappearing breaks it."""
     worker = load_worker(monkeypatch, base)
 
     landed = fetched(worker, base, selects)
     gguf = 2_604_300_000  # unsloth/FLUX.2-klein-4B-GGUF, Q4_K_M, Hub metadata
-    text_encoder_gguf = 2_497_281_312  # unsloth/Qwen3-4B-GGUF, Q4_K_M, Hub metadata
 
-    total = sum(landed.values()) + gguf + text_encoder_gguf
-    assert 5.0e9 < total < 5.6e9
-    # The saving is one whole copy of the transformer weights PLUS the bf16
-    # text encoder, and the recipe used to buy none of it: with the old
-    # deny-list the root bundle rode along, and with the old NF4 route the
-    # bf16 text encoder shards still had to be fetched before they were
-    # quantized in memory.
-    assert total + TRANSFORMER_BYTES > 12.5e9
+    total = sum(landed.values()) + gguf
+    assert 10.5e9 < total < 11.0e9
+    # The saving is one whole copy of the transformer weights, and the recipe
+    # used to buy none of it: with the old deny-list the root bundle rode along.
+    assert total + TRANSFORMER_BYTES > 18.5e9
 
 
 # -- the component repo, named in one place ------------------------------------
@@ -270,20 +260,17 @@ def test_the_gguf_repo_is_a_registered_component(base, monkeypatch):
     page — in the server process, which cannot import a runner's venv — has to
     be able to say what it is. `formats.COMPONENT_REPOS` is that shared place,
     and the recipe takes the FILENAME from it rather than keeping a second
-    copy. Two GGUFs are fetched now, transformer and text encoder, each its
-    own repo — both must be registered, not just whichever `download_file`
-    call happened to land last."""
+    copy."""
     from fused_render.ai.runners import formats
 
     worker = load_worker(monkeypatch, base)
     worker.download(MODEL)
 
-    assert len(base.file_calls) == 2
-    for call in base.file_calls:
-        assert call["repo"] in formats.COMPONENT_REPOS
-        entry = formats.COMPONENT_REPOS[call["repo"]]
-        assert entry["file"] == call["file"]
-        assert entry["of"] == MODEL
+    call = base.file_calls[-1]
+    assert call["repo"] in formats.COMPONENT_REPOS
+    entry = formats.COMPONENT_REPOS[call["repo"]]
+    assert entry["file"] == call["file"]
+    assert entry["of"] == MODEL
 
 
 # -- the live preview (SPEC §40) -------------------------------------------------
@@ -405,14 +392,15 @@ def _request(tmp_path, **over):
             "outPreview": preview.preview_path(out), **over}
 
 
-def test_load_builds_the_text_encoder_from_gguf_and_passes_it_into_from_pretrained(
+def test_load_passes_the_quantization_config_and_no_text_encoder_kwarg(
         monkeypatch, base):
     """The klein recipe's `load()` branch: the transformer is built via
-    `from_single_file` as before, and now the text encoder is ALSO built —
-    via `transformers.AutoModelForCausalLM.from_pretrained(repo, gguf_file=
-    …)`, the same loader any other GGUF checkpoint uses — and passed into
-    the pipeline's own `from_pretrained` as `text_encoder=`, a built object
-    the pipeline must not try to construct or fetch itself."""
+    `from_single_file` and handed in as `transformer=`, a built object, but
+    the text encoder is left for the pipeline's own `from_pretrained` to
+    construct from the snapshot on disk — `quantization_config=` is what
+    turns that construction into NF4 rather than bf16. Passing a
+    `text_encoder=` kwarg here would hand the pipeline an already-built,
+    unquantized object and skip `_load_quantization` entirely."""
     pipe = FakePipe()
     pipe.to = lambda device: None
     torch = fake_torch()
@@ -426,6 +414,10 @@ def test_load_builds_the_text_encoder_from_gguf_and_passes_it_into_from_pretrain
         @classmethod
         def from_single_file(cls, *a, **k):
             return "the-transformer-object"
+
+    class FakeQuantConfig:
+        def __init__(self, **kwargs):
+            seen["quant_kwargs"] = kwargs
 
     class FakePipelineCls:
         @classmethod
@@ -436,77 +428,21 @@ def test_load_builds_the_text_encoder_from_gguf_and_passes_it_into_from_pretrain
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda **k: "the-gguf-quant-config"
-    diffusers.Flux2Transformer2DModel = FakeTransformer
-    diffusers.Flux2KleinPipeline = FakePipelineCls
-    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
-
-    class FakeAutoModelForCausalLM:
-        @classmethod
-        def from_pretrained(cls, repo_id, gguf_file=None, torch_dtype=None):
-            seen["text_encoder_call"] = {
-                "repo_id": repo_id, "gguf_file": gguf_file, "torch_dtype": torch_dtype}
-            return "the-text-encoder-object"
-
-    transformers = types.ModuleType("transformers")
-    transformers.AutoModelForCausalLM = FakeAutoModelForCausalLM
-    monkeypatch.setitem(sys.modules, "transformers", transformers)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-
-    worker = load_worker(monkeypatch, base)
-    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf",
-               "text_encoder_gguf": "/blobs/text-encoder.gguf"}
-    worker.load(MODEL, fetched)
-
-    assert seen["text_encoder_call"] == {
-        "repo_id": "unsloth/Qwen3-4B-GGUF",
-        "gguf_file": "/blobs/text-encoder.gguf",
-        "torch_dtype": "bfloat16",
-    }
-    assert seen["pipeline_kwargs"]["text_encoder"] == "the-text-encoder-object"
-    assert seen["pipeline_kwargs"]["transformer"] == "the-transformer-object"
-    assert seen["pipeline_model_id"] == MODEL
-
-
-def test_load_omits_the_text_encoder_kwarg_when_the_recipe_fetched_none(
-        monkeypatch, base):
-    """`fetched["text_encoder_gguf"]` is `None` for a recipe with no
-    `text_encoder_repo` — `load()` must leave the `text_encoder` kwarg out of
-    the `from_pretrained` call entirely rather than pass it as `None`, which
-    would override the pipeline's own default construction instead of
-    leaving that component alone."""
-    pipe = FakePipe()
-    pipe.to = lambda device: None
-    torch = fake_torch()
-    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
-    torch.backends = types.SimpleNamespace(mps=None)
-    torch.bfloat16 = "bfloat16"
-
-    seen = {}
-
-    class FakeTransformer:
-        @classmethod
-        def from_single_file(cls, *a, **k):
-            return "the-transformer-object"
-
-    class FakePipelineCls:
-        @classmethod
-        def from_pretrained(cls, model_id, **kwargs):
-            seen["pipeline_kwargs"] = kwargs
-            return pipe
-
-    diffusers = types.ModuleType("diffusers")
-    diffusers.GGUFQuantizationConfig = lambda **k: "the-gguf-quant-config"
+    diffusers.PipelineQuantizationConfig = FakeQuantConfig
     diffusers.Flux2Transformer2DModel = FakeTransformer
     diffusers.Flux2KleinPipeline = FakePipelineCls
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     worker = load_worker(monkeypatch, base)
-    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf",
-               "text_encoder_gguf": None}
+    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf"}
     worker.load(MODEL, fetched)
 
     assert "text_encoder" not in seen["pipeline_kwargs"]
+    assert seen["pipeline_kwargs"]["transformer"] == "the-transformer-object"
+    assert seen["pipeline_kwargs"]["quantization_config"] is not None
+    assert seen["quant_kwargs"]["components_to_quantize"] == ["text_encoder"]
+    assert seen["pipeline_model_id"] == MODEL
 
 
 def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch, base):
@@ -1673,23 +1609,41 @@ def test_a_recipe_that_names_no_components_asks_for_no_quantization():
     assert worker._load_quantization({"quantize_4bit": []}) is None
 
 
-def test_the_klein_recipe_requests_no_bitsandbytes_quantization(
+def test_the_klein_recipe_quantizes_its_TEXT_ENCODER_and_nothing_else(
         monkeypatch, base):
-    """Both the transformer AND the text encoder are GGUF now, each built and
-    passed to `from_pretrained` as a BUILT object — asking diffusers to
-    quantize either would be asking it to re-quantize already-quantized
-    weights. The recipe carries no `quantize_4bit` key at all (the shape
-    every recipe in `_GGUF_RECIPES` is in now that both components arrive
-    pre-quantized), and `_load_quantization` must therefore hand back `None`
-    rather than an empty `PipelineQuantizationConfig` — a real config object
-    with nothing to quantize is not the same as skipping quantization
-    entirely, and diffusers may not treat the two the same."""
-    worker = load_worker(_NoMonkey(), FakeBase())
-    recipe = worker._recipe(MODEL)
+    """The transformer is already Q4_K_M and is passed to `from_pretrained` as a
+    BUILT object, so asking diffusers to quantize it too would be asking it to
+    re-quantize GGUF weights. The text encoder is the 7.5GB bf16 component that
+    makes this worth doing — ~70% of what the worker would otherwise hold."""
+    torch = fake_torch()
+    torch.bfloat16 = "bfloat16"
+    seen = {}
 
-    assert not recipe.get("quantize_4bit")
-    assert worker._load_quantization(recipe) is None
-    assert recipe["text_encoder_repo"] == "unsloth/Qwen3-4B-GGUF"
+    class FakeQuantConfig:
+        def __init__(self, quant_backend=None, quant_kwargs=None,
+                     components_to_quantize=None):
+            seen.update({"backend": quant_backend, "kwargs": quant_kwargs,
+                         "components": components_to_quantize})
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.PipelineQuantizationConfig = FakeQuantConfig
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    recipe = worker._recipe(MODEL)
+    assert recipe["quantize_4bit"] == ["text_encoder"]
+    assert worker._load_quantization(recipe) is not None
+
+    assert seen["components"] == ["text_encoder"]
+    assert seen["backend"] == "bitsandbytes_4bit"
+    # NF4 rather than bitsandbytes' fp4 default, double quant on, and a compute
+    # dtype matching the pipeline's `torch_dtype` — that last one defaults to
+    # float32, which would dequantize every matmul into the wrong dtype.
+    assert seen["kwargs"]["load_in_4bit"] is True
+    assert seen["kwargs"]["bnb_4bit_quant_type"] == "nf4"
+    assert seen["kwargs"]["bnb_4bit_use_double_quant"] is True
+    assert seen["kwargs"]["bnb_4bit_compute_dtype"] == torch.bfloat16
 
 
 def test_a_missing_sdnq_does_not_stop_an_ordinary_model_loading(monkeypatch, base):

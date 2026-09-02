@@ -96,82 +96,61 @@ _loaded = {}
 #: lands in the Hub cache, where the AI Models page has to be able to say what
 #: it is, and the page runs in a process that cannot import this venv.
 #:
-#: **The text encoder is ALSO a GGUF, for the same reason the transformer is
-#: one — and that reason is disk residency, not the bnb NF4 route this recipe
-#: used to take.** `black-forest-labs/FLUX.2-klein-4B`'s `text_encoder/` is
-#: byte-identical to stock `Qwen/Qwen3-4B` (matching shape, dtype, size and
-#: content hash on `model.norm.weight`, `model.layers.0.self_attn.q_proj.
-#: weight` and `model.embed_tokens.weight`, verified by range-reading both
-#: repos' safetensors headers), so `unsloth/Qwen3-4B-GGUF`'s Q4_K_M — the same
-#: quant level the transformer above uses — is the same weights this recipe
-#: already loaded, in a format `enable_group_offload`'s `offload_to_disk_path`
-#: can actually reach. It could not reach the old bnb NF4 encoder: `Params4bit`
-#: keeps its dequantization state (`quant_state`) as a plain Python attribute
-#: invisible to `ModuleGroup`'s `parameters()`/`buffers()` scan
-#: (`diffusers/hooks/group_offloading.py`), which made group-offloading it a
-#: device-mismatch crash rather than a slow path — see `_group_offload_
-#: exclusions`'s history for the exclusion this used to need and no longer
-#: does. `GGUFParameter` carries its quant metadata the same way but keeps
-#: every quantized byte in `.data`, which is exactly what that scan collects,
-#: so it round-trips through disk offload correctly the same way the
-#: transformer already does.
-#:
-#: **This repo's TEXT ENCODER is 7.5GB bf16 on its own — before this change,
-#: ~70% of what the worker held after the transformer swap**, which is why it
-#: is the component the idle-RAM problem this module's docstring opens with is
-#: actually about, and why quantizing it (first as bnb NF4, now as GGUF) has
-#: always been worth doing on its own. Measured on a 15.9GiB RX 9060 XT,
-#: 512x512 at 4 steps, prompt and seed fixed, comparing bf16 against the OLD
-#: bnb NF4 route (this comparison predates the GGUF swap above and is kept for
-#: the shape of the trade, not as a claim about the GGUF path's numbers):
+#: **`quantize_4bit` names the components to quantize AT LOAD, and it exists
+#: because swapping the transformer only fixed the smaller half of the bill.**
+#: The recipe below replaces a 7.75GB bf16 transformer with a 2.43GiB Q4_K_M
+#: GGUF and leaves everything else at bf16 — but this repo's TEXT ENCODER is
+#: 7.5GB on its own, so after the swap the encoder is ~70% of what the worker
+#: holds. Measured on a 15.9GiB RX 9060 XT, 512x512 at 4 steps, prompt and seed
+#: fixed:
 #:
 #:   * bf16 text encoder: `memory_allocated` 10.15GiB, `drm-memory-vram`
 #:     10.37GiB, warm render 5.66s / 5.72s, load+`to("cuda")` 3.45s + 3.00s.
 #:   * NF4 text encoder: `memory_allocated` 5.10GiB, `drm-memory-vram` 5.35GiB,
 #:     warm render 5.76s, load+`to("cuda")` 5.32s + 0.18s.
 #:
-#: Both figures describe VRAM after `_place()` put the whole pipeline on the
-#: card (`all-gpu`/plain `to("cuda")`), not the group-offload-plus-disk path
-#: this module now also has — NF4 halved the resident set there and was a wash
-#: on the clock (quantizing cost ~1.9s at load, offset by half as many bytes to
-#: copy to the card). **The GGUF-encoder path's footprint — resident RAM with
-#: group offload's disk mode on, VRAM during a render, and load/render time —
-#: is NOT YET MEASURED on hardware.** Nobody has loaded this recipe on a GPU
-#: since the swap; the numbers above are the bf16-vs-NF4 comparison this
-#: change inherits reasoning from, not evidence about GGUF. Q4_K_M is also a
-#: different quantization scheme from NF4 (llama.cpp's k-quants against
-#: bitsandbytes' own format) — whether it moves output quality is an open
-#: question this change does not answer, only names as a trade worth watching.
+#: So it HALVES the resident set and is a wash on the clock — 5.76s against
+#: 5.72s is inside the run-to-run spread, and the total time to a loaded
+#: pipeline actually FALLS (5.50s vs 6.45s), because quantizing costs ~1.9s at
+#: load and then there are half as many bytes to copy to the card. Peak during
+#: a render drops too (6.65GiB vs a 12.28GiB reserved high-water), which is
+#: what `_place()` is measuring against.
 #:
-#: **What this DOES fix, unlike the old NF4 route, is the download**: the
-#: bf16 encoder is no longer fetched at all (`keep` below drops `text_encoder*
-#: /*`, since the component is now injected as a pre-built object the same way
-#: the transformer already is, and `from_pretrained` never opens a subfolder
-#: passed in as an object). The old route's own docstring named this as the
-#: one thing it did NOT fix; see `catalog.py`'s SDNQ entry for the other
-#: pre-quantized route this recipe still is not, which arrives as a whole
-#: separate repo.
+#: **NF4 rather than int8, and bitsandbytes rather than a second repo**, for
+#: three converging reasons: `bitsandbytes` is already declared in all three
+#: manifests and verified on this hardware (see any of their headers), so this
+#: costs no new dependency; `tonera/FLUX.2-klein-4B-int8-diffusers` — the model
+#: `catalog.py` already recommends — ships its OWN text encoder as bnb NF4
+#: (`"load_in_4bit": true, "bnb_4bit_quant_type": "nf4"`), so this is the same
+#: format the app already loads rather than a new one; and quantizing at load
+#: needs no pre-quantized upload to exist for a given repo, which a table of
+#: editorial judgements should not have to wait for.
 #:
-#: A recipe with no `quantize_4bit` key (or an empty one) asks `_load_
-#: quantization` to quantize nothing, which is the shape every recipe below
-#: this comment is in now that both components arrive pre-quantized as GGUF —
-#: the key stays available for a future recipe that wants bitsandbytes on some
-#: OTHER component this table doesn't have a GGUF route for yet.
+#: **What this does NOT fix is the download.** The bf16 encoder is still
+#: fetched and then quantized in this process, so `keep` is unchanged and the
+#: bytes on disk are what they were — see `catalog.py`'s SDNQ entry for the
+#: other route, which is smaller to fetch and faster per render but arrives as
+#: a whole separate repo (`recommended`, and measured strictly better than
+#: this GGUF-transformer recipe on the same RX 9060 XT — smaller download,
+#: lower `memory_allocated`, faster warm render). This recipe is what a user
+#: gets who downloads `black-forest-labs/FLUX.2-klein-4B` itself rather than
+#: the SDNQ repo the AI Models page recommends; it is not the path the
+#: maintainer runs.
+#:
+#: A recipe WITHOUT this key quantizes nothing, which is why it is a list of
+#: component names rather than a boolean: the next recipe may want its VAE left
+#: alone, or a pipeline with three text encoders may want two of them.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
-        "text_encoder_repo": "unsloth/Qwen3-4B-GGUF",
+        "quantize_4bit": ["text_encoder"],
         # `*` crosses `/` in fnmatch, so `tokenizer*/*` covers a `tokenizer_2`
         # a future FLUX may add, and nothing at the root ever matches.
-        # `text_encoder*/*` is deliberately absent: the component is injected
-        # into `from_pretrained` as a built object (`load()`, mirroring how
-        # the transformer subfolder is skipped once `transformer=` is passed),
-        # so the bf16 files that subfolder holds are never opened.
         "keep": ["model_index.json", "scheduler/*", "tokenizer*/*",
-                 "vae/*", "transformer/config.json"],
+                 "text_encoder*/*", "vae/*", "transformer/config.json"],
     },
 }
 
@@ -179,14 +158,6 @@ _GGUF_RECIPES = {
 def _component_file(recipe):
     """The single file to pull out of the recipe's component repo."""
     return formats.COMPONENT_REPOS[recipe["repo"]]["file"]
-
-
-def _text_encoder_file(recipe):
-    """The single file to pull out of the recipe's text-encoder GGUF repo —
-    `_component_file`'s twin, reading `formats.COMPONENT_REPOS` the same way
-    so the AI Models page (which cannot import this venv) has one shared place
-    to say what either quantized component is."""
-    return formats.COMPONENT_REPOS[recipe["text_encoder_repo"]]["file"]
 
 
 def _recipe(model_id):
@@ -322,8 +293,7 @@ def download(model_id):
     """
     recipe = _recipe(model_id)
     if not recipe:
-        return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None,
-                "text_encoder_gguf": None}
+        return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None}
 
     snapshot = worker_base.download_snapshot(
         model_id, allow_patterns=list(recipe["keep"]))
@@ -331,20 +301,7 @@ def download(model_id):
     gguf = worker_base.download_file(
         recipe["repo"], filename,
         detail=f"Fetching {filename} (quantized transformer)…")
-    # `text_encoder_repo` names a SECOND GGUF, the text encoder's own — a
-    # separate repo from the transformer's, fetched the same way. Recipes are
-    # not required to carry this key (a future recipe's text encoder may have
-    # no byte-identical stock GGUF source to swap in), so this degrades to
-    # `None` rather than assuming every recipe below `_GGUF_RECIPES` looks
-    # like this one.
-    text_encoder_repo = recipe.get("text_encoder_repo")
-    text_encoder_gguf = None
-    if text_encoder_repo:
-        te_filename = _text_encoder_file(recipe)
-        text_encoder_gguf = worker_base.download_file(
-            text_encoder_repo, te_filename,
-            detail=f"Fetching {te_filename} (quantized text encoder)…")
-    return {"snapshot": snapshot, "gguf": gguf, "text_encoder_gguf": text_encoder_gguf}
+    return {"snapshot": snapshot, "gguf": gguf}
 
 
 #: How much VRAM `_place` refuses to plan into, on top of every component
@@ -880,32 +837,9 @@ def load(model_id, fetched):
         # is already quantized and already BUILT, passed in above as an object
         # rather than a name, and asking diffusers to quantize it again would
         # be asking it to re-quantize GGUF weights.
-        #
-        # The text encoder gets the same treatment when the recipe names one:
-        # built from its own GGUF file via transformers' own `gguf_file=`
-        # loader (the same dequantization path `AutoModelForCausalLM` already
-        # uses for any GGUF checkpoint, klein-specific only in which repo and
-        # file it points at), then passed in as a built object so
-        # `from_pretrained` skips fetching and constructing it itself. A
-        # recipe with no `text_encoder_repo` leaves `text_encoder` unbuilt and
-        # the kwarg omitted entirely — never passed as `None`, which would
-        # override the pipeline's own default construction instead of leaving
-        # it alone.
-        text_encoder = None
-        if fetched.get("text_encoder_gguf"):
-            from transformers import AutoModelForCausalLM
-
-            text_encoder = AutoModelForCausalLM.from_pretrained(
-                recipe["text_encoder_repo"], gguf_file=fetched["text_encoder_gguf"],
-                torch_dtype=torch.bfloat16)
-        pipeline_kwargs = {
-            "transformer": transformer,
-            "torch_dtype": torch.bfloat16,
-            "quantization_config": _load_quantization(recipe),
-        }
-        if text_encoder is not None:
-            pipeline_kwargs["text_encoder"] = text_encoder
-        pipe = pipeline_cls.from_pretrained(model_id, **pipeline_kwargs)
+        pipe = pipeline_cls.from_pretrained(
+            model_id, transformer=transformer, torch_dtype=torch.bfloat16,
+            quantization_config=_load_quantization(recipe))
     else:
         from diffusers import AutoPipelineForText2Image
 
