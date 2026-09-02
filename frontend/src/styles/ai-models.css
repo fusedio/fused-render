@@ -3462,12 +3462,23 @@ button.am-bench-model:focus-visible {
 
 /* The Fit column: a three-way dot plus a continuous bar over the SAME score
    (SPEC AI-19) — the dot is what a reader scans a column of, the bar is what
-   says how much headroom by how far it fills. */
+   says how much headroom by how far it fills.
+
+   The flex layout lives on an INNER wrapper, never on the `<td>` itself
+   (`am-hubtable-fit-inner`, below) — `display: flex` on a table cell drops
+   it out of `display: table-cell`, which knocks the whole row's cells out
+   of the table's column model (the browser then generates anonymous cells
+   around it) and misaligns every column to its right. The `<td>` keeps
+   `display: table-cell` and only carries `white-space`; the wrapper span
+   inside it carries the flex row. */
 .am-hubtable-fit {
+  white-space: nowrap;
+}
+
+.am-hubtable-fit-inner {
   display: flex;
   align-items: center;
   gap: 6px;
-  white-space: nowrap;
 }
 
 .am-hubtable-dot {
@@ -3513,22 +3524,32 @@ button.am-bench-model:focus-visible {
 }
 
 /* The Model column: the family's own name, the curated seal, the state tag
-   and — on its own line — the actual repo a Download button acts on. */
+   and — on its own line — the actual repo a Download button acts on.
+
+   Same rule as `.am-hubtable-fit` above: the flex column lives on an INNER
+   wrapper (`am-hubtable-name-inner`), never directly on the `<td>` — a `<td>`
+   with `display: flex` stops being a table cell, which is what was
+   collapsing this column into the Fit column and offsetting every header
+   from "Model" rightward. The `<td>` stays a plain cell carrying only
+   `white-space`. */
 .am-hubtable-name {
+  white-space: normal;
+}
+
+.am-hubtable-name-inner {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  white-space: normal;
 }
 
-.am-hubtable-name > a {
+.am-hubtable-name-inner > a {
   font-weight: 600;
   color: var(--fg);
   text-decoration: none;
 }
 
-.am-hubtable-name > a:hover {
+.am-hubtable-name-inner > a:hover {
   text-decoration: underline;
 }
 
@@ -3589,7 +3610,7 @@ button.am-bench-model:focus-visible {
   padding-left: 1.25em;
 }
 
-.am-hubtable-variant-row .am-hubtable-variant-name > a {
+.am-hubtable-variant-row .am-hubtable-name-inner > a {
   color: var(--fg-muted);
 }
 

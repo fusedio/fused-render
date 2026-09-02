@@ -97,19 +97,21 @@ function HubVariantRow({
     >
       <td />
       <td className="am-hubtable-name am-hubtable-variant-name" colSpan={2}>
-        <a
-          href={hubModelUrl(model.id)}
-          target="_blank"
-          rel="noopener noreferrer"
-          data-hint={`Open ${model.id} on the Hub`}
-        >
-          {model.id}
-        </a>
-        {disk.state === "partial" && (
-          <span className="am-hubtable-partial" data-hint={`${model.id} is a download that did not finish.`}>
-            {PARTIAL_TAG}
-          </span>
-        )}
+        <span className="am-hubtable-name-inner">
+          <a
+            href={hubModelUrl(model.id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-hint={`Open ${model.id} on the Hub`}
+          >
+            {model.id}
+          </a>
+          {disk.state === "partial" && (
+            <span className="am-hubtable-partial" data-hint={`${model.id} is a download that did not finish.`}>
+              {PARTIAL_TAG}
+            </span>
+          )}
+        </span>
       </td>
       <td className="num am-col-params">{paramsLabel(model.params)}</td>
       <td className="num" data-hint={hubSizeTitle(model, null)}>
@@ -259,70 +261,74 @@ function HubResultRow({
         style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
       >
         <td className="am-hubtable-fit">
-          {fit ? (
-            <>
-              <span className={`am-hubtable-dot am-hubtable-dot-${fit.dot}`} aria-hidden="true" />
-              <span
-                className="am-hubtable-bar"
-                role="img"
-                aria-label={`Fit: ${fit.dot}, ${Math.round(fit.percent)}%`}
-              >
-                <i className={`am-hubtable-dot-${fit.dot}`} style={{ width: `${fit.percent}%` }} />
-              </span>
-            </>
-          ) : (
-            <span className="am-hubtable-dash" title="Not enough is known about this repo to judge">—</span>
-          )}
+          <span className="am-hubtable-fit-inner">
+            {fit ? (
+              <>
+                <span className={`am-hubtable-dot am-hubtable-dot-${fit.dot}`} aria-hidden="true" />
+                <span
+                  className="am-hubtable-bar"
+                  role="img"
+                  aria-label={`Fit: ${fit.dot}, ${Math.round(fit.percent)}%`}
+                >
+                  <i className={`am-hubtable-dot-${fit.dot}`} style={{ width: `${fit.percent}%` }} />
+                </span>
+              </>
+            ) : (
+              <span className="am-hubtable-dash" title="Not enough is known about this repo to judge">—</span>
+            )}
+          </span>
         </td>
         <td className="am-hubtable-name">
-          {/* The row's identity is the PRIMARY's own id — the same repo the
-              href, the download and every other column already act on
-              (`familyDisplay`'s doc). Naming the row by the base model instead
-              let identity and action disagree. */}
-          <a
-            href={hubModelUrl(model.id)}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-hint={`Open ${model.id} on the Hub`}
-          >
-            {modelName(display.name)}
-          </a>
-          {curatedFlag && <CuratedMark />}
-          {/* The gate, named, with the whole of what to do about it on hover —
-              disclosed regardless of `authenticated`. `gate?.action` (below, in
-              the action column) is null for a signed-in user because the
-              Download button already works for them; that must not also erase
-              the one thing on the row saying WHY a token-holding user's pull
-              can still 403 until the owner grants access (`manual`). This is
-              NOT the plain pill D313 deleted: the gate still decides the
-              ACTION too, in the action column below. */}
-          {gate && (
-            <span className="am-card-gate" data-hint={gate.title}>
-              {gate.pill}
-            </span>
-          )}
-          {/* State, not identity — the same reason `RepoCard` and `HubResultCard`
-              before it kept this tag (D424): a half-fetched snapshot is not a
-              model an engine can read, and it is what makes Download mean
-              "resume" instead of "fetch". */}
-          {disk.state === "partial" && (
-            <span
-              className="am-hubtable-partial"
-              data-hint={
-                `${model.id} is a download that did not finish. Download picks it up from the ` +
-                "bytes already here rather than starting over."
-              }
+          <span className="am-hubtable-name-inner">
+            {/* The row's identity is the PRIMARY's own id — the same repo the
+                href, the download and every other column already act on
+                (`familyDisplay`'s doc). Naming the row by the base model instead
+                let identity and action disagree. */}
+            <a
+              href={hubModelUrl(model.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-hint={`Open ${model.id} on the Hub`}
             >
-              {PARTIAL_TAG}
-            </span>
-          )}
-          {/* The GROUPING fact, not the acting repo — muted, secondary, and
-              never the bold name (`familyDisplay`'s doc explains why). */}
-          {display.baseModel && (
-            <span className="am-hubtable-basemodel cc-mono" data-hint={`Grouped under ${display.baseModel}`}>
-              from {display.baseModel}
-            </span>
-          )}
+              {modelName(display.name)}
+            </a>
+            {curatedFlag && <CuratedMark />}
+            {/* The gate, named, with the whole of what to do about it on hover —
+                disclosed regardless of `authenticated`. `gate?.action` (below, in
+                the action column) is null for a signed-in user because the
+                Download button already works for them; that must not also erase
+                the one thing on the row saying WHY a token-holding user's pull
+                can still 403 until the owner grants access (`manual`). This is
+                NOT the plain pill D313 deleted: the gate still decides the
+                ACTION too, in the action column below. */}
+            {gate && (
+              <span className="am-card-gate" data-hint={gate.title}>
+                {gate.pill}
+              </span>
+            )}
+            {/* State, not identity — the same reason `RepoCard` and `HubResultCard`
+                before it kept this tag (D424): a half-fetched snapshot is not a
+                model an engine can read, and it is what makes Download mean
+                "resume" instead of "fetch". */}
+            {disk.state === "partial" && (
+              <span
+                className="am-hubtable-partial"
+                data-hint={
+                  `${model.id} is a download that did not finish. Download picks it up from the ` +
+                  "bytes already here rather than starting over."
+                }
+              >
+                {PARTIAL_TAG}
+              </span>
+            )}
+            {/* The GROUPING fact, not the acting repo — muted, secondary, and
+                never the bold name (`familyDisplay`'s doc explains why). */}
+            {display.baseModel && (
+              <span className="am-hubtable-basemodel cc-mono" data-hint={`Grouped under ${display.baseModel}`}>
+                from {display.baseModel}
+              </span>
+            )}
+          </span>
         </td>
         <td>{model.task ?? "—"}</td>
         <td className="num am-col-params">{paramsLabel(model.params)}</td>
