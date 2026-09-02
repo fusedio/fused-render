@@ -11,10 +11,11 @@ exactly that URL with no redirect, so the flag lands in the rendered
 document's OWN `location.search` — the same fact `runtime.js` already
 computes for the focus contract (`IS_THUMBNAIL`, mirroring
 `router.ancestorIsPreview`/`IS_PREVIEW`). `start()`/`restart()` guard on it
-directly; `call()` does too, because `engine_forward.py`'s `_forward` heals a
-dead-but-running child back to life on ANY proxied call — a preview render
-that calls `call()` against an app some other session already started can
-resurrect its daemon exactly like `start()` would. `stop()` and
+directly; `call()` and `run()` do too, because `engine_forward.py`'s
+`_forward` heals a dead-but-running child back to life on ANY proxied call —
+a preview render that calls `call()`/`run()` against an app some other
+session already started can resurrect its daemon exactly like `start()`
+would. `stop()` and
 `setAutostart()` are gated the same way: a card thumbnail mounts
 `entry_html` live with `allow-scripts`, so an app whose init path calls
 `fused.daemon.stop()` (or flips autostart) could change a real user's daemon
@@ -142,6 +143,14 @@ def test_call_is_refused_when_this_frame_is_a_preview_thumbnail():
                          search="?path=/apps/x/index.html&_preview=1")
     assert result["ok"] is False
     assert "fused.daemon.call" in result["message"]
+    assert result["fetchCount"] == 0
+
+
+def test_run_is_refused_when_this_frame_is_a_preview_thumbnail():
+    result = _run_daemon("run", args_js="{}",
+                         search="?path=/apps/x/index.html&_preview=1")
+    assert result["ok"] is False
+    assert "fused.daemon.run" in result["message"]
     assert result["fetchCount"] == 0
 
 

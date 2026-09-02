@@ -1,7 +1,7 @@
-"""Warm-worker entry point for /api/engine (docs/ENGINE_HOST_APPS_DESIGN.md).
+"""The shipped default daemon a `main =` manifest gets (docs/ENGINE_HOST_DESIGN.md).
 
-`executor._child.py` promoted from run-once to a serve loop: imports the target
-module once, then answers many `POST /call` requests in the same interpreter so
+A serve loop built on `executor._child.py`: imports the target module once,
+then answers many `POST /call` requests in the same interpreter so
 module-level imports and globals persist. Fits the engine_host child contract
 (--status/--cache/--version plus --module), returns _child.py's exact envelope
 plus resolved_py, and re-imports on the module's mtime change.

@@ -1234,7 +1234,7 @@ def _sql_from_answer(text: str) -> str:
 
 
 @router.post("/api/index/ask")
-async def api_index_ask(body: dict = Body(default={}),
+async def api_index_ask(request: Request, body: dict = Body(default={}),
                         x_fused: str | None = Header(default=None)):
     """A question in English, answered from the index.
 
@@ -1253,10 +1253,13 @@ async def api_index_ask(body: dict = Body(default={}),
         return _error("'prompt' must be a non-empty string")
     # The relay owns the claude hop, the model preference, the timeout and the
     # typed error envelope; a failure passes straight through it unchanged
-    # rather than being re-described here.
+    # rather than being re-described here. `request.app.state.ai_session` is
+    # this app's own session (see api_ai in server/ai.py for why that matters
+    # over the module global).
+    session = getattr(request.app.state, "ai_session", None)
     resp = await _server_ai._ai_relay({"prompt": prompt.strip(),
                                        "system_prompt": _ASK_SYSTEM_PROMPT,
-                                       "stream": False})
+                                       "stream": False}, session=session)
     try:
         answered = json.loads(bytes(resp.body))
     except ValueError:
