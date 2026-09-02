@@ -97,6 +97,17 @@ def _resolve(html) -> (
     return folder, manifest, interpreter, unbuilt_reason, None
 
 
+def _protocol_for(manifest: background_apps.Manifest | None) -> str | None:
+    """The folder's declared bring-up shape: `"main"` for a `main =` folder,
+    `"daemon"` for a `daemon =` folder, `None` for a folder with no valid
+    manifest at all — the field that lets `runtime.js`'s `run()`/`call()`
+    tell which of the two page-side methods a folder actually wants. Shared
+    by `status`, `start` and `restart` so a page never has to re-fetch
+    `status()` after `start()`/`restart()` just to learn what those two
+    already had in hand from the same manifest their own `_resolve` load."""
+    return None if manifest is None else ("main" if manifest.main else "daemon")
+
+
 @router.get("/api/apps/background/status")
 async def api_background_status(html: str = ""):
     # Read-only, same posture as every other GET here — no X-Fused guard.
@@ -107,12 +118,8 @@ async def api_background_status(html: str = ""):
     autostart = folder in await asyncio.to_thread(background_apps.autostart_paths)
     child = engine_host.current(engine_id)
     running = child is not None and engine_host._alive(child)
-    # "protocol" tells the runtime which page-side method the folder wants:
-    # "main" for the shipped worker's single /call route, "daemon" for the
-    # author's own HTTP surface, None when the folder has no valid manifest
-    # at all (still a 200 here — this endpoint always answers).
     manifest = await asyncio.to_thread(background_apps.load_manifest, folder)
-    protocol = None if manifest is None else ("main" if manifest.main else "daemon")
+    protocol = _protocol_for(manifest)
     return {
         "running": running,
         "autostart": autostart,
@@ -157,7 +164,7 @@ async def api_background_start(body: dict = Body(...),
         return _error(f"could not start {os.path.basename(folder)}'s "
                       f"background app: {detail}", status=502)
     return {"ok": True, "engine_id": engine_id, "pid": child.pid,
-            "version": child.version}
+            "version": child.version, "protocol": _protocol_for(manifest)}
 
 
 @router.post("/api/apps/background/autostart")
@@ -238,7 +245,8 @@ async def api_background_restart(body: dict = Body(...),
         # the folder's own unbuilt venv when that's what triggered it.
         return _error(unbuilt_reason if unbuilt_reason is not None else str(e),
                       status=502)
-    return {"ok": True, "pid": child.pid, "version": child.version}
+    return {"ok": True, "pid": child.pid, "version": child.version,
+            "protocol": _protocol_for(manifest)}
 
 
 @router.get("/api/apps/background/running")

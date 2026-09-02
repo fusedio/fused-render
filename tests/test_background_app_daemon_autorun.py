@@ -238,3 +238,57 @@ def test_run_and_call_are_unaffected_by_a_null_protocol():
     })
     assert call_result["ok"] is True
     assert call_result["value"] == {"y": 4}
+
+
+def test_start_then_wrong_method_is_caught_from_starts_own_protocol():
+    # start()/restart() set _daemonEngineId from their own response, and
+    # run()/call() only fetch status() when _daemonEngineId is still null —
+    # so the common "start() first, then call the wrong method" sequence
+    # must learn `protocol` from start()'s OWN response, not a second
+    # status() round trip start() never triggers. Drives the real
+    # `daemonStart`/`daemonRun` production functions against a stubbed fetch
+    # returning exactly what `/api/apps/background/start` returns.
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run runtime.js's daemon run() harness")
+    guard = _guard_source()
+    prelude = """
+      const location = {search: "?path=/apps/x/index.html"};
+      const window = {location};
+      window.parent = window;
+      function ownQuery(key) {
+        try { return new URLSearchParams(window.location.search).get(key); }
+        catch (e) { return null; }
+      }
+      function callHeaders(extra) { return Object.assign({}, extra || {}); }
+      let calls = [];
+      globalThis.fetch = (url, opts) => {
+        calls.push(String(url));
+        if (String(url).includes("/api/apps/background/start")) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(
+              {engine_id: "e1", pid: 123, version: "v1", protocol: "daemon"}),
+          });
+        }
+        return Promise.reject(new Error("no route for " + url));
+      };
+    """
+    call = """
+      daemon.start().then(() => daemon.run({})).then(
+        (value) => console.log(JSON.stringify({ok: true, value, calls})),
+        (err) => console.log(JSON.stringify({ok: false, message: err.message, calls})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + guard + "\n" + call],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["ok"] is False
+    assert "fused.daemon.run" in result["message"]
+    assert "daemon" in result["message"]
+    assert "fused.daemon.call" in result["message"]
+    # The rejection must come from start()'s own cached protocol, not a fresh
+    # status() fetch — start() never triggers one and none is stubbed here.
+    assert not any("/api/apps/background/status" in u for u in result["calls"])
+    # Refused before ever touching the proxy path.
+    assert not any("/api/engines/" in u for u in result["calls"])
