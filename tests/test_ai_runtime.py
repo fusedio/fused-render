@@ -1848,29 +1848,31 @@ def test_windows_gates_cuda_on_the_drivers_own_cuda_library(monkeypatch, tmp_pat
     assert registry.by_code("diffusers-image-cuda").available().ok is True
 
 
-def test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR(
+def test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE(
         monkeypatch, tmp_path):
     """The whole user-facing decision of the per-hardware split, in one test.
 
     A machine with a working NVIDIA GPU and a working AMD GPU has both
-    accelerated image rows available and still resolves to the unaccelerated
-    one, because that is the default and the accelerated rows are OPT-IN from the
-    Engines tab. That is a choice, not an accident of ordering: the accelerated
-    wheels are much larger downloads with a hardware requirement, and a default
-    that silently required one would fail hardest on the machines least able to
-    explain why. Anyone who wants the GPU says so once, and `prefs.json`
-    remembers.
+    accelerated image rows available and now resolves to one of them, because
+    GPU-backed inference is preferred over CPU-backed by policy decision (see
+    `registry.py`'s block comment above `_RUNNERS`) — not an accident of
+    ordering, and not the CPU default with the accelerator merely opt-in
+    anymore. CUDA wins over ROCm here because it is registered first among the
+    two accelerated rows, the same first-match-wins rule that puts MLX ahead of
+    both on Apple Silicon. Anyone who wants the CPU build (or the other
+    accelerator) instead says so once, and `prefs.json` remembers.
 
     **Renamed from `test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR` at
-    D416, and the text-generation half of it went with the transformers rows.**
-    The rule is unchanged and still holds on both capabilities — text
-    generation's accelerated variant is now `llamacpp-text-vulkan`, which sits
-    below `llamacpp-text` for this very reason — but Vulkan is gated by
-    `_vulkan`, which needs a loader library and a registered ICD rather than the
-    `/dev` nodes `_fake_amd`/`_fake_nvidia` fake here. Pinning text generation
-    through those two fakes would have asserted a property of the fixtures, so
-    the text side is pinned by
-    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    D416 (when it asserted the CPU default), and again from
+    `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR` for the
+    GPU-first policy reversal that flipped its assertion.** The rule now holds
+    the opposite way on both capabilities — text generation's accelerated
+    variant is `llamacpp-text-vulkan`, which now sits ABOVE `llamacpp-text` for
+    this very reason — but Vulkan is gated by `_vulkan`, which needs a loader
+    library and a registered ICD rather than the `/dev` nodes
+    `_fake_amd`/`_fake_nvidia` fake here. Pinning text generation through those
+    two fakes would have asserted a property of the fixtures, so the text side
+    is pinned by `test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text`
     instead, on the ordering itself.
 
     Pinned because the ordering is invisible in a diff of the table and nothing
@@ -1883,13 +1885,13 @@ def test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR(
 
     for code in ("diffusers-image-cuda", "diffusers-image-rocm"):
         assert registry.by_code(code).available().ok is True, code
-    assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image"
+    assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image-cuda"
 
-    # …and opting in is honoured, which is what makes the default a default
-    # rather than a restriction.
-    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
+    # …and asking for the CPU build explicitly is still honoured, which is
+    # what makes GPU-first a default rather than a restriction.
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image")
     resolution = registry.resolve(registry.IMAGE_GENERATION)
-    assert resolution.runner.code == "diffusers-image-cuda" and resolution.honoured
+    assert resolution.runner.code == "diffusers-image" and resolution.honoured
 
 
 def test_an_engine_row_is_serialised_from_ONE_probe(monkeypatch):
@@ -2255,32 +2257,37 @@ def test_the_registry_describes_the_transcription_runner():
     assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
 
 
-def test_llamacpp_text_is_registered_directly_below_mlx_text(monkeypatch):
-    """`llamacpp-text` is SECOND, so it is the `auto` answer everywhere MLX
-    cannot run — and MLX still wins on the platform it was built for.
+def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeypatch):
+    """`llamacpp-text` is THIRD — behind `mlx-text` and `llamacpp-text-vulkan`
+    — so it is the `auto` answer everywhere neither of those can run, and MLX
+    still wins on the platform it was built for.
 
-    **This test asserted the opposite until D416 and the inversion is the
-    decision, not a fixture repair.** It was
-    `test_llamacpp_text_is_registered_below_every_transformers_row`: this row sat
-    fourth precisely so `auto` could never reach it, because
-    `llamacpp_text/pyproject.toml` records that the maintainer's wheel index is
-    a coin-flip per release on macOS arm64 and a capability that fragile to
-    install is a poor default. Removing the three rows above it removed the
-    thing that made "never a fallthrough" achievable; D416 weighed that against
-    a measurement this engine won on every axis (4.2x transformers' throughput
-    on a Radeon GPU, 2.4x on CPU, a third of the download, a third of the peak
-    RSS) and moved the default. macOS arm64 — where the audit's failures were —
-    still resolves to `mlx-text` first, which is asserted below and is half of
-    why the trade was acceptable.
+    **This test asserted `llamacpp-text` SECOND until the GPU-first policy
+    decision (see `registry.py`'s block comment above `_RUNNERS`) inserted
+    `llamacpp-text-vulkan` ahead of it, and the reordering is the decision,
+    not a fixture repair.** Before that this row sat fourth, behind three
+    `transformers-text*` rows, precisely so `auto` could never reach it,
+    because `llamacpp_text/pyproject.toml` records that the maintainer's wheel
+    index is a coin-flip per release on macOS arm64 and a capability that
+    fragile to install is a poor default. D416 removed those three rows and
+    moved the default here on a measurement this engine won on every axis
+    (4.2x transformers' throughput on a Radeon GPU, 2.4x on CPU, a third of
+    the download, a third of the peak RSS); the GPU-first decision then moved
+    the default again, onto the Vulkan row, wherever a usable Vulkan GPU is
+    there — this row is what a Windows/Linux machine falls back to without
+    one. macOS arm64 — where the audit's failures were — still resolves to
+    `mlx-text` first (the Vulkan wheel does not cover macOS at all), which is
+    asserted below and is half of why the trade was acceptable.
 
     Position is checked directly, rather than only inferred from behaviour,
-    because the ordering is invisible in a diff of the table (the same argument
-    `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`'s
-    docstring makes about the Diffusers split) and nothing else fails when a row
-    moves one line up.
+    because the ordering is invisible in a diff of the table (the same
+    argument `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`'s
+    docstring makes about the Diffusers split) and nothing else fails when a
+    row moves one line up.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
-    assert codes.index("llamacpp-text") == codes.index("mlx-text") + 1
+    assert codes.index("llamacpp-text") == codes.index("llamacpp-text-vulkan") + 1
+    assert codes.index("llamacpp-text-vulkan") == codes.index("mlx-text") + 1
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
@@ -2332,23 +2339,30 @@ def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
     assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
 
 
-def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monkeypatch):
-    """The Vulkan variant sits directly after the CPU/Metal row, and it is LAST —
-    so `auto` never reaches it on any platform, and reaching it is always a
-    choice made on the Engines tab.
+def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monkeypatch):
+    """The Vulkan variant sits directly before the CPU/Metal row, and that is
+    what the GPU-first policy decision (see `registry.py`'s block comment above
+    `_RUNNERS`) requires: `auto` reaches it on any Windows/Linux x86_64 machine
+    whose GPU `_vulkan` can actually use, and the CPU row behind it is the
+    fallthrough for a machine with none.
 
-    This is now the whole of the "never a fallthrough" property for text
-    generation: D416 gave `llamacpp-text` the default and deliberately did not
-    give it to this row, whose `_offload_schedule` backoff is known not to engage
-    on AMD (see the row's own comment and PR #706 — radv satisfies an
-    over-commit by evicting other clients, which took a desktop session down
-    during testing). An over-large model on the row above costs a slow load; on
-    this row it can cost a session, which is not a thing to hand a machine that
-    did not ask for it.
+    D416 gave `llamacpp-text` the default in place of the withdrawn
+    `transformers-text*` rows; this policy decision later moved the default
+    again, onto the Vulkan row, when the hardware is there. Its
+    `_offload_schedule` backoff is known not to engage on AMD (see the row's
+    own comment and PR #706 — radv satisfies an over-commit by evicting other
+    clients, which took a desktop session down during testing) — an accepted
+    risk of the new default rather than a reason the row stays opt-in. Without
+    a faked loader/ICD here `_vulkan` still refuses on this test's real
+    machine, so `auto` still lands on the CPU row below it — the fallthrough
+    case, pinned by ordering rather than by faking Vulkan hardware (that half
+    is `test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there`
+    below).
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
-    assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") + 1
-    assert codes[-1] == "llamacpp-text-vulkan"
+    assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") - 1
+    assert codes[0] == "mlx-text"
+    assert codes[1] == "llamacpp-text-vulkan"
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
@@ -2356,19 +2370,19 @@ def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monk
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
-def test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_rows(monkeypatch):
+def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onnx(monkeypatch):
     """Embeddings' five rows, pinned in full — the whole family shares one
     ordering rule with the image and text families, and it is invisible in a diff
     of the table.
 
-    MLX takes the Macs (`_apple_silicon`), `onnx-embed` is the cross-platform
-    default and the Apple-Silicon fallback, and `onnx-embed-directml`/`-cuda`/
-    `-rocm` are opt-in accelerated siblings of that row — DirectML first because
-    it is the only one Windows can take, then CUDA before ROCm, the same order
-    `diffusers-image-cuda`/`-rocm` use. All three accelerated rows sit LAST so
-    `auto` never reaches any of them on any platform, exactly as
-    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
-    pins for text generation's own accelerated tail.
+    MLX takes the Macs (`_apple_silicon`), and `onnx-embed-directml`/`-cuda`/
+    `-rocm` now LEAD `onnx-embed` — DirectML first because it is the only one
+    Windows can take, then CUDA before ROCm, the same order
+    `diffusers-image-cuda`/`-rocm` use — by the GPU-first policy decision (see
+    `registry.py`'s block comment above `_RUNNERS`). `onnx-embed` behind them
+    is the cross-platform fallthrough and the Apple-Silicon fallback, exactly
+    as `test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text`
+    pins for text generation's own accelerated lead.
 
     There were three `transformers-embed*` rows between MLX and these until the
     parity gate (`tests/test_ai_onnx_embed_real_weights.py`) showed both engines
@@ -2378,9 +2392,17 @@ def test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_row
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
         "mlx-embed",
-        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
+        "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
     ]
 
+    # No accelerator faked on this Linux/x86_64 machine, so DirectML (Windows
+    # only) and the CUDA/ROCm device probes all refuse and `auto` falls
+    # through to the unaccelerated row — the fallthrough case. A machine WITH
+    # a working accelerator is pinned separately
+    # (`test_a_supported_amd_gpu_is_offered_the_rocm_engines` and its CUDA/
+    # DirectML neighbours already exercise `_rocm`/`_cuda`/`_directml`
+    # directly; `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`
+    # pins the image family's equivalent end-to-end).
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
@@ -2479,13 +2501,21 @@ def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, t
     assert "driver" in status.reason
 
 
-def test_llamacpp_text_vulkan_is_reachable_only_by_an_explicit_preference(monkeypatch, tmp_path):
-    """Opt-in, UNLIKE its neighbour since D416: a working loader and ICD make
-    this row AVAILABLE, and `auto` still resolves to `llamacpp-text` above it —
-    reaching this one is a choice."""
+def test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there(monkeypatch, tmp_path):
+    """The default, not merely opt-in, since the GPU-first policy decision
+    reordered this row above `llamacpp-text` (see `registry.py`'s block
+    comment above `_RUNNERS`): a working loader and ICD make it AVAILABLE, and
+    a bare "auto" — no preference set at all — resolves here rather than to
+    the CPU row behind it."""
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     _fake_vulkan(monkeypatch, tmp_path, "Linux")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text-vulkan" and resolution.honoured
+
+    # …and an explicit preference for it is honoured too, which is what makes
+    # GPU-first a default rather than the only reachable choice.
     _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text-vulkan")
     resolution = registry.resolve(registry.TEXT_GENERATION)
     assert resolution.runner.code == "llamacpp-text-vulkan" and resolution.honoured
