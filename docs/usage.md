@@ -226,7 +226,7 @@ where a first model comes from.
     row in the download manager before any weights are fetched. The CPU builds
     are a few hundred MB; a CUDA or ROCm build is several GB before a single
     weight arrives.
-- **Pages can use these models.** `fused.ai.text(prompt, {model: "org/name"})` runs a
+- **Pages can use these models.** `fused.ai.text({prompt, model: "org/name"})` runs a
   local chat model instead of Claude, `fused.ai.image({prompt})` renders a
   picture, and `fused.ai.transcribe({path})` turns a recording into text — all
   through the same download manager, so a page that asks for a model you don't
@@ -332,7 +332,8 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 
 `fused.ai` is a namespace of verbs — `.text`, `.image`, `.video`, `.transcribe`,
 `.embed`, plus `.models` and `.cancel` — not a function. Pages ask a text model
-with `fused.ai.text(prompt, opts?)`. It resolves with exactly
+with `fused.ai.text({prompt, ...opts})` — one options object, like every
+other verb. It resolves with exactly
 `{text, model, usage, provider}` — `model` is the full model id that ran,
 `usage` is either `null` or exactly `{input_tokens, output_tokens}`
 (Anthropic-style names, not OpenAI's `prompt_tokens`/`completion_tokens`), and

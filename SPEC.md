@@ -218,7 +218,8 @@ fused.env
 // Ask an AI model — the local claude (Claude Code) CLI, or a model resident on
 // this machine (RH-11, §40). Local-only. `fused.ai` is a namespace of verbs
 // (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
-const { text, model, usage, provider } = await fused.ai.text(prompt, {
+const { text, model, usage, provider } = await fused.ai.text({
+  prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
   provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
@@ -232,15 +233,16 @@ const { text, model, usage, provider } = await fused.ai.text(prompt, {
   §18). It lets a page branch on where it runs — gating any local-only behaviour when
   `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
   it, so the check is a positive signal, not the absence of an API.
-- **RH-11** `fused.ai.text(prompt, opts?)` asks an AI model through the shell: the
+- **RH-11** `fused.ai.text({prompt, ...opts})` asks an AI model through the shell: the
   server's `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** —
   the user's existing Claude Code login is the credential; no API key or proxy to
   configure (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on
   PATH) — or through a model resident on this machine (§40). The CLI runs as a pure
   one-shot completion (no tools, no settings/CLAUDE.md, no session persistence, one
   turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
-  `.image`/`.video`/`.transcribe`/`.embed`, and the former callable `fused.ai(prompt)`
-  is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
+  `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
+  (`prompt` is a field, never a positional argument), and the former callable
+  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
   pins the **tier** that serves the call; omitted, the model's shape decides (a repo
   id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
   is the fixed tier walk local → claude. The three omitted-`model` cases: no
@@ -6366,7 +6368,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `model` parameter already existed, and a value containing a **slash** is a
   Hugging Face repo id and therefore local, while one without is a Claude alias.
   That is not a heuristic — a Hub id is always `org/name` and no Claude alias
-  contains a slash. So `fused.ai.text(prompt, {model})` reaches a local model with
+  contains a slash. So `fused.ai.text({prompt, model})` reaches a local model with
   no new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
   which is what keeps every page written before this working. Since D631 the shape

@@ -459,7 +459,7 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
            system_prompt: str | None = None, provider: str | None = None,
            timeout: float = _DEFAULT_TIMEOUT_S):
     """`POST /api/ai` with `{"stream": true}` and yield text chunks as they
-    arrive, mirroring `fused.ai.text(prompt, {onChunk})`. `provider` as in
+    arrive, mirroring `fused.ai.text({prompt, onChunk})`. `provider` as in
     `text()`.
 
     The NDJSON body is `{"type":"chunk","text":...}` lines closed by one

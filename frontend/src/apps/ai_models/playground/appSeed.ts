@@ -57,7 +57,7 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     ]);
     lines.push(
       "It generates text. Call it from the page with " +
-        `fused.ai.text(prompt, { model: ${JSON.stringify(model.id)}${extra}, history, onChunk }) — ` +
+        `fused.ai.text({ prompt, model: ${JSON.stringify(model.id)}${extra}, history, onChunk }) — ` +
         "it streams tokens through onChunk and resolves with { text, usage }. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );

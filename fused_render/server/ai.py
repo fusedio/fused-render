@@ -30,7 +30,7 @@ router = APIRouter()
 
 # --- /api/ai — inference through the Claude Code CLI --------------------------
 #
-# fused.ai.text(prompt, opts) lands here. The shell invokes the `claude` binary the
+# fused.ai.text({prompt, ...opts}) lands here. The shell invokes the `claude` binary the
 # user already has (Claude Code — its login is the credential) rather than
 # pages fetching a model directly: the page stays origin-clean (no API key or
 # endpoint baked into authored HTML), and the server is one place to grow
@@ -138,8 +138,8 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # The slash is the SEAM (SPEC §40): a model id with an org in it names a repo on
 # disk, which means local inference, and one without it is a Claude alias. That
 # is not a heuristic — a Hub id always has the form `org/name`, and no Claude
-# alias ever contains a slash — and it is what lets `fused.ai.text(prompt,
-# {model})` reach a local model with no `provider` spelled out. Since D631
+# alias ever contains a slash — and it is what lets `fused.ai.text({prompt,
+# model})` reach a local model with no `provider` spelled out. Since D631
 # the shape rule is the DEFAULT, not the only route: an explicit `provider`
 # pins the tier and this function is not consulted.
 #

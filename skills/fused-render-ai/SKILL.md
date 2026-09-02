@@ -34,7 +34,9 @@ Both destinations are **local-only** — there is no hosted path — so an expor
 
 For `runPython`, params, or file IO → **`fused-render-authoring`**. For opening/running the app → **`fused-render-usage`**. For a folder that needs its own long-running daemon (outliving a page, surviving the warm worker's 15-minute idle-retire) rather than a per-call AI request → **`fused-render-background-apps`**.
 
-## Text: `fused.ai.text(prompt, opts?)`
+## Text: `fused.ai.text({prompt, ...opts})`
+
+One options object, like every other verb — `prompt` is a field, not a positional argument. `fused.ai.text("hi")` is a `bad_request`.
 
 Resolves with **exactly** this — the server normalizes, so no guarding:
 
@@ -129,7 +131,7 @@ Every rejection is an `Error` with `.type`, and `err.jobId` is set on any reject
 
 ```js
 try {
-  const res = await fused.ai.text(question, { model: chosenRepoId });
+  const res = await fused.ai.text({ prompt: question, model: chosenRepoId });
   out.textContent = res.text;
 } catch (err) {
   if (err.type === "model_loading") {
@@ -158,7 +160,8 @@ const context = JSON.stringify({                              // aggregates for 
   total_revenue: data.total_revenue,
   revenue_by_region: data.by_region,
 });
-const res = await fused.ai.text(`Data (JSON):\n${context}\n\nQuestion: ${q}`, {
+const res = await fused.ai.text({
+  prompt: `Data (JSON):\n${context}\n\nQuestion: ${q}`,
   systemPrompt: "You are a data analyst. Answer ONLY from the provided JSON. Cite figures.",
   effort: "low",
 });
@@ -166,7 +169,7 @@ const res = await fused.ai.text(`Data (JSON):\n${context}\n\nQuestion: ${q}`, {
 
 ## Local Models: `fused.ai.models`
 
-Generation itself needs **nothing new** — a repo id in `fused.ai.text(prompt, {model})` already reaches a local model. What needs an API is everything *around* it, because a model here is a resident process, not a request to someone else's datacentre.
+Generation itself needs **nothing new** — a repo id in `fused.ai.text({prompt, model})` already reaches a local model. What needs an API is everything *around* it, because a model here is a resident process, not a request to someone else's datacentre.
 
 | Call | Returns |
 |---|---|
@@ -643,8 +646,8 @@ Same names, same options as `fused.ai` above:
 
 | Python | JS equivalent |
 |---|---|
-| `fused_ai.text(prompt, model=, effort=, system_prompt=, provider=)` → `str` | `fused.ai.text(prompt, opts)` |
-| `fused_ai.stream(prompt, model=, effort=, system_prompt=, provider=)` → generator of `str` | `fused.ai.text(prompt, {onChunk})` |
+| `fused_ai.text(prompt, model=, effort=, system_prompt=, provider=)` → `str` | `fused.ai.text({prompt, ...})` |
+| `fused_ai.stream(prompt, model=, effort=, system_prompt=, provider=)` → generator of `str` | `fused.ai.text({prompt, onChunk})` |
 | `fused_ai.transcribe(path=, model=, language=, task=, initial_prompt=, vad=, diarize=, speakers=, words=, ...)` | `fused.ai.transcribe({...})` |
 | `fused_ai.image(prompt=, model=, width=, height=, steps=, guidance=, seed=, image=, ...)` | `fused.ai.image({...})` |
 | `fused_ai.embed(texts=, paths=, model=, kind=)` | same `/api/ai/embed` endpoint — one forward pass, not job-backed; see **Embeddings** below for the two per-model refusals |

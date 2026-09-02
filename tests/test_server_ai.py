@@ -1654,7 +1654,7 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
 
 
 def test_runtime_ships_ai():
-    assert "function aiText(prompt, opts)" in RUNTIME
+    assert "function aiText(opts)" in RUNTIME
     assert "text: aiText," in RUNTIME
     assert '"/api/ai"' in RUNTIME
     assert "ai," in RUNTIME  # registered on window.fused
@@ -1679,7 +1679,7 @@ def test_runtime_ai_streams_on_onchunk():
 
 
 def test_export_rejects_ai(tmp_path):
-    html = "<script>fused.ai.text('summarize this');</script>"
+    html = "<script>fused.ai.text({prompt: 'summarize this'});</script>"
     plan = plan_export(html, str(tmp_path))
     assert any("fused.ai.text() is not supported on a hosted page" in e
                for e in plan.errors)

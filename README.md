@@ -130,7 +130,7 @@ A page can do a lot through `fused`:
   bookmark reproduces the view. `fused.readFile` / `writeFile` / `uploadFile` /
   `mkdir` / `stat` / `rawUrl` work on files directly, no Python needed.
   → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
-- `fused.ai.text(prompt, opts?)` — ask Claude Code, or a local model when
+- `fused.ai.text({prompt, ...})` — ask Claude Code, or a local model when
   `opts.model` is a Hugging Face repo id (or pin the tier with
   `opts.provider: "local" | "claude"`). `fused.ai.image` / `.video` /
   `.transcribe` / `.embed` run locally; `fused.ai.models` lists, downloads,

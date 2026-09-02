@@ -131,7 +131,7 @@ def test_export_allows_fused_ai_pages(tmp_path):
     # runs in the recipient's full local runtime, where /api/ai exists (D388).
     # A recipient without a claude CLI gets the graceful ai_unavailable state.
     app = make_app(tmp_path)
-    (app / "chat.html").write_text("<html><script>fused.ai.text('hi')</script></html>")
+    (app / "chat.html").write_text("<html><script>fused.ai.text({prompt: 'hi'})</script></html>")
     out = tmp_path / "x.fused"
     appfile.export_app_file(str(app), str(out))
     with zipfile.ZipFile(out) as zf:

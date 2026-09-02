@@ -47,11 +47,14 @@
  *     listeners (see the preview note on start()/stop() below; watch()
  *     itself is read-only like status(), so it is not rejected, just kept
  *     inert).
- *   fused.ai.text(prompt, opts?) -> Promise<{text, model, usage, provider}>
+ *   fused.ai.text({prompt, ...opts}) -> Promise<{text, model, usage, provider}>
  *     Text is ONE capability among five (image, video, transcribe, embed), so
- *     it is a verb like the others; `fused.ai` itself is a namespace, not a
- *     function. The old callable `fused.ai(prompt)` is GONE, not aliased
- *     (D631) — a page still calling it gets "fused.ai is not a function".
+ *     it is a verb like the others and takes ONE options object like the
+ *     others — `prompt` is a field, not a positional argument, exactly as
+ *     `.image({prompt})` and `.transcribe({path})` already read. `fused.ai`
+ *     itself is a namespace, not a function. The old callable
+ *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
+ *     it gets "fused.ai is not a function".
  *     opts.provider: "local" | "claude" — which tier serves the call. Omitted,
  *     the model's shape decides (a repo id or .gguf filename is weights on
  *     this machine, anything else is a Claude alias), which IS the tier walk
@@ -82,7 +85,7 @@
  *     what it costs. load/download return {jobId} — a cold load is a multi-GB
  *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
  *     GENERATE TEXT with a local model there is no new call: pass its repo id
- *     as fused.ai.text(prompt, {model: "org/name"}).
+ *     as fused.ai.text({prompt, model: "org/name"}).
  *   fused.ai.image({prompt, model, provider, width, height, steps, guidance,
  *                   seed, onProgress}) -> Promise<{path, url, seed, provider, ...}>
  *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
@@ -3214,8 +3217,9 @@
   // CLI locally, or a resident local model (server/ai.py /api/ai). Resolves
   // with {text, model, usage, provider}; rejects with an Error carrying
   // `.type` ("bad_request" | "ai_unavailable" | "ai_error" | "timeout"),
-  // mirroring runPython's rejection style. opts:
-  //   { provider: "local"|"claude", systemPrompt, model,
+  // mirroring runPython's rejection style. ONE options object, like every
+  // other verb on `fused.ai` — the prompt is a field:
+  //   { prompt, provider: "local"|"claude", systemPrompt, model,
   //     effort: "low"|"medium"|"high"|"xhigh", onChunk }
   // effort defaults to low = no extended thinking (fast, cheap); medium+
   // enables Claude Code's own effort/thinking semantics.
@@ -3225,10 +3229,11 @@
   // plain JSON exchange it always was.
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
   // half-billed completion buys nothing — calls run fully concurrent.
-  function aiText(prompt, opts) {
+  function aiText(opts) {
     opts = opts || {};
+    const prompt = opts.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
-      const err = new Error("fused.ai.text(prompt): prompt must be a non-empty string");
+      const err = new Error("fused.ai.text({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
       return Promise.reject(err);
     }
@@ -3682,7 +3687,7 @@
   // ---------------------------------------------------------------- local models
   //
   // fused.ai.models — the lifecycle half of the AI API (SPEC §40). Generation
-  // itself needs nothing new: fused.ai.text(prompt, {model: "org/name", onChunk})
+  // itself needs nothing new: fused.ai.text({prompt, model: "org/name", onChunk})
   // already reaches a local model, because a model id with a slash in it IS a
   // Hugging Face repo id and the server routes on that.
   //
