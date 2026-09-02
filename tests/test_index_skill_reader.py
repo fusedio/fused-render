@@ -1,13 +1,13 @@
-"""The CODE in skills/fused-render-index/SKILL.md, checked rather than read.
+"""The CODE the fused-render-index skill hands out, checked rather than read.
 
-The Python reader is copy-paste code: whatever it gets wrong propagates into every
-app that follows the skill, and prose review cannot catch a path that resolves
-to a directory which does not exist. So the block is extracted from the
-markdown and run — its branch sanitization is checked against the real
+The Python reader (``skills/fused-render-index/reader.py``) is copy-paste code:
+whatever it gets wrong propagates into every app that follows the skill, and
+prose review cannot catch a path that resolves to a directory which does not
+exist. So the file is run — its branch sanitization is checked against the real
 ``fused_render._branch.sanitize`` it has to match, and ``connect()`` is pointed
-at the store shapes that made it raise. The JS example gets the two checks that
-can be made statically: its cross-references, and the generation guard that
-keeps a per-keystroke render honest.
+at the store shapes that made it raise. The JS example in SKILL.md gets the two
+checks that can be made statically: its cross-references, and the generation
+guard that keeps a per-keystroke render honest.
 """
 import os
 import re
@@ -17,16 +17,15 @@ import pytest
 
 from fused_render._branch import sanitize
 
-SKILL = (Path(__file__).resolve().parents[1] / "skills" / "fused-render-index"
-         / "SKILL.md").read_text(encoding="utf-8")
+_SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "fused-render-index"
+SKILL = (_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
 
 
 def _reader():
-    """Exec the ```python block under "The reader (copy this)"` and return it."""
-    after = SKILL.split("### The reader (copy this)", 1)[1]
-    code = after.split("```python", 1)[1].split("```", 1)[0]
+    """Exec the skill's reader.py and return its namespace."""
+    code = (_SKILL_DIR / "reader.py").read_text(encoding="utf-8")
     namespace = {}
-    exec(compile(code, "SKILL.md:reader", "exec"), namespace)  # noqa: S102
+    exec(compile(code, str(_SKILL_DIR / "reader.py"), "exec"), namespace)  # noqa: S102
     return namespace
 
 

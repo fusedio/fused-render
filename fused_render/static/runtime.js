@@ -324,7 +324,7 @@
  *     stats/lookup calls did, and readiness rides on every response, so a
  *     `status` method was surface without capability. Scanning, editing
  *     roots/ignore and the repos derivation stay raw fetch + `X-Fused: 1`
- *     (section C of skills/fused-render-index) — managing the index is a shell
+ *     (documented in skills/fused-render-index) — managing the index is a shell
  *     action, not a render path, and so are /api/index/delete (wipes the whole
  *     store) and /api/index/ask (spends AI credits per call).
  *     Both resolve with the endpoint's own payload PLUS a normalized

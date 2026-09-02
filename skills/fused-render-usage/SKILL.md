@@ -1,57 +1,30 @@
 ---
 name: fused-render-usage
-description: Open and run a fused-render project — launching the FusedRender desktop app, opening files and views, browsing the filesystem. Use when the user wants to open, run or show a project or view rather than author one.
+description: Use when opening, running or showing a fused-render project, file or view (not authoring one) — launching the desktop app, URL modes, browsing.
 ---
 
-# Using a fused-render project
+# Using fused-render
 
-fused-render is a **local file-explorer desktop app** that runs entirely on `127.0.0.1` — no accounts, no cloud. It browses any directory in the browser, previews files, and live-renders `.html` views that call local Python. This skill covers **running and using** the app; it does not cover writing views (that's `fused-render-authoring`).
+Local file-explorer desktop app, single instance per user, serves on `127.0.0.1` — no accounts, no cloud. Browses directories, previews files, live-renders `.html` views that call local Python. Authoring → `fused-render-authoring`.
 
-This skill assumes **the FusedRender desktop app is already running** — there's a single instance per user, serving on `127.0.0.1`. Everything below is a way to open something into that running instance.
+## Open a path via the app
 
-## Opening a file, view, or directory
+macOS `open -a FusedRender <path>` · Linux `gtk-launch fused-render <path>` (or the AppImage binary) · Windows `FusedRender.exe <path>`. Directory → explorer there; file → preview; `.html` → rendered view.
 
-Hand the path to the app — it opens as a full-shell view (`/explorer/view/<path>`) in a browser tab, reusing the running instance:
+## Open by URL
 
-| Platform | Open a path |
-|---|---|
-| macOS | `open -a FusedRender <path>` |
-| Linux | `gtk-launch fused-render <path>`, right-click → *Open With → FusedRender*, or the AppImage binary `FusedRender-<ver>.AppImage <path>` |
-| Windows | `FusedRender.exe <path>`, or right-click → *Open with → FusedRender* |
+Reuse the running instance's `http://127.0.0.1:<port>`. Path rides after the prefix, leading slash dropped, segments URL-encoded:
 
-Opening a directory lands the explorer there; opening a file previews it; opening an `.html` view renders it.
+- `/` → `/apps` hub; `/explorer` = file-explorer homepage.
+- `/explorer/view/<path>` — full shell chrome (what the app opens).
+- `/explorer/embed/<path>` — chrome-free; best for a single view or a screenshot.
 
-## Opening by URL (view / embed / preview templates)
+Mode is fixed by prefix (no toggle without navigation); params sync the same in both. Old `/view/`/`/embed/` links redirect; write the `/explorer/` forms.
 
-Everything the app shows is a URL, so any view is bookmarkable and shareable. The running app already has a tab open — reuse its `http://127.0.0.1:<port>` from the address bar and swap the path.
+**Preview templates** (parquet/image/etc.): open the TARGET file's path; the shell resolves the template by extension and passes `_file`. `?_mode=<name>` picks a specific mode.
 
-The filesystem path rides in the URL after a **mode prefix**, with its **leading slash dropped** and each segment URL-encoded (space → `%20`). `/Users/me/proj/dash.html` → `…/explorer/view/Users/me/proj/dash.html`.
+**URL params are the shareable state** — copy the URL to reproduce the exact view.
 
-| Path | Renders |
-|---|---|
-| `/` | Redirects to `/apps` (the app hub). `/explorer` is the file-explorer homepage — click to browse. |
-| `/explorer/view/<path>` | **Full-shell mode** — the page wrapped in explorer chrome (sidebar, breadcrumb, preview header). What the app opens when you hand it a path. |
-| `/explorer/embed/<path>` | **Embed mode** — the page chrome-free (no sidebar/breadcrumb/header). Best for opening a specific view on its own or for a screenshot. |
+## Switch skills
 
-`/view/<path>` and `/embed/<path>` still redirect to the `/explorer/...` forms, so old links keep working — but write the new ones.
-
-View vs embed is a fixed page-load mode set by the prefix — it can't toggle without a full navigation. Both serve the same page and sync URL params the same way; embed just hides the chrome.
-
-**Preview templates** (parquet/image/text viewers, etc.) open at the *target file's* path — `…/explorer/view/<abs path to the data file>` — and the shell resolves the template by extension, handing it the file via a read-only `_file` param. Point at the data file, not the template html. When a file has more than one mode, add `?_mode=<name>` to open a specific one (or use the switcher in the preview header).
-
-## Params are the shareable state
-
-View state (paging, sort, selection) lives in **URL params**, so any view is refresh-proof and bookmarkable — copy the URL to reproduce or share the exact state.
-
-## Where things live in a project
-
-- A **view** is usually a sibling pair: an `.html` page (UI) + a `.py` file (data it fetches via `fused.runPython`).
-- Built-in preview templates live under `fused_render/templates/<name>/`; user-owned ones under `~/.fused-render/` (see `fused-render-custom-templates`).
-
-## When to switch skills
-
-- Creating, editing, or debugging an `.html` view or `.py` data file, or a blank/errored view → **`fused-render-authoring`**.
-- Registering a custom preview template for a file extension → **`fused-render-custom-templates`**.
-- Calling an AI model from a page, driving local models, or generating an image → **`fused-render-ai`**.
-- Searching, counting, or aggregating files across the machine — the file index, a scan, `fused.fileIndex.*` → **`fused-render-index`**.
-- Giving a folder its own long-running daemon that survives its page closing and the warm worker's idle-retire → **`fused-render-background-apps`**.
+Authoring/debugging views → `fused-render-authoring` · template registration → `fused-render-custom-templates` · AI → `fused-render-ai` · file index/search → `fused-render-index` · resident daemons → `fused-render-background-apps`.
