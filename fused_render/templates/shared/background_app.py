@@ -223,7 +223,7 @@ def _request(method: str, path: str, body: dict | None = None,
 
 def status() -> dict:
     """`GET /api/apps/background/status` for THIS daemon's own app folder —
-    `{"running", "autostart", "pid", "version", "engine_id"}`."""
+    `{"running", "autostart", "pid", "version", "engine_id", "protocol"}`."""
     html = _self_html_path()
     return _request("GET", "/api/apps/background/status?html=" + quote(html))
 

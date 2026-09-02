@@ -75,7 +75,7 @@ def _bootstrap_background_app():
 
 background_app = _bootstrap_background_app()
 
-background_app.status()             # {"running", "autostart", "pid", "version", "engine_id"}
+background_app.status()             # {"running", "autostart", "pid", "version", "engine_id", "protocol"}
 background_app.stop()               # kills THIS process's daemon; autostart untouched
 background_app.set_autostart(True)  # persists the "come back at next launch" flag only
 background_app.restart()            # respawns
@@ -89,7 +89,7 @@ A tray "Quit" should call `stop()` here rather than a raw self-`terminate`/`exit
 
 ```js
 await fused.daemon.start();                // spawn it now — does NOT touch autostart
-const st = await fused.daemon.status();     // {running, autostart, pid, version, engine_id}
+const st = await fused.daemon.status();     // {running, autostart, pid, version, engine_id, protocol}
 const res = await fused.daemon.call("/count", { hello: "world" }); // POST, proxied to the daemon
 const out = await fused.daemon.run({ hello: "world" }); // main = convenience: call("/call", params), envelope unwrapped
 await fused.daemon.stop();                  // kill it now — does NOT touch autostart
@@ -105,7 +105,9 @@ const unsubscribe = fused.daemon.watch((s) => {
 
 The JS namespace is `daemon` while the HTTP endpoints (`/api/apps/background/*`) and Python modules say "background": "app" already means three other things here (an `fused-app`-tagged folder, the warm worker's `Child.kind`, the `/apps` hub), and `daemon` is the noun the manifest, the file and `engine_host` already use.
 
-Every method except `call`/`run` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to, the same `resolve_py` pattern `/api/run` uses, so there is no path-typed API to defend. `call(path, body)` reaches the daemon through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` and rejecting client-side if the app isn't known to be running — call `start()` first. `run(params)` is the `main =` convenience over the same proxy: `call("/call", params)` with the `{ok, result, error, stdout, resolved_py}` envelope unwrapped the way `runPython` unwraps `/api/run`'s.
+Every method except `call`/`run` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to, the same `resolve_py` pattern `/api/run` uses, so there is no path-typed API to defend. `call(path, body)` reaches the daemon through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` and bringing the daemon up transparently when it isn't known to be running — on a page's first call, or after the idle reaper has retired it — the same way `run()` always has; **`start()` is not required first**. `run(params)` is the `main =` convenience over the same proxy mechanics: POST `/call` with `params` as the body, the `{ok, result, error, stdout, resolved_py}` envelope unwrapped the way `runPython` unwraps `/api/run`'s.
+
+Each method also checks the folder actually declared the protocol it speaks, from `status()`'s `protocol` field: `run()` rejects with a "use `call()` instead" error against a `daemon =` folder (its own routes almost certainly don't serve `/call`), and `call()` rejects with a "use `run()` instead" error against a `main =` folder (it would otherwise "work" but hand back the raw envelope instead of the unwrapped result). A folder with no valid manifest at all reports `protocol: null` and gets neither check — its existing error paths already cover it.
 
 **Run state and autostart are two independent axes** (pinned by `test_api_start_calls_ensure_background_without_touching_autostart` and `test_api_autostart_sets_the_flag_without_starting_or_stopping_anything`):
 

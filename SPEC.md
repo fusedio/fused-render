@@ -11131,9 +11131,20 @@ declared daemon).
   same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
   `engine_id` from a cached `status()` call; `run(params)` is the `main =`
-  convenience over the same proxy — `call("/call", params)` with the
-  `{ok, result, error, stdout, resolved_py}` envelope unwrapped the way
-  `runPython` unwraps `/api/run`'s. `watch(callback)` (D515) is the
+  convenience over the same proxy mechanics — POST `/call` with `params` as
+  the body, the `{ok, result, error, stdout, resolved_py}` envelope
+  unwrapped the way `runPython` unwraps `/api/run`'s. Both bring the daemon
+  up transparently when it isn't known to be running (a page's first call,
+  or after the idle reaper has retired it) rather than requiring an explicit
+  `start()` first — `engine_forward._forward` already heals a
+  dead-but-running child on any proxied call, and the preview guard
+  (D507/D508) is what actually stops an uninvited spawn, not a start-first
+  gate. `status()`'s payload carries `protocol` (`"main"` | `"daemon"` |
+  `null` for a folder with no valid manifest), and `call`/`run` each reject
+  against the OTHER folder shape, naming the method to use instead — `run()`
+  against a `daemon =` folder, `call()` against a `main =` folder — rather
+  than silently 404ing or handing back a raw, unwrapped envelope.
+  `watch(callback)` (D515) is the
   push-shaped wrapper over `status()` a page needs to learn its daemon's
   state changed for a reason OUTSIDE its own control (another tab, the
   server's own resurrection, or — the case that motivated it — a native

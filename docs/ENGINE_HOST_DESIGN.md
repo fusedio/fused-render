@@ -84,14 +84,27 @@ declared project venv isn't built yet, rather than blocking — the same
 daemon — `status`, `start`, `stop`, `restart`, `setAutostart`, `call(path,
 body)`, `run(params)`, `watch(callback)`. `call` proxies to the daemon's own
 routes through `/api/engines/<id>/proxy/<path>` for a `daemon =` author;
-`run` is the `main =` convenience over it — `call("/call", params)` with the
-`{ok, result, error, stdout, resolved_py}` envelope unwrapped the way
-`runPython` unwraps `/api/run`'s. Run state and autostart are independent
-(D511): `start`/`stop`/`restart` never touch the persisted autostart flag, and
-`setAutostart` never starts or stops anything. A page rendering as a card
-preview thumbnail is refused on every method but `status` (D507/D508) — a
-sandboxed preview iframe must not be able to start, stop, or resurrect a
-real user's daemon just by being hovered or scrolled past.
+`run` is the `main =` convenience over the same proxy mechanics — POST
+`/call` with `params` as the body, the `{ok, result, error, stdout,
+resolved_py}` envelope unwrapped the way `runPython` unwraps `/api/run`'s.
+Both bring the daemon up transparently when it isn't known to be running —
+on a page's first call, or after the idle reaper has retired it — rather
+than requiring an explicit `start()` first: `engine_forward._forward`
+already heals a dead-but-running child on any proxied call, and the actual
+safety boundary against an uninvited spawn is the preview guard below, not a
+start-first gate. `status()`'s payload carries `protocol` ("main" | "daemon"
+| `null` for a folder with no valid manifest), which `call`/`run` each check
+against their own contract before proxying anything: `run()` against a
+`daemon =` folder rejects naming `call()` instead (its shipped-worker route
+almost certainly isn't served), and `call()` against a `main =` folder
+rejects naming `run()` instead (it would otherwise hand back the raw
+envelope rather than the unwrapped result). Run state and autostart are
+independent (D511): `start`/`stop`/`restart` never touch the persisted
+autostart flag, and `setAutostart` never starts or stops anything. A page
+rendering as a card preview thumbnail is refused on every method but
+`status` (D507/D508) — a sandboxed preview iframe must not be able to
+start, stop, or resurrect a real user's daemon just by being hovered or
+scrolled past.
 
 All map-specific knowledge lives in the template: `templates/map/map_render.py`
 posts to `/api/engines/map/…`, rewrites its own descriptor URLs to
