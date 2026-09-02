@@ -1854,3 +1854,153 @@ def test_toggling_a_narrow_filter_inside_the_window_does_not_reuse_the_smaller_f
                      "paramsBand": "under4b"})
     second_limit = parse_qs(urlsplit(fake.calls[1][0]).query)["limit"][0]
     assert second_limit == "96"
+
+
+# -- D639: the composite "Best match" ranking --------------------------------
+
+
+def test_matchscore_is_present_on_every_row_regardless_of_sort(client, hub_cache, monkeypatch):
+    _pin_hardware(monkeypatch)
+    fake = _reply([_fitted("org/m", score=100, safetensors_gb=1)])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client, {"sort": "downloads"}).json()
+    score = body["models"][0]["matchScore"]
+    assert isinstance(score, (int, float))
+    assert 0.0 <= score <= 100.0
+
+
+def test_default_sort_is_best_not_downloads(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([]))
+    body = _search(client).json()
+    assert body["query"]["sort"] == "best"
+
+
+def test_sort_best_still_asks_the_hub_for_downloads(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"sort": "best"})
+    assert "sort=downloads" in fake.calls[0][0]
+
+
+def test_an_unknown_sort_best_typo_is_still_refused(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([]))
+    bad = _search(client, {"sort": "bset"})
+    assert bad.status_code == 400
+
+
+def test_sort_best_ranks_by_the_composite_not_by_downloads_order(client, hub_cache, monkeypatch):
+    # A tiny, 5-year-old, hugely-downloaded stub vs. a capable, brand-new
+    # model with far fewer downloads — the exact inversion D639 exists to
+    # produce (a live repro on this project's own screenshot: a 2M-param
+    # test stub outranking real, current models by raw downloads alone).
+    _pin_hardware(monkeypatch)
+    tiny = _hit("org/tiny-stub",
+               safetensors={"parameters": {"F32": 500_000}, "total": 500_000},
+               downloads=20_000_000, createdAt="2021-01-01T00:00:00.000Z")
+    capable = _fitted("org/capable", score=100, safetensors_gb=8,
+                      downloads=1_000_000, createdAt="2026-08-01T00:00:00.000Z")
+    fake = _reply([tiny, capable])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client, {"sort": "best", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/capable", "org/tiny-stub"]
+
+
+def test_capability_axis_rewards_more_params_with_diminishing_returns():
+    lo = hub._capability_score(100_000_000, ram_gb=32.0)
+    hi = hub._capability_score(8_000_000_000, ram_gb=32.0)
+    huge = hub._capability_score(64_000_000_000, ram_gb=32.0)
+    assert lo < hi < huge <= 100.0
+
+
+def test_capability_axis_defaults_honestly_for_unknown_params():
+    assert hub._capability_score(None, ram_gb=32.0) == hub._CAPABILITY_DEFAULT
+    assert hub._capability_score(0, ram_gb=32.0) == hub._CAPABILITY_DEFAULT
+
+
+def test_speed_axis_saturates_so_an_anchor_less_estimate_cannot_win_outright():
+    # `speed.py:283`'s own documented gap: a sub-billion-parameter model's
+    # tok/s is not modelled at all, and the axis must not let that show up
+    # as a ranking advantage over a genuinely fast, correctly-modelled one.
+    already_fast = hub._speed_score({"tokensPerSecond": 40})
+    inflated = hub._speed_score({"tokensPerSecond": 17_324.6})
+    assert inflated <= 100.0
+    assert inflated - already_fast < 5
+
+
+def test_speed_axis_defaults_honestly_for_no_estimate():
+    assert hub._speed_score(None) == hub._SPEED_DEFAULT
+    assert hub._speed_score({}) == hub._SPEED_DEFAULT
+
+
+def test_recency_axis_prefers_newer_and_floors_a_future_date_at_zero_age():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # A second in the past, not exactly "now" — two separate `datetime.now()`
+    # reads (this test's and `_recency_score`'s own) a few microseconds apart
+    # would otherwise make "brand new" score a hair under the ceiling by pure
+    # timing, an irrelevant flake this margin avoids.
+    recent = hub._recency_score((now - timedelta(seconds=1)).isoformat())
+    four_years_old = hub._recency_score((now - timedelta(days=365 * 4)).isoformat())
+    a_future_date = hub._recency_score((now + timedelta(days=30)).isoformat())
+    assert four_years_old < recent < 100.0
+    # A "future" timestamp (clock skew) is floored at age zero, i.e. AT the
+    # ceiling — never scored ABOVE it, which is the property under test.
+    assert a_future_date == pytest.approx(100.0)
+
+
+def test_recency_axis_defaults_honestly_for_no_createdat():
+    assert hub._recency_score(None) == hub._RECENCY_DEFAULT
+    assert hub._recency_score("not a date") == hub._RECENCY_DEFAULT
+
+
+def test_popularity_axis_is_weak_log_scaled_and_capped():
+    low = hub._popularity_score(100_000)
+    high = hub._popularity_score(23_000_000)
+    assert 0.0 < low < high <= 100.0
+
+
+def test_popularity_axis_default_is_zero_not_a_middle_value():
+    # The one axis whose "nothing known" default is 0, not a mid-range
+    # value like every other axis (D639): popularity measures nothing but
+    # downloads, so no count at all is genuinely the worst case for it.
+    assert hub._popularity_score(None) == 0.0
+    assert hub._popularity_score(0) == 0.0
+
+
+def test_composite_score_gives_a_small_bump_for_a_row_already_on_disk():
+    absent = {"fit": {"score": 100}, "params": None, "speedEstimate": None,
+             "created": None, "downloads": None, "local": {"state": "none"}}
+    have = dict(absent, local={"state": "downloaded"})
+    assert hub._composite_score(have, 32.0) - hub._composite_score(absent, 32.0) == \
+        pytest.approx(hub._ON_DISK_BONUS)
+
+
+def test_composite_score_penalizes_cpu_offload_and_cpu_only():
+    base = {"params": None, "speedEstimate": None, "created": None, "downloads": None,
+            "local": {"state": "none"}}
+    gpu = dict(base, fit={"score": 80, "runMode": "gpu"})
+    offload = dict(base, fit={"score": 80, "runMode": "cpu-offload"})
+    cpu_only = dict(base, fit={"score": 80, "runMode": "cpu-only"})
+    s_gpu = hub._composite_score(gpu, 32.0)
+    s_offload = hub._composite_score(offload, 32.0)
+    s_cpu_only = hub._composite_score(cpu_only, 32.0)
+    assert s_offload == pytest.approx(s_gpu - hub._CPU_OFFLOAD_PENALTY)
+    assert s_cpu_only == pytest.approx(s_gpu - hub._CPU_ONLY_PENALTY)
+    assert s_cpu_only < s_offload < s_gpu
+
+
+def test_composite_score_stays_within_0_100_even_at_the_ceiling():
+    row = {"fit": {"score": 100, "runMode": "gpu"}, "params": 8_000_000_000,
+           "speedEstimate": {"tokensPerSecond": 200},
+           "created": "2026-09-01T00:00:00.000Z",
+           "downloads": 50_000_000, "local": {"state": "downloaded"}}
+    assert hub._composite_score(row, 32.0) <= 100.0
+
+
+def test_composite_score_degrades_honestly_with_nothing_known_at_all():
+    # Never 0 (reads as "definitely bad") and never 100 (reads as
+    # "definitely good") for a row with no evidence on any axis.
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+           "downloads": None, "local": {"state": "none"}}
+    score = hub._composite_score(row, 32.0)
+    assert 0.0 < score < 100.0

@@ -111,9 +111,11 @@ window are answered from memory.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -189,6 +191,224 @@ _PARAMS_BANDS = frozenset({"under4b", "4to15b", "over15b", "any"})
 # `size` uses on the frontend) and reorders it here, over `fit.verdict`'s own
 # `score`, after the per-request join. See `api_hub_search`.
 _FIT_SORT = "fit"
+
+# The DEFAULT ranking (D639): one 0-100 number blending memory fit, a
+# params-based capability proxy, speed, recency and popularity, plus a small
+# on-disk bonus — see `_composite_score` and D639 for the full defense of
+# the weights and the axes rejected. Like `_FIT_SORT`, not a `_SORTS` key:
+# there is no Hub wire field for it either, so it asks for the same
+# most-downloaded candidate set and reorders it here.
+_BEST_SORT = "best"
+
+# ---- D639's composite score: weights, defaults, and the axis curves -------
+#
+# Every weight below is a DELIBERATE choice, not a magic tuple — see D639 for
+# the reasoning this comment only summarizes. They sum to 1.0 before the
+# on-disk bonus, which is additive and outside the blend.
+_WEIGHT_FIT = 0.35
+_WEIGHT_CAPABILITY = 0.25
+_WEIGHT_SPEED = 0.15
+_WEIGHT_RECENCY = 0.15
+_WEIGHT_POPULARITY = 0.10
+
+# A small nudge for a model already on this disk (D639) — it costs nothing to
+# open, so it earns a push toward the top of a tie, never enough on its own
+# to out-rank a genuinely better-suited model that lives only on the Hub.
+_ON_DISK_BONUS = 6.0
+
+# D641: a row that only runs via CPU offload or CPU-only is a real cost the
+# ranking must reflect — the speed axis (`_speed_score`) does NOT already
+# cover this: it reads `speed.estimate_tok_s`'s `tokensPerSecond`, which is
+# a MACHINE-WIDE backend guess (Metal/CUDA/CPU-ARM/…, `speed.py`'s own
+# `backend_bucket`), not a per-row judgement of whether THIS repo's own
+# footprint would spill out of fast memory on THIS machine — so without an
+# explicit penalty here, two rows with the same speed estimate but
+# different `runMode`s would tie on this axis despite one of them being
+# visibly worse to actually use. Flat penalties, not a curve: this is a
+# binary fact (offloaded or not), not a quantity with diminishing returns.
+_CPU_OFFLOAD_PENALTY = 10.0
+_CPU_ONLY_PENALTY = 20.0
+
+# Defaults for a row with nothing to judge ONE axis by. Never 0 (reads as
+# "definitely bad") and never the axis's own ceiling (reads as "definitely
+# good") — "honest degrade to missing data" per the brief. Popularity is the
+# one exception (see `_popularity_score`): a real absence of any download
+# count is the worst case for a signal that measures nothing but downloads.
+_FIT_DEFAULT = 40.0
+_CAPABILITY_DEFAULT = 30.0
+_SPEED_DEFAULT = 70.0
+_RECENCY_DEFAULT = 35.0
+
+# The capability axis turns `params` into a 0-100 score via a diminishing-
+# returns curve anchored to what THIS machine could comfortably hold — so an
+# 8B model on a 32GB Mac scores near its ceiling while a 137M model on the
+# same machine scores near zero, without the axis needing to know anything
+# about quality. The anchor assumes BF16 (2 bytes/param, the middle ground
+# between full precision and a 4-bit quant) over `fit.COMFORT`'s own
+# utilization ceiling — the SAME "comfortable" fraction `fit.verdict` scores
+# 100 at, so this axis and the fit axis agree on what "comfortable" means
+# rather than fighting over two different budgets.
+_CAPABILITY_BYTES_PER_PARAM = 2.0
+# No RAM reading at all (`fit.machine_ram_gb()` returned None or 0) — a
+# reasonable mid-catalog anchor rather than refusing to rank the axis.
+_CAPABILITY_DEFAULT_ANCHOR_PARAMS = 8_000_000_000.0
+# `1 - exp(-k*x)` reaches ~86% of its ceiling at `x == 1` when `k == 2` — a
+# model sitting exactly at the machine's own comfortable-capacity anchor
+# should read as "near-saturated", not as "at the curve's inflection point".
+_CAPABILITY_STEEPNESS = 2.0
+
+# "Roughly conversational speed" (the brief's own words) — the tok/s past
+# which more speed stops earning much on this axis. A UX anchor, not a
+# hardware calibration constant, and deliberately not shared with anything
+# in `speed.py`.
+_SPEED_CONVERSATIONAL_TOK_S = 12.0
+
+# Half-life, in days, for the recency decay (`0.5 ** (age_days / this)`). A
+# repo exactly this old scores half of a brand-new one. One year: at four
+# years old (`gpt2`, the screenshot's own example) that is `0.5**4 ≈ 6%` —
+# visibly near the bottom with no hard cliff at an arbitrary birthday, which
+# is the whole complaint about the old downloads-only ranking.
+_RECENCY_HALF_LIFE_DAYS = 365.0
+
+# The download count at which the (weak, log-scaled) popularity axis
+# saturates near its ceiling — a handful of the most-downloaded repos on the
+# Hub at any given time. Beyond this, "more downloads" stops being a
+# meaningfully different fact for a TIEBREAK axis, which is all popularity
+# is supposed to be here.
+_POPULARITY_ANCHOR_DOWNLOADS = 5_000_000.0
+
+
+def _saturating(value: float, scale: float, steepness: float = 1.0) -> float:
+    """0-100 via `100 * (1 - exp(-steepness * value / scale))` — the one
+    diminishing-returns curve shape every axis below shares. `<= 0` input or
+    scale is a flat `0`, never a stray negative from floating point."""
+    if value <= 0 or scale <= 0:
+        return 0.0
+    return 100.0 * (1.0 - math.exp(-steepness * value / scale))
+
+
+def _capability_anchor_params(ram_gb: float | None) -> float:
+    """How many BF16-equivalent parameters this machine could comfortably
+    hold — the capability axis's own scale, not a size estimate anyone
+    reads a number off of (that stays `fit.py`'s job, per row, off real
+    evidence). See the constants above for the reasoning."""
+    if not ram_gb or ram_gb <= 0:
+        return _CAPABILITY_DEFAULT_ANCHOR_PARAMS
+    comfortable_bytes = ram_gb * fit.GB_BYTES * fit.COMFORT
+    return comfortable_bytes / _CAPABILITY_BYTES_PER_PARAM
+
+
+def _capability_score(params: int | None, ram_gb: float | None) -> float:
+    """The params-as-capability-proxy axis (D639) — never a guess when
+    `params` is unknown, which is exactly the row shape D634/D636 already
+    guard against inventing a number for."""
+    if params is None or params <= 0:
+        return _CAPABILITY_DEFAULT
+    anchor = _capability_anchor_params(ram_gb)
+    return _saturating(float(params), anchor, _CAPABILITY_STEEPNESS)
+
+
+def _speed_score(speed_estimate: dict | None) -> float:
+    """The speed axis. Saturates past `_SPEED_CONVERSATIONAL_TOK_S` by
+    construction (`_saturating`), which is what stops a bandwidth formula's
+    own known blind spot — an anchor-less sub-billion-parameter model's
+    inflated tok/s (`speed.py:283`'s own documented gap) — from winning this
+    axis outright: it saturates at the same ceiling a genuinely fast,
+    correctly-modelled model already reaches, never above it."""
+    if not isinstance(speed_estimate, dict):
+        return _SPEED_DEFAULT
+    tok_s = speed_estimate.get("tokensPerSecond")
+    if not isinstance(tok_s, (int, float)) or tok_s <= 0:
+        return _SPEED_DEFAULT
+    return _saturating(float(tok_s), _SPEED_CONVERSATIONAL_TOK_S)
+
+
+def _recency_score(created: str | None) -> float:
+    """The recency axis — exponential decay off `created` (ISO8601), or the
+    default for a repo the Hub gave no `createdAt` for, or one this server
+    could not parse. Never negative: a clock-skewed "future" timestamp is
+    floored to age zero rather than scored ABOVE a brand-new repo."""
+    if not created:
+        return _RECENCY_DEFAULT
+    try:
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return _RECENCY_DEFAULT
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+    return 100.0 * (0.5 ** (age_days / _RECENCY_HALF_LIFE_DAYS))
+
+
+def _popularity_score(downloads: int | None) -> float:
+    """The popularity axis — log-scaled, and DELIBERATELY the one axis whose
+    "nothing known" default is 0 rather than a middle value (D639): every
+    other axis's default sits in the middle because the absence of evidence
+    should not read as "definitely bad", but popularity is a WEAK signal by
+    design (the brief's own instruction) — this axis measures downloads and
+    nothing else, so a repo the Hub reports no count for genuinely has no
+    popularity evidence to credit it with, unlike a missing `params` or
+    `created` where the model still plainly exists and simply was not
+    described."""
+    if downloads is None or downloads <= 0:
+        return 0.0
+    return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
+
+
+def _composite_score(row: dict, ram_gb: float | None) -> float:
+    """`row["matchScore"]` (D639) — the composite 0-100 the DEFAULT sort
+    ranks by and the merged Fit+Score cell renders, blending:
+
+    * memory fit (`row["fit"]["score"]`, `fit.verdict`'s own 0-100) — the
+      heaviest weight, because a row already carries this as a hard GATE
+      elsewhere (`verdict: "no"` is dropped by default) and a row merely
+      "tight" should still visibly rank below one that is "easy" rather
+      than tying with it the way the pre-D639 fit-only sort did.
+    * capability (`_capability_score`) — a params-based proxy for "how much
+      model", scaled to what THIS machine can comfortably hold, so a
+      machine that can run 8B stops surfacing 137M models ahead of it.
+    * speed (`_speed_score`) — saturating past conversational pace, so an
+      anchor-less tiny model's inflated tok/s cannot win outright.
+    * recency (`_recency_score`) — exponential decay, so a 4-year-old repo
+      sinks well below a current one with no hard cliff.
+    * popularity (`_popularity_score`) — log-scaled and the LOWEST weight, a
+      tiebreak rather than a ranking driver, per the brief's own instruction.
+
+    Plus `_ON_DISK_BONUS` when this row is already on disk, MINUS
+    `_CPU_OFFLOAD_PENALTY`/`_CPU_ONLY_PENALTY` when `fit.runMode` says this
+    row would not run on the GPU/unified memory (D641 — the speed axis is a
+    machine-wide backend guess, not a per-row judgement of THIS repo's own
+    offload, so it does not already cover this). The blend is clamped to
+    `[0, 100]` afterward: the bonus can push a near-ceiling row past 100 on
+    its own, and a reader comparing this number to the 0-100 axes it is
+    made of should never see it escape that range.
+    """
+    fit_verdict = row.get("fit")
+    fit_axis = (
+        float(fit_verdict["score"])
+        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
+        else _FIT_DEFAULT
+    )
+    capability_axis = _capability_score(row.get("params"), ram_gb)
+    speed_axis = _speed_score(row.get("speedEstimate"))
+    recency_axis = _recency_score(row.get("created"))
+    popularity_axis = _popularity_score(row.get("downloads"))
+    blended = (
+        _WEIGHT_FIT * fit_axis
+        + _WEIGHT_CAPABILITY * capability_axis
+        + _WEIGHT_SPEED * speed_axis
+        + _WEIGHT_RECENCY * recency_axis
+        + _WEIGHT_POPULARITY * popularity_axis
+    )
+    if (row.get("local") or {}).get("state", "none") != "none":
+        blended += _ON_DISK_BONUS
+    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
+    if run_mode == "cpu-offload":
+        blended -= _CPU_OFFLOAD_PENALTY
+    elif run_mode == "cpu-only":
+        blended -= _CPU_ONLY_PENALTY
+    return min(100.0, max(0.0, blended))
+
 
 _MAX_LIMIT = 60
 
@@ -994,7 +1214,10 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     if guard is not None:
         return guard
     q, task = body.get("q"), body.get("task")
-    sort = body.get("sort") or "downloads"
+    # D639: the composite match score, not raw downloads, is the default —
+    # see that decision for why downloads-first rewards age and CI traffic
+    # over usefulness. `downloads` stays a fully explicit choice, unchanged.
+    sort = body.get("sort") or _BEST_SORT
     limit = body.get("limit")
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
@@ -1024,7 +1247,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # approaches `_MAX_ID_LEN`, the same cap `file`/a repo id already use.
     publisher = body.get("publisher")
     publisher = publisher.strip()[:_MAX_ID_LEN] if isinstance(publisher, str) and publisher.strip() else None
-    if sort not in _SORTS and sort != _FIT_SORT:
+    if sort not in _SORTS and sort not in (_FIT_SORT, _BEST_SORT):
         return _error(f"unknown sort {sort!r}", status=400)
     if fit_level not in _FIT_LEVELS:
         return _error(f"unknown fitLevel {fit_level!r}", status=400)
@@ -1153,7 +1376,21 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
 
-    if sort == _FIT_SORT:
+    # D639: every row gets a `matchScore` regardless of which sort was asked
+    # for — the merged Fit+Score cell renders it on every row, not only when
+    # ranking by it. Computed once per request off a single `machine_ram_gb()`
+    # reading (already `lru_cache`d, like `fit.verdict`'s own per-row reads
+    # of the same value), never per-row.
+    ram_gb = fit.machine_ram_gb()
+    for row in models:
+        row["matchScore"] = round(_composite_score(row, ram_gb), 1)
+
+    if sort == _BEST_SORT:
+        # Descending composite score. Stable sort keeps the Hub's own
+        # most-downloaded order as the tie-break, same guarantee `_FIT_SORT`
+        # documents below.
+        models.sort(key=lambda row: row.get("matchScore", 0.0), reverse=True)
+    elif sort == _FIT_SORT:
         # Descending score, nulls (nothing to judge) sorted last — `sort` is
         # Python's own stable sort, so ties (including every null-fit row
         # among themselves) keep the Hub's own most-downloaded ordering as
