@@ -65,6 +65,7 @@ from __future__ import annotations
 import glob
 import os
 import platform
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -935,6 +936,19 @@ VULKAN_LOADER_PATHS = (
 #: a container image commonly bind-mounts a driver in, so both are checked
 #: rather than only the share directory a bare-metal install uses.
 VULKAN_ICD_DIRS = ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+#: Manifest-basename markers for a Vulkan ICD that is SOFTWARE, not a GPU —
+#: matched against the filename `_vulkan` finds under `VULKAN_ICD_DIRS`,
+#: exactly the way the loader's own directory search works, not by opening
+#: and parsing the JSON. Mesa's lavapipe (LLVMpipe rasterizing behind a
+#: Vulkan front door) registers as `lvp_icd.<arch>.json` — this is the one
+#: that matters in practice, since `mesa-vulkan-drivers` ships it on stock
+#: Ubuntu/Debian desktops alongside every hardware ICD, so a machine with NO
+#: GPU at all still has a `*.json` in this directory. Google's SwiftShader
+#: (`vk_swiftshader_icd.json`) is the other software implementation anyone
+#: installs on purpose, included for the same reason. Both markers are
+#: substrings of the filenames the projects themselves publish, checked
+#: case-insensitively so a distro repackaging that changes case still matches.
+SOFTWARE_VULKAN_ICD_MARKERS = ("lvp_icd", "swiftshader")
 #: The Windows analogue of `NVCUDA_DLL`: the loader DLL a GPU driver installer
 #: places in `System32`, the same "hint, not proof" the CUDA gate already
 #: documents (installed by the display driver, not proof a device answers it).
@@ -1000,6 +1014,41 @@ def _vulkan() -> Availability:
     backend loading behaves like a plugin system, which it does NOT here: the
     Vulkan backend is linked in, not `dlopen`ed at runtime.
 
+    **A registered ICD is not the same claim as a GPU, and the GPU-first
+    reorder is what makes the difference matter (code review finding).** This
+    function's own earlier revision argued a loose "any `*.json` present"
+    check was fine BECAUSE `auto` could never reach this row — a user picking
+    it explicitly from the Engines tab had already accepted whatever showed
+    up. That argument is gone now that this row LEADS `llamacpp-text` in
+    `_RUNNERS`: Mesa's lavapipe registers `lvp_icd.<arch>.json` under
+    `mesa-vulkan-drivers`, which stock Ubuntu/Debian desktops ship alongside
+    every hardware ICD, so a machine with **no GPU at all** still has a
+    `*.json` here — and `auto` would hand it the 182MB Vulkan wheel for
+    inference on llvmpipe, materially SLOWER than the 22.5MB CPU wheel behind
+    it. So the Linux half of this gate now REFUSES when every ICD manifest
+    found is a known software rasterizer (`SOFTWARE_VULKAN_ICD_MARKERS`,
+    matched against the manifest FILENAME the same way the loader's own
+    directory search works — not by opening and parsing the JSON, which would
+    need trusting a driver-supplied file's schema this module has no reason
+    to depend on). A hardware ICD sitting beside a software one still passes
+    — lavapipe is a fallback Mesa registers unconditionally, so plenty of
+    real GPU machines have both, and refusing there would disqualify a
+    working GPU over an unrelated fallback entry.
+
+    **Windows gets no such tightening, and that is a decision, not an
+    oversight.** DLL presence is still only "a hint, not proof" (see
+    `VULKAN_DLL`'s own comment), but there is no cheap, safe way to do
+    better: `vkCreateInstance`/`vkEnumeratePhysicalDevices` genuinely
+    initializes the loader and every registered ICD, which is exactly the
+    kind of call `hw_detect.py`'s own module docstring keeps off any path
+    that runs per page-render/per resolve, and this module's own header
+    ("stdlib only, no subprocess") rules out doing that call in a
+    short-lived subprocess the way a slow/risky probe belongs (`hw_detect.py`
+    draws precisely that line already). Shipping an in-process call that
+    could hang or crash the server on a bad ICD is worse than the loose
+    check it would replace, so the DLL check stands, honestly documented as
+    a hint rather than proof.
+
     **Not cached, for `_rocm`'s reasons exactly** — a loader package or a
     driver installed while the app is running is a fix that must be seen
     without a restart.
@@ -1014,16 +1063,32 @@ def _vulkan() -> Availability:
                 "distribution's usual library paths; install "
                 "`vulkan-loader`/`libvulkan1`)",
             )
-        if not any(
-            os.path.isdir(d) and glob.glob(os.path.join(d, "*.json"))
-            for d in VULKAN_ICD_DIRS
-        ):
+        manifests = [
+            path
+            for directory in VULKAN_ICD_DIRS
+            if os.path.isdir(directory)
+            for path in glob.glob(os.path.join(directory, "*.json"))
+        ]
+        if not manifests:
             return Availability(
                 False,
                 "needs a Vulkan GPU driver (the loader is installed but no "
                 "driver ICD is registered under /etc/vulkan/icd.d or "
                 "/usr/share/vulkan/icd.d; install your GPU vendor's Vulkan "
                 "driver, e.g. `mesa-vulkan-drivers`)",
+            )
+        if all(
+            any(marker in os.path.basename(path).lower()
+                for marker in SOFTWARE_VULKAN_ICD_MARKERS)
+            for path in manifests
+        ):
+            return Availability(
+                False,
+                "needs a hardware Vulkan GPU (only a software rasterizer — "
+                "lavapipe/llvmpipe — is registered under /etc/vulkan/icd.d "
+                "or /usr/share/vulkan/icd.d; that runs on the CPU, slower "
+                "than `llama.cpp (CPU)`'s smaller download, so it does not "
+                "count as a usable GPU here)",
             )
         return Availability(True)
     if system == "Windows" and machine == "AMD64":
@@ -1041,27 +1106,124 @@ def _vulkan() -> Availability:
     )
 
 
+#: Read straight off the Display class registry key (see
+#: `_windows_display_adapter_ids`'s own docstring): a `MatchingDeviceID` of
+#: `SW\{D3D12-VENDOR-ID}&DEV_008C` — Microsoft's software-only WARP-backed
+#: Direct3D 12 adapter, the one every Windows box registers whether or not it
+#: has a real GPU (a headless server, an RDP session, or a VM with no GPU
+#: passthrough shows ONLY this one). `0x1414` is Microsoft's own PCI-SIG
+#: vendor id, reused here for a device that isn't PCI at all — Microsoft's
+#: own convention, not this module's.
+MS_BASIC_RENDER_VENDOR = 0x1414
+MS_BASIC_RENDER_DEVICE = 0x8C
+#: The Display class GUID `hw_detect.py`'s `AdapterRAM`-cap fix already
+#: trusts for the true VRAM figure — the same key names every display
+#: adapter's `MatchingDeviceID` (`PCI\VEN_xxxx&DEV_yyyy&...` for a real GPU,
+#: `SW\{...}&DEV_008C` for the Basic Render Driver), so `_directml` reads it
+#: for the same reason `hw_detect.py` does: nothing this module ships can
+#: safely call into DXGI/D3D12 itself (see `_directml`'s docstring), and the
+#: registry already carries the answer as plain data.
+DISPLAY_CLASS_REGISTRY_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+_PCI_VEN_DEV_RE = re.compile(r"VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})")
+
+
+def _windows_display_adapter_ids() -> list[tuple[int, int]] | None:
+    """Every display adapter's `(vendor_id, device_id)`, read off the Display
+    class registry key — or `None` when it cannot be read at all (any OS but
+    Windows, where `winreg` does not exist; a permissions failure; a registry
+    shape this function does not recognise), which `_directml` treats as
+    "could not determine" rather than "determined and it's software-only".
+
+    **Registry over DXGI, deliberately.** `_directml`'s own docstring already
+    established that enumerating D3D12 adapters directly needs a `ctypes` COM
+    call into `dxgi.dll` (`CreateDXGIFactory1` + `IDXGIFactory1::
+    EnumAdapters1`), and this module's header rule ("stdlib only, no
+    subprocess") does not by itself forbid a `ctypes` DLL call the way it
+    forbids shelling out — but a hand-rolled COM vtable walk is exactly the
+    kind of code this module cannot verify without the hardware to run it on
+    (no NVIDIA/AMD/Windows machine was available while writing this), and a
+    wrong vtable OFFSET crashes the process rather than returning a wrong
+    answer. `hw_detect.py`'s own `Win32_VideoController.AdapterRAM` fix
+    already establishes that this exact registry key is trustworthy for
+    per-adapter facts (there: the true VRAM size past the `uint32` cap; here:
+    the same subkeys' `MatchingDeviceID`), so reading it via stdlib `winreg`
+    answers the same question with no COM call, no new failure mode, and a
+    precedent already trusted elsewhere in this codebase.
+
+    Subkeys are enumerated numerically (`"0000"`, `"0001"`, …); a
+    non-numeric name (`"Properties"`, and other reserved subkeys Windows adds
+    under this class) is skipped rather than treated as a malformed adapter
+    entry.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    ids: list[tuple[int, int]] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             DISPLAY_CLASS_REGISTRY_KEY) as class_key:
+            index = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(class_key, index)
+                except OSError:
+                    break
+                index += 1
+                if not subkey_name.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(class_key, subkey_name) as adapter_key:
+                        matching_id, _ = winreg.QueryValueEx(
+                            adapter_key, "MatchingDeviceID")
+                except OSError:
+                    continue
+                match = _PCI_VEN_DEV_RE.search(matching_id)
+                if match:
+                    ids.append((int(match.group(1), 16), int(match.group(2), 16)))
+    except OSError:
+        return None
+    return ids
+
+
 def _directml() -> Availability:
-    """`onnx-embed-directml`'s platform — Windows on x86_64, and that is all.
+    """`onnx-embed-directml`'s platform — Windows on x86_64 — plus a real
+    Direct3D 12 adapter, since the GPU-first reorder (code review finding).
 
-    **The simplest probe in this section, and that is the right answer rather
-    than an omission.** `_vulkan` beside it is long because a Vulkan wheel
-    supplies neither the loader nor the driver ICD, so `import llama_cpp` HARD
-    FAILS on a machine missing either — there is a real, catastrophic failure to
-    gate against. DirectML has no equivalent: `onnxruntime-directml` links
-    against `DirectML.dll` and `d3d12.dll`, both of which ship with Windows
-    itself from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
+    **Platform half unchanged.** `onnxruntime-directml` links against
+    `DirectML.dll` and `d3d12.dll`, both of which ship with Windows itself
+    from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
     adapter — a discrete NVIDIA or AMD card, Intel Arc, or the integrated GPU
-    every desktop Windows machine has. There is no "no driver installed" state
-    to detect and nothing to `dlopen`-check.
+    every desktop Windows machine has. There is no "no driver installed"
+    state to detect and nothing to `dlopen`-check, so `_vulkan`'s loader/ICD
+    split has no equivalent here.
 
-    **So "plus a present GPU" is not modelled as a second probe.** Enumerating
-    D3D12 adapters needs a `ctypes` call into `dxgi.dll` — a system binary
-    question SPEC.md's rule keeps out of a per-page-render path — and every
-    answer it could give on a machine that reaches this row is "yes". A probe
-    that always answers yes is a probe whose failure mode is entirely its own
-    bugs. The row is also OPT-IN from the Engines tab and sits below the CPU row,
-    so `auto` never reaches it: nobody lands here without choosing to.
+    **The adapter half is new, and its old absence was a documented
+    trade-off that stopped holding.** This function's earlier revision
+    argued no adapter check was needed BECAUSE the row was opt-in from the
+    Engines tab and sat below `onnx-embed`, so `auto` never reached it —
+    "every answer it could give on a machine that reaches this row is yes"
+    was true only because reaching it meant a user had already chosen it
+    with eyes open. The GPU-first reorder made this row the embeddings
+    default on EVERY Windows x86_64 machine `auto` resolves on, including a
+    headless server, an RDP session, or a VM with no GPU passthrough — none
+    of which has anything but the Microsoft Basic Render Driver (`vendor
+    0x1414`, `device 0x8c`, WARP-backed software rasterization), on which
+    `onnxruntime-directml`'s own session creation fails at load. A machine
+    whose only adapter is that one is refused here for the same reason
+    `_vulkan`'s software-ICD check refuses lavapipe-only Linux: a claim of
+    GPU acceleration that the hardware cannot back up.
+
+    **Fails OPEN on anything the registry read cannot settle** — `None`
+    (non-Windows test env, a permissions failure, a registry shape this
+    function does not recognise) or an empty list (enumerated successfully,
+    found nothing) both pass rather than refuse, the same asymmetry `_cuda`'s
+    "no driver-version floor" docstring argues for: refusing a machine that
+    might well work, on a probe that failed to read it correctly, is a worse
+    mistake than the loose check this replaces. Only an EXPLICIT, exclusively
+    software adapter list refuses.
 
     `win_amd64` only, from the distribution's own wheel list (checked against
     `onnxruntime-directml` 1.24.4, which publishes `cp311`-`cp314` for
@@ -1075,18 +1237,29 @@ def _directml() -> Availability:
     """
     system = platform.system()
     machine = platform.machine()
-    if system == "Windows" and machine == "AMD64":
-        return Availability(True)
-    if system == "Windows":
+    if system != "Windows":
+        return Availability(
+            False,
+            f"needs Windows (this is {system.lower()}/{machine})",
+        )
+    if machine != "AMD64":
         return Availability(
             False,
             "needs an x86_64 machine (onnxruntime-directml publishes "
             "win_amd64 only, no win_arm64)",
         )
-    return Availability(
-        False,
-        f"needs Windows (this is {system.lower()}/{machine})",
-    )
+    adapters = _windows_display_adapter_ids()
+    if adapters and all(
+        vendor == MS_BASIC_RENDER_VENDOR and device == MS_BASIC_RENDER_DEVICE
+        for vendor, device in adapters
+    ):
+        return Availability(
+            False,
+            "needs a real GPU (only the Microsoft Basic Render Driver is "
+            "registered — this looks like a headless, RDP, or VM session "
+            "with no Direct3D 12 adapter passthrough)",
+        )
+    return Availability(True)
 
 
 # The table. Ordered, and first-match-wins per capability — which is what lets

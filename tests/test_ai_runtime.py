@@ -2436,11 +2436,17 @@ def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(mo
         assert "x86_64" in status.reason
 
 
-def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True):
+def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True,
+                  icd_names=("hardware_icd.json",)):
     """A machine with a working Vulkan loader and (optionally) a registered
     ICD — real files under `tmp_path`, repointed onto the module constants
     `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
     uses for `NVCUDA_DLL` rather than a global `os.path` patch.
+
+    `icd_names` is every manifest filename to create when `icd` is True — the
+    default is one plausible HARDWARE ICD name (nothing in
+    `SOFTWARE_VULKAN_ICD_MARKERS`); a test of the software-rasterizer refusal
+    passes `icd_names=("lvp_icd.x86_64.json",)` or similar instead.
     """
     if system == "Windows":
         dll = tmp_path / "vulkan-1.dll"
@@ -2455,7 +2461,8 @@ def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True):
     icd_dir = tmp_path / "icd.d"
     icd_dir.mkdir(exist_ok=True)
     if icd:
-        (icd_dir / "fake_icd.json").write_text("")
+        for name in icd_names:
+            (icd_dir / name).write_text("")
     monkeypatch.setattr(registry, "VULKAN_ICD_DIRS", (str(icd_dir),))
 
 
@@ -2499,6 +2506,48 @@ def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, t
     status = registry.by_code("llamacpp-text-vulkan").available()
     assert status.ok is False
     assert "driver" in status.reason
+
+
+def test_vulkan_refuses_a_software_only_icd_lavapipe(monkeypatch, tmp_path):
+    """The main fix (code review): `auto` reaching this row is new, and a
+    machine with NO GPU at all can still have a Vulkan ICD registered —
+    Mesa's lavapipe (`lvp_icd.<arch>.json`) ships in `mesa-vulkan-drivers`,
+    which stock Ubuntu/Debian desktops carry alongside every hardware ICD.
+    Before this fix a lavapipe-only machine passed `_vulkan`, downloaded the
+    182MB Vulkan wheel, and ran inference on llvmpipe — slower than the 22.5MB
+    CPU-index wheel `llamacpp-text` already offers for free. A loader is
+    installed and an ICD manifest IS present, so only the software-rasterizer
+    check can catch this — `test_vulkan_needs_a_registered_icd_even_with_a_working_loader`
+    already pins the "no manifest at all" half.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", icd_names=("lvp_icd.x86_64.json",))
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "software" in status.reason.lower()
+
+    # SwiftShader is the other software implementation anyone installs on
+    # purpose — same refusal, different manifest name.
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", icd_names=("vk_swiftshader_icd.json",))
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "software" in status.reason.lower()
+
+
+def test_vulkan_passes_when_a_hardware_icd_sits_beside_a_software_one(monkeypatch, tmp_path):
+    """A machine can have BOTH — lavapipe is a fallback Mesa registers
+    unconditionally, so a real GPU's ICD sits right beside it in the same
+    directory on plenty of real machines. Refusing there would be the
+    opposite bug: a GPU that IS usable, disqualified because a software
+    rasterizer also happens to be registered. The refusal is only for a
+    directory where EVERY manifest found is software."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux",
+                icd_names=("lvp_icd.x86_64.json", "radeon_icd.x86_64.json"))
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is True, status.reason
 
 
 def test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there(monkeypatch, tmp_path):

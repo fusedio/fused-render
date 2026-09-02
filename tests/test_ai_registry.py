@@ -125,9 +125,13 @@ def test_windows_resolves_to_onnx_embed_directml(monkeypatch):
 
 def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
     """`onnxruntime-directml` publishes `win_amd64` and nothing else, so the row
-    is Windows/AMD64 by construction. Unlike `_vulkan` there is no loader or
-    driver ICD to probe: DirectML runs on any Direct3D 12 adapter, which every
-    Windows 10+ machine has — see `_directml`'s own docstring."""
+    is Windows/AMD64 by construction. Unlike `_vulkan` there is no loader
+    file to probe — DirectML ships as part of Windows itself — but since the
+    GPU-first reorder `_directml` also checks for a REAL Direct3D 12 adapter
+    (see `_directml`'s own docstring and the tests below); on this real macOS
+    test machine `_windows_display_adapter_ids` cannot read the Windows
+    registry at all (`winreg` does not exist here) and returns `None`, which
+    `_directml` treats as "could not determine" and does not refuse on."""
     _windows(monkeypatch)
     assert _runner("onnx-embed-directml").available().ok
     for setter in (_mac_arm, _linux):
@@ -136,6 +140,59 @@ def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "ARM64")
     assert not _runner("onnx-embed-directml").available().ok
+
+
+def test_directml_refuses_a_machine_with_only_the_basic_render_driver(monkeypatch):
+    """The main fix (code review): `_directml` had NO adapter probe at all —
+    its own old docstring argued one was not needed because `auto` never
+    reached this row. That argument is gone since the GPU-first reorder made
+    it the embeddings default on every Windows x86_64 box, including a
+    headless/RDP/Server/VM machine whose only Direct3D 12 adapter is the
+    Microsoft Basic Render Driver (vendor `0x1414`, device `0x8c`) — a
+    software rasterizer, not a GPU, on which `onnxruntime-directml` session
+    creation fails at load time.
+
+    `_windows_display_adapter_ids` is the injectable seam (real code reads
+    the Display class registry key `hw_detect.py` already trusts for VRAM;
+    this test fakes its return value directly rather than touching a real
+    Windows registry, which does not exist on the machine running this
+    suite).
+    """
+    _windows(monkeypatch)
+    monkeypatch.setattr(
+        registry, "_windows_display_adapter_ids",
+        lambda: [(registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE)])
+    status = _runner("onnx-embed-directml").available()
+    assert status.ok is False
+    assert "Basic Render Driver" in status.reason or "basic render driver" in status.reason.lower()
+
+
+def test_directml_passes_with_a_real_adapter_beside_the_basic_render_driver(monkeypatch):
+    """Windows always registers the Microsoft Basic Render Driver alongside
+    any real adapter — its presence alone must not disqualify a machine that
+    also has a usable GPU."""
+    _windows(monkeypatch)
+    monkeypatch.setattr(
+        registry, "_windows_display_adapter_ids",
+        lambda: [
+            (registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE),
+            (0x10DE, 0x2704),  # an NVIDIA device id, any real value will do
+        ])
+    assert _runner("onnx-embed-directml").available().ok
+
+
+def test_directml_passes_when_the_adapter_probe_cannot_determine(monkeypatch):
+    """`None` (registry unreadable, or a permissions failure) is "could not
+    determine", not "determined and it's software-only" — refusing on an
+    inconclusive read would be a false negative on a real machine this probe
+    simply failed to read correctly, which is worse than the loose check it
+    replaces. An empty list (enumerated successfully, found nothing) gets the
+    same fail-open treatment for the same reason."""
+    _windows(monkeypatch)
+    monkeypatch.setattr(registry, "_windows_display_adapter_ids", lambda: None)
+    assert _runner("onnx-embed-directml").available().ok
+    monkeypatch.setattr(registry, "_windows_display_adapter_ids", lambda: [])
+    assert _runner("onnx-embed-directml").available().ok
 
 
 def test_the_accelerated_onnx_rows_reuse_the_existing_hardware_probes():
