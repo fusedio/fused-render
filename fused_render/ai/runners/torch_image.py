@@ -44,7 +44,9 @@ transformer subfolder deliberately NOT downloaded. Anything without a recipe
 loads the ordinary way through `AutoPipelineForText2Image`.
 """
 
+import atexit
 import os
+import shutil
 import sys
 import time
 
@@ -94,56 +96,82 @@ _loaded = {}
 #: lands in the Hub cache, where the AI Models page has to be able to say what
 #: it is, and the page runs in a process that cannot import this venv.
 #:
-#: **`quantize_4bit` names the components to quantize AT LOAD, and it exists
-#: because swapping the transformer only fixed the smaller half of the bill.**
-#: The recipe below replaces a 7.75GB bf16 transformer with a 2.43GiB Q4_K_M
-#: GGUF and leaves everything else at bf16 — but this repo's TEXT ENCODER is
-#: 7.5GB on its own, so after the swap the encoder is ~70% of what the worker
-#: holds. Measured on a 15.9GiB RX 9060 XT, 512x512 at 4 steps, prompt and seed
-#: fixed:
+#: **The text encoder is ALSO a GGUF, for the same reason the transformer is
+#: one — and that reason is disk residency, not the bnb NF4 route this recipe
+#: used to take.** `black-forest-labs/FLUX.2-klein-4B`'s `text_encoder/` is
+#: byte-identical to stock `Qwen/Qwen3-4B` (matching shape, dtype, size and
+#: content hash on `model.norm.weight`, `model.layers.0.self_attn.q_proj.
+#: weight` and `model.embed_tokens.weight`, verified by range-reading both
+#: repos' safetensors headers), so `unsloth/Qwen3-4B-GGUF`'s Q4_K_M — the same
+#: quant level the transformer above uses — is the same weights this recipe
+#: already loaded, in a format `enable_group_offload`'s `offload_to_disk_path`
+#: can actually reach. It could not reach the old bnb NF4 encoder: `Params4bit`
+#: keeps its dequantization state (`quant_state`) as a plain Python attribute
+#: invisible to `ModuleGroup`'s `parameters()`/`buffers()` scan
+#: (`diffusers/hooks/group_offloading.py`), which made group-offloading it a
+#: device-mismatch crash rather than a slow path — see `_group_offload_
+#: exclusions`'s history for the exclusion this used to need and no longer
+#: does. `GGUFParameter` carries its quant metadata the same way but keeps
+#: every quantized byte in `.data`, which is exactly what that scan collects,
+#: so it round-trips through disk offload correctly the same way the
+#: transformer already does.
+#:
+#: **This repo's TEXT ENCODER is 7.5GB bf16 on its own — before this change,
+#: ~70% of what the worker held after the transformer swap**, which is why it
+#: is the component the idle-RAM problem this module's docstring opens with is
+#: actually about, and why quantizing it (first as bnb NF4, now as GGUF) has
+#: always been worth doing on its own. Measured on a 15.9GiB RX 9060 XT,
+#: 512x512 at 4 steps, prompt and seed fixed, comparing bf16 against the OLD
+#: bnb NF4 route (this comparison predates the GGUF swap above and is kept for
+#: the shape of the trade, not as a claim about the GGUF path's numbers):
 #:
 #:   * bf16 text encoder: `memory_allocated` 10.15GiB, `drm-memory-vram`
 #:     10.37GiB, warm render 5.66s / 5.72s, load+`to("cuda")` 3.45s + 3.00s.
 #:   * NF4 text encoder: `memory_allocated` 5.10GiB, `drm-memory-vram` 5.35GiB,
 #:     warm render 5.76s, load+`to("cuda")` 5.32s + 0.18s.
 #:
-#: So it HALVES the resident set and is a wash on the clock — 5.76s against
-#: 5.72s is inside the run-to-run spread, and the total time to a loaded
-#: pipeline actually FALLS (5.50s vs 6.45s), because quantizing costs ~1.9s at
-#: load and then there are half as many bytes to copy to the card. Peak during
-#: a render drops too (6.65GiB vs a 12.28GiB reserved high-water), which is
-#: what `_place()` is measuring against.
+#: Both figures describe VRAM after `_place()` put the whole pipeline on the
+#: card (`all-gpu`/plain `to("cuda")`), not the group-offload-plus-disk path
+#: this module now also has — NF4 halved the resident set there and was a wash
+#: on the clock (quantizing cost ~1.9s at load, offset by half as many bytes to
+#: copy to the card). **The GGUF-encoder path's footprint — resident RAM with
+#: group offload's disk mode on, VRAM during a render, and load/render time —
+#: is NOT YET MEASURED on hardware.** Nobody has loaded this recipe on a GPU
+#: since the swap; the numbers above are the bf16-vs-NF4 comparison this
+#: change inherits reasoning from, not evidence about GGUF. Q4_K_M is also a
+#: different quantization scheme from NF4 (llama.cpp's k-quants against
+#: bitsandbytes' own format) — whether it moves output quality is an open
+#: question this change does not answer, only names as a trade worth watching.
 #:
-#: **NF4 rather than int8, and bitsandbytes rather than a second repo**, for
-#: three converging reasons: `bitsandbytes` is already declared in all three
-#: manifests and verified on this hardware (see any of their headers), so this
-#: costs no new dependency; `tonera/FLUX.2-klein-4B-int8-diffusers` — the model
-#: `catalog.py` already recommends — ships its OWN text encoder as bnb NF4
-#: (`"load_in_4bit": true, "bnb_4bit_quant_type": "nf4"`), so this is the same
-#: format the app already loads rather than a new one; and quantizing at load
-#: needs no pre-quantized upload to exist for a given repo, which a table of
-#: editorial judgements should not have to wait for.
+#: **What this DOES fix, unlike the old NF4 route, is the download**: the
+#: bf16 encoder is no longer fetched at all (`keep` below drops `text_encoder*
+#: /*`, since the component is now injected as a pre-built object the same way
+#: the transformer already is, and `from_pretrained` never opens a subfolder
+#: passed in as an object). The old route's own docstring named this as the
+#: one thing it did NOT fix; see `catalog.py`'s SDNQ entry for the other
+#: pre-quantized route this recipe still is not, which arrives as a whole
+#: separate repo.
 #:
-#: **What this does NOT fix is the download.** The bf16 encoder is still
-#: fetched and then quantized in this process, so `keep` is unchanged and the
-#: bytes on disk are what they were — see `catalog.py`'s SDNQ entry for the
-#: other route, which is smaller to fetch and faster per render but arrives as
-#: a whole separate repo.
-#:
-#: A recipe WITHOUT this key quantizes nothing, which is why it is a list of
-#: component names rather than a boolean: the next recipe may want its VAE left
-#: alone, or a pipeline with three text encoders may want two of them.
+#: A recipe with no `quantize_4bit` key (or an empty one) asks `_load_
+#: quantization` to quantize nothing, which is the shape every recipe below
+#: this comment is in now that both components arrive pre-quantized as GGUF —
+#: the key stays available for a future recipe that wants bitsandbytes on some
+#: OTHER component this table doesn't have a GGUF route for yet.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
-        "quantize_4bit": ["text_encoder"],
+        "text_encoder_repo": "unsloth/Qwen3-4B-GGUF",
         # `*` crosses `/` in fnmatch, so `tokenizer*/*` covers a `tokenizer_2`
         # a future FLUX may add, and nothing at the root ever matches.
+        # `text_encoder*/*` is deliberately absent: the component is injected
+        # into `from_pretrained` as a built object (`load()`, mirroring how
+        # the transformer subfolder is skipped once `transformer=` is passed),
+        # so the bf16 files that subfolder holds are never opened.
         "keep": ["model_index.json", "scheduler/*", "tokenizer*/*",
-                 "text_encoder*/*", "vae/*", "transformer/config.json"],
+                 "vae/*", "transformer/config.json"],
     },
 }
 
@@ -151,6 +179,14 @@ _GGUF_RECIPES = {
 def _component_file(recipe):
     """The single file to pull out of the recipe's component repo."""
     return formats.COMPONENT_REPOS[recipe["repo"]]["file"]
+
+
+def _text_encoder_file(recipe):
+    """The single file to pull out of the recipe's text-encoder GGUF repo —
+    `_component_file`'s twin, reading `formats.COMPONENT_REPOS` the same way
+    so the AI Models page (which cannot import this venv) has one shared place
+    to say what either quantized component is."""
+    return formats.COMPONENT_REPOS[recipe["text_encoder_repo"]]["file"]
 
 
 def _recipe(model_id):
@@ -286,7 +322,8 @@ def download(model_id):
     """
     recipe = _recipe(model_id)
     if not recipe:
-        return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None}
+        return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None,
+                "text_encoder_gguf": None}
 
     snapshot = worker_base.download_snapshot(
         model_id, allow_patterns=list(recipe["keep"]))
@@ -294,7 +331,20 @@ def download(model_id):
     gguf = worker_base.download_file(
         recipe["repo"], filename,
         detail=f"Fetching {filename} (quantized transformer)…")
-    return {"snapshot": snapshot, "gguf": gguf}
+    # `text_encoder_repo` names a SECOND GGUF, the text encoder's own — a
+    # separate repo from the transformer's, fetched the same way. Recipes are
+    # not required to carry this key (a future recipe's text encoder may have
+    # no byte-identical stock GGUF source to swap in), so this degrades to
+    # `None` rather than assuming every recipe below `_GGUF_RECIPES` looks
+    # like this one.
+    text_encoder_repo = recipe.get("text_encoder_repo")
+    text_encoder_gguf = None
+    if text_encoder_repo:
+        te_filename = _text_encoder_file(recipe)
+        text_encoder_gguf = worker_base.download_file(
+            text_encoder_repo, te_filename,
+            detail=f"Fetching {te_filename} (quantized text encoder)…")
+    return {"snapshot": snapshot, "gguf": gguf, "text_encoder_gguf": text_encoder_gguf}
 
 
 #: How much VRAM `_place` refuses to plan into, on top of every component
@@ -397,6 +447,88 @@ def _num_blocks_per_group():
         return _NUM_BLOCKS_PER_GROUP
 
 
+#: Env var gating `_group_offload_disk_path()` — same "set AND sane"
+#: precedence as `_VRAM_HEADROOM_ENV`/`_NUM_BLOCKS_PER_GROUP_ENV`. Unset
+#: falls through to the default (disk offload ON); the one recognized
+#: override is the literal value `"off"` (case-insensitive), which disables
+#: `offload_to_disk_path` and drops the group-offload rung back to memory
+#: mode — every other value, including a typo of "off" itself, is treated
+#: as unset rather than as an intentional but malformed override, so a
+#: mistyped value degrades to disk-on instead of silently doing nothing.
+_GROUP_OFFLOAD_DISK_ENV = "FUSED_RENDER_AI_GROUP_OFFLOAD_DISK"
+
+
+def _group_offload_disk_enabled():
+    """Whether `_place`'s group-offload rung should pass `offload_to_disk_
+    path` at all. True unless `_GROUP_OFFLOAD_DISK_ENV` is set to exactly
+    "off" (case-insensitive, surrounding whitespace ignored) — the same
+    "sane, not just parsed" posture the other two knobs use, applied to a
+    boolean instead of a number: there is no ambiguous middle ground to
+    reject the way `-4` or `inf` needs rejecting for a byte count, so the
+    only two states are "recognized disable string" and "everything else
+    defaults to on."
+    """
+    raw = os.environ.get(_GROUP_OFFLOAD_DISK_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() != "off"
+
+
+def _group_offload_disk_path():
+    """Where `_place`'s group-offload rung should spill block weights to
+    while they are offloaded, or `None` when `_group_offload_disk_enabled()`
+    says disk offload is off (memory mode: `enable_group_offload` with no
+    `offload_to_disk_path` at all, its own long-standing default).
+
+    Deliberately real disk, never `$TMPDIR`/`/tmp` and never `$XDG_RUNTIME_
+    DIR`: `fused_render/supervisor/paths.py` documents `$XDG_RUNTIME_DIR` as
+    tmpfs-backed on Linux, and a generic `/tmp` is exactly as likely to be a
+    tmpfs mount on the machines this ships to. Spilling group-offloaded
+    weights onto tmpfs would just move the same anonymous, unreclaimable
+    pages this feature exists to get rid of from the process's RSS to a
+    filesystem backed by that same RAM — clean-looking in `/proc/<pid>/
+    smaps_rollup` (file-backed pages, evictable in principle) but not
+    actually freeing anything on a memory-constrained host, since the
+    kernel would need to evict them back into a RAM the tmpfs itself
+    consumes. `~/.fused-render` is the app's own real-disk home directory —
+    the same `os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser
+    ("~/.fused-render")` fallback used throughout the rest of the app
+    (`tasks_store.py`, `community.py`, `meta_migration.py`, and others) —
+    so this reuses that convention rather than inventing a new base path.
+
+    Scoped per-worker by pid rather than shared across worker processes:
+    two workers group-offloading the same recipe at once must not read or
+    write each other's half-written block files. Created eagerly (`os.
+    makedirs(..., exist_ok=True)`) so `enable_group_offload` never has to
+    create it itself mid-load, and removed via `atexit` — registered once,
+    the first time this function actually returns a path, not on every
+    call — because the tree exists only for this process's lifetime and
+    nothing else reads it once the process is gone. Losing the directory to
+    an unclean exit (SIGKILL, a crash) leaves stale files on disk rather
+    than corrupting anything: `enable_group_offload`'s own disk path skips
+    rewriting a block file that already exists, so leftover files are dead
+    weight, not a correctness risk — cleanup here is tidiness, not safety.
+    """
+    if not _group_offload_disk_enabled():
+        return None
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    path = os.path.join(home, "cache", "group-offload", str(os.getpid()))
+    os.makedirs(path, exist_ok=True)
+    if path not in _GROUP_OFFLOAD_DISK_PATHS_REGISTERED:
+        atexit.register(shutil.rmtree, path, ignore_errors=True)
+        _GROUP_OFFLOAD_DISK_PATHS_REGISTERED.add(path)
+    return path
+
+
+#: Guards `_group_offload_disk_path()`'s `atexit.register` against
+#: registering the same directory's cleanup twice — `_place` can call it
+#: more than once in a process only in tests, but a duplicate `atexit`
+#: registration would just call `shutil.rmtree` on an already-removed
+#: directory a second time at exit, harmless with `ignore_errors=True` but
+#: still worth not doing.
+_GROUP_OFFLOAD_DISK_PATHS_REGISTERED = set()
+
+
 def _component_bytes(module):
     """Bytes a loaded `torch.nn.Module` component will cost on a device —
     parameters AND buffers, because a component can hold real weight-sized
@@ -417,45 +549,28 @@ def _component_bytes(module):
 
 
 def _group_offload_exclusions(pipe):
-    """Which of `pipe.components` block offload must never touch: `vae`
-    always (see `_place`'s docstring for why), plus `text_encoder` when the
-    pipeline actually has one — read off `pipe.components` rather than
-    assumed present, so a pipeline built without a text encoder (a future
-    recipe, a test fake) is handled rather than crashing on a name that was
-    never registered.
+    """Which of `pipe.components` block offload must never touch: just
+    `vae`, always — see `_place`'s docstring for the full mechanism. `pipe`
+    is still taken as an argument (rather than this being a bare constant)
+    so a future exclusion can be conditioned on what the pipeline actually
+    has, the way the text encoder's exclusion used to be here.
 
-    Two independent reasons rule the text encoder out of `enable_group_
-    offload`, both load-bearing, both applying to the klein recipe's
-    `Qwen3ForCausalLM` today:
-
-    * **Its bitsandbytes NF4 weights are invisible to `ModuleGroup`.**
-      `Params4bit` keeps its dequantization state (`absmax`, `code`, the
-      nested `state2`) in `quant_state`, a plain Python attribute on the
-      tensor — never registered as a parameter or buffer of the owning
-      `Linear4bit`. `ModuleGroup.__init__`
-      (`diffusers/hooks/group_offloading.py`) collects exactly `module.
-      parameters()`/`module.buffers()`, so it never sees `quant_state`, and
-      its onload path (`_transfer_tensor_to_device`) reassigns `tensor.data`
-      directly rather than calling `Params4bit.to()` — the only method that
-      moves `quant_state` alongside `.data`
-      (`bitsandbytes/nn/modules.py:Params4bit.to`). Group-offloading this
-      component would leave `.data` on one device and `quant_state` on
-      another: a device-mismatch `RuntimeError` on the first forward, not a
-      slow path.
-    * **Even ignoring quantization, block offload would buy nothing here.**
-      `enable_group_offload`'s block-level mode groups a module's direct
-      `ModuleList` children. A causal LM's direct children (embeddings,
-      final norm, LM head, and ONE `ModuleList` of transformer layers
-      wrapped inside `model.layers`, not exposed as a direct child of the
-      top-level module `pipe.text_encoder` names) are not `ModuleList`s
-      themselves, so the whole component would land in one unmatched group
-      moved as a single unit — identical to `.to(device)`, with none of the
-      per-block VRAM ceiling this rung exists to lower.
+    The text encoder is NOT excluded. The klein recipe's text encoder is a
+    GGUF `Qwen3ForCausalLM`, built by `transformers`' own `gguf_file=`
+    loader (see `load()`), and `GGUFParameter` keeps all of its quantized
+    bytes in `.data` itself — its quant metadata is plain Python attributes,
+    same shape as bitsandbytes' `Params4bit`, but nothing quantized lives
+    outside `.data` the way bitsandbytes' `quant_state` does. `ModuleGroup`
+    (`diffusers/hooks/group_offloading.py`) collects tensors from `module.
+    parameters()`/`module.buffers()` and its onload path moves `.data`
+    directly; a `GGUFParameter` round-trips through that correctly, with
+    nothing left behind on the wrong device. A bitsandbytes NF4 text
+    encoder could not make this same claim — `Params4bit.to()` is the only
+    method that moves `quant_state` alongside `.data`, and `ModuleGroup`
+    never calls it — which is why this component was excluded before the
+    text encoder moved to GGUF.
     """
-    exclude = ["vae"]
-    if getattr(pipe, "text_encoder", None) is not None:
-        exclude.append("text_encoder")
-    return exclude
+    return ["vae"]
 
 
 def _place(pipe):
@@ -476,23 +591,37 @@ def _place(pipe):
     2. **Group offload** — the probe ran and said it does not fit: diffusers'
        own `pipe.enable_group_offload(onload_device="cuda", offload_device=
        "cpu", offload_type="block_level", num_blocks_per_group=_num_blocks_
-       per_group(), exclude_modules=["vae"])`, memory mode only — no
-       `offload_to_disk_path`. It moves one group of blocks onto the GPU at a
-       time instead of parking every weight in system RAM for the process's
-       whole life, which lowers the VRAM ceiling a render needs without
-       accelerate's offload ever entering the picture. REPLACES case 3 here,
-       never stacks on it: `_raise_error_if_accelerate_model_or_sequential_
-       hook_present` makes diffusers' own hooks and accelerate's mutually
-       exclusive, so a pipeline cannot carry both at once. `use_stream` is
-       left at its default (unset) — SPEC/D's gate on the RX 9060 XT is what
-       settles whether streaming is safe on ROCm, by measurement, and that
-       gate has not run; this rung must not force it on ahead of that answer.
+       per_group(), exclude_modules=["vae"], offload_to_disk_path=
+       _group_offload_disk_path())`. It moves one group of blocks onto the
+       GPU at a time instead of parking every weight in system RAM for the
+       process's whole life, which lowers the VRAM ceiling a render needs
+       without accelerate's offload ever entering the picture. REPLACES
+       case 3 here, never stacks on it: `_raise_error_if_accelerate_model_or_
+       sequential_hook_present` makes diffusers' own hooks and accelerate's
+       mutually exclusive, so a pipeline cannot carry both at once.
+       `use_stream` is left at its default (unset) — SPEC/D's gate on the RX
+       9060 XT is what settles whether streaming is safe on ROCm, by
+       measurement, and that gate has not run; this rung must not force it
+       on ahead of that answer.
 
-       `exclude_modules=` (`_group_offload_exclusions(pipe)`, always `vae`
-       plus `text_encoder` when the pipeline has one) names two components
-       that must never reach `enable_group_offload`, for two unrelated
-       reasons — see `_group_offload_exclusions`'s own docstring for the
-       text-encoder reasoning; the VAE's is below.
+       `offload_to_disk_path=` is what turns the offloaded blocks' host
+       pages from anonymous (parked in RAM for the process's whole life,
+       same as plain offload leaves them) into file-backed and kernel-
+       evictable — see `_group_offload_disk_path()`'s own docstring for
+       where that path lives, why it must be real disk, and the env knob
+       that can turn it back off. `_group_offload_disk_enabled() is False`
+       makes this argument `None`, which `enable_group_offload` treats
+       exactly like never passing it at all: memory mode, the same shape
+       this rung shipped with before disk residency existed.
+
+       `exclude_modules=` (`_group_offload_exclusions(pipe)`, always `vae`)
+       names the one component that must never reach `enable_group_offload`
+       — see `_group_offload_exclusions`'s own docstring for why the text
+       encoder is NOT in this list: it is a GGUF component (see `load()`),
+       and GGUF's quantized tensors round-trip through group offload's
+       (and, by extension, the disk path's) tensor movement correctly,
+       unlike bitsandbytes' NF4 weights, which could not appear here at
+       all.
 
        `vae` is load-bearing, not an optimization: block offload's hooks
        only fire on a module's `forward`, and diffusers'
@@ -515,17 +644,6 @@ def _place(pipe):
        already run. Excluding it moves it once to the onload device instead
        and leaves it resident — at 0.17 GiB, cheap enough next to the
        transformer this rung exists for that it is not worth measuring.
-
-       `text_encoder` is excluded for a different pair of reasons — a
-       device-mismatch crash its bitsandbytes NF4 weights would hit on the
-       very first forward, and a block-level grouping that would buy nothing
-       even if it didn't crash. Unlike the VAE, excluding it is not "move it
-       once and pay a small resident cost": on the klein recipe this is the
-       7.5GB (bf16) / ~3.75GB (NF4) component the idle-memory problem this
-       module's docstring opens with is actually about. `_place` does not
-       solve that here — it only keeps group offload from being the thing
-       that crashes on it; the component still ends up resident, same as
-       plain offload would have left it.
     3. **Offload** — group offload itself raised with nothing left hooked, or
        the probe raised before it could answer whether the model fits:
        today's unconditional `enable_model_cpu_offload()`, unchanged, and
@@ -685,12 +803,13 @@ def _place(pipe):
                     # klein recipe's VAE) would silently never come back off
                     # the offload device. See the docstring above for the
                     # full mechanism. 0.17 GiB resident is not worth the risk
-                    # of getting this wrong. `text_encoder`, when the pipeline
-                    # has one, is excluded for the bnb/`Qwen3ForCausalLM`
-                    # reasons the docstring gives — read from `pipe.components`
-                    # rather than assumed, so a pipeline with no text encoder
-                    # at all (or one named differently) is handled correctly.
+                    # of getting this wrong. The text encoder is NOT excluded
+                    # — it is a GGUF component (see `load()`), and GGUF's
+                    # quantized tensors round-trip through group offload
+                    # correctly, unlike the bitsandbytes NF4 weights this
+                    # recipe used to load it with.
                     exclude_modules=_group_offload_exclusions(pipe),
+                    offload_to_disk_path=_group_offload_disk_path(),
                 )
                 placement = "group-offload"
             except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it
@@ -761,9 +880,32 @@ def load(model_id, fetched):
         # is already quantized and already BUILT, passed in above as an object
         # rather than a name, and asking diffusers to quantize it again would
         # be asking it to re-quantize GGUF weights.
-        pipe = pipeline_cls.from_pretrained(
-            model_id, transformer=transformer, torch_dtype=torch.bfloat16,
-            quantization_config=_load_quantization(recipe))
+        #
+        # The text encoder gets the same treatment when the recipe names one:
+        # built from its own GGUF file via transformers' own `gguf_file=`
+        # loader (the same dequantization path `AutoModelForCausalLM` already
+        # uses for any GGUF checkpoint, klein-specific only in which repo and
+        # file it points at), then passed in as a built object so
+        # `from_pretrained` skips fetching and constructing it itself. A
+        # recipe with no `text_encoder_repo` leaves `text_encoder` unbuilt and
+        # the kwarg omitted entirely — never passed as `None`, which would
+        # override the pipeline's own default construction instead of leaving
+        # it alone.
+        text_encoder = None
+        if fetched.get("text_encoder_gguf"):
+            from transformers import AutoModelForCausalLM
+
+            text_encoder = AutoModelForCausalLM.from_pretrained(
+                recipe["text_encoder_repo"], gguf_file=fetched["text_encoder_gguf"],
+                torch_dtype=torch.bfloat16)
+        pipeline_kwargs = {
+            "transformer": transformer,
+            "torch_dtype": torch.bfloat16,
+            "quantization_config": _load_quantization(recipe),
+        }
+        if text_encoder is not None:
+            pipeline_kwargs["text_encoder"] = text_encoder
+        pipe = pipeline_cls.from_pretrained(model_id, **pipeline_kwargs)
     else:
         from diffusers import AutoPipelineForText2Image
 

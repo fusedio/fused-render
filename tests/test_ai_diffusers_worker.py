@@ -71,17 +71,17 @@ REPO_FILES = [
 ]
 
 #: What `from_pretrained` actually opens for this pipeline: the index, every
-#: component subfolder it names, and the transformer's CONFIG (the GGUF is a
-#: bare tensor file — `from_single_file(config=…, subfolder="transformer")`
-#: reads this to know what it is building, which is why "skip the subfolder"
-#: was never an option).
+#: component subfolder it still names, and the transformer's CONFIG (the GGUF
+#: is a bare tensor file — `from_single_file(config=…, subfolder=
+#: "transformer")` reads this to know what it is building, which is why "skip
+#: the subfolder" was never an option). `text_encoder/` is absent on purpose:
+#: `keep` never allow-lists it, because `load()` builds that component from
+#: its OWN GGUF repo (`text_encoder_repo`) and passes it into `from_pretrained`
+#: as a built object, the same way the transformer already arrives — so this
+#: repo's bf16 `text_encoder/` files are never opened at all.
 READ_BY_THE_PIPELINE = {
     "model_index.json",
     "transformer/config.json",
-    "text_encoder/config.json",
-    "text_encoder/model.safetensors.index.json",
-    "text_encoder/model-00001-of-00002.safetensors",
-    "text_encoder/model-00002-of-00002.safetensors",
     "tokenizer/tokenizer.json",
     "tokenizer/tokenizer_config.json",
     "tokenizer/vocab.json",
@@ -232,21 +232,34 @@ def test_the_transformer_config_survives_the_filter(base, monkeypatch, selects):
     assert "transformer/config.json" in landed
 
 
-def test_the_split_costs_about_ten_gigabytes_not_eighteen(base, monkeypatch,
-                                                          selects):
-    """The figure `catalog.py`'s `size_gb` promises and D310's benchmark
-    assumed. Bounded rather than exact — the repo may gain a config file — but
-    tight enough that either copy of the transformer reappearing breaks it."""
+def test_the_split_now_costs_about_five_gigabytes_not_eighteen(base, monkeypatch,
+                                                                selects):
+    """The GGUF transformer used to be the only quantized component, landing
+    around 10.8GB against an 18.6GB unfiltered download (the figure `catalog.
+    py`'s `size_gb` promised and D310's benchmark assumed, back when the text
+    encoder was still fetched as its own bf16 shards through the snapshot
+    filter below). Now the text encoder is ALSO a GGUF, fetched as one ~2.33
+    GiB file via a separate `download_file` call rather than through the
+    snapshot's `keep` allow-list at all — `landed` below no longer includes
+    it, only the snapshot's config/tokenizer/scheduler/VAE bytes, so both
+    GGUFs have to be added back in by hand to get the true total. Bounded
+    rather than exact — the repo may gain a config file — but tight enough
+    that either copy of the transformer, or the old bf16 text encoder,
+    reappearing breaks it."""
     worker = load_worker(monkeypatch, base)
 
     landed = fetched(worker, base, selects)
     gguf = 2_604_300_000  # unsloth/FLUX.2-klein-4B-GGUF, Q4_K_M, Hub metadata
+    text_encoder_gguf = 2_497_281_312  # unsloth/Qwen3-4B-GGUF, Q4_K_M, Hub metadata
 
-    total = sum(landed.values()) + gguf
-    assert 10.5e9 < total < 11.0e9
-    # The saving is one whole copy of the transformer weights, and the recipe
-    # used to buy none of it: with the old deny-list the root bundle rode along.
-    assert total + TRANSFORMER_BYTES > 18.5e9
+    total = sum(landed.values()) + gguf + text_encoder_gguf
+    assert 5.0e9 < total < 5.6e9
+    # The saving is one whole copy of the transformer weights PLUS the bf16
+    # text encoder, and the recipe used to buy none of it: with the old
+    # deny-list the root bundle rode along, and with the old NF4 route the
+    # bf16 text encoder shards still had to be fetched before they were
+    # quantized in memory.
+    assert total + TRANSFORMER_BYTES > 12.5e9
 
 
 # -- the component repo, named in one place ------------------------------------
@@ -257,17 +270,20 @@ def test_the_gguf_repo_is_a_registered_component(base, monkeypatch):
     page — in the server process, which cannot import a runner's venv — has to
     be able to say what it is. `formats.COMPONENT_REPOS` is that shared place,
     and the recipe takes the FILENAME from it rather than keeping a second
-    copy."""
+    copy. Two GGUFs are fetched now, transformer and text encoder, each its
+    own repo — both must be registered, not just whichever `download_file`
+    call happened to land last."""
     from fused_render.ai.runners import formats
 
     worker = load_worker(monkeypatch, base)
     worker.download(MODEL)
 
-    call = base.file_calls[-1]
-    assert call["repo"] in formats.COMPONENT_REPOS
-    entry = formats.COMPONENT_REPOS[call["repo"]]
-    assert entry["file"] == call["file"]
-    assert entry["of"] == MODEL
+    assert len(base.file_calls) == 2
+    for call in base.file_calls:
+        assert call["repo"] in formats.COMPONENT_REPOS
+        entry = formats.COMPONENT_REPOS[call["repo"]]
+        assert entry["file"] == call["file"]
+        assert entry["of"] == MODEL
 
 
 # -- the live preview (SPEC §40) -------------------------------------------------
@@ -387,6 +403,110 @@ def _request(tmp_path, **over):
     return {"prompt": "a red fox", "out": out, "job": "sys:ai-image:abc",
             "width": 512, "height": 512, "steps": 4,
             "outPreview": preview.preview_path(out), **over}
+
+
+def test_load_builds_the_text_encoder_from_gguf_and_passes_it_into_from_pretrained(
+        monkeypatch, base):
+    """The klein recipe's `load()` branch: the transformer is built via
+    `from_single_file` as before, and now the text encoder is ALSO built —
+    via `transformers.AutoModelForCausalLM.from_pretrained(repo, gguf_file=
+    …)`, the same loader any other GGUF checkpoint uses — and passed into
+    the pipeline's own `from_pretrained` as `text_encoder=`, a built object
+    the pipeline must not try to construct or fetch itself."""
+    pipe = FakePipe()
+    pipe.to = lambda device: None
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+
+    seen = {}
+
+    class FakeTransformer:
+        @classmethod
+        def from_single_file(cls, *a, **k):
+            return "the-transformer-object"
+
+    class FakePipelineCls:
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            seen["pipeline_kwargs"] = kwargs
+            seen["pipeline_model_id"] = model_id
+            return pipe
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.GGUFQuantizationConfig = lambda **k: "the-gguf-quant-config"
+    diffusers.Flux2Transformer2DModel = FakeTransformer
+    diffusers.Flux2KleinPipeline = FakePipelineCls
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    class FakeAutoModelForCausalLM:
+        @classmethod
+        def from_pretrained(cls, repo_id, gguf_file=None, torch_dtype=None):
+            seen["text_encoder_call"] = {
+                "repo_id": repo_id, "gguf_file": gguf_file, "torch_dtype": torch_dtype}
+            return "the-text-encoder-object"
+
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModelForCausalLM = FakeAutoModelForCausalLM
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf",
+               "text_encoder_gguf": "/blobs/text-encoder.gguf"}
+    worker.load(MODEL, fetched)
+
+    assert seen["text_encoder_call"] == {
+        "repo_id": "unsloth/Qwen3-4B-GGUF",
+        "gguf_file": "/blobs/text-encoder.gguf",
+        "torch_dtype": "bfloat16",
+    }
+    assert seen["pipeline_kwargs"]["text_encoder"] == "the-text-encoder-object"
+    assert seen["pipeline_kwargs"]["transformer"] == "the-transformer-object"
+    assert seen["pipeline_model_id"] == MODEL
+
+
+def test_load_omits_the_text_encoder_kwarg_when_the_recipe_fetched_none(
+        monkeypatch, base):
+    """`fetched["text_encoder_gguf"]` is `None` for a recipe with no
+    `text_encoder_repo` — `load()` must leave the `text_encoder` kwarg out of
+    the `from_pretrained` call entirely rather than pass it as `None`, which
+    would override the pipeline's own default construction instead of
+    leaving that component alone."""
+    pipe = FakePipe()
+    pipe.to = lambda device: None
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+
+    seen = {}
+
+    class FakeTransformer:
+        @classmethod
+        def from_single_file(cls, *a, **k):
+            return "the-transformer-object"
+
+    class FakePipelineCls:
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            seen["pipeline_kwargs"] = kwargs
+            return pipe
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.GGUFQuantizationConfig = lambda **k: "the-gguf-quant-config"
+    diffusers.Flux2Transformer2DModel = FakeTransformer
+    diffusers.Flux2KleinPipeline = FakePipelineCls
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf",
+               "text_encoder_gguf": None}
+    worker.load(MODEL, fetched)
+
+    assert "text_encoder" not in seen["pipeline_kwargs"]
 
 
 def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch, base):
@@ -576,6 +696,79 @@ def test_group_offload_blocks_unparsable_env_is_ignored(monkeypatch, base):
     assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
 
 
+# -- the group-offload disk-residency knob (`_group_offload_disk_path`) -----------
+#
+# "Set AND sane" like the other two knobs, but there is no numeric middle
+# ground to sanity-check here — the only recognized override turns disk
+# residency OFF, and the default (unset, or anything that is not exactly
+# "off") is ON. `conftest.py` redirects `FUSED_RENDER_HOME` to an isolated
+# per-run temp directory for the whole suite, so calling `_group_offload_
+# disk_path()` directly — real `os.makedirs` and `atexit.register` included —
+# is safe here without extra monkeypatching.
+
+
+def test_group_offload_disk_enabled_by_default_when_env_is_unset(monkeypatch, base):
+    monkeypatch.delenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", raising=False)
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._group_offload_disk_enabled() is True
+    path = worker._group_offload_disk_path()
+    assert path is not None
+    home = os.environ["FUSED_RENDER_HOME"]
+    assert os.path.realpath(path).startswith(os.path.realpath(home))
+    assert os.path.isdir(path)
+
+
+def test_group_offload_disk_env_off_disables_it(monkeypatch, base):
+    """The one recognized override — falls back to memory mode, exactly the
+    shape `enable_group_offload` had before disk residency existed."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", "off")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._group_offload_disk_enabled() is False
+    assert worker._group_offload_disk_path() is None
+
+
+def test_group_offload_disk_env_off_is_case_insensitive_and_trims_whitespace(
+        monkeypatch, base):
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", "  OFF  ")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._group_offload_disk_enabled() is False
+    assert worker._group_offload_disk_path() is None
+
+
+def test_group_offload_disk_bogus_env_degrades_to_the_default(monkeypatch, base):
+    """A typo of "off" (or any other gibberish) is not a recognized disable
+    string, so it is treated like unset — disk offload stays ON, the same
+    "sane, not just parsed" posture the other two knobs use."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", "0ff")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._group_offload_disk_enabled() is True
+    assert worker._group_offload_disk_path() is not None
+
+
+def test_place_falls_back_to_memory_mode_group_offload_when_the_disk_env_is_off(
+        monkeypatch, base):
+    """End-to-end through `_place`: the disk env knob reaches `enable_group_
+    offload`'s `offload_to_disk_path=` kwarg as `None`, the same "no disk
+    path passed at all" shape the rung had before disk residency existed."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_DISK", "off")
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert len(pipe.group_offload_calls) == 1
+    assert pipe.group_offload_calls[0]["offload_to_disk_path"] is None
+
+
 # -- size-aware GPU placement (`_place`) ------------------------------------------
 #
 # Measured on the user's machine: FLUX.2-klein-4B via the ROCm GGUF recipe, a
@@ -583,8 +776,12 @@ def test_group_offload_blocks_unparsable_env_is_ignored(monkeypatch, base):
 # `enable_model_cpu_offload()` left `RssAnon` at 11.7 GiB (the weights, parked
 # in system RAM) and the worker's own VRAM (`drm-total-vram`) at 0.59 GiB —
 # HIP context and staging only — on a card that was otherwise 2.0 GiB used out
-# of 15.9. Component sizes on disk: text encoder bf16 8.05 GB, transformer
-# GGUF Q4_K_M 2.60 GB, VAE 0.17 GB.
+# of 15.9. Component sizes ON DISK, not resident: text encoder bf16 8.05 GB
+# (the OLD bf16-then-NF4 route this recipe no longer takes — kept as the
+# `text_encoder_bytes` fixtures' size below since these placement tests exist
+# to exercise the ladder's arithmetic, not to describe today's GGUF-encoder
+# footprint, which has not been measured on hardware), transformer GGUF
+# Q4_K_M 2.60 GB, VAE 0.17 GB.
 #
 # A third placement — pinning transformer+VAE resident while the text encoder
 # offloaded per call — was built, measured, and removed; see `_place`'s own
@@ -831,30 +1028,35 @@ def test_place_uses_group_offload_when_it_does_not_all_fit(monkeypatch, base):
     assert kwargs["offload_device"] == "cpu"
     assert kwargs["offload_type"] == "block_level"
     assert kwargs["num_blocks_per_group"] == worker._NUM_BLOCKS_PER_GROUP
-    # Task 2's knob, not this one's — memory mode only, nothing on disk.
-    assert "offload_to_disk_path" not in kwargs
+    # Disk residency is on by default — a real path under this test's own
+    # isolated FUSED_RENDER_HOME (see conftest.py's redirect), never None and
+    # never under a tmpfs-backed dir like $XDG_RUNTIME_DIR or /tmp.
+    disk_path = kwargs["offload_to_disk_path"]
+    assert disk_path is not None
+    home = os.environ["FUSED_RENDER_HOME"]
+    assert os.path.realpath(disk_path).startswith(os.path.realpath(home))
     # Unsettled pending the hardware gate (SPEC/D) — must not be forced on.
     assert kwargs.get("use_stream") is not True
     # The VAE must reach `enable_group_offload` as an EXCLUSION, not silently
     # absorbed into block offload — `AutoencoderKLFlux2` (the klein recipe's
     # VAE) has no `_group_offload_block_modules`, so block-offloading it would
     # leave its weights on the offload device when `.decode(...)` is called,
-    # which never fires a group-offload hook (only `.forward()` does).
-    # `text_encoder` is excluded for an unrelated pair of reasons — its
-    # bitsandbytes `quant_state` is invisible to `ModuleGroup`, and a causal
-    # LM's direct children are not `ModuleList`s anyway — see `_group_
-    # offload_exclusions`.
-    assert kwargs["exclude_modules"] == ["vae", "text_encoder"]
+    # which never fires a group-offload hook (only `.forward()` does). The
+    # text encoder is NOT excluded: it is a GGUF component now, and GGUF's
+    # quantized tensors round-trip through `ModuleGroup` correctly, unlike
+    # the bitsandbytes NF4 weights this recipe used to load it with.
+    assert kwargs["exclude_modules"] == ["vae"]
     assert {"placement": "group-offload"} in base.state_calls
 
 
-def test_place_group_offload_excludes_text_encoder_when_pipeline_has_none(
+def test_place_group_offload_excludes_only_vae_when_pipeline_has_no_text_encoder(
     monkeypatch, base
 ):
-    """A pipeline with no `text_encoder` attribute at all — a future recipe,
-    a test fake — must not make `_group_offload_exclusions` (or `_place`)
-    raise on a name that was never registered; `exclude_modules` degrades to
-    just `["vae"]`, exactly like it did before this component was added."""
+    """`_group_offload_exclusions` names only `vae` unconditionally now — no
+    text-encoder-specific branch exists to raise on a name that was never
+    registered, but a pipeline with no `text_encoder` attribute at all (a
+    future recipe, a test fake) should still reach `enable_group_offload`
+    with exactly `["vae"]`, same as any other pipeline."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
@@ -902,24 +1104,25 @@ def test_place_falls_back_to_plain_offload_when_group_offload_raises(monkeypatch
 
 def test_place_reraises_original_error_when_group_offload_fails_partway(monkeypatch, base):
     """Finding #2: `enable_group_offload` hooks components ONE AT A TIME in a
-    loop, so a raise on the second hookable component (`extra`, after
-    `transformer` already got hooked — `text_encoder` and `vae` are both
-    excluded and never reached) leaves `transformer` group-offloaded even
-    though the call overall failed. `enable_model_cpu_offload` opens with
-    `_maybe_raise_error_if_group_offload_active(raise_error=True)` and
-    refuses to run AT ALL while any component still carries a group-offload
-    hook, so blindly falling back to it here would replace the real failure
-    with a confusing `ValueError` about group offload being active — on a
-    load that plain offload could never have completed anyway. `_place` must
-    detect that partial state via `_maybe_raise_error_if_group_offload_
-    active(raise_error=False)` and re-raise the ORIGINAL error instead of
-    attempting (and failing) the fallback.
+    loop, so a raise on the third hookable component (`extra`, after
+    `text_encoder` and `transformer` already got hooked — `vae` is the only
+    exclusion now and is never reached) leaves both earlier components
+    group-offloaded even though the call overall failed. `enable_model_cpu_
+    offload` opens with `_maybe_raise_error_if_group_offload_active(raise_
+    error=True)` and refuses to run AT ALL while any component still carries
+    a group-offload hook, so blindly falling back to it here would replace
+    the real failure with a confusing `ValueError` about group offload being
+    active — on a load that plain offload could never have completed anyway.
+    `_place` must detect that partial state via `_maybe_raise_error_if_
+    group_offload_active(raise_error=False)` and re-raise the ORIGINAL error
+    instead of attempting (and failing) the fallback.
 
-    A THIRD hookable component (`extra`, beside `transformer`) is built by
-    hand here rather than through `_placement_pipe` — with `text_encoder` now
-    excluded alongside `vae`, that helper's fixture leaves only one
-    offloadable component, which cannot demonstrate hooking-then-failing at
-    all."""
+    A FOURTH hookable component (`extra`, beside `text_encoder` and
+    `transformer`) is built by hand here rather than through `_placement_
+    pipe`, which only wires up the three names an ordinary klein pipeline
+    has — this test needs one that fails partway through a MULTI-component
+    hook loop, which needs at least two components to have already
+    succeeded before the failure."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
@@ -938,10 +1141,10 @@ def test_place_reraises_original_error_when_group_offload_fails_partway(monkeypa
     with pytest.raises(RuntimeError, match="extra"):
         worker._place(pipe)
 
-    # The partial hook is real — `transformer` got group-offloaded before
-    # the raise on `extra`. `text_encoder` was never attempted at all: it is
-    # excluded from `enable_group_offload` entirely.
-    assert pipe.group_offloaded_names == ["transformer"]
+    # The partial hook is real — `text_encoder` and `transformer` both got
+    # group-offloaded before the raise on `extra`. `vae` was never attempted
+    # at all: it is the only component excluded from `enable_group_offload`.
+    assert pipe.group_offloaded_names == ["text_encoder", "transformer"]
     # The fallback must not even be attempted: `enable_model_cpu_offload`
     # would only raise its own confusing error over this state.
     assert pipe.offload_calls == 0
@@ -1470,41 +1673,23 @@ def test_a_recipe_that_names_no_components_asks_for_no_quantization():
     assert worker._load_quantization({"quantize_4bit": []}) is None
 
 
-def test_the_klein_recipe_quantizes_its_TEXT_ENCODER_and_nothing_else(
+def test_the_klein_recipe_requests_no_bitsandbytes_quantization(
         monkeypatch, base):
-    """The transformer is already Q4_K_M and is passed to `from_pretrained` as a
-    BUILT object, so asking diffusers to quantize it too would be asking it to
-    re-quantize GGUF weights. The text encoder is the 7.5GB bf16 component that
-    made this worth doing — ~70% of what the worker held before."""
-    torch = fake_torch()
-    torch.bfloat16 = "bfloat16"
-    seen = {}
-
-    class FakeQuantConfig:
-        def __init__(self, quant_backend=None, quant_kwargs=None,
-                     components_to_quantize=None):
-            seen.update({"backend": quant_backend, "kwargs": quant_kwargs,
-                         "components": components_to_quantize})
-
-    diffusers = types.ModuleType("diffusers")
-    diffusers.PipelineQuantizationConfig = FakeQuantConfig
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
-
-    worker = load_worker(monkeypatch, base)
+    """Both the transformer AND the text encoder are GGUF now, each built and
+    passed to `from_pretrained` as a BUILT object — asking diffusers to
+    quantize either would be asking it to re-quantize already-quantized
+    weights. The recipe carries no `quantize_4bit` key at all (the shape
+    every recipe in `_GGUF_RECIPES` is in now that both components arrive
+    pre-quantized), and `_load_quantization` must therefore hand back `None`
+    rather than an empty `PipelineQuantizationConfig` — a real config object
+    with nothing to quantize is not the same as skipping quantization
+    entirely, and diffusers may not treat the two the same."""
+    worker = load_worker(_NoMonkey(), FakeBase())
     recipe = worker._recipe(MODEL)
-    assert recipe["quantize_4bit"] == ["text_encoder"]
-    assert worker._load_quantization(recipe) is not None
 
-    assert seen["components"] == ["text_encoder"]
-    assert seen["backend"] == "bitsandbytes_4bit"
-    # NF4 rather than bitsandbytes' fp4 default, double quant on, and a compute
-    # dtype matching the pipeline's `torch_dtype` — that last one defaults to
-    # float32, which would dequantize every matmul into the wrong dtype.
-    assert seen["kwargs"]["load_in_4bit"] is True
-    assert seen["kwargs"]["bnb_4bit_quant_type"] == "nf4"
-    assert seen["kwargs"]["bnb_4bit_use_double_quant"] is True
-    assert seen["kwargs"]["bnb_4bit_compute_dtype"] == torch.bfloat16
+    assert not recipe.get("quantize_4bit")
+    assert worker._load_quantization(recipe) is None
+    assert recipe["text_encoder_repo"] == "unsloth/Qwen3-4B-GGUF"
 
 
 def test_a_missing_sdnq_does_not_stop_an_ordinary_model_loading(monkeypatch, base):
