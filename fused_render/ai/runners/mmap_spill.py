@@ -341,13 +341,45 @@ def _sweep_stale_spill_files(base):
     ordinary quit unless something else sweeps it.
 
     Only a file whose pid prefix names a process that is no longer alive is
-    removed — `os.kill(pid, 0)` liveness, same as before — and a filename
-    this function cannot parse as `<pid>-<random>.safetensors` is left
-    alone rather than guessed at.
+    removed, and a filename this function cannot parse as `<pid>-<random>.
+    safetensors` is left alone rather than guessed at.
+
+    **Liveness is probed with `psutil.pid_exists(pid)`, never `os.kill`.**
+    `os.kill(pid, 0)` is the ordinary POSIX liveness idiom — send signal 0,
+    no-op if the process exists, `ProcessLookupError` if it does not — but
+    on Windows CPython's `os.kill` has no such no-op signal at all: any
+    value other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through
+    `OpenProcess` + `TerminateProcess(handle, sig)`, so `os.kill(pid, 0)`
+    unconditionally KILLS whatever process `pid` names. A sweep meant to
+    clean up after dead workers would instead terminate live ones on every
+    Windows worker whose pid happened to prefix a file in this directory.
+    `psutil.pid_exists` is a real liveness probe on every platform it
+    supports, with no such side effect, so it replaces `os.kill` entirely
+    rather than only being consulted on Windows — one code path, correct
+    everywhere, instead of a platform branch that could silently regress
+    back to the lethal one.
+
+    `psutil` is imported function-locally here, guarded, matching the
+    convention `worker_base.py`'s `os_footprint_bytes`/memory probes already
+    use for the same package (see that module's docstring: "psutil comes
+    with every runner's environment; if it is somehow absent..."). If the
+    import fails, or `pid_exists` itself raises, this sweeps NOTHING rather
+    than falling back to `os.kill` — a POSIX-only fallback would be safe on
+    POSIX, but the whole point of this function is to run unmodified on
+    every platform a runner ships on, and a conditional fallback is exactly
+    the kind of platform branch that is easy to get right in the common
+    case and wrong on the one platform nobody is testing against. Sweeping
+    nothing just means a stale file survives one more worker's cleanup
+    pass — the disk usage it costs is bounded and swept next time; killing
+    a live render is not recoverable at all. "When in doubt, keep it."
     """
     try:
         entries = os.listdir(base)
     except OSError:
+        return
+    try:
+        import psutil
+    except ImportError:
         return
     for entry in entries:
         pid_str = entry.split("-", 1)[0]
@@ -358,15 +390,13 @@ def _sweep_stale_spill_files(base):
         if pid == os.getpid():
             continue
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        except OSError:
-            # Alive, or this process cannot tell (EPERM on a foreign-owned
-            # pid) — either way, not confidently dead, so leave it alone.
+            alive = psutil.pid_exists(pid)
+        except Exception:
+            # Indeterminate — this process cannot tell either way, so leave
+            # the file alone rather than guess.
             continue
-        else:
-            continue  # the process answered: it is alive, its file stays.
+        if alive:
+            continue
         try:
             os.remove(os.path.join(base, entry))
         except OSError:

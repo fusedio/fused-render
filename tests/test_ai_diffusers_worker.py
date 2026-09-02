@@ -1406,6 +1406,22 @@ def test_spill_base_dir_honours_fused_render_home(monkeypatch, tmp_path):
         str(tmp_path), "cache", "mmap-spill")
 
 
+class _FakePsutil:
+    """Stands in for the real `psutil` module `_sweep_stale_spill_files`
+    imports function-locally. `alive_pids` is the set of pids `pid_exists`
+    answers True for; `raises` (when given) is raised instead of returning,
+    for the indeterminate case."""
+
+    def __init__(self, alive_pids=(), raises=None):
+        self._alive_pids = set(alive_pids)
+        self._raises = raises
+
+    def pid_exists(self, pid):
+        if self._raises is not None:
+            raise self._raises
+        return pid in self._alive_pids
+
+
 def test_sweep_stale_spill_files_removes_only_dead_pids(monkeypatch, tmp_path):
     """Ported from the deleted `_sweep_stale_group_offload_dirs` tests: a
     filename whose pid prefix names a process that is no longer alive is
@@ -1419,17 +1435,101 @@ def test_sweep_stale_spill_files_removes_only_dead_pids(monkeypatch, tmp_path):
     dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
     dead_path.write_bytes(b"stale")
 
-    live_path = tmp_path / f"{os.getpid()}-def456.safetensors"
+    live_pid = os.getpid()
+    live_path = tmp_path / f"{live_pid}-def456.safetensors"
     live_path.write_bytes(b"live")
 
     unparsable_path = tmp_path / "not-a-pid-prefixed-name.safetensors"
     unparsable_path.write_bytes(b"leave me alone")
+
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(alive_pids={live_pid}))
 
     mmap_spill._sweep_stale_spill_files(str(tmp_path))
 
     assert not dead_path.exists()
     assert live_path.exists()
     assert unparsable_path.exists()
+
+
+def test_sweep_stale_spill_files_keeps_own_pids_file(monkeypatch, tmp_path):
+    """`pid == os.getpid()` is skipped outright, before `psutil` is even
+    asked — this worker's own spill file is never a sweep candidate."""
+    mmap_spill = load_mmap_spill()
+
+    own_path = tmp_path / f"{os.getpid()}-abc123.safetensors"
+    own_path.write_bytes(b"mine")
+
+    # No alive pids registered at all — if the own-pid guard did not fire
+    # first, `psutil.pid_exists(os.getpid())` returning False here would
+    # have this file swept.
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil(alive_pids=()))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))
+
+    assert own_path.exists()
+
+
+def test_sweep_stale_spill_files_never_calls_os_kill(monkeypatch, tmp_path):
+    """Pins the platform contract: `os.kill` is POSIX-safe liveness idiom
+    that Windows routes through `TerminateProcess` for any signal other than
+    `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` — calling it here would kill a live
+    worker rather than merely probe it. The sweep must never reach for it,
+    on any platform."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    (tmp_path / f"{dead_pid}-abc123.safetensors").write_bytes(b"stale")
+    (tmp_path / f"{os.getpid()}-def456.safetensors").write_bytes(b"live")
+
+    def _boom(pid, sig):
+        raise AssertionError(
+            "_sweep_stale_spill_files must not call os.kill")
+
+    monkeypatch.setattr(mmap_spill.os, "kill", _boom)
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(alive_pids={os.getpid()}))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+
+def test_sweep_stale_spill_files_leaves_everything_when_psutil_raises(
+        monkeypatch, tmp_path):
+    """The indeterminate case — the liveness check itself raises (or
+    `psutil` is unavailable, exercised below) — must leave every file
+    alone. Removing a live worker's spill file would pull the mmap out
+    from under a running pipeline, so "when in doubt, keep it" holds even
+    when the probe itself is broken."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
+    dead_path.write_bytes(b"stale")
+
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(raises=RuntimeError("broken")))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+    assert dead_path.exists()
+
+
+def test_sweep_stale_spill_files_leaves_everything_when_psutil_absent(
+        monkeypatch, tmp_path):
+    """`psutil` is a hard dependency of every runner environment, but if it
+    is somehow missing the safe answer is to sweep nothing rather than fall
+    back to a probe that is lethal on Windows."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
+    dead_path.write_bytes(b"stale")
+
+    monkeypatch.setitem(sys.modules, "psutil", None)  # import psutil -> ImportError
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+    assert dead_path.exists()
 
 
 def test_sweep_stale_spill_files_tolerates_a_missing_directory(monkeypatch):
