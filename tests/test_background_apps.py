@@ -713,6 +713,45 @@ def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
         engine_host.stop(engine_id)
 
 
+def test_restart_restamps_last_used_after_the_new_child_finishes_bootstrap(
+        monkeypatch):
+    # `restart()`'s replacement Child's `last_used` defaults to the moment it
+    # is constructed (`field(default_factory=time.monotonic)`) — BEFORE
+    # `_spawn`/`_replay` run, both of which can take real time. Without a
+    # restamp after bring-up actually finishes, a child with a short
+    # `idle_timeout_s` could already be idle-eligible the instant it comes
+    # up. Simulate a slow bootstrap by sleeping after the real `_spawn`
+    # returns, and assert `last_used` reflects that delay rather than the
+    # instant `restart()` was called.
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        real_spawn = engine_host._spawn
+
+        # `_terminate`'s own kill-wait loop already burns ~0.05s polling the
+        # outgoing child's exit, so a naive small delay here would be lost
+        # in that noise and pass even against the unfixed code — 0.3s keeps
+        # the two clearly apart.
+        def slow_spawn(child):
+            real_spawn(child)
+            time.sleep(0.3)
+
+        monkeypatch.setattr(engine_host, "_spawn", slow_spawn)
+
+        before = time.monotonic()
+        restarted = engine_host.restart(engine_id)
+        assert restarted.last_used - before >= 0.2, (
+            "restart() stamped last_used at Child construction time, before "
+            "the slow bootstrap actually finished")
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_ensure_background_without_folder_defaults_to_empty_string():
     # The folder param is optional so existing direct callers that don't
     # care need not pass one.

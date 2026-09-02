@@ -803,6 +803,14 @@ def restart(engine_id: str, failed: Child | None = None,
                       retry_post=existing.retry_post)
         _spawn(child)
         _replay(child)
+        # `last_used` defaults to the moment `Child` was constructed above,
+        # BEFORE `_spawn`/`_replay` run; both can take real time (`_spawn`
+        # waits on the child's status file, `_replay` re-POSTs every
+        # registered reinit request), so a short `idle_timeout_s` could
+        # already be mostly exhausted before this child has ever served a
+        # real call. Re-stamp it now that bring-up is actually done, the same
+        # restamp `ensure_background`'s freshly-spawned branch already makes.
+        child.last_used = time.monotonic()
         with _lock:
             _children[engine_id] = child
         return child
