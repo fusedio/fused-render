@@ -1679,8 +1679,27 @@ def engine_gap(model_id: str) -> dict | None:
 
     names = " or ".join(dict.fromkeys(runner.short for runner in offering))
     # The registry's own words for why the engine that reads this cannot run,
-    # taken from the first offering runner rather than composed here.
-    why = offering[0].available().reason or registry.unavailable_reason(capability)
+    # taken from the BASE (unaccelerated) runner when one is among the
+    # offering set, not from `offering[0]` unconditionally.
+    #
+    # **Why `offering[0]` alone got this wrong (PR review finding).**
+    # `runners_offering()` walks `_RUNNERS` in registry order, and since the
+    # GPU-first reorder that order puts each family's accelerator rows AHEAD
+    # of its cross-platform base row — `onnx-embed-directml`, `-cuda`, `-rocm`,
+    # then `onnx-embed`. `offering[0]` on an Intel Mac was therefore
+    # `onnx-embed-directml`, whose reason is "needs Windows" — true of that one
+    # row and useless to the reader, who is not on Windows and never will be.
+    # The blocker that actually applies is `onnx-embed`'s own gate (no macOS
+    # x86_64 `onnxruntime` wheel), because the base row is definitionally the
+    # one every accelerated sibling falls back to (`_SHARED_SUGGESTIONS`
+    # points every hardware variant AT it) — it is the row this machine would
+    # be judged against if it had no accelerator at all, which is exactly the
+    # question `engine_gap` is answering.
+    why_runner = next(
+        (runner for runner in offering if runner.code not in _SHARED_SUGGESTIONS),
+        offering[0],
+    )
+    why = why_runner.available().reason or registry.unavailable_reason(capability)
     counterpart = counterpart_for(model_id, serving.code) if serving else None
 
     # A COLON rather than a dash before `why`: the registry's own reasons

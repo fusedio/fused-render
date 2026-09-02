@@ -196,15 +196,26 @@ where a first model comes from.
     trade is that a plain `.safetensors` chat model from the Hub is loadable on
     Apple Silicon only; off a Mac, take the GGUF the shortlist names instead. It
     is the same model, not a smaller one.
-  - **The accelerated builds are opt-in, and the default is the unaccelerated
-    one.** Images offer Diffusers (CPU), (CUDA) and (ROCm); chat offers
-    llama.cpp (CPU) and (Vulkan), which reaches both NVIDIA and AMD from one
-    wheel. The unaccelerated build is what you get without choosing: it is a
-    smaller install, it runs on any machine, and nothing about it can fail on
-    hardware you do not have. The accelerated ones are much larger downloads and
-    are offered on the Engines tab **only** when the app can see a matching,
-    usable GPU — otherwise the option is greyed out with the reason, such as a
-    driver that is not loaded or a `/dev/kfd` your user cannot open.
+  - **The accelerated build is the default when your machine looks like it has
+    the matching hardware.** Images offer Diffusers (CPU), (CUDA) and (ROCm);
+    chat offers llama.cpp (CPU) and (Vulkan), which reaches NVIDIA, AMD and
+    Intel GPUs from one wheel. Without you choosing anything, the app picks
+    whichever of these its check passes — a real device check for images (an
+    NVIDIA or AMD GPU the driver reports), a lighter check for chat's Vulkan
+    build (a real driver ICD registered, ruling out a software-only Vulkan
+    implementation on Linux; on Windows, the Vulkan library file present AND
+    a real display adapter registered rather than only Microsoft's software
+    one — still not the same as proof a GPU answers a Vulkan call, just proof
+    the machine is not a headless/RDP/VM session with nothing behind it) —
+    and only falls back to the unaccelerated build on a machine that check
+    refuses.
+    That means the first Load on a machine with a GPU is a much larger
+    download than the CPU build alone, since the accelerated wheel is what
+    gets fetched. The Engines tab still lists every build and greys out the
+    ones your machine cannot run, with the reason — a driver that is not
+    loaded, or a `/dev/kfd` your user cannot open — and you can switch to the
+    CPU build (or the other accelerator) there at any time; a preference you
+    set there is remembered and honoured over the automatic pick.
     Transcription has no GPU build outside Apple Silicon: CTranslate2's AMD
     wheels are not installable the way this app installs things, so AMD
     transcribes on the CPU.
