@@ -107,17 +107,18 @@ SERVER_JSON_NAME = "server.json"
 # `runtime.js` and the server from disagreeing. Never consulted to reject a
 # caller's option: the server is the one closed envelope (D413).
 _IMAGE_WIRE_KEYS = frozenset(
-    {"prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+    {"prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
+     "provider"})
 _TRANSCRIBE_WIRE_KEYS = frozenset(
     {"path", "model", "language", "task", "initialPrompt", "vad", "diarize",
-     "speakers", "words"})
+     "speakers", "words", "provider"})
 #: …and `/api/ai/embed`'s, pinned against `_EMBED_OPTIONS` the same way.
 #: `kind` is the member worth naming: it is refused per MODEL rather than
 #: per endpoint (a dual encoder has no retrieval convention), so a client
 #: that could not send it would leave every retrieval model embedding
 #: queries as documents — unit-length vectors of the right dimension, and
 #: worse, with nothing a caller could measure to say so.
-_EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind"})
+_EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind", "provider"})
 
 
 class ServerNotRunning(Exception):
@@ -417,6 +418,44 @@ def _wait_job(job_id: str, on_progress=None, timeout: float | None = None,
         time.sleep(poll_interval)
 
 
+def _frame(payload: dict, started: dict, *, usage=None, metadata: dict | None = None) -> dict:
+    """The one result frame every verb resolves with (RH-11, D632) — the
+    same shape `runtime.js`'s `resultFrame` builds and `common.ai_result`
+    sends: {provider, finishReason, warnings, usage, response, providerMetadata,
+    ...payload}. `started` is a job-backed route's immediate reply."""
+    import datetime as _dt
+    provider = started.get("provider") or "local"
+    meta = {k: v for k, v in (metadata or {}).items() if v is not None}
+    return {
+        "provider": provider,
+        "finishReason": "stop",
+        "warnings": list(started.get("warnings") or []),
+        "usage": usage,
+        "response": {
+            "id": started.get("jobId"),
+            "modelId": started.get("model"),
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+        "providerMetadata": {provider: meta},
+        **payload,
+    }
+
+
+def _frame_segment(s):
+    """A transcript segment as the file stores it -> as the frame speaks it
+    (`startSecond`/`endSecond`, words renamed the same way) — `runtime.js`'s
+    `frameSegment`, mirrored."""
+    if not isinstance(s, dict):
+        return s
+    out = {k: v for k, v in s.items() if k not in ("start", "end", "words")}
+    out["startSecond"] = s.get("start")
+    out["endSecond"] = s.get("end")
+    if isinstance(s.get("words"), list):
+        out["words"] = [{"word": w.get("word"), "startSecond": w.get("start"),
+                         "endSecond": w.get("end")} for w in s["words"] if isinstance(w, dict)]
+    return out
+
+
 def _raise_for_terminal_job(job: dict) -> None:
     state = job.get("state")
     if state == "done":
@@ -430,16 +469,23 @@ def _raise_for_terminal_job(job: dict) -> None:
 
 
 def text(prompt: str, model: str | None = None, effort: str | None = None,
-         system_prompt: str | None = None, timeout: float = _DEFAULT_TIMEOUT_S) -> str:
-    """`POST /api/ai` and return the completion text. Mirrors `fused.ai()`
-    without `onChunk` — see `stream()` for the streaming form."""
+         system_prompt: str | None = None, provider: str | None = None,
+         timeout: float = _DEFAULT_TIMEOUT_S) -> str:
+    """`POST /api/ai` and return the completion text. Mirrors `fused.ai.text()`
+    without `onChunk` — see `stream()` for the streaming form.
+
+    `provider` is `"local"` or `"claude"` — which tier serves the call. Left
+    `None`, the server picks from the model's shape (a repo id or `.gguf`
+    filename is local, anything else Claude), exactly as the JS side does."""
     body: dict = {"prompt": prompt}
     if model is not None:
         body["model"] = model
+    if provider is not None:
+        body["provider"] = provider
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:
-        body["system_prompt"] = system_prompt
+        body["systemPrompt"] = system_prompt
     payload = _post_json("/api/ai", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)
@@ -448,9 +494,11 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
 
 
 def stream(prompt: str, model: str | None = None, effort: str | None = None,
-           system_prompt: str | None = None, timeout: float = _DEFAULT_TIMEOUT_S):
+           system_prompt: str | None = None, provider: str | None = None,
+           timeout: float = _DEFAULT_TIMEOUT_S):
     """`POST /api/ai` with `{"stream": true}` and yield text chunks as they
-    arrive, mirroring `fused.ai(prompt, {onChunk})`.
+    arrive, mirroring `fused.ai.text({prompt, onChunk})`. `provider` as in
+    `text()`.
 
     The NDJSON body is `{"type":"chunk","text":...}` lines closed by one
     `{"type":"done", ...}` line. A `done` frame with `ok: false` is an error
@@ -461,10 +509,12 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
     body = {"prompt": prompt, "stream": True}
     if model is not None:
         body["model"] = model
+    if provider is not None:
+        body["provider"] = provider
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:
-        body["system_prompt"] = system_prompt
+        body["systemPrompt"] = system_prompt
     resp = _request("POST", "/api/ai", body=body, timeout=timeout)
 
     def _chunks():
@@ -521,6 +571,7 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
                task: str | None = None, initial_prompt: str | None = None,
                vad: bool | None = None, diarize: bool | None = None,
                speakers: int | None = None, words: bool | None = None,
+               provider: str | None = None,
                wait: bool = True, on_progress=None,
                timeout: float | None = None) -> dict:
     """`POST /api/ai/transcribe`. Job-backed (SPEC AI-9), so this blocks by
@@ -543,7 +594,7 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     for key, value in (
         ("model", model), ("language", language), ("task", task),
         ("initialPrompt", initial_prompt), ("vad", vad), ("diarize", diarize),
-        ("speakers", speakers), ("words", words),
+        ("speakers", speakers), ("words", words), ("provider", provider),
     ):
         if value is not None:
             body[key] = value
@@ -554,22 +605,28 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     job = _wait_job(job_id, on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
     written = _read_transcript(reply["output"], job_id=job_id)
-    return {
-        **reply,
-        "text": written.get("text"),
-        "segments": written.get("segments"),
-        "language": written.get("language"),
-        "duration": written.get("duration"),
-        # The transcript's legend — None unless `diarize` was asked for, read
-        # from the FILE like everything else here, same as `runtime.js`: a
-        # caller never has to know which engine wrote it.
-        "speakers": written.get("speakers"),
-        # How many voices the clustering decided there were, present only on
-        # a run that had to estimate (D318); a caller who passed `speakers`
-        # already knows this and gets None here, matching the JS reply's
-        # `undefined` for the same case.
-        "estimatedSpeakers": written.get("estimatedSpeakers"),
-    }
+    return _frame(
+        {
+            "text": written.get("text"),
+            "segments": [_frame_segment(s) for s in (written.get("segments") or [])],
+            "language": written.get("language"),
+            "durationInSeconds": written.get("duration"),
+        },
+        reply,
+        metadata={
+            "path": reply.get("path"),
+            "output": reply.get("output"),
+            "outputText": reply.get("outputText"),
+            "outputPartial": reply.get("outputPartial"),
+            "task": reply.get("task"),
+            # The transcript's legend — None unless `diarize` was asked for,
+            # read from the FILE like everything else here, same as
+            # `runtime.js`: a caller never has to know which engine wrote it.
+            "speakers": written.get("speakers"),
+            # How many voices the clustering decided there were, present only
+            # on a run that had to estimate (D318).
+            "estimatedSpeakers": written.get("estimatedSpeakers"),
+        })
 
 
 # ------------------------------------------------------------------- image
@@ -578,7 +635,8 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
 def image(prompt: str, model: str | None = None, width: int | None = None,
           height: int | None = None, steps: int | None = None,
           guidance: float | None = None, seed: int | None = None,
-          image: str | None = None, wait: bool = True, on_progress=None,
+          image: str | None = None, provider: str | None = None,
+          wait: bool = True, on_progress=None,
           timeout: float | None = None) -> dict:
     """`POST /api/ai/image`. Job-backed like `transcribe()`, same default.
 
@@ -590,6 +648,7 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     for key, value in (
         ("model", model), ("width", width), ("height", height),
         ("steps", steps), ("guidance", guidance), ("seed", seed),
+        ("provider", provider),
     ):
         if value is not None:
             body[key] = value
@@ -601,7 +660,12 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     job = _wait_job(_require_job_id(reply, "/api/ai/image"),
                     on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
-    return reply
+    return _frame(
+        {"images": [{"path": reply.get("path"), "mediaType": "image/png"}]},
+        reply, usage={"imagesGenerated": 1},
+        metadata={k: reply.get(k) for k in
+                  ("seed", "width", "height", "steps", "guidance", "image",
+                   "prompt", "previewPath")})
 
 
 # ------------------------------------------------------------------- embed
@@ -609,6 +673,7 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
 
 def embed(texts: list | None = None, paths: list | None = None,
           model: str | None = None, kind: str | None = None,
+          provider: str | None = None,
           timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
     """`POST /api/ai/embed`. Not job-backed (`/api/ai/embed`'s own docstring:
     one forward pass over a short batch, over before a progress row would
@@ -645,6 +710,8 @@ def embed(texts: list | None = None, paths: list | None = None,
         body["model"] = model
     if kind is not None:
         body["kind"] = kind
+    if provider is not None:
+        body["provider"] = provider
     payload = _post_json("/api/ai/embed", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)

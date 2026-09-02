@@ -262,10 +262,15 @@ class Worker:
     peak_resident_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
-    #: whether the runner's torch was built to use it, and since D381 those
-    #: differ BY DEFAULT everywhere: the default torch rows pin the `whl/cpu`
-    #: build and the accelerated ones are opt-in. Same argument AI-8 makes
-    #: about resident bytes: only the process holding the weights knows.
+    #: whether the RUNNER IT ACTUALLY RESOLVED is the one whose torch was built
+    #: to use it — even under the GPU-first policy decision (`registry.py`'s
+    #: block comment above `_RUNNERS`), where the accelerated rows are now the
+    #: DEFAULT wherever `registry._cuda`/`_rocm` finds usable hardware, a
+    #: machine can still be running the CPU-pinned row (no accelerator found,
+    #: or the user picked it back from the Engines tab), and the two builds
+    #: disagree about `device` the same way they always did. Same argument
+    #: AI-8 makes about resident bytes: only the process holding the weights
+    #: knows.
     device: str = ""
     #: Which rung of `torch_image._place()`'s ladder the worker actually
     #: landed on — "all-gpu" | "group-offload" | "offload", as the WORKER

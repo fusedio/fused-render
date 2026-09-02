@@ -409,6 +409,34 @@ def test_a_gap_with_no_counterpart_still_says_what_serves_here(monkeypatch):
     assert "does not read this model's files" in gap["reason"]
 
 
+def test_the_gap_reason_names_the_blocker_for_THIS_machine_not_offering_zero(monkeypatch):
+    """PR review finding: `runners_offering()` walks `_RUNNERS` in registry
+    order, and since the GPU-first reorder that order is
+    `onnx-embed-directml, onnx-embed-cuda, onnx-embed-rocm, onnx-embed` —
+    accelerator rows for OTHER operating systems ahead of the cross-platform
+    base row. Picking `offering[0]`'s reason unconditionally therefore named
+    `_directml`'s "needs Windows" on an Intel Mac, which is true of that row
+    and useless to the reader: the actual reason nothing here can read
+    `nomic-ai/nomic-embed-text-v1.5` is `onnx-embed`'s own gate — no macOS
+    x86_64 `onnxruntime` wheel — and that is the sentence this machine needs.
+
+    `nomic-ai/nomic-embed-text-v1.5` is curated on `onnx-embed` (see
+    `catalog.py`'s suggestion list), so it is offered by all four hardware
+    variants via `_SHARED_SUGGESTIONS` — the same shape the brief's example
+    used.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    assert catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5") == (
+        "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
+    )
+    gap = catalog.engine_gap("nomic-ai/nomic-embed-text-v1.5")
+    assert gap is not None
+    reason = gap["reason"]
+    assert "Apple Silicon" in reason, reason
+    assert "Windows" not in reason, reason
+
+
 def test_an_UNCURATED_id_is_never_a_gap(monkeypatch):
     """"No information" is not "no", and this is the assertion that keeps the fix
     from becoming a wall. Nobody here has an opinion about a repo the user found
@@ -444,10 +472,17 @@ def test_runners_offering_is_the_narrow_companion_to_all_suggested_ids():
     assert "nomic-ai/nomic-embed-text-v1.5" in every
     assert catalog.runners_offering(
         "mlx-community/siglip2-so400m-patch16-384") == ("mlx-embed",)
-    assert catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed"
+    # First in REGISTRY order, which is `onnx-embed-directml` now that the
+    # GPU-first policy decision (`registry.py`'s block comment above
+    # `_RUNNERS`) leads the ONNX family with its accelerated rows —
+    # `runners_offering` walks `registry.all_runners()` in order, so this
+    # follows the reorder without a code change here.
+    assert catalog.runners_offering(
+        "nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed-directml"
     # Hardware variants report as offering their family's list, the same
     # resolution `for_runner` does.
     assert "onnx-embed-cuda" in catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")
+    assert "onnx-embed" in catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")
 
 
 def test_every_multi_runner_capability_has_the_same_shape():

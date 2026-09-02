@@ -77,13 +77,15 @@ STATE = {
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
-    #: can see that this machine HAS a GPU and not that the runner's torch was
-    #: built to use it, and since D381 that is the COMMON case rather than the
-    #: exotic one on every platform — the default torch rows pin the `whl/cpu`
-    #: build, so a machine with a card runs on the CPU until its user opts into
-    #: the CUDA or ROCm row. Reported because a model answering
-    #: at three tokens a second is working perfectly and looks broken, and the
-    #: device is the whole of the explanation.
+    #: can see that this machine HAS a GPU and not that the RUNNER IT RESOLVED
+    #: is the one whose torch was built to use it — true since D381, and still
+    #: true under the GPU-first policy decision (`registry.py`'s block comment
+    #: above `_RUNNERS`) even though the accelerated torch rows are now the
+    #: DEFAULT wherever `registry._cuda`/`_rocm` finds usable hardware: a
+    #: machine with no accelerator, or a user who opted back to the `whl/cpu`
+    #: row from the Engines tab, still runs on the CPU. Reported because a
+    #: model answering at three tokens a second is working perfectly and looks
+    #: broken, and the device is the whole of the explanation.
     #:
     #: None from a runner that does not set it — one device, nothing to say.
     "device": None,

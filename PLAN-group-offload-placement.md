@@ -2,7 +2,7 @@
 
 Source: shared artifact 659284ce-6996-48e9-8f7e-170ac18fab4f
 
-**SUPERSEDED IN PART — see `DECISIONS.md` (D633 and the Task 2 note
+**SUPERSEDED IN PART — see `DECISIONS.md` (D636 and the Task 2 note
 following it) for the full record.** Read this plan for Task 1's original
 reasoning, but treat the following as corrected or overtaken, not as
 written below:
@@ -38,7 +38,7 @@ written below:
   for its own models. Whether that is achievable for this pipeline's
   quantized components (a GGUF transformer, a bnb NF4 text encoder) is a
   separate, open investigation. Task 3 (forwarding placement through the
-  supervisor, D632) is unaffected by any of this and already shipped.
+  supervisor, D635) is unaffected by any of this and already shipped.
 
 Group-Offload Placement 
  Implementation plan · fused-render

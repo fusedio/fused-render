@@ -373,7 +373,7 @@ def spill_path():
     reasons, both load-bearing:
 
     1. **Collision safety.** A pid-only identity is reused whenever Linux
-       recycles a pid — the same hazard D637 fixed for the group-offload
+       recycles a pid — the same hazard D640 fixed for the group-offload
        cache this replaces: a worker whose pid collided with a dead one's
        populated file would inherit it and rebind from THE WRONG MODEL'S
        WEIGHTS with no error. The random suffix closes that; stale files
@@ -390,7 +390,7 @@ def spill_path():
        quantization cost to have anything to spill) and only adds risk: two
        workers loading the same model concurrently would read and write the
        identical path, and a spill mid-write racing another process's mmap
-       read is exactly the corruption class D637 already had to fix once.
+       read is exactly the corruption class D640 already had to fix once.
 
     `atexit.register` runs as a best-effort EXTRA for the ordinary Python-
     level exit path — cheap insurance, not the mechanism cleanup actually

@@ -21,7 +21,7 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    │
    ├─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
    │
-   ├─ fused.ai("...")          ← the claude CLI, or a local model; {text, model, usage}
+   ├─ fused.ai.text({prompt})  ← the claude CLI, or a local model; {text, ...result frame}
    │
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
@@ -32,7 +32,10 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <head>
 <meta charset="utf-8" />
 <meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
 ```
+
+**Declare the fused API version beside it: `<meta name="fused-api-version" content="N" />`** — copy the value from the starter's `index.html`, which always carries the current one. It records which shape of the `fused` runtime the page was authored against. A page without the tag is version 0. When the API changes in a breaking way, the app page shows a **Migrate** button that opens a task on the entry page; that task invokes **`fused-render-api-migration`**, which reads the per-version notes (`docs/v{N}.md` beside that skill), updates the code and bumps the tag. Authoring a new page: use the current version. Adding a breaking change to the runtime: add a `docs/vN.md` to that skill and bump the starter's tag — the procedure is in its SKILL.md.
 
 **Optional app icon: `icon.svg`.** An `icon.svg` next to the entry page becomes the app's sidebar glyph and tab favicon, rendered as is. Designing one (own background, both themes, 14–16 px legibility) → **`fused-render-app-icon`**.
 
@@ -207,7 +210,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `await fused.stat(path)` | `{path, name, is_dir, size, mtime, writable, remote, templates}`. Use it for a size guard before reading something big, to capture `mtime` before editing, to check `writable` before offering an edit UI, and to notice `remote` (a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). |
 | `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: a file changed on disk since that mtime rejects with `.type === "conflict"` (and `.mtime` = the current value) instead of clobbering. `opts.create` writes only if the path is absent — an existing path rejects with `.type === "exists"` and nothing is written, which is how you create a file without a stat-then-write race. A read-only file rejects with `.type === "readonly"`. Resolves with a fresh stat; keep its `.mtime` to re-arm the lock. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL serving the file's raw bytes — for `<img src>`, `<video src>`, `<embed>`, download links. |
-| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Local-only. See **"AI calls"** below. |
+| `await fused.ai.text({prompt, ...opts})` | Ask an AI model; resolves with `text` plus the result frame every `fused.ai` verb shares (`provider, finishReason, warnings, usage, response, providerMetadata`). Every verb takes `abortSignal`. Local-only. See **"AI calls"** below. |
 | `await fused.fileIndex.search({root, q, limit})` / `.query({sql, limit})` | Read the machine-wide **file index** — one folder's corpus, or one read-only SQL statement over the `files`/`dirs` views (totals, per-extension breakdowns, path matches). Both resolve with `ready: {indexed, scanning, stale, reason}`, so an empty result is never mistaken for "no matches" when the truth is "no index yet". Use this instead of walking the filesystem in Python. Details, and the Python direct-parquet reader for bulk reads: **`fused-render-index`**. |
 | `await fused.capture.screen(opts)` / `.audio(opts)` / `.screenshot(opts)` / `.sources()` | Record the screen, record the microphone, grab a still — **natively**, so the result is a FILE on this machine, not a `MediaRecorder` blob. See **`fused-render-capture`**. |
 | `fused.trackJob(spec)` | Report a long-running operation to the shell's **download manager**, so it stays visible after the user browses away. Returns a handle; see **`fused-render-jobs`**. Never throws, never rejects. |
@@ -242,17 +245,17 @@ try {
 
 ## AI calls (`fused.ai`)
 
-`await fused.ai(prompt, opts?)` resolves with **exactly** `{text, model, usage}` — the server normalizes, so no guarding is needed. `model` is the full id that actually ran; `usage` is `null` or `{input_tokens, output_tokens}` (Anthropic-style names — `prompt_tokens` reads `undefined`). The model id picks the destination: an id containing a `/` or ending in `.gguf` runs on **this machine**, anything else goes to the **`claude` (Claude Code) CLI** on the user's own login. Common options are `systemPrompt`, `model`, `effort` and `onChunk`.
+`fused.ai` is a namespace of verbs (`.text`, `.image`, `.video`, `.transcribe`, `.embed`, `.models`, `.cancel`), not a function. `await fused.ai.text({prompt, ...opts})` — one options object, `prompt` a field like `.image({prompt})` — resolves with `text` plus **the result frame every verb shares**: `{provider, finishReason, warnings, usage, response: {id, modelId, timestamp}, providerMetadata}`. The server normalizes, so no guarding is needed. `response.modelId` is the full id that actually ran (no top-level `model`); `usage` is `null` or `{inputTokens, outputTokens, totalTokens}`; `provider` is the tier that answered. Two tiers, fixed order: `opts.provider: "local" | "claude"` pins one; omitted, the model id picks — an id containing a `/` or ending in `.gguf` runs on **this machine**, anything else goes to the **`claude` (Claude Code) CLI** on the user's own login. Common options are `provider`, `systemPrompt`, `model`, `effort` and `onChunk`.
 
 Three things decide whether a page using it behaves:
 
-- **It is local-only, and the exporter enforces that textually.** Any page containing the string `fused.ai(` is rejected for export (SPEC RH-11) — an `if (fused.env === "local")` guard does not help. Keep AI out of a view that must export.
+- **It is local-only, and the exporter enforces that textually.** Any page containing the string `fused.ai.text(` is rejected for export (SPEC RH-11) — an `if (fused.env === "local")` guard does not help. Keep AI out of a view that must export.
 - **Feed it aggregates, not the dataset.** Compute in Python, reduce to a compact summary, and hand the model that. A full table blows the token budget and drowns the signal.
 - **There is no stale-cancel channel.** Calls run fully concurrent, so a double-click fires two paid calls — disable the button while one is in flight.
 
 Rejections carry `.type`: `model_loading` (a local model is loading — `err.jobId` is the download it just started, not a failure), `ai_unavailable` (show a friendly state, not a raw overlay), `bad_request`, `ai_error`, `timeout`.
 
-Everything else — the full options and rejection tables, `fused.ai.models.*`, `.image()`, `.video()`, `.transcribe()`, `.embed()`, `.cancel()`, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
+Everything else — the result frame, per-verb option lists, recipes for `.image()`, `.video()`, `.transcribe()`, `.embed()`, the `fused.ai.models.*` picker, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
 
 ## The canonical wiring pattern
 

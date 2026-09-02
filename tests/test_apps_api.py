@@ -980,13 +980,18 @@ def _repo_text(*parts):
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
     home = _repo_text("frontend", "src", "apps", "builder", "HomeHero.tsx")
+    # The URL builder lives in platform (shared with the Migrate buttons, which
+    # make the same hop from the app page and the explorer topbar).
+    landing = _repo_text("frontend", "src", "platform", "lib", "appLanding.ts")
     # The scaffolding work is a TASK on the app's index.html now, and the chat
     # rides beside that page as a SIDE PANE rather than as a whole-page mode —
     # so the re-attach carries `_side=claude` plus the run to attach to.
-    assert '_side: "claude"' in home, "post-create nav must open the claude pane"
+    assert '_side: "claude"' in landing, "post-create nav must open the claude pane"
     assert "appLandingUrl(res.entry_html, res.task.run_id" in home, \
         "…on the app's entry html, carrying the task's run"
-    assert "run: runId" in home, "…and attach to the run the POST just started"
+    assert "run: runId" in landing, "…and attach to the run the POST just started"
+    assert "appLandingUrl" in home and "appLanding" in home, \
+        "the hero makes the hop through the shared builder"
     # the run_id is what gates it: no session (no prompt) -> the default view
     assert "if (res.task?.run_id) {" in home
 
@@ -1174,16 +1179,16 @@ def test_app_entry_endpoint_answers_by_the_marker_rule(client, workspace, tmp_pa
     # the rule from filenames (D301) — any folder may be asked, workspace or not.
     d = _app_dir(workspace, "sine", htmls=("main.html",))
     r = client.get("/api/apps/entry", params={"path": str(d)})
-    assert r.json() == {"entry": str(d / "main.html")}
+    assert r.json()["entry"] == str(d / "main.html")
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "index.html").write_text("<html></html>")  # untagged: no entry
     assert client.get("/api/apps/entry",
-                      params={"path": str(plain)}).json() == {"entry": None}
+                      params={"path": str(plain)}).json()["entry"] is None
     assert client.get("/api/apps/entry",
-                      params={"path": "relative/nope"}).json() == {"entry": None}
+                      params={"path": "relative/nope"}).json()["entry"] is None
     assert client.get("/api/apps/entry",
-                      params={"path": str(tmp_path / "gone")}).json() == {"entry": None}
+                      params={"path": str(tmp_path / "gone")}).json()["entry"] is None
 
 
 def test_rendering_an_external_marked_page_registers_the_folder(
