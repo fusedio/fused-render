@@ -38,6 +38,7 @@ from fused_render.server.routers import ai_runtime
 # network".
 from test_ai_hub_fetch import no_egress  # noqa: F401
 from _big_files import sparse_file
+from _hardware_probe_helpers import force_no_accelerators
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -595,7 +596,7 @@ def test_a_runner_that_cannot_run_here_says_why(monkeypatch):
     assert "Apple Silicon" in status.reason and "windows" in status.reason
 
 
-def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
+def test_resolution_skips_a_runner_that_cannot_run(monkeypatch, tmp_path):
     # Picking an unavailable runner and failing at load time would report "the
     # model failed to load" for a machine that was never going to load it.
     #
@@ -605,8 +606,16 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     # was skipped". Skipping is now visible as a HANDOVER, which is the stronger
     # statement of the same rule — and the ordering is what carries it, so the
     # test names both sides.
+    #
+    # `llamacpp-text-vulkan` now sits between the two skipped/resolved rows
+    # this test names — accelerator presence is forced off (`_hardware_probe_
+    # helpers.force_no_accelerators`) so the Linux assertion pins the SAME
+    # skip-then-resolve shape regardless of the machine actually running the
+    # suite; `test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_
+    # hardware_is_there` covers the row this fakes off.
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     resolved = registry.for_capability(registry.TEXT_GENERATION)
     assert resolved is not None and resolved.code == "llamacpp-text"
     # …and the runner that was skipped is still registered ahead of it, which is
@@ -689,11 +698,17 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
             registry.IMAGE_GENERATION).code == "diffusers-image"
 
 
-def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch):
+def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch, tmp_path):
     """The same synced-prefs.json rule as the whisper runners: an image
-    preference set on a Mac must not take image generation away on a PC."""
+    preference set on a Mac must not take image generation away on a PC.
+
+    Accelerators forced off (`force_no_accelerators`): a dropped preference
+    falls through to the ORDERING, same AUTO path a CI runner's real NVIDIA/
+    AMD hardware could otherwise redirect.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
 
     resolution = registry.resolve(registry.IMAGE_GENERATION)
@@ -767,7 +782,7 @@ def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypat
     assert "not a runner this build knows" in resolution.ignored_reason
 
 
-def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch):
+def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch, tmp_path):
     """The three codes D416 deleted, arriving in a prefs.json that outlived them.
 
     This is not the same case as the test above even though it takes the same
@@ -793,6 +808,11 @@ def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch):
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    # The degraded resolution falls through to the ORDERING (`_first_available`),
+    # which is the same AUTO path — forced off so this pins `llamacpp-text`
+    # rather than betting on whether the machine running the suite has a real
+    # Vulkan GPU.
+    force_no_accelerators(monkeypatch, tmp_path)
     for stale in ("transformers-text", "transformers-text-cuda",
                   "transformers-text-rocm"):
         assert registry.by_code(stale) is None, stale
@@ -1260,7 +1280,7 @@ _TEXT_ENGINE_PER_SHIPPED_PLATFORM = (
 )
 
 
-def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch):
+def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch, tmp_path):
     """No platform this app ships to may be left with no local text generation.
 
     D293 stated this first: text generation was Apple-Silicon-only, which made
@@ -1273,10 +1293,13 @@ def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch):
 
     **The remaining coverage is thin, and the test says so rather than implying
     otherwise.** Apple Silicon holds `mlx-text` and `llamacpp-text` both; Windows
-    and Linux hold `llamacpp-text` alone, with `llamacpp-text-vulkan` as an
-    opt-in registered BELOW it — which is why `auto` never reaches the Vulkan row
-    and why it does not widen this coverage — and no second FAMILY behind
-    either. So on those two
+    and Linux hold `llamacpp-text` PLUS `llamacpp-text-vulkan`, now registered
+    ABOVE it — the GPU-first policy decision means `auto` reaches the Vulkan
+    row first on those two platforms WHEN the hardware is there (see
+    `registry.py`'s block comment above `_RUNNERS`), and this table names the
+    row that would serve with no accelerator present, which is what makes the
+    assertion below host-independent rather than a bet on the CI runner's own
+    GPU. So on those two
     platforms this assertion is one runner deep, and `_llamacpp_platform`'s own
     docstring carries what that costs (a Windows ARM64 box, or a Linux machine
     outside the three architectures its wheel index publishes, has no local text
@@ -1285,6 +1308,7 @@ def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch):
     for system, machine, code in _TEXT_ENGINE_PER_SHIPPED_PLATFORM:
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        force_no_accelerators(monkeypatch, tmp_path)
         runner = registry.for_capability(registry.TEXT_GENERATION)
         assert runner is not None and runner.code == code, (system, machine)
         # A resolved engine with an empty shortlist is a Discover tab with a
@@ -1747,6 +1771,13 @@ def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_pa
     # D416 the CUDA row under test is an image row — text generation's own
     # accelerated variant is `llamacpp-text-vulkan`, gated by `_vulkan`, and
     # would not have been moved by this NVIDIA probe either way.
+    #
+    # `_rocm` reads the REAL `/dev/kfd`/DRM class dir on whatever machine
+    # runs this suite — `_fake_nvidia` only fakes the CUDA side — so it is
+    # forced off too, or a developer's own AMD-equipped Linux box would
+    # resolve `diffusers-image-rocm` here instead.
+    monkeypatch.setattr(registry, "KFD_DEVICE", str(tmp_path / "no-kfd"))
+    monkeypatch.setattr(registry, "DRM_CLASS_DIR", str(tmp_path / "no-drm"))
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image"
 
@@ -2146,11 +2177,16 @@ def test_recommended_is_written_opt_in_and_never_as_a_false():
                     "leave the key out instead")
 
 
-def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch):
+def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch, tmp_path):
     """`default_for` is position 0, and position 0 is the smallest — end to end.
 
     Named per capability because these are the ids a no-model call reaches for,
     and the whole point of the change is that they are now the SMALL ones.
+
+    Accelerators forced off (`force_no_accelerators`) so the Windows half pins
+    `llamacpp-text`'s list — the fallthrough — rather than betting on whether
+    the CI runner's own `vulkan-1.dll` happens to make `_vulkan` pass, which
+    would silently switch this to `llamacpp-text-vulkan`'s list instead.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
@@ -2164,13 +2200,14 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     assert catalog.default_for(registry.TEXT_GENERATION) == \
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
         "Systran/faster-whisper-tiny.en"
 
 
-def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
+def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tmp_path):
     """A Windows machine must not be shown MLX repos, or told it has no runner.
 
     Both halves were one bug: `describe()` took the FIRST runner registered for
@@ -2178,9 +2215,15 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     cross-platform row a Windows box would have read "needs Apple Silicon" under
     a heading whose four suggestions were all Metal-packed checkpoints it could
     not load — while a runner sat ready to serve it.
+
+    Accelerators forced off (`force_no_accelerators`): this test's subject is
+    the CPU fallthrough row's identity, and a CI runner whose real
+    `vulkan-1.dll` makes `_vulkan` pass would otherwise resolve to
+    `llamacpp-text-vulkan` instead, silently pinning the wrong row's label.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["available"] is True and text["reason"] is None
@@ -2210,22 +2253,28 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
                for m in text["models"])
 
 
-def test_the_cpu_warning_reaches_the_page(monkeypatch):
+def test_the_cpu_warning_reaches_the_page(monkeypatch, tmp_path):
     """The CPU runner says what using it is LIKE, and the catalog carries it.
 
-    The CPU row is the default off Apple Silicon, so a model that works and
-    answers at walking pace is the ORDINARY outcome now rather than a Windows
-    quirk — which is exactly why the sentence has to be there. Nothing else on
-    the page can say it: the device a model really got is a measurement that
-    does not exist until one has loaded.
+    The CPU row is the fallthrough off Apple Silicon and off a Vulkan GPU
+    both, so a model that works and answers at walking pace is still an
+    ordinary outcome on a machine with neither — which is exactly why the
+    sentence has to be there. Nothing else on the page can say it: the device
+    a model really got is a measurement that does not exist until one has
+    loaded.
 
     The sentence is rendered under that engine's row on the Engines tab (D315),
     not over the Discover sections it used to head; this asserts the CATALOG
     still carries it, which is the contract that does not depend on where a
     page prints it.
+
+    Accelerators forced off (`force_no_accelerators`) so this pins
+    `llamacpp-text`'s own note rather than `llamacpp-text-vulkan`'s on a CI
+    runner with a real Vulkan loader.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["runnerNote"] and "CPU" in text["runnerNote"]
@@ -2257,7 +2306,7 @@ def test_the_registry_describes_the_transcription_runner():
     assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
 
 
-def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeypatch):
+def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeypatch, tmp_path):
     """`llamacpp-text` is THIRD — behind `mlx-text` and `llamacpp-text-vulkan`
     — so it is the `auto` answer everywhere neither of those can run, and MLX
     still wins on the platform it was built for.
@@ -2284,6 +2333,13 @@ def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeyp
     argument `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`'s
     docstring makes about the Diffusers split) and nothing else fails when a
     row moves one line up.
+
+    Accelerators forced off (`force_no_accelerators`) for the Windows
+    assertion below: this test's subject is the ORDERING, so it has to hold
+    independent of the CI runner's own hardware — the GitHub `windows-latest`
+    runner ships a real `vulkan-1.dll`, which made this test (and three
+    others of the same shape) fail on the `test-python-windows` lane before
+    this fix.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
     assert codes.index("llamacpp-text") == codes.index("llamacpp-text-vulkan") + 1
@@ -2291,6 +2347,7 @@ def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeyp
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
@@ -2339,7 +2396,7 @@ def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
     assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
 
 
-def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monkeypatch):
+def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monkeypatch, tmp_path):
     """The Vulkan variant sits directly before the CPU/Metal row, and that is
     what the GPU-first policy decision (see `registry.py`'s block comment above
     `_RUNNERS`) requires: `auto` reaches it on any Windows/Linux x86_64 machine
@@ -2352,12 +2409,19 @@ def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monk
     `_offload_schedule` backoff is known not to engage on AMD (see the row's
     own comment and PR #706 — radv satisfies an over-commit by evicting other
     clients, which took a desktop session down during testing) — an accepted
-    risk of the new default rather than a reason the row stays opt-in. Without
-    a faked loader/ICD here `_vulkan` still refuses on this test's real
-    machine, so `auto` still lands on the CPU row below it — the fallthrough
-    case, pinned by ordering rather than by faking Vulkan hardware (that half
-    is `test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there`
-    below).
+    risk of the new default rather than a reason the row stays opt-in.
+
+    **Accelerators are forced off (`force_no_accelerators`), not left to
+    whatever this test's real machine happens to have.** The earlier revision
+    of this docstring argued "without a faked loader/ICD here `_vulkan` still
+    refuses on this test's real machine" — true on the macOS box that wrote
+    it, false on the GitHub `windows-latest` CI runner, which ships a real
+    `vulkan-1.dll` and made this test (and three others of the same shape)
+    fail on the `test-python-windows` lane. `auto` landing on the CPU row is
+    the fallthrough case this test pins by ORDERING, not by an assumption
+    about the runner's hardware; hardware presence is
+    `test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there`'s
+    job, below.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
     assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") - 1
@@ -2366,11 +2430,12 @@ def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monk
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    force_no_accelerators(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
-def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onnx(monkeypatch):
+def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onnx(monkeypatch, tmp_path):
     """Embeddings' five rows, pinned in full — the whole family shares one
     ordering rule with the image and text families, and it is invisible in a diff
     of the table.
@@ -2395,16 +2460,21 @@ def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onn
         "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
     ]
 
-    # No accelerator faked on this Linux/x86_64 machine, so DirectML (Windows
-    # only) and the CUDA/ROCm device probes all refuse and `auto` falls
-    # through to the unaccelerated row — the fallthrough case. A machine WITH
-    # a working accelerator is pinned separately
-    # (`test_a_supported_amd_gpu_is_offered_the_rocm_engines` and its CUDA/
-    # DirectML neighbours already exercise `_rocm`/`_cuda`/`_directml`
-    # directly; `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`
+    # Accelerators forced OFF (`force_no_accelerators`), not merely left
+    # unfaked — `_cuda`/`_rocm` read the REAL `/dev/nvidia*`/`/dev/kfd` on
+    # whatever machine runs this suite, so "no accelerator faked" is not the
+    # same claim as "no accelerator present": a Linux CI runner (or a
+    # developer's own desktop) with a real NVIDIA card or AMD render node
+    # would resolve to `onnx-embed-cuda`/`-rocm` here instead, silently. So
+    # `auto` falls through to the unaccelerated row DETERMINISTICALLY — the
+    # fallthrough case. A machine WITH a working accelerator is pinned
+    # separately (`test_a_supported_amd_gpu_is_offered_the_rocm_engines` and
+    # its CUDA/DirectML neighbours already exercise `_rocm`/`_cuda`/
+    # `_directml` directly; `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`
     # pins the image family's equivalent end-to-end).
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.EMBEDDINGS).code == "onnx-embed"
 
@@ -10411,7 +10481,7 @@ _TEXT_PLATFORMS = [
 
 @pytest.mark.parametrize("system, machine, expected_runner", _TEXT_PLATFORMS)
 def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
-        client, hub, monkeypatch, system, machine, expected_runner):
+        client, hub, monkeypatch, tmp_path, system, machine, expected_runner):
     """The one case a cached entry reaches index 0, pinned rather than left to be
     discovered. A runner with no `SUGGESTIONS` key has nothing curated to put in
     front of the disk — and `default` is then None, which is the honest answer
@@ -10429,9 +10499,14 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     run, the list emptied is the one the row actually resolved, and the premise is
     checked before the conclusion so a future change to resolution fails loudly on
     the setup instead of mysteriously on the assertion.
+
+    Accelerators forced off (`force_no_accelerators`): the Linux param's
+    expected runner is the CPU fallthrough, and a machine (CI or otherwise)
+    with a real Vulkan GPU would resolve `llamacpp-text-vulkan` instead.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: system)
     monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    force_no_accelerators(monkeypatch, tmp_path)
     runner = catalog._runner_for(registry.TEXT_GENERATION)
     assert runner is not None and runner.code == expected_runner
     monkeypatch.setitem(catalog.SUGGESTIONS, runner.code, [])
