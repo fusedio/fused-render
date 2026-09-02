@@ -1210,7 +1210,8 @@ def test_the_total_size_comes_from_the_detail_endpoint(client, monkeypatch):
     monkeypatch.setattr(httpx, "get", fake)
     body = _size(client, {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit"}).json()
     assert body == {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit",
-                    "usedStorage": 4_619_599_193, "error": None}
+                    "usedStorage": 4_619_599_193, "fileSize": None,
+                    "fit": None, "speedEstimate": None, "error": None}
     url = fake.calls[0][0]
     assert url == ("https://huggingface.co/api/models/"
                    "Runpod/FLUX.2-klein-4B-mflux-4bit?expand%5B%5D=usedStorage")
@@ -1221,7 +1222,8 @@ def test_a_repo_the_hub_has_no_total_for_reports_none(client, monkeypatch):
     # total, and a repo the Hub does not measure has none.
     monkeypatch.setattr(httpx, "get", _detail({"id": "org/m"}))
     assert _size(client, {"id": "org/m"}).json() == {
-        "id": "org/m", "usedStorage": None, "error": None}
+        "id": "org/m", "usedStorage": None, "fileSize": None,
+        "fit": None, "speedEstimate": None, "error": None}
 
 
 @pytest.mark.parametrize("value", ["4619599193", -1, 1.5, True, {}, None])
@@ -1327,3 +1329,329 @@ def test_the_size_lookup_is_a_guarded_post(client, monkeypatch):
     assert not fake.calls, "a guarded size lookup still reached the Hub"
     assert client.get("/api/ai-models/hub/size").status_code == 405
     assert _size(client, {"id": "org/m"}).status_code == 200
+
+
+# -- Bug chain fix: the GGUF total was the whole repo, not the resolved file -
+
+# A GGUF repo's `usedStorage` (the detail endpoint's own total) counts EVERY
+# quantization the author published, not the one file `_model_row` resolved
+# for this row. `blobs=true` on the SAME detail endpoint — verified against
+# `huggingface_hub`'s own `HfApi.model_info(files_metadata=True)`
+# (`hf_api.py`: `if files_metadata: params["blobs"] = True`) — expands
+# `siblings` into filename+size, so the one file's own bytes come from the
+# same one-round-trip endpoint rather than a repo-wide sum.
+
+
+def test_a_file_specific_size_comes_from_the_blobs_expansion(client, monkeypatch):
+    fake = _detail({"id": "unsloth/x-GGUF", "siblings": [
+        {"rfilename": "x-Q4_K_M.gguf", "size": 4_200_000_000},
+        {"rfilename": "x-Q8_0.gguf", "size": 8_100_000_000},
+    ]})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "unsloth/x-GGUF", "file": "x-Q4_K_M.gguf"}).json()
+    assert body["fileSize"] == 4_200_000_000
+    assert body["usedStorage"] is None
+    url = fake.calls[0][0]
+    assert url == "https://huggingface.co/api/models/unsloth/x-GGUF?blobs=true"
+
+
+def test_a_file_not_among_the_siblings_reports_no_size(client, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/x", "siblings": [
+        {"rfilename": "other.gguf", "size": 10},
+    ]}))
+    body = _size(client, {"id": "org/x", "file": "missing.gguf"}).json()
+    assert body["fileSize"] is None and body["error"] is None
+
+
+@pytest.mark.parametrize("value", ["10", -1, 1.5, True])
+def test_a_file_size_that_is_not_a_count_of_bytes_is_no_size(client, monkeypatch, value):
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/x", "siblings": [
+        {"rfilename": "m.gguf", "size": value},
+    ]}))
+    body = _size(client, {"id": "org/x", "file": "m.gguf"}).json()
+    assert body["fileSize"] is None
+
+
+def test_without_a_file_the_size_lookup_is_the_repo_total_as_before(client, monkeypatch):
+    fake = _detail({"id": "org/m", "usedStorage": 123})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] == 123 and body["fileSize"] is None
+
+
+def test_a_file_lookup_does_not_collide_with_the_repo_total_cache(client, monkeypatch):
+    # Two different questions about the same repo, and the cache key has to
+    # tell them apart or one would silently answer the other.
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": 999}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 999
+    fake = _detail({"id": "org/m", "siblings": [{"rfilename": "m.gguf", "size": 7}]})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "org/m", "file": "m.gguf"}).json()
+    assert body["fileSize"] == 7 and body["usedStorage"] is None
+    assert len(fake.calls) == 1
+
+
+# -- Bug chain fix: fit/speed ride along the file-specific size lookup ------
+#
+# `_model_row` cannot judge fit for a GGUF row during SEARCH — there is no
+# safetensors dtype map to size it from, and resolving the one Hub call that
+# WOULD size it (this same `blobs=true` lookup) per row inside a search reply
+# would be exactly the per-row Hub round trip the module's own docstring
+# forbids. But the lazy per-repo size lookup already exists and already
+# costs one round trip once a card scrolls into view — so the verdict rides
+# that same answer rather than asking a second time.
+
+
+def test_the_size_lookup_computes_fit_and_speed_for_the_resolved_file(
+        client, monkeypatch):
+    _pin_hardware(monkeypatch)
+    fake = _detail({"id": "unsloth/x-GGUF", "siblings": [
+        {"rfilename": "x-Q4_K_M.gguf", "size": 4_000_000_000},
+    ]})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {
+        "id": "unsloth/x-GGUF", "file": "x-Q4_K_M.gguf",
+        "capability": registry.TEXT_GENERATION,
+    }).json()
+    assert body["fit"]["verdict"] in ("easy", "tight")
+    assert body["speedEstimate"]["tokensPerSecond"] > 0
+
+
+def test_no_fit_or_speed_without_a_capability(client, monkeypatch):
+    # `capability` is the caller's own row telling this route what ladder to
+    # judge against — a size with no stated capability is not enough to judge.
+    fake = _detail({"id": "unsloth/x-GGUF", "siblings": [
+        {"rfilename": "x-Q4_K_M.gguf", "size": 4_000_000_000},
+    ]})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "unsloth/x-GGUF", "file": "x-Q4_K_M.gguf"}).json()
+    assert body["fit"] is None and body["speedEstimate"] is None
+
+
+def test_no_speed_estimate_for_a_non_text_capability(client, monkeypatch):
+    _pin_hardware(monkeypatch)
+    fake = _detail({"id": "org/x", "siblings": [
+        {"rfilename": "x.gguf", "size": 4_000_000_000},
+    ]})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {
+        "id": "org/x", "file": "x.gguf", "capability": "text-to-image",
+    }).json()
+    assert body["fit"] is not None
+    assert body["speedEstimate"] is None
+
+
+def test_no_fit_without_a_resolved_file(client, monkeypatch):
+    # The repo-wide total is not a basis for judging fit: it counts every
+    # quantization the author published, not the weights a load would read,
+    # so it would be MORE likely to be wrong than showing nothing.
+    fake = _detail({"id": "org/x", "usedStorage": 900_000_000_000})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {
+        "id": "org/x", "capability": registry.TEXT_GENERATION,
+    }).json()
+    assert body["fit"] is None and body["speedEstimate"] is None
+
+
+# -- Part 2: Quant, derived from measured metadata, never guessed from a name
+
+
+def test_quant_is_the_dominant_measured_dtype(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/m", safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "BF16"
+
+
+def test_quant_picks_the_dtype_with_the_most_bytes(client, hub_cache, monkeypatch):
+    # A tiny embedding table at a different width must not decide the label.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/m", safetensors={"parameters": {"F32": 1_000, "F16": 8_000_000_000}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "F16"
+
+
+def test_quant_is_the_gguf_files_own_token(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("unsloth/x-GGUF", siblings=[
+        {"rfilename": "x-Q4_K_M.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "Q4_K_M"
+
+
+def test_quant_is_null_when_nothing_measured_it(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/nothing", safetensors=None)]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] is None
+
+
+# -- Part 3: three filters, all server-side (see hub-search-notes.md) -------
+
+
+def _stub_verdicts(monkeypatch, verdicts: dict):
+    """Bypass real fit maths for the FILTER tests below — the scoring itself
+    is covered elsewhere (`test_sort_fit_...`, `test_a_verdict_no_row_...`);
+    these tests are only about what `api_hub_search` DOES with a verdict once
+    it has one."""
+    def fake_verdict(capability, model_id, size_gb=None, resident_gb=None, **kw):
+        return verdicts.get(model_id)
+    monkeypatch.setattr(hub.fit, "verdict", fake_verdict)
+
+
+def test_fit_level_easy_shows_only_easy_verdicts(client, hub_cache, monkeypatch):
+    _stub_verdicts(monkeypatch, {
+        "org/easy": {"verdict": "easy", "basis": "declared", "footprintBytes": 1, "score": 100.0},
+        "org/tight": {"verdict": "tight", "basis": "declared", "footprintBytes": 1, "score": 50.0},
+    })
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/easy"), _hit("org/tight")]))
+    body = _search(client, {"fitLevel": "easy"}).json()
+    assert [m["id"] for m in body["models"]] == ["org/easy"]
+
+
+def test_fit_level_tight_allows_easy_and_tight_but_not_no(client, hub_cache, monkeypatch):
+    _stub_verdicts(monkeypatch, {
+        "org/easy": {"verdict": "easy", "basis": "declared", "footprintBytes": 1, "score": 100.0},
+        "org/tight": {"verdict": "tight", "basis": "declared", "footprintBytes": 1, "score": 50.0},
+        "org/no": {"verdict": "no", "basis": "declared", "footprintBytes": 1, "score": 0.0},
+    })
+    monkeypatch.setattr(httpx, "get", _reply(
+        [_hit("org/easy"), _hit("org/tight"), _hit("org/no")]))
+    body = _search(client, {"fitLevel": "tight", "includeUnfit": True}).json()
+    assert {m["id"] for m in body["models"]} == {"org/easy", "org/tight"}
+
+
+def test_fit_level_any_leaves_the_unfit_default_untouched(client, hub_cache, monkeypatch):
+    _stub_verdicts(monkeypatch, {
+        "org/no": {"verdict": "no", "basis": "declared", "footprintBytes": 1, "score": 0.0},
+    })
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/no")]))
+    body = _search(client, {"fitLevel": "any", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/no"]
+
+
+def test_an_unknown_fit_level_is_refused(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([]))
+    assert _search(client, {"fitLevel": "bogus"}).status_code == 400
+
+
+def test_quant_filter_narrows_to_the_matching_dtype(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/bf16", safetensors={"parameters": {"BF16": 1_000_000}}),
+        _hit("org/f16", safetensors={"parameters": {"F16": 1_000_000}}),
+    ]))
+    body = _search(client, {"quant": "F16", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/f16"]
+
+
+def test_quant_filter_is_case_insensitive(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/bf16", safetensors={"parameters": {"BF16": 1_000_000}}),
+    ]))
+    body = _search(client, {"quant": "bf16", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/bf16"]
+
+
+def test_quant_filter_drops_rows_with_no_measured_quant(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/bf16", safetensors={"parameters": {"BF16": 1_000_000}}),
+        _hit("org/none", safetensors=None),
+    ]))
+    body = _search(client, {"quant": "BF16", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/bf16"]
+
+
+def test_params_band_under_4b(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/small", safetensors={"parameters": {"BF16": 1_000_000_000}}),
+        _hit("org/big", safetensors={"parameters": {"BF16": 8_000_000_000}}),
+    ]))
+    body = _search(client, {"paramsBand": "under4b", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/small"]
+
+
+def test_params_band_4_to_15b_is_inclusive_at_the_edges(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/edge-low", safetensors={"parameters": {"BF16": 4_000_000_000}}),
+        _hit("org/edge-high", safetensors={"parameters": {"BF16": 15_000_000_000}}),
+        _hit("org/over", safetensors={"parameters": {"BF16": 16_000_000_000}}),
+    ]))
+    body = _search(client, {"paramsBand": "4to15b", "includeUnfit": True}).json()
+    assert {m["id"] for m in body["models"]} == {"org/edge-low", "org/edge-high"}
+
+
+def test_params_band_over_15b(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/small", safetensors={"parameters": {"BF16": 1_000_000_000}}),
+        _hit("org/huge", safetensors={"parameters": {"BF16": 70_000_000_000}}),
+    ]))
+    body = _search(client, {"paramsBand": "over15b", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/huge"]
+
+
+def test_params_band_drops_rows_with_no_params(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/known", safetensors={"parameters": {"BF16": 1_000_000_000}}),
+        _hit("org/unknown", safetensors=None),
+    ]))
+    body = _search(client, {"paramsBand": "under4b", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/known"]
+
+
+def test_an_unknown_params_band_is_refused(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([]))
+    assert _search(client, {"paramsBand": "bogus"}).status_code == 400
+
+
+def test_publisher_is_sent_to_the_hub_as_author(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"publisher": "mlx-community"})
+    url = fake.calls[0][0]
+    assert "author=mlx-community" in url
+
+
+def test_publisher_joins_the_cache_key(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"publisher": "mlx-community"})
+    _search(client, {"publisher": "unsloth"})
+    assert len(fake.calls) == 2
+
+
+def test_no_publisher_means_no_author_param(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client)
+    url = fake.calls[0][0]
+    assert "author=" not in url
+
+
+def test_a_narrow_quant_filter_still_overfetches_so_limit_is_not_underfilled(
+        client, hub_cache, monkeypatch):
+    # Mirrors the identical fix already made for `includeUnfit`/task filters
+    # (see `test_unchecking_include_unfit_inside_the_window_does_not_reuse_the_smaller_fetch`):
+    # a filter that only removes rows AFTER the Hub's own answer must not be
+    # satisfied from the same small `count`-sized fetch a plain query would
+    # use, or the page comes back under-filled with headroom left unused on
+    # the Hub's own answer.
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"quant": "BF16", "limit": 24})
+    url = fake.calls[0][0]
+    assert "limit=96" in url  # count(24) * _OVERFETCH(4)
+
+
+def test_toggling_a_narrow_filter_inside_the_window_does_not_reuse_the_smaller_fetch(
+        client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation", "includeUnfit": True, "limit": 24})
+    first_limit = parse_qs(urlsplit(fake.calls[0][0]).query)["limit"][0]
+    assert first_limit == "24"
+    _search(client, {"task": "text-generation", "includeUnfit": True, "limit": 24,
+                     "paramsBand": "under4b"})
+    second_limit = parse_qs(urlsplit(fake.calls[1][0]).query)["limit"][0]
+    assert second_limit == "96"

@@ -1231,6 +1231,29 @@ def pick_gguf_file(filenames) -> str | None:
     return None
 
 
+def gguf_quant_token(filename: str) -> str | None:
+    """The quantization token literally in `filename`'s own name — e.g.
+    `Q4_K_M` out of `...-Q4_K_M.gguf`, or `UD-Q3_K_XL` out of unsloth's
+    dynamic-quant naming — or None when the filename carries no recognisable
+    token (an unsuffixed `model.gguf`, or a full-precision `BF16`/`F16`/`F32`
+    file, neither of which is shaped like a quant suffix).
+
+    Public because the Hub search join (`hub_models.py`) reads it for the
+    row's Quant column: this is a REAL published fact — the one file that
+    would actually download says what it is — unlike inferring a model's
+    precision by matching substrings in its repo NAME, which is the guess
+    the plan this function serves explicitly rejects. Reuses
+    `_GGUF_QUANT_TOKEN_RE` rather than a second pattern, so the Quant column
+    and `pick_gguf_file`'s own ranking can never read a filename's token
+    differently.
+    """
+    match = _GGUF_QUANT_TOKEN_RE.search(filename)
+    if not match:
+        return None
+    token = match.group("token").upper()
+    return f"UD-{token}" if match.group("ud") else token
+
+
 # --------------------------------------------------------------- SPEC AI-24
 #: "Best quality that still fits" order — most-preferred first — used ONLY by
 #: `select_gguf_recipe` below, a caller that already knows its own memory

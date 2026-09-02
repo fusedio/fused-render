@@ -176,6 +176,12 @@ _SORTS = {
     "trending": ("trendingScore", -1),
 }
 
+# Part 3's three explicit filters — "any"/unset is always the no-op default,
+# so a page that never touches these controls behaves exactly as it did
+# before they existed.
+_FIT_LEVELS = frozenset({"easy", "tight", "any"})
+_PARAMS_BANDS = frozenset({"under4b", "4to15b", "over15b", "any"})
+
 # The one sort value this endpoint accepts that is not in `_SORTS`: "fit" asks
 # for a candidate set the Hub CAN rank (downloads — the same honest default
 # `size` uses on the frontend) and reorders it here, over `fit.verdict`'s own
@@ -335,6 +341,57 @@ def _estimated_bytes(safetensors) -> int | None:
         if bits and isinstance(count, int) and count >= 0:
             total += count * bits // 8
     return total or None
+
+
+def _quant(safetensors, file: str | None) -> str | None:
+    """The row's quantization, when it is a MEASURED fact — never a guess from
+    the repo's own NAME (the user's explicit complaint about llmfit's
+    approach, and the reason this function exists at all).
+
+    Two sources, both real evidence:
+
+    * `safetensors.parameters` — the SAME dtype -> count map `_estimated_bytes`
+      already sums. The dtype with the most BYTES (not the most parameters —
+      a small embedding table at a different width must not decide the
+      label for an otherwise-uniform model) is the one reported.
+    * a GGUF row's own resolved `file` — the quant token IN the filename
+      llama.cpp's own ecosystem publishes it under (`formats.gguf_quant_token`),
+      which is a real published fact about the one file this row would
+      actually download.
+
+    `None` when neither source has anything: an unquantifiable repo (no
+    safetensors metadata and no GGUF file resolved, e.g. a format this app
+    reads through neither path) renders nothing rather than an inference.
+    """
+    if isinstance(safetensors, dict):
+        by_dtype = safetensors.get("parameters")
+        if isinstance(by_dtype, dict):
+            best_dtype, best_bytes = None, -1
+            for dtype, count in by_dtype.items():
+                bits = _DTYPE_BITS.get(str(dtype).upper())
+                if not bits or not isinstance(count, int) or count < 0:
+                    continue
+                total_bytes = count * bits
+                if total_bytes > best_bytes:
+                    best_dtype, best_bytes = str(dtype).upper(), total_bytes
+            if best_dtype is not None:
+                return best_dtype
+    if file:
+        return formats.gguf_quant_token(file)
+    return None
+
+
+def _params_band(params: int | None) -> str | None:
+    """Which of Part 3's three size bands `params` falls in, or `None` for a
+    row with no known parameter count — a band filter drops those rather than
+    guessing which one they would belong to."""
+    if params is None:
+        return None
+    if params < 4_000_000_000:
+        return "under4b"
+    if params <= 15_000_000_000:
+        return "4to15b"
+    return "over15b"
 
 
 def _params(safetensors) -> int | None:
@@ -596,8 +653,13 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         if capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
+    quant = _quant(safetensors, file)
     return {
         "id": model_id,
+        # Measured, never guessed from the repo's own name — see `_quant`'s
+        # own docstring for the two sources this can come from and why a
+        # third (name-matching) is deliberately not one of them.
+        "quant": quant,
         # What this repo was derived from, and how — parsed off the Hub's own
         # `base_model:<relation>:<id>` tag, or (None, None) for a row standing
         # alone or one whose tags this server could not read. The GROUPING
@@ -724,6 +786,46 @@ def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
     return used, None
 
 
+def _fetch_file_size(model_id: str, file: str) -> tuple[int | None, str | None]:
+    """One named file's own bytes within a repo: (size, error) — the bytes
+    the row's resolved GGUF `file` would actually add to disk, never the
+    repo-wide total `_fetch_used_storage` answers.
+
+    **`blobs=true` on the SAME detail endpoint**, not a second one — verified
+    against `huggingface_hub`'s own `HfApi.model_info(files_metadata=True)`
+    (`hf_api.py`: `if files_metadata: params["blobs"] = True`), which is what
+    turns the bare-filename `siblings` the LIST endpoint already returns (see
+    `_EXPAND`'s own docstring) into filename + size + LFS metadata on this
+    per-repo endpoint. Still one GET, still one round trip.
+
+    A file the Hub does not list among `siblings` (renamed since the search
+    that resolved it, or simply wrong) reports no size rather than a stale
+    guess. Anything that is not a plain non-negative int is the same "no
+    answer" `_fetch_used_storage` already reads for `usedStorage`.
+    """
+    url = f"{hub_endpoint()}/api/models/{quote(model_id, safe='/')}?{urlencode({'blobs': 'true'})}"
+    response, error = _get(url)
+    if error or response is None:
+        return None, error
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "The Hub sent something that is not JSON."
+    if not isinstance(payload, dict):
+        return None, "The Hub sent an unexpected reply."
+    siblings = payload.get("siblings")
+    if not isinstance(siblings, list):
+        return None, None
+    for sibling in siblings:
+        if not isinstance(sibling, dict) or sibling.get("rfilename") != file:
+            continue
+        size = sibling.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            return None, None
+        return size, None
+    return None, None
+
+
 def _cached(key: tuple):
     now = time.monotonic()
     with _cache_lock:
@@ -775,8 +877,27 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
     include_unfit = bool(body.get("includeUnfit"))
+    # Part 3's three explicit filters. All server-side, and for the SAME
+    # reason `includeUnfit` already is (see the `fetch` comment below): each
+    # one only removes rows AFTER the Hub's own answer, so filtering them
+    # client-side over an already-truncated page would under-fill it exactly
+    # the way the unfit drop used to before that bug was fixed.
+    fit_level = (body.get("fitLevel") or "any").strip() if isinstance(body.get("fitLevel"), str) else "any"
+    quant_filter = (body.get("quant") or "").strip().upper() if isinstance(body.get("quant"), str) else ""
+    params_band = (body.get("paramsBand") or "any").strip() if isinstance(body.get("paramsBand"), str) else "any"
+    # Publisher/org is the one exception: `author` is a real Hub query
+    # parameter (verified against `huggingface_hub.HfApi.list_models`'s own
+    # `params["author"] = author`), so this narrows the WIRE request itself
+    # rather than the join — the Hub does the filtering, before this route's
+    # own overfetch multiplier even applies.
+    publisher = body.get("publisher")
+    publisher = publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
     if sort not in _SORTS and sort != _FIT_SORT:
         return _error(f"unknown sort {sort!r}", status=400)
+    if fit_level not in _FIT_LEVELS:
+        return _error(f"unknown fitLevel {fit_level!r}", status=400)
+    if params_band not in _PARAMS_BANDS:
+        return _error(f"unknown paramsBand {params_band!r}", status=400)
     # A task nothing here can run is refused rather than searched for. The menu
     # only offers supported tags, so reaching this is either a stale page or a
     # hand-written request — and answering it with an empty grid would look
@@ -805,7 +926,15 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # machine, not about the pipeline tag). Either reason over-fetches, or
     # the reply truncates to fewer than `count` rows with headroom left
     # unused on the Hub's own answer.
-    fetch = (count if task_filter and include_unfit
+    #
+    # Part 3's fitLevel/quant/paramsBand filters widen the same problem: each
+    # one runs in this same post-join, pre-truncation section (below) and can
+    # throw away MORE of the candidate set than the unfit drop alone would —
+    # a `quant=Q4_K_M` filter over a page of mostly-BF16 results, say. Any of
+    # them being active forces the full overfetch multiplier, the same as an
+    # unfiltered query already gets by default.
+    extra_filters_active = fit_level != "any" or bool(quant_filter) or params_band != "any"
+    fetch = (count if task_filter and include_unfit and not extra_filters_active
              else min(count * _OVERFETCH, _MAX_FETCH))
     params: dict[str, object] = {
         "sort": sort_field,
@@ -815,6 +944,8 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     }
     if query:
         params["search"] = query
+    if publisher:
+        params["author"] = publisher
     # (D412) When a task filter is set AND the runner actually serving that
     # capability HERE declares a format tag (`Runner.hub_filter_tags`), the
     # Hub is asked to AND it onto the pipeline-tag filter already sent —
@@ -844,7 +975,15 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # toggling it off after an on request must not hand back the smaller
     # `count`-sized payload the "on" request fetched, or the verdict:"no"
     # drop below runs with no headroom left to backfill from.
-    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()), extra_tags, fetch)
+    # `publisher` joins the key for the identical `extra_tags` reason: it
+    # changes the WIRE request (`params["author"]`), so two different values
+    # are genuinely two different Hub answers. `fit_level`/`quant_filter`/
+    # `params_band` do NOT need to — they never reach the Hub, they run fresh
+    # every request in the post-join section below exactly like
+    # `include_unfit` already does, and their only effect on what gets FETCHED
+    # is already captured by `fetch`'s own value, which is already here.
+    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()),
+           extra_tags, fetch, publisher)
     payload = _cached(key)
     if payload is None:
         rows, error = _fetch(params)
@@ -893,6 +1032,22 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
                     reverse=True)
 
+    # Part 3's three explicit filters — run BEFORE the unfit-hide-by-default
+    # block below, so a reader who has already narrowed to (say) "easy fits
+    # under 4B" sees `hiddenUnfit` counted against THAT window, not the wider
+    # one they asked to leave behind. A row with nothing to judge a filter
+    # against (no fit, no quant, no params) is dropped rather than kept: these
+    # are the reader's own explicit ask, unlike the unfit-by-default hide
+    # below, which carries the on-disk exemption because IT is a default
+    # nobody asked for.
+    if fit_level != "any":
+        allowed = {"easy"} if fit_level == "easy" else {"easy", "tight"}
+        models = [row for row in models if (row.get("fit") or {}).get("verdict") in allowed]
+    if quant_filter:
+        models = [row for row in models if (row.get("quant") or "").upper() == quant_filter]
+    if params_band != "any":
+        models = [row for row in models if _params_band(row.get("params")) == params_band]
+
     def _on_disk(row: dict) -> bool:
         return (row.get("local") or {}).get("state", "none") != "none"
 
@@ -937,8 +1092,9 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
 
 @router.post("/api/ai-models/hub/size")
 def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
-    """One repo's TOTAL size on the Hub, for a card the dtype map could not
-    measure.
+    """One repo's size on the Hub, for a card the dtype map could not measure
+    — the repo's TOTAL by default, or one named FILE's own bytes when the
+    caller already knows which single file a row would download.
 
     **Guarded POST for exactly the reason search is** — see `api_hub_search`:
     the cost of this request is in the REQUEST, not the reply, because it leaves
@@ -947,14 +1103,34 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
     second exception.
 
     **One repo per call, and the page asks lazily.** The Hub only expands
-    `usedStorage` on the per-repo detail endpoint, so a page of two dozen
-    results is two dozen round trips — which is why this is not folded into
-    search and why the frontend calls it only for a row with no estimate whose
-    card has actually scrolled into view (see the module docstring).
+    `usedStorage` (or, for a named `file`, per-file sizes via `blobs=true`) on
+    the per-repo detail endpoint, so a page of two dozen results is two dozen
+    round trips — which is why this is not folded into search and why the
+    frontend calls it only for a row with no estimate whose card has actually
+    scrolled into view (see the module docstring).
 
-    The number is NOT the search's `estimatedSize` and must not be presented as
-    one: it is everything in the repo — tokenizer, configs, every quantised copy
-    the author published — rather than the weights a load would read.
+    **`usedStorage` is NOT the search's `estimatedSize` and must not be
+    presented as one**: it is everything in the repo — tokenizer, configs,
+    every quantised copy the author published — rather than the weights a load
+    would read. This is exactly why a GGUF row must NOT be sized off it: the
+    row already knows (`_model_row`'s own `file`, via `formats.pick_gguf_file`)
+    which ONE file it would actually download, and passing that back as `file`
+    here gets that file's own bytes off the SAME endpoint instead of the whole
+    repo's total.
+
+    **`fit`/`speedEstimate` ride the SAME round trip, when they can be judged
+    at all.** `_model_row` cannot compute either for a GGUF row during SEARCH
+    — there is no safetensors dtype map to size it from, and resolving this
+    very lookup per row inside a search reply would be exactly the per-row Hub
+    round trip the module docstring forbids. But this lookup already happens,
+    lazily, once a card scrolls into view — so the verdict is judged off
+    whatever size THIS call resolved, at no extra cost, rather than left null
+    forever. Two conditions, both load-bearing: a `capability` must be given
+    (the caller's own row says what ladder to judge against — a bare byte
+    count is not enough), and a `file`-specific size must have resolved (the
+    repo-wide `usedStorage` total is deliberately NOT judged: it counts every
+    quantization the author published, not the weights a load would read, so
+    judging fit off it would be more likely wrong than showing nothing).
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -970,18 +1146,51 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
         # Echoed back so a caller can see WHICH id was refused, truncated so a
         # megabyte of junk in the body is not a megabyte of error message.
         return _error(f"{model_id[:80]!r} is not a repo id of the form org/name", status=400)
+    raw_file = body.get("file")
+    file = raw_file.strip() if isinstance(raw_file, str) and raw_file.strip() else None
+    if file is not None and len(file) > _MAX_ID_LEN:
+        return _error("file is too long", status=400)
+    raw_capability = body.get("capability")
+    capability = raw_capability if isinstance(raw_capability, str) and raw_capability else None
 
-    key = ("size", hub_endpoint(), model_id, bool(_token()))
+    key = ("size", hub_endpoint(), model_id, file, bool(_token()))
     payload = _cached(key)
     if payload is None:
-        used, error = _fetch_used_storage(model_id)
-        if error:
-            # Not a 5xx, and not cached: the request was fine, the far side was
-            # not, and the next card into view should find out for itself.
-            return {"id": model_id, "usedStorage": None, "error": error}
-        payload = {"usedStorage": used}
+        if file:
+            size, error = _fetch_file_size(model_id, file)
+            if error:
+                # Not a 5xx, and not cached: the request was fine, the far side
+                # was not, and the next card into view should find out for itself.
+                return {"id": model_id, "usedStorage": None, "fileSize": None,
+                        "fit": None, "speedEstimate": None, "error": error}
+            payload = {"usedStorage": None, "fileSize": size}
+        else:
+            used, error = _fetch_used_storage(model_id)
+            if error:
+                return {"id": model_id, "usedStorage": None, "fileSize": None,
+                        "fit": None, "speedEstimate": None, "error": error}
+            payload = {"usedStorage": used, "fileSize": None}
         _store(key, payload)
-    return {"id": model_id, "usedStorage": payload["usedStorage"], "error": None}
+
+    # Judged FRESH every request, never cached alongside the raw byte count —
+    # the same reason `api_hub_search`'s own join runs outside its cache:
+    # hardware and the footprint store can change between two requests for the
+    # same repo within the TTL, and baking a verdict into the cached payload
+    # would let one go stale under the other.
+    fit_verdict = None
+    speed_estimate = None
+    if file and capability and isinstance(payload.get("fileSize"), int):
+        size_gb = payload["fileSize"] / fit.GB_BYTES
+        footprint_store = footprints.load_store()
+        hardware = hw_detect.cached_hardware()
+        fit_verdict = fit.verdict(capability, model_id, size_gb, params=None,
+                                  footprint_store=footprint_store, hardware=hardware)
+        if capability == TEXT_GENERATION:
+            speed_estimate = speed.estimate_tok_s(size_gb, params=None, hardware=hardware)
+
+    return {"id": model_id, "usedStorage": payload["usedStorage"],
+            "fileSize": payload.get("fileSize"), "fit": fit_verdict,
+            "speedEstimate": speed_estimate, "error": None}
 
 
 @router.get("/api/ai-models/hub/tasks")
