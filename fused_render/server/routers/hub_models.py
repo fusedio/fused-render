@@ -161,10 +161,27 @@ _TIMEOUT_S = 12.0
 # no per-repo follow-up request. That is what makes resolving a GGUF search
 # result at ROW-CONSTRUCTION time (`formats.pick_gguf_file`) cheap: the data
 # this needs is already in the payload this module was fetching anyway.
+#
+# **`gguf` (fix for code review finding 1, amending D637) is the same shape
+# of free ride.** Live-verified composed with the rest of this tuple against
+# both a single-file and a multi-quant GGUF repo (`hugging-quants/Llama-3.2-
+# 1B-Instruct-Q4_K_M-GGUF`, `bartowski/Llama-3.2-1B-Instruct-GGUF`): the Hub
+# returns `{"total": <param count>, "architecture": ..., "totalFileSize":
+# ...}` for every repo that ships a `.gguf` at all, absent otherwise. `total`
+# is the checkpoint's REAL parameter count read off the GGUF header itself —
+# confirmed IDENTICAL (1,235,814,432) across three different quantizations
+# of the same model, i.e. it does not change with quantization the way
+# `totalFileSize` (the repo-wide byte total across every file the author
+# shipped, the same "whole repo standing in for one file" shape `_quant`/
+# `_estimated_bytes` already refuse for safetensors) does. `_model_row` uses
+# `total` as `params` for a `file`-resolved row that has no safetensors
+# metadata of its own — a GENUINE Hub-reported fact, not a guess from the
+# repo's name — and never `totalFileSize`, which would reintroduce the exact
+# repo-wide-total bug D638's own fix corrected for `usedStorage`.
 _EXPAND = (
     "pipeline_tag", "downloads", "likes", "lastModified", "createdAt",
     "library_name", "gated", "private", "tags", "safetensors", "siblings",
-    "config",
+    "config", "gguf",
 )
 
 # Sorts the page offers. Keyed so a client cannot pass an arbitrary sort field
@@ -234,10 +251,40 @@ _CPU_ONLY_PENALTY = 20.0
 # good") — "honest degrade to missing data" per the brief. Popularity is the
 # one exception (see `_popularity_score`): a real absence of any download
 # count is the worst case for a signal that measures nothing but downloads.
+#
+# **Every default here was re-checked against one question (code review
+# finding 7): can this number ever score HIGHER than a real, honestly-
+# measured value would for a genuinely capable/fast/recent row?** Only
+# speed failed it. `_FIT_DEFAULT`/`_CAPABILITY_DEFAULT`/`_RECENCY_DEFAULT`
+# each sit well below their own axis's ceiling and below what a
+# comfortably-good real row scores (an "easy" fit is 100, a machine-
+# saturating model's capability is ~86, a brand-new repo's recency is
+# ~100) — a row with no evidence to judge those axes by never outranks one
+# that is actually good on them, only ones that are actually bad, which is
+# the intended "absence is not evidence of badness" reading. `_SPEED_
+# DEFAULT` alone had a NAMED anchor to fail against: 70 (`_saturating`'s
+# curve, corresponding to ~14.4 tok/s) sat ABOVE `_SPEED_CONVERSATIONAL_
+# TOK_S` (12 tok/s) itself, so an unmeasured row scored higher than a real,
+# measured, plainly-usable 8 tok/s model (score 48) ever could — absence
+# beating weak-but-real evidence, not just beating bad evidence. Lowered to
+# just AT the anchor (`_saturating(12, 12)` rounds to ~63.2): a row with no
+# speed evidence now reads as "about as fast as barely-conversational",
+# never faster than a model that is REALLY that fast.
 _FIT_DEFAULT = 40.0
 _CAPABILITY_DEFAULT = 30.0
-_SPEED_DEFAULT = 70.0
+_SPEED_DEFAULT = 63.0
 _RECENCY_DEFAULT = 35.0
+
+# Mirrors the frontend's identical anchor (`hubTableView.ts::SPEED_ANCHOR_
+# PARAMS`, same value, same citation): below this many parameters,
+# `speed.py`'s own bandwidth formula is documented as unvalidated (fixed
+# per-call overhead dominates), so `speedLabel` renders the dash there
+# rather than a number — and `_speed_score` (fix for finding 6) must not
+# rank on a number the table itself refuses to print. Kept as a SEPARATE
+# constant rather than importing the frontend's, because there is nothing
+# in this backend module to import it FROM — see `_speed_score`'s own
+# docstring for the bug this fixes.
+_SPEED_ANCHOR_PARAMS = 1_000_000_000.0
 
 # The capability axis turns `params` into a 0-100 score via a diminishing-
 # returns curve anchored to what THIS machine could comfortably hold — so an
@@ -308,13 +355,27 @@ def _capability_score(params: int | None, ram_gb: float | None) -> float:
     return _saturating(float(params), anchor, _CAPABILITY_STEEPNESS)
 
 
-def _speed_score(speed_estimate: dict | None) -> float:
+def _speed_score(speed_estimate: dict | None, params: int | None) -> float:
     """The speed axis. Saturates past `_SPEED_CONVERSATIONAL_TOK_S` by
     construction (`_saturating`), which is what stops a bandwidth formula's
     own known blind spot — an anchor-less sub-billion-parameter model's
     inflated tok/s (`speed.py:283`'s own documented gap) — from winning this
     axis outright: it saturates at the same ceiling a genuinely fast,
-    correctly-modelled model already reaches, never above it."""
+    correctly-modelled model already reaches, never above it.
+
+    **`params` gates the SAME anchor `speedLabel` already refuses to print a
+    number below** (fix for code review finding 6). Below `_SPEED_ANCHOR_
+    PARAMS`, `speedTitle`'s own words are "a number here would not be a real
+    estimate" — but this function used to score `tokensPerSecond` in
+    unchanged regardless, so `_saturating(17_324.6, 12)` (the tiny CI-stub
+    example the frontend's own doc cites) rounded to the axis's CEILING,
+    100.0, while the cell right beside it showed a dash. One source of
+    truth for "this estimate isn't real": a row below the anchor gets
+    `_SPEED_DEFAULT` here too, the identical default an estimate-less row
+    already gets, rather than trusting a number this app's own UI does not
+    trust."""
+    if params is not None and params < _SPEED_ANCHOR_PARAMS:
+        return _SPEED_DEFAULT
     if not isinstance(speed_estimate, dict):
         return _SPEED_DEFAULT
     tok_s = speed_estimate.get("tokensPerSecond")
@@ -355,6 +416,50 @@ def _popularity_score(downloads: int | None) -> float:
     return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
 
 
+def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
+    """The composite blend BEFORE the `[0, 100]` clamp `_composite_score`
+    applies for display — see that function for the full description of the
+    five axes and the bonus/penalties below.
+
+    **Kept separate from the clamp, and this is what the SORT must use**
+    (fix for code review finding 8). `_ON_DISK_BONUS` and `_CPU_OFFLOAD_
+    PENALTY`/`_CPU_ONLY_PENALTY` are flat adjustments that do not change one
+    row's rank RELATIVE to another with the same blend — but clamping BEFORE
+    comparing does: on a GPU-less machine every row takes the identical
+    `_CPU_ONLY_PENALTY`, and a typical pre-penalty blend down the tail (say
+    25-50) lands under 20 post-penalty, so `max(0.0, blended)` flattened a
+    real slice of the tail to exactly 0.0 — a comparison the CLAMPED number
+    can no longer make, silently falling the sort back to the Hub's own
+    downloads order for every tied-at-zero row. `_ON_DISK_BONUS` does the
+    same at the ceiling. The fix is to compare on THIS unclamped figure and
+    only clamp the number actually shown."""
+    fit_verdict = row.get("fit")
+    fit_axis = (
+        float(fit_verdict["score"])
+        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
+        else _FIT_DEFAULT
+    )
+    capability_axis = _capability_score(row.get("params"), ram_gb)
+    speed_axis = _speed_score(row.get("speedEstimate"), row.get("params"))
+    recency_axis = _recency_score(row.get("created"))
+    popularity_axis = _popularity_score(row.get("downloads"))
+    blended = (
+        _WEIGHT_FIT * fit_axis
+        + _WEIGHT_CAPABILITY * capability_axis
+        + _WEIGHT_SPEED * speed_axis
+        + _WEIGHT_RECENCY * recency_axis
+        + _WEIGHT_POPULARITY * popularity_axis
+    )
+    if (row.get("local") or {}).get("state", "none") != "none":
+        blended += _ON_DISK_BONUS
+    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
+    if run_mode == "cpu-offload":
+        blended -= _CPU_OFFLOAD_PENALTY
+    elif run_mode == "cpu-only":
+        blended -= _CPU_ONLY_PENALTY
+    return blended
+
+
 def _composite_score(row: dict, ram_gb: float | None) -> float:
     """`row["matchScore"]` (D639) — the composite 0-100 the DEFAULT sort
     ranks by and the merged Fit+Score cell renders, blending:
@@ -382,32 +487,12 @@ def _composite_score(row: dict, ram_gb: float | None) -> float:
     `[0, 100]` afterward: the bonus can push a near-ceiling row past 100 on
     its own, and a reader comparing this number to the 0-100 axes it is
     made of should never see it escape that range.
+
+    **This is the DISPLAYED number only — `api_hub_search`'s own sort uses
+    `_composite_raw_score` (unclamped) instead, see that function's own
+    docstring for why (code review finding 8).**
     """
-    fit_verdict = row.get("fit")
-    fit_axis = (
-        float(fit_verdict["score"])
-        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
-        else _FIT_DEFAULT
-    )
-    capability_axis = _capability_score(row.get("params"), ram_gb)
-    speed_axis = _speed_score(row.get("speedEstimate"))
-    recency_axis = _recency_score(row.get("created"))
-    popularity_axis = _popularity_score(row.get("downloads"))
-    blended = (
-        _WEIGHT_FIT * fit_axis
-        + _WEIGHT_CAPABILITY * capability_axis
-        + _WEIGHT_SPEED * speed_axis
-        + _WEIGHT_RECENCY * recency_axis
-        + _WEIGHT_POPULARITY * popularity_axis
-    )
-    if (row.get("local") or {}).get("state", "none") != "none":
-        blended += _ON_DISK_BONUS
-    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
-    if run_mode == "cpu-offload":
-        blended -= _CPU_OFFLOAD_PENALTY
-    elif run_mode == "cpu-only":
-        blended -= _CPU_ONLY_PENALTY
-    return min(100.0, max(0.0, blended))
+    return min(100.0, max(0.0, _composite_raw_score(row, ram_gb)))
 
 
 _MAX_LIMIT = 60
@@ -981,21 +1066,53 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         safetensors = None
     params = _params(safetensors, config)
     estimated_size = _estimated_bytes(safetensors)
+    quant = _quant(safetensors, file, config)
+    # Fix for code review finding 1 (amending D637): a `file`-resolved row
+    # with no safetensors metadata of its own — the common GGUF-only-repo
+    # shape, not the mixed-publish case F3 already handles — used to reach
+    # `fit.verdict`/`speed.estimate_tok_s` with `params` AND `size_gb` BOTH
+    # None, so the composite ranking's fit/capability/speed axes all fell to
+    # their defaults at once (`_composite_score`) regardless of how good the
+    # actual model was. The Hub's own `gguf` metadata expand (`_EXPAND`, no
+    # extra request) reports the checkpoint's REAL parameter count straight
+    # off the GGUF header — quantization-invariant, unlike `estimatedSize` —
+    # and the file we already resolved names a real published quant token
+    # (`quant`, above). Combined, `fit._weight_bytes`'s existing `params x
+    # bytes-per-param` path (already there for a catalog entry's
+    # `quantization` string, just never fed one from a Hub search row before
+    # this fix) gives a REAL estimate instead of three blind defaults.
+    #
+    # Deliberately NOT written into `estimatedSize`/the row's own `size_gb`-
+    # shaped fields: `params` is a repo-level fact (a real HUB-reported
+    # figure, safe to show in the Params column), but the resulting footprint
+    # is only ever fed to `fit.verdict`/`speed.estimate_tok_s` for RANKING —
+    # the client's lazy per-file `hub/size` lookup still owns the displayed
+    # Size cell (D637's own reasoning: `estimatedSize` non-null would
+    # suppress that lookup, trading "unknown, will resolve" for "an estimate
+    # that never gets corrected").
+    gguf_quantization = None
+    if file is not None and params is None:
+        gguf_meta = raw.get("gguf")
+        gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
+        if isinstance(gguf_total, int) and gguf_total > 0:
+            params = gguf_total
+            gguf_quantization = quant
     # A real, safetensors-derived byte total is strictly better evidence than
     # `fit`'s own `params x bytes-per-param` guess — that guess is what
     # `fit._weight_bytes` falls back to only when `quantization` is a
-    # recognized display string, which a Hub search row never carries (that
-    # field is catalog-only). So `quantization` stays None here always, and
-    # `size_gb` carries the computed total whenever one exists.
+    # recognized display string, which a Hub search row never carried before
+    # the GGUF case just above. So `size_gb` carries the computed total
+    # whenever one exists, and `quantization` stays None except for that one
+    # case.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
     fit_verdict = fit.verdict(capability, model_id, size_gb, params=params,
-                              footprint_store=footprint_store, hardware=hardware)
+                              footprint_store=footprint_store, hardware=hardware,
+                              quantization=gguf_quantization)
     speed_estimate = (
-        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        speed.estimate_tok_s(size_gb, params=params, quantization=gguf_quantization, hardware=hardware)
         if capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
-    quant = _quant(safetensors, file, config)
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -1381,15 +1498,25 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # ranking by it. Computed once per request off a single `machine_ram_gb()`
     # reading (already `lru_cache`d, like `fit.verdict`'s own per-row reads
     # of the same value), never per-row.
+    #
+    # `raw_scores` (fix for code review finding 8) keeps the UNCLAMPED blend
+    # beside the displayed, clamped `matchScore` — keyed by `id(row)` rather
+    # than written onto the row itself, so it never reaches the JSON reply
+    # (an internal sort key, not a wire field). See `_composite_raw_score`'s
+    # own docstring for why sorting on the clamped number ties a real slice
+    # of a GPU-less machine's tail at exactly 0.0.
     ram_gb = fit.machine_ram_gb()
+    raw_scores: dict[int, float] = {}
     for row in models:
-        row["matchScore"] = round(_composite_score(row, ram_gb), 1)
+        raw_score = _composite_raw_score(row, ram_gb)
+        raw_scores[id(row)] = raw_score
+        row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
 
     if sort == _BEST_SORT:
-        # Descending composite score. Stable sort keeps the Hub's own
-        # most-downloaded order as the tie-break, same guarantee `_FIT_SORT`
-        # documents below.
-        models.sort(key=lambda row: row.get("matchScore", 0.0), reverse=True)
+        # Descending composite score, on the UNCLAMPED figure (finding 8) —
+        # stable sort keeps the Hub's own most-downloaded order as the
+        # tie-break, same guarantee `_FIT_SORT` documents below.
+        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
     elif sort == _FIT_SORT:
         # Descending score, nulls (nothing to judge) sorted last — `sort` is
         # Python's own stable sort, so ties (including every null-fit row

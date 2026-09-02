@@ -435,6 +435,67 @@ def test_a_gguf_row_carries_no_file_when_nothing_serves_the_capability_here(
     assert row["file"] is None
 
 
+# -- code review finding 1: a GGUF row scores real data, not three defaults -
+
+
+def test_gguf_row_uses_the_huds_own_gguf_metadata_for_params(client, hub_cache, monkeypatch):
+    """The Hub's `expand[]=gguf` (new in `_EXPAND`) reports the checkpoint's
+    real, quantization-invariant parameter count off the GGUF header itself
+    — a genuine measured fact, safe to show in the Params column, and
+    nothing here has to guess it from the repo's own name."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-only", siblings=[{"rfilename": "x-Q4_K_M.gguf"}],
+        gguf={"total": 1_235_814_432, "architecture": "llama"},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q4_K_M.gguf"
+    assert row["params"] == 1_235_814_432
+    # `estimatedSize` stays None — the client's lazy per-file lookup still
+    # owns the displayed Size cell (D637); this fix only feeds the RANKING
+    # axes off the real params + the resolved file's own quant token.
+    assert row["estimatedSize"] is None
+
+
+def test_gguf_row_with_no_gguf_metadata_at_all_still_has_no_params(client, hub_cache, monkeypatch):
+    """No crash, and no invented number, when the Hub genuinely has nothing
+    under `gguf` for this repo (a shape older or unusual repos can have)."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-no-meta", siblings=[{"rfilename": "x-Q4_K_M.gguf"}],
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q4_K_M.gguf"
+    assert row["params"] is None
+
+
+def test_gguf_row_with_real_params_scores_well_above_the_three_defaults_at_once(
+        client, hub_cache, monkeypatch):
+    """The reported bug: a GGUF row used to collapse fit/capability/speed
+    to their defaults SIMULTANEOUSLY (`0.35*_FIT_DEFAULT + 0.25*_CAPABILITY_
+    DEFAULT + 0.15*_SPEED_DEFAULT`, ~32 before this fix) regardless of how
+    good the actual model was, while an equally-good safetensors row scored
+    off real data. Same downloads/created on both rows here, so only the
+    fit/capability/speed axes can account for the gap — a small, comfortably
+    -fitting real GGUF model must end up well above the three-defaults
+    baseline once `gguf.total` is known."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/gguf-with-meta", siblings=[{"rfilename": "x-Q4_K_M.gguf"}],
+             gguf={"total": 1_000_000_000}, **same),
+        _hit("org/gguf-no-meta", siblings=[{"rfilename": "y-Q4_K_M.gguf"}], **same),
+    ]))
+    body = _search(client).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    with_meta = by_id["org/gguf-with-meta"]
+    no_meta = by_id["org/gguf-no-meta"]
+    assert with_meta["fit"] is not None
+    assert no_meta["fit"] is None
+    assert with_meta["matchScore"] > no_meta["matchScore"]
+
+
 # -- the request ------------------------------------------------------------
 
 
@@ -573,7 +634,11 @@ def test_no_format_tag_is_added_when_the_active_runner_declares_none(
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"task": "text-generation"})
     url = fake.calls[0][0]
-    assert "filter=text-generation" in url and "gguf" not in url
+    # `expand[]=gguf` (fix for code review finding 1) rides every request
+    # unconditionally now — it costs nothing and the join needs it for any
+    # row that turns out to resolve a GGUF file, so its presence here is not
+    # evidence of a format FILTER; only `filter=gguf` would be.
+    assert "filter=text-generation" in url and "filter=gguf" not in url
 
 
 def test_no_format_tag_is_added_without_a_task_filter(client, hub_cache, monkeypatch):
@@ -1921,15 +1986,46 @@ def test_speed_axis_saturates_so_an_anchor_less_estimate_cannot_win_outright():
     # `speed.py:283`'s own documented gap: a sub-billion-parameter model's
     # tok/s is not modelled at all, and the axis must not let that show up
     # as a ranking advantage over a genuinely fast, correctly-modelled one.
-    already_fast = hub._speed_score({"tokensPerSecond": 40})
-    inflated = hub._speed_score({"tokensPerSecond": 17_324.6})
+    # `params` is above `_SPEED_ANCHOR_PARAMS` for both rows here — this
+    # test is about the SATURATING CURVE, not the anchor gate (see the two
+    # tests below for that).
+    already_fast = hub._speed_score({"tokensPerSecond": 40}, 7_000_000_000)
+    inflated = hub._speed_score({"tokensPerSecond": 17_324.6}, 7_000_000_000)
     assert inflated <= 100.0
     assert inflated - already_fast < 5
 
 
 def test_speed_axis_defaults_honestly_for_no_estimate():
-    assert hub._speed_score(None) == hub._SPEED_DEFAULT
-    assert hub._speed_score({}) == hub._SPEED_DEFAULT
+    assert hub._speed_score(None, 7_000_000_000) == hub._SPEED_DEFAULT
+    assert hub._speed_score({}, 7_000_000_000) == hub._SPEED_DEFAULT
+
+
+def test_speed_axis_defaults_below_the_anchor_even_with_a_real_estimate():
+    # Code review finding 6: the display (`speedLabel`/`speedTitle` in
+    # `hubTableView.ts`) already refuses to print a tok/s figure below
+    # `_SPEED_ANCHOR_PARAMS` ("a number here would not be a real estimate")
+    # — the ranking axis must refuse to SCORE on it too, one source of
+    # truth for "this estimate isn't real". Before this fix,
+    # `_saturating(17_324.6, 12)` scored the axis's own CEILING (100.0) for
+    # a sub-billion-parameter stub, ABOVE a genuinely fast, correctly-
+    # modelled model's real score.
+    tiny_params = 2_000_000  # a 2M-parameter CI stub, same shape as the
+    # `tiny-Qwen2ForCausalLM-2.5` example D639 itself cites.
+    inflated_but_tiny = hub._speed_score({"tokensPerSecond": 17_324.6}, tiny_params)
+    assert inflated_but_tiny == hub._SPEED_DEFAULT
+    real_fast_model = hub._speed_score({"tokensPerSecond": 40}, 7_000_000_000)
+    assert inflated_but_tiny < real_fast_model
+
+
+def test_speed_default_is_at_or_below_the_conversational_anchor():
+    # Code review finding 7: `_SPEED_DEFAULT` used to correspond to ~14.4
+    # tok/s, ABOVE `_SPEED_CONVERSATIONAL_TOK_S` (12) itself, so an
+    # unmeasured row outranked a real, measured, plainly-usable slow model
+    # (a real 8 tok/s model scored 48 on this axis, well under the old
+    # default of 70). The default must never beat what a genuinely-measured
+    # row AT the anchor itself scores.
+    at_anchor = hub._saturating(hub._SPEED_CONVERSATIONAL_TOK_S, hub._SPEED_CONVERSATIONAL_TOK_S)
+    assert hub._SPEED_DEFAULT <= at_anchor + 0.5
 
 
 def test_recency_axis_prefers_newer_and_floors_a_future_date_at_zero_age():
@@ -2004,3 +2100,50 @@ def test_composite_score_degrades_honestly_with_nothing_known_at_all():
            "downloads": None, "local": {"state": "none"}}
     score = hub._composite_score(row, 32.0)
     assert 0.0 < score < 100.0
+
+
+def test_raw_score_is_unclamped_where_the_displayed_score_is_clamped():
+    # Code review finding 8: `_composite_score` (displayed) clamps to
+    # [0, 100]; `_composite_raw_score` (the SORT key) must not, or a
+    # GPU-less machine's whole tail (identical `_CPU_ONLY_PENALTY` moves no
+    # row relative to another, but the clamp afterward flattens every one
+    # whose blend was already under 20 to exactly 0.0) loses its ordering.
+    low = {"fit": {"score": 5, "runMode": "cpu-only"}, "params": 1_000,
+           "speedEstimate": None, "created": "2015-01-01T00:00:00.000Z",
+           "downloads": 0, "local": {"state": "none"}}
+    from datetime import datetime, timezone
+    high_ceiling = {"fit": {"score": 100, "runMode": "gpu"}, "params": 800_000_000_000,
+                    "speedEstimate": {"tokensPerSecond": 5000},
+                    "created": datetime.now(timezone.utc).isoformat(),
+                    "downloads": 50_000_000, "local": {"state": "downloaded"}}
+    assert hub._composite_raw_score(low, 32.0) < 0.0
+    assert hub._composite_raw_score(high_ceiling, 32.0) > 100.0
+    # The displayed number stays clamped either way.
+    assert hub._composite_score(low, 32.0) == 0.0
+    assert hub._composite_score(high_ceiling, 32.0) == 100.0
+
+
+def test_a_gpu_less_machines_tail_keeps_a_strict_ordering():
+    """A GPU-less machine gives every row the identical `_CPU_ONLY_PENALTY`
+    (`runMode` is a property of the MACHINE, not the row) — it must not
+    change one row's rank relative to another's. Three rows here differ
+    only in fit score; capability, speed, recency and popularity are all
+    real-but-weak evidence (a tiny, old, unpopular repo), so every blend
+    lands well under `_CPU_ONLY_PENALTY` — before the fix, all three
+    clamped to the SAME displayed 0.0, and sorting on that clamped number
+    would have tied them, falling back to whatever order the Hub happened
+    to send them in. `_composite_raw_score` must keep them apart."""
+    def row(fit_score):
+        return {"fit": {"score": fit_score, "runMode": "cpu-only"},
+                "params": 1_000,  # real, but far below the capability anchor
+                "speedEstimate": None, "created": "2015-01-01T00:00:00.000Z",
+                "downloads": 0, "local": {"state": "none"}}
+
+    high, mid, low = row(20), row(10), row(0)
+    raw = [hub._composite_raw_score(r, 32.0) for r in (high, mid, low)]
+    assert raw[0] > raw[1] > raw[2]
+    assert raw[2] < 0.0  # negative — a fact the clamp then hides
+    # The reported symptom: the DISPLAYED number genuinely ties at the
+    # clamp floor even though the raw blends plainly do not.
+    displayed = [hub._composite_score(r, 32.0) for r in (high, mid, low)]
+    assert displayed[0] == displayed[1] == displayed[2] == 0.0
