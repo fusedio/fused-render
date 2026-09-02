@@ -30,7 +30,7 @@ Facts:
 - Failures reject Error with `.message` (duckdb/server text), `.type`, `.status` — render `.message`.
 - Index calls **not superseded like `runPython`'s**: slower earlier keystroke's reply can land last. Guard own renders (below).
 - Page of rows ≠ match count — ask `count(*)` separately to page.
-- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/cancel`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/lookup`, `/api/index/runs`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. Shapes: `fused_render/server/routers/` + `fused_render/static/runtime.js` comments. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
+- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/scan-folder`, `/api/index/cancel`, `/api/index/rank`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/lookup`, `/api/index/runs`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. Shapes: `fused_render/server/routers/` + `fused_render/static/runtime.js` comments. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
 - Store location fixed: `home_dir()/index` — `/api/index/config` edits roots/ignore, cannot relocate store (only `FUSED_RENDER_HOME` at server start moves it).
 
 ### The canonical shape (per-keystroke)

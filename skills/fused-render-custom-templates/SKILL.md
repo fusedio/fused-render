@@ -19,7 +19,7 @@ Each extension resolves to ordered mode list (first = default; >1 shows switcher
     └── icon.svg       optional switcher icon (monochrome, currentColor, square, legible 16px)
 ```
 
-Name resolution: user folder wins, else built-in `fused_render/templates/<name>/`. Naming after built-in shadows it deliberately (built-in names = every folder there with template.html; also Templates → Library). Folder names: single segment, no dots, no leading `_`. Folder without registry entry = inert draft.
+Name resolution: user folder wins, else built-in — resolved from staged copy `~/.fused-render/.core-templates/<name>/` (packaged `fused_render/templates/` tree copied there at server startup; repo tree is source only). Naming after built-in shadows it deliberately (built-in names = every staged folder with template.html; also Templates → Library). Folder names: single segment, no dots, no leading `_`. Folder without registry entry = inert draft.
 
 ## registry.json
 

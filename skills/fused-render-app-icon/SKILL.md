@@ -5,7 +5,7 @@ description: Use when adding/changing/fixing app's icon.svg — sidebar glyph, b
 
 # icon.svg
 
-`icon.svg` (exact lowercase name) beside entry page. Nothing registers it — found by name; edits show next navigation. Used 14 px (sidebar Projects), 16 px (favicon — also for plain files opened in explorer). Skip → generic mark.
+`icon.svg` (exact lowercase name) beside entry page. Nothing registers it — found by name; edits show next navigation. Used tiny: sidebar Projects glyph + favicon (favicon also for plain files opened in explorer). Skip → generic mark.
 
 Rules:
 

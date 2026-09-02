@@ -36,7 +36,7 @@ Two tiers. `provider: "local" | "claude"` pins; omitted → model shape decides:
 
 ## Text and cold start
 
-**text** options: `prompt, provider, model, systemPrompt, effort (Claude; default "low" = no extended thinking — ask for more explicitly), history, raw, images (local-only, rejects on Claude), temperature/maxTokens/topP (dropped on Claude w/ warning), onChunk, abortSignal`. Feed aggregates, not datasets — compute in Python first. Structured output: demand strict JSON, strip fences, `JSON.parse` in try/catch. Vision: `images` on local model with `acceptsImage`.
+**text** options: `prompt, provider, model, systemPrompt, effort ("low"|"medium"|"high"|"xhigh", Claude only; default "low" = no extended thinking — ask for more explicitly), history, raw, images, temperature/maxTokens/topP, onChunk, abortSignal`. Tier split: `history`/`raw`/`images` local-only, **reject `bad_request` on Claude**; `temperature`/`maxTokens`/`topP` on Claude and `effort` on local dropped with `warnings[]` entry, call succeeds. `history` = `[{role: "user"|"assistant", content}]` — push user+assistant pair after each turn. Feed aggregates, not datasets — compute in Python first. Structured output: demand strict JSON, strip fences, `JSON.parse` in try/catch. Vision: `images` on local model with `acceptsImage`.
 
 **Cold start**: first text/embed call naming non-resident local model rejects `model_loading` — download already started, `err.jobId` = it. `fused.watchJob(err.jobId)`, then retry. Not a failure. Image/video/transcribe load inside own job instead (`done`/`total` null while weights arrive — guard division).
 
@@ -75,3 +75,5 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 | `cancelled` | abortSignal / cancel / row ✕ — not a failure |
 
 Debug machine (not page): `which claude`; `GET /api/ai/runtime`; `POST /api/ai` with `X-Fused: 1` (required on every POST).
+
+Full option semantics + edge cases: `fused_render/static/runtime.js` header comment (SPEC §40 refs); Python signatures: `fused_render/templates/shared/fused_ai.py`.

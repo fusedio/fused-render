@@ -9,17 +9,17 @@ Local file-explorer desktop app, single instance per user, serves on `127.0.0.1`
 
 ## Open path via app
 
-macOS `open -a FusedRender <path>` · Linux `gtk-launch fused-render <path>` (or AppImage binary) · Windows `FusedRender.exe <path>`. Dir → explorer; file → preview; `.html` → rendered view.
+macOS `open -a FusedRender <path>` · Linux `gtk-launch fused-render <path>` (or AppImage binary) · Windows `FusedRenderPy.exe <path>`. Dir → explorer; file → preview; `.html` → rendered view.
 
 ## Open by URL
 
 Reuse running instance's `http://127.0.0.1:<port>`. Path after prefix, leading slash dropped, segments URL-encoded:
 
-- `/` → `/apps` hub; `/explorer` = file-explorer homepage.
+- `/` → `/home`; `/explorer` = file-explorer homepage.
 - `/explorer/view/<path>` — full shell chrome (what app opens).
 - `/explorer/embed/<path>` — chrome-free; single view or screenshot.
 
-Mode fixed by prefix (no toggle without navigation); params sync same in both. Old `/view/`/`/embed/` links redirect; write `/explorer/` forms.
+Mode fixed by prefix (no toggle without navigation); params sync same in both. Old `/view/`/`/embed/` links rewritten client-side; write `/explorer/` forms.
 
 **Preview templates** (parquet/image/etc.): open TARGET file's path; shell resolves template by extension, passes `_file`. `?_mode=<name>` picks specific mode.
 

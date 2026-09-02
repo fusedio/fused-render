@@ -31,7 +31,7 @@ One plain fn `main(**params)`. Rules:
 
 ### Available Python libraries
 
-No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (authoritative: `[bundled]` extra in repo `pyproject.toml`). Prefer it — zero install.
+No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (authoritative: repo `pyproject.toml` — `[bundled]` extra, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
@@ -104,7 +104,7 @@ Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fus
 
 ## Preview templates
 
-Same html, opened FOR target file: read-only `_file` param carries path. Reader `.py` only when Python adds value; text → `readFile`, media → `rawUrl`. Built-ins: `fused_render/templates/<name>/` (see `xlsx/`). Extension → mode list: `fused_render/templates/registry.json`. User overrides → `fused-render-custom-templates`.
+Same html, opened FOR target file: read-only `_file` param carries path. Reader `.py` only when Python adds value; text → `readFile`, media → `rawUrl`. Built-in sources: `fused_render/templates/<name>/` (see `xlsx/`; server serves staged copy `~/.fused-render/.core-templates/`). Extension → mode list: `fused_render/templates/registry.json`. User overrides → `fused-render-custom-templates`.
 
 ## Testing
 

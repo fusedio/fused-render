@@ -24,9 +24,9 @@ So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings t
 
 ## API
 
-`screen({audio: false|"mic"|"system"|"both", rect, path, maxSeconds})` and `audio({device, path, maxSeconds})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}`. `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
+`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}`. `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
 
-`screenshot({rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
+`screenshot({display, rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
 
 `fused.capture.list()` finds live recordings (incl. pre-reload); `attach(id)` returns handle. Check on load before starting second recording. Microphone names empty until browser mic permission granted once.
 
