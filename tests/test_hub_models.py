@@ -502,31 +502,70 @@ def test_gguf_row_with_no_gguf_metadata_at_all_still_has_no_params(client, hub_c
     assert row["params"] is None
 
 
-def test_gguf_row_with_real_params_scores_well_above_the_three_defaults_at_once(
+def test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone(
         client, hub_cache, monkeypatch):
-    """The reported bug: a GGUF row used to collapse fit/capability/speed
-    to their defaults SIMULTANEOUSLY (`0.35*_FIT_DEFAULT + 0.25*_CAPABILITY_
-    DEFAULT + 0.15*_SPEED_DEFAULT`, ~32 before this fix) regardless of how
-    good the actual model was, while an equally-good safetensors row scored
-    off real data. Same downloads/created on both rows here, so only the
-    fit/capability/speed axes can account for the gap — a small, comfortably
-    -fitting real GGUF model must end up well above the three-defaults
-    baseline once `gguf.total` is known."""
+    """`params` (the Hub's real `gguf.total`) still moves the ranking even
+    though fit/speed derivation for a GGUF row was deleted entirely (see the
+    DECISIONS.md entry recorded alongside this test): `_capability_score`
+    reads `params` with no bytes-per-param conversion, so a row that knows
+    its real parameter count scores above one that does not, on the
+    capability axis alone, with `fit` staying `None` on BOTH — a GGUF row
+    never gets a server-derived fit verdict any more, recognized quant token
+    or not."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
+    # 7B sits well above `_CAPABILITY_DEFAULT` (30.0) on this machine's own
+    # capability curve (`_capability_anchor_params(32.0)` ~= 11.2B params) —
+    # a tiny model's real params can score BELOW the "unknown" default here,
+    # so this figure is chosen deliberately, not incidentally.
     monkeypatch.setattr(httpx, "get", _reply([
         _hit("org/gguf-with-meta", siblings=[{"rfilename": "x-Q4_K_M.gguf"}],
-             gguf={"total": 1_000_000_000}, **same),
+             gguf={"total": 7_000_000_000}, **same),
         _hit("org/gguf-no-meta", siblings=[{"rfilename": "y-Q4_K_M.gguf"}], **same),
     ]))
     body = _search(client).json()
     by_id = {m["id"]: m for m in body["models"]}
     with_meta = by_id["org/gguf-with-meta"]
     no_meta = by_id["org/gguf-no-meta"]
-    assert with_meta["fit"] is not None
+    assert with_meta["fit"] is None
     assert no_meta["fit"] is None
+    assert with_meta["speedEstimate"] is None
+    assert no_meta["speedEstimate"] is None
+    assert with_meta["params"] == 7_000_000_000
+    assert no_meta["params"] is None
     assert with_meta["matchScore"] > no_meta["matchScore"]
+
+
+def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
+        client, hub_cache, monkeypatch):
+    """The bug that survived two prior guard-based rounds: `formats.gguf_
+    quant_token`'s regex RESOLVES many tokens (`Q8_K_XL`, `FP8`, `Q5_1`,
+    `IQ4_NL`, `Q4_1`, ...) that `fit._quant_key` has no bytes-per-param entry
+    for, and `formats.pick_gguf_file` actively SELECTS files carrying them —
+    so gating the derivation on "`quant` resolved a token" (round 2's fix)
+    was never the same guarantee as "a quant this server can actually turn
+    into real bytes". A 30B `Q8_K_XL` file's real footprint is ~31.5GB
+    (~1.05 bytes/param); `_weight_bytes`'s `DEFAULT_BYTES_PER_PARAM` (0.58)
+    guess would be 17.4GB, comfortably "easy" on a 32GB machine when it is
+    not. There is no whitelist fix for this — `fit`/`speedEstimate` must be
+    unconditionally `None` for every GGUF row, recognized token or not, so
+    this specific under-report can never resurface."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-q8-k-xl", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
+        gguf={"total": 30_000_000_000, "architecture": "llama"},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q8_K_XL.gguf"
+    # The token IS recognized by the regex — this is not the round-2 case.
+    assert row["quant"] == "Q8_K_XL"
+    # The real, quantization-invariant params count is still shown...
+    assert row["params"] == 30_000_000_000
+    # ...but never turned into a synthesized footprint or verdict.
+    assert row["fit"] is None
+    assert row["speedEstimate"] is None
 
 
 # -- the request ------------------------------------------------------------

@@ -1067,78 +1067,44 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     params = _params(safetensors, config)
     estimated_size = _estimated_bytes(safetensors)
     quant = _quant(safetensors, file, config)
-    # Fix for code review finding 1 (amending D637): a `file`-resolved row
-    # with no safetensors metadata of its own — the common GGUF-only-repo
-    # shape, not the mixed-publish case F3 already handles — used to reach
-    # `fit.verdict`/`speed.estimate_tok_s` with `params` AND `size_gb` BOTH
-    # None, so the composite ranking's fit/capability/speed axes all fell to
-    # their defaults at once (`_composite_score`) regardless of how good the
-    # actual model was. The Hub's own `gguf` metadata expand (`_EXPAND`, no
-    # extra request) reports the checkpoint's REAL parameter count straight
-    # off the GGUF header — quantization-invariant, unlike `estimatedSize` —
-    # and the file we already resolved names a real published quant token
-    # (`quant`, above). Combined, `fit._weight_bytes`'s existing `params x
-    # bytes-per-param` path (already there for a catalog entry's
-    # `quantization` string, just never fed one from a Hub search row before
-    # this fix) gives a REAL estimate instead of three blind defaults.
-    #
-    # Deliberately NOT written into `estimatedSize`/the row's own `size_gb`-
-    # shaped fields: `params` is a repo-level fact (a real HUB-reported
-    # figure, safe to show in the Params column), but the resulting footprint
-    # is only ever fed to `fit.verdict`/`speed.estimate_tok_s` for RANKING —
-    # the client's lazy per-file `hub/size` lookup still owns the displayed
-    # Size cell (D637's own reasoning: `estimatedSize` non-null would
-    # suppress that lookup, trading "unknown, will resolve" for "an estimate
-    # that never gets corrected").
-    #
-    # Fix for code review finding (second round, amending the paragraph
-    # above): `gguf_quantization` — and therefore whether `fit_params` below
-    # is fed to `fit.verdict`/`speed.estimate_tok_s` at all — is set ONLY
-    # when `quant` (== `formats.gguf_quant_token(file)`, see `_quant`'s own
-    # first branch) actually resolved a token. `gguf_quant_token` returns
-    # `None` BY DESIGN for an unsuffixed or full-precision file
-    # (`model.gguf`, `...-F16.gguf`, `...-BF16.gguf` — its own docstring),
-    # which is exactly `pick_gguf_file`'s pass-3 fallback case. Feeding that
-    # `params` into `fit._weight_bytes` anyway used to hit its
-    # `parsed is not None and (recognized or valid_size_gb is None)` branch
-    # with `recognized=False`, multiplying by `DEFAULT_BYTES_PER_PARAM`
-    # (0.58, "4-bit-ish") — under-reporting a full-precision checkpoint's
-    # real footprint by roughly 3.4x and calling an unfittable model "easy".
-    # `_weight_bytes`'s own docstring calls under-reporting "the more
-    # dangerous of the two" directions, and this module must never guess a
-    # quantization from a filename it could not actually classify (the
-    # user's original complaint `_quant` itself exists to satisfy). So an
-    # unrecognized file goes back to reporting `fit: null`/`speedEstimate:
-    # null` — exactly what it did before this whole GGUF-params feed existed
-    # — and the client's lazy per-file `hub/size` lookup supplies the real
-    # verdict instead, same as any other row whose weight is unknown here.
-    # `params` itself stays set to the real, quantization-invariant HUB
-    # total either way — it is still a genuine fact worth the Params column
-    # even when this server does not know what precision it is stored at.
-    gguf_quantization = None
-    fit_params = params
+    # `params` for a `file`-resolved (GGUF) row: the Hub's own `gguf`
+    # metadata expand (`_EXPAND`, no extra request) reports the checkpoint's
+    # REAL parameter count straight off the GGUF header — quantization-
+    # invariant, unlike `estimatedSize` — and it costs nothing extra to keep.
+    # `_capability_score` reads `params` directly with no bytes-per-param
+    # conversion, so this figure alone cannot leak a memory verdict; it is
+    # only ever a capability-axis input and a Params-column fact.
     if file is not None and params is None:
         gguf_meta = raw.get("gguf")
         gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
         if isinstance(gguf_total, int) and gguf_total > 0:
             params = gguf_total
-            if quant is not None:
-                gguf_quantization = quant
-                fit_params = gguf_total
-    # A real, safetensors-derived byte total is strictly better evidence than
-    # `fit`'s own `params x bytes-per-param` guess — that guess is what
-    # `fit._weight_bytes` falls back to only when `quantization` is a
-    # recognized display string, which a Hub search row never carried before
-    # the GGUF case just above. So `size_gb` carries the computed total
-    # whenever one exists, and `quantization` stays None except for that one
-    # case.
+    # Fit/speed derivation for a GGUF row was DELETED (three code review
+    # rounds each caught the same under-report class re-emerging — see the
+    # DECISIONS.md entry recorded alongside this change). It is not a bug
+    # this module can patch by recognising more quant tokens: `formats.
+    # gguf_quant_token`'s regex resolves tokens (`Q8_K_XL`, `FP8`, `Q5_1`,
+    # `IQ4_NL`, `Q4_1`, ...) that `fit._quant_key` has no bytes-per-param
+    # entry for, and `_weight_bytes` silently falls back to
+    # `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") for ANY unrecognised
+    # string whenever there is no real `size_gb` to prefer — which is always
+    # true here, since a `file`-resolved row has no safetensors-derived
+    # `estimated_size`. A 30B `Q8_K_XL` file computes 30e9 x 0.58 = 17.4GB
+    # against a real ~31.5GB and still reads "easy" on a 32GB machine. There
+    # is no whitelist of tokens that makes `params x bytes-per-param` safe
+    # in general — only the actual file's bytes do — so a GGUF row's `fit`
+    # and `speedEstimate` are unconditionally `None` here. The client's lazy
+    # per-file `hub/size` lookup, which fires anyway for every row without a
+    # server-supplied `estimatedSize`, is the ONLY thing that ever produces
+    # a memory verdict or a tok/s figure for such a row.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
-    fit_verdict = fit.verdict(capability, model_id, size_gb, params=fit_params,
-                              footprint_store=footprint_store, hardware=hardware,
-                              quantization=gguf_quantization)
+    fit_verdict = (
+        fit.verdict(capability, model_id, size_gb, params=params,
+                    footprint_store=footprint_store, hardware=hardware)
+        if file is None else None)
     speed_estimate = (
-        speed.estimate_tok_s(size_gb, params=fit_params, quantization=gguf_quantization, hardware=hardware)
-        if capability == TEXT_GENERATION else None)
+        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        if file is None and capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
     return {
