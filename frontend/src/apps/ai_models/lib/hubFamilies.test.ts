@@ -147,6 +147,31 @@ describe("groupIntoFamilies", () => {
     expect(families[1].primary.id).toBe("org/base-4bit");
   });
 
+  it("picks the primary by the ACTIVE sort, not always by fit (code review finding)", () => {
+    // A: the better FIT, but the worse MATCH. B: the better MATCH, but the
+    // worse fit. Under `sort=best` (the default), the composite matchScore
+    // is what the page is actually sorted by, so B — the better match —
+    // must be drawn and must sit at its own (earlier) index; under
+    // `sort=fit`, A — the better fit — wins instead, exactly as before.
+    const rows = [
+      model("org/b-better-match", {
+        baseModel: "org/base", relation: "quantized",
+        fit: fitScore(90), matchScore: 85,
+      }),
+      model("org/a-better-fit", {
+        baseModel: "org/base", relation: "quantized",
+        fit: fitScore(100), matchScore: 50,
+      }),
+    ];
+    const best = groupIntoFamilies(rows, "best");
+    expect(best[0].primary.id).toBe("org/b-better-match");
+    expect(best[0].variants.map((m) => m.id)).toEqual(["org/a-better-fit"]);
+
+    const fit = groupIntoFamilies(rows, "fit");
+    expect(fit[0].primary.id).toBe("org/a-better-fit");
+    expect(fit[0].variants.map((m) => m.id)).toEqual(["org/b-better-match"]);
+  });
+
   it("a variant whose base model never appeared in these results still groups under it", () => {
     // The base repo may not have matched the query or may have been dropped
     // upstream (D313) — the variant still names it, and still deserves a

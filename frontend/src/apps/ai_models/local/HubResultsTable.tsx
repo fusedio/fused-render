@@ -84,7 +84,19 @@ import { type Job } from "@platform/lib/jobs";
  *  and carried down as a data attribute instead — and it counts only
  *  PRIMARY/family rows, never a disclosed variant's own sub-rows, so
  *  opening one never shifts where the next band line falls relative to the
- *  family rows around it. */
+ *  family rows around it.
+ *
+ *  **The marked row is the one that STARTS a new band, drawn with a
+ *  `border-top` (code review finding), not the one that ENDS the previous
+ *  one drawn with `border-bottom`.** The banded row's own variant rows are
+ *  sibling `<tr>`s that render immediately AFTER it, before the next
+ *  family's row — so a `border-bottom` on the 5th family drew the
+ *  separator between that family and its own children the moment its
+ *  disclosure was open, reading as if the variants belonged to the NEXT
+ *  family. A `border-top` on the family that begins the next band instead
+ *  always lands between the previous family's last rendered row (primary
+ *  or its own last variant, whichever there is) and this one — correct
+ *  either way, since it never has to guess where a variant block ends. */
 const BAND_EVERY = 5;
 
 /** One variant's disclosure row — id, size, disk state, and its own action —
@@ -243,10 +255,12 @@ function HubResultRow({
   onCancel,
 }: {
   family: HubFamily;
-  /** True on every fifth family row (see `BAND_EVERY`) — a data attribute
-   *  rather than a class the CSS keys directly, so a reader inspecting the
-   *  DOM can see the count is deliberate rather than a `:nth-child` guess
-   *  that cannot see the variant rows it has to skip. */
+  /** True on the family that STARTS every fifth band (see `BAND_EVERY`'s
+   *  own doc for why this is a `border-top` on the STARTING row rather than
+   *  a `border-bottom` on the ending one) — a data attribute rather than a
+   *  class the CSS keys directly, so a reader inspecting the DOM can see
+   *  the count is deliberate rather than a `:nth-child` guess that cannot
+   *  see the variant rows it has to skip. */
   banded: boolean;
   /** Used only for the MAJORITY-value styling hint (`isMajorityValue`) on a
    *  column that IS rendered — column presence itself is `showTask`/
@@ -340,9 +354,16 @@ function HubResultRow({
   // for a row that had nothing to begin with.
   const effectiveFit = model.fit ?? fitOverride ?? null;
   const effectiveSpeed = model.speedEstimate ?? speedOverride ?? null;
+  // Code review finding: `model.matchScore` was computed server-side against
+  // `_FIT_DEFAULT` whenever `model.fit` was null — exactly the rows
+  // `fitOverride` exists to correct. Once the correction lands, the score
+  // above no longer describes the fit now shown beside it, so the cell must
+  // stop asserting one number blends the other (`matchCell`/`matchTitle`'s
+  // own `stale` parameter).
+  const matchScoreStale = model.fit == null && fitOverride !== undefined;
 
   const display = familyDisplay(family);
-  const match = matchCell(effectiveFit, model.matchScore);
+  const match = matchCell(effectiveFit, model.matchScore, matchScoreStale);
   const size = hubSizeLabel(model, total);
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
   const loadable = !runner || runner.available;
@@ -380,7 +401,7 @@ function HubResultRow({
             composite `matchScore`, bar colour AND glyph shape are the memory
             verdict, and a non-GPU run mode (D641) prints as a visible muted
             suffix rather than a second colour. */}
-        <td className="am-hubtable-match" data-hint={matchTitle(effectiveFit, model.matchScore)}>
+        <td className="am-hubtable-match" data-hint={matchTitle(effectiveFit, model.matchScore, matchScoreStale)}>
           <span className="am-hubtable-match-inner">
             <span
               className={`am-hubtable-dot am-hubtable-dot-${match.dot}`}
@@ -611,8 +632,17 @@ export function HubResultsTable({
   // three render from this single decision so the column count cannot
   // drift out of lockstep between them (the exact class of bug commit
   // 79aef51e and 82f53ec7 already fixed twice on this table).
-  const showTask = columnVisible(capabilityHoist, capabilityValues);
-  const showQuant = columnVisible(quantHoist, quantValues);
+  //
+  // **Presence covers variants too, unlike the hoist/summary above** (code
+  // review finding): a family's variants are exactly its quant/finetune
+  // republishes, so "all primaries agree" says nothing about whether an
+  // OPENED disclosure's siblings do. `columnVisible` takes the full set so
+  // a variant that actually differs keeps the column (and its own cell)
+  // rather than the summary staying up while the column vanishes under it.
+  const allCapabilityValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.capability);
+  const allQuantValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.quant);
+  const showTask = columnVisible(capabilityHoist, allCapabilityValues);
+  const showQuant = columnVisible(quantHoist, allQuantValues);
 
   return (
     <div className="am-hubtable-wrap">
@@ -641,7 +671,7 @@ export function HubResultsTable({
             <HubResultRow
               key={family.key}
               family={family}
-              banded={(i + 1) % BAND_EVERY === 0}
+              banded={i > 0 && i % BAND_EVERY === 0}
               capabilityHoist={capabilityHoist}
               quantHoist={quantHoist}
               showTask={showTask}

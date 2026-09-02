@@ -11,7 +11,6 @@ import {
   matchTitle,
   popLabel,
   quantLabel,
-  runModeLabel,
   speedLabel,
   speedTitle,
   variantLabel,
@@ -116,6 +115,19 @@ describe("matchCell", () => {
     expect(matchCell(verdict("easy", "gpu"), 50).offloadLabel).toBeNull();
     expect(matchCell(verdict("easy"), 50).offloadLabel).toBeNull();
   });
+
+  it("blanks the bar/number when `stale` — a corrected fit must never sit beside a score computed before it (code review finding)", () => {
+    // A GGUF row whose lazy per-file lookup just resolved a real "easy" fit,
+    // beside a `matchScore` the server computed against `_FIT_DEFAULT`
+    // because `model.fit` was null at scoring time. The dot still shows the
+    // real verdict; the bar/number must NOT claim a number for it.
+    expect(matchCell(verdict("easy"), 40, true)).toEqual({
+      percent: 0,
+      scoreText: "—",
+      dot: "easy",
+      offloadLabel: null,
+    });
+  });
 });
 
 describe("matchTitle", () => {
@@ -135,6 +147,13 @@ describe("matchTitle", () => {
     expect(
       matchTitle({ verdict: "tight", basis: "declared", footprintBytes: 1, runMode: "cpu-offload" }, 40),
     ).toContain("CPU offload");
+  });
+
+  it("says the score is not recomputed yet, rather than blending a fit it was not scored against, when stale", () => {
+    const title = matchTitle({ verdict: "easy", basis: "declared", footprintBytes: 1, score: 100 }, 40, true);
+    expect(title).not.toContain("Match score 40/100");
+    expect(title).not.toContain("blends");
+    expect(title.toLowerCase()).toContain("not");
   });
 });
 
@@ -208,18 +227,6 @@ describe("quantLabel", () => {
 
   it("is a dash rather than a guess when nothing measured it", () => {
     expect(quantLabel(null)).toBe("—");
-  });
-});
-
-describe("runModeLabel", () => {
-  it("names the three run modes in words a reader chose, not the wire strings", () => {
-    expect(runModeLabel("gpu")).toBe("GPU");
-    expect(runModeLabel("cpu-offload")).toBe("CPU offload");
-    expect(runModeLabel("cpu-only")).toBe("CPU only");
-  });
-
-  it("is a dash when there is no fit to read a run mode off of", () => {
-    expect(runModeLabel(undefined)).toBe("—");
   });
 });
 
@@ -337,6 +344,17 @@ describe("columnVisible", () => {
 
   it("is absent for an empty result set", () => {
     expect(columnVisible(null, [])).toBe(false);
+  });
+
+  it("stays PRESENT when primaries are unanimous but a variant differs (code review finding)", () => {
+    // All primaries are BF16 (the hoist says unanimous), but a family's own
+    // variant — its quant/finetune republish — is Q4_K_M. The hoist's word
+    // alone would drop the column header-and-all while an opened disclosure
+    // still shows a Q4_K_M row with nothing to label it; `columnVisible`
+    // must re-check the FULL set (primaries + variants) it is actually given.
+    expect(
+      columnVisible({ value: "BF16", unanimous: true }, ["BF16", "BF16", "BF16", "Q4_K_M"]),
+    ).toBe(true);
   });
 });
 

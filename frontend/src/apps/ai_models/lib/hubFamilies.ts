@@ -19,13 +19,14 @@
 // SAME base, arriving on a later page or a different sort, land in the same
 // family rather than starting a new one.
 import type { HubModel } from "@platform/lib/api";
+import type { ResultSort } from "./hubSearchView";
 
 export interface HubFamily {
   /** `baseModel` when known, else the lone member's own id — stable across
    *  re-renders of the SAME result set, which is what a React `key` needs. */
   key: string;
-  /** The best-fitting member (then most-downloaded, then the server's own
-   *  ranking as the final tie-break) — the row a family's single line draws. */
+  /** The member that ranks first under the ACTIVE sort (see `groupIntoFamilies`'s
+   *  `sort` parameter) — the row a family's single line draws. */
   primary: HubModel;
   /** Every other member, same ordering rule, for the "N variants" affordance. */
   variants: HubModel[];
@@ -48,24 +49,63 @@ function byFitThenDownloads(a: HubModel, b: HubModel): number {
   return dlB - dlA;
 }
 
-/** Every result, collapsed to one family per model — primary chosen by fit,
- *  variants ordered the same way, an untagged row standing alone.
+/** Descending: higher composite `matchScore` first, then higher downloads,
+ *  same stability guarantee as `byFitThenDownloads`. `matchScore` (D639) is
+ *  attached to every row regardless of which sort was requested, so this is
+ *  the general-purpose comparator for every sort except "fit" itself, which
+ *  asks specifically for the memory-only judgement `byFitThenDownloads`
+ *  gives. */
+function byMatchThenDownloads(a: HubModel, b: HubModel): number {
+  const matchA = a.matchScore ?? -1;
+  const matchB = b.matchScore ?? -1;
+  if (matchA !== matchB) return matchB - matchA;
+  const dlA = a.downloads ?? -1;
+  const dlB = b.downloads ?? -1;
+  return dlB - dlA;
+}
+
+/** Which comparator decides a family's primary, for a given active sort
+ *  (code review finding: the primary used to be picked by `fit` alone, no
+ *  matter what the page was actually sorted by — under `sort=best` this drew
+ *  the family's best-FITTING member while every visible row's Match number
+ *  came from the family's best-MATCHING one, so the Match column stopped
+ *  descending down the table the moment the two disagreed). `"fit"` keeps
+ *  the memory-only comparator, matching what that sort itself ranks by;
+ *  every other sort (including the "best" default, and page-level sorts
+ *  like "size" that have nothing of their own to say about which variant is
+ *  the "right" one) uses the composite `matchScore`, since it is the one
+ *  ranking figure every row carries no matter how the page is sorted. */
+function primaryComparator(sort: ResultSort): (a: HubModel, b: HubModel) => number {
+  return sort === "fit" ? byFitThenDownloads : byMatchThenDownloads;
+}
+
+/** Every result, collapsed to one family per model — primary chosen by
+ *  `primaryComparator(sort)`, variants ordered the same way, an untagged row
+ *  standing alone. `sort` defaults to `"fit"` for a caller with no sort
+ *  context of its own (every existing test predates `sort=best` and assumes
+ *  this).
  *
  *  **Families are positioned at their PRIMARY's index in `models`, not at
  *  whichever member first appeared.** A family draws its primary's row —
  *  size, downloads, age, everything a column shows comes off that one
  *  member — so that is also the member whose position in an already-sorted
  *  `models` (`bySizeAscending`, the Hub's own `downloads`/`trending` order,
- *  `sort=fit`'s reorder) has to decide where the family lands. Positioning by
- *  first-appearance instead let a family sit at a NON-primary variant's
- *  index while showing the primary's value there — the Size column visibly
- *  not ascending under a size sort, because the row drawn at the "smallest
- *  so far" position could be showing a bigger primary. Ordering by the
- *  primary's own index instead makes the family order exactly as sorted as
- *  `models` itself was, for whatever key it was sorted by, with no need to
- *  special-case which sort is in force.
+ *  a `sort=fit`/`sort=best` reorder) has to decide where the family lands.
+ *  Positioning by first-appearance instead let a family sit at a NON-primary
+ *  variant's index while showing the primary's value there — a sort-visible
+ *  column (Size, Match) visibly not ascending/descending, because the row
+ *  drawn at that position could be showing a different member's value.
+ *  Ordering by the primary's own index instead makes the family order
+ *  exactly as sorted as `models` itself was, for the SAME key
+ *  `primaryComparator(sort)` used to choose that primary — which is what
+ *  keeps the two decisions from disagreeing the way they did before this
+ *  fix, rather than a guarantee that holds for every key regardless of
+ *  which one the primary was actually chosen by.
  */
-export function groupIntoFamilies(models: readonly HubModel[]): HubFamily[] {
+export function groupIntoFamilies(
+  models: readonly HubModel[],
+  sort: ResultSort = "fit",
+): HubFamily[] {
   const buckets = new Map<string, HubModel[]>();
   const indexOf = new Map<HubModel, number>();
 
@@ -80,8 +120,9 @@ export function groupIntoFamilies(models: readonly HubModel[]): HubFamily[] {
     bucket.push(model);
   });
 
+  const compare = primaryComparator(sort);
   const families = Array.from(buckets.entries(), ([key, group]) => {
-    const sorted = group.slice().sort(byFitThenDownloads);
+    const sorted = group.slice().sort(compare);
     return { key, primary: sorted[0], variants: sorted.slice(1) };
   });
   families.sort((a, b) => indexOf.get(a.primary)! - indexOf.get(b.primary)!);

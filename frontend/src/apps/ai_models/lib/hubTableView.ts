@@ -58,9 +58,25 @@ export interface MatchCell {
   offloadLabel: "offload" | "CPU only" | null;
 }
 
-export function matchCell(fit: AiFitVerdict | null, matchScore: number | null | undefined): MatchCell {
-  const percent = typeof matchScore === "number" ? matchScore : 0;
-  const scoreText = typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
+/** `matchCell`'s `stale` parameter (code review finding): true exactly when
+ *  `fit` is a CLIENT-side correction that landed after the server computed
+ *  `matchScore` — i.e. `HubModel.fit` was null, so the composite was scored
+ *  against `_FIT_DEFAULT` (~40), and the lazy per-file lookup then resolved
+ *  a real verdict the score was never recomputed against. Rendering the
+ *  bar/number as if they described that corrected verdict is what let a
+ *  GGUF row show a green "easy" dot beside a ~40%-long bar and a low
+ *  number, while the hover claimed the number "blends memory fit" — two
+ *  parts of one cell stating different things about the same row. When
+ *  stale, the bar/number fall back to the dash/empty state (never a second,
+ *  possibly-also-wrong number invented to fill the gap) so the colour/shape
+ *  the corrected fit earns has nothing beside it to contradict it. */
+export function matchCell(
+  fit: AiFitVerdict | null,
+  matchScore: number | null | undefined,
+  stale = false,
+): MatchCell {
+  const percent = !stale && typeof matchScore === "number" ? matchScore : 0;
+  const scoreText = !stale && typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
   const dot = fit?.verdict ?? "unknown";
   const offloadLabel = fit?.runMode === "cpu-offload" ? "offload" : fit?.runMode === "cpu-only" ? "CPU only" : null;
   return { percent, scoreText, dot, offloadLabel };
@@ -76,9 +92,15 @@ const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
  *  carries (D640): what the composite number is made of, and what the bar's
  *  colour+shape mean, PLUS the run mode D641 folded in here once Mode
  *  stopped being its own column. */
-export function matchTitle(fit: AiFitVerdict | null, matchScore: number | null | undefined): string {
-  const scoreText =
-    typeof matchScore === "number"
+export function matchTitle(
+  fit: AiFitVerdict | null,
+  matchScore: number | null | undefined,
+  stale = false,
+): string {
+  const scoreText = stale
+    ? "Match score not shown: this repo's memory fit was just corrected from a fuller size lookup, and the " +
+      "score above has not been recomputed against it yet."
+    : typeof matchScore === "number"
       ? `Match score ${Math.round(matchScore)}/100 — blends memory fit, how much of this machine's capacity ` +
         "the model's size uses, estimated speed, how recently it was published, and popularity, with a small " +
         "bonus if it is already on this disk."
@@ -187,10 +209,27 @@ export function hoistValue(values: readonly (string | null)[]): Hoist | null {
  *  visible, because that produced a real ambiguity a reviewer caught live:
  *  a blank cell and a genuine dash (unknown) are two different facts, and
  *  rendering both as "no visible text" left a reader with no way to tell
- *  "unremarkable, matches the summary" from "nobody knows". */
+ *  "unremarkable, matches the summary" from "nobody knows".
+ *
+ *  **`values` must cover every row the table can DISPLAY, primaries and
+ *  variants alike** (code review finding) — `hoist` itself stays computed
+ *  over primaries only (D640's own deliberate choice: a closed disclosure's
+ *  siblings are not on screen, and the SUMMARY LINE must not silently
+ *  change what it claims about the rows a reader can currently see), but
+ *  presence is a different question — whether a column is worth having AT
+ *  ALL — and a family's variants are precisely its quant/finetune
+ *  republishes, i.e. the rows most likely to actually DIFFER on Quant or
+ *  Capability. Trusting `hoist.unanimous` (primaries-only) for this hid the
+ *  column header-and-all while an opened disclosure still showed variants
+ *  with a genuinely different value and nothing to label it — a summary
+ *  that goes false the moment a reader expands a row. So this re-checks
+ *  unanimity against the FULL `values` actually passed, rather than taking
+ *  `hoist`'s own (primaries-only) word for it. */
 export function columnVisible(hoist: Hoist | null, values: readonly (string | null)[]): boolean {
-  if (hoist?.unanimous) return false;
-  return values.some((v) => v !== null);
+  const known = values.filter((v): v is string => v !== null);
+  if (known.length === 0) return false;
+  if (hoist?.unanimous && known.every((v) => v === hoist.value)) return false;
+  return true;
 }
 
 /** Whether ONE row's value is the majority value of a non-unanimous hoist —
@@ -289,22 +328,6 @@ export function speedTitle(params: number | null): string | undefined {
  *  exactly the kind of guess this column exists to refuse. */
 export function quantLabel(quant: string | null): string {
   return quant ?? DASH;
-}
-
-/** The three run modes `fit.verdict` can report, in words a reader chose
- *  rather than the wire's hyphenated strings — the dash when there is no fit
- *  to read one off of at all. */
-export function runModeLabel(runMode: AiFitVerdict["runMode"] | undefined): string {
-  switch (runMode) {
-    case "gpu":
-      return "GPU";
-    case "cpu-offload":
-      return "CPU offload";
-    case "cpu-only":
-      return "CPU only";
-    default:
-      return DASH;
-  }
 }
 
 /** Downloads, compacted the same way the rest of the page counts things

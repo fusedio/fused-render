@@ -523,7 +523,7 @@ export function HubResults({
   // settled on — server ranking, or the page's own size pass — so the fit/
   // trending/size ordering already decided above survives into which family
   // leads and which order the rows themselves appear in (`hubFamilies.ts`).
-  const families = shown ? groupIntoFamilies(shown) : null;
+  const families = shown ? groupIntoFamilies(shown, settled.sort) : null;
   // `families.length`, not `models.length`: the table draws one row per
   // FAMILY, and a heading counting server rows over a grid of grouped ones
   // said "24 on huggingface.co" above nine visible rows — the summary and the
