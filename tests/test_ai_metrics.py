@@ -357,13 +357,15 @@ def test_the_claude_tier_records_what_the_caller_was_told(monkeypatch):
 
     snap = ai_metrics.snapshot(5)
     assert snap["totals"]["completions"] == 1
-    assert snap["totals"]["input_tokens"] == told["usage"]["input_tokens"]
-    assert snap["totals"]["output_tokens"] == told["usage"]["output_tokens"]
+    # The counter keeps Anthropic's snake_case; the wire speaks the frame's
+    # camelCase (D632) — same numbers, converted once at the boundary.
+    assert snap["totals"]["input_tokens"] == told["usage"]["inputTokens"]
+    assert snap["totals"]["output_tokens"] == told["usage"]["outputTokens"]
     # The CLI's own duration, so the tokens/second figure is about the MODEL
     # and not about how long this relay held its subprocess.
     assert snap["totals"]["seconds"] == round(_CLI_RESULT["duration_ms"] / 1000, 2)
     # Under the RESOLVED id, so "haiku" and its full id are one row.
-    assert [m["model"] for m in snap["models"]] == [told["model"]]
+    assert [m["model"] for m in snap["models"]] == [told["response"]["modelId"]]
 
 
 def test_the_claude_tier_records_a_streamed_completion_once(monkeypatch):
@@ -437,12 +439,16 @@ def test_the_local_tier_records_a_streamed_completion(monkeypatch):
                 for line in chunk.splitlines() if line]
 
     frames = asyncio.run(go())
-    assert frames[-1] == {"type": "done", "ok": True, "result": {
-        "text": "hi", "model": "org/chat",
-        # `input_tokens` is present and null: this worker did not count the
-        # prompt, and the key says so rather than being absent for one runner
-        # and present for another.
-        "usage": {"input_tokens": None, "output_tokens": 3, "seconds": 0.1}}}
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is True
+    result = done["result"]
+    assert result["text"] == "hi"
+    assert result["response"]["modelId"] == "org/chat"
+    # `inputTokens` is present and null: this worker did not count the prompt,
+    # and null is the honest answer, never a zero (AI-3). `seconds` rides
+    # under providerMetadata.local since D632.
+    assert result["usage"] == {"inputTokens": None, "outputTokens": 3, "totalTokens": 3}
+    assert result["providerMetadata"]["local"]["seconds"] == 0.1
     assert ai_metrics.snapshot(5)["totals"]["output_tokens"] == 3
 
 
@@ -455,7 +461,7 @@ def test_a_local_worker_that_counts_the_prompt_is_believed(monkeypatch):
                           "input_tokens": 37, "seconds": 0.2}])
     resp = asyncio.run(_server_ai._ai_relay({"prompt": "hi", "model": "org/chat"}))
     told = json.loads(bytes(resp.body))["result"]
-    assert told["usage"]["input_tokens"] == 37
+    assert told["usage"]["inputTokens"] == 37
 
     row, = ai_metrics.snapshot(5)["models"]
     assert row["input_tokens"] == 37 and row["output_tokens"] == 4
