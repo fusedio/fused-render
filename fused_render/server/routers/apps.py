@@ -464,13 +464,14 @@ def api_app_entry(path: str):
 def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Create the MIGRATION task: move the app's entry page (and the rest of
     the folder that speaks `fused`) from the fused API version it declares to
-    the current one. The prompt carries the changelog for every version being
-    crossed — v2 → v5 attaches v3 + v4 + v5 (`fused_api_version.migration_prompt`)
-    — and lands on the entry page, the same shape and the same seam as the
-    scaffolding task `/api/apps/new` creates, so the app's Tasks tab lists it
-    and the Claude pane can attach to its run. The version tag itself is the
-    session's to write (step 2 of the prompt): stamping it here would declare a
-    migration done before the code moved."""
+    the current one. The prompt is one line that names the jump and invokes
+    the `fused-render-api-migration` skill — the skill owns the per-version
+    notes (v2 → v5 reads v3 + v4 + v5) and the procedure
+    (`fused_api_version.migration_prompt`). The task lands on the entry page,
+    the same shape and the same seam as the scaffolding task `/api/apps/new`
+    creates, so the app's Tasks tab lists it and the Claude pane can attach to
+    its run. The version tag itself is the session's to write: stamping it
+    here would declare a migration done before the code moved."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard

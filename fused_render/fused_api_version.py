@@ -1,4 +1,4 @@
-"""The fused page API's version, and how an app on an older one migrates.
+"""The fused page API's version, and the task that migrates an app to it.
 
 The `fused` runtime a page is handed (`fused.ai`, `fused.runPython`,
 `fused.params`, ...) changes over time, and a hard break like the `fused.ai`
@@ -14,36 +14,36 @@ A page without the tag is version 0 — every app authored before the tag
 existed. Absence is a fact about age, not something a migration stamps over:
 `meta_migration` and the community install deliberately leave it alone, so
 "missing" keeps meaning "predates versioning" and the migrate button is
-offered exactly where it might be needed. (A page that already uses the new
-shapes but never got the tag also reads 0; the migration prompt tells the
-session to verify what the code actually calls and, if it is already current,
-to just add the tag.)
+offered exactly where it might be needed.
 
-`fused_api_migrations.json` beside this module is the changelog: one entry per
-version, keyed by the version number as a string, holding plain text
-describing what changed in that version over the one before. `CURRENT` is the
-largest key, so shipping a new API version is ONE JSON entry — plus the
-starter's tag (`app_starter/index.html`) bumped to match (the two must agree:
-a starter declaring a version the changelog does not know would read as "ahead
-of current" and the button would stay off). Migrating an app from
-version A to version B hands the session every entry in (A, B], in order:
-v2 → v5 attaches v3 + v4 + v5. Nothing here reads the whole file — the tag is
-matched from the same 4 KiB head budget as `app_listing.has_fused_meta`.
+THE CHANGELOG IS A SKILL. `skills/fused-render-api-migration/` holds one
+`docs/v{N}.md` per version — what changed in N over N-1, in text a Claude
+session can act on — and a SKILL.md that knows which notes to read for which
+jump and how to do the whole migration (sweep the folder, rewrite, bump the
+tag). The server does not carry a second copy of that knowledge: the current
+version here is read off that same `docs/` folder (through `skill_sources`,
+so a dev checkout and a wheel install agree), and the migration task's prompt
+is one line that invokes the skill. Shipping a new API version is therefore
+a new `docs/vN.md` plus the starter's tag (`app_starter/index.html`) bumped to
+match — the two must agree, or the starter reads as "ahead of current".
 
-BUMPING THE VERSION (the procedure the next breaking fused-API PR follows):
-1. add a `"N"` entry to `fused_api_migrations.json` describing the break in
-   text a migrating session can act on — old spelling → new spelling;
-2. set `content="N"` on the starter's `<meta name="fused-api-version">`;
-3. nothing else — `CURRENT`, the app page's button, and the prompt all read
-   the JSON.
+Nothing here reads a whole page — the tag is matched from the same 4 KiB head
+budget as `app_listing.has_fused_meta`.
 """
-import json
 import os
 import re
 
+from fused_render.skill_sources import skill_sources
+
 META_NAME = "fused-api-version"
 
-_MIGRATIONS_JSON = os.path.join(os.path.dirname(__file__), "fused_api_migrations.json")
+# The skill that owns the changelog and the migration procedure; the plugin
+# root (`skill_plugin`, D216) hands it to every session we spawn under the
+# `fused-render:` prefix.
+MIGRATION_SKILL = "fused-render-api-migration"
+MIGRATION_SKILL_QUALIFIED = f"fused-render:{MIGRATION_SKILL}"
+_DOCS_SUBDIR = "docs"
+_DOC_RE = re.compile(r"^v(\d+)\.md$")
 
 # Same head budget as `app_listing.has_fused_meta`: the tag sits beside the app
 # marker at the top of <head>, and an unbounded read per app is a full-file
@@ -89,75 +89,55 @@ def api_version(html_path: str) -> int:
     return version_from_text(head)
 
 
-def migrations() -> dict[int, dict]:
-    """The changelog, keyed by integer version, ascending. Read on each call
-    (it is one small file) so a dev checkout editing the JSON sees it live."""
-    with open(_MIGRATIONS_JSON, "r", encoding="utf-8") as fh:
-        raw = json.load(fh)
-    out: dict[int, dict] = {}
-    for k, v in raw.items():
-        try:
-            n = int(k)
-        except (TypeError, ValueError):
-            continue
-        if n <= 0 or not isinstance(v, dict):
-            continue
-        out[n] = v
-    return dict(sorted(out.items()))
+def docs_dir() -> str | None:
+    """The migration skill's `docs/` folder, or None when the skill is not
+    resolvable (a checkout with no skills at all)."""
+    src = skill_sources().get(MIGRATION_SKILL)
+    if not src:
+        return None
+    d = os.path.join(src, _DOCS_SUBDIR)
+    return d if os.path.isdir(d) else None
+
+
+def versions() -> list[int]:
+    """Every documented API version — one `docs/v{N}.md` each — ascending.
+    Empty when the skill or its docs cannot be found."""
+    d = docs_dir()
+    if d is None:
+        return []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        m = _DOC_RE.match(n)
+        if m and os.path.isfile(os.path.join(d, n)):
+            v = int(m.group(1))
+            if v > 0:
+                out.append(v)
+    return sorted(out)
 
 
 def current_version() -> int:
-    """The API version the runtime speaks now — the largest changelog entry.
-    0 only if the changelog is empty."""
-    m = migrations()
-    return max(m) if m else 0
-
-
-def migration_context(from_version: int, to_version: int) -> str:
-    """Every changelog entry in (from_version, to_version], oldest first, as
-    one text block headed per version. Empty when nothing lies between."""
-    parts = []
-    for n, entry in migrations().items():
-        if from_version < n <= to_version:
-            summary = str(entry.get("summary") or "").strip()
-            changes = str(entry.get("changes") or "").strip()
-            head = f"## fused API version {n}"
-            if summary:
-                head += f" — {summary}"
-            parts.append(head + "\n\n" + changes)
-    return "\n\n".join(parts)
+    """The API version the runtime speaks now — the highest documented one.
+    0 only when no docs resolve, which also switches the Migrate button off
+    (nothing is "behind" version 0)."""
+    vs = versions()
+    return vs[-1] if vs else 0
 
 
 def migration_prompt(entry_html: str, from_version: int, to_version: int) -> str:
-    """The task text a migrating Claude session is handed: what to move, the
-    tag to end on, and the changelog for every version being crossed."""
+    """The migration task's text: invoke the skill, name the jump. The skill
+    carries the procedure and the per-version notes; repeating them here
+    would be the second copy the skill exists to prevent."""
     entry_name = os.path.basename(entry_html)
-    tag = f'<meta name="{META_NAME}" content="{to_version}" />'
-    lines = [
+    return (
         f"Migrate this fused-render app from fused API version {from_version} "
-        f"to version {to_version}.",
-        "",
-        f"The app's entry page is `{entry_name}` (this file). The fused page API "
-        "it was written against has changed; the notes below describe every "
-        "change between the version it declares and the current one, oldest "
-        "first. Apply them all.",
-        "",
-        "Steps:",
-        f"1. Read `{entry_name}` and every other `.html` and `.py` file in this "
-        "folder that uses the `fused` runtime (`fused.*` in pages, `import "
-        "fused_ai` / `fused_ai.*` in Python) and update each call and each "
-        "reader of a result to the new shapes described below. Verify what the "
-        "code ACTUALLY calls before changing it: a page may already be on the "
-        "new shapes without declaring so, in which case only step 2 applies.",
-        f"2. In `{entry_name}`, declare the new version by placing "
-        f"`{tag}` directly after the `<meta name=\"fused-app\" />` tag "
-        "(replace any existing `fused-api-version` meta; keep both tags near "
-        "the top of <head>, inside the first 4 KiB of the file).",
-        "3. Do not change behaviour beyond what the notes require, and do not "
-        "restyle or restructure the app.",
-        "",
-        "Changes to apply:",
-        "",
-        migration_context(from_version, to_version) or "(no recorded changes)",
-    ]
-    return "\n".join(lines)
+        f"to version {to_version}. Invoke the `{MIGRATION_SKILL_QUALIFIED}` "
+        f"skill and follow it end to end — it reads the per-version notes, "
+        f"updates every file in this folder that uses the `fused` runtime, and "
+        f"bumps the `<meta name=\"{META_NAME}\">` tag in `{entry_name}` (this "
+        f"file, the app's entry page). Do not change anything the skill's notes "
+        f"do not ask for."
+    )

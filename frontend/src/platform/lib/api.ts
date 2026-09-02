@@ -2249,8 +2249,8 @@ export function getAppEntry(path: string): Promise<AppEntryInfo> {
 }
 
 // Create the fused-API MIGRATION task on an app's entry page: the same task
-// shape /api/apps/new creates, its prompt carrying the changelog for every
-// version between the one the page declares and the current one. 409 when the
+// shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
+// skill for the jump from the declared version to the current one. 409 when the
 // app is already current, 404 when the folder has no entry.
 export interface MigrateAppResult extends NewAppResult {
   from_version: number;
