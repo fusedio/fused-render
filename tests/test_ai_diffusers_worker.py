@@ -1299,6 +1299,41 @@ def test_spill_deduplicates_shared_storage_tensors(monkeypatch, tmp_path):
     assert component.weight_a.data is component.weight_b.data
 
 
+def test_spill_rebind_failure_names_the_offending_key_and_progress(monkeypatch, tmp_path):
+    """A raise from inside the rebind loop (`loaded[source_key]` missing a
+    key, or `_AttrSetter.apply`'s shape mismatch) leaves some tensors rebound
+    and others not — values stay correct either way, since rebinding only
+    swaps `.data` for a byte-identical mmap'd copy, but the error that
+    propagates has to name which slot it was on and how many slots had
+    already been rebound, or the loss is undiagnosable."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    weight_a = _SpillTensor([1, 2])
+    weight_b = _SpillTensor([3, 4])
+    component = _SpillComponent(params=[("a", weight_a), ("b", weight_b)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    st_torch = sys.modules["safetensors.torch"]
+    real_load_file = st_torch.load_file
+
+    def broken_load_file(path, device="cpu"):
+        loaded = real_load_file(path, device=device)
+        del loaded["transformer.param.b"]
+        return loaded
+
+    monkeypatch.setattr(st_torch, "load_file", broken_load_file)
+
+    with pytest.raises(Exception) as excinfo:
+        mmap_spill.spill({"transformer": component}, spill_path)
+
+    message = str(excinfo.value)
+    assert "transformer.param.b" in message
+    assert "1" in message  # "a" was already rebound when "b" failed
+    assert isinstance(excinfo.value.__cause__, KeyError)
+
+
 def test_spill_path_is_unique_across_calls(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
     mmap_spill = load_mmap_spill()

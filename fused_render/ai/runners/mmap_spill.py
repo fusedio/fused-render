@@ -282,9 +282,25 @@ def spill(components, path):
     write_seconds = time.time() - started
 
     loaded = load_file(path, device="cpu")
-    for slot in slots:
+    for index, slot in enumerate(slots):
         source_key = dedup_map.get(slot.key, slot.key)
-        slot.setter.apply(loaded[source_key])
+        try:
+            slot.setter.apply(loaded[source_key])
+        except Exception as error:
+            # Everything above this loop succeeding is what makes the write
+            # itself safe to fail (the pipeline is untouched, still pointing
+            # at its original tensors) — but a raise HERE, mid-rebind
+            # (`loaded[source_key]` missing a key, or `_AttrSetter.apply`'s
+            # `tensor.view(old.shape)` hitting a shape mismatch), leaves
+            # `index` slots already rebound and the rest untouched. Values
+            # are correct either way — rebinding only swaps `.data` for a
+            # byte-identical mmap'd copy — so this names the slot and the
+            # progress rather than rolling anything back.
+            raise RuntimeError(
+                f"mmap_spill rebind failed on slot {index + 1}/{len(slots)} "
+                f"(key={slot.key!r}); {index} of {len(slots)} slots were "
+                f"already rebound before this one"
+            ) from error
 
     return {
         "tensors": len(slots), "bytes": total_bytes,
