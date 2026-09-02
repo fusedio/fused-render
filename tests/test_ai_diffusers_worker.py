@@ -512,6 +512,70 @@ def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
     assert worker._vram_headroom_bytes() == worker._VRAM_HEADROOM_BYTES
 
 
+# -- the group-offload block-size knob's own edge cases (`_num_blocks_per_group`) -
+#
+# Same "set AND sane" precedence `_vram_headroom_bytes` follows, exercised the
+# same way: no torch involved, `_num_blocks_per_group` reads only `os.environ`.
+
+
+def test_group_offload_blocks_default_when_env_is_unset(monkeypatch, base):
+    monkeypatch.delenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", raising=False)
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
+def test_group_offload_blocks_env_override_is_honoured(monkeypatch, base):
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "4")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == 4
+
+
+def test_group_offload_blocks_zero_env_is_ignored(monkeypatch, base):
+    """Zero blocks is not a smaller group, it is a nonsense group — must
+    degrade to the documented default exactly like a negative headroom does,
+    not be accepted as "the finest possible granularity"."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "0")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
+def test_group_offload_blocks_negative_env_is_ignored(monkeypatch, base):
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "-4")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
+def test_group_offload_blocks_infinite_env_is_ignored(monkeypatch, base):
+    """`float("inf")` parses without raising, and `int(inf)` raises
+    `OverflowError` — the same class `_vram_headroom_bytes` had to add a
+    dedicated catch for; this knob follows its pattern exactly."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "inf")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
+def test_group_offload_blocks_absurdly_large_env_is_ignored(monkeypatch, base):
+    """Finite but not remotely a plausible block count for any shipped
+    pipeline — the same "sanity beats trust" reasoning as the headroom
+    knob's own absurdly-large case."""
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "2000")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
+def test_group_offload_blocks_unparsable_env_is_ignored(monkeypatch, base):
+    monkeypatch.setenv("FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS", "soon")
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._num_blocks_per_group() == worker._NUM_BLOCKS_PER_GROUP
+
+
 # -- size-aware GPU placement (`_place`) ------------------------------------------
 #
 # Measured on the user's machine: FLUX.2-klein-4B via the ROCm GGUF recipe, a
@@ -526,7 +590,12 @@ def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
 # offloaded per call — was built, measured, and removed; see `_place`'s own
 # docstring for why (unreachable for this exact pipeline shape, and not
 # actually cheaper than all-gpu once accelerate's offload hook CHAIN is
-# accounted for). What's left below is the two-way decision only.
+# accounted for).
+#
+# What IS left below is a three-way decision: all-gpu, `enable_group_offload`
+# (block level, memory mode — the new rung) when it does not fit, and plain
+# `enable_model_cpu_offload` as the terminal fallback when group offload
+# itself raises, or when the probe never got far enough to try it.
 
 
 class _FakeParam:
@@ -599,7 +668,8 @@ class _FakePlacementPipe:
 
     _exclude_from_cpu_offload = []
 
-    def __init__(self, nn, components, model_cpu_offload_seq, to_raises_on=None):
+    def __init__(self, nn, components, model_cpu_offload_seq, to_raises_on=None,
+                 group_offload_raises=False):
         self.nn = nn
         self.components = components
         self.model_cpu_offload_seq = model_cpu_offload_seq
@@ -608,10 +678,16 @@ class _FakePlacementPipe:
         #: all-gpu MOVE itself into a failure, as opposed to the size PROBE
         #: that `mem_get_info_raises` already covers.
         self._to_raises_on = to_raises_on
+        #: `enable_group_offload` raises — simulating whatever diffusers
+        #: version/backend combination makes the new rung itself unusable,
+        #: which must degrade to plain offload exactly like a raising
+        #: `.to("cuda")` does for the all-gpu case.
+        self._group_offload_raises = group_offload_raises
         for name, component in components.items():
             setattr(self, name, component)
         self.to_calls = []
         self.offload_calls = 0
+        self.group_offload_calls = []
         self.hooked_names = []
         self.placed_names = []
 
@@ -619,6 +695,11 @@ class _FakePlacementPipe:
         self.to_calls.append(device)
         if device == self._to_raises_on:
             raise RuntimeError("HIP out of memory")
+
+    def enable_group_offload(self, **kwargs):
+        self.group_offload_calls.append(kwargs)
+        if self._group_offload_raises:
+            raise RuntimeError("group offload unsupported here")
 
     def enable_model_cpu_offload(self):
         self.offload_calls += 1
@@ -650,6 +731,10 @@ def _fake_torch_for_placement(free_bytes, mem_get_info_raises=False):
                                        mem_get_info=mem_get_info)
     torch.backends = types.SimpleNamespace(
         mps=types.SimpleNamespace(is_available=lambda: False))
+    # Identity stand-in: enough for `_place` to hand `enable_group_offload`
+    # something keyed the same way a real `torch.device` would be, without
+    # this fixture needing the real class's `.type`/equality machinery.
+    torch.device = lambda name: name
     return torch, nn
 
 
@@ -657,7 +742,7 @@ _GIB = 1 << 30
 
 
 def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
-                    to_raises_on=None):
+                    to_raises_on=None, group_offload_raises=False):
     """A 4-component pipeline (`text_encoder`, `transformer`, `vae`, plus a
     non-Module `tokenizer` that `_place` must skip when summing bytes and
     never mistake for something `enable_model_cpu_offload` places)."""
@@ -669,7 +754,8 @@ def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
     }
     seq = "->".join(name for name, component in components.items()
                     if isinstance(component, nn.Module))
-    return _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on)
+    return _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on,
+                              group_offload_raises=group_offload_raises)
 
 
 def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
@@ -688,11 +774,11 @@ def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
     assert {"placement": "all-gpu"} in base.state_calls
 
 
-def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch, base):
-    """Below the all-gpu floor: today's unconditional `enable_model_cpu_
-    offload()`, and every component gets hooked — there is no pin to keep
-    any of them resident (see `_place`'s docstring for why that branch was
-    tried, measured, and removed)."""
+def test_place_uses_group_offload_when_it_does_not_all_fit(monkeypatch, base):
+    """Below the all-gpu floor: the new rung, `enable_group_offload` at block
+    level, REPLACES plain offload rather than stacking beside it — plain
+    `enable_model_cpu_offload` must not be called at all when group offload
+    itself succeeds."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))  # < 3 GiB headroom
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
@@ -703,12 +789,44 @@ def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch,
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
-    assert pipe.offload_calls == 1
+    assert pipe.offload_calls == 0
     assert pipe.to_calls == []
-    assert pipe._exclude_from_cpu_offload == []
+    assert len(pipe.group_offload_calls) == 1
+    kwargs = pipe.group_offload_calls[0]
+    assert kwargs["onload_device"] == "cuda"
+    assert kwargs["offload_device"] == "cpu"
+    assert kwargs["offload_type"] == "block_level"
+    assert kwargs["num_blocks_per_group"] == worker._NUM_BLOCKS_PER_GROUP
+    # Task 2's knob, not this one's — memory mode only, nothing on disk.
+    assert "offload_to_disk_path" not in kwargs
+    # Unsettled pending the hardware gate (SPEC/D) — must not be forced on.
+    assert kwargs.get("use_stream") is not True
+    assert {"placement": "group-offload"} in base.state_calls
+
+
+def test_place_falls_back_to_plain_offload_when_group_offload_raises(monkeypatch, base):
+    """Group offload itself failing (an unsupported diffusers/backend
+    combination) must degrade to today's unconditional `enable_model_cpu_
+    offload()` — the same "a load that would have succeeded via plain
+    offload must not fail outright" reasoning the all-gpu case's own
+    raising `.to("cuda")` already follows."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB),
+                            group_offload_raises=True)
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert len(pipe.group_offload_calls) == 1  # the attempt happened
+    assert pipe.offload_calls == 1  # and fell back to it
     assert pipe.placed_names == []
     assert set(pipe.hooked_names) == {"transformer", "vae", "text_encoder"}
     assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "group-offload"} not in base.state_calls
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
@@ -729,6 +847,9 @@ def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base)
     assert pipe.offload_calls == 1
     assert pipe._exclude_from_cpu_offload == []
     assert pipe.placed_names == []
+    # The probe never ran, so there is no "does it fit" answer to hand the
+    # group-offload rung — it must be skipped entirely, not attempted blind.
+    assert pipe.group_offload_calls == []
 
 
 def test_place_falls_back_to_offload_when_component_sizing_raises(monkeypatch, base):
@@ -753,6 +874,7 @@ def test_place_falls_back_to_offload_when_component_sizing_raises(monkeypatch, b
     assert pipe.offload_calls == 1
     assert pipe._exclude_from_cpu_offload == []
     assert pipe.placed_names == []
+    assert pipe.group_offload_calls == []
 
 
 def test_place_falls_back_to_offload_when_the_all_gpu_move_itself_raises(
@@ -862,9 +984,13 @@ def test_place_unparsable_headroom_env_override_is_ignored(monkeypatch, base):
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
-    assert pipe.offload_calls == 1
+    # "Offload" here means "not all-gpu" — the probe answered "does not fit",
+    # which now reaches the group-offload rung rather than plain offload.
+    assert len(pipe.group_offload_calls) == 1
+    assert pipe.offload_calls == 0
     assert pipe.to_calls == []
-    assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "group-offload"} in base.state_calls
+    assert {"placement": "all-gpu"} not in base.state_calls
 
 
 # -- releasing the allocator on an idle timer (D597) -----------------------------

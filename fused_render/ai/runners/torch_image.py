@@ -349,6 +349,54 @@ def _vram_headroom_bytes():
         return _VRAM_HEADROOM_BYTES
 
 
+#: How many transformer blocks `_place`'s group-offload rung moves onto the
+#: GPU as one unit — diffusers' own `num_blocks_per_group`, passed straight
+#: through to `pipe.enable_group_offload(..., offload_type="block_level")`.
+#: 1 is the finest granularity: the smallest possible unit is swapped in at a
+#: time, trading render speed for the lowest possible VRAM ceiling — the
+#: right default for a rung whose entire purpose is fitting a model onto a
+#: card too small for `_VRAM_HEADROOM_BYTES`'s all-gpu bound to clear.
+#: Overridable with `FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS` (an int, e.g. `4`)
+#: once real hardware shows a coarser grouping is worth the VRAM it costs —
+#: nobody has profiled that trade on the card this shipped for yet, so 1 is
+#: a conservative starting point, not a measured optimum.
+_NUM_BLOCKS_PER_GROUP = 1
+
+#: Env var for `_NUM_BLOCKS_PER_GROUP`, same "set AND sane" precedence as
+#: `_VRAM_HEADROOM_ENV` — an unset, unparsable, or out-of-range (zero,
+#: negative, infinite, or implausibly large) value is silently ignored
+#: rather than treated as an intentional override, so a typo here degrades
+#: to the documented default instead of handing diffusers a group size that
+#: makes no sense. See `_num_blocks_per_group` for why "parses" is not the
+#: same question as "sane".
+_NUM_BLOCKS_PER_GROUP_ENV = "FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS"
+
+
+def _num_blocks_per_group():
+    """`_NUM_BLOCKS_PER_GROUP`, or the env override — sanity-checked, not
+    just parsed, for the same two reasons `_vram_headroom_bytes` is: a bare
+    `int()`/`except ValueError` pair would let `-4` through (a negative
+    group size diffusers has no sane way to honour) and let a string large
+    enough to overflow `int()` raise `OverflowError` — a class `except
+    ValueError` never catches, which would otherwise reach `_place`'s own
+    outer guard and silently fall all the way to plain offload rather than
+    the documented default every other unparsable value gets. A plausible
+    group size is a positive integer under 1024 — comfortably above any
+    block count a shipped pipeline has — and anything outside that,
+    including zero, is treated exactly like a value that failed to parse.
+    """
+    raw = os.environ.get(_NUM_BLOCKS_PER_GROUP_ENV)
+    if not raw:
+        return _NUM_BLOCKS_PER_GROUP
+    try:
+        value = float(raw)
+        if not (0 < value < 1024):
+            return _NUM_BLOCKS_PER_GROUP
+        return int(value)
+    except (ValueError, OverflowError):
+        return _NUM_BLOCKS_PER_GROUP
+
+
 def _component_bytes(module):
     """Bytes a loaded `torch.nn.Module` component will cost on a device —
     parameters AND buffers, because a component can hold real weight-sized
@@ -371,7 +419,7 @@ def _component_bytes(module):
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
-    Two cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
+    Three cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
     FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9 GiB RX 9060
     XT with 2.0 GiB already used system-wide. The unconditional `enable_
     model_cpu_offload()` this branch used to call regardless of card size
@@ -383,24 +431,45 @@ def _place(pipe):
     1. **All-GPU** — every component's measured size plus `_vram_headroom_
        bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
        ("cuda")`, nothing streamed per render.
-    2. **Offload** — it does not fit: today's unconditional `enable_model_cpu_
-       offload()`, unchanged.
+    2. **Group offload** — the probe ran and said it does not fit: diffusers'
+       own `pipe.enable_group_offload(onload_device="cuda", offload_device=
+       "cpu", offload_type="block_level", num_blocks_per_group=_num_blocks_
+       per_group())`, memory mode only — no `offload_to_disk_path`. It moves
+       one group of blocks onto the GPU at a time instead of parking every
+       weight in system RAM for the process's whole life, which lowers the
+       VRAM ceiling a render needs without accelerate's offload ever
+       entering the picture. REPLACES case 3 here, never stacks on it:
+       `_raise_error_if_accelerate_model_or_sequential_hook_present` makes
+       diffusers' own hooks and accelerate's mutually exclusive, so a
+       pipeline cannot carry both at once. `use_stream` is left at its
+       default (unset) — SPEC/D's gate on the RX 9060 XT is what settles
+       whether streaming is safe on ROCm, by measurement, and that gate has
+       not run; this rung must not force it on ahead of that answer.
+    3. **Offload** — group offload itself raised, or the probe raised before
+       it could answer whether the model fits: today's unconditional
+       `enable_model_cpu_offload()`, unchanged, and still the terminal
+       fallback either way.
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
-    straight to case 2 — the same "a probe must never break loading" reasoning
-    `release()`'s per-backend try/except documents just below, applied to the
-    measurement instead of the reclaim. That promise covers the MEASUREMENT;
-    the all-gpu case's own `pipe.to("cuda")` gets the identical treatment for
-    the same reason — `_vram_headroom_bytes()`'s margin is explicitly a
-    guess, `free` is sampled once before the move rather than continuously,
-    and a competing process (or a component whose real device cost exceeds
-    `numel * element_size`) can turn a move that looked safe into a raise. A
-    load that would have SUCCEEDED via plain offload must not fail outright
-    just because the faster path was tried first, so a raising `.to("cuda")`
-    falls back to `enable_model_cpu_offload()` exactly like case 2.
+    straight to case 3, skipping case 2 entirely — group offload is only
+    attempted once the probe has actually answered "it does not fit"; a
+    probe that never got that far has nothing for `enable_group_offload` to
+    act on either. This is the same "a probe must never break loading"
+    reasoning `release()`'s per-backend try/except documents just below,
+    applied to the measurement instead of the reclaim. That promise covers
+    the MEASUREMENT; the all-gpu case's own `pipe.to("cuda")` and case 2's
+    own `pipe.enable_group_offload(...)` get the identical treatment for the
+    same reason — `_vram_headroom_bytes()`'s margin is explicitly a guess,
+    `free` is sampled once before the move rather than continuously, and a
+    competing process (or a component whose real device cost exceeds `numel
+    * element_size`) can turn a move that looked safe into a raise. A load
+    that would have SUCCEEDED via plain offload must not fail outright just
+    because a faster path was tried first, so a raising `.to("cuda")` or a
+    raising `enable_group_offload(...)` both fall back to `enable_model_cpu_
+    offload()` exactly like case 3.
 
-    **A third case — pinning the "hot" set (denoiser + VAE) resident while
+    **A fourth case — pinning the "hot" set (denoiser + VAE) resident while
     leaving the text encoder to offload's per-call fetch — was built,
     measured, and removed.** A code review surfaced five defects, and
     chasing them down showed the branch could not pay for itself:
@@ -452,6 +521,20 @@ def _place(pipe):
     (SD3.5 and friends) ever joins the catalog, that is when to revisit —
     and the chain semantics above are the thing to get right this time.
 
+    **None of that accelerate-chain reasoning applies to case 2 above.**
+    `enable_group_offload` is diffusers' own mechanism — it installs its own
+    forward hooks (`diffusers/hooks/group_offloading.py`) and never touches
+    `model_cpu_offload_seq`, `_exclude_from_cpu_offload`, or any of
+    accelerate's `CpuOffload`/`prev_module_hook` machinery. The five defects
+    above — the unreachable branch, the chain re-eviction, the round-trip
+    through `maybe_free_model_hooks()`, the missing fallback, `max(others)`
+    undercounting peak — were all specific to PINNING a subset of components
+    resident inside accelerate's sequential-hook chain. Group offload pins
+    nothing and reads no such sequence; it is a different mechanism solving
+    a different problem (lowering the VRAM ceiling for whatever does not
+    fit, not keeping a hot subset resident), so a future reader should not
+    assume this rung was already tried under a different name and rejected.
+
     The MPS and CPU branches are untouched: MPS's unified memory makes
     offloading pure overhead there (see below), and CPU has nothing to place.
     MPS generators are unreliable, so the seed is taken on the CPU whatever
@@ -495,6 +578,21 @@ def _place(pipe):
             try:
                 pipe.to("cuda")
             except Exception:  # noqa: BLE001 - the move must degrade like the probe above
+                pipe.enable_model_cpu_offload()
+                placement = "offload"
+        elif placement == "offload":
+            # The probe RAN and said it does not fit — group offload is only
+            # tried when that answer is trustworthy. `placement is None`
+            # (the probe raised) skips straight to the `else` below instead.
+            try:
+                pipe.enable_group_offload(
+                    onload_device=torch.device("cuda"),
+                    offload_device=torch.device("cpu"),
+                    offload_type="block_level",
+                    num_blocks_per_group=_num_blocks_per_group(),
+                )
+                placement = "group-offload"
+            except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it
                 pipe.enable_model_cpu_offload()
                 placement = "offload"
         else:
