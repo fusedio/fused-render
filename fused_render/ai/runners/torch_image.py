@@ -44,12 +44,9 @@ transformer subfolder deliberately NOT downloaded. Anything without a recipe
 loads the ordinary way through `AutoPipelineForText2Image`.
 """
 
-import atexit
 import os
-import shutil
 import sys
 import time
-import uuid
 
 # The base sits in THIS directory, and so does everything else this imports.
 # Each `worker.py` shell has already inserted `runners/` on the way in (it is one
@@ -60,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import engine_options  # noqa: E402 - refuse `image` on arrival; see its docstring
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import mmap_spill  # noqa: E402 - file-backed mmap residency; see its own docstring
 import preview  # noqa: E402 - the ONE live-thumbnail writer; see preview.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
@@ -357,381 +355,29 @@ def _vram_headroom_bytes():
         return _VRAM_HEADROOM_BYTES
 
 
-#: How many transformer blocks `_place`'s group-offload rung moves onto the
-#: GPU as one unit — diffusers' own `num_blocks_per_group`, passed straight
-#: through to `pipe.enable_group_offload(..., offload_type="block_level")`.
-#: 1 is the finest granularity: the smallest possible unit is swapped in at a
-#: time, trading render speed for the lowest possible VRAM ceiling — the
-#: right default for a rung whose entire purpose is fitting a model onto a
-#: card too small for `_VRAM_HEADROOM_BYTES`'s all-gpu bound to clear.
-#: Overridable with `FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS` (an int, e.g. `4`)
-#: once real hardware shows a coarser grouping is worth the VRAM it costs —
-#: nobody has profiled that trade on the card this shipped for yet, so 1 is
-#: a conservative starting point, not a measured optimum.
-_NUM_BLOCKS_PER_GROUP = 1
-
-#: Env var for `_NUM_BLOCKS_PER_GROUP`, same "set AND sane" precedence as
-#: `_VRAM_HEADROOM_ENV` — an unset, unparsable, or out-of-range (zero,
-#: negative, infinite, or implausibly large) value is silently ignored
-#: rather than treated as an intentional override, so a typo here degrades
-#: to the documented default instead of handing diffusers a group size that
-#: makes no sense. See `_num_blocks_per_group` for why "parses" is not the
-#: same question as "sane".
-_NUM_BLOCKS_PER_GROUP_ENV = "FUSED_RENDER_AI_GROUP_OFFLOAD_BLOCKS"
-
-
-def _num_blocks_per_group():
-    """`_NUM_BLOCKS_PER_GROUP`, or the env override — sanity-checked, not
-    just parsed, for the same two reasons `_vram_headroom_bytes` is: a bare
-    `int()`/`except ValueError` pair would let `-4` through (a negative
-    group size diffusers has no sane way to honour) and let a string large
-    enough to overflow `int()` raise `OverflowError` — a class `except
-    ValueError` never catches, which would otherwise reach `_place`'s own
-    outer guard and silently fall all the way to plain offload rather than
-    the documented default every other unparsable value gets. A plausible
-    group size is a positive integer under 1024 — comfortably above any
-    block count a shipped pipeline has — and anything outside that,
-    including zero, is treated exactly like a value that failed to parse.
-    """
-    raw = os.environ.get(_NUM_BLOCKS_PER_GROUP_ENV)
-    if not raw:
-        return _NUM_BLOCKS_PER_GROUP
-    try:
-        value = float(raw)
-        if not (0 < value < 1024):
-            return _NUM_BLOCKS_PER_GROUP
-        return int(value)
-    except (ValueError, OverflowError):
-        return _NUM_BLOCKS_PER_GROUP
-
-
-#: Env var gating `_group_offload_disk_path()` — same "set AND sane"
-#: precedence as `_VRAM_HEADROOM_ENV`/`_NUM_BLOCKS_PER_GROUP_ENV`. Unset
-#: falls through to the default (disk offload ON); the one recognized
-#: override is the literal value `"off"` (case-insensitive), which disables
-#: `offload_to_disk_path` and drops the group-offload rung back to memory
-#: mode — every other value, including a typo of "off" itself, is treated
-#: as unset rather than as an intentional but malformed override, so a
-#: mistyped value degrades to disk-on instead of silently doing nothing.
-_GROUP_OFFLOAD_DISK_ENV = "FUSED_RENDER_AI_GROUP_OFFLOAD_DISK"
-
-
-def _group_offload_disk_enabled():
-    """Whether `_place`'s group-offload rung should pass `offload_to_disk_
-    path` at all. True unless `_GROUP_OFFLOAD_DISK_ENV` is set to exactly
-    "off" (case-insensitive, surrounding whitespace ignored) — the same
-    "sane, not just parsed" posture the other two knobs use, applied to a
-    boolean instead of a number: there is no ambiguous middle ground to
-    reject the way `-4` or `inf` needs rejecting for a byte count, so the
-    only two states are "recognized disable string" and "everything else
-    defaults to on."
-    """
-    raw = os.environ.get(_GROUP_OFFLOAD_DISK_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() != "off"
-
-
-def _group_offload_base_dir():
-    """The directory `_group_offload_disk_path()`'s per-load subdirectories
-    live under — `~/.fused-render/cache/group-offload` (or `$FUSED_RENDER_
-    HOME`'s equivalent), the app's own real-disk home, never `$TMPDIR`/`/tmp`
-    and never `$XDG_RUNTIME_DIR`: `fused_render/supervisor/paths.py`
-    documents `$XDG_RUNTIME_DIR` as tmpfs-backed on Linux, and a generic
-    `/tmp` is exactly as likely to be a tmpfs mount on the machines this
-    ships to. Spilling group-offloaded weights onto tmpfs would just move
-    the same anonymous, unreclaimable pages this feature exists to get rid
-    of from the process's RSS to a filesystem backed by that same RAM —
-    clean-looking in `/proc/<pid>/smaps_rollup` (file-backed pages, evictable
-    in principle) but not actually freeing anything on a memory-constrained
-    host, since the kernel would need to evict them back into a RAM the
-    tmpfs itself consumes. `~/.fused-render` is the same `os.environ.get
-    ("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")` fallback
-    used throughout the rest of the app (`tasks_store.py`, `community.py`,
-    `meta_migration.py`, and others), reused here rather than inventing a new
-    base path.
-    """
-    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    return os.path.join(home, "cache", "group-offload")
-
-
-def _sweep_stale_group_offload_dirs(base):
-    """Remove every subdirectory of `base` left behind by a PROCESS THAT NO
-    LONGER EXISTS, best-effort, before this load claims its own subdirectory.
-
-    **This is the mechanism disk cleanup actually depends on — `atexit` is
-    not.** A worker's two shutdown paths (`worker_base.serve`'s `/quit`
-    handler, which spawns a thread that calls `os._exit(0)`; and
-    `supervisor._kill_tree`, SIGTERM then SIGKILL) both skip `atexit`
-    handlers entirely — `os._exit` by definition, and a signal Python has
-    installed no handler for by not giving the interpreter a chance to run
-    its exit machinery at all. `enable_group_offload`'s disk path also
-    writes its whole offloaded weight set to disk the moment it is enabled
-    (`GroupOffloadingHook.initialize_hook` calls `group.offload_()` at LOAD
-    time, per the installed `diffusers/hooks/group_offloading.py`), not
-    lazily on first render — so every ordinary load-then-quit cycle through
-    this rung would otherwise leave its whole subdirectory on disk forever,
-    with `atexit`'s registration in `_group_offload_disk_path()` firing only
-    on the rare unhandled-exception exit. Ten loads on a machine that takes
-    this rung costs the user tens of GB with no indication why, absent this
-    sweep.
-
-    **Only a directory whose pid prefix names a process that is no longer
-    alive is removed** — never every sibling, and never by simply sweeping
-    everything under `base` on the theory that "this process's own directory
-    is the only one that matters right now": two workers can legitimately be
-    group-offloading at once, each holding its own live subdirectory, and a
-    sweep that cannot tell a dead worker's leftovers from a live one's
-    in-progress files would delete out from under it. `os.kill(pid, 0)`
-    (raises `ProcessLookupError` for a dead pid, `OSError` for one this
-    process cannot signal, returns cleanly for a live one) is the liveness
-    check; a directory is only ever removed on the FIRST of those two,
-    matching the identity `_group_offload_disk_path()` writes below
-    (`<pid>-<random>`). A directory whose name this function cannot parse as
-    that shape is left alone rather than guessed at.
-
-    Best-effort throughout: a missing `base` (nothing has ever offloaded to
-    disk on this machine), a permission error walking it, or a permission
-    error removing one stale entry must not turn an optimisation's own
-    housekeeping into a reason a load fails. This runs once per call to
-    `_group_offload_disk_path()`, which is once per load that reaches the
-    group-offload rung — O(number of stale directories on disk), never
-    O(their contents), so it costs nothing proportional to weight size.
-    """
-    try:
-        entries = os.listdir(base)
-    except OSError:
-        return
-    for entry in entries:
-        pid_str = entry.split("-", 1)[0]
-        try:
-            pid = int(pid_str)
-        except ValueError:
-            continue
-        if pid == os.getpid():
-            continue
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        except OSError:
-            # Alive, or this process cannot tell (EPERM on a foreign-owned
-            # pid) — either way, not confidently dead, so leave it alone.
-            continue
-        else:
-            continue  # the process answered: it is alive, its directory stays.
-        try:
-            shutil.rmtree(os.path.join(base, entry), ignore_errors=True)
-        except OSError:
-            pass
-
-
-def _group_offload_disk_path():
-    """Where `_place`'s group-offload rung should spill block weights to
-    while they are offloaded, or `None` when `_group_offload_disk_enabled()`
-    says disk offload is off (memory mode: `enable_group_offload` with no
-    `offload_to_disk_path` at all, its own long-standing default).
-
-    **Identity is `<pid>-<random>`, never pid alone, and the directory is
-    swept clean before use even though the identity is already unique —
-    both, not either.** `enable_group_offload`'s own disk-write skip (`if
-    not self._is_offloaded_to_disk and not os.path.exists(self.safetensors_
-    file_path)`, `diffusers/hooks/group_offloading.py`) is keyed by a hash
-    of the module's own group id — deterministic across processes, and
-    across any two loads of the same recipe. A pid-only directory name is
-    reused whenever Linux recycles a pid (commonly every ~32768 loads on
-    this platform's default `pid_max`), and combined with a directory that
-    nothing ever swept (see `_sweep_stale_group_offload_dirs`), a worker
-    whose pid collides with a dead one would inherit that directory
-    fully populated, skip every write, and go on to ONLOAD THE WRONG
-    MODEL'S WEIGHTS with no error at all. A random suffix makes that
-    collision astronomically unlikely by construction; deleting whatever
-    (if anything) already sits at this exact path before `os.makedirs`
-    closes the gap for the one case a random suffix does not cover on its
-    own — a stale directory this process's own earlier, uncleaned run left
-    at the exact same identity, which cannot happen with a fresh `uuid4`
-    but costs nothing to guard against anyway.
-
-    Deliberately real disk — see `_group_offload_base_dir()` for why, and
-    for the `FUSED_RENDER_HOME` convention this reuses.
-
-    Created eagerly (`os.makedirs(..., exist_ok=True)`) so `enable_group_
-    offload` never has to create it itself mid-load. `atexit.register`
-    still runs on a normal Python-level exit (an unhandled exception, a
-    plain `return` from `main()`) as a best-effort EXTRA — cheap insurance
-    for the one shutdown path that does reach it — but `_sweep_stale_group_
-    offload_dirs` above, not this, is the mechanism cleanup actually
-    depends on; see that function's own docstring for why `atexit` alone
-    was not enough.
-    """
-    if not _group_offload_disk_enabled():
-        return None
-    base = _group_offload_base_dir()
-    _sweep_stale_group_offload_dirs(base)
-    identity = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
-    path = os.path.join(base, identity)
-    shutil.rmtree(path, ignore_errors=True)
-    os.makedirs(path, exist_ok=True)
-    if path not in _GROUP_OFFLOAD_DISK_PATHS_REGISTERED:
-        atexit.register(shutil.rmtree, path, ignore_errors=True)
-        _GROUP_OFFLOAD_DISK_PATHS_REGISTERED.add(path)
-    return path
-
-
-#: Guards `_group_offload_disk_path()`'s `atexit.register` against
-#: registering the same directory's cleanup twice — `_place` can call it
-#: more than once in a process only in tests, but a duplicate `atexit`
-#: registration would just call `shutil.rmtree` on an already-removed
-#: directory a second time at exit, harmless with `ignore_errors=True` but
-#: still worth not doing.
-_GROUP_OFFLOAD_DISK_PATHS_REGISTERED = set()
-
-
 def _component_bytes(module):
     """Bytes a loaded `torch.nn.Module` component will cost on a device —
-    parameters AND buffers, because a component can hold real weight-sized
-    tensors in either bucket (a GGUF-quantized transformer's scale/zero-point
-    tensors are commonly registered as buffers, not parameters, and skipping
-    them would undercount exactly the component this feature was built to
-    place). Measured while the component is still on CPU — `_place` runs
-    before ANY `.to()`/offload call, so this is the true per-component size
-    for any repo, with no catalog lookup and no reliance on a config file
-    agreeing with what actually got loaded.
+    parameters AND buffers, since a buffer (a running-stats tensor, a
+    quantizer's scale/zero-point) occupies VRAM exactly like a parameter
+    does once the module is moved there.
+
+    Measured while the component is still on CPU — `_place` calls this
+    before ANY `.to()`/offload call, so `numel() * element_size()` is the
+    honest per-tensor cost regardless of what device the tensor happens to
+    report right now.
     """
     total = 0
-    for param in module.parameters():
-        total += param.numel() * param.element_size()
-    for buf in module.buffers():
-        total += buf.numel() * buf.element_size()
+    for tensor in module.parameters():
+        total += tensor.numel() * tensor.element_size()
+    for tensor in module.buffers():
+        total += tensor.numel() * tensor.element_size()
     return total
-
-
-def _has_untracked_tensor(obj, registered_ids, _depth=0):
-    """True when `obj` (a parameter, a buffer, or — one recursion level down
-    — a plain object hanging off one) carries a plain attribute that is a
-    `torch.Tensor` not in `registered_ids`. `registered_ids` is the SAME set
-    at every level of the recursion: it always names the owning component's
-    actual `named_parameters()`/`named_buffers()`, never the attributes of
-    whatever `obj` happens to be at this level, so a tensor found two levels
-    down (bitsandbytes' `weight.quant_state.absmax`) is judged against the
-    same registration `ModuleGroup` itself would check, not against
-    `quant_state`'s own attributes as if reaching `absmax` by recursion
-    somehow registered it. `_depth` bounds the walk to component → attribute
-    → attribute's own attribute and no further, a fixed, small cost
-    regardless of what a component's attributes reference.
-    """
-    import torch
-
-    if not hasattr(obj, "__dict__"):
-        return False
-    for value in vars(obj).values():
-        if isinstance(value, torch.Tensor):
-            if id(value) not in registered_ids:
-                return True
-        elif _depth < 1 and hasattr(value, "__dict__"):
-            if _has_untracked_tensor(value, registered_ids, _depth=_depth + 1):
-                return True
-    return False
-
-
-def _unsafe_for_group_offload(component):
-    """True when `component` holds quantization state that `enable_group_
-    offload`'s tensor movement would leave behind, so it must be excluded
-    from block offload.
-
-    Governing fact (installed `diffusers/hooks/group_offloading.py`,
-    `ModuleGroup.__init__`): a group collects tensors ONLY from `module.
-    parameters()` and `module.buffers()`, and moves each one by reassigning
-    `tensor.data` (`_transfer_tensor_to_device`) — it never calls `.to()`.
-    A parameter whose entire quantized representation lives in `.data`
-    itself, with any quantization metadata kept as plain non-tensor Python
-    attributes, survives that move correctly: diffusers' own `GGUFParameter`
-    (`diffusers/quantizers/gguf/utils.py`) is exactly this shape — nothing
-    on it but `.data` and a `quant_type` string. A parameter that instead
-    keeps PART of its quantized representation in a SEPARATE tensor hanging
-    off it as a plain attribute is silently corrupted by the move: the
-    attribute tensor never gets reassigned, so after an onload the weight's
-    `.data` sits on the new device while its quant state is still on the
-    old one. bitsandbytes' `Params4bit` is this shape — `quant_state.
-    absmax`, `quant_state.code`, and (double-quantized) `quant_state.
-    state2`'s own `absmax`/`code` are ordinary tensors kept as attributes of
-    `quant_state`, itself a plain attribute of the parameter, never
-    registered as a parameter or buffer anywhere `ModuleGroup` would find
-    it.
-
-    Detected STRUCTURALLY, by `_has_untracked_tensor`: walk each parameter's
-    and buffer's own plain attributes (recursing one level into any
-    attribute that is itself a plain object, since bitsandbytes nests a
-    second `quant_state` this way for double quantization) looking for a
-    tensor that is not itself a registered parameter or buffer of
-    `component` — the SAME `registered_ids` set is threaded through every
-    level of that recursion, not recomputed at each level, because a nested
-    object's own tensor attributes (`quant_state.absmax`) are exactly the
-    ones this is trying to catch, not tensors to treat as newly "registered"
-    just because they were reached by recursing. No name list, and no
-    `import bitsandbytes`/`gguf`/`sdnq` — those packages are optional and
-    this module gains no hard dependency on any of them just to decide
-    whether a component is safe to move. Walking already-resident Python
-    attributes costs nothing proportional to weight size, so this is fine
-    to run at load time.
-
-    **Anything this function cannot make sense of comes back UNSAFE
-    (excluded).** `component.named_parameters()` raising, or a shape this
-    walk does not recognize, is treated the same as a confirmed-bad one:
-    staying resident costs memory, where guessing SAFE and being wrong
-    silently corrupts a render.
-
-    **`sdnq` is not installed in this environment, and this function has
-    never actually been run against an SDNQ-quantized component.** Nothing
-    here verifies whether SDNQ's tensors are safe under `ModuleGroup`'s
-    movement; the structural check above may exclude an SDNQ component or
-    may not, depending on how SDNQ happens to shape its parameters, and
-    neither outcome should be read as SDNQ having been checked against a
-    real object.
-    """
-    try:
-        registered_ids = {id(t) for _, t in component.named_parameters()}
-        registered_ids |= {id(t) for _, t in component.named_buffers()}
-        tensors = [t for _, t in component.named_parameters()]
-        tensors += [t for _, t in component.named_buffers()]
-        for tensor in tensors:
-            if _has_untracked_tensor(tensor, registered_ids):
-                return True
-    except Exception:  # noqa: BLE001 - an unrecognized shape is unsafe, not a crash
-        return True
-    return False
-
-
-def _group_offload_exclusions(pipe):
-    """Which of `pipe.components` block offload must never touch: `vae`
-    always — see `_place`'s docstring for the decode-path reason, a hook
-    problem `_unsafe_for_group_offload` has nothing to say about — plus
-    whatever that structural check finds unsafe to move by `.data`
-    reassignment.
-
-    Generic and quantizer-agnostic on purpose: this used to exclude (or
-    not) a component by name, on reasoning specific to what THAT recipe's
-    text encoder happened to be quantized with. That does not generalize
-    to a catalog where a user can point this app at an arbitrary HF repo
-    whose component quantization this app has never seen and cannot
-    hand-tune for. Asking each component structurally whether ITS tensors
-    survive `enable_group_offload`'s movement, rather than asking which
-    model this is, is the version of this check that keeps working for a
-    repo nobody curated.
-    """
-    exclusions = ["vae"]
-    for name, component in pipe.components.items():
-        if name == "vae" or component is None or not hasattr(component, "named_parameters"):
-            continue
-        if _unsafe_for_group_offload(component):
-            exclusions.append(name)
-    return exclusions
 
 
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
-    Three cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
+    Two cases on CUDA/ROCm — SPEC/D measured on the user's own machine: a
     FLUX.2-klein-4B pipeline via the ROCm GGUF recipe, on a 15.9 GiB RX 9060
     XT with 2.0 GiB already used system-wide. The unconditional `enable_
     model_cpu_offload()` this branch used to call regardless of card size
@@ -743,97 +389,49 @@ def _place(pipe):
     1. **All-GPU** — every component's measured size plus `_vram_headroom_
        bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
        ("cuda")`, nothing streamed per render.
-    2. **Group offload** — the probe ran and said it does not fit: diffusers'
-       own `pipe.enable_group_offload(onload_device="cuda", offload_device=
-       "cpu", offload_type="block_level", num_blocks_per_group=_num_blocks_
-       per_group(), exclude_modules=["vae"], offload_to_disk_path=
-       _group_offload_disk_path())`. It moves one group of blocks onto the
-       GPU at a time instead of parking every weight in system RAM for the
-       process's whole life, which lowers the VRAM ceiling a render needs
-       without accelerate's offload ever entering the picture. REPLACES
-       case 3 here, never stacks on it: `_raise_error_if_accelerate_model_or_
-       sequential_hook_present` makes diffusers' own hooks and accelerate's
-       mutually exclusive, so a pipeline cannot carry both at once.
-       `use_stream` is left at its default (unset) — SPEC/D's gate on the RX
-       9060 XT is what settles whether streaming is safe on ROCm, by
-       measurement, and that gate has not run; this rung must not force it
-       on ahead of that answer.
+    2. **Offload** — the probe ran and said it does not fit, or the probe
+       raised before it could answer whether the model fits: today's
+       unconditional `enable_model_cpu_offload()`. This is where every model
+       in the catalog actually lands, because every model in the catalog is
+       quantized (SDNQ, bitsandbytes, GGUF, torchao) and diffusers'
+       `enable_group_offload`/accelerate's `dispatch_model` both walk only
+       `named_parameters()`/`named_buffers()` — neither one knows about a
+       quantizer's own dequantization state living as a plain attribute
+       (bitsandbytes' `Params4bit.quant_state.absmax`/`.code`/nested
+       `.state2`), and accelerate raises outright for a cpu/disk device_map
+       with `load_in_4bit`. A block-offload rung that cannot see the tensors
+       a quantized model actually carries is dead weight at best and an OOM
+       at worst, so this function does not attempt one; `enable_model_cpu_
+       offload()`'s per-call `.to(device)`/`.to("cpu")` round trip already
+       knows how to move a component wholesale without walking into a
+       quantizer's internals.
 
-       `offload_to_disk_path=` is what turns the offloaded blocks' host
-       pages from anonymous (parked in RAM for the process's whole life,
-       same as plain offload leaves them) into file-backed and kernel-
-       evictable — see `_group_offload_disk_path()`'s own docstring for
-       where that path lives, why it must be real disk, and the env knob
-       that can turn it back off. `_group_offload_disk_enabled() is False`
-       makes this argument `None`, which `enable_group_offload` treats
-       exactly like never passing it at all: memory mode, the same shape
-       this rung shipped with before disk residency existed.
-
-       `exclude_modules=` (`_group_offload_exclusions(pipe)`) names every
-       component that must never reach `enable_group_offload`: `vae`,
-       always, plus whatever `_unsafe_for_group_offload` finds holding
-       quantization state outside the tensors `ModuleGroup` actually moves
-       — see that function's own docstring for the structural check and
-       why it does not need to know which model this is.
-
-       `vae` is load-bearing, not an optimization: block offload's hooks
-       only fire on a module's `forward`, and diffusers'
-       `AutoencoderKL` is the ONE VAE class that opts a decode-only call path
-       into the same hooking via `_group_offload_block_modules = ["quant_
-       conv", "post_quant_conv", "encoder", "decoder"]`
-       (`diffusers/models/autoencoders/autoencoder_kl.py`), which makes
-       `apply_group_offloading` recurse into the encoder/decoder so their
-       inner `ModuleList`s each get their own hook. `AutoencoderKLFlux2` —
-       the klein recipe's VAE — declares no such attribute, so its encoder,
-       decoder and quant_conv all land in one "unmatched group" whose hook
-       sits on the VAE's own `forward`. Every FLUX pipeline decodes via
-       `self.vae.decode(latents, return_dict=False)`, never `.forward(...)`,
-       and diffusers' `@apply_forward_hook` decorator
-       (`diffusers/utils/accelerate_utils.py`) only fires accelerate's own
-       `_hf_hook` on `.decode`/`.encode` — it has no idea group offload's
-       hooks exist. A block-offloaded `AutoencoderKLFlux2` would therefore
-       decode with its weights still parked on the offload device against
-       CUDA latents, and die there after the whole denoising loop had
-       already run. Excluding it moves it once to the onload device instead
-       and leaves it resident — at 0.17 GiB, cheap enough next to the
-       transformer this rung exists for that it is not worth measuring.
-    3. **Offload** — group offload itself raised with nothing left hooked
-       (after one retry in memory mode, if the first attempt was in disk
-       mode — see the `except` below for why disk mode gets a second try
-       before falling here), or the probe raised before it could answer
-       whether the model fits: today's unconditional `enable_model_cpu_
-       offload()`, unchanged, and still the terminal fallback either way.
-       (A group-offload raise that left some components already hooked
-       cannot reach this cleanly — see the `except` below.)
+       `enable_model_cpu_offload()` parks every offloaded weight in
+       anonymous host RAM for the process's whole life — the kernel cannot
+       reclaim it except via swap. `_spill_idle_weights()`, called once
+       placement is decided (see below), rewrites that residency onto a
+       memory-mapped safetensors file so the same bytes become ordinary,
+       kernel-evictable page cache instead; see that function's and
+       `mmap_spill`'s own docstrings for the mechanism and why it must run
+       again after every render, not just once at load.
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
-    straight to case 3, skipping case 2 entirely — group offload is only
-    attempted once the probe has actually answered "it does not fit"; a
-    probe that never got that far has nothing for `enable_group_offload` to
-    act on either. This is the same "a probe must never break loading"
-    reasoning `release()`'s per-backend try/except documents just below,
-    applied to the measurement instead of the reclaim. That promise covers
-    the MEASUREMENT; the all-gpu case's own `pipe.to("cuda")` and case 2's
-    own `pipe.enable_group_offload(...)` get the identical treatment for the
-    same reason — `_vram_headroom_bytes()`'s margin is explicitly a guess,
-    `free` is sampled once before the move rather than continuously, and a
-    competing process (or a component whose real device cost exceeds `numel
-    * element_size`) can turn a move that looked safe into a raise. A load
-    that would have SUCCEEDED via plain offload must not fail outright just
-    because a faster path was tried first, so a raising `.to("cuda")` falls
-    back to `enable_model_cpu_offload()` exactly like case 3. A raising
-    `enable_group_offload(...)` falls back the same way ONLY when the raise
-    left nothing hooked: the method hooks components one at a time in a
-    loop, and `enable_model_cpu_offload` opens by refusing to run at all
-    (`_maybe_raise_error_if_group_offload_active(raise_error=True)`) while
-    any component still carries a group-offload hook. A raise that hit
-    component N after already hooking components before it cannot be undone
-    through any supported diffusers call, so that case re-raises the
-    ORIGINAL error instead of trading it for a confusing "group offload
-    active" `ValueError` — see the `except` below for the exact check.
+    straight to case 2 — the all-gpu move is only attempted once the probe
+    has actually answered "it fits"; a probe that never got that far treats
+    the model as not fitting. This is the same "a probe must never break
+    loading" reasoning `release()`'s per-backend try/except documents just
+    below, applied to the measurement instead of the reclaim. That promise
+    covers the MEASUREMENT; the all-gpu case's own `pipe.to("cuda")` gets the
+    identical treatment for the same reason — `_vram_headroom_bytes()`'s
+    margin is explicitly a guess, `free` is sampled once before the move
+    rather than continuously, and a competing process (or a component whose
+    real device cost exceeds `numel * element_size`) can turn a move that
+    looked safe into a raise. A load that would have SUCCEEDED via offload
+    must not fail outright just because the faster path was tried first, so
+    a raising `.to("cuda")` falls back to `enable_model_cpu_offload()`.
 
-    **A fourth case — pinning the "hot" set (denoiser + VAE) resident while
+    **A third case — pinning the "hot" set (denoiser + VAE) resident while
     leaving the text encoder to offload's per-call fetch — was built,
     measured, and removed.** A code review surfaced five defects, and
     chasing them down showed the branch could not pay for itself:
@@ -885,20 +483,6 @@ def _place(pipe):
     (SD3.5 and friends) ever joins the catalog, that is when to revisit —
     and the chain semantics above are the thing to get right this time.
 
-    **None of that accelerate-chain reasoning applies to case 2 above.**
-    `enable_group_offload` is diffusers' own mechanism — it installs its own
-    forward hooks (`diffusers/hooks/group_offloading.py`) and never touches
-    `model_cpu_offload_seq`, `_exclude_from_cpu_offload`, or any of
-    accelerate's `CpuOffload`/`prev_module_hook` machinery. The five defects
-    above — the unreachable branch, the chain re-eviction, the round-trip
-    through `maybe_free_model_hooks()`, the missing fallback, `max(others)`
-    undercounting peak — were all specific to PINNING a subset of components
-    resident inside accelerate's sequential-hook chain. Group offload pins
-    nothing and reads no such sequence; it is a different mechanism solving
-    a different problem (lowering the VRAM ceiling for whatever does not
-    fit, not keeping a hot subset resident), so a future reader should not
-    assume this rung was already tried under a different name and rejected.
-
     The MPS and CPU branches are untouched: MPS's unified memory makes
     offloading pure overhead there (see below), and CPU has nothing to place.
     MPS generators are unreliable, so the seed is taken on the CPU whatever
@@ -942,89 +526,12 @@ def _place(pipe):
             except Exception:  # noqa: BLE001 - the move must degrade like the probe above
                 pipe.enable_model_cpu_offload()
                 placement = "offload"
-        elif placement == "offload":
-            # The probe RAN and said it does not fit — group offload is only
-            # tried when that answer is trustworthy. `placement is None`
-            # (the probe raised) skips straight to the `else` below instead.
-            disk_path = _group_offload_disk_path()
-            try:
-                pipe.enable_group_offload(
-                    onload_device=torch.device("cuda"),
-                    offload_device=torch.device("cpu"),
-                    offload_type="block_level",
-                    num_blocks_per_group=_num_blocks_per_group(),
-                    # The VAE decodes via `.decode(...)`, never `.forward(...)`
-                    # — block offload only hooks `forward`, so a VAE without
-                    # `_group_offload_block_modules` (AutoencoderKLFlux2, the
-                    # klein recipe's VAE) would silently never come back off
-                    # the offload device. See the docstring above for the
-                    # full mechanism. 0.17 GiB resident is not worth the risk
-                    # of getting this wrong. Every other exclusion in this
-                    # list came from `_unsafe_for_group_offload` structurally
-                    # inspecting that component's own parameters — see that
-                    # function's docstring, not this comment, for why.
-                    exclude_modules=_group_offload_exclusions(pipe),
-                    offload_to_disk_path=disk_path,
-                )
-                placement = "group-offload"
-            except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it
-                # `enable_group_offload` hooks components one at a time in a
-                # loop, so a raise partway through can leave earlier
-                # components already group-offloaded even though this call
-                # failed overall. `enable_model_cpu_offload` opens with
-                # `_maybe_raise_error_if_group_offload_active(raise_error=
-                # True)` and refuses to run AT ALL while any component still
-                # carries a group-offload hook — calling it unconditionally
-                # here would trade the real failure for a confusing
-                # `ValueError` about group offload being active, on a load
-                # that the docstring promises will fall back to plain
-                # offload. Ask the same question with `raise_error=False`
-                # first: a clean failure (nothing got hooked) is safe to act
-                # on further; a partial failure re-raises the ORIGINAL error,
-                # since there is no supported diffusers call to strip a
-                # partially-applied set of group-offload hooks back off and
-                # let anything else proceed.
-                if pipe._maybe_raise_error_if_group_offload_active(raise_error=False):
-                    raise
-                # A clean failure in DISK mode gets one retry in memory mode
-                # before falling all the way to plain offload: disk mode's
-                # `initialize_hook` runs `group.offload_()` immediately, at
-                # hook-install time, which for a torchao-quantized component
-                # (`tonera/FLUX.2-klein-4B-int8-diffusers`'s transformer, the
-                # catalog's own curated recipe) hits `_check_disk_offload_
-                # torchao` and raises `ValueError` before a single render has
-                # happened — turning a load that succeeds fine in memory mode
-                # (and used to succeed via plain offload, before disk
-                # residency existed) into a hard failure. The same shape
-                # applies to a disk that is out of space or unwritable
-                # (ENOSPC/EACCES). Nothing about this retry is torchao-
-                # specific: any clean failure that showed up only because
-                # `offload_to_disk_path` was set gets the same second chance,
-                # on the theory that the mechanism this rung exists to
-                # provide (group offload without accelerate's chain) is worth
-                # more than the disk residency on top of it.
-                if disk_path is not None:
-                    try:
-                        pipe.enable_group_offload(
-                            onload_device=torch.device("cuda"),
-                            offload_device=torch.device("cpu"),
-                            offload_type="block_level",
-                            num_blocks_per_group=_num_blocks_per_group(),
-                            exclude_modules=_group_offload_exclusions(pipe),
-                            offload_to_disk_path=None,
-                        )
-                        placement = "group-offload"
-                    except Exception:  # noqa: BLE001 - same fallback contract as above
-                        if pipe._maybe_raise_error_if_group_offload_active(raise_error=False):
-                            raise
-                        pipe.enable_model_cpu_offload()
-                        placement = "offload"
-                else:
-                    pipe.enable_model_cpu_offload()
-                    placement = "offload"
         else:
             pipe.enable_model_cpu_offload()
             placement = "offload"
+
+        if placement == "offload":
+            _spill_idle_weights(pipe)
 
         worker_base.set_state(placement=placement)
         return "cuda", "cuda"
@@ -1033,6 +540,53 @@ def _place(pipe):
         return "mps", "cpu"
     pipe.to("cpu")
     return "cpu", "cpu"
+
+
+def _spill_idle_weights(pipe):
+    """Rewrite `pipe`'s CPU-resident weights from anonymous host RAM onto a
+    memory-mapped safetensors file, so idle pages become ordinary,
+    kernel-evictable page cache instead of memory `enable_model_cpu_offload()`
+    parks for the process's whole life. See `mmap_spill.spill`'s own
+    docstring for the mechanism: enumerate every CPU tensor (parameters,
+    buffers, and a quantizer's own untracked state) -> write them to one
+    file -> reload via `safetensors.torch.load_file`'s zero-copy mmap ->
+    rebind each tensor's `.data` to the mmap'd view.
+
+    Called once right after placement decides `"offload"` (`_place`, above)
+    and again after every render (`release()`, below): accelerate's
+    `CpuOffload` hook allocates a BRAND NEW tensor on every
+    `.to(device)`/`.to("cpu")` round trip a render makes, discarding
+    whatever mmap rebind was in place before it started — so "spill once at
+    load" is not enough; it has to happen again every time the weights come
+    back to the CPU.
+
+    Race-free by construction, not by locking here. Load-time: `worker_base.
+    set_state(state="ready", ...)` only happens after `load()` returns, and
+    `/generate` refuses every request until `state == "ready"` — so this call
+    can never overlap the FIRST render. Release-time: `worker_base._fire_
+    release` acquires `GENERATE_LOCK` before calling `release()`, the same
+    lock `generate()` holds for its own duration — so this call can never
+    overlap a LATER render either. A render that arrives while this function
+    is between "enumerate" and "rebind" simply cannot happen; nothing here
+    needs its own lock.
+
+    Never raises: a spill is an optimization on top of a working `"offload"`
+    placement, and neither a load nor a release may fail — or, for release,
+    leave the just-finished render's result undelivered — because this did.
+    `_loaded["spill_path"]` is one path for this process's whole life, so
+    every call after the first overwrites the same file instead of leaking a
+    new one.
+    """
+    if pipe is None:
+        return
+    try:
+        path = _loaded.get("spill_path")
+        if path is None:
+            path = mmap_spill.spill_path()
+            _loaded["spill_path"] = path
+        mmap_spill.spill(pipe.components, path)
+    except Exception:  # noqa: BLE001 - an optimization must never break load/release
+        pass
 
 
 def load(model_id, fetched):
@@ -1215,6 +769,12 @@ def release():
             torch.cuda.empty_cache()
         except (RuntimeError, OSError):
             pass
+
+    # Every render's `.to("cpu")` round trip re-allocates anonymous host
+    # tensors for whatever `enable_model_cpu_offload()` is holding — see
+    # `_spill_idle_weights`'s own docstring for why re-spilling here, not
+    # just once at load, is what keeps those pages file-backed while idle.
+    _spill_idle_weights(_loaded.get("pipe"))
 
 
 def _sigma_after(pipeline, step):
