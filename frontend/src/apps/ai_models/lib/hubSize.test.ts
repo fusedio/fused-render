@@ -282,10 +282,10 @@ describe("knownFit and knownSpeedEstimate", () => {
     };
     const fetchSize = async () => ({ usedStorage: null, fileSize: 4_000_000_000, fit, speedEstimate });
     // Nothing known before the lookup resolves.
-    expect(knownFit("org/g")).toBeUndefined();
+    expect(knownFit("org/g", "m.gguf")).toBeUndefined();
     await lookupTotalSize("org/g", "m.gguf", fetchSize);
-    expect(knownFit("org/g")).toEqual(fit);
-    expect(knownSpeedEstimate("org/g")).toEqual(speedEstimate);
+    expect(knownFit("org/g", "m.gguf")).toEqual(fit);
+    expect(knownSpeedEstimate("org/g", "m.gguf")).toEqual(speedEstimate);
   });
 
   it("is null, not undefined, once a lookup resolves with nothing to judge", async () => {
@@ -298,5 +298,42 @@ describe("knownFit and knownSpeedEstimate", () => {
   it("has nothing to say about a repo nobody has asked about", () => {
     expect(knownFit("org/never")).toBeUndefined();
     expect(knownSpeedEstimate("org/never")).toBeUndefined();
+  });
+});
+
+// Code review F1: the cache used to be keyed by repo id ALONE, so a
+// `file: null` ask (the page-level Size sort, `measureSizes`) and a
+// `file`-scoped ask (a table row, `HubResultsTable`) for the SAME repo
+// clobbered each other — whichever answered first "won" for both, even
+// though the two questions have different answers (a repo-wide total with no
+// fit, vs. one file's bytes with a fit verdict riding along).
+describe("the size cache is keyed by (id, file), not id alone", () => {
+  beforeEach(_forgetTotalSizes);
+
+  it("keeps a repo-wide lookup and a file-scoped lookup for the same repo apart", async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const fetchSize = async (id: string, file?: string) => {
+      asked.push([id, file]);
+      return file
+        ? { usedStorage: null, fileSize: 4_200_000_000, fit: { verdict: "easy" as const, basis: "declared" as const, footprintBytes: 1, score: 100 } }
+        : { usedStorage: 15_000_000_000 };
+    };
+    // The page-level Size sort asks first, with no file — this used to poison
+    // the id-only cache entry for every row asking about the SAME repo.
+    expect(await lookupTotalSize("unsloth/x-GGUF", null, fetchSize)).toBe(15_000_000_000);
+    // A table row then asks about its own resolved file, and must NOT be
+    // answered from the repo-wide entry above.
+    expect(await lookupTotalSize("unsloth/x-GGUF", "x-Q4_K_M.gguf", fetchSize)).toBe(4_200_000_000);
+    expect(asked).toEqual([
+      ["unsloth/x-GGUF", undefined],
+      ["unsloth/x-GGUF", "x-Q4_K_M.gguf"],
+    ]);
+    // And each question keeps its own answer for a later reader.
+    expect(knownTotalSize("unsloth/x-GGUF", null)).toBe(15_000_000_000);
+    expect(knownTotalSize("unsloth/x-GGUF", "x-Q4_K_M.gguf")).toBe(4_200_000_000);
+    // Only the file-scoped ask carries a fit verdict — the repo-wide one never
+    // asked for a capability to judge against.
+    expect(knownFit("unsloth/x-GGUF", null)).toBeNull();
+    expect(knownFit("unsloth/x-GGUF", "x-Q4_K_M.gguf")).not.toBeNull();
   });
 });
