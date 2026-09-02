@@ -287,3 +287,40 @@ remaining fixes are appended below as they land.
   so a `"fit"` request is never served the wrong ordering because it hit a
   `"downloads"` cache entry or vice versa (they don't share entries at
   all). No second bug here.
+
+## CI-red fix: two tests carried the host's RAM as an unstated premise
+
+`test_a_row_with_params_carries_fit_speed_and_created` and
+`test_size_is_recovered_from_the_dtype_map` both fixture an 8B-param BF16
+row (16GB footprint) and then index `models[0]`. On the dev Mac (32GB) that
+row fits and survives this branch's new hide-unfit-by-default filter; on a
+CI runner (as little as 7GB) `fit.verdict` returns `verdict: "no"`, the
+filter drops the only row, and `models[0]` raises `IndexError` — the
+feature working as designed, the test carrying an assumption it never
+stated.
+
+Reproduced the exact mechanism directly against `fit.verdict`:
+`machine_ram_gb=7.0` + no GPU + 16GB footprint -> `"no"`;
+`machine_ram_gb=32.0` + no GPU + the same footprint -> `"easy"`.
+
+Fix: added `_pin_hardware(monkeypatch, ram_gb=32.0)` (follows the existing
+`fit.machine_ram_gb`/`hw_detect.cached_hardware` stubbing pattern already
+used in `tests/test_ai_fit.py`, not a new one) and called it from those two
+tests plus a third with the same latent defect:
+`test_speed_estimate_is_absent_for_a_non_text_capability` (4B BF16 = 8GB,
+also asserts `fit is not None` after the default filter, also one small
+runner away from the identical `IndexError`).
+
+Audited the rest of the file's `safetensors=`/size fixtures for the same
+class of bug: `_fitted()`'s "clearly-no" (4000GB) and "clearly-easy" (1GB)
+fixtures are deliberately extreme (per its own docstring) and stay
+host-independent on any real machine — left those alone. No other
+safetensors fixture in the file sits in the ambiguous middle.
+
+Confirmed not vacuous: `test_a_verdict_no_row_is_absent_by_default_and_present_with_the_opt_in_flag`
+and `test_limit_still_counts_rows_actually_returned_after_the_fit_filter`
+still exercise the real `verdict: "no"` drop (via `_fitted`'s 4000GB
+fixture, unpinned) and both still pass — the unfit filter is still under
+test, not merely dodged.
+
+`tests/test_hub_models.py -q`: 111 passed.

@@ -22,6 +22,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.ai import hw_detect
 from fused_render.ai import registry
 from fused_render.ai import tasks as ai_tasks
 from fused_render.server import create_app
@@ -256,6 +257,14 @@ def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
     # 8B parameters at BF16 is 16GB, and saying so before the click is the
     # number that matters on a page whose sibling feature exists because disks
     # fill up.
+    #
+    # The premise: hardware is pinned to 32GB/no-GPU (`_pin_hardware`), which
+    # comfortably fits 16GB, so this row survives the default unfit filter on
+    # ANY runner. Without this the assertion depends on the host's real RAM —
+    # a CI box smaller than the dev Mac judges the row `verdict: "no"`, the
+    # default filter drops it, and `models` comes back empty before either
+    # assert below ever runs.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/big",
         safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
@@ -532,6 +541,12 @@ def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypa
 def test_a_row_with_params_carries_fit_speed_and_created(client, hub_cache, monkeypatch):
     # 8B params at BF16 is a real footprint fit.verdict can judge, and a
     # text-generation row is exactly the capability speed.estimate_tok_s covers.
+    #
+    # The premise: 32GB/no-GPU (`_pin_hardware`) fits 16GB comfortably on any
+    # runner. Without it this reads the real host's memory — CI's judges the
+    # row `verdict: "no"`, the default filter drops it, and `models` is empty
+    # before `[0]` below ever runs (the bug this test was written to catch).
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/big",
         createdAt="2026-08-01T00:00:00.000Z",
@@ -554,6 +569,10 @@ def test_a_row_with_no_params_and_no_size_carries_nulls_not_a_guess(client, hub_
 
 
 def test_speed_estimate_is_absent_for_a_non_text_capability(client, hub_cache, monkeypatch):
+    # The premise: 32GB/no-GPU (`_pin_hardware`) fits the 8GB fixture below
+    # on any runner, so this row is never dropped by the unfit default before
+    # the `fit is not None` assertion gets a chance to run.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "org/pic", "pipeline_tag": "text-to-image",
          "safetensors": {"parameters": {"BF16": 4_000_000_000}, "total": 4_000_000_000}},
@@ -629,6 +648,30 @@ def test_a_row_with_no_tags_at_all_carries_nulls_not_a_500(client, hub_cache, mo
 
 
 # -- ranking by fit, trending, and hiding what cannot run (task 2) ----------
+
+
+def _pin_hardware(monkeypatch, *, ram_gb=32.0):
+    """Pin the machine `fit.verdict`/`speed.estimate_tok_s` judge a footprint
+    against, so a row's fit/speed verdict is a property of the FIXTURE, not
+    of whatever box happens to run the suite.
+
+    Without this, a test whose fixture sits between "obviously fits" and
+    "obviously doesn't" reads the real host: a dev Mac (32GB) and a CI
+    runner (as little as 7GB) disagree about `verdict`, and since the
+    unfit-by-default filter (D-numbered above) drops a `verdict: "no"` row
+    before the assertions ever run, the failure shows up as an `IndexError`
+    on an empty `models` list — CI-only, and unexplained unless you already
+    know the premise.
+
+    32GB/no-GPU (CPU-only) matches the dev machine this suite was written
+    against, made explicit rather than left to be true by accident of the
+    host — see D416, `_no_format_filter` above, for the identical shape of
+    bug this same file already learned from once.
+    """
+    monkeypatch.setattr(hub.fit, "machine_ram_gb", lambda: ram_gb)
+    monkeypatch.setattr(hub.fit, "_wired_limit_mb", lambda: None)
+    monkeypatch.setattr(hub.hw_detect, "cached_hardware", lambda: hw_detect.HardwareInfo(
+        gpus=[], total_vram_gb=0.0, bandwidth_gb_s=None, detected_at=0.0))
 
 
 def _fitted(model_id, score, safetensors_gb, **extra):
