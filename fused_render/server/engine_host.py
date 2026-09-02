@@ -75,7 +75,7 @@ _REAP_INTERVAL_S = 60.0
 #: e.g. a `main =` daemon running someone's `main(**params)`) gets this budget
 #: instead of riding a request indefinitely — the same 60s `/api/run` bounds a
 #: cold call to. A resident child (`idle_timeout_s == 0`: `daemon =`, or any
-#: `kind="template"`) is unaffected; its proxied calls have no host-imposed
+#: template daemon) is unaffected; its proxied calls have no host-imposed
 #: budget beyond the connection-level timeout.
 CALL_TIMEOUT_S = 60.0
 
@@ -96,26 +96,31 @@ class Child:
     #: background daemon serving its own HTTP surface. When set, `_spawn`
     #: passes `--module <this>`.
     module: str = ""
-    #: One of "template", "background" — which bring-up path owns this child.
-    #: Explicit rather than inferred (e.g. from `module` truthiness) so
-    #: kind-specific behavior can never drift onto a child by accident when a
-    #: new kind is added.
-    kind: str = "template"
-    #: The declaring folder, `kind="background"` only — `""` for every other
-    #: kind. Threaded through the same way `cache`/`version` already are
-    #: (the caller resolved it from the manifest; re-deriving it from
-    #: `daemon`'s dirname would be wrong whenever the manifest's `daemon`
-    #: names a nested path). `_spawn_env` exports it as `FUSED_RENDER_APP_DIR`
-    #: so a background daemon can address the background-apps API about
-    #: itself without knowing its own page's `html` path.
+    #: The declaring folder, for a background app's own daemon or shipped
+    #: worker — `""` for a built-in template. Threaded through the same way
+    #: `cache`/`version` already are (the caller resolved it from the
+    #: manifest; re-deriving it from `daemon`'s dirname would be wrong
+    #: whenever the manifest's `daemon` names a nested path). `_spawn_env`
+    #: exports it as `FUSED_RENDER_APP_DIR` so a background daemon can
+    #: address the background-apps API about itself without knowing its own
+    #: page's `html` path — a template daemon never has a `folder`, so it
+    #: never gets one.
     folder: str = ""
     #: How long this child may sit idle before `reap_idle_children` retires
     #: it; `0` (the default, and always the value for a template child) means
-    #: resident. A `kind="background"` child carries whatever its manifest's
+    #: resident. A background child carries whatever its manifest's
     #: `idle_timeout_s` resolved to (see `background_apps.load_manifest`) —
     #: `0` for a written `daemon =`, positive for a `main =` app unless its
     #: manifest overrides it.
     idle_timeout_s: float = 0.0
+    #: Whether a proxied POST to this daemon is safely re-runnable — the
+    #: manifest's own `retry_post` (`background_apps.Manifest.retry_post`),
+    #: carried onto the child so the proxy's at-most-once decision is a
+    #: property of THIS daemon's HTTP surface, not of how it was brought up.
+    #: `False` (the default, and at-most-once the safe reading of it) unless
+    #: the manifest opted in; a built-in template's own daemon (map's tile
+    #: daemon is the first) declares `retry_post = true`.
+    retry_post: bool = False
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
@@ -320,9 +325,10 @@ def _spawn_env(child: Child) -> dict:
             env.pop(name, None)
     # A background daemon otherwise has no way to learn its own app folder —
     # the background-apps API keys every endpoint off the page's `html` path
-    # (see routers/background_apps.py), which the daemon never sees. Only
-    # `kind="background"` children carry `folder` at all (see Child.folder).
-    if child.kind == "background" and child.folder:
+    # (see routers/background_apps.py), which the daemon never sees. A
+    # template daemon never has a `folder` (see Child.folder), so this is a
+    # no-op for it.
+    if child.folder:
         env["FUSED_RENDER_APP_DIR"] = child.folder
     return env
 
@@ -435,6 +441,21 @@ def current(engine_id: str) -> Child | None:
     return _children.get(engine_id)
 
 
+def _retry_post_for(daemon: str) -> bool:
+    """The declaring folder's own `retry_post` flag, read for its declaration
+    value ONLY — not as a trust boundary. `_validate` has already confirmed
+    `daemon` resolves under a blessed template root before this is called, so
+    reading `pyproject.toml` beside it cannot smuggle in a folder `_validate`
+    would have rejected; this never routes through `_validate_background`'s
+    folder-self-declaration trust model. A template with no
+    `[tool.fused-render.app]` table at all (or none of one) reads as the safe
+    default, `False`."""
+    from fused_render import background_apps
+
+    manifest = background_apps.load_manifest(os.path.dirname(daemon))
+    return manifest.retry_post if manifest is not None else False
+
+
 def ensure(engine_id: str, python: str, daemon: str, cache: str,
            version: str) -> Child:
     """A live child for engine_id matching the request, reusing the current one
@@ -457,7 +478,8 @@ def ensure(engine_id: str, python: str, daemon: str, cache: str,
         if existing is not None:
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=daemon,
-                      cache=cache, version=version)
+                      cache=cache, version=version,
+                      retry_post=_retry_post_for(daemon))
         _spawn(child)
         with _lock:
             _children[engine_id] = child
@@ -527,11 +549,12 @@ def _validate_background(engine_id: str, python: str, daemon: str,
 
 def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
                       version: str, folder: str = "",
-                      idle_timeout_s: float = 0.0, module: str = "") -> Child:
+                      idle_timeout_s: float = 0.0, module: str = "",
+                      retry_post: bool = False) -> Child:
     """A live child for a background app's engine_id, reusing the current one
     when it matches and answers — the same double-checked reuse/spawn dance as
-    `ensure`, but for a `kind="background"` child, validated against its own
-    declaring folder's manifest rather than the (now-autostart-only) store.
+    `ensure`, but validated against its own declaring folder's manifest
+    rather than the (now-autostart-only) store.
 
     `folder` is the manifest's declaring folder (every caller already has it
     in scope, the same way it already has `cache`/`version`) — stored on the
@@ -541,24 +564,31 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
     (D513 — re-deriving via `os.path.dirname(daemon)` breaks any manifest
     whose `daemon` names a nested path). Optional (defaults to `""`) only so
     existing direct callers that don't care about it need not pass one; every
-    production call site does.
+    production call site does. The reuse check below is `_matches` alone,
+    same as `ensure`'s own — a background app's engine_id and a template's
+    are drawn from disjoint namespaces (`background_apps.engine_id_for`'s
+    `bg_`-prefixed digest vs. a template's bare name), and `_matches` already
+    compares `daemon`, so a same-id-different-protocol collision could not
+    pass it anyway.
 
     `idle_timeout_s` is the manifest's own policy, threaded onto `Child`
     unchanged; a non-zero value starts the idle sweeper (see
     `_ensure_reaper`) so this child actually gets reaped. `module` is set
     only for a `main =` manifest (`daemon` is then `DEFAULT_DAEMON`), telling
-    `_spawn` which file to pass as `--module`."""
+    `_spawn` which file to pass as `--module`. `retry_post` is the manifest's
+    own `retry_post` (`background_apps.Manifest.retry_post`), threaded onto
+    `Child` unchanged."""
     _validate_background(engine_id, python, daemon, folder, module)
     if idle_timeout_s > 0:
         _ensure_reaper()
     existing = _children.get(engine_id)
-    if (existing is not None and existing.kind == "background"
+    if (existing is not None
             and _matches(existing, python, daemon, cache, version, module)
             and _alive(existing) and _ping(existing)):
         return existing
     with _spawn_lock:
         existing = _children.get(engine_id)
-        if (existing is not None and existing.kind == "background"
+        if (existing is not None
                 and _matches(existing, python, daemon, cache, version, module)
                 and _alive(existing) and _ping(existing)):
             return existing
@@ -566,8 +596,8 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=daemon,
                       cache=cache, version=version, module=module,
-                      kind="background", folder=folder,
-                      idle_timeout_s=idle_timeout_s)
+                      folder=folder, idle_timeout_s=idle_timeout_s,
+                      retry_post=retry_post)
         _spawn(child)
         # `last_used` defaults to the moment `Child` was constructed, BEFORE
         # `_spawn` runs; `_spawn` can block up to BOOTSTRAP_TIMEOUT_S (120s)
@@ -581,18 +611,18 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
 
 
 def background_running_folders() -> set[str]:
-    """The declaring folders of every currently-live `kind="background"`
-    child — the actual run-state source for the `/apps` grid's running badge
+    """The declaring folders of every currently-live background child — the
+    actual run-state source for the `/apps` grid's running badge
     (2026-08-26 code review: the badge used to be keyed off
     `background_apps.autostart_paths()`, which went stale the moment D511
     split run state from autostart, since `start()` no longer persists
     anything and a running-but-not-autostart daemon has no other row to
     appear in). `_children`/`folder`/`_alive` are all already in memory, so
-    this is a snapshot over a dict plus a `Popen.poll()` per background
-    child — no folder walk, no toml read, cheap enough to call once per grid
-    render exactly like the endpoint's docstring promises."""
+    this is a snapshot over a dict plus a `Popen.poll()` per child — no
+    folder walk, no toml read, cheap enough to call once per grid render
+    exactly like the endpoint's docstring promises."""
     with _lock:
-        children = [c for c in _children.values() if c.kind == "background"]
+        children = list(_children.values())
     return {c.folder for c in children if c.folder and _alive(c)}
 
 
@@ -611,8 +641,8 @@ def running_engines() -> list[dict]:
     must not touch this module's lock or its private dict (the same boundary
     `background_running_folders` exists to keep).
 
-    `folder` and `module` are reported as-is — `folder` is set for
-    `kind="background"` only, and `module` for a `main =` daemon (a `daemon =`
+    `folder` and `module` are reported as-is — `folder` is set for a
+    background child only, and `module` for a `main =` daemon (a `daemon =`
     app leaves it empty), so the caller can label a row without having to
     guess the manifest's protocol.
     """
@@ -621,7 +651,6 @@ def running_engines() -> list[dict]:
     return [
         {
             "engine_id": c.engine_id,
-            "kind": c.kind,
             "pid": c.pid,
             "version": c.version,
             "folder": c.folder,
@@ -683,9 +712,9 @@ def mark_idle(engine_id: str) -> None:
 def reap_idle_children(now: float | None = None) -> int:
     """Terminate every child idle past its own `idle_timeout_s`, returning the
     count reaped. A child with `idle_timeout_s == 0` (the default for a
-    `daemon =` app and every `kind="template"` child) is never a candidate —
-    eligibility is the child's own policy, not its kind. Exposed so a test can
-    drive it directly.
+    `daemon =` app and every template child) is never a candidate —
+    eligibility is the child's own policy, not what brought the child up.
+    Exposed so a test can drive it directly.
 
     The Child record is left in `_children` (dead, but present) rather than
     popped: `engine_forward._forward`'s existing heal-on-proxy path calls
@@ -760,8 +789,9 @@ def restart(engine_id: str, failed: Child | None = None,
                       daemon=existing.daemon, cache=existing.cache,
                       version=version if version is not None else existing.version,
                       module=existing.module,
-                      kind=existing.kind, folder=existing.folder,
-                      idle_timeout_s=existing.idle_timeout_s)
+                      folder=existing.folder,
+                      idle_timeout_s=existing.idle_timeout_s,
+                      retry_post=existing.retry_post)
         _spawn(child)
         _replay(child)
         with _lock:

@@ -88,12 +88,12 @@ def api_engine_stop(engine_id: str,
     """Stop one engine child. `X-Fused` guarded like its `ensure`/`reinit`/
     `forget` siblings, since it reaches the child's executing side.
 
-    NOT A DESTRUCTIVE ROUTE, despite the name — stopping either kind is safe
+    NOT A DESTRUCTIVE ROUTE, despite the name — stopping any child is safe
     and recoverable, which is why it is offered as a plain button in the
     status bar:
 
-      * a `template` engine respawns on the next `ensure`;
-      * a `background` child with `idle_timeout_s > 0` (a `main =` daemon)
+      * a built-in template engine respawns on the next `ensure`;
+      * a background app with `idle_timeout_s > 0` (a `main =` daemon)
         respawns on the next call to it, and is already idle-reaped on a
         timer anyway; one with `idle_timeout_s == 0` (a `daemon =` app) going
         down IS the documented "quit this app right now" action (see
@@ -102,8 +102,8 @@ def api_engine_stop(engine_id: str,
     Deliberately NOT routed through `POST /api/apps/background/stop`: that
     endpoint takes an `html` PAGE path and derives the folder with
     `_folder_for` (a `dirname()`), so handing it a folder would resolve to the
-    folder's PARENT — and it only covers `kind="background"`, missing template
-    engines entirely.
+    folder's PARENT — and it only covers a background app's own folder,
+    missing template engines entirely.
 
     `engine_host.stop` already does the whole teardown (kills the child, drops
     the replay registry and the busy count) and is idempotent for an id that
@@ -133,16 +133,18 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
     if request.method == "POST" and (error := _require_fused(x_fused)) is not None:
         return error
     body = await request.body() if request.method == "POST" else b""
-    # A background app's proxied POST (fused.daemon.call / fused.daemon.run) can
-    # run arbitrary side-effecting daemon code: it never rides a pooled
-    # keep-alive, and once on the wire a failure is surfaced rather than
-    # retried, so a call runs at most once. A template daemon's POST traffic
-    # (e.g. a "describe" request) stays pooled/retry-friendly by default,
-    # since most of it is safely re-runnable and a blanket at_most_once here
-    # would give up that resilience for no reason tied to background apps.
+    # A daemon's proxied POST (fused.daemon.call / fused.daemon.run, or a
+    # template's own describe/register traffic) can run arbitrary
+    # side-effecting code unless its manifest declares otherwise: it never
+    # rides a pooled keep-alive, and once on the wire a failure is surfaced
+    # rather than retried, so a call runs at most once. A daemon whose
+    # manifest opts in with `retry_post = true` (the map template's tile
+    # daemon is the first) stays pooled/retry-friendly, since its POSTs are
+    # safely re-runnable and a blanket at_most_once would give up that
+    # resilience for no reason tied to its actual behavior.
     child = engine_host.current(engine_id)
     at_most_once = (request.method == "POST"
-                    and child is not None and child.kind != "template")
+                    and child is not None and not child.retry_post)
     # A child with a bounded lifetime (idle_timeout_s > 0, e.g. a `main =`
     # daemon) must not be retired mid-call: mark it busy for the duration so
     # the idle sweeper skips it, and stamp last_used at completion so idle is
