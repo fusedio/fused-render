@@ -630,3 +630,160 @@ only the active runner available at all) plus three in `test_ai_registry.py`
 for `available_runners` itself (present-and-ordered on Apple Silicon,
 excluded on an Intel Mac per `_llamacpp_platform`'s own doc, empty for an
 unserved capability).
+
+## Fourth fix-builder round: ten code-review findings (2026-09-02)
+
+Merged `origin/main` first, as its own commit, before any fix — the branch's
+merge base (`09d1cdbc`) predates main's `a86c57e5`, which dropped
+`test_shutdown_is_a_single_handler_reaping_every_background_pid`'s
+`CORE_WATCH_PID` expectation after #945 removed the retired core_apps
+watcher from `scripts/dev.sh`. That test was the one branch-only local
+failure the brief described; merging main made it pass locally the same
+way it already does on the CI merge ref. No conflicts.
+
+Then all ten findings, MUST-FIX first. See D643-D650 in `DECISIONS.md` for
+the full reasoning on each; this is the short version plus anything the
+brief itself got wrong or that a future reader should know before touching
+this code again.
+
+**(1) GGUF rows scored on three defaults at once — fixed via a genuinely
+free Hub field, `expand[]=gguf`.** The brief guessed the file's size might
+be "knowable" from data already in hand; it is not (the LIST endpoint's
+`siblings` carries only `rfilename`, confirmed by this module's own
+`_EXPAND` comment, and a per-file size still costs the lazy client-side
+`hub/size` round trip same as before). What IS free, and what the brief's
+"params may be derivable" turned out to mean once checked live: the Hub's
+`expand[]=gguf` returns `{"total": <param count>, ...}` for any repo
+shipping a `.gguf`, and `total` is the SAME number across every
+quantization of the same model (verified against three real repos at
+Q4_K_M/Q8_0/mixed-quant — all three reported `1235814432`). That is real,
+quantization-invariant evidence `fit._weight_bytes`/`speed.estimate_tok_s`
+already know how to turn into a footprint estimate given a `quantization`
+string (which `_quant` already resolves for a GGUF row, unused for this
+purpose until now). D643 has the rejected alternatives — in particular,
+do NOT re-derive params from a mixed-repo's own (nulled) safetensors map;
+D637 already settled that one row must describe ONE upload consistently.
+
+**(2) hubFamilies primary-selection is sort-aware, not "trust the array's
+own order."** My first instinct was "the input array is already sorted by
+whatever's active, so just take group[0] in array order" — this is WRONG
+against an existing, deliberately-kept test (`hubFamilies.test.ts`'s
+"picks the best-FITTING member as primary" case builds its fixture in an
+order that does NOT match fit order, and still expects the fit-best member
+to win for the default `sort="fit"` case). `groupIntoFamilies` now takes
+an explicit `sort: ResultSort = "fit"` parameter and a `primaryComparator`
+keyed on it — `byFitThenDownloads` only for `sort === "fit"`,
+`byMatchThenDownloads` (new) for everything else including `"best"`.
+
+**(3) Match cell staleness: chose "blank the score," not "recompute
+client-side."** Recomputing would need a full or partial reimplementation
+of `_composite_score`'s five-axis formula in TypeScript — a second copy to
+keep in sync forever, and a partial reconstruction (subtract the default
+fit contribution, add back the real one) silently assumes the OTHER four
+axes were not ALSO defaulted, which was routinely true before fix (1) and
+can still happen for the cases it doesn't cover. `matchCell`/`matchTitle`
+both took a `stale` parameter instead (default `false`, every existing
+call site untouched) — blank bar/dash number, real dot/colour, an honest
+hover sentence. Fix (1) reduces how often `stale` is ever `true` but does
+not eliminate it.
+
+**(4) Hoist column presence now covers variants, hoist/summary still
+doesn't.** `columnVisible`'s signature is unchanged; it now re-derives
+unanimity from the actual `values` it's handed rather than trusting the
+(primaries-only) `Hoist.unanimous` flag, and the call site passes the full
+`families.flatMap(f => [f.primary, ...f.variants])` list. `hoistValue`
+itself, feeding the summary line, stays primaries-only per D640's own
+reasoning — this is a presence fix, not a summary fix.
+
+**(5) CSS majority opacity → a real token, `--fg-faint`.** Computed actual
+WCAG contrast ratios before picking values (not just eyeballing): the
+pre-fix compound was ~2.32:1 light / ~2.95:1 dark, both under the 3:1
+floor; `--fg-faint` lands at ~3.6:1 light / ~4.5:1 dark. Added to both
+`:root` and `:root[data-theme="light"]` in `tokens.css`; `tests/
+test_theme.py`'s palette-completeness/no-literal-colours checks both pass.
+
+**(6)+(7) One `_speed_score` fix covers both.** Below
+`_SPEED_ANCHOR_PARAMS` (1B, same value as the frontend's
+`SPEED_ANCHOR_PARAMS`), `_speed_score` now returns `_SPEED_DEFAULT`
+regardless of what `speedEstimate` says — matching what `speedLabel`
+already refuses to print. `_SPEED_DEFAULT` itself dropped 70 → 63
+(`_saturating(12, 12)`, i.e. AT the conversational anchor, never above
+it). Checked every OTHER axis default against "can this ever outscore a
+real, good measurement" and found no other violation — left `_FIT_DEFAULT`
+/`_CAPABILITY_DEFAULT`/`_RECENCY_DEFAULT` unchanged, and did not touch
+`_popularity_score`'s 0.0 floor (D639's own deliberate exception).
+
+**(8) Sort key separated from the displayed number.** `_composite_raw_score`
+(unclamped) is now what `sort=best` and the internal ranking compare on;
+`_composite_score` (clamped `[0, 100]`, the wire `matchScore`) wraps it.
+Kept the raw figures in a plain `dict[int, float]` keyed by `id(row)` for
+the duration of one request rather than writing them onto the row dicts,
+so nothing new leaks into the JSON reply.
+
+**(9) Band border flipped from `border-bottom` on the ending row to
+`border-top` on the starting one** — `banded={i > 0 && i % BAND_EVERY ===
+0}`, was `(i + 1) % BAND_EVERY === 0`. No DOM harness in this repo, so
+this one is unverified by eye; a human should confirm the 6th/11th/16th
+family row (not the 5th/10th/15th) now carries the visible rule, and that
+it still looks right whether or not a preceding family's disclosure is
+open.
+
+**(10) Dead code removed.** `runModeLabel` and `.am-hubtable-dash` — grepped
+`tests/` for both (this repo's pytest tests can assert on literal frontend
+source lines) before deleting; no hits outside `hubTableView.test.ts`
+itself, whose own tests for `runModeLabel` are deleted with it.
+
+### What I found the brief got wrong
+
+- **"You already resolve a specific GGUF file for these rows, so its size
+  is knowable"** — not from data already in hand. The LIST endpoint's
+  `siblings` never carries a size (only `rfilename`); a per-file size is
+  still exactly the lazy client-side round trip it already was. What the
+  brief was gesturing at, and what turned out to actually be free, was
+  `params` (via `expand[]=gguf`'s `total`), not size — I did not add a
+  size estimate to the wire response at all, on purpose (see D643's
+  rejected alternatives: an estimate written into `estimatedSize` would
+  suppress the client's lazy lookup that resolves the REAL bytes).
+
+### Tests run this session
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 180 passed (175
+  before this session; 5 net new — 3 for fix (1), 1 each for fix (7) and
+  fix (8), plus 2 existing `_speed_score` tests updated to pass `params`).
+- `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
+  (after appending D643-D650).
+- `.venv/bin/python -m pytest tests/test_theme.py -q`: 133 passed.
+- `.venv/bin/python -m pytest tests/test_ai_fit.py tests/test_ai_speed.py
+  -q`: 117 passed (checking `fit.verdict`/`speed.estimate_tok_s`'s new
+  `quantization=` call pattern from `_model_row` didn't regress either
+  module).
+- `.venv/bin/python -m pytest tests/test_dev_sh_process_cleanup.py -q`: 28
+  passed (confirms the merge fixed the one branch-only failure the brief
+  named).
+- `cd frontend && bun test` (full suite, per the mock.module-is-process-
+  wide rule, since `hubFamilies.ts`'s signature changed): 3003 passed, 1
+  failed — `appCardMenu.test.ts` / `appShot.ts`'s `window.addEventListener
+  is not a function`. Confirmed pre-existing and unrelated: fails
+  identically in isolation AND with this session's changes `git stash`ed
+  back out, in a file this session never touched.
+- `cd frontend && bun run typecheck`: clean.
+- `cd frontend && node scripts/check-boundaries.mjs`: clean (426 files).
+- Grepped `tests/` for every backend/frontend symbol touched this session
+  (`runModeLabel`, `am-hubtable-dash`, `am-hubtable-majority`, `matchCell`,
+  `matchTitle`, `groupIntoFamilies`, `columnVisible`, `byFitThenDownloads`,
+  `BAND_EVERY`, `_speed_score`, `_SPEED_DEFAULT`, `_composite_score`,
+  `_composite_raw_score`, `_EXPAND`): no hits outside `test_hub_models.py`
+  itself.
+
+### Left for a human with a browser
+
+- Fix (5): confirm `--fg-faint` reads as "muted but legible" (not
+  invisible, not full-strength) in both light and dark theme, on an actual
+  hoisted-majority Quant/Capability cell.
+- Fix (9): confirm the band border now separates FAMILIES correctly with a
+  disclosure open — specifically, that expanding the 5th (or 10th, ...)
+  family's variants no longer draws a line between that family and its own
+  children.
+- Fix (3): confirm a GGUF row whose fit corrects via the lazy lookup shows
+  a real dot/colour with a blank bar/number, and that the hover text reads
+  sensibly rather than confusingly terse.
