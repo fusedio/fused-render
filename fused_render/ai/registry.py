@@ -1049,19 +1049,39 @@ def _vulkan() -> Availability:
     real GPU machines have both, and refusing there would disqualify a
     working GPU over an unrelated fallback entry.
 
-    **Windows gets no such tightening, and that is a decision, not an
-    oversight.** DLL presence is still only "a hint, not proof" (see
-    `VULKAN_DLL`'s own comment), but there is no cheap, safe way to do
-    better: `vkCreateInstance`/`vkEnumeratePhysicalDevices` genuinely
-    initializes the loader and every registered ICD, which is exactly the
-    kind of call `hw_detect.py`'s own module docstring keeps off any path
-    that runs per page-render/per resolve, and this module's own header
-    ("stdlib only, no subprocess") rules out doing that call in a
-    short-lived subprocess the way a slow/risky probe belongs (`hw_detect.py`
-    draws precisely that line already). Shipping an in-process call that
-    could hang or crash the server on a bad ICD is worse than the loose
-    check it would replace, so the DLL check stands, honestly documented as
-    a hint rather than proof.
+    **Windows now gets an adapter check layered on top of the DLL hint, not
+    a replacement for it (code review follow-up).** The loader call is still
+    ruled out for the same reason as before: `vkCreateInstance`/
+    `vkEnumeratePhysicalDevices` genuinely initializes the loader and every
+    registered ICD, which is exactly the kind of call `hw_detect.py`'s own
+    module docstring keeps off any path that runs per page-render/per
+    resolve, and this module's own header ("stdlib only, no subprocess")
+    rules out doing that call in a short-lived subprocess the way a
+    slow/risky probe belongs (`hw_detect.py` draws precisely that line
+    already). An in-process call that could hang or crash the server on a
+    bad ICD is still worse than the check it would replace — that half of
+    the earlier reasoning holds. But it only rules out the LOADER question,
+    and this row's `_directml` neighbour already answered a narrower
+    question — "is there a real display adapter, or only Microsoft's
+    software one?" — without going anywhere near the loader:
+    `_windows_display_adapter_ids` reads the Display class registry key
+    `hw_detect.py`'s own `AdapterRAM` fix already trusts for per-adapter
+    facts, no COM call and no new failure mode. That question is exactly
+    the one worth asking here too, so `_vulkan` now asks it the same way:
+    `vulkan-1.dll` presence is still checked FIRST and is still necessary —
+    a machine with a real GPU but no Vulkan-capable driver installed has no
+    loader at all, and only the DLL check catches that — and on a machine
+    that clears it, every adapter being the Microsoft Basic Render Driver
+    (`_directml`'s own headless/RDP/VM case: vendor `0x1414`, device `0x8c`)
+    now refuses too, for the identical reason `_directml` refuses: a claim
+    of GPU acceleration with no hardware behind it. This does not become
+    proof a device answers `vkCreateInstance` — it only rules out the one
+    case the registry can rule out, a box with no non-software adapter at
+    all, which is as far as a registry read can honestly reach; `_vulkan`
+    still cannot tell an NVIDIA card from an AMD one, or a Vulkan-capable
+    driver from a stale one, the way `_cuda`/`_rocm` can on their own
+    platforms. No real device was exercised against this code either way —
+    no NVIDIA, AMD, or Windows machine was available while writing it.
 
     **Not cached, for `_rocm`'s reasons exactly** — a loader package or a
     driver installed while the app is running is a fix that must be seen
@@ -1111,6 +1131,19 @@ def _vulkan() -> Availability:
                 False,
                 f"needs a GPU with its Vulkan driver installed (the loader "
                 f"library is not at {VULKAN_DLL})",
+            )
+        adapters = _windows_display_adapter_ids()
+        if adapters and all(
+            vendor == MS_BASIC_RENDER_VENDOR and device == MS_BASIC_RENDER_DEVICE
+            for vendor, device in adapters
+        ):
+            return Availability(
+                False,
+                "needs a real GPU (vulkan-1.dll is present, but the only "
+                "display adapter registered is the Microsoft Basic Render "
+                "Driver — this looks like a headless, RDP, or VM session "
+                "with no Direct3D 12 adapter passthrough, so there is no "
+                "hardware behind the loader)",
             )
         return Availability(True)
     return Availability(

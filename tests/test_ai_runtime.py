@@ -2507,7 +2507,7 @@ def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(mo
 
 
 def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True,
-                  icd_names=("hardware_icd.json",)):
+                  icd_names=("hardware_icd.json",), adapters=None):
     """A machine with a working Vulkan loader and (optionally) a registered
     ICD — real files under `tmp_path`, repointed onto the module constants
     `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
@@ -2517,12 +2517,24 @@ def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True,
     default is one plausible HARDWARE ICD name (nothing in
     `SOFTWARE_VULKAN_ICD_MARKERS`); a test of the software-rasterizer refusal
     passes `icd_names=("lvp_icd.x86_64.json",)` or similar instead.
+
+    `adapters` (Windows only) is the value `_windows_display_adapter_ids` is
+    made to return — the same injectable seam `_directml`'s own tests fake
+    directly, reused here rather than a parallel one, since `_vulkan` now
+    asks it the identical question. Left `None` by default, which leaves the
+    real `_windows_display_adapter_ids` in place — on this macOS test
+    machine that reads no registry at all (`winreg` does not exist) and
+    returns `None` itself, i.e. every caller that doesn't pass `adapters`
+    gets the fail-open path for free, same as `_directml`'s equivalent tests.
     """
     if system == "Windows":
         dll = tmp_path / "vulkan-1.dll"
         if loader:
             dll.write_text("")
         monkeypatch.setattr(registry, "VULKAN_DLL", str(dll))
+        if adapters is not None:
+            monkeypatch.setattr(
+                registry, "_windows_display_adapter_ids", lambda: adapters)
         return
     loader_path = tmp_path / "libvulkan.so.1"
     if loader:
@@ -2557,6 +2569,55 @@ def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, t
     status = registry.by_code("llamacpp-text-vulkan").available()
     assert status.ok is False
     assert "Vulkan driver" in status.reason
+
+
+def test_vulkan_passes_on_windows_with_a_real_adapter_and_the_loader(monkeypatch, tmp_path):
+    """The follow-up fix: a real PCI display adapter alongside a working
+    loader still passes — the adapter check is only meant to catch the
+    software-only case, exactly like `_directml`'s equivalent test."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(monkeypatch, tmp_path, "Windows",
+                 adapters=[(0x10DE, 0x2704)])  # an NVIDIA device id
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is True, status.reason
+
+
+def test_vulkan_refuses_windows_with_only_the_basic_render_driver(monkeypatch, tmp_path):
+    """The follow-up fix (this pass): `_vulkan`'s Windows branch used to pass
+    on `vulkan-1.dll` presence alone — "a hint, not proof" by its own
+    docstring's admission. Since the GPU-first reorder made this row the
+    text-generation default on every Windows x86_64 box `auto` resolves on,
+    a headless/RDP/VM machine with the DLL installed but no real Direct3D 12
+    adapter now refuses, reusing `_windows_display_adapter_ids` — the exact
+    seam `_directml` already established for the identical question."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(
+        monkeypatch, tmp_path, "Windows",
+        adapters=[(registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE)])
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "Basic Render Driver" in status.reason
+
+
+def test_vulkan_passes_on_windows_when_the_adapter_probe_cannot_determine(monkeypatch, tmp_path):
+    """`None` (registry unreadable) and `[]` (enumerated, found nothing) both
+    fail OPEN — a probe that failed to read the registry is not evidence the
+    machine is software-only, exactly the asymmetry `_directml`'s equivalent
+    test pins. `adapters=None` here leaves the real (macOS, `winreg`-less)
+    `_windows_display_adapter_ids` in place, which already returns `None`
+    on this test machine; the second half pins the empty-list case
+    explicitly."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(monkeypatch, tmp_path, "Windows")
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is True, status.reason
+
+    _fake_vulkan(monkeypatch, tmp_path, "Windows", adapters=[])
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is True, status.reason
 
 
 def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, tmp_path):
