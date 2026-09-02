@@ -416,6 +416,48 @@ def _component_bytes(module):
     return total
 
 
+def _group_offload_exclusions(pipe):
+    """Which of `pipe.components` block offload must never touch: `vae`
+    always (see `_place`'s docstring for why), plus `text_encoder` when the
+    pipeline actually has one — read off `pipe.components` rather than
+    assumed present, so a pipeline built without a text encoder (a future
+    recipe, a test fake) is handled rather than crashing on a name that was
+    never registered.
+
+    Two independent reasons rule the text encoder out of `enable_group_
+    offload`, both load-bearing, both applying to the klein recipe's
+    `Qwen3ForCausalLM` today:
+
+    * **Its bitsandbytes NF4 weights are invisible to `ModuleGroup`.**
+      `Params4bit` keeps its dequantization state (`absmax`, `code`, the
+      nested `state2`) in `quant_state`, a plain Python attribute on the
+      tensor — never registered as a parameter or buffer of the owning
+      `Linear4bit`. `ModuleGroup.__init__`
+      (`diffusers/hooks/group_offloading.py`) collects exactly `module.
+      parameters()`/`module.buffers()`, so it never sees `quant_state`, and
+      its onload path (`_transfer_tensor_to_device`) reassigns `tensor.data`
+      directly rather than calling `Params4bit.to()` — the only method that
+      moves `quant_state` alongside `.data`
+      (`bitsandbytes/nn/modules.py:Params4bit.to`). Group-offloading this
+      component would leave `.data` on one device and `quant_state` on
+      another: a device-mismatch `RuntimeError` on the first forward, not a
+      slow path.
+    * **Even ignoring quantization, block offload would buy nothing here.**
+      `enable_group_offload`'s block-level mode groups a module's direct
+      `ModuleList` children. A causal LM's direct children (embeddings,
+      final norm, LM head, and ONE `ModuleList` of transformer layers
+      wrapped inside `model.layers`, not exposed as a direct child of the
+      top-level module `pipe.text_encoder` names) are not `ModuleList`s
+      themselves, so the whole component would land in one unmatched group
+      moved as a single unit — identical to `.to(device)`, with none of the
+      per-block VRAM ceiling this rung exists to lower.
+    """
+    exclude = ["vae"]
+    if getattr(pipe, "text_encoder", None) is not None:
+        exclude.append("text_encoder")
+    return exclude
+
+
 def _place(pipe):
     """Put the pipeline on the best device here: `(device, seed_device)`.
 
@@ -446,8 +488,14 @@ def _place(pipe):
        settles whether streaming is safe on ROCm, by measurement, and that
        gate has not run; this rung must not force it on ahead of that answer.
 
-       `exclude_modules=["vae"]` is load-bearing, not an optimization: block
-       offload's hooks only fire on a module's `forward`, and diffusers'
+       `exclude_modules=` (`_group_offload_exclusions(pipe)`, always `vae`
+       plus `text_encoder` when the pipeline has one) names two components
+       that must never reach `enable_group_offload`, for two unrelated
+       reasons — see `_group_offload_exclusions`'s own docstring for the
+       text-encoder reasoning; the VAE's is below.
+
+       `vae` is load-bearing, not an optimization: block offload's hooks
+       only fire on a module's `forward`, and diffusers'
        `AutoencoderKL` is the ONE VAE class that opts a decode-only call path
        into the same hooking via `_group_offload_block_modules = ["quant_
        conv", "post_quant_conv", "encoder", "decoder"]`
@@ -467,6 +515,17 @@ def _place(pipe):
        already run. Excluding it moves it once to the onload device instead
        and leaves it resident — at 0.17 GiB, cheap enough next to the
        transformer this rung exists for that it is not worth measuring.
+
+       `text_encoder` is excluded for a different pair of reasons — a
+       device-mismatch crash its bitsandbytes NF4 weights would hit on the
+       very first forward, and a block-level grouping that would buy nothing
+       even if it didn't crash. Unlike the VAE, excluding it is not "move it
+       once and pay a small resident cost": on the klein recipe this is the
+       7.5GB (bf16) / ~3.75GB (NF4) component the idle-memory problem this
+       module's docstring opens with is actually about. `_place` does not
+       solve that here — it only keeps group offload from being the thing
+       that crashes on it; the component still ends up resident, same as
+       plain offload would have left it.
     3. **Offload** — group offload itself raised with nothing left hooked, or
        the probe raised before it could answer whether the model fits:
        today's unconditional `enable_model_cpu_offload()`, unchanged, and
@@ -626,8 +685,12 @@ def _place(pipe):
                     # klein recipe's VAE) would silently never come back off
                     # the offload device. See the docstring above for the
                     # full mechanism. 0.17 GiB resident is not worth the risk
-                    # of getting this wrong.
-                    exclude_modules=["vae"],
+                    # of getting this wrong. `text_encoder`, when the pipeline
+                    # has one, is excluded for the bnb/`Qwen3ForCausalLM`
+                    # reasons the docstring gives — read from `pipe.components`
+                    # rather than assumed, so a pipeline with no text encoder
+                    # at all (or one named differently) is handled correctly.
+                    exclude_modules=_group_offload_exclusions(pipe),
                 )
                 placement = "group-offload"
             except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it

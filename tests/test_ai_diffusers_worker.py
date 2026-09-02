@@ -840,7 +840,38 @@ def test_place_uses_group_offload_when_it_does_not_all_fit(monkeypatch, base):
     # VAE) has no `_group_offload_block_modules`, so block-offloading it would
     # leave its weights on the offload device when `.decode(...)` is called,
     # which never fires a group-offload hook (only `.forward()` does).
-    assert kwargs["exclude_modules"] == ["vae"]
+    # `text_encoder` is excluded for an unrelated pair of reasons — its
+    # bitsandbytes `quant_state` is invisible to `ModuleGroup`, and a causal
+    # LM's direct children are not `ModuleList`s anyway — see `_group_
+    # offload_exclusions`.
+    assert kwargs["exclude_modules"] == ["vae", "text_encoder"]
+    assert {"placement": "group-offload"} in base.state_calls
+
+
+def test_place_group_offload_excludes_text_encoder_when_pipeline_has_none(
+    monkeypatch, base
+):
+    """A pipeline with no `text_encoder` attribute at all — a future recipe,
+    a test fake — must not make `_group_offload_exclusions` (or `_place`)
+    raise on a name that was never registered; `exclude_modules` degrades to
+    just `["vae"]`, exactly like it did before this component was added."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    components = {
+        "transformer": _make_component(nn, int(2.6 * _GIB)),
+        "vae": _make_component(nn, int(0.17 * _GIB)),
+        "tokenizer": object(),
+    }
+    seq = "->".join(name for name, component in components.items()
+                    if isinstance(component, nn.Module))
+    pipe = _FakePlacementPipe(nn, components, seq)
+
+    device, seed_device = worker._place(pipe)
+
+    assert (device, seed_device) == ("cuda", "cuda")
+    assert len(pipe.group_offload_calls) == 1
+    assert pipe.group_offload_calls[0]["exclude_modules"] == ["vae"]
     assert {"placement": "group-offload"} in base.state_calls
 
 
@@ -871,32 +902,46 @@ def test_place_falls_back_to_plain_offload_when_group_offload_raises(monkeypatch
 
 def test_place_reraises_original_error_when_group_offload_fails_partway(monkeypatch, base):
     """Finding #2: `enable_group_offload` hooks components ONE AT A TIME in a
-    loop, so a raise on the second component (`transformer`, after `text_
-    encoder` already got hooked — `vae` is excluded and never reached) leaves
-    `text_encoder` group-offloaded even though the call overall failed.
-    `enable_model_cpu_offload` opens with `_maybe_raise_error_if_group_
-    offload_active(raise_error=True)` and refuses to run AT ALL while any
-    component still carries a group-offload hook, so blindly falling back to
-    it here would replace the real failure with a confusing `ValueError`
-    about group offload being active — on a load that plain offload could
-    never have completed anyway. `_place` must detect that partial state via
-    `_maybe_raise_error_if_group_offload_active(raise_error=False)` and
-    re-raise the ORIGINAL error instead of attempting (and failing) the
-    fallback."""
+    loop, so a raise on the second hookable component (`extra`, after
+    `transformer` already got hooked — `text_encoder` and `vae` are both
+    excluded and never reached) leaves `transformer` group-offloaded even
+    though the call overall failed. `enable_model_cpu_offload` opens with
+    `_maybe_raise_error_if_group_offload_active(raise_error=True)` and
+    refuses to run AT ALL while any component still carries a group-offload
+    hook, so blindly falling back to it here would replace the real failure
+    with a confusing `ValueError` about group offload being active — on a
+    load that plain offload could never have completed anyway. `_place` must
+    detect that partial state via `_maybe_raise_error_if_group_offload_
+    active(raise_error=False)` and re-raise the ORIGINAL error instead of
+    attempting (and failing) the fallback.
+
+    A THIRD hookable component (`extra`, beside `transformer`) is built by
+    hand here rather than through `_placement_pipe` — with `text_encoder` now
+    excluded alongside `vae`, that helper's fixture leaves only one
+    offloadable component, which cannot demonstrate hooking-then-failing at
+    all."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
-    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
-                            vae_bytes=int(0.17 * _GIB),
-                            text_encoder_bytes=int(8.05 * _GIB),
-                            group_offload_fails_at="transformer")
+    components = {
+        "text_encoder": _make_component(nn, int(8.05 * _GIB)),
+        "transformer": _make_component(nn, int(2.6 * _GIB)),
+        "extra": _make_component(nn, int(0.1 * _GIB)),
+        "vae": _make_component(nn, int(0.17 * _GIB)),
+        "tokenizer": object(),
+    }
+    seq = "->".join(name for name, component in components.items()
+                    if isinstance(component, nn.Module))
+    pipe = _FakePlacementPipe(nn, components, seq,
+                              group_offload_fails_at="extra")
 
-    with pytest.raises(RuntimeError, match="transformer"):
+    with pytest.raises(RuntimeError, match="extra"):
         worker._place(pipe)
 
-    # The partial hook is real — `text_encoder` got group-offloaded before
-    # the raise on `transformer`.
-    assert pipe.group_offloaded_names == ["text_encoder"]
+    # The partial hook is real — `transformer` got group-offloaded before
+    # the raise on `extra`. `text_encoder` was never attempted at all: it is
+    # excluded from `enable_group_offload` entirely.
+    assert pipe.group_offloaded_names == ["transformer"]
     # The fallback must not even be attempted: `enable_model_cpu_offload`
     # would only raise its own confusing error over this state.
     assert pipe.offload_calls == 0
