@@ -573,3 +573,60 @@ per the fix brief's own instruction, because it is a real gap in what
 - F7: confirm `.am-hubtable-row:hover`'s new subtle background reads
   sensibly rather than looking like a false click affordance on a row that
   is not, as a whole, clickable.
+
+## Second fix-builder round: GGUF rows still blank on this Mac (D638)
+
+Confirmed live before touching anything (as instructed):
+`registry.for_capability(registry.TEXT_GENERATION)` on this Apple Silicon
+Mac returns `mlx-text` with `hub_filter_tags == ()`, while
+`registry.available_runners(registry.TEXT_GENERATION)` (new) shows
+`llamacpp-text` (`hub_filter_tags == ("gguf",)`) is also available, just
+not preferred. So D412's GGUF-pick branch in `_model_row` never ran for a
+GGUF-only repo — `file` stayed `None`, and everything downstream
+(`quant`, `params`, `estimatedSize`, `fit`) went `None` with it, exactly
+matching the reported table (dashes plus a whole-repo `usedStorage`
+standing in for one file's size).
+
+Fix: `registry.available_runners(capability)` (new, in `registry.py`) lists
+every runner for a capability that is genuinely available here, not only
+the preferred one. `_model_row` tries the preferred runner's GGUF pick
+first (unchanged); only when the preferred runner declares NO format tag
+at all does it fall through to the first available secondary runner that
+does declare `gguf`, and try the same `pick_gguf_file` over the same
+`siblings` — no new Hub request either way. D412's drop rule stays scoped
+to the ACTIVE runner's own inability to resolve a pick; a secondary runner
+finding nothing loadable does not drop the row.
+
+Decision recorded as **D638** in `DECISIONS.md` (appended, dated
+2026-09-02) — includes why a "downloads via a different engine" UI note
+was investigated and NOT added: `POST /api/ai/runtime/download` resolves
+strictly through `for_capability(capability)` with no per-model override
+anywhere in `supervisor.py` (`_runner_or_raise`, `_fetch_only`), so a row
+resolved via the secondary runner is still, today, downloaded by asking
+the PREFERRED runner's own worker to fetch it — which for a GGUF-only
+repo on this Mac means MLX's worker is asked to fetch a repo with no
+safetensors, which will not produce a usable download. This is a REAL,
+pre-existing gap in the download/load path (routing is per-capability,
+never per-model or per-format), not something this round's display fix
+introduces or worsens — Download on such a row was already going to hit
+this whether or not the search table shows correct numbers first. Flagged
+here rather than fixed: fixing it means giving `supervisor.load`/
+`POST /api/ai/runtime/download` a way to target a specific runner for one
+model, which touches the download architecture, not the search display —
+out of scope for a round scoped to "the GGUF rows show no fit/quant/size".
+Worth a follow-up round or an explicit product call on whether search
+should also gate the Download button (or route it) once search can name
+a resolvable-but-not-preferred repo, which it now can.
+
+Tests: `tests/test_hub_models.py`'s autouse `_no_format_filter` fixture now
+also pins `hub.available_runners` to `()` (previously only `for_capability`
+was pinned) — needed because leaving it real would let this Mac's own
+registry state (both `mlx-text` and `llamacpp-text` genuinely available)
+decide format-filter-adjacent tests never written to exercise D638, the
+exact machine-dependent trap this round was warned about. Four new tests
+in `test_hub_models.py` exercise both arrangements explicitly (secondary
+runner present and resolves; secondary runner present but finds nothing;
+only the active runner available at all) plus three in `test_ai_registry.py`
+for `available_runners` itself (present-and-ordered on Apple Silicon,
+excluded on an Intel Mac per `_llamacpp_platform`'s own doc, empty for an
+unserved capability).
