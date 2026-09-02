@@ -457,6 +457,39 @@ def test_gguf_row_uses_the_huds_own_gguf_metadata_for_params(client, hub_cache, 
     assert row["estimatedSize"] is None
 
 
+def test_gguf_row_with_unrecognized_quant_token_never_claims_easy(client, hub_cache, monkeypatch):
+    """The regression this fix must never let back in: an unsuffixed or
+    full-precision GGUF file (`formats.gguf_quant_token` returns `None` for
+    both BY DESIGN — its own docstring — and `pick_gguf_file`'s pass-3
+    fallback selects exactly this shape) must not feed `params` into
+    `fit.verdict`/`speed.estimate_tok_s` with no real quantization evidence.
+    Before this fix, `_weight_bytes` hit its unconditional-guess branch and
+    multiplied `params` by `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish"),
+    turning a real 7B F16 checkpoint (~14GB) into a ~4.1GB estimate.
+
+    RAM is pinned to 16GB (deliberately just above `RESERVE_BYTES` = 8e9, so
+    the ~8GB usable pool is real headroom) rather than this suite's usual
+    32GB: on 32GB even the WRONG 4.1GB guess and the RIGHT ~14GB figure both
+    read as comfortably fitting, so that premise cannot distinguish "under-
+    reported" from "correctly estimated" — 16GB is the smallest pin where
+    the two readings disagree (no fit at all vs. a false "easy")."""
+    _pin_hardware(monkeypatch, ram_gb=16.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-unsuffixed", siblings=[{"rfilename": "model.gguf"}],
+        gguf={"total": 7_000_000_000, "architecture": "llama"},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "model.gguf"
+    assert row["quant"] is None
+    # The real, quantization-invariant params count is still shown...
+    assert row["params"] == 7_000_000_000
+    # ...but must not be turned into a guessed footprint: no verdict at all,
+    # and certainly never "easy".
+    assert row["fit"] is None
+    assert row["speedEstimate"] is None
+
+
 def test_gguf_row_with_no_gguf_metadata_at_all_still_has_no_params(client, hub_cache, monkeypatch):
     """No crash, and no invented number, when the Hub genuinely has nothing
     under `gguf` for this repo (a shape older or unusual repos can have)."""

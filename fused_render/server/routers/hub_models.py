@@ -1090,13 +1090,41 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # Size cell (D637's own reasoning: `estimatedSize` non-null would
     # suppress that lookup, trading "unknown, will resolve" for "an estimate
     # that never gets corrected").
+    #
+    # Fix for code review finding (second round, amending the paragraph
+    # above): `gguf_quantization` — and therefore whether `fit_params` below
+    # is fed to `fit.verdict`/`speed.estimate_tok_s` at all — is set ONLY
+    # when `quant` (== `formats.gguf_quant_token(file)`, see `_quant`'s own
+    # first branch) actually resolved a token. `gguf_quant_token` returns
+    # `None` BY DESIGN for an unsuffixed or full-precision file
+    # (`model.gguf`, `...-F16.gguf`, `...-BF16.gguf` — its own docstring),
+    # which is exactly `pick_gguf_file`'s pass-3 fallback case. Feeding that
+    # `params` into `fit._weight_bytes` anyway used to hit its
+    # `parsed is not None and (recognized or valid_size_gb is None)` branch
+    # with `recognized=False`, multiplying by `DEFAULT_BYTES_PER_PARAM`
+    # (0.58, "4-bit-ish") — under-reporting a full-precision checkpoint's
+    # real footprint by roughly 3.4x and calling an unfittable model "easy".
+    # `_weight_bytes`'s own docstring calls under-reporting "the more
+    # dangerous of the two" directions, and this module must never guess a
+    # quantization from a filename it could not actually classify (the
+    # user's original complaint `_quant` itself exists to satisfy). So an
+    # unrecognized file goes back to reporting `fit: null`/`speedEstimate:
+    # null` — exactly what it did before this whole GGUF-params feed existed
+    # — and the client's lazy per-file `hub/size` lookup supplies the real
+    # verdict instead, same as any other row whose weight is unknown here.
+    # `params` itself stays set to the real, quantization-invariant HUB
+    # total either way — it is still a genuine fact worth the Params column
+    # even when this server does not know what precision it is stored at.
     gguf_quantization = None
+    fit_params = params
     if file is not None and params is None:
         gguf_meta = raw.get("gguf")
         gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
         if isinstance(gguf_total, int) and gguf_total > 0:
             params = gguf_total
-            gguf_quantization = quant
+            if quant is not None:
+                gguf_quantization = quant
+                fit_params = gguf_total
     # A real, safetensors-derived byte total is strictly better evidence than
     # `fit`'s own `params x bytes-per-param` guess — that guess is what
     # `fit._weight_bytes` falls back to only when `quantization` is a
@@ -1105,11 +1133,11 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # whenever one exists, and `quantization` stays None except for that one
     # case.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
-    fit_verdict = fit.verdict(capability, model_id, size_gb, params=params,
+    fit_verdict = fit.verdict(capability, model_id, size_gb, params=fit_params,
                               footprint_store=footprint_store, hardware=hardware,
                               quantization=gguf_quantization)
     speed_estimate = (
-        speed.estimate_tok_s(size_gb, params=params, quantization=gguf_quantization, hardware=hardware)
+        speed.estimate_tok_s(size_gb, params=fit_params, quantization=gguf_quantization, hardware=hardware)
         if capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
