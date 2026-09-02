@@ -266,8 +266,10 @@ class Worker:
     #: reported it via `set_state(placement=...)`, never inferred here. None
     #: from a runner that never calls `_place` (the CPU/MPS branches report
     #: nothing, and non-diffusers runners have no placement decision to make
-    #: at all) — the page renders that as nothing rather than as a guess,
-    #: the same convention `device` above already follows.
+    #: at all). Reaches `describe()`'s `"placement"` key the same way `device`
+    #: above does, but unlike `device` nothing in `frontend/` reads it yet —
+    #: `AiLoadedModel` has no `placement` field — so the value currently
+    #: rides the API and stops there.
     placement: str | None = None
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
@@ -2850,9 +2852,10 @@ def describe() -> dict:
                 "residentBytes": w.resident_bytes,
                 # Which rung of `torch_image._place()`'s ladder the weights
                 # actually landed on — "all-gpu" | "group-offload" |
-                # "offload". None from a runner that never calls `_place`,
-                # which the page renders as nothing rather than as a guess,
-                # the same convention `device` below follows.
+                # "offload". None from a runner that never calls `_place`.
+                # Rides through the API the same way `device` below does, but
+                # `AiLoadedModel` (`frontend/src/platform/lib/api.ts`) has no
+                # `placement` field yet, so no page reads this key.
                 "placement": w.placement,
                 # The OS's "right now" figure (D597) — what a user's system
                 # monitor shows, which `residentBytes` does NOT on Apple
