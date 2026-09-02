@@ -444,10 +444,17 @@ def test_runners_offering_is_the_narrow_companion_to_all_suggested_ids():
     assert "nomic-ai/nomic-embed-text-v1.5" in every
     assert catalog.runners_offering(
         "mlx-community/siglip2-so400m-patch16-384") == ("mlx-embed",)
-    assert catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed"
+    # First in REGISTRY order, which is `onnx-embed-directml` now that the
+    # GPU-first policy decision (`registry.py`'s block comment above
+    # `_RUNNERS`) leads the ONNX family with its accelerated rows —
+    # `runners_offering` walks `registry.all_runners()` in order, so this
+    # follows the reorder without a code change here.
+    assert catalog.runners_offering(
+        "nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed-directml"
     # Hardware variants report as offering their family's list, the same
     # resolution `for_runner` does.
     assert "onnx-embed-cuda" in catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")
+    assert "onnx-embed" in catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")
 
 
 def test_every_multi_runner_capability_has_the_same_shape():
