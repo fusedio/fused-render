@@ -17,13 +17,13 @@
  */
 :root {
   color-scheme: dark;
-  --fg: #e8eaed;
-  --fg-muted: #9aa0a6;
-  --border: #2a2d33;
-  --bg: #131417;
-  --bg-alt: #1b1d21;
-  --sel: #2b3a52;
-  --accent: #E5FF44;
+  --fg: oklch(0.985 0 0);
+  --fg-muted: oklch(0.708 0 0);
+  --border: oklch(0.269 0 0);
+  --bg: oklch(0.145 0 0);
+  --bg-alt: oklch(0.205 0 0);
+  --sel: oklch(0.32 0 0);
+  --accent: oklch(0.985 0 0);
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
@@ -34,9 +34,9 @@
 
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
-  --accent-rgb: 229, 255, 68;
+  --accent-rgb: 251, 251, 251;
   --error-rgb: 255, 107, 107;
-  --fg-muted-rgb: 154, 160, 166;
+  --fg-muted-rgb: 168, 168, 168;
   /* --warning's triple, for the trouble card's wash (SPEC §42): those failures
      are caveats rather than crashes — the app is running, something beside it
      is not — so they are tinted with the warning hue rather than with the
@@ -65,12 +65,12 @@
 
   /* Surfaces floating above --bg-alt: the bookmark tooltip and icon/template
      pickers (--bg-panel), the tour popover (--bg-popover). */
-  --bg-panel: #202329;
-  --bg-popover: #1c1e24;
+  --bg-panel: oklch(0.205 0 0);
+  --bg-popover: oklch(0.205 0 0);
   /* Opaque row fills, pre-composited: a stretched-link row can't stack a
      translucent wash over its own background, so the flat result is a token. */
-  --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
-  --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+  --row-bg-hover: oklch(0.245 0 0); /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: oklch(0.269 0 0); /* --bg-alt under the accent 0.13 wash */
 
   /* Status-bar item states (D576, matching VS Code's own
      `statusBarItem.hoverBackground` / `statusBarItem.activeBackground`).
@@ -90,8 +90,8 @@
      and --bg, because a mix states a DIRECTION and the two themes need
      different distances along it — the dark values below are the mixes they
      replace, to the byte; the light ones are not (see the light block). */
-  --am-surface-have: #24262b;
-  --am-surface-none: #17191d;
+  --am-surface-have: oklch(0.235 0 0);
+  --am-surface-none: oklch(0.175 0 0);
 
   /* Quiet control chrome — the bars' two bordered controls (the labelled mode
      trigger and .bar-ctl-bordered). These are TOKENS
@@ -107,19 +107,19 @@
      whisper of --tint rather than a plate. */
   --ctl-quiet-bg: rgba(var(--tint), 0.04);
   --ctl-quiet-bg-hover: rgba(var(--tint), 0.08);
-  --ctl-quiet-border: #343840;
+  --ctl-quiet-border: oklch(0.3 0 0);
   /* Hover lands roughly where the RESTING border used to be, so the state
      change is still legible without the idle control shouting. */
-  --ctl-quiet-border-hover: #4b505a;
+  --ctl-quiet-border-hover: oklch(0.439 0 0);
   /* The bordered mode trigger's fill. Transparent in dark: --bg under a
      --bg-alt bar cut a darker plate out of the toolbar, and between that well
      and its lighter ring the quietest control in the app read as a chip. The
      hairline alone is enough to say "this one is a menu". */
   --ctl-plate-bg: transparent;
 
-  --on-accent: #10131a; /* text/glyph on an --accent fill */
-  --on-fg: #ffffff; /* .btn-primary hover: one step further from --bg than --fg */
-  --accent-soft: #c9d95e; /* the accent as readable body text */
+  --on-accent: oklch(0.205 0 0); /* text/glyph on an --accent fill */
+  --on-fg: oklch(1 0 0); /* .btn-primary hover: one step further from --bg than --fg */
+  --accent-soft: oklch(0.87 0 0); /* the accent as readable body text */
   --success-bright: #3fca6b; /* live/signed-in dots */
   --success-soft: #86d786;
   --warning-soft: #dfb054;
@@ -151,10 +151,10 @@
   --error-page-fg: #ffdede;
 
   /* Tour popover chrome (driver.js overrides). */
-  --tour-fg: #e8e8e8;
-  --tour-desc: #b4b6bd;
-  --tour-dim: #7c7f88;
-  --tour-next-hover: #d8f238;
+  --tour-fg: oklch(0.985 0 0);
+  --tour-desc: oklch(0.8 0 0);
+  --tour-dim: oklch(0.6 0 0);
+  --tour-next-hover: oklch(0.87 0 0);
 
   /* Board ground and board card (shell/ScheduleTaskViews.tsx). Two tokens
      rather than reusing --bg-alt/--bg-panel because the Board needs a
@@ -176,8 +176,8 @@
      Light: the card stays white — it lifts by hairline and shadow, the way
      every other light surface in this file does — and the lane goes a step
      DARKER than the page so the same ordering survives the flip. */
-  --tasks-lane-bg: #16181b;
-  --tasks-card-bg: #1e2023;
+  --tasks-lane-bg: oklch(0.175 0 0);
+  --tasks-card-bg: oklch(0.205 0 0);
 
   /* Task status hues — the Schedule page's tree/board/calendar rings
      (shell/ScheduleTaskViews.tsx, ported from the flow app's task board). Own
@@ -219,8 +219,8 @@
      raised surface, which no single wash can do in both themes (--tint
      lightens in dark and darkens in light), so each palette names its own
      pre-composited pair rather than the stylesheet naming a literal. */
-  --pg-card-bg: #16181c;
-  --pg-card-bg-hover: #1d2025;
+  --pg-card-bg: oklch(0.175 0 0);
+  --pg-card-bg-hover: oklch(0.22 0 0);
   --status-done: #4ade80;
   --status-failed: #f87171;
   --status-archived: #cd93b6;
@@ -295,26 +295,26 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --fg: #1f2023;
-  --fg-muted: #61656c;
-  --border: #d8dade;
-  --bg: #ffffff;
-  --bg-alt: #f4f5f7;
-  --sel: #cfe0f7;
+  --fg: oklch(0.145 0 0);
+  --fg-muted: oklch(0.556 0 0);
+  --border: oklch(0.922 0 0);
+  --bg: oklch(1 0 0);
+  --bg-alt: oklch(0.97 0 0);
+  --sel: oklch(0.9 0 0);
   /* The brand lime is unreadable as text on white and near-invisible as a
      hairline, so light mode uses a deep olive-lime of the same hue: it clears
      4.5:1 against both --bg and white, so it works as text, border, fill and
      wash from the one token — no second accent needed. */
-  --accent: #5f7300;
+  --accent: oklch(0.205 0 0);
   --error: #c62828;
   --success: #1a7f37;
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
 
   --tint: 0, 0, 0;
-  --accent-rgb: 95, 115, 0;
+  --accent-rgb: 38, 38, 38;
   --error-rgb: 198, 40, 40;
-  --fg-muted-rgb: 97, 101, 108;
+  --fg-muted-rgb: 115, 115, 115;
   --warning-rgb: 143, 106, 16;
 
   /* Tailwind's own published alphas, which are written for a white page — see
@@ -329,10 +329,10 @@
 
   /* Floating surfaces lift by going *lighter* than --bg-alt here, i.e. all the
      way to --bg; their existing borders + shadow carry the separation. */
-  --bg-panel: #ffffff;
-  --bg-popover: #ffffff;
-  --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
-  --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+  --bg-panel: oklch(1 0 0);
+  --bg-popover: oklch(1 0 0);
+  --row-bg-hover: oklch(0.94 0 0); /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: oklch(0.9 0 0); /* --bg-alt under the accent 0.13 wash */
 
   /* Black-alpha here, not white — the same inversion VS Code applies to these
      two tokens in a light theme. A white overlay on a light bar is invisible. */
@@ -347,8 +347,8 @@
      just off the card's own --bg-alt, and `none` recedes to nearly the page
      white. Both stay lighter than --border (#d8dade), so a card's own outline
      still reads at either end. */
-  --am-surface-have: #eceef2;
-  --am-surface-none: #fbfbfc;
+  --am-surface-have: oklch(0.94 0 0);
+  --am-surface-none: oklch(0.985 0 0);
 
   /* Quiet control chrome (see the dark block). These four are the values the
      component rules carried inline before the group existed, so light mode is
@@ -359,9 +359,9 @@
   --ctl-quiet-border-hover: var(--fg-muted);
   --ctl-plate-bg: var(--bg);
 
-  --on-accent: #ffffff;
-  --on-fg: #000000;
-  --accent-soft: #5f7300;
+  --on-accent: oklch(0.985 0 0);
+  --on-fg: oklch(0 0 0);
+  --accent-soft: oklch(0.371 0 0);
   --success-bright: #1a8f45;
   --success-soft: #1f7a3a;
   --warning-soft: #8a6410;
@@ -382,24 +382,24 @@
   --error-page-border: #c0392b;
   --error-page-fg: #7f1d1d;
 
-  --tour-fg: #1f2023;
-  --tour-desc: #4a4e55;
-  --tour-dim: #6f747c;
-  --tour-next-hover: #4e5f00;
+  --tour-fg: oklch(0.145 0 0);
+  --tour-desc: oklch(0.371 0 0);
+  --tour-dim: oklch(0.556 0 0);
+  --tour-next-hover: oklch(0.371 0 0);
 
   /* Board ground and board card (see the dark block for why these are their
      own pair). The card is white and lifts by hairline + shadow; the lane is
      a step darker than the page, which is what keeps "card above lane" true
      in a palette where the page itself is the lightest thing available. */
-  --tasks-lane-bg: #eef0f2;
-  --tasks-card-bg: #ffffff;
+  --tasks-lane-bg: oklch(0.955 0 0);
+  --tasks-card-bg: oklch(1 0 0);
 
   /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
-  --pg-card-bg: #eaebee;
-  --pg-card-bg-hover: #e1e2e6;
+  --pg-card-bg: oklch(0.955 0 0);
+  --pg-card-bg-hover: oklch(0.93 0 0);
   --status-done: #16a34a;
   --status-failed: #dc2626;
   /* The rose deepened for white (see the dark block). Still warm, still low

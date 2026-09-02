@@ -1,14 +1,18 @@
-/* Tailwind WITHOUT preflight — see the base layer at the bottom of this file. */
-/* Layer order pinned up front: the base layer is DECLARED at the bottom of
+/* Flow design language token sheet (.claude/skills/flow-design-language).
+   Tailwind WITHOUT preflight — see the base layer at the bottom of this file.
+   Layer order pinned up front: the base layer is DECLARED at the bottom of
    this file, and without this line that first-appearance order would rank it
-   above utilities — its `color: inherit` would then beat every text-* class
-   on a shadcn button. */
+   above utilities. */
 @layer theme, base, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Deviation from Flow (recorded in MAINTENANCE.md): dark is keyed off the
+   `data-theme` attribute the pre-paint bootstrap stamps on <html>, not a
+   `.dark` class — the shell iframes itself and inherits theme through that
+   attribute. Dark is the no-attribute default. */
 @custom-variant dark (&:is(:root:not([data-theme="light"]) *));
 
 @theme inline {
@@ -28,8 +32,11 @@
     --color-chart-1: var(--chart-1);
     --color-ring: var(--ring);
     --color-input: var(--input);
+    /* `--border` / `--accent` are claimed by the legacy palette in tokens.css
+       (hairline colour / brand chartreuse), so shadcn's read the sh- twins. */
     --color-border: var(--sh-border);
     --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--sh-accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -44,13 +51,18 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+    /* Radius contract: rounded-sm/md curve (controls); rounded-lg/xl are
+       SQUARED (0px) for cards and dialogs. Never use rounded-2xl or larger;
+       rounded-full stays full for pills/dots. */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0px;
+    --radius-xl: 0px;
+    --radius-2xl: 0px;
+    --radius-3xl: 0px;
+    --radius-4xl: 0px;
+    /* House easing for entries and size changes. */
+    --ease-flow: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 :root[data-theme="light"] {
@@ -69,14 +81,15 @@
     --sh-accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.577 0.245 27.325);
     --sh-border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
+    --chart-1: oklch(0.646 0.222 41.116);
+    --chart-2: oklch(0.6 0.118 184.704);
+    --chart-3: oklch(0.398 0.07 227.392);
+    --chart-4: oklch(0.828 0.189 84.429);
+    --chart-5: oklch(0.769 0.188 70.08);
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -88,20 +101,14 @@
 }
 
 :root {
-    /* Radius is not a theme concern — on the bare :root so BOTH themes (dark
-       is the no-attribute default) resolve the radius-* scale; parked in the
-       light block only, every rounded-* was calc() over nothing in dark. */
-    --radius: 0.625rem;
+    --radius: 0;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
-    /* One shade BELOW the app's own page background (tokens.css --bg,
-       #131417) and in ITS cool blue-grey hue — a neutral grey here read
-       warmer than the page it sits on. */
-    --card: #0f1013;
+    --card: oklch(0.205 0 0);
     --card-foreground: oklch(0.985 0 0);
     --popover: oklch(0.205 0 0);
     --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
+    --primary: oklch(0.985 0 0);
     --primary-foreground: oklch(0.205 0 0);
     --secondary: oklch(0.269 0 0);
     --secondary-foreground: oklch(0.985 0 0);
@@ -109,65 +116,48 @@
     --muted-foreground: oklch(0.708 0 0);
     --sh-accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --sh-border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
+    --destructive: oklch(0.637 0.237 25.331);
+    --destructive-foreground: oklch(0.985 0 0);
+    --sh-border: oklch(0.269 0 0);
+    --input: oklch(0.269 0 0);
+    --ring: oklch(0.439 0 0);
+    --chart-1: oklch(0.488 0.243 264.376);
+    --chart-2: oklch(0.696 0.17 162.48);
+    --chart-3: oklch(0.769 0.188 70.08);
+    --chart-4: oklch(0.627 0.265 303.9);
+    --chart-5: oklch(0.645 0.246 16.439);
+    --sidebar: oklch(0.145 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.488 0.243 264.376);
     --sidebar-primary-foreground: oklch(0.985 0 0);
     --sidebar-accent: oklch(0.269 0 0);
     --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar-border: oklch(0.269 0 0);
+    --sidebar-ring: oklch(0.439 0 0);
 }
 
 /* ---- Four names Tailwind and this app both claim --------------------------
    `--shadow-sm/md/lg` and `--ease-out` exist in BOTH theme vocabularies, and
    they mean different things: tokens.css stores a bare COLOUR in each shadow
-   token (its rules spell out the geometry — `0 4px 14px var(--shadow-sm)`),
-   where Tailwind stores a whole box-shadow value. tokens.css declares them
-   unlayered on `:root`, so it wins over Tailwind's `@layer theme` no matter
-   which file is imported first — and every shadcn `shadow-sm` would resolve to
-   `box-shadow: rgba(0,0,0,.25)`, which is not a shadow at all.
-
-   Re-declared here on `[data-slot]` — the attribute every shadcn component
-   stamps on its root — because an element's OWN custom property beats one it
-   inherits from `:root`, whatever the specificity. So shadcn's subtree reads
-   Tailwind's values and every app element still reads the app's.
-   Deliberately unlayered, to match the `:root` block it has to out-rank. */
+   token, where Tailwind stores a whole box-shadow value. Re-declared here on
+   `[data-slot]` — the attribute every shadcn component stamps on its root —
+   because an element's OWN custom property beats one it inherits from `:root`.
+   Flow caps shadows at `shadow-sm`; the heavier names resolve to the same
+   small shadow so a stray `shadow-md` cannot escalate. */
 [data-slot] {
-  /* Tailwind's GEOMETRY, this app's INK (`--shadow-ink*`, tokens.css). The
-     alphas were hardcoded here at Tailwind's published values, which are drawn
-     for a white page — so every shadcn component wore light-mode shadows on the
-     dark one, and `test_theme` was right to fail: a colour that cannot follow
-     the palette does not belong outside it. The geometry stays verbatim,
-     because that is the part this block exists to restore. */
   --shadow-2xs: 0 1px var(--shadow-ink-soft);
   --shadow-xs: 0 1px 2px 0 var(--shadow-ink-soft);
   --shadow-sm: 0 1px 3px 0 var(--shadow-ink), 0 1px 2px -1px var(--shadow-ink);
-  --shadow-md: 0 4px 6px -1px var(--shadow-ink), 0 2px 4px -2px var(--shadow-ink);
-  --shadow-lg: 0 10px 15px -3px var(--shadow-ink), 0 4px 6px -4px var(--shadow-ink);
-  --shadow-xl: 0 20px 25px -5px var(--shadow-ink), 0 8px 10px -6px var(--shadow-ink);
-  --shadow-2xl: 0 25px 50px -12px var(--shadow-ink-deep);
+  --shadow-md: var(--shadow-sm);
+  --shadow-lg: var(--shadow-sm);
+  --shadow-xl: var(--shadow-sm);
+  --shadow-2xl: var(--shadow-sm);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
 }
 
 @layer base {
-  /* Tailwind v4's `border-*` utilities carry their own border-style, so the one
-     preflight piece shadcn components actually need is form-control font
-     inheritance — without it a <button> falls back to the UA's 13.3px system-ui
-     inside a 14px app.
-     Scoped to `[data-slot]`, the attribute every shadcn component stamps on its
-     root, rather than to bare `button`/`input`: this app has 23k lines of CSS
-     that predate Tailwind and never asked for a reset, and a global rule here
-     would silently restyle every control they DON'T explicitly set a font on. */
+  /* Form-control font inheritance for shadcn roots only: legacy CSS predates
+     Tailwind and never asked for a reset. */
   button[data-slot],
   input[data-slot],
   select[data-slot],
@@ -175,5 +165,138 @@
     font: inherit;
     letter-spacing: inherit;
     color: inherit;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  a,
+  button,
+  [role="button"],
+  input,
+  select,
+  textarea,
+  label {
+    touch-action: manipulation;
+  }
+}
+
+/* Touch-target floor: 44px on coarse pointers, with an exemption for dense
+   inline widgets whose surrounding row provides the touch area. */
+@media (pointer: coarse) {
+  [data-slot="button"],
+  [data-slot="input"],
+  [data-slot="textarea"],
+  [data-slot="select-trigger"] {
+    min-height: 44px;
+  }
+  [data-slot="toggle"],
+  [data-slot="checkbox"],
+  [data-slot="icon-button"],
+  [data-size="xs"],
+  [data-size="icon-xs"],
+  [data-size="icon-sm"] {
+    min-height: 0;
+  }
+}
+
+/* Dark scrollbars (dark is the no-attribute default). */
+:root:not([data-theme="light"]) *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+:root:not([data-theme="light"]) *::-webkit-scrollbar-track {
+  background: oklch(0.205 0 0);
+}
+:root:not([data-theme="light"]) *::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0 0);
+  border-radius: 4px;
+}
+:root:not([data-theme="light"]) *::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0 0);
+}
+
+/* Auto-hide scrollbar: thin, stable gutter, thumb visible only on hover. */
+.scrollbar-auto-hide {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scrollbar-auto-hide::-webkit-scrollbar {
+  width: 8px !important;
+  height: 8px !important;
+  background: transparent !important;
+}
+.scrollbar-auto-hide::-webkit-scrollbar-track,
+.scrollbar-auto-hide::-webkit-scrollbar-thumb {
+  background: transparent !important;
+}
+.scrollbar-auto-hide:hover {
+  scrollbar-color: oklch(0.4 0 0) transparent;
+}
+.scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0 0) !important;
+  border-radius: 999px !important;
+}
+:root[data-theme="light"] .scrollbar-auto-hide:hover {
+  scrollbar-color: oklch(0.7 0 0) transparent;
+}
+:root[data-theme="light"] .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.7 0 0) !important;
+}
+
+/* Shimmer text — the house busy indicator. Guarded below. */
+@keyframes shimmer-text-slide {
+  0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
+  100% { background-position: 0% center; }
+}
+.shimmer-text {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    -webkit-text-fill-color: unset;
+    background: none;
+  }
+}
+
+/* Expandable dialog transition — the house easing curve for size changes. */
+[data-slot="dialog-content"] {
+  transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="dialog-content"] {
+    transition: none;
+  }
+}
+
+/* Live pulse for a status dot while streaming. Guarded. */
+@keyframes flow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.flow-pulse {
+  animation: flow-pulse 1.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-pulse {
+    animation: none;
   }
 }
