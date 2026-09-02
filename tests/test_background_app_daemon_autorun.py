@@ -1,12 +1,14 @@
-"""`fused.daemon.run(params)` (the `main =` convenience over `call`) must
-transparently bring the daemon up rather than reject when it isn't known to
-be running yet — unlike `call()`, which is documented to require an explicit
-`start()` first (SKILL.md, ENGINE_HOST_DESIGN.md: a `main =` app is "spawned
-on first call... the next call re-warms it"). Before this, `run()` delegated
-straight to `call()`, which gates on the cached `_daemonKnownRunning` flag —
-false both for a page's first-ever call (nothing has started it yet) and for
-an app the idle reaper retired since the last `status()`/`watch()` poll — so
-the very call meant to bring it up rejected instead with "call start() first".
+"""`fused.daemon.run(params)` and `fused.daemon.call(path, body)` (the
+`main =`/`daemon =` convenience methods proxied through
+`_daemonProxyPost`, SKILL.md, ENGINE_HOST_DESIGN.md) must both transparently
+bring the daemon up rather than reject when it isn't known to be running yet
+— a page's first-ever call (nothing has started it yet), or an app the idle
+reaper retired since the last `status()`/`watch()` poll. Each also refuses
+the OTHER method's folder shape: `run()` against a `daemon =` folder would
+otherwise POST /call to a server that doesn't serve it, and `call()` against
+a `main =` folder would otherwise "work" but hand back the raw envelope
+instead of the unwrapped result — both silently wrong instead of naming the
+folder's actual declared protocol and the method to use instead.
 
 Same node-harness style as test_background_app_daemon_guard.py: the named
 functions are lifted out of runtime.js by source text and driven under node
@@ -135,3 +137,104 @@ def test_run_skips_the_extra_start_round_trip_once_known_running():
     assert result["ok"] is True
     assert result["value"] == {"x": 2}
     assert not any("/api/apps/background/start" in u for u in result["calls"])
+
+
+def test_call_starts_the_daemon_on_the_very_first_call_instead_of_rejecting():
+    # call() used to require an explicit start() first and reject with "call
+    # start() first" — the preview guard (D507/D508), not a start-first gate,
+    # is the actual safety boundary, and engine_forward already heals a
+    # dead-but-running child on any proxied call regardless.
+    result = _run("call", '"/count", {}', {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": False, "protocol": "daemon"},
+        },
+        "/api/apps/background/start": {
+            "ok": True,
+            "json": {"engine_id": "e1", "pid": 123, "version": "v1"},
+        },
+        "/api/engines/e1/proxy/count": {
+            "ok": True,
+            "json": {"n": 1},
+        },
+    })
+    assert result["ok"] is True
+    assert result["value"] == {"n": 1}
+    assert any("/api/apps/background/start" in u for u in result["calls"])
+    assert any("/api/engines/e1/proxy/count" in u for u in result["calls"])
+
+
+def test_call_skips_the_extra_start_round_trip_once_known_running():
+    result = _run("call", '"/count", {}', {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": True, "protocol": "daemon"},
+        },
+        "/api/engines/e1/proxy/count": {
+            "ok": True,
+            "json": {"n": 2},
+        },
+    })
+    assert result["ok"] is True
+    assert result["value"] == {"n": 2}
+    assert not any("/api/apps/background/start" in u for u in result["calls"])
+
+
+def test_run_rejects_a_daemon_folder_naming_call_instead():
+    result = _run("run", "{}", {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": True, "protocol": "daemon"},
+        },
+    })
+    assert result["ok"] is False
+    assert "fused.daemon.run" in result["message"]
+    assert "daemon" in result["message"]
+    assert "fused.daemon.call" in result["message"]
+    # Refused before ever touching the proxy path.
+    assert not any("/api/engines/" in u for u in result["calls"])
+
+
+def test_call_rejects_a_main_folder_naming_run_instead():
+    result = _run("call", '"/call", {}', {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": True, "protocol": "main"},
+        },
+    })
+    assert result["ok"] is False
+    assert "fused.daemon.call" in result["message"]
+    assert "main" in result["message"]
+    assert "fused.daemon.run" in result["message"]
+    assert not any("/api/engines/" in u for u in result["calls"])
+
+
+def test_run_and_call_are_unaffected_by_a_null_protocol():
+    # A folder with no valid manifest at all reports protocol: null — neither
+    # method should add a new rejection on top of whatever error path already
+    # covers that folder (the proxy 404 speaks for itself).
+    run_result = _run("run", "{}", {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": True, "protocol": None},
+        },
+        "/api/engines/e1/proxy/call": {
+            "ok": True,
+            "json": {"ok": True, "result": {"x": 3}},
+        },
+    })
+    assert run_result["ok"] is True
+    assert run_result["value"] == {"x": 3}
+
+    call_result = _run("call", '"/whatever", {}', {
+        "/api/apps/background/status": {
+            "ok": True,
+            "json": {"engine_id": "e1", "running": True, "protocol": None},
+        },
+        "/api/engines/e1/proxy/whatever": {
+            "ok": True,
+            "json": {"y": 4},
+        },
+    })
+    assert call_result["ok"] is True
+    assert call_result["value"] == {"y": 4}

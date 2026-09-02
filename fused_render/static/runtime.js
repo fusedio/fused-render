@@ -14,23 +14,37 @@
  *     `pyproject.toml` naming a `daemon` file. Every method sends this page's
  *     own path so the server resolves which app folder it belongs to; none
  *     take a folder path. Run state and autostart are independent (D511):
- *     `status()` resolves {running, autostart, pid, version, engine_id} as
- *     two separate facts. `start()` spawns the daemon now and does NOT touch
- *     autostart (409 if its project venv isn't built yet — open the page
- *     once, or `fused.runPython`, to install it first). `stop()` kills the
- *     running daemon, also without touching autostart — if autostart is on
- *     the server's startup resurrection hook still brings it back next
- *     launch; if it's off (the default) it stays down until an explicit
- *     `start()`. `restart()` respawns it, autostart untouched either way.
- *     `setAutostart(bool)` is the ONLY thing that persists the "bring this
- *     back at every launch" flag — opt-in, never a side effect of `start()`.
+ *     `status()` resolves {running, autostart, pid, version, engine_id,
+ *     protocol} as separate facts — `protocol` is "main" for a folder that
+ *     declares `main =`, "daemon" for one that declares `daemon =`, or null
+ *     for a folder with no valid manifest at all. `start()` spawns the
+ *     daemon now and does NOT touch autostart (409 if its project venv
+ *     isn't built yet — open the page once, or `fused.runPython`, to
+ *     install it first). `stop()` kills the running daemon, also without
+ *     touching autostart — if autostart is on the server's startup
+ *     resurrection hook still brings it back next launch; if it's off (the
+ *     default) it stays down until an explicit `start()`. `restart()`
+ *     respawns it, autostart untouched either way. `setAutostart(bool)` is
+ *     the ONLY thing that persists the "bring this back at every launch"
+ *     flag — opt-in, never a side effect of `start()`.
+ *   fused.daemon.run(params) -> Promise<result>
+ *     The `main =` convenience: POSTs `params` to the shipped worker's one
+ *     route and unwraps the {ok, result, error, stdout, resolved_py}
+ *     envelope, throwing an Error carrying .type/.traceback/.stdout on a
+ *     python-side failure — the same shape `fused.runPython` throws.
+ *     Rejects, naming `call()` instead, if the folder declares `daemon =`.
+ *     Brings the daemon up transparently on the first call and re-warms it
+ *     after the idle reaper retires it — no explicit `start()` needed.
  *   fused.daemon.call(path, body?) -> Promise<any>
- *     Reach the running daemon directly, proxied through the same
- *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
- *     already rides. Resolves the engine_id from a cached status() first
- *     (calling status() itself if none is cached yet) — rejects if the app
- *     isn't running. Local-only, like the rest of fused.daemon — not
- *     available on hosted/exported pages (see the file header below).
+ *     Reach a `daemon =` folder's own routes directly, proxied through the
+ *     same stable-origin /api/engines/<id>/proxy a template daemon's traffic
+ *     already rides, and handed back RAW (no envelope — that shape is
+ *     entirely up to the author's own server). Resolves the engine_id from
+ *     a cached status() first (calling status() itself if none is cached
+ *     yet). Rejects, naming `run()` instead, if the folder declares
+ *     `main =`. Brings the daemon up transparently exactly like `run()`.
+ *     Local-only, like the rest of fused.daemon — not available on
+ *     hosted/exported pages (see the file header below).
  *   fused.daemon.watch(callback) -> unsubscribe()
  *     Learn that the daemon's state changed WITHOUT the page having caused
  *     it itself — the case a page's own start()/stop()/restart() calls
@@ -2609,12 +2623,26 @@
   // fused.daemon is the browser control surface for a FOLDER's declared
   // long-running daemon, not this page's own script — every method sends the
   // page's own path as `html`, and the server resolves which app folder that
-  // page belongs to, exactly like resolve_py does for runPython. `call` is
-  // the one that reaches the daemon itself: it proxies through the SAME
-  // stable-origin
+  // page belongs to, exactly like resolve_py does for runPython. `run` and
+  // `call` both reach the daemon itself, through the SAME stable-origin
   // /api/engines/<id>/proxy path a template daemon's traffic already rides
   // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
-  // call cached — a page never computes that id itself.
+  // call cached — a page never computes that id itself. `run(params)` is the
+  // `main =` convenience: POST /call with `params` as the body, unwrapping
+  // the {ok, result, error, stdout, resolved_py} envelope the shipped worker
+  // answers with. `call(path, body)` is for a `daemon =` folder's own routes,
+  // proxied and handed back raw — a `main =` folder's single route would
+  // just be `call("/call", ...)` minus the unwrap, which is why `call()`
+  // refuses a `main =` folder outright (use `run()`) and `run()` refuses a
+  // `daemon =` folder outright (use `call()`), each naming the folder's
+  // actual declared protocol and the method to use instead. Both bring the
+  // daemon up transparently — on a page's first call, and to re-warm it
+  // after the idle reaper retires it — rather than requiring an explicit
+  // `start()` first: the preview guard below (D507/D508), not a start-first
+  // gate, is what actually stops a card thumbnail or hover peek from
+  // spawning a daemon, and `engine_forward._forward` already heals a
+  // dead-but-running child on any proxied call regardless of which of the
+  // two methods reaches it.
   //
   // Run state and autostart are deliberately independent (D511): `stop`
   // kills the running daemon but never touches the persisted autostart flag
@@ -2625,13 +2653,21 @@
   // `_daemonEngineId` is a hash of the FOLDER, so `status()` always resolves one
   // whether or not the app is running — it names WHICH app, not whether one is
   // running. `_daemonKnownRunning` is the separate, actually-gating fact
-  // (`call()`'s guard reads this, never engine_id's presence, which is always
-  // truthy and so cannot tell "not running" from "running").
+  // (bring-up reads this, never engine_id's presence, which is always
+  // truthy and so cannot tell "not running" from "running"). `_daemonProtocol`
+  // is the folder's declared bring-up shape from that same status() payload
+  // ("main" | "daemon" | null for a folder with no valid manifest) — it is
+  // what lets `run()`/`call()` catch an author calling the wrong one of the
+  // two for their folder instead of silently 404ing (a `daemon =` folder
+  // under `run()`) or handing back a raw, unwrapped envelope (a `main =`
+  // folder under `call()`).
   let _daemonEngineId = null;
   let _daemonKnownRunning = false;
+  let _daemonProtocol = null;
 
   function _noteDaemonPayload(data, marksRunning) {
     if (data && data.engine_id) _daemonEngineId = data.engine_id;
+    if (data && "protocol" in data) _daemonProtocol = data.protocol;
     if (marksRunning !== undefined) {
       // start()/restart() succeeding means ensure_background returned a live
       // child (both 502 on any spawn failure, so a 200 here IS "running");
@@ -2653,11 +2689,13 @@
   // own `src` (fused_render/server/routers/render.py echoes it straight back
   // as the served document's own location), and `IS_THUMBNAIL` above already
   // climbs same-origin ancestors for the nested case. `start()`/`restart()`
-  // obviously spawn; `call()` is in scope too — engine_forward.py's
-  // `_forward` heals a dead-but-running child back to life on ANY proxied
-  // call, so a preview render that calls `call()` against an app some other
-  // session already started can resurrect its daemon exactly like `start()`
-  // would. `stop()` and `setAutostart()` are gated the same way, NOT left
+  // obviously spawn; `call()` and `run()` are in scope too — both bring the
+  // daemon up transparently when not known running, and even set aside
+  // that, engine_forward.py's `_forward` heals a dead-but-running child back
+  // to life on ANY proxied call, so a preview render that calls either
+  // against an app some other session already started can resurrect its
+  // daemon exactly like `start()` would. `stop()` and `setAutostart()` are
+  // gated the same way, NOT left
   // open (D508): a card thumbnail mounts `entry_html` live in a sandboxed
   // iframe with `allow-scripts`, so an app whose init path calls
   // `fused.daemon.stop()` (or flips autostart) would change a real user's
@@ -2734,39 +2772,59 @@
                        { autostart: !!autostart });
   }
 
-  function daemonCall(path, body) {
-    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
-    const doCall = () =>
+  // Shared bring-up-then-POST mechanics behind both `call()` and `run()`:
+  // learn engine_id/protocol/running from one status() fetch when nothing is
+  // cached yet, bring the daemon up when it isn't known running (a page's
+  // first-ever call, or an app the idle reaper retired since the last poll),
+  // then POST to the proxy path and hand back the raw response. Carries NO
+  // protocol check — that is each public method's own job, applied before
+  // delegating here, so that `run()`'s internal use of this helper can never
+  // reject itself against `run()`'s own check.
+  function _daemonProxyPost(path, body) {
+    const doPost = () =>
       fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
         method: "POST",
         headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
         body: JSON.stringify(body || {}),
       }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
 
-    // Nothing cached yet (no status()/start()/etc. call this page has made)
-    // — learn engine_id AND whether it's actually running from one status()
-    // fetch before deciding. Once something is cached, trust it rather than
-    // re-fetching on every call.
     const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
-    return ready.then(() => {
-      if (!_daemonKnownRunning) {
-        // Gated on the payload's own running fact, not on _daemonEngineId's
-        // presence — engine_id is a hash of the folder and is always
-        // populated by status(), running or not, so checking it alone can
-        // never catch "not running" (the proxy's own 409 in that case is a
-        // "start it first" message meaningless to an app author).
-        return Promise.reject(
-          new Error("fused.daemon.call: no running background app for this page " +
-                    "(call start() first)")
-        );
-      }
-      return doCall().then(({ data, httpOk }) => {
+    const bringUp = ready.then(() => (_daemonKnownRunning ? null : daemonStart()));
+    return bringUp.then(() =>
+      doPost().then(({ data, httpOk }) => {
         if (!httpOk) {
-          const err = new Error((data && data.error) || "fused.daemon.call failed");
+          const err = new Error((data && data.error) ||
+                                `fused.daemon: proxy call to ${path} failed`);
           throw err;
         }
         return data;
-      });
+      })
+    );
+  }
+
+  function _daemonWrongProtocolError(method, declared, wantMethod, wantArgs) {
+    return new Error(
+      `fused.daemon.${method}: refused — this folder declares \`${declared} =\` ` +
+      (declared === "daemon"
+        ? "and serves its own routes; use "
+        : "and the shipped worker serves exactly one route; use ") +
+      `fused.daemon.${wantMethod}(${wantArgs}) instead.`
+    );
+  }
+
+  function daemonCall(path, body) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (_daemonProtocol === "main") {
+        return Promise.reject(
+          _daemonWrongProtocolError("call", "main", "run", "params")
+        );
+      }
+      return _daemonProxyPost(path, body);
     });
   }
 
@@ -2877,19 +2935,21 @@
   // gives a `daemon =` author talking to their own routes.
   function daemonRun(params) {
     if (IS_THUMBNAIL) return _daemonRejectPreview("run");
-    // Unlike call() (an author's own arbitrary route, gated on start() having
-    // been called explicitly), run() is the `main =` convenience over the
-    // shipped worker's one route — documented to bring the daemon up
-    // transparently on its very first call, and to re-warm it after the idle
-    // reaper retires it. _daemonKnownRunning is false in both of those cases
-    // (nothing has started it yet, or the last poll predates the reap), so
-    // bring it up here rather than letting daemonCall's start-first gate
-    // reject a call that's supposed to just work. Once known running, this
-    // adds no extra round trip — call() heals a since-reaped child on its own
-    // via engine_forward's restart-on-proxy-failure path.
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway. Bring-up itself (spawning on the first call, re-warming
+    // after the idle reaper retires it) lives entirely in _daemonProxyPost
+    // now — run() adds nothing on top of it besides its own protocol check
+    // and the envelope unwrap `call()` deliberately leaves raw.
     const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
-    const bringUp = ready.then(() => (_daemonKnownRunning ? null : daemonStart()));
-    return bringUp.then(() => daemonCall("/call", params || {})).then((data) => {
+    return ready.then(() => {
+      if (_daemonProtocol === "daemon") {
+        return Promise.reject(
+          _daemonWrongProtocolError("run", "daemon", "call", "path, body")
+        );
+      }
+      return _daemonProxyPost("/call", params || {});
+    }).then((data) => {
       if (data && data.stdout) console.log("[python]", data.stdout);
       if (data && data.resolved_py) watchPath(data.resolved_py);
       if (!data.ok) {
