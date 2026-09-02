@@ -301,7 +301,13 @@ const { text, usage, response, provider } = await fused.ai.text({
   every verb takes **`opts.abortSignal`**, a standard `AbortSignal`: aborting
   rejects with `.type === "cancelled"` and stops the work server-side (disconnect
   for a stream, `/api/ai/cancel` for a local text generation, the job's own cancel
-  route for image/video/transcribe). Rejects with
+  route for image/video/transcribe). **Inputs are learn-once too (D633):** every
+  verb's envelope is closed (an unknown option is a 400 naming it — text
+  included), the partial-result callback is `onChunk` on every verb that streams
+  (a string on text, a segment on transcribe; `onProgress(job)` is the job-row
+  callback), every file input resolves beside the calling page (text's `images`
+  included), and the wire speaks the page's camelCase on `/api/ai` as on the
+  other routes (`systemPrompt`, `maxTokens`, `topP`). Rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
@@ -8274,7 +8280,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   rebuilds each line key by key rather than copying the segment — deliberately,
   so an engine's logprobs and temperatures never reach a file a page reads — so a
   public field is dropped unless it is named there. It was, and the symptom was
-  `onSegment` handing pages timing-less segments while the final `.json` had
+  `onChunk` (then `onSegment`) handing pages timing-less segments while the final `.json` had
   them, permanently: the reader counts DELIVERED LINES, so a segment sent live
   without its words is never re-sent with them. Anything added to a segment that
   a caller is meant to see has to be named in `partial.py` as well.

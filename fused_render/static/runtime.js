@@ -119,7 +119,7 @@
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, provider, language, task, diarize,
- *                        speakers, words, onProgress, onSegment})
+ *                        speakers, words, onProgress, onChunk})
  *     -> Promise<{text, segments: [{text, startSecond, endSecond, speaker?,
  *                 words?}], language, durationInSeconds, ...frame}>
  *     providerMetadata.local: {path, output, url, outputText, outputPartial,
@@ -133,7 +133,7 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
- *     onSegment(segment) gives the transcript AS IT DECODES — every segment,
+ *     onChunk(segment) gives the transcript AS IT DECODES — every segment,
  *     in order, exactly once, without the page implementing any of it. It
  *     rides the poll onProgress already costs (no second loop, and no extra
  *     request at all for a caller that does not pass it), reading a
@@ -3331,6 +3331,13 @@
       err.type = "bad_request";
       return Promise.reject(err);
     }
+    // Closed envelope (D413's rule, D633): an option this verb does not have
+    // is a 400 here, before any request — the same check the other four
+    // verbs already run, so a `systemprompt` typo cannot silently do nothing.
+    const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
+                      "raw", "images", "temperature", "maxTokens", "topP"];
+    const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
+    if (textUnknownErr) return Promise.reject(textUnknownErr);
     const body = { prompt: prompt };
     // Which tier serves the call: "local" (weights on this machine) or
     // "claude" (the Claude Code CLI). A SEPARATE field, not a prefix on the
@@ -3340,7 +3347,7 @@
     // exists now so a third tier (a hosted gateway, whose ids look like repo
     // ids) is an added value rather than a new wire key.
     if (opts.provider !== undefined) body.provider = opts.provider;
-    if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
+    if (opts.systemPrompt !== undefined) body.systemPrompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
     // Prior turns, for a caller holding a conversation. `prompt` stays the
@@ -3361,15 +3368,21 @@
     // reason as history and raw: the Claude CLI has no notion of an
     // attachment, so it refuses this rather than silently answering as if
     // nothing had been sent.
-    if (opts.images !== undefined) body.images = opts.images;
+    if (opts.images !== undefined) {
+      body.images = opts.images;
+      // Page-relative, like every other file input on fused.ai (RH-1, D633):
+      // the page's own `?path=` rides along as `base` so "shot.png" means
+      // "beside this page". Only sent when there is something to resolve.
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) body.base = ownPath;
+    }
     // Sampling. Local models only, like history and raw — the Claude CLI
     // exposes no sampling knobs, so these are refused there rather than
-    // dropped. camelCase in, snake_case on the wire, because the wire shape is
-    // the worker's and every other runtime option makes the same trip
-    // (systemPrompt -> system_prompt).
+    // dropped. camelCase on the wire too (D633) — the worker's snake_case is
+    // the server's business, not the page's.
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
-    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
-    if (opts.topP !== undefined) body.top_p = opts.topP;
+    if (opts.maxTokens !== undefined) body.maxTokens = opts.maxTokens;
+    if (opts.topP !== undefined) body.topP = opts.topP;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const signal = abortSignalOf(opts);
@@ -3867,7 +3880,7 @@
   // naming the API rather than the endpoint. `allowedKeys` is exactly the
   // whitelist array `aiImage`/`aiTranscribe` already loop over to build the
   // body; `extra` is the callbacks consumed above that loop (`onProgress`,
-  // `onSegment`) — real options, just not body fields, so they must not
+  // `onChunk`) — real options, just not body fields, so they must not
   // trip this check or every existing caller that passes one breaks.
   function rejectUnknownOptions(opts, allowedKeys, extra, apiName) {
     const allowed = new Set(allowedKeys.concat(extra));
@@ -4081,7 +4094,7 @@
     const transcribeKeys = ["path", "model", "provider", "language", "task", "initialPrompt",
                             "vad", "diarize", "speakers", "words"];
     const transcribeUnknownErr = rejectUnknownOptions(
-      opts, transcribeKeys, ["onProgress", "onSegment", "abortSignal"], "fused.ai.transcribe");
+      opts, transcribeKeys, ["onProgress", "onChunk", "abortSignal"], "fused.ai.transcribe");
     if (transcribeUnknownErr) return Promise.reject(transcribeUnknownErr);
     if (typeof opts.path !== "string" || !opts.path.trim()) {
       const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
@@ -4149,7 +4162,10 @@
     // tidiness: every request made below is one that every existing
     // transcription would otherwise start making, once per poll, for a file
     // nobody is reading.
-    const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
+    // `onChunk`, the same name text uses for "a piece of the result arrived"
+    // (D633) — here the piece is a segment, not a string. One callback name
+    // to learn for partial results; `onProgress(job)` stays the row callback.
+    const onSegment = typeof opts.onChunk === "function" ? opts.onChunk : null;
     const body = {};
     for (const key of transcribeKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];

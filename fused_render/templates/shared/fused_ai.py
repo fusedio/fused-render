@@ -485,7 +485,7 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:
-        body["system_prompt"] = system_prompt
+        body["systemPrompt"] = system_prompt
     payload = _post_json("/api/ai", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)
@@ -514,7 +514,7 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
     if effort is not None:
         body["effort"] = effort
     if system_prompt is not None:
-        body["system_prompt"] = system_prompt
+        body["systemPrompt"] = system_prompt
     resp = _request("POST", "/api/ai", body=body, timeout=timeout)
 
     def _chunks():

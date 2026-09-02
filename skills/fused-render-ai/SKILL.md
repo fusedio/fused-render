@@ -79,7 +79,7 @@ try {
 
 ### Options, and which destination honours them
 
-Two kinds of local-only option. The **semantic** ones (`history`, `raw`, `images`) are **refused with a 400** on Claude — dropping them would answer a different question than the one asked. The **tunables** (`temperature`/`topP`/`maxTokens` on Claude, `effort` on a local model) are **dropped and reported** in the result's `warnings[]` — the call succeeds, and the result names what had no effect, so one options object travels across tiers.
+**The envelope is closed on every verb**, text included: an option name the verb does not have is a `bad_request` naming it, before any request leaves the page. Two kinds of local-only option. The **semantic** ones (`history`, `raw`, `images`) are **refused with a 400** on Claude — dropping them would answer a different question than the one asked. The **tunables** (`temperature`/`topP`/`maxTokens` on Claude, `effort` on a local model) are **dropped and reported** in the result's `warnings[]` — the call succeeds, and the result names what had no effect, so one options object travels across tiers.
 
 | Option | Claude path | Local model |
 |---|---|---|
@@ -422,7 +422,7 @@ out.textContent = rec.text;
 for (const s of rec.segments) addCue(s.startSecond, s.endSecond, s.text);   // {text, startSecond, endSecond}
 ```
 
-Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `words`, `onProgress`, `onSegment`.
+Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `words`, `onProgress`, `onChunk`.
 
 Resolves with the result frame: payload `text`, `segments: [{text, startSecond, endSecond, speaker?, words?}]`, `language`, `durationInSeconds`; `response.id` = the job id; and under `providerMetadata.local` the files and the run — `path` (the input), `output`, `url` (a ready-made `/api/fs/raw` address for `output`), `outputText`, `outputPartial`, `task`, `speakers`, `estimatedSpeakers`.
 
@@ -443,12 +443,12 @@ Everything else worth knowing:
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (missing path, not a file, unknown `task`, or an unusable `speakers`).
 
-### As it decodes: `onSegment`
+### As it decodes: `onChunk`
 
 ```js
 const rec = await fused.ai.transcribe({
   path: "meeting.m4a",
-  onSegment: (s) => addCue(s.start, s.end, s.text),   // fires DURING the run
+  onChunk: (s) => addCue(s.startSecond, s.endSecond, s.text),   // fires DURING the run
   onProgress: (job) => bar.value = job.done / job.total,
 });
 // …and `rec.segments` is the same list, whole, when it resolves.
@@ -458,7 +458,7 @@ const rec = await fused.ai.transcribe({
 - **Same shape as `rec.segments`** — `{text, startSecond, endSecond}`, plus `speaker` when diarizing and `words` when asked for and available. One rendering path for both.
 - **It costs one extra request per poll, and only if you pass it** — the tail rides the tick `onProgress` was already paying for.
 - **Resolution is the engine's, not the callback's.** faster-whisper emits a segment at a time; the MLX runner finishes a whole decoded window (up to 30s) and emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
-- `onSegment` is a live view, not the delivery mechanism: the file is. It stops when the promise does, and the last reads in flight are delivered *before* the rejection, so a `catch` that clears the transcript pane keeps it clear.
+- `onChunk` is a live view, not the delivery mechanism: the file is. It stops when the promise does, and the last reads in flight are delivered *before* the rejection, so a `catch` that clears the transcript pane keeps it clear.
 
 **The salvage path.** The worker appends each finished segment to **`outputPartial`** (`<output minus .json>.partial.jsonl`, one JSON object per line, flushed per segment). It is **gone** after a finished or cancelled run — `output` is the answer — and **left on disk after a failure**, holding every segment that decoded before it died. A 90-minute recording that fails at minute 80 writes no `.json` at all, so this is the only place those 80 minutes survive:
 
@@ -516,7 +516,7 @@ for (const s of rec.segments) {
 - **Not free, unlike `diarize`.** An extra pass per decoded window — measured at 0.16s → 0.22s on a 7.4s recording (+40%) — plus a **one-time ~1.3s** on the first worded transcription in a worker process while Metal compiles the extra graph. And it **changes the decode**: the library's hallucination pruning only runs with word timings on, so the *same file* can come back with a different number of segments than a call without it. Ask for it when a page needs it.
 - **No per-word confidence, deliberately** — it is a number only some engines have, and the reply must not come to depend on which one ran.
 - Default `false` and additive: a transcript written without it has no `words` key anywhere.
-- `onSegment` segments carry `words` too, same shape — one rendering path for the live view and the final list.
+- `onChunk` segments carry `words` too, same shape — one rendering path for the live view and the final list.
 
 ### Two engines, and a format that loads nowhere
 
@@ -526,7 +526,7 @@ One thing about the call is therefore engine-dependent:
 
 - **Progress resolution.** MLX Whisper reports once per decoded window (up to 30s), so `job.done` can sit still and then jump. It is always a real position in the recording.
 
-Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPrompt` — is honoured by both engines today, so nothing here needs a per-engine check. Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
+Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPrompt` — is honoured by both engines today, so nothing here needs a per-engine check. Everything else — the result shape, the two files, `onChunk`, the speaker labels, `vad` — is identical whichever one served you.
 
 ## Embeddings: `fused.ai.embed({texts, ...})`
 
@@ -793,7 +793,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 
 **Transcription**
 
-- **Expecting the words from the job** → the row only says when; the text is read off `output`. For words *during* the run, pass `onSegment`.
+- **Expecting the words from the job** → the row only says when; the text is read off `output`. For words *during* the run, pass `onChunk`.
 - **Reading progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads. Take the id from `catalog()`.

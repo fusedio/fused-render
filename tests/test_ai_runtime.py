@@ -7880,7 +7880,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
 
 
 def _framed(segments):
-    """File-shape transcript segments -> the frame's shape `onSegment` and
+    """File-shape transcript segments -> the frame's shape `onChunk` and
     `rec.segments` speak since D632 (`runtime.js`'s `frameSegment`)."""
     out = []
     for s in segments:
@@ -7953,7 +7953,7 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
       const rawUrl = (p) => "/api/fs/raw?path=" + p;
       const stat = () => Promise.reject(new Error("no stat"));
       const readFile = () => {readfile};
-      // A caller with no `onSegment` must make no request of its own. The
+      // A caller with no `onChunk` must make no request of its own. The
       // bridge swallows tail failures on purpose, so an unstubbed `fetch`
       // would let a regression here pass silently as a rejected promise
       // nobody reads — this one is LOUD instead.
@@ -8250,9 +8250,9 @@ def test_the_bridge_refuses_a_caller_supplied_base_as_an_unknown_option():
     assert "base" in settled["message"]
 
 
-def test_onProgress_and_onSegment_are_exempt_from_the_transcribe_unknown_key_check():
+def test_onProgress_and_onChunk_are_exempt_from_the_transcribe_unknown_key_check():
     settled = _run_ai_transcribe_opts_only(
-        '{path: "a.m4a", onProgress: () => {}, onSegment: () => {}}')
+        '{path: "a.m4a", onProgress: () => {}, onChunk: () => {}}')
     assert settled["ok"] is True, settled
 
 
@@ -8575,7 +8575,7 @@ def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
 # it cannot see the poll loop at all. This second harness drives the real one:
 # the file GROWS between ticks, exactly as a worker appending to it makes it,
 # and `fetch` is a real ranged reader over those bytes. What is proved is the
-# part a page must not have to write itself — that `onSegment` fires in order,
+# part a page must not have to write itself — that `onChunk` fires in order,
 # once each, while the run is still going.
 
 
@@ -8602,7 +8602,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     made to fail on its own without disturbing the tail that ran before it.
 
     Returns `{settled, segments, segmentsAtSettle, fetches}` — the outcome,
-    every `onSegment` argument in the order it arrived, how many of them had
+    every `onChunk` argument in the order it arrived, how many of them had
     arrived at the moment the promise settled, and every request the bridge
     made.
     """
@@ -8716,7 +8716,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
       );
     """.replace("OPTS", opts).replace(
         "LISTENER",
-        "{onSegment: (s) => heard.push(s)}" if on_segment
+        "{onChunk: (s) => heard.push(s)}" if on_segment
         # …but still an `onProgress`, so the poll loop ticks exactly as it does
         # for the caller under test. Without one, `watch(null)` would never
         # reach the branch that decides whether to tail.
@@ -8740,7 +8740,7 @@ def _jsonl(*segments):
 
 def test_a_page_gets_each_segment_WHILE_the_file_is_still_decoding():
     """The deliverable. A page must not have to implement file tailing to get a
-    streaming transcript — it passes `onSegment` and the bridge does it, off
+    streaming transcript — it passes `onChunk` and the bridge does it, off
     the poll it was already running for `onProgress`."""
     one = {"start": 0.0, "end": 1.5, "text": "hello"}
     two = {"start": 1.5, "end": 3.0, "text": "world"}
@@ -8788,7 +8788,7 @@ def test_a_tail_still_IN_FLIGHT_when_the_row_finishes_cannot_double_deliver():
 def test_a_run_whose_partial_file_never_appears_still_delivers_EVERY_segment():
     """404 for the whole run — an older server that advertises no partial path,
     a transcripts directory on a filesystem that lost it, a worker too fast to
-    ever be caught mid-run. `onSegment` is a promise about segments, not about
+    ever be caught mid-run. `onChunk` is a promise about segments, not about
     the file they arrived through."""
     one = {"start": 0.0, "end": 1.0, "text": "one"}
     run = _run_ai_transcribe_tailing(
@@ -8864,7 +8864,7 @@ def test_a_server_that_IGNORES_the_range_still_delivers_each_segment_once():
     assert run["segments"] == _framed([one, two])
 
 
-def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
+def test_a_caller_with_NO_onChunk_makes_exactly_the_requests_it_always_did():
     """The additive promise, and the one a page cannot see: a bridge that
     tailed unconditionally would put a second request on every poll of every
     existing transcription, for a file nobody is reading."""
@@ -8878,7 +8878,7 @@ def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
     assert quiet["settled"]["ok"] is True, quiet["settled"]
     assert quiet["fetches"] == []
 
-    # …and with `onSegment`, one tail per tick and no more — no second loop.
+    # …and with `onChunk`, one tail per tick and no more — no second loop.
     # Three ticks, not two: `watch` reports the terminal record as well, and
     # that last tail is what carries the segments written between the final
     # running tick and the row finishing.
@@ -8899,20 +8899,20 @@ def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
     run = _run_ai_transcribe_tailing(
         [_jsonl(one)], {"text": "one", "segments": [one]},
         partial_path=json.dumps(reply["outputPartial"]))
-    # `onSegment` speaks the frame's segment shape (D632), not the file's.
+    # `onChunk` speaks the frame's segment shape (D632), not the file's.
     assert run["segments"] == [{"text": "one", "startSecond": 0.0, "endSecond": 1.0}]
     assert run["fetches"][0]["url"].endswith(reply["outputPartial"])
 
 
 def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
-    """`onSegment` must stop when the promise settles, and the failure path is
+    """`onChunk` must stop when the promise settles, and the failure path is
     the one that did not honour that.
 
     `watch` reports the terminal record too, so an `error` or `cancelled` row
     starts one last tail — and a tail from the tick before it can still be in
     flight anyway. The success path settles `tailChain` before it drains, but
     the failure path threw straight out of the `.then`, so those reads landed
-    afterwards and called `onSegment` on a promise the caller had already seen
+    afterwards and called `onChunk` on a promise the caller had already seen
     reject. A page that clears its transcript pane on the rejection then gets a
     cue painted into the cleared pane, from a run it was told was over.
 
@@ -8925,7 +8925,7 @@ def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
     appended, so it cannot have seen it, and the terminal tick's `tail()`
     declines to start another while one is in flight. Settling the chain and
     rejecting therefore delivered nothing at all: `err.outputPartial` pointed
-    at a file holding a segment `onSegment` never got. The success path drains
+    at a file holding a segment `onChunk` never got. The success path drains
     the finished `.json` for exactly this reason; the failure path has no
     `.json`, so it re-reads the partial file one last time instead.
     """
@@ -8945,7 +8945,7 @@ def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
     assert run["segmentsAtSettle"] == len(run["segments"]), run
 
 
-def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
+def test_a_CANCELLED_run_also_stops_calling_onChunk_once_it_rejects():
     """Same rule on the other terminal state. A page cancels a transcription
     to make it stop; a cue arriving after `cancel()` resolved is the one thing
     a Stop button must not do."""
@@ -9180,7 +9180,7 @@ def test_sampling_reaches_the_worker(client, fake_runner, monkeypatch):
 
     client.post("/api/ai", json={
         "prompt": "hi", "model": "org/chat",
-        "temperature": 0.2, "max_tokens": 64, "top_p": 0.9,
+        "temperature": 0.2, "maxTokens": 64, "topP": 0.9,
     }, headers={"X-Fused": "1"})
 
     assert seen["temperature"] == 0.2
@@ -9189,13 +9189,13 @@ def test_sampling_reaches_the_worker(client, fake_runner, monkeypatch):
 
 
 @pytest.mark.parametrize("body,expected", [
-    ({"max_tokens": 10_000_000}, "between"),
-    ({"max_tokens": 0}, "between"),
+    ({"maxTokens": 10_000_000}, "between"),
+    ({"maxTokens": 0}, "between"),
     ({"temperature": 9}, "between"),
-    ({"top_p": 2}, "between"),
+    ({"topP": 2}, "between"),
     ({"temperature": "warm"}, "must be a number"),
     # True is an int in Python and would pass a bare range check as max_tokens=1.
-    ({"max_tokens": True}, "must be a number"),
+    ({"maxTokens": True}, "must be a number"),
 ])
 def test_a_sampling_value_out_of_range_is_refused(client, body, expected):
     """One resident model serves every page, so an unbounded token budget is not

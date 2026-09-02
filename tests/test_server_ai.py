@@ -733,7 +733,7 @@ def test_relay_options_become_reconfiguration_requests(monkeypatch):
     fake = _cli_ok(monkeypatch)
     proc = _FakeProc(turns=[_result_lines(), _result_lines()])
     _seed_session(proc)  # live instance
-    _relay({"prompt": "hello", "system_prompt": "be terse",
+    _relay({"prompt": "hello", "systemPrompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
     assert fake.calls == []  # reconfigured, not respawned
 
@@ -1045,7 +1045,7 @@ def test_relay_control_error_respawns_with_argv_config(monkeypatch):
     live = _FakeProc(control_error={
         "set_model": "unexpected field: system_prompt"})
     _seed_session(live)
-    resp = _relay({"prompt": "hello", "system_prompt": "be terse",
+    resp = _relay({"prompt": "hello", "systemPrompt": "be terse",
                    "model": "claude-sonnet-5"})
     assert _data(resp)["ok"] is True
     assert live.killed  # the control error discarded the instance

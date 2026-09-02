@@ -9,8 +9,8 @@
 // with the job id of the load this call just started — watch it, retry once),
 // and the job poll that image and transcription runs are built on.
 //
-// The wire names are the SERVER's, snake_case (`system_prompt`, `top_p`,
-// `max_tokens`) — `runtime.js` renames them for page authors and that renaming
+// The wire names are the PAGE's, camelCase (`systemPrompt`, `topP`,
+// `maxTokens`) since D633 — the same names `runtime.js` exposes, so nothing
 // is its business, not a second contract to copy here.
 import { postJson, rawUrl } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
@@ -25,9 +25,9 @@ export interface ChatTurn {
  *  key is not sent at all. */
 export interface ChatSettings {
   temperature?: number;
-  top_p?: number;
-  max_tokens?: number;
-  system_prompt?: string;
+  topP?: number;
+  maxTokens?: number;
+  systemPrompt?: string;
 }
 
 /** The AI SDK's token counts (D632) — `totalTokens` is the sum the server

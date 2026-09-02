@@ -784,18 +784,31 @@ _HISTORY_ROLES = ("user", "assistant")
 #: an unbounded token budget is not one caller's slow request — it is every
 #: other caller blocked behind it. 32k is past any chat turn and short of "this
 #: laptop is busy until you notice".
+# Wire names are the PAGE's names — camelCase, as on every other `/api/ai/*`
+# route (D633). `runtime.js` used to rename these to snake_case on the way in
+# and the worker still speaks snake; the one rename now happens where the
+# worker request is built (`_local_relay`), not at the bridge.
 _SAMPLING = {
     "temperature": (0.0, 2.0),
-    "top_p": (0.0, 1.0),
-    "max_tokens": (1, 32768),
+    "topP": (0.0, 1.0),
+    "maxTokens": (1, 32768),
 }
+#: The closed envelope of `/api/ai` (D413's rule, extended to text by D633):
+#: an unrecognised key is a 400 naming it, checked before any other field —
+#: the same asymmetry as the other four routes, where `base` is bridge-
+#: injected (the page's own `?path=`, for relative `images`) and not a
+#: caller-facing option.
+_TEXT_OPTIONS = frozenset({
+    "prompt", "provider", "model", "systemPrompt", "effort", "history", "raw",
+    "images", "temperature", "maxTokens", "topP"})
+_TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
 
 
 # The wire name of each sampling knob -> the option name a PAGE wrote
 # (`runtime.js` maps camelCase to snake_case on the way in), so a warning
 # names the thing the author can find in their own code.
-_OPTION_NAMES = {"temperature": "temperature", "max_tokens": "maxTokens",
-                 "top_p": "topP", "effort": "effort"}
+_OPTION_NAMES = {"temperature": "temperature", "maxTokens": "maxTokens",
+                 "topP": "topP", "effort": "effort"}
 
 
 def _unsupported(setting: str, tier: str, why: str) -> dict:
@@ -828,7 +841,7 @@ def _local_finish_reason(event: dict, body: dict) -> str:
     """
     if event.get("cancelled"):
         return "cancelled"
-    limit = body.get("max_tokens")
+    limit = body.get("maxTokens")
     tokens = event.get("tokens")
     if (isinstance(limit, int) and not isinstance(limit, bool)
             and isinstance(tokens, int) and tokens >= limit):
@@ -870,13 +883,31 @@ def _images_problem(images) -> str | None:
     beside `history`'s and `raw`'s own refusals, and this only checks the
     SHAPE: a list of non-empty strings, under the cap."""
     if not isinstance(images, list):
-        return "'images' must be a list of absolute file paths"
+        return "'images' must be a list of file paths"
     if len(images) > _MAX_IMAGES:
         return f"'images' may not carry more than {_MAX_IMAGES} paths"
     for index, path in enumerate(images):
         if not isinstance(path, str) or not path:
             return f"'images[{index}]' must be a non-empty string"
     return None
+
+
+def _resolve_images(images: list, base) -> tuple[list | None, str | None]:
+    """Page-relative `images`, the rule every other file input on this
+    surface follows (RH-1, D633): a relative path resolves against the
+    directory of `base`, the calling page's own absolute path, which the
+    bridge injects; an absolute path passes through untouched. Before this,
+    text was the one verb whose file input had to be absolute."""
+    resolved = []
+    for path in images:
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            if not isinstance(base, str) or not os.path.isabs(base):
+                return None, ("'images' must be absolute, or relative to a page "
+                              "named by 'base'")
+            path = os.path.join(os.path.dirname(base), path)
+        resolved.append(os.path.abspath(path))
+    return resolved, None
 
 
 def _images_unsupported_by_runner(model: str) -> str | None:
@@ -1023,9 +1054,11 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # `prompt` — so this is only set when the caller asked for raw.
         **({"prompt": prompt} if body.get("raw") else {}),
         "messages": messages,
-        "max_tokens": body.get("max_tokens"),
+        # The worker's vocabulary is snake_case; the wire's is the page's
+        # camelCase (D633). This is the one place the two meet.
+        "max_tokens": body.get("maxTokens"),
         "temperature": body.get("temperature"),
-        "top_p": body.get("top_p"),
+        "top_p": body.get("topP"),
         # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
         # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
         # VLM's chat template is told `num_images` and asking about two
@@ -1278,6 +1311,19 @@ async def _ai_relay(body: dict):
     validation happens BEFORE any streaming starts, so 400s and the
     binary-missing 502 are always proper JSON; only an error after the first
     byte is demoted to an ok:false done frame on a 200."""
+    # The envelope is CLOSED, checked before any field (D413's rule, D633):
+    # a page that mistyped an option learns about the option it does not
+    # have, not about the field it also got wrong — and never watches a
+    # `systemprompt` silently do nothing. Same message shape as the four
+    # capability routes' `_reject_unknown`.
+    unknown = sorted(k for k in body if k not in _TEXT_SERVER_OPTIONS)
+    if unknown:
+        named = ", ".join(repr(k) for k in unknown)
+        verb = "is not an option" if len(unknown) == 1 else "are not options"
+        return _ai_error(
+            "bad_request",
+            f"{named} {verb} of /api/ai; accepted: {', '.join(sorted(_TEXT_OPTIONS))}",
+            status=400)
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _ai_error(
@@ -1343,7 +1389,7 @@ async def _ai_relay(body: dict):
             "bad_request",
             "'effort' must be one of: %s" % ", ".join(_AI_EFFORTS),
             status=400)
-    system_prompt = body.get("system_prompt")
+    system_prompt = body.get("systemPrompt")
     if not (isinstance(system_prompt, str) and system_prompt):
         system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
 
@@ -1385,6 +1431,10 @@ async def _ai_relay(body: dict):
         problem = _images_problem(images)
         if problem:
             return _ai_error("bad_request", problem, status=400)
+        images, problem = _resolve_images(images, body.get("base"))
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+        body = {**body, "images": images}
     # `raw` and `images` refuse each other, the same shape as `raw`/`history`
     # above and for the same underlying reason: `raw` means "no chat template
     # at all", and the image placeholder tokens a picture needs are inserted

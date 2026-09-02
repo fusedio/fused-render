@@ -101,7 +101,7 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     lines.push(
       "It turns speech into text. Call it from the page with " +
         `await fused.ai.transcribe({ path, model: ${JSON.stringify(model.id)}${extra}, onSegment }) — ` +
-        "path is an audio/video file on disk, segments stream through onSegment. " +
+        "path is an audio/video file on disk, segments stream through onChunk. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
   } else if (capability === "embeddings") {

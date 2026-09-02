@@ -319,9 +319,9 @@ export function TextStage({
 
   const settings = (): ChatSettings => ({
     ...(temperature !== DEFAULTS.temperature ? { temperature } : {}),
-    ...(topP !== DEFAULTS.top_p ? { top_p: topP } : {}),
-    ...(maxTokens !== DEFAULTS.max_tokens ? { max_tokens: maxTokens } : {}),
-    ...(system.trim() ? { system_prompt: system.trim() } : {}),
+    ...(topP !== DEFAULTS.top_p ? { topP } : {}),
+    ...(maxTokens !== DEFAULTS.max_tokens ? { maxTokens } : {}),
+    ...(system.trim() ? { systemPrompt: system.trim() } : {}),
   });
 
   const send = async (asked?: string) => {
