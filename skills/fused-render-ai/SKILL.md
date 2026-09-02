@@ -52,7 +52,7 @@ Two tiers, fixed order. `provider` pins one; omitted, the model's shape decides.
 **Take local ids from `fused.ai.models.catalog()` and treat them as opaque.** Ids are backend-specific (MLX on Apple Silicon, GGUF/ONNX elsewhere) and not always `org/name` — a curated GGUF id is a bare filename. A hard-coded id is an unusable download on the next machine. Never `id.split("/")`.
 
 ```js
-const cat = await fused.ai.models.catalog();       // { capabilities: [row...], ramGb }
+const cat = await fused.ai.models.catalog();       // { capabilities: [row...], unsupported, ramGb }
 const row = cat.capabilities.find(r => r.capability === "text-generation");
 row.available;   // false → nothing here serves it; row.reason says why
 row.default;     // the id a bare call uses — null when there is no recommendation
@@ -198,7 +198,7 @@ try {
 }
 ```
 
-Renders take minutes on CPU, are capped at 900 s, and **serialize**: a second render waits with no queue message on its row. Keep default sliders modest; disable the button.
+Renders take minutes on CPU, are capped at 900 s (past that: `ai_error`), and **serialize**: a second render waits with no queue message on its row. Keep default sliders modest; disable the button.
 
 ## Video: `fused.ai.video({prompt, ...})`
 
@@ -319,7 +319,7 @@ const txt  = await fused.ai.embed({ texts: ["a dog on a beach"], model: m.id });
 
 | Call | Returns |
 |---|---|
-| `catalog()` | `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], ramGb}` |
+| `catalog()` | `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}` |
 | `list()` | `{loaded: [...], downloading, runners: [{code, capability, available, active, ...}], totalResidentBytes, memoryCeilingBytes}` |
 | `load(id, {capability})` / `download(id, {capability})` | `{jobId}` — a job, not a model. Watch with `fused.watchJob(jobId)` |
 | `unload({capability})` | `{stopped, ...}` |
@@ -340,7 +340,7 @@ for (const m of row.models) {                        // render ALL of them — f
 
 ## From Python: `import fused_ai`
 
-Same verbs, same option names, blocking by default. Any `.py` the server runs can `import fused_ai` with no path setup.
+Same option names, blocking by default; every verb except `video`. Any `.py` the server runs can `import fused_ai` with no path setup.
 
 ```python
 import fused_ai
@@ -380,8 +380,8 @@ try { ... } catch (err) {
 | `ai_unavailable` | `claude` CLI not found, or the local worker will not start | text |
 | `unavailable` | A fact about this machine: no runner, needs Apple Silicon, `"claude"` on a non-text verb | image, video, transcribe, embed, models |
 | `bad_request` | Unknown option, missing/empty required field, local-only option on Claude, unusable value | all |
-| `ai_error` | Ran and failed (bad model id, OOM, worker crash, transcript unreadable) | all |
-| `timeout` | Text 600 s, image 900 s, video 2 h | text, image, video |
+| `ai_error` | Ran and failed: bad model id, OOM, worker crash, transcript unreadable, or a render past its cap (image 900 s, video 2 h — "the … process did not answer") | all |
+| `timeout` | No answer within 600 s | text |
 | `cancelled` | `abortSignal`, `fused.ai.cancel`, or the row's ✕ | all |
 
 ## Export
