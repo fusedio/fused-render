@@ -1688,3 +1688,89 @@ def test_export_rejects_ai(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert any("fused.ai.text() is not supported on a hosted page" in e
                for e in plan.errors)
+
+
+# -- one AI session per app build, never shared across event loops ----------
+# `asyncio.Lock` binds itself to whichever event loop first CONTENDS it (an
+# uncontended acquire/release never binds at all) and permanently raises on
+# any later contended acquire from a different loop.  `_AiSession.lock` is
+# touched by both `prewarm_default()` and `shutdown()`, so a session object
+# reused across two independent app builds - each with its own event loop -
+# risks exactly that cross-loop RuntimeError the moment its lock is ever
+# contended in one of those builds.
+
+
+def test_a_contended_asyncio_lock_raises_when_reused_from_another_loop():
+    import asyncio
+
+    lock = asyncio.Lock()
+
+    async def hold_then_release():
+        async with lock:
+            await asyncio.sleep(0.02)
+
+    async def contend():
+        async with lock:
+            pass
+
+    async def first_loop():
+        await asyncio.gather(hold_then_release(), contend())
+
+    asyncio.run(first_loop())  # contended acquire binds `lock` to this loop
+
+    with pytest.raises(RuntimeError, match="different event loop"):
+        # An UNCONTENDED acquire never calls the loop-binding check at all
+        # (that's the fast path `Lock.acquire()` takes when nobody else
+        # holds it) - only a second contended acquire, from this second
+        # loop, exercises the check that finds the stale binding.
+        asyncio.run(first_loop())
+
+
+def test_prewarm_ai_gives_each_app_build_its_own_session(monkeypatch):
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    first = _server_ai._AI_SESSION
+    _server_ai.prewarm_ai()
+    second = _server_ai._AI_SESSION
+    assert second is not first
+    assert isinstance(second, _server_ai._AiSession)
+
+
+def test_shutdown_closes_the_shutting_down_apps_own_session(monkeypatch):
+    """Two overlapping app builds each get their own `_AiSession` (the test
+    above), but a shared module global still leaves shutdown reading
+    whichever session happens to be current rather than the one its own app
+    built. Simulate the interleaving directly: app A prewarms, app B
+    prewarms (the global now points at B's session), then A shuts down.
+    A's shutdown must close A's own session, and must leave B's session
+    alone — not close it, and not close it twice when B later shuts down
+    its own."""
+    import types
+
+    monkeypatch.setattr(_server_ai._AiSession, "prewarm_default", lambda self: None)
+    closed = []
+
+    async def _recording_shutdown(self):
+        closed.append(self)
+
+    monkeypatch.setattr(_server_ai._AiSession, "shutdown", _recording_shutdown)
+
+    app_a = types.SimpleNamespace(state=types.SimpleNamespace())
+    app_b = types.SimpleNamespace(state=types.SimpleNamespace())
+
+    _server_ai.prewarm_ai(app_a)
+    session_a = getattr(app_a.state, "ai_session", None)
+    assert session_a is not None, (
+        "prewarm_ai(app) must stash the session it built on app.state, "
+        "not only on the module global")
+
+    _server_ai.prewarm_ai(app_b)
+    session_b = app_b.state.ai_session
+    assert session_b is not session_a
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_a))
+    assert closed == [session_a], (
+        "shutting down app A must close A's own session, not whatever the "
+        "module global currently points at")
+
+    asyncio.run(_server_ai.shutdown_ai_session(app_b))
+    assert closed == [session_a, session_b]

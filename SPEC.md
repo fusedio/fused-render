@@ -11051,19 +11051,27 @@ browser control surface, `static/runtime.js`) and `fused_render/background_apps.
 + `server/routers/background_apps.py` (the server side) turn engine_host's
 existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
 general "keep this running" primitive, rather than a special case wired for
-one built-in template. The map viewer's tile daemon and a warm `/api/engine`
-worker are the two existing engine_host child kinds (template, app);
-background apps are the third.
+one built-in template. `engine_host` has no child-kind tag at all — a
+built-in template's own tile daemon and a folder's own declared daemon are
+both just a `Child`, distinguished only by which of its fields are set:
+`folder` (the declaring app folder, empty for a template), `module` (the
+warm-worker module a `main =` app serves, empty otherwise), `idle_timeout_s`
+(the reap rule — `0` for a resident daemon, positive for a `main =` app),
+and `retry_post` (whether a proxied POST to it is safely re-runnable).
 
 - **Manifest.** A folder opts in with `[tool.fused-render.app]` in its own
-  `pyproject.toml`: `kind = "background"` and `daemon = "<file>"`, a filename
-  resolved inside the folder — never a path that can climb out of it
+  `pyproject.toml`, declaring its protocol with exactly one of two keys:
+  `daemon = "<file>"` (the author's own HTTP surface, resident by default) or
+  `main = "<file>"` (the shipped `engine_worker.py` imports it once and
+  answers by calling its `main(**params)`, reaped after `idle_timeout_s`
+  idle seconds, default 900s). Either way the file is a filename resolved
+  inside the folder — never a path that can climb out of it
   (`background_apps.load_manifest`'s realpath containment check, the same
   posture `registered_apps.py`'s folder guards already take). Nothing else
   reads this table; it is greenfield.
-- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`
-  — same shape as the warm-worker's `app_engine_id`, a distinct prefix so the
-  two can never collide. `version_for(folder, interpreter)` digests the
+- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`,
+  a distinct prefix so a background child's id can never collide with a
+  template's. `version_for(folder, interpreter)` digests the
   manifest's own bytes, the daemon file's mtime/size, and the interpreter
   path (D514) — any of the three changing retires the running child rather
   than reusing it.
@@ -11108,20 +11116,21 @@ background apps are the third.
   `background_apps.load_manifest` enforces containment, not flatness), and
   such a daemon's own dirname has no `pyproject.toml` of its own, so
   re-deriving would refuse to ever start it. Reused/spawned with the same
-  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
-  child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
-  now gates on `kind == "app"`, not the `module` field's truthiness) —
-  sitting idle is the entire point of a background app, unlike a warm script
-  worker that idle-retires after `APP_IDLE_RETIRE_S`. Every managed child
-  (template, app, background) dies together on the server's ASGI shutdown
+  double-checked dance `ensure` already uses. `idle_timeout_s` is a plain
+  float on `Child`, not derived from kind: a `daemon =` background child
+  defaults to `0` (never reaped, sitting idle is the entire point of a
+  resident daemon) while a `main =` background child defaults to 900s,
+  reaped by `reap_idle_children` on the same sweeper thread that reaps any
+  other bounded child. Every managed child (template, background) dies
+  together on the server's ASGI shutdown
   event (`engine_host.stop_all()`, already wired at `server/app.py`'s
   `_shutdown_engines` and reached by the packaged macOS app's `quit_teardown`
   server-drain step, which sets `should_exit` and lets uvicorn's own shutdown
   sequence run the ASGI lifespan shutdown — no separate rung was needed).
 - **The API** (`server/routers/background_apps.py`) takes `html` — the
   page's own path — on every endpoint, never a raw folder path, and resolves
-  the app folder from it server-side exactly as `/api/run`/`/api/engine`
-  resolve `py` (D500): this adds no code-execution surface and no
+  the app folder from it server-side exactly as `/api/run` resolves
+  `py` (D500): this adds no code-execution surface and no
   path-typed API to defend. `_folder_for` REALPATH's the resolved folder
   (D509, 2026-08-26 code review — it used to only `abspath` it): folder
   identity across every endpoint now agrees with `engine_id_for`'s own
@@ -11133,10 +11142,11 @@ background apps are the third.
   entries for it. `enable`/`disable` are gone — no back-compat aliases
   (D511; this feature was unmerged when the split landed). `GET /status`
   reports `{running, autostart, pid, version, engine_id}` as two independent
-  facts; `POST /start` spawns the daemon now WITHOUT touching autostart
-  (409 if the folder's project venv isn't built yet — the same stance
-  `/api/engine` already takes, D500: building one inside a POST would block
-  for minutes, so opening the page once installs it first); `POST /stop`
+  facts; `POST /start` spawns the daemon now WITHOUT touching autostart —
+  `_resolve` falls back to `sys.executable` when the folder's project venv
+  isn't built yet, the same fallback `/api/run`'s builtin engine takes
+  (D500), rather than blocking a POST for the minutes a venv build can take;
+  `POST /stop`
   kills the running daemon, also without touching autostart — if it's on,
   the startup hook (or a later `start`/`restart`) brings it back; if it's
   off (the default), it stays down until an explicit `start`; `POST
@@ -11159,33 +11169,34 @@ background apps are the third.
   a daemon started without opting into autostart — now the DEFAULT path —
   had no row there and the badge stayed off for it even while genuinely
   running). `engine_host.background_running_folders()` enumerates the
-  in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
+  in-memory `_children` dict directly (`c.folder` truthy, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
 - **The status bar's Engines section (D591).** Two routes on
   `server/routers/engines.py` let the user see and stop what is running,
-  across ALL THREE child kinds rather than background apps only:
+  across every live child rather than background apps only:
   - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
-    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
-    (`kind="background"` only) and `module` (warm app workers only) so a row
-    can be labelled without guessing each kind's conventions. Read-only and
-    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
-    this router's proxied GETs. The work is
-    `engine_host.running_engines()`, which keeps the same lock discipline
-    `background_running_folders` established — snapshot under `_lock`,
-    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
-    lock or the private `_children` dict.
+    child with `engine_id`, `pid`, `version`, `folder` (set for a background
+    app's own daemon, empty for a template) and `module` (set for a `main =`
+    warm worker, empty otherwise) so a row can be labelled without guessing
+    which fields a given child populated. Read-only and UNGUARDED, the same
+    posture as `GET /api/apps/background/running` and as this router's
+    proxied GETs. The work is `engine_host.running_engines()`, which keeps
+    the same lock discipline `background_running_folders` established —
+    snapshot under `_lock`, `_alive()`'s `Popen.poll()` outside it — so the
+    router never touches the lock or the private `_children` dict.
   - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
     like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
     executing side. Calls `engine_host.stop`, which is idempotent (it pops
     with a default), so a stale row clicked after the engine already exited
-    is a no-op rather than an error. NOT a destructive route: a `template`
-    engine respawns on the next `ensure`, a warm `app` worker on its next
-    call (and is idle-reaped on a timer regardless, `APP_IDLE_RETIRE_S`), and
-    a `background` daemon going down is exactly the documented "quit this app
+    is a no-op rather than an error. NOT a destructive route: a template
+    engine respawns on the next `ensure`, a `main =` background child on its
+    next call (and is idle-reaped on a timer regardless, `idle_timeout_s`),
+    and a `daemon =` background daemon going down is exactly the documented "quit this app
     right now" action. Deliberately NOT routed through
     `POST /api/apps/background/stop`, which takes an `html` PAGE path and
     derives the folder with a `dirname()` — handing it a folder resolves to
-    the folder's PARENT — and which covers `kind="background"` only.
+    the folder's PARENT — and which covers a background app's own folder
+    only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
@@ -11195,13 +11206,26 @@ background apps are the third.
   store ever come back here — a folder that was only `start()`ed, with
   autostart never turned on, does not.
 - **`fused.daemon`** (`static/runtime.js`) is the browser's control surface for
-  a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
-  variant of `runPython` for the PAGE's own script: `status()` / `start()` /
+  a FOLDER's declared daemon, whichever protocol it chose: `status()` / `start()` /
   `stop()` / `restart()` / `setAutostart(bool)` all send the page's own path
   as `html`; `call(path, body)` reaches the daemon directly, proxied through the
   same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
-  `engine_id` from a cached `status()` call. `watch(callback)` (D515) is the
+  `engine_id` from a cached `status()` call; `run(params)` is the `main =`
+  convenience over the same proxy mechanics — POST `/call` with `params` as
+  the body, the `{ok, result, error, stdout, resolved_py}` envelope
+  unwrapped the way `runPython` unwraps `/api/run`'s. Both bring the daemon
+  up transparently when it isn't known to be running (a page's first call,
+  or after the idle reaper has retired it) rather than requiring an explicit
+  `start()` first — `engine_forward._forward` already heals a
+  dead-but-running child on any proxied call, and the preview guard
+  (D507/D508) is what actually stops an uninvited spawn, not a start-first
+  gate. `status()`'s payload carries `protocol` (`"main"` | `"daemon"` |
+  `null` for a folder with no valid manifest), and `call`/`run` each reject
+  against the OTHER folder shape, naming the method to use instead — `run()`
+  against a `daemon =` folder, `call()` against a `main =` folder — rather
+  than silently 404ing or handing back a raw, unwrapped envelope.
+  `watch(callback)` (D515) is the
   push-shaped wrapper over `status()` a page needs to learn its daemon's
   state changed for a reason OUTSIDE its own control (another tab, the
   server's own resurrection, or — the case that motivated it — a native
@@ -11217,7 +11241,8 @@ background apps are the third.
   `fused.capture` and the rest of the local-only surface named in the file
   header — not available on hosted/exported pages. Named `fused.app` through
   D505; renamed to `fused.daemon` (D506) to resolve a three-way collision on
-  "app" (an app-tagged folder, `ensure_app`'s warm worker, the `/apps` hub) —
+  "app" (an app-tagged folder, the warm-worker endpoint that has since been
+  folded into this same background-app machinery, and the `/apps` hub) —
   the HTTP endpoints (`/api/apps/background/*`) and the Python modules
   (`background_apps.py`, `background_app.py`) deliberately kept their
   "background" naming; only the author-facing JS name changed.
@@ -11233,17 +11258,17 @@ background apps are the third.
   symlinked app folder's badge no longer silently fails to match its
   daemon's (realpath-keyed) running folder.
 - **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
-  `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
-  `Child.folder`) into a `kind="background"` child's environment only — the
-  one affordance the API above doesn't otherwise offer, since every endpoint
-  keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
+  `FUSED_RENDER_APP_DIR` into any child whose `Child.folder` is set (the
+  manifest's declaring folder) — the one affordance the API above doesn't
+  otherwise offer, since every endpoint keys off a page's `html` path and a
+  daemon has none. `templates/shared/background_app.py`
   is the stdlib-only client that reads it: `status()`/`stop()`/`set_autostart(bool)`/`restart()`
   against the calling daemon's own app, resolving the origin the same ladder
   `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
   `NotUnderEngine` when the env var is absent (not running as an
   engine-spawned background daemon at all). `engine_host.restart()` carries
   `folder` over onto its replacement `Child` the same as `python`/`daemon`/
-  `cache`/`version`/`kind` — a healed or manually-restarted background
+  `cache`/`version` — a healed or manually-restarted background
   child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
   bring-up.
 - **Resurrection has three triggers, not one, and they are not equally
@@ -11426,7 +11451,7 @@ the rules around it.
   any `window.fused` accessor for the paths.
 ---
 
-## 48. Self-Fix — A Claude Session on This Installation (D634)
+## 48. Self-Fix — A Claude Session on This Installation (D655)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure

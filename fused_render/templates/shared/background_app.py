@@ -5,12 +5,12 @@ Every endpoint under `/api/apps/background/*` (`server/routers/background_apps.p
 keys off `html` — the page's own path — and resolves the app folder from it
 server-side (`_folder_for` there does `os.path.dirname(os.path.abspath(html))`).
 A background daemon spawned by `engine_host.ensure_background` has no page and
-no `html` path of its own, so before this module it had no way to ask the
-server about itself at all: it could not check whether it is still enabled,
-tell the server to stop it, or turn itself off.
+no `html` path of its own, so this module gives it a way to ask the server
+about itself: check whether it is still enabled, tell the server to stop it,
+or turn itself off.
 
-The missing piece is `FUSED_RENDER_APP_DIR` — exported into a `kind="background"`
-child's environment only (`engine_host.py`'s `_spawn_env`, alongside
+The missing piece is `FUSED_RENDER_APP_DIR` — exported into a background
+child's environment only (`engine_host.py`'s `_spawn_env`, keyed on
 `Child.folder`) — the app folder the daemon's own manifest declared. This
 module reads that var, synthesizes a stand-in `html` path inside the folder
 (the server only ever takes its `dirname`, so the leaf name is arbitrary —
@@ -19,7 +19,7 @@ speaks the same endpoints a page's `fused.daemon.*` calls speak.
 
 Run state and autostart are independent (D511): `stop()` only kills this
 process, `set_autostart(bool)` only flips the persisted flag — neither
-implies the other. There is no `disable()` here any more.
+implies the other.
 
 **Stdlib only, no `import fused_render`** — same constraint as `fused_ai.py`
 and `appenv.py` beside this file (see the `adding-a-shared-template-utility`
@@ -75,9 +75,9 @@ _DEFAULT_TIMEOUT_S = 10.0
 # own constant of the same name.
 SERVER_JSON_NAME = "server.json"
 
-# The env var `engine_host._spawn_env` exports for a `kind="background"`
-# child only — see that function's docstring. Named here too so a test can
-# pin the two together without restating the string.
+# The env var `engine_host._spawn_env` exports for a background child (one
+# with a `Child.folder`) only — see that function's docstring. Named here too
+# so a test can pin the two together without restating the string.
 APP_DIR_ENV = "FUSED_RENDER_APP_DIR"
 
 # Arbitrary leaf name for the synthetic `html` path the server-side endpoints
@@ -170,7 +170,7 @@ def _self_html_path() -> str:
             f"{APP_DIR_ENV} is not set: this process is not running as a "
             "background app daemon spawned by the fused-render engine "
             "(engine_host.ensure_background), so it has no app folder to "
-            "act on. This is expected outside a `kind=\"background\"` "
+            "act on. This is expected outside a background app's own "
             "daemon — a standalone script has no such folder either."
         )
     return os.path.join(app_dir, _STANDIN_HTML_NAME)
@@ -223,7 +223,7 @@ def _request(method: str, path: str, body: dict | None = None,
 
 def status() -> dict:
     """`GET /api/apps/background/status` for THIS daemon's own app folder —
-    `{"running", "autostart", "pid", "version", "engine_id"}`."""
+    `{"running", "autostart", "pid", "version", "engine_id", "protocol"}`."""
     html = _self_html_path()
     return _request("GET", "/api/apps/background/status?html=" + quote(html))
 

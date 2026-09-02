@@ -14,23 +14,37 @@
  *     `pyproject.toml` naming a `daemon` file. Every method sends this page's
  *     own path so the server resolves which app folder it belongs to; none
  *     take a folder path. Run state and autostart are independent (D511):
- *     `status()` resolves {running, autostart, pid, version, engine_id} as
- *     two separate facts. `start()` spawns the daemon now and does NOT touch
- *     autostart (409 if its project venv isn't built yet — open the page
- *     once, or `fused.runPython`, to install it first). `stop()` kills the
- *     running daemon, also without touching autostart — if autostart is on
- *     the server's startup resurrection hook still brings it back next
- *     launch; if it's off (the default) it stays down until an explicit
- *     `start()`. `restart()` respawns it, autostart untouched either way.
- *     `setAutostart(bool)` is the ONLY thing that persists the "bring this
- *     back at every launch" flag — opt-in, never a side effect of `start()`.
+ *     `status()` resolves {running, autostart, pid, version, engine_id,
+ *     protocol} as separate facts — `protocol` is "main" for a folder that
+ *     declares `main =`, "daemon" for one that declares `daemon =`, or null
+ *     for a folder with no valid manifest at all. `start()` spawns the
+ *     daemon now and does NOT touch autostart (409 if its project venv
+ *     isn't built yet — open the page once, or `fused.runPython`, to
+ *     install it first). `stop()` kills the running daemon, also without
+ *     touching autostart — if autostart is on the server's startup
+ *     resurrection hook still brings it back next launch; if it's off (the
+ *     default) it stays down until an explicit `start()`. `restart()`
+ *     respawns it, autostart untouched either way. `setAutostart(bool)` is
+ *     the ONLY thing that persists the "bring this back at every launch"
+ *     flag — opt-in, never a side effect of `start()`.
+ *   fused.daemon.run(params) -> Promise<result>
+ *     The `main =` convenience: POSTs `params` to the shipped worker's one
+ *     route and unwraps the {ok, result, error, stdout, resolved_py}
+ *     envelope, throwing an Error carrying .type/.traceback/.stdout on a
+ *     python-side failure — the same shape `fused.runPython` throws.
+ *     Rejects, naming `call()` instead, if the folder declares `daemon =`.
+ *     Brings the daemon up transparently on the first call and re-warms it
+ *     after the idle reaper retires it — no explicit `start()` needed.
  *   fused.daemon.call(path, body?) -> Promise<any>
- *     Reach the running daemon directly, proxied through the same
- *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
- *     already rides. Resolves the engine_id from a cached status() first
- *     (calling status() itself if none is cached yet) — rejects if the app
- *     isn't running. Local-only, like the rest of fused.daemon — not
- *     available on hosted/exported pages (see the file header below).
+ *     Reach a `daemon =` folder's own routes directly, proxied through the
+ *     same stable-origin /api/engines/<id>/proxy a template daemon's traffic
+ *     already rides, and handed back RAW (no envelope — that shape is
+ *     entirely up to the author's own server). Resolves the engine_id from
+ *     a cached status() first (calling status() itself if none is cached
+ *     yet). Rejects, naming `run()` instead, if the folder declares
+ *     `main =`. Brings the daemon up transparently exactly like `run()`.
+ *     Local-only, like the rest of fused.daemon — not available on
+ *     hosted/exported pages (see the file header below).
  *   fused.daemon.watch(callback) -> unsubscribe()
  *     Learn that the daemon's state changed WITHOUT the page having caused
  *     it itself — the case a page's own start()/stop()/restart() calls
@@ -294,9 +308,9 @@
  *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
  *     Report a long-running operation THIS PAGE is running to the shell's
  *     download manager, so it stays visible after the page that started it is
- *     navigated away from (SPEC §36, D244). Model downloads used to be the
- *     motivating example; they are the server's job now (SPEC §40) and a page
- *     observes them with fused.job() instead of reporting them. Every
+ *     navigated away from (SPEC §36, D244). Model downloads are the server's
+ *     job (SPEC §40); a page observes them with fused.job() instead of
+ *     reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
@@ -541,11 +555,11 @@
   //     permanently: from then on everything works exactly as written. Clicking
   //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
-  // flag used to be, so a page could gate its own boot focus instead of being
-  // corrected — and the claude template was its only reader, gating a focus()
-  // the patch below was already dropping. One mechanism, applied to every page
-  // including the ones nobody has written yet, beats two that have to agree.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A per-page flag would let a
+  // page gate its own boot focus instead of being corrected, and every page
+  // that has not been written yet would need to opt in correctly. One
+  // mechanism, applied to every page including the ones nobody has written
+  // yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
@@ -709,12 +723,11 @@
       }
     }
 
-    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
-    // MutationObserver re-stripping as the document streamed. It never worked on
-    // its own — the browser queues the candidate when the element is inserted
-    // and removing the attribute afterwards does not dequeue it — so the blur
-    // above was already carrying that case, and for a card thumbnail the
-    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // `autofocus` IS NOT TOUCHED HERE: stripping the attribute would not work on
+    // its own — the browser queues the candidate when the element is inserted,
+    // so removing the attribute afterwards does not dequeue it — the blur
+    // above already carries that case, and for a card thumbnail the
+    // attribute does not apply at all (`sandbox` sets the sandboxed automatic
     // features flag, which has no re-enabling token — THUMB_SEAL). What is left
     // is one focus flicker in a pane preview before the bounce lands, against
     // an observer running over every mutation of every previewed document.
@@ -1432,14 +1445,14 @@
   // leaves in the same synchronous task as the abort — so `X-Fused-Supersedes`
   // on it reaches the server as early as anything can, with no extra round trip.
   //
-  // The separate POST below used to be the only path, deferred by setTimeout(0)
-  // to batch. Measured in Chromium against a local server, that landed ~19 ms
-  // after the abort — and any superseded call whose handler finished inside that
-  // window was written as `ok` and counted in the latency percentiles, which is
-  // the exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
-  // finish that fast, so a template re-querying per keystroke hit it often.
-  // Reported by Bugbot; the header closes the gap for every supersession that
-  // has a causing request, which is all of them.
+  // A separate POST, deferred by setTimeout(0) to batch, would arrive too late:
+  // measured in Chromium against a local server, an abort's POST lands ~19 ms
+  // after the abort, and any superseded call whose handler finishes inside that
+  // window is written as `ok` and counted in the latency percentiles — the
+  // exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
+  // finish that fast, so a template re-querying per keystroke hits it often.
+  // The header closes the gap for every supersession that has a causing
+  // request, which is all of them.
   //
   // The POST survives as the unload backstop: pagehide has ids with no request
   // left to carry them.
@@ -1606,10 +1619,10 @@
   // able to).
   //
   // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
-  // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
-  // one-shot by construction) and that shape had a hole no amount of caching
-  // fixed: ANY remount of that iframe for ANY reason — toggling the sidebar
-  // away and back, closing and reopening the folder pane, a panel/tab
+  // A `_fused_ask` query param baked into the claude iframe's URL, one-shot by
+  // construction, has a hole no amount of caching fixes: ANY remount of that
+  // iframe for ANY reason — toggling the sidebar away and back, closing and
+  // reopening the folder pane, a panel/tab
   // reattaching — rebuilds the src from the same cached value and replays the
   // ask into a brand new conversation. A src is not a message; it is a
   // document's ADDRESS, and an address that is only supposed to be visited
@@ -1696,15 +1709,14 @@
 
   // How long an install may run before the overlay appears at all.
   //
-  // The overlay used to mount synchronously, before anything was known about how
-  // long the install would take — so an install that finishes in tens of
-  // milliseconds still threw a full-screen modal over the page and tore it down
-  // again, which reads as a flicker/flash rather than as progress. Now that a
-  // declaration the app interpreter already satisfies installs NOTHING (see engine.py's
-  // `app_satisfies`), the installs that remain are either genuinely long (a real
-  // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
-  // cache, where the modal was pure noise). Delay separates the two without having
-  // to predict which one this is.
+  // The overlay must not mount synchronously: an install that finishes in tens
+  // of milliseconds would still throw a full-screen modal over the page and
+  // tear it down again, which reads as a flicker/flash rather than as progress.
+  // A declaration the app interpreter already satisfies installs NOTHING (see
+  // engine.py's `app_satisfies`), so the installs that remain are either
+  // genuinely long (a real download, where 600ms of delay is imperceptible) or
+  // genuinely short (a warm uv cache, where the modal would be pure noise).
+  // Delay separates the two without having to predict which one this is.
   const INSTALL_MOUNT_DELAY_MS = 600;
 
   let installUi = null;
@@ -1825,10 +1837,10 @@
   //   * A LATE RESPONSE. A call answered before the install began but delivered
   //     after it finished is not a loop — it has not run at all yet — and must
   //     re-attempt rather than report a stale snapshot as a failure.
-  //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
-  //     editing dependencies minted a NEW key and a legitimate second install. It
-  //     is stable per project now, so a page-scoped set refused the install for a
-  //     user who had just fixed their `pyproject.toml`.
+  //   * A MANIFEST EDIT. The key is stable per project, not derived from the
+  //     requirement set, so editing dependencies does not mint a new key — a
+  //     page-scoped set would refuse the install for a user who had just fixed
+  //     their `pyproject.toml`.
   //
   // Deduplication — the actual "one install per page, not one per script" — lives
   // in `installEnv`'s `installInFlight` registry instead, which is the right
@@ -1841,9 +1853,9 @@
     return Boolean(need && need.key) && !installed.has(need.key);
   }
 
-  // The backdrop, and the container every install's row is appended to. It owns no
-  // title/detail/bar of its own any more — those belong to a row, because there is
-  // no longer one install to describe.
+  // The backdrop, and the container every install's row is appended to. It owns
+  // no title/detail/bar of its own — those belong to a row, since multiple
+  // installs can run concurrently, each needing its own to describe.
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -1983,9 +1995,9 @@
       : "Preparing " + (need.name || "the environment");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
     // already in flight rather than duplicating it, so re-opening a page whose
-    // download is four minutes old used to paint 0% and then jump to 25% on the
-    // first poll — nothing was lost, but a user switching between apps saw
-    // 0% → 25% → freeze over and over and concluded it was looping. The initial
+    // download is four minutes old would otherwise paint 0% and then jump to
+    // 25% on the first poll — a user switching between apps would see
+    // 0% → 25% → freeze over and over and read it as looping. The initial
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
@@ -2208,15 +2220,13 @@
   // `pkg` comes from `needs_build` on the polled progress record — set by
   // the worker (`_env_install_worker.py`'s `install`), the process that
   // actually knows `--no-build` was passed and can tell this refusal apart
-  // from a genuine resolver failure. That used to be re-derived here, by
-  // regexing uv's stderr for either of its two wordings — two detectors
-  // that could disagree is exactly the defect this rewrite removes; there is
-  // one now, and it lives where the fact actually originates.
+  // from a genuine resolver failure. There is a single detector, and it
+  // lives where the fact actually originates.
   //
   // `appName` is `need.name` (same fallback `confirmInstall` uses): a
   // non-expert reading this dialog cannot act on "no ready-to-use package"
-  // sitting next to a bare package name, and nothing in the old copy said
-  // which app even wants the dependency or what continuing costs.
+  // sitting next to a bare package name without knowing which app wants the
+  // dependency or what continuing costs.
   function confirmBuildRetry(row, ui, pkg, appName) {
     return askRow(
       row, ui,
@@ -2496,10 +2506,10 @@
   // would show CURRENT content under a heading that says otherwise.
   //
   // Closing it means the reader can no longer be handed a path: it needs the bytes
-  // (a temp materialization, which is exactly the on-disk snapshot this design
-  // removed) or a file-like object over the revision route (a Python-side shim
-  // every reader would have to accept). That is phase 2b, and it is a change to the
-  // `main()` contract rather than a patch here — hence the deferral.
+  // (a temp materialization) or a file-like object over the revision route (a
+  // Python-side shim every reader would have to accept). That is phase 2b, and
+  // it is a change to the `main()` contract rather than a patch here — hence
+  // the deferral.
   //
   // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
   // revision indicator names the limitation next to the sha (Preview.tsx —
@@ -2647,131 +2657,30 @@
       );
   }
 
-  // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
-  // fused.engine(py) is the warm variant of runPython: the server keeps the
-  // script's worker alive between calls. Same wire body and result/error shape,
-  // and it shares runPython's latest-wins stale-cancel channel (keyed by the .py
-  // path), headers, and never-settle-on-supersede semantics. The hosted runtime
-  // aliases fused.engine to runPython; this local one falls back on a network
-  // error (see below), since a warm worker is only an optimization.
-  function engineCall(pyPath, params, opts) {
-    opts = opts || {};
-    const key = opts.key === undefined ? pyPath : opts.key;
-    const keyed = key !== null;
-    const controller = new AbortController();
-    controller._callId = newCallId();
-    if (keyed) {
-      const prev = inflightByKey.get(key);
-      if (prev) {
-        prev._supersededByKey = true;
-        reportSuperseded(prev._callId);
-        prev.abort();
-      }
-      inflightByKey.set(key, controller);
-    }
-    let detachSignal = null;
-    if (opts.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else {
-        const onAbort = () => controller.abort();
-        opts.signal.addEventListener("abort", onAbort);
-        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
-      }
-    }
-    const cleanup = () => {
-      if (detachSignal) detachSignal();
-      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
-    };
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-
-    const attempt = () =>
-      fetch("/api/engine", {
-        method: "POST",
-        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                             controller._callId),
-        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
-        signal: controller.signal,
-      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
-
-    const run = attempt().then(({ data, httpOk }) => {
-      // The script may have written anything; tell the shell even on failure.
-      noteFsChanged();
-      if (data && data.stdout) console.log("[python]", data.stdout);
-      // Watch the executed file for auto-reload, even on failure (LR-2).
-      if (data && data.resolved_py) watchPath(data.resolved_py);
-      if (!httpOk) {
-        // A server-level error ({"error": "..."}), not a script error envelope.
-        const err = new Error(
-          (data && typeof data.error === "string" && data.error) ||
-          "engine request failed");
-        err.type = "engine_error";
-        throw err;
-      }
-      if (!data.ok) {
-        const err = new Error(data.error && data.error.message);
-        err.type = data.error && data.error.type;
-        err.traceback = data.error && data.error.traceback;
-        err.stdout = data.stdout;
-        throw err;
-      }
-      return data.result;
-    });
-
-    return run.then(
-      (result) => {
-        cleanup();
-        if (controller._supersededByKey) return new Promise(() => {});
-        return result;
-      },
-      (err) => {
-        cleanup();
-        if (opts.signal && opts.signal.aborted) throw err;
-        if (controller._supersededByKey) return new Promise(() => {});
-        // Degrade to per-call runPython ONLY when the local server is
-        // unreachable — a fetch TypeError, never an HTTP status (a warm worker
-        // is pure optimization; the page must keep working). An HTTP-status
-        // failure means the server answered: the proxy may already have run
-        // main() (a post-heal 502) or the venv needs building (409), so
-        // re-running here could double-execute a side-effecting main(). Surface
-        // it instead. A script error carries the Python exception type and
-        // propagates the same way.
-        if (err && err.name === "TypeError")
-          return runPython(pyPath, params, opts);
-        throw err;
-      }
-    );
-  }
-
-  function engineForget(pyPath) {
-    const ownPath = new URLSearchParams(window.location.search).get("path");
-    return fetch("/api/engine/forget", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify({ py: pyPath, html: ownPath }),
-    })
-      .then((res) => res.json())
-      .catch(() => ({ ok: true })); // best-effort teardown; never reject the page
-  }
-
-  function engine(pyPath, opts) {
-    opts = opts || {};
-    return {
-      call: (params, callOpts) =>
-        engineCall(pyPath, params, Object.assign({}, opts, callOpts || {})),
-      forget: () => engineForget(pyPath),
-    };
-  }
-
   // ---- background apps (fused.daemon, server/routers/background_apps.py) ---
   // fused.daemon is the browser control surface for a FOLDER's declared
   // long-running daemon, not this page's own script — every method sends the
-  // page's own path as `html` (same derivation as fused.engine above), and the
-  // server resolves which app folder that page belongs to, exactly like
-  // resolve_py does for runPython/fused.engine. `call` is the one that reaches
-  // the daemon itself: it proxies through the SAME stable-origin
+  // page's own path as `html`, and the server resolves which app folder that
+  // page belongs to, exactly like resolve_py does for runPython. `run` and
+  // `call` both reach the daemon itself, through the SAME stable-origin
   // /api/engines/<id>/proxy path a template daemon's traffic already rides
   // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
-  // call cached — a page never computes that id itself.
+  // call cached — a page never computes that id itself. `run(params)` is the
+  // `main =` convenience: POST /call with `params` as the body, unwrapping
+  // the {ok, result, error, stdout, resolved_py} envelope the shipped worker
+  // answers with. `call(path, body)` is for a `daemon =` folder's own routes,
+  // proxied and handed back raw — a `main =` folder's single route would
+  // just be `call("/call", ...)` minus the unwrap, which is why `call()`
+  // refuses a `main =` folder outright (use `run()`) and `run()` refuses a
+  // `daemon =` folder outright (use `call()`), each naming the folder's
+  // actual declared protocol and the method to use instead. Both bring the
+  // daemon up transparently — on a page's first call, and to re-warm it
+  // after the idle reaper retires it — rather than requiring an explicit
+  // `start()` first: the preview guard below (D507/D508), not a start-first
+  // gate, is what actually stops a card thumbnail or hover peek from
+  // spawning a daemon, and `engine_forward._forward` already heals a
+  // dead-but-running child on any proxied call regardless of which of the
+  // two methods reaches it.
   //
   // Run state and autostart are deliberately independent (D511): `stop`
   // kills the running daemon but never touches the persisted autostart flag
@@ -2782,13 +2691,21 @@
   // `_daemonEngineId` is a hash of the FOLDER, so `status()` always resolves one
   // whether or not the app is running — it names WHICH app, not whether one is
   // running. `_daemonKnownRunning` is the separate, actually-gating fact
-  // (`call()`'s guard reads this, never engine_id's presence, which is always
-  // truthy and so cannot tell "not running" from "running").
+  // (bring-up reads this, never engine_id's presence, which is always
+  // truthy and so cannot tell "not running" from "running"). `_daemonProtocol`
+  // is the folder's declared bring-up shape from that same status() payload
+  // ("main" | "daemon" | null for a folder with no valid manifest) — it is
+  // what lets `run()`/`call()` catch an author calling the wrong one of the
+  // two for their folder instead of silently 404ing (a `daemon =` folder
+  // under `run()`) or handing back a raw, unwrapped envelope (a `main =`
+  // folder under `call()`).
   let _daemonEngineId = null;
   let _daemonKnownRunning = false;
+  let _daemonProtocol = null;
 
   function _noteDaemonPayload(data, marksRunning) {
     if (data && data.engine_id) _daemonEngineId = data.engine_id;
+    if (data && "protocol" in data) _daemonProtocol = data.protocol;
     if (marksRunning !== undefined) {
       // start()/restart() succeeding means ensure_background returned a live
       // child (both 502 on any spawn failure, so a 200 here IS "running");
@@ -2810,11 +2727,13 @@
   // own `src` (fused_render/server/routers/render.py echoes it straight back
   // as the served document's own location), and `IS_THUMBNAIL` above already
   // climbs same-origin ancestors for the nested case. `start()`/`restart()`
-  // obviously spawn; `call()` is in scope too — engine_forward.py's
-  // `_forward` heals a dead-but-running child back to life on ANY proxied
-  // call, so a preview render that calls `call()` against an app some other
-  // session already started can resurrect its daemon exactly like `start()`
-  // would. `stop()` and `setAutostart()` are gated the same way, NOT left
+  // obviously spawn; `call()` and `run()` are in scope too — both bring the
+  // daemon up transparently when not known running, and even set aside
+  // that, engine_forward.py's `_forward` heals a dead-but-running child back
+  // to life on ANY proxied call, so a preview render that calls either
+  // against an app some other session already started can resurrect its
+  // daemon exactly like `start()` would. `stop()` and `setAutostart()` are
+  // gated the same way, NOT left
   // open (D508): a card thumbnail mounts `entry_html` live in a sandboxed
   // iframe with `allow-scripts`, so an app whose init path calls
   // `fused.daemon.stop()` (or flips autostart) would change a real user's
@@ -2891,39 +2810,59 @@
                        { autostart: !!autostart });
   }
 
-  function daemonCall(path, body) {
-    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
-    const doCall = () =>
+  // Shared bring-up-then-POST mechanics behind both `call()` and `run()`:
+  // learn engine_id/protocol/running from one status() fetch when nothing is
+  // cached yet, bring the daemon up when it isn't known running (a page's
+  // first-ever call, or an app the idle reaper retired since the last poll),
+  // then POST to the proxy path and hand back the raw response. Carries NO
+  // protocol check — that is each public method's own job, applied before
+  // delegating here, so that `run()`'s internal use of this helper can never
+  // reject itself against `run()`'s own check.
+  function _daemonProxyPost(path, body) {
+    const doPost = () =>
       fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
         method: "POST",
         headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
         body: JSON.stringify(body || {}),
       }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
 
-    // Nothing cached yet (no status()/start()/etc. call this page has made)
-    // — learn engine_id AND whether it's actually running from one status()
-    // fetch before deciding. Once something is cached, trust it rather than
-    // re-fetching on every call.
     const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
-    return ready.then(() => {
-      if (!_daemonKnownRunning) {
-        // Gated on the payload's own running fact, not on _daemonEngineId's
-        // presence — engine_id is a hash of the folder and is always
-        // populated by status(), running or not, so checking it alone can
-        // never catch "not running" (the proxy's own 409 in that case is a
-        // "start it first" message meaningless to an app author).
-        return Promise.reject(
-          new Error("fused.daemon.call: no running background app for this page " +
-                    "(call start() first)")
-        );
-      }
-      return doCall().then(({ data, httpOk }) => {
+    const bringUp = ready.then(() => (_daemonKnownRunning ? null : daemonStart()));
+    return bringUp.then(() =>
+      doPost().then(({ data, httpOk }) => {
         if (!httpOk) {
-          const err = new Error((data && data.error) || "fused.daemon.call failed");
+          const err = new Error((data && data.error) ||
+                                `fused.daemon: proxy call to ${path} failed`);
           throw err;
         }
         return data;
-      });
+      })
+    );
+  }
+
+  function _daemonWrongProtocolError(method, declared, wantMethod, wantArgs) {
+    return new Error(
+      `fused.daemon.${method}: refused — this folder declares \`${declared} =\` ` +
+      (declared === "daemon"
+        ? "and serves its own routes; use "
+        : "and the shipped worker serves exactly one route; use ") +
+      `fused.daemon.${wantMethod}(${wantArgs}) instead.`
+    );
+  }
+
+  function daemonCall(path, body) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (_daemonProtocol === "main") {
+        return Promise.reject(
+          _daemonWrongProtocolError("call", "main", "run", "params")
+        );
+      }
+      return _daemonProxyPost(path, body);
     });
   }
 
@@ -3026,6 +2965,43 @@
     };
   }
 
+  // `run(params)` is the shipped-worker convenience over the same
+  // `_daemonProxyPost` mechanics `call()` uses: a `main =` daemon speaks
+  // exactly one route, POST /call with the raw params object as the body,
+  // answering the same {ok, result, error, stdout, resolved_py} envelope
+  // runPython does — so `run` unwraps that envelope the way runPython does,
+  // instead of handing back the raw proxy response `call` gives a
+  // `daemon =` author talking to their own routes.
+  function daemonRun(params) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("run");
+    // Nothing cached yet — learn the folder's declared protocol from one
+    // status() fetch before deciding, same round trip _daemonProxyPost would
+    // need anyway. Bring-up itself (spawning on the first call, re-warming
+    // after the idle reaper retires it) lives entirely in _daemonProxyPost
+    // now — run() adds nothing on top of it besides its own protocol check
+    // and the envelope unwrap `call()` deliberately leaves raw.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (_daemonProtocol === "daemon") {
+        return Promise.reject(
+          _daemonWrongProtocolError("run", "daemon", "call", "path, body")
+        );
+      }
+      return _daemonProxyPost("/call", params || {});
+    }).then((data) => {
+      if (data && data.stdout) console.log("[python]", data.stdout);
+      if (data && data.resolved_py) watchPath(data.resolved_py);
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    });
+  }
+
   const daemon = {
     status: daemonStatus,
     start: daemonStart,
@@ -3033,6 +3009,7 @@
     restart: daemonRestart,
     setAutostart: daemonSetAutostart,
     call: daemonCall,
+    run: daemonRun,
     watch: daemonWatch,
   };
 
@@ -4443,21 +4420,18 @@
       return watcher.watch(onTick).then((record) => {
         if (signal && signal.aborted) throw cancelledError("the transcription", started.jobId);
         if (!record) {
-          // The row is gone — and since the manager stopped evicting live
-          // SERVER work under its cap, that no longer happens MID-RUN. It means
-          // the row finished and aged out while this tab was asleep, which a
-          // transcription long enough to background does easily.
+          // The row is gone. Live SERVER work under the manager's cap is never
+          // evicted, so this cannot happen MID-RUN — it means the row finished
+          // and aged out while this tab was asleep, which a transcription long
+          // enough to background does easily.
           //
           // The TRANSCRIPT is the other witness and the one that matters, so
           // reading it is both the answer and the check: if it is there, the
-          // work landed. An earlier cut tried to out-wait a mid-run absence
-          // here instead, resuming the watcher and polling for the file — and
-          // that machinery could hang forever (a re-entered `watch` that never
-          // SEES the row never gives up) while also turning one flaky
-          // `/api/jobs` fetch into a hard failure. Both were compensation for
-          // an eviction that should not have been happening; the fix belonged
-          // in the manager, and this is a backstop again rather than a state
-          // machine.
+          // work landed. Resuming the watcher and polling for the file instead
+          // would risk hanging forever (a re-entered `watch` that never SEES
+          // the row never gives up) while also turning one flaky `/api/jobs`
+          // fetch into a hard failure — so this stays a backstop rather than a
+          // state machine.
           return done().catch(() => {
             const err = new Error("the transcription job is no longer being reported");
             err.type = "ai_error";
@@ -5529,7 +5503,6 @@
     // on this, never on user-agent sniffing.
     device: "desktop",
     runPython,
-    engine,
     daemon,
     rawUrl,
     stat,

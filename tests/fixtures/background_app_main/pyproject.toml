@@ -1,2 +1,2 @@
 [tool.fused-render.app]
-daemon = "daemon.py"
+main = "compute.py"

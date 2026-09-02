@@ -15,12 +15,13 @@ There is no per-call override, so design around it:
 - **Move the heavy job out of band.** For a genuinely long build, run it as a separate process that writes an output file, and have the view read the finished result.
 - **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
 
-State does not survive any of this: `fused.engine(py)`, the warm variant of
-`runPython` that keeps a worker's imports and globals alive between calls, still
-idle-retires that worker after 15 minutes with no calls. A folder that genuinely
-needs to keep running past that — a poll loop, a held connection, a tray or
-menu-bar presence — wants a resident daemon instead: see
-**`fused-render-background-apps`**.
+State does not survive any of this: a folder that opts into `[tool.fused-render.app]`
+with `main = "x.py"` gets a warm worker that keeps imports and globals alive
+between calls, but it's still reaped after `idle_timeout_s` idle seconds
+(default 900s / 15 min), reached from the page via `fused.daemon.run(params)`.
+A folder that genuinely needs to keep running past that — a poll loop, a held
+connection, a tray or menu-bar presence — wants its own resident daemon
+(`daemon = "x.py"`) instead: see **`fused-render-background-apps`**.
 
 ## Show it in the download manager (`fused.trackJob`)
 
