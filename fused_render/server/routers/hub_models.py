@@ -127,6 +127,7 @@ from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
     _entry_is_dir,
+    _quantization as _config_quantization_bits,
     _scan_repo,
     _unfinished_fetch,
     hub_cache_dir,
@@ -161,6 +162,7 @@ _TIMEOUT_S = 12.0
 _EXPAND = (
     "pipeline_tag", "downloads", "likes", "lastModified", "createdAt",
     "library_name", "gated", "private", "tags", "safetensors", "siblings",
+    "config",
 )
 
 # Sorts the page offers. Keyed so a client cannot pass an arbitrary sort field
@@ -217,6 +219,19 @@ _DTYPE_BITS = {
     "U32": 32, "I32": 32, "F32": 32,
     "U64": 64, "I64": 64, "F64": 64,
 }
+
+# The INTEGER dtypes, which store several packed weights per word in a
+# quantized checkpoint (D634-amending finding, code review F2) — the same set
+# `hub_cache._safetensors_params` already keys on for the identical reason on
+# a downloaded model's own card. `_quant` must never report one of these as
+# the model's quantization: it names the STORAGE CONTAINER (an MLX/GPTQ 4-bit
+# checkpoint packs 8 weights into one `U32`), not the precision, and reporting
+# it as one is a label as wrong in substance as guessing from the repo's name
+# — the thing D634 exists to rule out. `_params` must not sum these RAW either
+# — doing so counts storage slots, not weights, which is why a 27B MLX-4bit
+# repo used to report 4.7B params (`_params_band` then misclassified it into
+# "Under 8B"). See D636.
+_PACKED_DTYPES = frozenset({"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"})
 
 # Hub `library_name` values NOTHING here can ever open, and the reason this is a
 # DENYLIST rather than an allowlist.
@@ -343,41 +358,61 @@ def _estimated_bytes(safetensors) -> int | None:
     return total or None
 
 
-def _quant(safetensors, file: str | None) -> str | None:
+def _quant(safetensors, file: str | None, config=None) -> str | None:
     """The row's quantization, when it is a MEASURED fact — never a guess from
     the repo's own NAME (the user's explicit complaint about llmfit's
     approach, and the reason this function exists at all).
 
-    Two sources, both real evidence:
+    Three sources, in priority order, all real evidence:
 
-    * `safetensors.parameters` — the SAME dtype -> count map `_estimated_bytes`
-      already sums. The dtype with the most BYTES (not the most parameters —
-      a small embedding table at a different width must not decide the
-      label for an otherwise-uniform model) is the one reported.
     * a GGUF row's own resolved `file` — the quant token IN the filename
       llama.cpp's own ecosystem publishes it under (`formats.gguf_quant_token`),
       which is a real published fact about the one file this row would
-      actually download.
+      actually download. Wins outright when set (F3): `_model_row` clears
+      `safetensors` for a `file`-resolved row precisely so a repo publishing
+      BOTH formats cannot have its OTHER upload's dtype decide this row's
+      label while the Download button fetches the GGUF.
+    * `config`'s own `quantization`/`quantization_config` block (D636,
+      amending D634) — MLX writes `quantization: {bits}`, transformers writes
+      `quantization_config: {bits | load_in_4bit | load_in_8bit}`. This is the
+      checkpoint's own declaration of its precision, read via the same
+      `hub_cache._quantization` a downloaded model's card already trusts, so
+      the two surfaces cannot label the same repo two different ways.
+    * `safetensors.parameters` — the SAME dtype -> count map `_estimated_bytes`
+      already sums, but **only a FLOAT dtype is reported this way.** An
+      integer dtype (`_PACKED_DTYPES`) with no `config` evidence names a
+      STORAGE CONTAINER, not a quantization — an MLX/GPTQ 4-bit checkpoint
+      bit-packs eight weights into each `U32`, and `U32` is not "the
+      quantization" any more than "gzip" would be. Among float dtypes, the one
+      with the most BYTES (not the most parameters — a small embedding table
+      at a different width must not decide the label for an otherwise-uniform
+      model) is the one reported.
 
-    `None` when neither source has anything: an unquantifiable repo (no
-    safetensors metadata and no GGUF file resolved, e.g. a format this app
-    reads through neither path) renders nothing rather than an inference.
+    `None` when nothing above has real evidence: an unquantifiable repo (no
+    GGUF file, no declared config quantization, and either no safetensors
+    metadata or only a packed integer dtype with nothing corroborating it)
+    renders nothing rather than an inference.
     """
+    if file:
+        return formats.gguf_quant_token(file)
+    if isinstance(config, dict):
+        bits = _config_quantization_bits(config)
+        if isinstance(bits, int) and bits > 0:
+            return f"{bits}-bit"
     if isinstance(safetensors, dict):
         by_dtype = safetensors.get("parameters")
         if isinstance(by_dtype, dict):
             best_dtype, best_bytes = None, -1
             for dtype, count in by_dtype.items():
-                bits = _DTYPE_BITS.get(str(dtype).upper())
+                dtype_u = str(dtype).upper()
+                bits = _DTYPE_BITS.get(dtype_u)
                 if not bits or not isinstance(count, int) or count < 0:
                     continue
                 total_bytes = count * bits
                 if total_bytes > best_bytes:
-                    best_dtype, best_bytes = str(dtype).upper(), total_bytes
-            if best_dtype is not None:
+                    best_dtype, best_bytes = dtype_u, total_bytes
+            if best_dtype is not None and best_dtype not in _PACKED_DTYPES:
                 return best_dtype
-    if file:
-        return formats.gguf_quant_token(file)
     return None
 
 
@@ -394,16 +429,50 @@ def _params_band(params: int | None) -> str | None:
     return "over15b"
 
 
-def _params(safetensors) -> int | None:
+def _params(safetensors, config=None) -> int | None:
+    """The repo's real parameter count — not the number of storage SLOTS a
+    quantized checkpoint's dtype map counts (D636, code review F2).
+
+    The Hub's own `safetensors.total` is the SAME undercount as summing
+    `parameters` raw: verified live against `mlx-community/Qwen3.8-27B-4bit`
+    (a declared 27B model), whose `total` (4,665,462,000) is exactly the sum
+    of its `BF16` and `U32` element counts with NEITHER unpacked — i.e. the
+    Hub does not adjust for packing either, so trusting `total` directly
+    reproduces this bug rather than avoiding it. `total` is therefore only a
+    fallback for the shape `parameters` cannot cover (present, but not a dict).
+
+    When `config` declares a bit width (`_config_quantization_bits`, the same
+    source `_quant` trusts), each PACKED dtype's count is expanded by how many
+    that width of weights its storage width holds — `hub_cache._safetensors_params`'s
+    own arithmetic, applied to the aggregate dtype->count map this endpoint
+    gets instead of that function's per-tensor shapes. Without a declared bit
+    width there is no honest way to un-pack a `U32` count, so it is counted as
+    published (an undercount `_params_band`/callers must live with, the same
+    as before this fix, rather than a guess at the packing ratio).
+    """
     if not isinstance(safetensors, dict):
         return None
+    by_dtype = safetensors.get("parameters")
+    if isinstance(by_dtype, dict):
+        quantized_bits = _config_quantization_bits(config) if isinstance(config, dict) else None
+        counted = 0
+        saw_any = False
+        for dtype, count in by_dtype.items():
+            if not isinstance(count, int) or count < 0:
+                continue
+            saw_any = True
+            dtype_u = str(dtype).upper()
+            if quantized_bits and dtype_u in _PACKED_DTYPES:
+                bits = _DTYPE_BITS.get(dtype_u)
+                per_word = (bits // quantized_bits) if bits else 0
+                if per_word > 1:
+                    count *= per_word
+            counted += count
+        if saw_any:
+            return counted or None
     total = safetensors.get("total")
     if isinstance(total, int) and total > 0:
         return total
-    by_dtype = safetensors.get("parameters")
-    if isinstance(by_dtype, dict):
-        counted = sum(v for v in by_dtype.values() if isinstance(v, int) and v >= 0)
-        return counted or None
     return None
 
 
@@ -637,7 +706,22 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         if file is None:
             return None
     safetensors = raw.get("safetensors")
-    params = _params(safetensors)
+    config = raw.get("config")
+    # F3 (code review): a `file`-resolved row (llama.cpp is the active text
+    # engine and this repo also ships GGUF) downloads THAT file — a repo that
+    # ALSO publishes safetensors is publishing a different upload the Download
+    # button never touches. Reading size/params/quant off it here would make
+    # every one of those fields describe the full-precision weights while the
+    # button fetches a quantized GGUF, and — because `estimated_size` would
+    # then be non-null — would suppress `HubResultRow`'s lazy per-file lookup
+    # that would otherwise correct it (`wantsTotal` goes false). Treating
+    # safetensors as absent for this row is what lets the file's own token
+    # (`_quant`, below) and the file's own bytes (the lazy `hub/size` lookup,
+    # once the fix for F1 keys it by `file` too) win instead, exactly as this
+    # repo's Download button would.
+    if file is not None:
+        safetensors = None
+    params = _params(safetensors, config)
     estimated_size = _estimated_bytes(safetensors)
     # A real, safetensors-derived byte total is strictly better evidence than
     # `fit`'s own `params x bytes-per-param` guess — that guess is what
@@ -653,7 +737,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         if capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
-    quant = _quant(safetensors, file)
+    quant = _quant(safetensors, file, config)
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -883,15 +967,25 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # client-side over an already-truncated page would under-fill it exactly
     # the way the unfit drop used to before that bug was fixed.
     fit_level = (body.get("fitLevel") or "any").strip() if isinstance(body.get("fitLevel"), str) else "any"
-    quant_filter = (body.get("quant") or "").strip().upper() if isinstance(body.get("quant"), str) else ""
+    # Capped like `q`/`task` above (code review F6) — a real quant token
+    # (`Q4_K_M`, `4-bit`, a dtype name) is short, so an uncapped string here
+    # was never functional, only an unbounded value nothing else in this
+    # section had.
+    quant_filter = (body.get("quant") or "").strip().upper()[:40] if isinstance(body.get("quant"), str) else ""
     params_band = (body.get("paramsBand") or "any").strip() if isinstance(body.get("paramsBand"), str) else "any"
     # Publisher/org is the one exception: `author` is a real Hub query
     # parameter (verified against `huggingface_hub.HfApi.list_models`'s own
     # `params["author"] = author`), so this narrows the WIRE request itself
     # rather than the join — the Hub does the filtering, before this route's
-    # own overfetch multiplier even applies.
+    # own overfetch multiplier even applies. Capped (code review F6): unlike
+    # `q`/`task`/`file`, this had no length limit at all before this fix, and
+    # it is the one of these four that goes straight onto the OUTBOUND Hub
+    # URL as `params["author"]` — a hand-written megabyte-long value became a
+    # megabyte-long URL this server would actually go and fetch, and would
+    # sit in the cache key forever within the TTL. No real Hub org name
+    # approaches `_MAX_ID_LEN`, the same cap `file`/a repo id already use.
     publisher = body.get("publisher")
-    publisher = publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
+    publisher = publisher.strip()[:_MAX_ID_LEN] if isinstance(publisher, str) and publisher.strip() else None
     if sort not in _SORTS and sort != _FIT_SORT:
         return _error(f"unknown sort {sort!r}", status=400)
     if fit_level not in _FIT_LEVELS:

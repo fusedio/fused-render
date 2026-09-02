@@ -1488,6 +1488,106 @@ def test_quant_is_null_when_nothing_measured_it(client, hub_cache, monkeypatch):
     assert row["quant"] is None
 
 
+# -- Code review F2: a packed integer dtype is a storage container, not a ---
+# -- quantization; `config`'s own declared bit width is real evidence too ---
+
+
+def test_quant_does_not_report_a_packed_dtype_as_the_quantization(client, hub_cache, monkeypatch):
+    # An MLX/GPTQ 4-bit checkpoint bit-packs weights into U32 words with no
+    # `quantization`/`quantization_config` block at all (an ad-hoc format this
+    # server does not recognise) — "U32" is a storage container, not evidence
+    # of any particular precision, so this must render nothing rather than a
+    # wrong label.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/packed-no-config", safetensors={"parameters": {"U32": 1_000_000}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] is None
+
+
+def test_quant_prefers_configs_declared_bit_width_over_the_packed_dtype(client, hub_cache, monkeypatch):
+    # `mlx-community/Qwen3.8-27B-4bit`'s own shape, live-verified: BF16 scales
+    # beside a U32-packed 4-bit weight matrix, with `config.quantization_config
+    # = {"bits": 4}` declaring the real precision.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/mlx-4bit",
+        safetensors={"parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120}},
+        config={"quantization_config": {"bits": 4}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "4-bit"
+
+
+def test_quant_still_reports_a_float_dtype_with_no_config(client, hub_cache, monkeypatch):
+    # Unchanged from before this fix: a plain BF16 checkpoint has no packed
+    # container to misreport, so the dtype itself is still real evidence.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/bf16", safetensors={"parameters": {"BF16": 8_000_000_000}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "BF16"
+
+
+def test_params_unpacks_a_packed_dtype_using_configs_declared_bit_width(client, hub_cache, monkeypatch):
+    # Same live-verified fixture as the quant test above: the Hub's own raw
+    # element count (BF16 + U32 summed with neither unpacked) is ~4.7B, which
+    # is the bug (a declared-27B model reporting "Under 8B"). Unpacking the
+    # U32 count by the declared 4-bit width recovers ~28B, matching the
+    # model's own name.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/mlx-4bit",
+        safetensors={
+            "parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120},
+            "total": 4_665_462_000,
+        },
+        config={"quantization_config": {"bits": 4}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["params"] == 1_303_792_880 + 3_361_669_120 * 8
+    assert row["params"] > 27_000_000_000
+
+
+def test_params_band_reclassifies_the_unpacked_model_correctly(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/mlx-27b",
+        safetensors={"parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120}},
+        config={"quantization_config": {"bits": 4}},
+    )]))
+    body = _search(client, {"paramsBand": "over15b", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/mlx-27b"]
+
+
+def test_params_without_a_declared_bit_width_stays_the_raw_undercount(client, hub_cache, monkeypatch):
+    # No `config` at all: there is no honest way to know the packing ratio, so
+    # this is unchanged from before the fix — an undercount, not a guess.
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/packed-no-config", safetensors={"parameters": {"U32": 3_361_669_120}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["params"] == 3_361_669_120
+
+
+# -- Code review F3: a `file`-resolved row's safetensors upload must not ----
+# -- describe what the Download button actually fetches ---------------------
+
+
+def test_a_file_resolved_row_ignores_its_own_safetensors_upload(client, hub_cache, monkeypatch):
+    # A repo publishing BOTH GGUF and safetensors, with llama.cpp active (so
+    # `file` resolves): quant, size and params must all describe the GGUF file
+    # the Download button fetches, never the full-precision safetensors this
+    # row is not going to download.
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/both-formats",
+        safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
+        siblings=[{"rfilename": "both-formats-Q4_K_M.gguf"}],
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["quant"] == "Q4_K_M"
+    assert row["estimatedSize"] is None
+    assert row["params"] is None
+
+
 # -- Part 3: three filters, all server-side (see hub-search-notes.md) -------
 
 
@@ -1603,6 +1703,30 @@ def test_params_band_drops_rows_with_no_params(client, hub_cache, monkeypatch):
 def test_an_unknown_params_band_is_refused(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", _reply([]))
     assert _search(client, {"paramsBand": "bogus"}).status_code == 400
+
+
+# -- Code review F6: `publisher` and `quant` are capped like their neighbours
+
+
+def test_publisher_is_capped_before_it_reaches_the_outbound_hub_url(client, hub_cache, monkeypatch):
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"publisher": "x" * 10_000})
+    url = fake.calls[0][0]
+    author = parse_qs(urlsplit(url).query)["author"][0]
+    assert len(author) == hub._MAX_ID_LEN
+
+
+def test_quant_filter_is_capped(client, hub_cache, monkeypatch):
+    # A real quant token is short (`Q4_K_M`, `4-bit`, a dtype name); an
+    # uncapped value here was never functional, only unbounded. Confirmed via
+    # `_params_band`-style behavioural check: a capped filter that no longer
+    # matches any real quant string drops every row rather than erroring.
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/bf16", safetensors={"parameters": {"BF16": 1_000_000}}),
+    ]))
+    body = _search(client, {"quant": "BF16" + "x" * 10_000, "includeUnfit": True}).json()
+    assert body["models"] == []
 
 
 def test_publisher_is_sent_to_the_hub_as_author(client, hub_cache, monkeypatch):
