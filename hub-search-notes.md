@@ -324,3 +324,187 @@ fixture, unpinned) and both still pass — the unfit filter is still under
 test, not merely dodged.
 
 `tests/test_hub_models.py -q`: 111 passed.
+
+---
+
+## Resumed-builder notes (2026-09-01/02) — Parts A-D of the review's follow-up brief
+
+Context: the previous builder died mid-edit from a network error with
+~920 lines of UNCOMMITTED but good work spanning the server-side Part B
+filters/quant field, the frontend `hubSize.ts`/`hubTableView.ts` fixes and
+tests, and the start of `HubResultsTable.tsx`'s fit/speed fallback wiring.
+That work is now committed (see the commit log below); this section covers
+what was finished on top of it.
+
+### What was already done (verified, not redone)
+
+- `_quant()`, the three server-side search filters (`fitLevel`, `quant`,
+  `paramsBand`) plus `publisher`, `_fetch_file_size`, and `api_hub_size`'s
+  `file`/`capability` extension — all in `hub_models.py`, all with passing
+  tests in `tests/test_hub_models.py` (144 passed at the time of resume).
+- `hubSize.ts`'s `knownFit`/`knownSpeedEstimate`/the `file`-aware
+  `lookupTotalSize` (fixes the ≈1.4 TB GGUF-repo-total bug), and
+  `hubTableView.ts`'s banded `speedLabel`/new `scoreLabel`/`quantLabel` —
+  all with passing tests already written by the dead builder.
+- `api.ts`'s `HubModel.file`/`HubModel.quant`, `HubFitLevel`/`HubParamsBand`,
+  and `getHubModelSize`'s `file`/`capability` params.
+
+Committed as-is in `b971d27b` (server) with no functional changes.
+
+### Part A — finished the table wiring
+
+`HubResultsTable.tsx` had `fitOverride`/`speedOverride`/`effectiveFit`/
+`effectiveSpeed` state already wired by the dead builder, but the row's own
+cells (`fitCell(model.fit)`, `speedLabel(model.speedEstimate)`,
+`runModeLabel(model.fit?.runMode)`) still read the raw search-reply values
+instead of the effective ones — exactly the bug report (a row shows a real
+size but `—` for Fit/tok-s/Mode). Fixed by switching those three call sites
+to `effectiveFit`/`effectiveSpeed`. The file also had two dangling imports
+(`getHubModelSize` from `@platform/lib/api`, `knownFit`/`knownSpeedEstimate`
+from `hubSize.ts`) that were used but never imported — a genuine build
+break the dead builder's own last edit introduced; typecheck caught both
+immediately.
+
+Added three columns — Score, Quant, Capability — to header, primary row and
+variant row in lockstep:
+
+- Order: Fit, **Score**, Model, Task, **Capability**, Params, **Quant**,
+  Size, tok/s, Mode, Pop., New, Var., action. Score sits next to Fit (its
+  numeric echo); Capability next to Task (the internal runner key vs. the
+  friendly label); Quant next to Params (both are "how much/what kind of
+  weight" facts).
+- Header: 14 `<th>` (was 11). Primary row: 14 `<td>` (was 11), no colSpan.
+  Variant row: the name cell's `colSpan` went from `2` (covering
+  Model+Task) to `3` (covering Model+Task+Capability) — the variant's own
+  id stands in for all three, same as before — plus a new `td` each for the
+  empty Score slot and for Quant (via `quantLabel(model.quant)`). Total
+  variant-row `td` count: 12, colSpan-weighted to 14 to match the header.
+- Column-drop ladder (container-query, table's own inline size, never
+  viewport): added Capability at 900px (widest — it echoes Task, the least
+  new information of the three), Score at 600px (a numeric echo of the Fit
+  bar, which never leaves the row), Quant at 500px (kept longer than Score
+  because it's often the more decisive fact at that width). Fit, name, Size
+  and the action column still never drop, per the existing rule.
+- `hubFamilies.test.ts`'s `model()` fixture didn't have `file`/`quant` keys
+  and `HubResults.tsx`'s own `lookupTotalSize(id)` call (the page-level size
+  SORT's bulk lookup, not the per-row lazy one) was still on the OLD
+  1-argument signature — both are call sites the dead builder's own
+  signature change should have touched and didn't. Fixed; both were real
+  typecheck failures, not hypothetical ones.
+
+`npm run typecheck`: clean. `bun test` on every touched `.test.ts` (+
+`repoCardControls.test.ts`, which greps `HubResultsTable.tsx`'s source):
+all green, no counts needed touching (columns changed, `<DownloadGlyph />`
+count did not).
+
+### Part B — filter UI, then a scope correction
+
+First pass put all four facets (fit level, quant, params band, publisher)
+into `SearchControls.tsx`, visible on both faces of the Local tab —
+`FIT_LEVELS`/`PARAMS_BANDS`/`activeFitLevel`/`activeParamsBand` were added
+to `hubSearchView.ts` for this and are still there, since the vocabulary is
+correct regardless of where the chrome renders.
+
+**Correction (mid-task, from the orchestrator):** the four facets must
+render ONLY while a search is active, never on the idle "your models" face
+— filtering a handful of already-downloaded, deliberately-chosen models by
+publisher or quant does nothing, and having the controls live on both faces
+made "which grid does this filter apply to?" genuinely ambiguous. Fixed by
+moving the chrome into a new `HubFilterBar` inside `HubResults.tsx` (mounted
+only while the search face is on screen — `HubResults` itself is
+conditionally rendered by `LocalTab`, so this needed no extra gating logic
+of its own) and reverting `SearchControls.tsx` to only query/task/sort/
+includeUnfit, its original scope. `ControlMenu` is now `export`ed out of
+`SearchControls.tsx` so `HubFilterBar` can reuse it rather than a third
+hand-rolled dropdown. See D635.
+
+### Part C — URL params
+
+`readHubUrl()` in `LocalTab.tsx` seeds all eight pieces of state (both the
+live controls AND the initial `settled` object) from `location.search` on
+mount, using the app's existing `readParam`/`writeParams` convention
+(`params.ts`, `BenchmarkTab.tsx`'s `benchCap`/`benchMetric`/`benchModel`).
+Names: `hubQ`, `hubSort`, `hubTask`, `hubFit`, `hubQuant`, `hubParams`,
+`hubOrg`, `hubUnfit` — every one prefixed, per the brief's explicit
+"do NOT use bare `q`/`sort`/`model`" instruction (`?model=` already means
+the Playground's own seed, page-wide, and colliding with it is a known,
+deliberately-unfixed live bug — see the memory note on `_side=claude`
+leaking `model=`).
+
+Two requirements needed real design, not just wiring:
+
+- **Write on settle, not per keystroke.** The `writeParams` call is in a
+  `useEffect` keyed on `settled` (the debounced object), never on
+  `query`/`task`/etc directly — a burst of typing is one `replaceState`
+  after the 350ms debounce, not one per character.
+- **A shared link must RUN the search, not just prefill the box.** Solved
+  by seeding `settled`'s OWN initial `useState` from the same
+  `readHubUrl()` read that seeds the live controls, rather than leaving
+  `settled` at an empty default and waiting for the debounce effect to
+  catch up. `searchChrome`/`face` already derive from `settled`, so this
+  alone puts the page straight into the results face on the very first
+  render when `?hubQ=` (or `?hubTask=`) is present.
+
+**Then the orchestrator's scope correction added a third requirement**: a
+facet param with no query must be INERT, not half-applied. `readHubUrl`
+computes `asked = !!(q.trim() || task.trim())` and only reads
+`hubFit`/`hubParams`/`hubQuant`/`hubOrg` off the URL when `asked` is true;
+otherwise all four seed to their "any"/"" no-op default regardless of what
+the URL says. This matters because `HubFilterBar` doesn't even mount on the
+idle face — a value that snuck into state anyway would sit there inert
+until the reader typed a query, at which point it would silently apply to
+a search nobody asked to filter. The write side mirrors this: the
+`writeParams` effect computes the same `asked` boolean off `settled` and
+passes `null` for all four facet keys whenever it's false, so the URL never
+advertises a filter that isn't in effect on whatever's actually on screen.
+
+`activeSort`/`activeFitLevel`/`activeParamsBand` (already written for the
+menu triggers) double as the URL value's VALIDATION for free: each already
+falls back to its own first/no-op entry for a value it doesn't recognise,
+which is exactly what a malformed or hand-edited param needs — no separate
+`isValidSort`-type helper was written.
+
+No dedicated test file exists for `LocalTab.tsx`'s URL wiring (there's no
+DOM harness in this repo, per every other component-level doc in this
+feature) — `BenchmarkTab.tsx`'s own `readParam`/`writeParams` usage is
+similarly untested at the component level, so this follows that precedent
+rather than inventing a new one.
+
+### Part D — this file, and D634/D635
+
+Highest D-number was D633 on this branch (D630 on origin/main at the time
+of resume) — D634 and D635 added, covering the measured-only quant rule and
+the filter server/client split + the facet-scoping correction. Both are
+genuinely non-obvious design choices with real rejected alternatives, not
+implementation detail — see `DECISIONS.md` directly rather than duplicating
+the text here.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 144 passed
+  (unchanged by this session's frontend-only work).
+- `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
+  (after appending D634/D635).
+- `cd frontend && npm run typecheck`: clean, twice (once after Part A/B's
+  first pass, once after the scope correction + Part C).
+- `cd frontend && bun test src/apps/ai_models` (every test file under the
+  app, not just the touched ones, to catch any cross-file text-hazard or
+  import fallout from moving `ControlMenu`): 587 passed, 0 failed, across
+  22 files.
+- `node scripts/check-boundaries.mjs`: clean (426 files) — checked because
+  this session moved a component (`ControlMenu`) between files and added a
+  new cross-file import (`HubResults.tsx` importing from
+  `SearchControls.tsx`).
+- Grepped `tests/` for every frontend source line touched
+  (`HubResultsTable`, `am-hubtable`, `speedLabel`, `fitCell`,
+  `hubTableView`, `hubSize.ts`, `SearchControls`, `LocalTab`, `HubResults`):
+  no Python test asserts on any of them.
+
+### Left for a human with a browser
+
+Nothing in this session was visually verified — no DOM harness, no browser
+access. The column-drop thresholds, the row density with three more
+columns, the `HubFilterBar`'s placement/wrapping inside the results
+section, and the URL round-trip (typing a query, reloading the tab, and
+confirming the address bar and the results agree) are all unverified by
+eye. See the parent report's own to-verify list.
