@@ -2927,12 +2927,13 @@
     };
   }
 
-  // `run(params)` is the shipped-worker convenience over `call`: a `main =`
-  // daemon speaks exactly one route, POST /call with the raw params object as
-  // the body, answering the same {ok, result, error, stdout, resolved_py}
-  // envelope runPython does — so `run` unwraps that envelope the way
-  // runPython does, instead of handing back the raw proxy response `call`
-  // gives a `daemon =` author talking to their own routes.
+  // `run(params)` is the shipped-worker convenience over the same
+  // `_daemonProxyPost` mechanics `call()` uses: a `main =` daemon speaks
+  // exactly one route, POST /call with the raw params object as the body,
+  // answering the same {ok, result, error, stdout, resolved_py} envelope
+  // runPython does — so `run` unwraps that envelope the way runPython does,
+  // instead of handing back the raw proxy response `call` gives a
+  // `daemon =` author talking to their own routes.
   function daemonRun(params) {
     if (IS_THUMBNAIL) return _daemonRejectPreview("run");
     // Nothing cached yet — learn the folder's declared protocol from one
