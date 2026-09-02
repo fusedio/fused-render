@@ -118,6 +118,23 @@ def _claude_found() -> bool:
     return bool(claude_health.summary_refreshed().get("found"))
 
 
+def _run_is_live(run_id: str) -> bool:
+    """Is the process of the run we RECORDED still going?
+
+    Asked of the pid, never remembered — the same question the guard asks, in
+    one place so the guard and `resume` cannot drift apart on it. False on any
+    failure: neither caller may treat "could not tell" as "still running".
+    """
+    if not run_id:
+        return False
+    try:
+        agent = _load_agent()
+        return bool(agent._alive(os.path.join(agent.RUNS, run_id)))
+    except Exception:  # noqa: BLE001 — see the docstring
+        logger.debug("liveness check failed for run %s", run_id, exc_info=True)
+        return False
+
+
 def _live_session_in(root: str) -> str:
     """The id of a Claude run still going in `root`, or "" if there is none.
 
@@ -153,12 +170,8 @@ def _live_session_in(root: str) -> str:
         return ""
 
     recorded = selffix.active_run()
-    if recorded:
-        try:
-            if agent._alive(os.path.join(agent.RUNS, recorded)):
-                return recorded
-        except Exception:  # noqa: BLE001
-            logger.debug("liveness check failed for run %s", recorded, exc_info=True)
+    if recorded and _run_is_live(recorded):
+        return recorded
 
     try:
         return str(agent._live_run(root).get("run_id") or "")
@@ -218,6 +231,62 @@ def _watch_fix(run_id: str, incident: str, report: str, title: str,
         # a session it stopped following still excludes a second one for exactly
         # as long as its process is alive.
         stamp()
+
+
+def resume() -> None:
+    """Finish the stamp for a fix session this process did not spawn.
+
+    `_watch_fix` is a daemon thread owned by the server that started the
+    session; the session is a DETACHED claude process that outlives it. So a
+    restart used to end the measuring while the editing carried on — and the
+    restart most likely to happen is the one the session CAUSES, since it edits
+    .py files under a dev server watching them (the same fact the guard above
+    was redesigned around). `reconcile` cannot cover it: that returns early when
+    no marker exists, which is exactly what a session that never got to stamp
+    leaves behind. The install ends up patched with no badge, which is the one
+    outcome this feature exists to prevent.
+
+    Two halves, and neither alone is enough:
+
+      what already changed   one `settle` against the `before` this session
+                             recorded at its start (`selffix.note_session`),
+                             which stamps if the tree moved while nothing was
+                             watching. Stamping mid-session is not a special
+                             case — it is what the watcher does every few ticks.
+      what changes NEXT      re-attach the watcher, but only while the run's own
+                             process is alive. Asked of the pid, never
+                             remembered; a dead run has already had its final
+                             answer taken above.
+
+    A record carrying no `before` does nothing at all: a schema-1 pointer left
+    by an older version, and a DIAGNOSTIC session, both land here and both have
+    nothing to stamp — the read-only install a diagnostic session runs on is the
+    one whose digest cannot move.
+
+    Never raises. This runs on a startup thread, and a badge that is late is not
+    a reason to fail a boot.
+    """
+    try:
+        record = selffix.session_record()
+        before = str(record.get("before") or "")
+        run_id = str(record.get("run_id") or "")
+        if not before or not run_id:
+            return
+        incident = str(record.get("incident") or "")
+        report = str(record.get("report") or "")
+        title = str(record.get("title") or "")
+        try:
+            selffix.settle(before=before, run_id=run_id, report=report,
+                           incident=incident, title=title)
+        except Exception:  # noqa: BLE001 — bookkeeping, never fatal
+            logger.debug("self-fix resume stamp failed", exc_info=True)
+        if not _run_is_live(run_id):
+            return
+        threading.Thread(target=_watch_fix,
+                         args=(run_id, incident, report, title, before),
+                         daemon=True, name="fused-render-selffix-watch").start()
+    except Exception:  # noqa: BLE001 — a startup thread must not raise
+        logger.debug("self-fix resume failed", exc_info=True)
 
 
 @router.post("/api/selffix/start")
@@ -339,6 +408,16 @@ def api_selffix_start(body: dict = Body(default={}),
                         "disagreed — this session is diagnostic")
             diagnostic = True
 
+        # The marker's label for this fix. A described problem has no
+        # operation name, so its first line stands in — the panel lists fixes
+        # by this, and "a problem the user described" over every row says
+        # nothing. Derived HERE, inside the lock and before the spawn, so the
+        # session pointer can carry it for `resume` (SF-7d).
+        title = str(body.get("title") or "").strip()
+        if not title:
+            first_line = str(body.get("note") or "").strip().splitlines()
+            title = first_line[0][:120] if first_line else ""
+
         try:
             # BEFORE the session starts and never after. Two digests, not one:
             # the release's (for `reconcile`) and the tree as this session finds
@@ -370,15 +449,14 @@ def api_selffix_start(body: dict = Body(default={}),
         # Recorded INSIDE the lock and before it is dropped, so the next request
         # to take it already sees this run — the mutex only has to cover the
         # window in which nothing on disk names the session yet.
-        selffix.note_session(str(run_id))
+        #
+        # `before` and the marker's three strings ride along so that a server
+        # which restarts mid-session can still stamp what this one changed: the
+        # watcher below dies with this process, the session does not (SF-7d,
+        # `resume`). Derived above rather than after the spawn for that reason.
+        selffix.note_session(str(run_id), before=before, report=report,
+                             incident=incident, title=title)
 
-    # The marker's label for this fix. A described problem has no operation
-    # name, so its first line stands in — the panel lists fixes by this, and
-    # "a problem the user described" over every row says nothing.
-    title = str(body.get("title") or "").strip()
-    if not title:
-        first_line = str(body.get("note") or "").strip().splitlines()
-        title = first_line[0][:120] if first_line else ""
     # NOT WATCHED WHEN DIAGNOSTIC. The watcher exists to notice that the tree
     # changed and stamp the installation; on a read-only one it would poll a
     # digest that cannot move, and then try to write a marker into the same tree

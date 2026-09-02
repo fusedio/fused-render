@@ -644,20 +644,43 @@ def session_path() -> str:
     return _session_file(records_dir())
 
 
-def note_session(run_id: str) -> None:
-    """Record which run is fixing this installation.
+def note_session(run_id: str, *, before: str = "", report: str = "",
+                 incident: str = "", title: str = "") -> None:
+    """Record which run is fixing this installation — and what it would take to
+    stamp that run's work if this process does not live to do it.
 
-    Written for ONE reason: the runs directory is shared by every chat on the
-    machine and the live-run scan only looks at the newest few, so a fix session
-    that runs while enough other conversations start would scroll out of that
-    window and stop excluding a second one. This pointer does not scroll — it
-    names a run directly, and the guard asks that run's process whether it is
-    still going.
+    THE POINTER. The runs directory is shared by every chat on the machine and
+    the live-run scan only looks at the newest few, so a fix session that runs
+    while enough other conversations start would scroll out of that window and
+    stop excluding a second one. This pointer does not scroll — it names a run
+    directly, and the guard asks that run's process whether it is still going.
 
-    NOT a lease, and the difference is the whole design: nothing here expires,
-    nothing recovers it at startup, and a record left behind by a session that
+    THE STAMP'S INPUTS (`before`, plus the three strings the marker carries).
+    The watcher that decides "did this session change the tree?" is a daemon
+    thread owned by the server that spawned the session, while the session is a
+    DETACHED process that outlives it. The router's module docstring already
+    names the restart most likely to happen — the one the fix session CAUSES, by
+    editing .py files under a dev server watching them — and made the GUARD
+    survive it by deriving liveness from disk. The STAMP had no such answer: the
+    thread died, `settle` was never called against this session's `before`, and
+    `reconcile` cannot stand in because it returns early when no marker exists,
+    which is precisely the state a session that never got to stamp leaves
+    behind. An installation could therefore end up patched with no badge — the
+    one outcome this feature exists to prevent. Persisting `before` is what lets
+    `resume` finish the job (SF-7d).
+
+    Deliberately NOT the baseline. Stamping from baseline drift alone would make
+    the badge an INTEGRITY claim about the bytes, which this feature refuses to
+    make (no signed manifest ships, and a source checkout rebuilding its shell
+    would light a badge meaning nothing). A stamp still requires a session we
+    recorded starting — provenance — and `before` is that session's own reading.
+
+    STILL NOT A LEASE, and the distinction survives intact: nothing here
+    expires and nothing here grants anything, a record left by a session that
     ended (or by a machine that lost power mid-fix) reads as "not running" the
-    moment its pid is gone. The next start overwrites it.
+    moment its pid is gone, and the next start overwrites it. What a restart now
+    recovers is the unfinished STAMP, never a claim on the tree — liveness is
+    still asked of the process and never remembered.
 
     Best-effort. A pointer that could not be written costs the long-session half
     of the guard, and the scan still covers the ordinary case; refusing to start
@@ -666,23 +689,31 @@ def note_session(run_id: str) -> None:
     for home in record_homes():
         try:
             _write_json(_session_file(home),
-                        {"schema": 1, "run_id": str(run_id)})
+                        {"schema": 2, "run_id": str(run_id),
+                         "before": str(before), "report": str(report),
+                         "incident": str(incident), "title": str(title)})
             return
         except OSError:
             continue
     logger.debug("could not record the fix session id", exc_info=True)
 
 
-def active_run() -> str:
-    """The run id last recorded here, or "". Says nothing about liveness — the
-    caller asks the process, which is the only thing that knows.
+def session_record() -> dict:
+    """The newest session pointer across EVERY home, or `{}`.
 
-    The NEWEST pointer across EVERY home (`reader_homes`), because an
-    installation's writability can change between one session and the next — in
-    both directions — and the guard must not lose sight of a live agent just
-    because the pointer it wrote now sits in a home today's prediction would not
-    have offered a writer."""
-    newest, run = 0.0, ""
+    The NEWEST across `reader_homes`, because an installation's writability can
+    change between one session and the next — in both directions — and neither
+    the guard nor the resume may lose sight of a session just because the
+    pointer it wrote now sits in a home today's prediction would not have
+    offered a writer.
+
+    Says nothing about liveness: the caller asks the process, which is the only
+    thing that knows. A schema-1 record — written before the stamp's inputs were
+    persisted, and still on disk across an upgrade — comes back as it stands: it
+    carries no `before`, and a resume that finds none does nothing, which is
+    exactly the behaviour that shipped before this existed.
+    """
+    newest, found = 0.0, {}
     for home in reader_homes():
         path = _session_file(home)
         record = _read_json(path)
@@ -693,8 +724,14 @@ def active_run() -> str:
         except OSError:
             continue
         if at >= newest:
-            newest, run = at, str(record.get("run_id") or "")
-    return run
+            newest, found = at, record
+    return found
+
+
+def active_run() -> str:
+    """The run id last recorded here, or "". Says nothing about liveness — the
+    caller asks the process, which is the only thing that knows."""
+    return str(session_record().get("run_id") or "")
 
 
 def clear(*, now: float | None = None) -> bool:

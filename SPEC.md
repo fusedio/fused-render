@@ -11607,6 +11607,31 @@ the installation, and the mark that says so.
   modification made some other way is not marked, which is the right silence: a
   source checkout rebuilds `static/shell-dist` on every watch tick, and a badge
   that lit up for that would mean nothing anywhere else.
+- **SF-7d** **The stamp survives a restart of the server that started the
+  session, because the session does.** The watcher is a daemon thread owned by
+  the process that spawned the fix; the `claude` process is detached and
+  outlives it. The restart most likely to happen is the one the fix session
+  *causes* — it edits `.py` files under a dev server watching them — which is
+  the same fact the one-at-a-time guard was redesigned around (SF-11), and the
+  guard survives it only because liveness is derived from the runs directory
+  rather than remembered. The stamp had no equivalent: the thread died, `settle`
+  was never called against that session's `before`, and `reconcile` cannot stand
+  in for it because it returns early when no marker exists — precisely the state
+  a session that never got to stamp leaves behind. An installation could
+  therefore end up patched with **no badge**, which is the one outcome this
+  section exists to prevent. So the session pointer carries the stamp's inputs
+  (`before` and the marker's three strings), and one startup handler finishes
+  the job: **one `settle` against that `before`** for what already changed, and
+  **a re-attached watcher, only while the run's own process is alive**, for what
+  changes next. Two things this deliberately is NOT. It is not a lease — nothing
+  expires, nothing is granted, and liveness is still *asked* of the pid, so what
+  a restart recovers is an unfinished stamp and never a claim on the tree. And
+  it does not measure against the BASELINE, which would be the easy way to
+  notice drift and the wrong one: that turns the badge into an integrity claim
+  about the bytes, which SF-7a refuses to make. A stamp still requires a session
+  we recorded starting. A pointer with no `before` — one written by an older
+  version, or by a diagnostic session, which has nothing to stamp — resumes
+  nothing at all.
 - **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
   that up because "the tree was replaced" is not something the app may merely
   assume:

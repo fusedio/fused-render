@@ -1871,3 +1871,141 @@ def test_the_source_reinstall_command_survives_a_path_with_spaces(tmp_path,
         assert quoted == f'"{root.parent}"', command
     else:
         assert shlex.split(quoted) == [str(root.parent)], command
+
+
+# ------------------------------------------- the watcher outliving its server
+
+
+def _join_watchers(timeout: float = 5.0) -> None:
+    """Wait out any watcher `resume` launched. It is a daemon thread, so an
+    assertion made straight after the call would race it."""
+    for thread in threading.enumerate():
+        if thread.name == "fused-render-selffix-watch":
+            thread.join(timeout=timeout)
+
+
+
+def test_a_fix_whose_watcher_died_with_the_server_is_still_stamped(
+        install, monkeypatch):
+    """SF-7d. The watcher is a thread on the server that spawned the session;
+    the claude process is detached and outlives it. The restart most likely to
+    happen is the one the session CAUSES — it edits .py files under a dev server
+    watching them — and before this, that restart ended the measuring while the
+    editing carried on: no `settle` against this session's `before`, and
+    `reconcile` cannot stand in because it returns early with no marker to find.
+    The install ended up patched with no badge, the one outcome this feature
+    exists to prevent."""
+    before = _pristine()
+    selffix.note_session("r-orphan", before=before, report=str(install / ".x" / "r.md"),
+                         incident="", title="download failed")
+    # The session edits the tree; the server that was watching is gone.
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched by the session\n")
+    # A new process starts. Its run is over, so nothing is re-attached.
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    selffix_routes.resume()
+
+    state = selffix.status()
+    assert state is not None, "the fix was never stamped — the badge would not appear"
+    assert state["modified"] is True
+    assert [f["run_id"] for f in state["fixes"]] == ["r-orphan"]
+    assert state["fixes"][0]["title"] == "download failed", (
+        "the marker's strings ride with the pointer, or the panel lists the fix "
+        "under a blank label")
+
+
+def test_resume_re_attaches_the_watcher_while_the_session_is_still_running(
+        install, monkeypatch):
+    """Stamping once is only half of it. A session still editing after the
+    restart needs something measuring it from here on, and liveness is asked of
+    the pid — the same question the guard asks, never remembered."""
+    before = _pristine()
+    selffix.note_session("r-live", before=before)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive={"r-live"}))
+    # The autouse `_no_detached_watcher` already stubs the watcher; this records
+    # what it was handed, which is the contract under test — that a watcher is
+    # launched for the live run, carrying the digest it must measure against.
+    watched = []
+    monkeypatch.setattr(
+        selffix_routes, "_watch_fix",
+        lambda run_id, incident, report, title, seen: watched.append((run_id, seen)))
+
+    selffix_routes.resume()
+    _join_watchers()
+
+    assert watched == [("r-live", before)], (
+        "a live session was left with nothing watching it")
+
+
+def test_resume_does_not_re_attach_to_a_session_that_has_finished(
+        install, monkeypatch):
+    """The dead run has already had its final answer taken by the settle above.
+    Re-attaching would poll a run that will never tick until the watcher's own
+    hour is up."""
+    before = _pristine()
+    selffix.note_session("r-done", before=before)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+    monkeypatch.setattr(selffix_routes, "_watch_fix",
+                        lambda *a, **k: pytest.fail("must not follow a dead run"))
+
+    selffix_routes.resume()
+    _join_watchers()
+
+
+def test_resume_stamps_nothing_when_the_tree_never_moved(install, monkeypatch):
+    """`resume` finishes a stamp; it does not invent one. A session that changed
+    nothing must not raise a badge pointing at a do-nothing report — the same
+    rule `settle` already holds, reached by a different door."""
+    before = _pristine()
+    selffix.note_session("r-quiet", before=before)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    selffix_routes.resume()
+
+    assert selffix.status() is None
+
+
+def test_a_pointer_written_before_this_existed_resumes_nothing(install, monkeypatch):
+    """A schema-1 record survives an upgrade and carries no `before`. There is
+    nothing to measure against, and measuring against the BASELINE instead would
+    turn the badge into an integrity claim about the bytes — which this feature
+    refuses to make. So it does exactly what the old version did: nothing."""
+    _pristine()
+    for home in selffix.record_homes():
+        path = selffix._session_file(home)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            json.dump({"schema": 1, "run_id": "r-old"}, handle)
+        break
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    selffix_routes.resume()
+
+    assert selffix.status() is None
+    assert selffix.active_run() == "r-old", "the pointer still names its run"
+
+
+def test_a_diagnostic_session_records_no_before_so_nothing_resumes_it(
+        client, monkeypatch, install):
+    """A read-only install has no baseline, no watcher and nothing to stamp — a
+    digest that cannot move. The pointer is still written (the guard needs it
+    just as much) but it carries no `before`, so `resume` skips it for the same
+    reason the watcher was never started."""
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r-diag"})
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready", lambda *a, **k: None)
+
+    started = post(client, "/api/selffix/start", {"note": "dates render wrong"})
+    assert started.status_code == 200
+    assert started.json()["diagnostic"] is True
+
+    assert selffix.active_run() == "r-diag"
+    assert selffix.session_record().get("before") == "", (
+        "a diagnostic session must not leave a digest for resume to act on")

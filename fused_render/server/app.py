@@ -486,6 +486,20 @@ def create_app(start_dir: str) -> FastAPI:
 
         selffix.start_reconcile()
 
+    # Did a fix session outlive the server that was watching it? Its watcher is
+    # a thread and dies with that process; the claude session is detached and
+    # does not — and the restart most likely to happen is the one the session
+    # itself causes by editing .py files under a dev server. Without this the
+    # install could end up patched with no badge (SF-7d, routers/selffix.resume).
+    # Its own thread for the same reason as the reconcile above: it can hash the
+    # package, and only when a session pointer with a `before` is actually there.
+    @on_startup
+    async def _startup_selffix_resume():
+        from fused_render.server.routers import selffix as selffix_router
+
+        threading.Thread(target=selffix_router.resume, daemon=True,
+                         name="fused-render-selffix-resume").start()
+
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.
     # A startup event for the same reason as `_startup_schedule`: it is a

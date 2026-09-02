@@ -122,6 +122,9 @@ EXPECTED_STARTUP = [
     # `create_app` — this list is a record of registration order, not a
     # preference about it.
     "_startup_selffix_reconcile",
+    # SF-7d: and immediately after it, the resume that finishes a stamp for a
+    # fix session whose watcher died with the server that started it.
+    "_startup_selffix_resume",
     "_startup_tasks_watch",
     "_startup_ai_idle_reaper",
     "_startup_ai_hardware_refresh",
