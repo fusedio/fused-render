@@ -134,12 +134,20 @@ export function CuratedMark() {
 // the sidebar's live dot, because "this is running" should be one colour in
 // this app rather than one per surface.
 function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
+  // RAM/VRAM (D670): once a runner has reported a device figure alongside a
+  // host one, `residentBytes` is not a safe stand-in any more — for a
+  // GPU-resident model it is `max(RSS, the runner's own device probe)`, so
+  // it would print VRAM here labelled "resident", which is the exact
+  // conflation this split exists to undo. `hostResidentBytes` is the one
+  // figure genuinely of the process, whether or not a split is known.
+  const residentHint =
+    loaded.hostResidentBytes ?? loaded.residentBytes;
   return (
     <span
       className="am-loaded-badge"
       data-hint={
         `${loaded.model} is loaded in memory` +
-        (loaded.residentBytes ? ` — ${formatSize(loaded.residentBytes)} resident` : "")
+        (residentHint ? ` — ${formatSize(residentHint)} resident` : "")
       }
     >
       Loaded
@@ -217,9 +225,37 @@ function RuntimeChip({
     // running — and the page has no reason to tell those apart, since none
     // of them counts down.
     const countdown = unloadCountdown(loaded.unloadsInSeconds);
+    // RAM/VRAM (D670): known exactly when a host reading AND a device
+    // reading are both in hand — same gate `ModelsDock.tsx`'s `MemoryCell`
+    // uses, and for the same reason: a device figure with no host reading
+    // must not be presented as if it were RAM. Without a known split (the
+    // common case: CPU, mmap'd runners, unified-memory MLX/mflux and
+    // torch-on-MPS) this renders exactly as before — one "in memory" figure.
+    const hasKnownSplit =
+      loaded.hostResidentBytes !== null &&
+      (loaded.deviceAllocatedBytes !== null || loaded.deviceReservedBytes !== null);
     return (
       <div className="am-card-runtime am-card-runtime-ready">
-        {loaded.residentBytes ? (
+        {hasKnownSplit ? (
+          <>
+            <span
+              className="am-runtime-mem am-runtime-mem-lead"
+              data-hint={
+                "Host RAM resident right now — the graphics card keeps its own " +
+                "memory pool separately, shown alongside this."
+              }
+            >
+              {formatSize(loaded.hostResidentBytes)} RAM
+              {countdown ? ` — ${countdown}` : ""}
+            </span>
+            <span
+              className="am-runtime-mem"
+              data-hint="What the graphics card's own memory pool is holding for this model."
+            >
+              {formatSize(loaded.deviceAllocatedBytes ?? loaded.deviceReservedBytes)} VRAM
+            </span>
+          </>
+        ) : loaded.residentBytes ? (
           <span
             className="am-runtime-mem am-runtime-mem-lead"
             data-hint={

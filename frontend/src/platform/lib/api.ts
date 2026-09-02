@@ -3217,6 +3217,24 @@ export interface AiLoadedModel {
    *  parenthetical when the two coincide. Null where no counter could be read at
    *  all — which must stay null, since a row cannot invent a held figure. */
   osFootprintBytes: number | null;
+  /** Bare host RSS, un-conflated with a runner's own device probe
+   *  (`worker_base.host_resident_bytes`). `residentBytes` above is
+   *  deliberately left as `max(RSS, a runner's memory() hook)`, and that
+   *  hook answers in DEVICE bytes for a GPU-resident model — so on a worker
+   *  with a known split this is the one field that is genuinely RAM, never
+   *  VRAM folded in. Null on any worker that never reported a split — an
+   *  older runner, a probe that failed, or (deliberately) a unified-memory
+   *  runner, which has no separate figure to give. */
+  hostResidentBytes: number | null;
+  /** A DISCRETE GPU's own pool, split into what is actually allocated right
+   *  now and what the driver is holding reserved
+   *  (`worker_base.device_memory_bytes`) — CUDA/ROCm only. Both null
+   *  together on Apple Silicon (MLX/mflux) and torch-on-MPS: there the GPU
+   *  pool IS system memory, so a separate VRAM figure would double-count
+   *  the same bytes `residentBytes`/`osFootprintBytes` already count as
+   *  RAM. `hostResidentBytes` is set exactly when either of these is. */
+  deviceAllocatedBytes: number | null;
+  deviceReservedBytes: number | null;
   /** What this model actually COSTS on this machine, in bytes — the primary
    *  figure on a status-bar row, colour-coded against
    *  `AiRuntime.memoryCeilingBytes` (D594). Straight from

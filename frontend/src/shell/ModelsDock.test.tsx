@@ -71,6 +71,9 @@ const model = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
   error: null,
   residentBytes: 4_000_000_000,
   osFootprintBytes: 4_000_000_000,
+  hostResidentBytes: null,
+  deviceAllocatedBytes: null,
+  deviceReservedBytes: null,
   footprintBytes: null,
   footprintBasis: null,
   device: "mps",
@@ -325,6 +328,97 @@ test("no machine ceiling means no colour either", () => {
   });
   const heldSpan = findAll(findAll(tree, "dl-row")[0], "dl-mem-live")[0];
   expect(heldSpan.props.className as string).not.toContain("is-mem-");
+});
+
+// ------------------------------------------------ the RAM/VRAM split (D670)
+//
+// A GPU-resident model on a discrete card (ROCm/CUDA) reports a host RSS
+// reading distinct from its device-allocator readings — the worker's
+// `/health` no longer folds VRAM into a number the row calls "now"/"held" as
+// if it were process memory.
+test("a worker with a known split shows RAM and VRAM as separate, labelled figures", () => {
+  const tree = renderView({
+    models: [
+      model({
+        residentBytes: 2_500_000_000,
+        osFootprintBytes: 2_500_000_000,
+        hostResidentBytes: 2_500_000_000,
+        deviceAllocatedBytes: 5_200_000_000,
+        deviceReservedBytes: 8_100_000_000,
+      }),
+    ],
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).toBe("2.3 GB RAM · 4.8 GB VRAM (7.5 GB held)");
+});
+
+// Same "omit the parenthetical when it adds nothing" rule as the RSS/footprint
+// pair above, applied to VRAM's allocated/reserved pair.
+test("VRAM drops its own parenthetical when allocated and reserved agree", () => {
+  const tree = renderView({
+    models: [
+      model({
+        hostResidentBytes: 2_500_000_000,
+        deviceAllocatedBytes: 5_200_000_000,
+        deviceReservedBytes: 5_200_000_000,
+      }),
+    ],
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).toBe("2.3 GB RAM · 4.8 GB VRAM");
+});
+
+// THE BAND MOVES TO RAM ONCE THE SPLIT IS KNOWN: the gate now charges only
+// the host figure against the RAM budget, so a colour on VRAM would answer a
+// question about the wrong ceiling.
+test("once the split is known, the colour band sits on RAM, never on VRAM", () => {
+  const tree = renderView({
+    models: [
+      model({
+        hostResidentBytes: 19_000_000_000,
+        deviceAllocatedBytes: 5_200_000_000,
+        deviceReservedBytes: 8_100_000_000,
+      }),
+    ],
+    ceilingBytes: 25_769_803_776, // ~70%+ of ceiling on RAM alone -> not "easy"
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  const ramSpan = findAll(cell, "dl-mem-live")[0];
+  expect((ramSpan.props.className as string).split(" ")).toContain("is-mem-tight");
+  expect(text(ramSpan)).toBe("18 GB RAM");
+});
+
+// A DEVICE READING WITH NO HOST READING is not a "known split" — the row
+// falls back to the unsplit rendering rather than inventing a RAM figure it
+// cannot back up.
+test("a device reading with no host reading renders the unsplit row, not a split one", () => {
+  const tree = renderView({
+    models: [
+      model({
+        residentBytes: 1_850_960_734,
+        osFootprintBytes: 25_676_453_144,
+        hostResidentBytes: null,
+        deviceAllocatedBytes: 5_200_000_000,
+        deviceReservedBytes: 8_100_000_000,
+      }),
+    ],
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).toBe("1.7 GB now (24 GB held)");
+  expect(text(cell)).not.toContain("VRAM");
+});
+
+// UNIFIED MEMORY (MLX/mflux, torch-on-MPS) reports no device figure at all —
+// the default `model()` fixture is exactly this shape, and every test above
+// it already exercises the unsplit row, so this just names the invariant:
+// null/null device readings never trip the split branch.
+test("a unified-memory worker (no device readings) never renders a split row", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 4_000_000_000, osFootprintBytes: 25_676_453_144 })],
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).not.toContain("RAM");
+  expect(text(cell)).not.toContain("VRAM");
 });
 
 // A bring-up is legitimately listed in the panel, with its state standing in
