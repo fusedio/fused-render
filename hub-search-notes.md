@@ -914,3 +914,190 @@ scope.
   quant-diverse variant — confirm the summary line and the Quant column
   visibly agree now, on an actual page rather than only in `familyHoist`'s
   own unit tests.
+
+## Sixth fix-builder round: derived GGUF fit deleted, not guarded
+
+D657-D660 in DECISIONS.md carry the full reasoning; this is what changed,
+what the brief got wrong, and where I diverged from a literal reading of it.
+
+**(1) The whole GGUF params x bytes-per-param derivation is gone.**
+`_model_row` (`fused_render/server/routers/hub_models.py`) still reads
+`gguf.total` into `params` for a `file`-resolved row (still real, still
+quantization-invariant, still free, still feeds `_capability_score` and the
+Params column) but never threads it into `fit.verdict`/`speed.estimate_tok_s`
+any more. Both are now:
+
+```python
+fit_verdict = (
+    fit.verdict(capability, model_id, size_gb, params=params,
+                footprint_store=footprint_store, hardware=hardware)
+    if file is None else None)
+speed_estimate = (
+    speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+    if file is None and capability == TEXT_GENERATION else None)
+```
+
+i.e. gated on `file is None` (not a GGUF row) rather than on any property of
+`quant`. This is unconditional the way the brief asked — no whitelist, no
+"but this token is probably fine" branch. `gguf_quantization` and the
+separate `fit_params` variable D654 introduced are deleted; there is exactly
+one `params` now, used for both the Params column and (only for a
+non-GGUF row) `fit`/`speedEstimate`.
+
+**(2) Pinned the exact case that survived two prior rounds.** New test
+`test_gguf_row_with_recognized_quant_still_reports_no_derived_fit`
+(`tests/test_hub_models.py`) uses the reviewer's own repro: a 30B model
+whose file is `x-Q8_K_XL.gguf` — `formats.gguf_quant_token` DOES resolve
+`"Q8_K_XL"` (confirmed via the regex, not assumed), so this is not the
+round-2 "unrecognized token" case at all — and asserts `fit is None` and
+`speedEstimate is None` regardless. Also had to fix an existing test that
+assumed the old behavior:
+`test_gguf_row_with_real_params_scores_well_above_the_three_defaults_at_once`
+asserted `with_meta["fit"] is not None` for a Q4_K_M row — renamed to
+`test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone`
+and rewritten to assert both rows' `fit`/`speedEstimate` are `None`, with the
+`matchScore` gap now attributed to `_capability_score` alone (real `params`
+vs. none). Kept `test_gguf_row_with_unrecognized_quant_token_never_claims_
+easy` (the round-2 pin) unmodified — it still passes unchanged, since
+`fit: null` was already its assertion.
+
+**(3) Axis defaults: verified numerically rather than changed.** The brief
+worried deleting derived fit would "reintroduce a page where every GGUF row
+ties near the bottom" and asked me to revisit the axis defaults. I did not
+change `_FIT_DEFAULT`/`_SPEED_DEFAULT`/`_CAPABILITY_DEFAULT` — they already
+implement "absence is neutral, not penal" (D639's own doctrine, re-verified
+against code review finding 7 at the time: no default can ever outscore a
+genuinely good real value). Ran the actual scoring functions rather than
+hand-estimating: a same-params/recency/downloads pair at 7B params/32GB RAM
+scores ~88.6 (safetensors, real "easy" fit) vs. ~62.4 (GGUF, fit/speed both
+defaulted, capability real) — a real but moderate 26-point gap, not a
+collapse to the bottom (`verdict: "no"` or CPU-penalized rows score far
+lower). `_capability_score` is untouched by this round and keeps
+differentiating GGUF rows from each other by real `params` even with no fit
+verdict, so a 30B GGUF row still outranks a 1B GGUF row on capability alone.
+I considered this the honest read of "make the fit axis's absence neutral
+rather than penal for a row we simply have not measured yet" — those
+constants already ARE that; a GGUF-specific default would have been a new
+inconsistency (one row shape's "no evidence" reading differently from
+every other row shape's), and the brief explicitly forbade inventing a fit
+verdict to achieve this.
+
+**(4) `resolveFit`/`resolveSpeed` gained a `file` parameter (real, previously
+unreported defect).** The brief was right that this was live and unfixed:
+`wantsTotal = !model.estimatedSize` in `HubResultsTable.tsx` is NOT gated on
+whether `model.file` is set, so a row with `model.file === null` still runs
+the lazy lookup (for the repo-wide `usedStorage` total). `api_hub_size`
+(`hub_models.py`) only computes a fit/speed verdict when it receives a
+`file`, so that lookup always answers `fit: null` — and `lookupTotalSize`
+caches that `null` identically to a real "asked, nothing to judge" answer
+(`hubSize.test.ts:295`'s own pinned contract). The old precedence
+(`fitOverride !== undefined ? fitOverride : model.fit`) let that
+never-judges `null` win outright, wiping a real `basis: "measured"` verdict
+`footprint_store` had already supplied for an on-disk model at search time.
+Fixed by adding a `file: string | null` parameter to both `resolveFit` and
+`resolveSpeed`; the override only wins when `file !== null`. Updated the one
+call site (`HubResultsTable.tsx`) to pass `model.file`, and rewrote the
+`resolveFit`/`resolveSpeed` describe block in `hubTableView.test.ts` to pin
+this directly (a `file === null` row's real `modelFit` survives both a
+`null` and a differing-verdict override).
+
+**(5) `matchFitBasis` simplified to a straight read of `AiFitVerdict.basis`.**
+Old signature took `(effectiveFit, fitOverride, wantsTotal)` and re-derived
+a fourth "estimated" state for the (now nonexistent) GGUF-guess case. New
+signature is `matchFitBasis(fit: AiFitVerdict | null): MatchFitBasis`
+where `MatchFitBasis = AiFitVerdict["basis"] | null` — the same
+`measured`/`declared`/`download` ladder `fitNote.ts` already has copy for.
+`matchTitle`'s hover text now says "measured from real memory usage ... when
+this model ran" for `basis === "measured"`, and "judged from this repo's own
+reported size — not yet measured by an actual run here" for `declared`/
+`download`, mirroring `fitNote.ts`'s own measured-vs-everything-else split
+rather than inventing new wording. The old sentence ("an estimate from the
+parameter count and quantization alone ... still in flight") is deleted —
+it described exactly the mechanism this round removed, and would have been
+false for every row going forward. Added the tests the brief flagged as
+missing (`matchTitle`'s basis branch had none before this round).
+
+**(6) `isMatchScoreStale` widened to compare verdicts, not just nullness —
+confirmed the reachable path is dissolved, fixed defensively anyway.** Per
+the brief's own instruction: `fitOverride != null && (modelFit == null ||
+fitOverride.verdict !== modelFit.verdict)`. Traced whether the
+differing-non-null-verdict path is actually reachable post-(1)/(4): it is
+NOT — `resolveFit`'s `file !== null` gate (item 4) means an override can
+only ever win for a row whose `file !== null`, and post-(1) every such row's
+`model.fit` is unconditionally `None` from the server. So `modelFit` is
+always `null` in the one branch where `fitOverride` can be honoured, and the
+new comparison is behaviorally identical to the old null-only check today.
+Kept the fix anyway (D660's own "Rejected" column explains why: unreachable
+today is not an invariant either function's type enforces, and the fifth
+round's own notes explicitly flagged this as a known, deliberately
+unaddressed gap) — updated the one existing test that pinned the OLD,
+narrower behavior (`isMatchScoreStale(verdict("easy"), verdict("tight"))`
+now asserts `true`, was `false`) and added a same-verdict "not stale"
+counterpart.
+
+### What this round's brief got wrong
+
+Nothing substantive that I could find. Two places where I diverged from a
+literal reading, both flagged above rather than silently decided: (3) the
+brief asked me to "revisit defaults" and I concluded the existing constants
+already satisfied the goal rather than changing them — verified
+numerically, not asserted; (6) the brief's suggested `isMatchScoreStale`
+condition is correct but, given (1)/(4)'s combined effect, is not currently
+exercisable by any live code path — I said so rather than claiming it fixes
+a reachable bug.
+
+One thing worth flagging for a future round: deleting derived fit means a
+GGUF row can no longer be hidden by the `verdict: "no"` default-hide rule
+(D652) — `(row.get("fit") or {}).get("verdict")` reads `None`, not `"no"`,
+for every GGUF row until the lazy per-file lookup resolves one client-side.
+This was already true for round 2's unrecognized-quant rows and is an
+accepted, not newly-introduced, consequence of this round's fix — but it
+means an obviously-oversized GGUF model can sit in the results list (with a
+neutral-not-bad match score, see (3)) until a reader scrolls it into view.
+Nothing in this brief asked me to change that, and doing so would mean
+either inventing a fit verdict (forbidden) or hiding GGUF rows by some other
+signal (out of scope, not requested) — leaving it as a known property for
+whoever picks up server-side memory judgement for GGUF rows next, if anyone
+does.
+
+### Tests run this session
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 182 passed (181
+  before this session — 1 renamed/rewritten test plus 1 new pinned test for
+  the `Q8_K_XL` case).
+- `.venv/bin/python -m pytest tests/test_ai_fit.py tests/test_ai_speed.py
+  tests/test_doc_duplicate_ids.py -q`: 120 passed (checking the call-pattern
+  change — `fit.verdict`/`speed.estimate_tok_s` no longer called at all for
+  a GGUF row — didn't regress either module, and D657-D660 clear the
+  duplicate-id guard).
+- `cd frontend && bun test src/apps/ai_models`: 639 passed (was 636 before
+  this session — 3 net new: two `matchTitle` basis-branch tests the brief
+  flagged as missing, one `isMatchScoreStale` same-verdict counterpart; some
+  existing tests in `resolveFit`/`resolveSpeed`/`matchFitBasis` describe
+  blocks were rewritten in place for the new signatures rather than added
+  alongside).
+- `cd frontend && bun run typecheck`: clean.
+- `cd frontend && node scripts/check-boundaries.mjs`: clean (426 files).
+- No `mock.module` touched this round, so no full `bun test` run (only the
+  targeted `src/apps/ai_models` run, per the standing rule).
+- Grepped `tests/` (Python) for every backend/frontend symbol touched this
+  session (`gguf_quantization`, `fit_params`, `wantsTotal`, `resolveFit`,
+  `resolveSpeed`, `matchFitBasis`, `isMatchScoreStale`, `MatchFitBasis`,
+  `"estimated"`/`'estimated'`): no hits outside this repo's own frontend
+  test files and two unrelated `estimated` matches in
+  `test_model_templates.py`/`test_ai_runtime.py` (a different `estimated`
+  boolean field, unrelated to this feature).
+
+### Left for a human with a browser
+
+- The new `matchTitle` basis sentences ("measured from real memory usage
+  recorded when this model ran on this machine" / "judged from this repo's
+  own reported size — not yet measured by an actual run here") have never
+  been seen rendered — confirm they read naturally beside the existing
+  verdict/mode sentences.
+- The (3) numeric claim (a GGUF row's Match score sits ~26 points below a
+  comparable "easy" safetensors row, not near the bottom) was verified by
+  calling `_composite_raw_score` directly with synthetic rows, not by
+  loading an actual page — a human with a real, quant-diverse result set
+  should confirm the table reads as "reasonably ranked, honestly unjudged"
+  rather than "buried" for GGUF rows in practice.
