@@ -196,12 +196,16 @@ where a first model comes from.
     trade is that a plain `.safetensors` chat model from the Hub is loadable on
     Apple Silicon only; off a Mac, take the GGUF the shortlist names instead. It
     is the same model, not a smaller one.
-  - **The accelerated build is the default when your machine has the matching
-    GPU.** Images offer Diffusers (CPU), (CUDA) and (ROCm); chat offers
-    llama.cpp (CPU) and (Vulkan), which reaches both NVIDIA and AMD from one
-    wheel. Without you choosing anything, the app picks whichever of these it
-    can see a usable GPU for — CUDA before ROCm for images, Vulkan for chat —
-    and only falls back to the unaccelerated build on a machine with neither.
+  - **The accelerated build is the default when your machine looks like it has
+    the matching hardware.** Images offer Diffusers (CPU), (CUDA) and (ROCm);
+    chat offers llama.cpp (CPU) and (Vulkan), which reaches NVIDIA, AMD and
+    Intel GPUs from one wheel. Without you choosing anything, the app picks
+    whichever of these its check passes — a real device check for images (an
+    NVIDIA or AMD GPU the driver reports), a lighter check for chat's Vulkan
+    build (a real driver ICD registered, ruling out a software-only Vulkan
+    implementation on Linux; a Vulkan library file present on Windows, which
+    is not the same as proof a GPU answers it) — and only falls back to the
+    unaccelerated build on a machine that check refuses.
     That means the first Load on a machine with a GPU is a much larger
     download than the CPU build alone, since the accelerated wheel is what
     gets fetched. The Engines tab still lists every build and greys out the
