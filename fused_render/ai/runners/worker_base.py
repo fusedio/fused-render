@@ -269,6 +269,59 @@ def _arm_release_timer():
     timer.start()
 
 
+def _trim_malloc_arenas():
+    """Return glibc's per-thread arena memory to the OS, called at the tail
+    of `_fire_release` once the runner's own `_release` hook has returned —
+    i.e. after torch's caching allocator / MLX's pool has already handed back
+    whatever IT was holding, so this is asking the OS-facing layer underneath
+    those allocators for the rest.
+
+    glibc gives each thread its own heap arena (capped by `HEAP_MAX_SIZE`, in
+    practice at most a few dozen MB) the moment that thread mallocs while the
+    main arena is contended — and a `free()` back into a per-thread arena
+    shrinks the arena's OWN accounting but never returns the pages to the OS
+    on its own; only an explicit `malloc_trim()` call against that arena does,
+    and nothing in the process calls one unless told to. Torch runs many
+    threads (its own pool, MIOpen/comgr's), each with its own arena, so an
+    idle worker whose runner has already freed every tensor it knows about
+    can still sit on hundreds of MB of RSS that is provably unused.
+
+    Measured on a live FLUX worker on Linux/ROCm, all-GPU placement, 2.47 GB
+    RSS: 1.57 GB of that was anonymous, and splitting it by mapping shape
+    found 0.62 GB across 15 mappings that are 64 MB-aligned reservations of
+    <=64 MB apiece — the signature of these per-thread arenas (`[heap]`
+    itself was only 24 MB, which is why the main arena alone looked
+    innocent). This function targets exactly those 15 mappings. It does NOT
+    touch, and cannot reclaim, the OTHER 0.84 GB of anonymous RSS (138
+    mappings, unaligned, odd sizes — direct `mmap`, not arena-shaped): those
+    are live HIP host arenas and pinned staging buffers that stay mapped for
+    as long as the HIP context itself lives, not idle allocator slack.
+
+    Linux/glibc only, and best-effort throughout: musl has no `malloc_trim`
+    symbol at all, so its absence is discovered by catching the
+    `AttributeError` `ctypes.CDLL(None).malloc_trim` raises rather than
+    assumed present — there is no portable equivalent to fall back to on
+    macOS/Windows either, hence the platform check up front. `ctypes` is
+    imported function-locally, matching this module's convention for an
+    optional, platform-specific import (see the darwin branch of
+    `os_footprint_bytes`). Any failure here — to load the symbol, or to call
+    it — is caught and swallowed: a release must never fail, or take the
+    idle timer down, because trimming afterward didn't work.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return
+    try:
+        malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _fire_release(token):
     """The idle timer's callback: reclaim the allocator pool, but only if
     nothing has run since `token` was handed out.
@@ -300,6 +353,14 @@ def _fire_release(token):
     where the MPS branch always raised and quietly took the CUDA branch down
     with it — see `torch_image.release`). The worker's own stderr lands in
     `$TMPDIR/fused-render-<pid>.log`, where a broken reclaim is now visible.
+
+    `_trim_malloc_arenas()` runs AFTER `_release` regardless of whether it
+    raised — the runner's own allocator freeing memory is what makes an
+    arena trimmable in the first place, so the trim has to come second, and
+    it must run even on a raising `release` since a partial free still
+    leaves something worth trimming. See its own docstring for why a runner
+    freeing memory back to its allocator is not the same as the OS getting
+    it back.
     """
     global _release_timer
     with GENERATE_LOCK:
@@ -313,6 +374,11 @@ def _fire_release(token):
             run_on_generate_thread(_release)
         except Exception:  # noqa: BLE001 - logged below, then swallowed: see docstring
             traceback.print_exc(file=sys.stderr)
+        # After `_release` — whether it ran clean or raised — has freed
+        # whatever it was going to. See `_trim_malloc_arenas` for why this
+        # is still needed on top of that: glibc doesn't return per-thread
+        # arena memory to the OS on `free()` alone.
+        _trim_malloc_arenas()
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 

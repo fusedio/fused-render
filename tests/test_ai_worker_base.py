@@ -920,6 +920,123 @@ def test_a_raising_release_does_not_crash_the_timer_or_break_the_next_execution(
         server.shutdown()
 
 
+class _FakeLibc:
+    """Stands in for `ctypes.CDLL(None)` so `_trim_malloc_arenas` can be
+    exercised without depending on the real glibc symbol being present (or
+    absent, on whatever platform runs this suite)."""
+
+    def __init__(self, calls, trim=None):
+        self._calls = calls
+        self._trim = trim if trim is not None else (lambda n: calls.append(("trim", n)))
+
+    @property
+    def malloc_trim(self):
+        return self._trim
+
+
+def test_idle_release_calls_malloc_trim_after_the_runners_release_returns(base, manual_timers, monkeypatch):
+    """The whole point of this mechanism: glibc never returns a per-thread
+    arena's freed memory to the OS on its own, so the idle-release path has
+    to ask for it explicitly, and only once the runner's own release (which
+    is what actually frees the arena memory in the first place) has
+    finished."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _FakeLibc(calls))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert calls == ["released", ("trim", 0)]
+    finally:
+        server.shutdown()
+
+
+def test_a_missing_malloc_trim_symbol_does_not_break_the_release(base, manual_timers, monkeypatch):
+    """musl has no `malloc_trim` at all — `ctypes.CDLL(None).malloc_trim`
+    raises `AttributeError` rather than returning a callable, and that must
+    not take the release down with it."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+
+    class _NoTrimLibc:
+        @property
+        def malloc_trim(self):
+            raise AttributeError("malloc_trim")
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _NoTrimLibc())
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert calls == ["released"]
+        assert base._release_timer is None
+    finally:
+        server.shutdown()
+
+
+def test_a_raising_malloc_trim_does_not_break_the_release(base, manual_timers, monkeypatch):
+    """A `malloc_trim` call that itself raises (`OSError`, in principle —
+    it is a bare libc call reached through `ctypes`) must be swallowed just
+    like a raising `release` hook already is."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+
+    def boom(n):
+        raise OSError("nope")
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _FakeLibc(calls, trim=boom))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert calls == ["released"]
+        assert base._release_timer is None
+    finally:
+        server.shutdown()
+
+
+def test_malloc_trim_is_skipped_off_linux(base, manual_timers, monkeypatch):
+    """The trim is a glibc/Linux mechanism only — on any other platform
+    `_trim_malloc_arenas` must not even try to load `ctypes.CDLL`, since
+    macOS/Windows have no `malloc_trim` equivalent to reach for."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: (_ for _ in ()).throw(
+        AssertionError("must not be called off Linux")))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
 def test_release_runs_on_the_generate_thread_not_the_connection_thread(base, manual_timers):
     """Routed through `run_on_generate_thread` like `generate` itself: the
     hook this exists for is `mx.clear_cache()`, an MLX call, and that
