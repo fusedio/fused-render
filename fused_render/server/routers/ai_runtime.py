@@ -202,8 +202,8 @@ def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
 def _provider_rejection(body: dict, verb: str):
     """The `provider` tier check the four capability routes share (D631).
 
-    Returns `(None, None)` when the call may proceed locally, else
-    `(type, message, status)`-shaped data for the caller to wrap in its own
+    Returns None when the call may proceed locally, else a
+    `(type, message, status)` triple for the caller to wrap in its own
     error envelope (`_error` for the three job-backed routes, `_embed_error`
     for embed — the two wire shapes differ, so the wrapping is the caller's).
 
