@@ -5,6 +5,8 @@ import {
   hubSizeBytes,
   hubSizeLabel,
   hubSizeTitle,
+  knownFit,
+  knownSpeedEstimate,
   knownTotalSize,
   lookupTotalSize,
 } from "./hubSize";
@@ -34,6 +36,8 @@ function row(extra: Partial<HubModel> = {}): HubModel {
     created: null,
     baseModel: null,
     relation: null,
+    quant: null,
+    file: null,
     local: { state: "none" },
     url: "https://huggingface.co/org/m",
     ...extra,
@@ -131,6 +135,17 @@ describe("hubSizeTitle", () => {
     expect(title).toContain("no safetensors metadata");
     expect(title).not.toContain("can't be computed");
   });
+
+  it("names the resolved FILE, not the whole repo, for a GGUF row", () => {
+    // The bug this fixes: a GGUF repo's fallback used to be the Hub's
+    // repo-wide total — every quantization the author published — even
+    // though the row already knows the ONE file it would download
+    // (`HubModel.file`). Once that file's own size is what `total` carries,
+    // the tooltip has to say so rather than repeating the repo-total wording.
+    const title = hubSizeTitle(row({ file: "x-Q4_K_M.gguf" }), 4_200_000_000);
+    expect(title).toContain("x-Q4_K_M.gguf");
+    expect(title).not.toContain("total for this repo");
+  });
 });
 
 describe("lookupTotalSize", () => {
@@ -142,8 +157,8 @@ describe("lookupTotalSize", () => {
       asked.push(id);
       return { usedStorage: 4_619_599_193 };
     };
-    expect(await lookupTotalSize("org/m", fetchSize)).toBe(4_619_599_193);
-    expect(await lookupTotalSize("org/m", fetchSize)).toBe(4_619_599_193);
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBe(4_619_599_193);
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBe(4_619_599_193);
     expect(asked).toEqual(["org/m"]);
     // …and a card mounting later can paint the number immediately.
     expect(knownTotalSize("org/m")).toBe(4_619_599_193);
@@ -161,8 +176,8 @@ describe("lookupTotalSize", () => {
         release = res;
       });
     };
-    const a = lookupTotalSize("org/m", fetchSize);
-    const b = lookupTotalSize("org/m", fetchSize);
+    const a = lookupTotalSize("org/m", null, fetchSize);
+    const b = lookupTotalSize("org/m", null, fetchSize);
     release({ usedStorage: 7 });
     expect(await a).toBe(7);
     expect(await b).toBe(7);
@@ -177,8 +192,8 @@ describe("lookupTotalSize", () => {
       calls += 1;
       return { usedStorage: null };
     };
-    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
-    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBeNull();
     expect(calls).toBe(1);
     expect(knownTotalSize("org/m")).toBeNull();
   });
@@ -187,7 +202,7 @@ describe("lookupTotalSize", () => {
     const fetchSize = async () => {
       throw new Error("offline");
     };
-    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBeNull();
   });
 
   it("does not remember a Hub-side failure as 'no number'", async () => {
@@ -202,11 +217,11 @@ describe("lookupTotalSize", () => {
         ? { usedStorage: null, error: "429 Too Many Requests" }
         : { usedStorage: 4_619_599_193 };
     };
-    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBeNull();
     // Nothing was learned, so a card mounting later must not paint the failure
     // as an answer — `undefined` is what tells the two apart.
     expect(knownTotalSize("org/m")).toBeUndefined();
-    expect(await lookupTotalSize("org/m", fetchSize)).toBe(4_619_599_193);
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBe(4_619_599_193);
     expect(calls).toBe(2);
     expect(knownTotalSize("org/m")).toBe(4_619_599_193);
   });
@@ -220,18 +235,68 @@ describe("lookupTotalSize", () => {
       if (calls === 1) throw new Error("offline");
       return { usedStorage: 7 };
     };
-    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
-    expect(await lookupTotalSize("org/m", fetchSize)).toBe(7);
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBe(7);
     expect(calls).toBe(2);
   });
 
   it("tells one repo from another", async () => {
     const fetchSize = async (id: string) => ({ usedStorage: id === "org/a" ? 1 : 2 });
-    expect(await lookupTotalSize("org/a", fetchSize)).toBe(1);
-    expect(await lookupTotalSize("org/b", fetchSize)).toBe(2);
+    expect(await lookupTotalSize("org/a", null, fetchSize)).toBe(1);
+    expect(await lookupTotalSize("org/b", null, fetchSize)).toBe(2);
   });
 
   it("has nothing to say about a repo nobody has asked about", () => {
     expect(knownTotalSize("org/never")).toBeUndefined();
+  });
+
+  // Bug chain fix: a GGUF row's size comes from the ONE file it would
+  // download, not a repo-wide total that counts every quantization the
+  // author published.
+  it("passes the resolved FILE through and reads fileSize, not usedStorage", async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const fetchSize = async (id: string, file?: string) => {
+      asked.push([id, file]);
+      // A generous repo-wide total that would be the WRONG answer if this
+      // read `usedStorage` instead of `fileSize` — the exact bug.
+      return { usedStorage: 1_400_000_000_000, fileSize: 4_200_000_000 };
+    };
+    expect(await lookupTotalSize("unsloth/x-GGUF", "x-Q4_K_M.gguf", fetchSize)).toBe(4_200_000_000);
+    expect(asked).toEqual([["unsloth/x-GGUF", "x-Q4_K_M.gguf"]]);
+  });
+
+  it("still reads usedStorage when no file is given (every non-GGUF fallback)", async () => {
+    const fetchSize = async () => ({ usedStorage: 4_619_599_193, fileSize: null });
+    expect(await lookupTotalSize("org/m", null, fetchSize)).toBe(4_619_599_193);
+  });
+});
+
+describe("knownFit and knownSpeedEstimate", () => {
+  beforeEach(_forgetTotalSizes);
+
+  it("rides the same lookup that resolves the size, for a row with a file", async () => {
+    const fit = { verdict: "easy" as const, basis: "declared" as const, footprintBytes: 1, score: 100 };
+    const speedEstimate = {
+      tokensPerSecond: 42, method: "bandwidth" as const, backend: "metal-mlx" as const,
+      bandwidthGbS: 200, contextTokens: 8192, calibrated: false, calibrationFactor: null,
+    };
+    const fetchSize = async () => ({ usedStorage: null, fileSize: 4_000_000_000, fit, speedEstimate });
+    // Nothing known before the lookup resolves.
+    expect(knownFit("org/g")).toBeUndefined();
+    await lookupTotalSize("org/g", "m.gguf", fetchSize);
+    expect(knownFit("org/g")).toEqual(fit);
+    expect(knownSpeedEstimate("org/g")).toEqual(speedEstimate);
+  });
+
+  it("is null, not undefined, once a lookup resolves with nothing to judge", async () => {
+    const fetchSize = async () => ({ usedStorage: 9, fileSize: null });
+    await lookupTotalSize("org/m", null, fetchSize);
+    expect(knownFit("org/m")).toBeNull();
+    expect(knownSpeedEstimate("org/m")).toBeNull();
+  });
+
+  it("has nothing to say about a repo nobody has asked about", () => {
+    expect(knownFit("org/never")).toBeUndefined();
+    expect(knownSpeedEstimate("org/never")).toBeUndefined();
   });
 });

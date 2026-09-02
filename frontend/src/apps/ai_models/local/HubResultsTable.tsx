@@ -36,14 +36,23 @@ import {
   fitCell,
   paramsLabel,
   popLabel,
+  quantLabel,
   runModeLabel,
+  scoreLabel,
   speedLabel,
   variantLabel,
 } from "@apps/ai_models/lib/hubTableView";
-import { hubSizeLabel, hubSizeTitle, knownTotalSize, lookupTotalSize } from "@apps/ai_models/lib/hubSize";
+import {
+  hubSizeLabel,
+  hubSizeTitle,
+  knownFit,
+  knownSpeedEstimate,
+  knownTotalSize,
+  lookupTotalSize,
+} from "@apps/ai_models/lib/hubSize";
 import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { DownloadGlyph } from "@apps/ai_models/shared/ModelProgress";
-import { type HubModel } from "@platform/lib/api";
+import { getHubModelSize, type HubModel } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 
 /** One variant's disclosure row — id, size, disk state, and its own action —
@@ -96,7 +105,8 @@ function HubVariantRow({
       style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
     >
       <td />
-      <td className="am-hubtable-name am-hubtable-variant-name" colSpan={2}>
+      <td />
+      <td className="am-hubtable-name am-hubtable-variant-name" colSpan={3}>
         <span className="am-hubtable-name-inner">
           <a
             href={hubModelUrl(model.id)}
@@ -114,6 +124,7 @@ function HubVariantRow({
         </span>
       </td>
       <td className="num am-col-params">{paramsLabel(model.params)}</td>
+      <td className="num am-col-quant">{quantLabel(model.quant)}</td>
       <td className="num" data-hint={hubSizeTitle(model, null)}>
         {size ?? "—"}
       </td>
@@ -197,12 +208,27 @@ function HubResultRow({
   const [total, setTotal] = useState<number | null>(
     (wantsTotal ? knownTotalSize(model.id) : null) ?? null,
   );
+  // Bug chain fix: `_model_row` cannot judge fit (or speed) for a row with no
+  // safetensors metadata — a GGUF repo, chiefly — during SEARCH, so
+  // `model.fit`/`model.speedEstimate` arrive null. The lazy size lookup below
+  // ALREADY costs one round trip once this row scrolls into view, and the
+  // server rides a verdict on that same answer when it can
+  // (`api_hub_size`'s own doc) — these two only ever move off `undefined`
+  // for a row that actually asked (`wantsTotal`), and stay unread otherwise
+  // (`effectiveFit`/`effectiveSpeed` below fall back to the search's own
+  // value first).
+  const [fitOverride, setFitOverride] = useState(wantsTotal ? knownFit(model.id) : undefined);
+  const [speedOverride, setSpeedOverride] = useState(
+    wantsTotal ? knownSpeedEstimate(model.id) : undefined,
+  );
 
   useEffect(() => {
     if (!wantsTotal) return;
     const known = knownTotalSize(model.id);
     if (known !== undefined) {
       setTotal(known);
+      setFitOverride(knownFit(model.id));
+      setSpeedOverride(knownSpeedEstimate(model.id));
       return;
     }
     const el = row.current;
@@ -216,9 +242,17 @@ function HubResultRow({
       }
       if (asking) return;
       asking = true;
-      lookupTotalSize(model.id).then((bytes) => {
+      // A capability-bound fetch, so a resolved GGUF `file` gets both the
+      // file-specific size AND a fit/speed judgement in the same round trip
+      // — `lookupTotalSize`'s own doc explains why the default (unbound)
+      // fetch, which the page-level size SORT uses, does not ask for either.
+      lookupTotalSize(model.id, model.file, (id, file) =>
+        getHubModelSize(id, file, model.capability),
+      ).then((bytes) => {
         if (!alive) return;
         setTotal(bytes);
+        setFitOverride(knownFit(model.id));
+        setSpeedOverride(knownSpeedEstimate(model.id));
         if (knownTotalSize(model.id) !== undefined) io.disconnect();
       });
     });
@@ -227,10 +261,17 @@ function HubResultRow({
       alive = false;
       io.disconnect();
     };
-  }, [model.id, wantsTotal]);
+  }, [model.id, model.file, model.capability, wantsTotal]);
+
+  // The search's own fit/speed win when they exist (a row WITH safetensors
+  // metadata never even sets `wantsTotal`, so these overrides stay
+  // `undefined` and never matter); the lazy ride-along only ever fills in
+  // for a row that had nothing to begin with.
+  const effectiveFit = model.fit ?? fitOverride ?? null;
+  const effectiveSpeed = model.speedEstimate ?? speedOverride ?? null;
 
   const display = familyDisplay(family);
-  const fit = fitCell(model.fit);
+  const fit = fitCell(effectiveFit);
   const size = hubSizeLabel(model, total);
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
   const loadable = !runner || runner.available;
@@ -278,6 +319,7 @@ function HubResultRow({
             )}
           </span>
         </td>
+        <td className="num am-col-score">{scoreLabel(effectiveFit)}</td>
         <td className="am-hubtable-name">
           <span className="am-hubtable-name-inner">
             {/* The row's identity is the PRIMARY's own id — the same repo the
@@ -331,12 +373,14 @@ function HubResultRow({
           </span>
         </td>
         <td>{model.task ?? "—"}</td>
+        <td className="am-col-cap">{model.capability}</td>
         <td className="num am-col-params">{paramsLabel(model.params)}</td>
+        <td className="num am-col-quant">{quantLabel(model.quant)}</td>
         <td className="num" data-hint={hubSizeTitle(model, total)}>
           {size ?? "—"}
         </td>
-        <td className="num am-col-tok">{speedLabel(model.speedEstimate)}</td>
-        <td className="am-col-mode">{runModeLabel(model.fit?.runMode)}</td>
+        <td className="num am-col-tok">{speedLabel(effectiveSpeed)}</td>
+        <td className="am-col-mode">{runModeLabel(effectiveFit?.runMode)}</td>
         <td className="num am-col-pop">{popLabel(model.downloads)}</td>
         <td className="num am-col-new">{ageLabel(model.created)}</td>
         <td className="num">
@@ -454,9 +498,12 @@ export function HubResultsTable({
         <thead>
           <tr>
             <th scope="col">Fit</th>
+            <th scope="col" className="num am-col-score">Score</th>
             <th scope="col">Model</th>
             <th scope="col">Task</th>
+            <th scope="col" className="am-col-cap">Capability</th>
             <th scope="col" className="num am-col-params">Params</th>
+            <th scope="col" className="num am-col-quant">Quant</th>
             <th scope="col" className="num">Size</th>
             <th scope="col" className="num am-col-tok">tok/s</th>
             <th scope="col" className="am-col-mode">Mode</th>

@@ -88,7 +88,7 @@ async function measureSizes(
   const worker = async () => {
     while (alive() && next < ids.length) {
       const id = ids[next++];
-      out.set(id, await lookupTotalSize(id));
+      out.set(id, await lookupTotalSize(id, null));
     }
   };
   await Promise.all(

@@ -27,7 +27,7 @@
 // is no DOM harness in this repo by design, so the part with a rule in it lives
 // in a module that can be driven. What stays in `HubResultCard` is the
 // IntersectionObserver — the one piece that genuinely needs a DOM node.
-import type { HubModel } from "@platform/lib/api";
+import type { AiFitVerdict, AiSpeedEstimate, HubModel } from "@platform/lib/api";
 import { getHubModelSize } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 
@@ -80,6 +80,19 @@ export function hubSizeTitle(model: HubModel, total: number | null): string | un
       "publishes. Other files in the repo are not included."
     );
   }
+  if (total !== null && model.file) {
+    // A GGUF row: `total` here is the ONE file `formats.pick_gguf_file`
+    // resolved, not the repo-wide total — see `hub_models.py`'s own
+    // `_fetch_file_size`. Saying so, and naming the file, is the fix for the
+    // bug this replaced: a repo-total tooltip over a number that used to BE
+    // the repo total (every quantization the author published) claimed a
+    // much bigger download than this row would actually make.
+    return (
+      `≈${formatSize(total)} — the size of \`${model.file}\`, the specific quantization this row ` +
+      "would download. This repo publishes no safetensors metadata, so there is no weights-only " +
+      "figure to show."
+    );
+  }
   if (total !== null) {
     return (
       `≈${formatSize(total)} — the Hub's total for this repo: every file in it, not just the ` +
@@ -101,6 +114,15 @@ export function hubSizeTitle(model: HubModel, total: number | null): string | un
  *  dash for that repo. */
 const resolved = new Map<string, number | null>();
 
+/** The fit/speed judgement that rode along with the size — see
+ *  `lookupTotalSize`'s own docstring for why this can only ever be non-null
+ *  for a row whose lookup was asked with a `file` (a GGUF row). Populated in
+ *  the SAME pass as `resolved`, never separately: they are one answer to one
+ *  question, and reading one without the other would let a card show a size
+ *  and a stale (or missing) fit from two different requests. */
+const resolvedFit = new Map<string, AiFitVerdict | null>();
+const resolvedSpeed = new Map<string, AiSpeedEstimate | null>();
+
 /** Lookups in flight. React 18 runs an effect twice in strict mode, and an
  *  IntersectionObserver can report the same card again before state settles;
  *  either would be a duplicate request to a third party. */
@@ -115,7 +137,36 @@ export function knownTotalSize(id: string): number | null | undefined {
   return resolved.has(id) ? (resolved.get(id) ?? null) : undefined;
 }
 
-/** This repo's total bytes, asked once however many cards want it.
+/** The fit verdict that rode along with `id`'s size lookup, or `undefined`
+ *  if nothing has answered for this repo yet. Only ever populated for a
+ *  lookup made WITH a `file` and a `capability` (see `lookupTotalSize`) —
+ *  every other repo answers `undefined` forever, which a reader of this
+ *  function should read the same as "nothing to show", identical to
+ *  `HubModel.fit` being null from the search reply itself. */
+export function knownFit(id: string): AiFitVerdict | null | undefined {
+  return resolvedFit.has(id) ? (resolvedFit.get(id) ?? null) : undefined;
+}
+
+/** `knownFit`'s sibling for the speed estimate that rides the same lookup. */
+export function knownSpeedEstimate(id: string): AiSpeedEstimate | null | undefined {
+  return resolvedSpeed.has(id) ? (resolvedSpeed.get(id) ?? null) : undefined;
+}
+
+/** This repo's size, asked once however many cards want it — the repo-wide
+ *  total by default, or one named FILE's own bytes when `file` is given (a
+ *  GGUF row's own resolved `HubModel.file`): summing sibling sizes across an
+ *  entire GGUF repo (every quantization variant) is the bug this fixes, and
+ *  the resolved file is the one this row would actually download.
+ *
+ *  **Fit/speed ride the SAME request when `file` is given.** `_model_row`
+ *  cannot judge fit for a GGUF row during search (no dtype map to size it
+ *  from, and a per-row Hub call inside a search reply is exactly what the
+ *  server refuses to do), but this lazy per-repo lookup already costs one
+ *  round trip — so the verdict comes back on it for free rather than staying
+ *  null forever. Callers that want that ride-along pass a `fetchSize` bound
+ *  to their row's own `capability` (see `HubResultsTable.tsx`); callers that
+ *  only care about the byte total (the page-level size SORT) can leave it at
+ *  the default, which asks for a size with no capability and gets none back.
  *
  *  A failure resolves to null rather than rejecting: the card keeps its dash,
  *  and a size nobody asked out loud for is not worth a banner. But it is NOT
@@ -128,21 +179,33 @@ export function knownTotalSize(id: string): number | null | undefined {
  */
 export function lookupTotalSize(
   id: string,
+  file: string | null,
   fetchSize: (
     id: string,
-  ) => Promise<{ usedStorage: number | null; error?: string }> = getHubModelSize,
+    file?: string,
+  ) => Promise<{
+    usedStorage: number | null;
+    fileSize?: number | null;
+    fit?: AiFitVerdict | null;
+    speedEstimate?: AiSpeedEstimate | null;
+    error?: string;
+  }> = getHubModelSize,
 ): Promise<number | null> {
   if (resolved.has(id)) return Promise.resolve(resolved.get(id) ?? null);
   const running = inFlight.get(id);
   if (running) return running;
-  const lookup = fetchSize(id)
+  const lookup = fetchSize(id, file ?? undefined)
     .then((r) => {
       // 200 with an `error` is how the server reports a Hub-side failure — a
       // rate limit, an unreachable Hub, a reply it could not read. It looks
       // like "no number for this repo" and means something else entirely.
       if (r.error) return null;
-      const bytes = typeof r.usedStorage === "number" ? r.usedStorage : null;
+      const bytes = file
+        ? (typeof r.fileSize === "number" ? r.fileSize : null)
+        : (typeof r.usedStorage === "number" ? r.usedStorage : null);
       resolved.set(id, bytes);
+      resolvedFit.set(id, r.fit ?? null);
+      resolvedSpeed.set(id, r.speedEstimate ?? null);
       return bytes;
     })
     .catch(() => null)
@@ -158,5 +221,7 @@ export function lookupTotalSize(
 /** Tests only: the caches outlive a component, which is the point of them. */
 export function _forgetTotalSizes(): void {
   resolved.clear();
+  resolvedFit.clear();
+  resolvedSpeed.clear();
   inFlight.clear();
 }

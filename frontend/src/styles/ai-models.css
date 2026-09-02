@@ -3623,12 +3623,27 @@ button.am-bench-model:focus-visible {
   text-align: right;
 }
 
-/* Column-hiding, narrowest first: tok/s, Mode, Params, Pop. and New drop in
-   that order as the pane narrows — never the fit, name, size or action
-   cells, which is the plan's own line in the sand. Thresholds are the
-   TABLE's own inline size (`container-type: inline-size` above), not the
-   viewport, so a split pane narrows the same columns a full-width window
-   would. */
+/* Column-hiding, widest-drops-first: Capability, tok/s, Mode, Score, Params,
+   Quant, Pop. and New drop in that order as the pane narrows — never the
+   fit, name, size or action cells, which is the plan's own line in the
+   sand. Thresholds are the TABLE's own inline size (`container-type:
+   inline-size` above), not the viewport, so a split pane narrows the same
+   columns a full-width window would.
+
+   Capability drops first (900px) because it repeats what `Task` already
+   says in friendlier words — the one new column that is closer to a second
+   label than new information. Score follows Mode (600px): it is a numeric
+   echo of the Fit bar that never leaves the row, so a reader loses nothing
+   the bar itself doesn't still show. Quant drops just after Params (500px)
+   rather than with it, since a quant token is often the more decisive fact
+   of the two at that width (it is dead weight without a Size to compare it
+   against, but easy to make out are the two). */
+@container (max-width: 900px) {
+  .am-hubtable .am-col-cap {
+    display: none;
+  }
+}
+
 @container (max-width: 760px) {
   .am-hubtable .am-col-tok {
     display: none;
@@ -3641,8 +3656,20 @@ button.am-bench-model:focus-visible {
   }
 }
 
+@container (max-width: 600px) {
+  .am-hubtable .am-col-score {
+    display: none;
+  }
+}
+
 @container (max-width: 560px) {
   .am-hubtable .am-col-params {
+    display: none;
+  }
+}
+
+@container (max-width: 500px) {
+  .am-hubtable .am-col-quant {
     display: none;
   }
 }

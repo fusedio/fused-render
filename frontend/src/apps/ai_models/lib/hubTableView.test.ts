@@ -4,7 +4,9 @@ import {
   familyDisplay,
   fitCell,
   popLabel,
+  quantLabel,
   runModeLabel,
+  scoreLabel,
   speedLabel,
   variantLabel,
 } from "./hubTableView";
@@ -36,6 +38,8 @@ function model(id: string, extra: Partial<HubModel> = {}): HubModel {
     created: null,
     baseModel: null,
     relation: null,
+    quant: null,
+    file: null,
     local: { state: "none" },
     url: `https://huggingface.co/${id}`,
     ...extra,
@@ -87,8 +91,21 @@ describe("speedLabel", () => {
     calibrationFactor: null,
   });
 
-  it("shows one decimal of tok/s", () => {
-    expect(speedLabel(estimate(24.13))).toBe("24.1");
+  it("shows one decimal of tok/s under 10", () => {
+    expect(speedLabel(estimate(2.13))).toBe("2.1");
+  });
+
+  it("shows a plain rounded integer from 10 up to 999", () => {
+    expect(speedLabel(estimate(24.13))).toBe("24");
+    expect(speedLabel(estimate(342.9))).toBe("343");
+  });
+
+  it("compacts anything at or past 1000 with one decimal and a 'k' — never a raw 5-digit figure", () => {
+    // The bug this fixes: a 2M-param model's bandwidth-bound estimate prints
+    // "17324.6" with no cap or sane rounding — a number nobody reads as
+    // tokens per second at a glance.
+    expect(speedLabel(estimate(17_324.6))).toBe("17.3k");
+    expect(speedLabel(estimate(1000))).toBe("1.0k");
   });
 
   it("is a dash, never '0 tok/s', when there is no estimate", () => {
@@ -96,6 +113,36 @@ describe("speedLabel", () => {
     // table filled with `-` is useless, but a search table showing "0" for
     // "we do not know" is actively wrong, not merely unhelpful.
     expect(speedLabel(null)).toBe("—");
+  });
+
+  it("is a dash for a non-finite figure rather than a formatting crash", () => {
+    expect(speedLabel(estimate(Number.NaN))).toBe("—");
+    expect(speedLabel(estimate(Number.POSITIVE_INFINITY))).toBe("—");
+  });
+});
+
+describe("scoreLabel", () => {
+  it("rounds the 0-100 fit score to a whole number", () => {
+    expect(scoreLabel({ verdict: "easy", basis: "declared", footprintBytes: 1, score: 87.6 })).toBe("88");
+  });
+
+  it("is a dash when the fit object carries no score (an older cached shape)", () => {
+    expect(scoreLabel({ verdict: "easy", basis: "declared", footprintBytes: 1 })).toBe("—");
+  });
+
+  it("is a dash when there is no fit to score at all", () => {
+    expect(scoreLabel(null)).toBe("—");
+  });
+});
+
+describe("quantLabel", () => {
+  it("renders a measured quant as-is", () => {
+    expect(quantLabel("BF16")).toBe("BF16");
+    expect(quantLabel("Q4_K_M")).toBe("Q4_K_M");
+  });
+
+  it("is a dash rather than a guess when nothing measured it", () => {
+    expect(quantLabel(null)).toBe("—");
   });
 });
 

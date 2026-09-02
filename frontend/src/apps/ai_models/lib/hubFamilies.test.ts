@@ -25,6 +25,8 @@ function model(id: string, extra: Partial<HubModel> = {}): HubModel {
     created: null,
     baseModel: null,
     relation: null,
+    file: null,
+    quant: null,
     local: { state: "none" },
     url: `https://huggingface.co/${id}`,
     ...extra,
