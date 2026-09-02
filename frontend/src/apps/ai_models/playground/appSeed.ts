@@ -57,8 +57,8 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     ]);
     lines.push(
       "It generates text. Call it from the page with " +
-        `fused.ai(prompt, { model: ${JSON.stringify(model.id)}${extra}, history, onChunk }) — ` +
-        "it streams tokens through onChunk and resolves with { text, usage }. " +
+        `fused.ai.text({ prompt, model: ${JSON.stringify(model.id)}${extra}, history, onChunk }) — ` +
+        "it streams tokens through onChunk and resolves with { text, usage, response, providerMetadata }. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
   } else if (capability === "text-to-image") {
@@ -100,8 +100,8 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     ]);
     lines.push(
       "It turns speech into text. Call it from the page with " +
-        `await fused.ai.transcribe({ path, model: ${JSON.stringify(model.id)}${extra}, onSegment }) — ` +
-        "path is an audio/video file on disk, segments stream through onSegment. " +
+        `await fused.ai.transcribe({ path, model: ${JSON.stringify(model.id)}${extra}, onChunk }) — ` +
+        "path is an audio/video file on disk, segments stream through onChunk. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
   } else if (capability === "embeddings") {

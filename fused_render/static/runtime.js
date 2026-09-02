@@ -47,20 +47,53 @@
  *     listeners (see the preview note on start()/stop() below; watch()
  *     itself is read-only like status(), so it is not rejected, just kept
  *     inert).
- *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
+ *   EVERY fused.ai verb resolves with ONE frame (D632) plus its own payload:
+ *     {provider, finishReason, warnings, usage, response: {id, modelId,
+ *      timestamp}, providerMetadata: {<provider>: {...}}, ...payload}
+ *     Learn it once. `response.modelId` is the id that actually ran (there is
+ *     no top-level `model`); nothing you passed is echoed back at top level —
+ *     what the server snapped, clamped or invented (seed, size, steps, file
+ *     paths, seconds) is under providerMetadata[provider].
+ *   fused.ai.text({prompt, ...opts})
+ *     -> Promise<{text, ...frame}>  usage: {inputTokens, outputTokens, totalTokens}
+ *     Text is ONE capability among five (image, video, transcribe, embed), so
+ *     it is a verb like the others and takes ONE options object like the
+ *     others — `prompt` is a field, not a positional argument, exactly as
+ *     `.image({prompt})` and `.transcribe({path})` already read. `fused.ai`
+ *     itself is a namespace, not a function. The old callable
+ *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
+ *     it gets "fused.ai is not a function".
+ *     opts.provider: "local" | "claude" — which tier serves the call. Omitted,
+ *     the model's shape decides (a repo id or .gguf filename is weights on
+ *     this machine, anything else is a Claude alias), which IS the tier walk
+ *     local -> claude for the two tiers that exist. The reply's `provider`
+ *     names the tier that answered. The SAME option, same meaning, is on
+ *     .image/.video/.transcribe/.embed, and every reply carries `provider`;
+ *     those four have only a local tier today, so omitted means "local" and
+ *     "claude" rejects with `unavailable` (the CLI speaks text and nothing
+ *     else) rather than a 400 — the tier exists, it lacks the verb.
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
  *     opts.images: absolute paths to base images for a vision-language model,
  *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
- *     All five are LOCAL-MODEL ONLY and are refused (400) rather than dropped
- *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
- *     without unloading the model.
+ *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
+ *     Claude path — dropping them would answer a different question. The
+ *     sampling knobs (and `effort` on a local model) are TUNABLES: a tier
+ *     that lacks one drops it and says so in the result's `warnings[]`
+ *     ({type: "unsupported-setting", setting, message}) instead of failing
+ *     the call. `finishReason`: "stop" | "length" (hit maxTokens) |
+ *     "cancelled".
+ *     opts.abortSignal: a standard AbortSignal. Aborting rejects with
+ *     .type === "cancelled" and stops the work server-side (a streaming
+ *     call by disconnecting, a local generation via /api/ai/cancel). Every
+ *     verb on fused.ai takes it; on the job-backed ones it cancels the job.
+ *     fused.ai.cancel() remains the capability-wide form.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
- *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
- *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
- *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
+ *     (Claude Code) CLI or a resident local model. Resolves with the frame
+ *     above plus `text`; usage is the AI SDK's {inputTokens, outputTokens,
+ *     totalTokens} or null. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
  *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
@@ -68,9 +101,12 @@
  *     what it costs. load/download return {jobId} — a cold load is a multi-GB
  *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
  *     GENERATE TEXT with a local model there is no new call: pass its repo id
- *     as fused.ai(prompt, {model: "org/name"}).
- *   fused.ai.image({prompt, model, width, height, steps, guidance, seed,
- *                   onProgress}) -> Promise<{path, url, seed, ...}>
+ *     as fused.ai.text({prompt, model: "org/name"}).
+ *   fused.ai.image({prompt, model, provider, width, height, steps, guidance,
+ *                   seed, onProgress})
+ *     -> Promise<{images: [{path, url, mediaType}], ...frame}>
+ *     usage: {imagesGenerated}; providerMetadata.local: {seed, width, height,
+ *     steps, guidance, image, prompt, previewPath}; response.id = the job id.
  *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
@@ -82,9 +118,12 @@
  *     it is null on the last tick and on resolve, because the preview file is
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers, words,
- *                        onProgress, onSegment})
- *                  -> Promise<{output, url, text, segments, language, ...}>
+ *   fused.ai.transcribe({path, model, provider, language, task, diarize,
+ *                        speakers, words, onProgress, onChunk})
+ *     -> Promise<{text, segments: [{text, startSecond, endSecond, speaker?,
+ *                 words?}], language, durationInSeconds, ...frame}>
+ *     providerMetadata.local: {path, output, url, outputText, outputPartial,
+ *     task, speakers, estimatedSpeakers}; response.id = the job id.
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
  *     when relative, like readFile/rawUrl. Resolves with the
@@ -94,7 +133,7 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
- *     onSegment(segment) gives the transcript AS IT DECODES — every segment,
+ *     onChunk(segment) gives the transcript AS IT DECODES — every segment,
  *     in order, exactly once, without the page implementing any of it. It
  *     rides the poll onProgress already costs (no second loop, and no extra
  *     request at all for a caller that does not pass it), reading a
@@ -154,10 +193,11 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
- *   fused.ai.video({prompt, model, width, height, frames, steps, seed, image,
- *                   onProgress}) -> Promise<{path, url, model, prompt, width,
- *                                            height, frames, steps, seed,
- *                                            image}>
+ *   fused.ai.video({prompt, model, provider, width, height, frames, steps, seed,
+ *                   image, onProgress})
+ *     -> Promise<{videos: [{path, url, mediaType}], ...frame}>
+ *     usage: {videosGenerated}; providerMetadata.local: {seed, width, height,
+ *     frames, steps, image, prompt}; response.id = the job id.
  *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
  *     Silicon only (no fallback on other platforms: the first capability
  *     with no "everywhere" runner). Same shape as fused.ai.image minus
@@ -183,7 +223,9 @@
  *     an edit's default from its base image — pass width/height explicitly
  *     to override either one. Rejects with .type "bad_request" if `image`
  *     is missing, not a regular file, or anything but a single string.
- *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
+ *   fused.ai.embed({texts, paths, model, provider, abortSignal})
+ *     -> Promise<{embeddings: number[][], values, ...frame}>
+ *     providerMetadata.local: {dim, kind}.
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
  *     `paths` (files on this machine, resolved beside this page when
@@ -194,7 +236,7 @@
  *     no onProgress, no jobId on success. Rejects .type "bad_request" |
  *     "model_loading" (the model is not resident; .jobId is the load this
  *     call just started — watch it and retry, exactly like the first
- *     fused.ai(...) on a cold local model) | "ai_error" | "unavailable" (no
+ *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
  *     embedding runner on this machine).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
@@ -3196,11 +3238,106 @@
       });
   }
 
-  // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
-  // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
-  // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
-  // "timeout"), mirroring runPython's rejection style. opts:
-  //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
+  // ---- shared by every fused.ai verb: abort handling -----------------------
+  //
+  // `opts.abortSignal` is the standard AbortSignal, the same one fetch takes
+  // — no bespoke token. Aborting rejects the verb's promise with
+  // .type === "cancelled" (the type the job-backed verbs already use for a ✕
+  // in the download manager, so a page has one branch for both). The server
+  // side stops too: a streaming /api/ai call stops on disconnect, a
+  // non-streaming local one through /api/ai/cancel, and a job-backed verb
+  // through the job's own cancel route — the same flag the manager's ✕ sets.
+  function abortSignalOf(opts) {
+    const s = opts && opts.abortSignal;
+    return s && typeof s.aborted === "boolean" && typeof s.addEventListener === "function"
+      ? s : null;
+  }
+  function cancelledError(what, jobId) {
+    const err = new Error(what + " was cancelled");
+    err.type = "cancelled";
+    if (jobId) err.jobId = jobId;
+    return err;
+  }
+  // fetch rejects an aborted request with a DOMException named AbortError;
+  // this is the one place that name is translated into the bridge's own type.
+  function rethrowAbort(what) {
+    return (e) => {
+      if (e && e.name === "AbortError") throw cancelledError(what);
+      throw e;
+    };
+  }
+  // The one result frame (D632) the three job-backed verbs assemble client
+  // side from the started reply + the record — the server's `/api/ai` and
+  // `/api/ai/embed` build the identical shape in `common.ai_result`.
+  function resultFrame(payload, f) {
+    const meta = {};
+    Object.keys(f.metadata || {}).forEach((k) => {
+      if (f.metadata[k] !== undefined) meta[k] = f.metadata[k];
+    });
+    return {
+      provider: f.provider || "local",
+      finishReason: f.finishReason || "stop",
+      warnings: f.warnings || [],
+      usage: f.usage === undefined ? null : f.usage,
+      // Seconds, Z — the server's format (`common.ai_result`), so the field
+      // reads the same on every verb.
+      response: { id: f.id || null, modelId: f.modelId,
+                  timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") },
+      providerMetadata: { [f.provider || "local"]: meta },
+      ...payload,
+    };
+  }
+  // A transcript segment as the file stores it -> as the frame speaks it
+  // (the AI SDK's {text, startSecond, endSecond}; `speaker` and `words` ride
+  // along, the words renamed the same way).
+  function frameSegment(s) {
+    if (!s || typeof s !== "object") return s;
+    const { start, end, words, ...rest } = s;
+    const out = { ...rest, startSecond: start, endSecond: end };
+    if (Array.isArray(words)) {
+      out.words = words.map((w) => ({ word: w.word, startSecond: w.start, endSecond: w.end }));
+    }
+    return out;
+  }
+  // Starting a job-backed verb. The start POST is NOT passed the signal: an
+  // abort that interrupted it could leave a job running whose id the page
+  // never received — orphaned work nobody can cancel. So the signal is
+  // checked before, the POST runs to completion, and an abort that landed
+  // meanwhile cancels the job BY ID (`addEventListener("abort")` does not
+  // fire for an already-aborted signal, so that window is handled here). A
+  // 200 with no jobId is an error, not a watch on `undefined` that never
+  // settles.
+  function startJob(path, body, signal, what) {
+    if (signal && signal.aborted) return Promise.reject(cancelledError(what));
+    return aiPost(path, body).then((started) => {
+      if (!started || typeof started.jobId !== "string" || !started.jobId) {
+        const err = new Error(path + " replied with no jobId");
+        err.type = "ai_error";
+        throw err;
+      }
+      if (signal && signal.aborted) {
+        cancelJob(started.jobId);
+        throw cancelledError(what, started.jobId);
+      }
+      return started;
+    });
+  }
+  function cancelJob(jobId) {
+    return fetch("/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {
+      method: "POST",
+      headers: callHeaders({ "X-Fused": "1" }),
+    }).catch(() => {});
+  }
+
+  // fused.ai.text — ask an AI model: the shell runs the claude (Claude Code)
+  // CLI locally, or a resident local model (server/ai.py /api/ai). Resolves
+  // with {text, model, usage, provider, finishReason, warnings}; rejects with
+  // an Error carrying
+  // `.type` ("bad_request" | "ai_unavailable" | "ai_error" | "timeout"),
+  // mirroring runPython's rejection style. ONE options object, like every
+  // other verb on `fused.ai` — the prompt is a field:
+  //   { prompt, provider: "local"|"claude", systemPrompt, model,
+  //     effort: "low"|"medium"|"high"|"xhigh", onChunk }
   // effort defaults to low = no extended thinking (fast, cheap); medium+
   // enables Claude Code's own effort/thinking semantics.
   // onChunk(text) opts the call into streaming: it fires per text delta as
@@ -3209,15 +3346,34 @@
   // plain JSON exchange it always was.
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
   // half-billed completion buys nothing — calls run fully concurrent.
-  function ai(prompt, opts) {
+  function aiText(opts) {
     opts = opts || {};
+    // Closed envelope (D413's rule, D633): an option this verb does not have
+    // is a 400 here, before any request — the same check the other four
+    // verbs already run, so a `systemprompt` typo cannot silently do nothing.
+    // Checked BEFORE `prompt`, like the others: a call with both an unknown
+    // option and a missing prompt must learn about the option, or "add a
+    // prompt" fixes the visible error and lands the same typo again.
+    const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
+                      "raw", "images", "temperature", "maxTokens", "topP"];
+    const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
+    if (textUnknownErr) return Promise.reject(textUnknownErr);
+    const prompt = opts.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
-      const err = new Error("fused.ai(prompt): prompt must be a non-empty string");
+      const err = new Error("fused.ai.text({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
       return Promise.reject(err);
     }
     const body = { prompt: prompt };
-    if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
+    // Which tier serves the call: "local" (weights on this machine) or
+    // "claude" (the Claude Code CLI). A SEPARATE field, not a prefix on the
+    // model string — the model id is the model's own name and stays so.
+    // Omitted, the server infers the tier from the model's shape, which is
+    // unambiguous while the two tiers' namespaces cannot overlap; the field
+    // exists now so a third tier (a hosted gateway, whose ids look like repo
+    // ids) is an added value rather than a new wire key.
+    if (opts.provider !== undefined) body.provider = opts.provider;
+    if (opts.systemPrompt !== undefined) body.systemPrompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
     // Prior turns, for a caller holding a conversation. `prompt` stays the
@@ -3238,22 +3394,55 @@
     // reason as history and raw: the Claude CLI has no notion of an
     // attachment, so it refuses this rather than silently answering as if
     // nothing had been sent.
-    if (opts.images !== undefined) body.images = opts.images;
+    if (opts.images !== undefined) {
+      body.images = opts.images;
+      // Page-relative, like every other file input on fused.ai (RH-1, D633):
+      // the page's own `?path=` rides along as `base` so "shot.png" means
+      // "beside this page". Only sent when there is something to resolve.
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) body.base = ownPath;
+    }
     // Sampling. Local models only, like history and raw — the Claude CLI
     // exposes no sampling knobs, so these are refused there rather than
-    // dropped. camelCase in, snake_case on the wire, because the wire shape is
-    // the worker's and every other runtime option makes the same trip
-    // (systemPrompt -> system_prompt).
+    // dropped. camelCase on the wire too (D633) — the worker's snake_case is
+    // the server's business, not the page's.
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
-    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
-    if (opts.topP !== undefined) body.top_p = opts.topP;
+    if (opts.maxTokens !== undefined) body.maxTokens = opts.maxTokens;
+    if (opts.topP !== undefined) body.topP = opts.topP;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the AI call"));
+    // Best-effort server-side stop on abort. A streaming call is stopped by
+    // the disconnect itself; a NON-streaming local generation is not — the
+    // relay's thread would run to completion for a reply nobody reads — so
+    // the capability-wide cancel is asked for too. One resident text model
+    // means the generation in flight is this one; on the Claude tier the
+    // route answers false and nothing happens.
+    //
+    // Scoped three ways so it cannot stop somebody else's generation: only a
+    // NON-streaming call (a stream is stopped by its own disconnect), only
+    // one that will land on the local tier (the same shape rule the server
+    // applies when `provider` is omitted — a Claude call has nothing to
+    // cancel there, and posting would hit whatever local generation another
+    // page has in flight), and only while THIS call is unsettled — the
+    // listener is removed once it resolves or rejects, so a reused signal
+    // aborted later does not reach back.
+    const looksLocal = body.provider === "local"
+      || (body.provider === undefined && typeof body.model === "string"
+          && (body.model.indexOf("/") !== -1 || /\.gguf$/i.test(body.model)));
+    const wantsServerCancel = !!signal && !onChunk && looksLocal;
+    const onAbort = () => { aiPost("/api/ai/cancel", {}).catch(() => {}); };
+    if (wantsServerCancel) signal.addEventListener("abort", onAbort, { once: true });
+    const settle = (promise) => wantsServerCancel
+      ? promise.finally(() => signal.removeEventListener("abort", onAbort))
+      : promise;
     const req = fetch("/api/ai", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
-    });
+      signal: signal || undefined,
+    }).catch(rethrowAbort("the AI call"));
     function fail(error) {
       const err = new Error(error && error.message);
       err.type = error && error.type;
@@ -3264,21 +3453,23 @@
       throw err;
     }
     if (!onChunk) {
-      return req
-        .then((res) => res.json())
+      // The body read is abortable too — an abort that lands while the
+      // completion is still downloading must still read as `cancelled`.
+      return settle(req
+        .then((res) => res.json().catch(rethrowAbort("the AI call")))
         .then((data) => {
           if (!data.ok) fail(data.error);
           return data.result;
-        });
+        }));
     }
     // Streaming: the body is NDJSON — {"type":"chunk","text"} lines, then a
     // terminal {"type":"done"}. A chunk may split across read() boundaries,
     // so buffer and cut on newlines. Errors BEFORE the stream starts arrive
     // as ordinary non-200 JSON; after, as an ok:false done frame.
-    return req.then((res) => {
+    return settle(req.then((res) => {
       const ct = (res.headers.get("Content-Type") || "").indexOf("x-ndjson");
       if (!res.ok || ct === -1) {
-        return res.json().then((data) => fail(data && data.error));
+        return res.json().catch(rethrowAbort("the AI call")).then((data) => fail(data && data.error));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -3303,10 +3494,10 @@
           buffer = lines.pop();
           lines.forEach(handleLine);
           return pump();
-        });
+        }, rethrowAbort("the AI call"));
       }
       return pump();
-    });
+    }));
   }
 
   // ---- background jobs / the download manager (SPEC §36, D244) --------------
@@ -3658,7 +3849,7 @@
   // ---------------------------------------------------------------- local models
   //
   // fused.ai.models — the lifecycle half of the AI API (SPEC §40). Generation
-  // itself needs nothing new: fused.ai(prompt, {model: "org/name", onChunk})
+  // itself needs nothing new: fused.ai.text({prompt, model: "org/name", onChunk})
   // already reaches a local model, because a model id with a slash in it IS a
   // Hugging Face repo id and the server routes on that.
   //
@@ -3668,13 +3859,20 @@
   //
   // load() and download() return a JOB, not a finished model: a cold load is a
   // multi-GB download and nothing waits on it. Watch it with fused.job(id).
-  async function aiPost(path, body) {
+  async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body || {}),
+      signal: signal || undefined,
+    }).catch(rethrowAbort("the AI call"));
+    // A non-JSON body (proxy 502, HTML error page) reads as `{}` so the
+    // status below still produces a typed error; an ABORT mid-read is not
+    // that case and must surface as `cancelled`, never as an empty reply.
+    const data = await res.json().catch(rethrowAbort("the AI call")).catch((e) => {
+      if (e && e.type === "cancelled") throw e;
+      return {};
     });
-    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error((data && data.error) || res.statusText);
       err.type = res.status === 409 ? "unavailable" : "bad_request";
@@ -3729,7 +3927,7 @@
   // naming the API rather than the endpoint. `allowedKeys` is exactly the
   // whitelist array `aiImage`/`aiTranscribe` already loop over to build the
   // body; `extra` is the callbacks consumed above that loop (`onProgress`,
-  // `onSegment`) — real options, just not body fields, so they must not
+  // `onChunk`) — real options, just not body fields, so they must not
   // trip this check or every existing caller that passes one breaks.
   function rejectUnknownOptions(opts, allowedKeys, extra, apiName) {
     const allowed = new Set(allowedKeys.concat(extra));
@@ -3754,8 +3952,8 @@
     // the option it does not have, not about the field it also got wrong —
     // "add a prompt" would "fix" the error and land the caller right back
     // in the silent-drop illusion this whole change exists to end.
-    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed", "image"];
-    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
+    const imageKeys = ["prompt", "model", "provider", "width", "height", "steps", "guidance", "seed", "image"];
+    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress", "abortSignal"], "fused.ai.image");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
@@ -3777,8 +3975,15 @@
     // there is no array to normalise, on purpose.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/image", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/image", body, signal, "the image").then((started) => {
       const watcher = watchJob(started.jobId);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
       // `step` is the cache-buster and nothing more: the preview file is ONE
       // path overwritten in place, so a browser handed the same URL twice shows
       // the first frame forever. Keyed on the step rather than on Date.now() so
@@ -3797,7 +4002,13 @@
           : null;
       // Same fact on the resolved object: it names the real PNG through `url`,
       // and `previewUrl` is null because the file it would name is deleted.
-      const done = () => ({ ...started, url: rawUrl(started.path), previewUrl: null });
+      const done = () => resultFrame(
+        { images: [{ path: started.path, url: rawUrl(started.path), mediaType: "image/png" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { imagesGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      steps: started.steps, guidance: started.guidance, image: started.image,
+                      prompt: started.prompt, previewPath: started.previewPath } });
       // The record is COPIED rather than annotated: it is the same object the
       // job manager is drawing from, and a field written onto it here would
       // travel to every other watcher of that row.
@@ -3805,6 +4016,7 @@
         ? (job) => onProgress({ ...job, previewUrl: previewUrl(job) })
         : null;
       return watcher.watch(tick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the image", started.jobId);
         if (!record) {
           // The row aged out from under us — a backgrounded tab can sleep past
           // its retention on a render this long. The FILE is the other witness,
@@ -3840,8 +4052,8 @@
   // reasoning.
   function aiVideo(opts) {
     opts = opts || {};
-    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed", "image"];
-    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
+    const videoKeys = ["prompt", "model", "provider", "width", "height", "frames", "steps", "seed", "image"];
+    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress", "abortSignal"], "fused.ai.video");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.video({prompt}): prompt must be a non-empty string");
@@ -3859,11 +4071,25 @@
     // unused `base` the server simply never reads.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/video", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/video", body, signal, "the video").then((started) => {
       const watcher = watchJob(started.jobId);
-      const done = () => ({ ...started, url: rawUrl(started.path) });
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
+      const done = () => resultFrame(
+        { videos: [{ path: started.path, url: rawUrl(started.path), mediaType: "video/mp4" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { videosGenerated: 1 },
+          metadata: { seed: started.seed, width: started.width, height: started.height,
+                      frames: started.frames, steps: started.steps, image: started.image,
+                      prompt: started.prompt } });
       const tick = onProgress ? (job) => onProgress({ ...job }) : null;
       return watcher.watch(tick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the video", started.jobId);
         if (!record) {
           // The row aged out from under us — the same backgrounded-tab race
           // `aiImage` guards against, and more likely here: a video render can
@@ -3912,10 +4138,10 @@
     // accepts it — it is injected below from the page's own `?path=`, never
     // from the caller's own options object, so a caller passing it directly
     // is passing an option that does not exist from here.
-    const transcribeKeys = ["path", "model", "language", "task", "initialPrompt",
+    const transcribeKeys = ["path", "model", "provider", "language", "task", "initialPrompt",
                             "vad", "diarize", "speakers", "words"];
     const transcribeUnknownErr = rejectUnknownOptions(
-      opts, transcribeKeys, ["onProgress", "onSegment"], "fused.ai.transcribe");
+      opts, transcribeKeys, ["onProgress", "onChunk", "abortSignal"], "fused.ai.transcribe");
     if (transcribeUnknownErr) return Promise.reject(transcribeUnknownErr);
     if (typeof opts.path !== "string" || !opts.path.trim()) {
       const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
@@ -3983,7 +4209,10 @@
     // tidiness: every request made below is one that every existing
     // transcription would otherwise start making, once per poll, for a file
     // nobody is reading.
-    const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
+    // `onChunk`, the same name text uses for "a piece of the result arrived"
+    // (D633) — here the piece is a segment, not a string. One callback name
+    // to learn for partial results; `onProgress(job)` stays the row callback.
+    const onSegment = typeof opts.onChunk === "function" ? opts.onChunk : null;
     const body = {};
     for (const key of transcribeKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
@@ -3996,8 +4225,15 @@
     // whatever the error message says.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
-    return aiPost("/api/ai/transcribe", body).then((started) => {
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/transcribe", body, signal, "the transcription").then((started) => {
       const watcher = watchJob(started.jobId);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
       // ---- the progressive transcript --------------------------------------
       //
       // `started.outputPartial` is a `.partial.jsonl` beside the transcript:
@@ -4028,7 +4264,8 @@
       let broken = false;
       const decoder = onSegment && typeof TextDecoder === "function"
         ? new TextDecoder("utf-8") : null;
-      const deliver = (segment) => {
+      const deliver = (raw) => {
+        const segment = frameSegment(raw);
         // Counted BEFORE the call, so a callback that throws cannot make the
         // final drain resend the segment it threw on.
         delivered += 1;
@@ -4162,24 +4399,30 @@
             }
             return written;
           })
-          .then((written) => ({
-            ...started,
-            url: rawUrl(started.output),
-            text: written.text,
-            segments: written.segments,
-            language: written.language,
-            duration: written.duration,
-            // The transcript's legend, and undefined unless `diarize` was
-            // asked for. Read from the FILE like everything else here, so a
-            // page never has to know which engine wrote it.
-            speakers: written.speakers,
-            // …and how many people the clustering decided there were, present
-            // only on a run that had to work it out (D318). A caller who
-            // passed `speakers` already has this number and gets undefined
-            // here, which is the honest shape: the field means "estimated",
-            // not "resolved".
-            estimatedSpeakers: written.estimatedSpeakers,
-          }))
+          .then((written) => resultFrame(
+            {
+              text: written.text,
+              segments: (written.segments || []).map(frameSegment),
+              language: written.language,
+              durationInSeconds: written.duration,
+            },
+            { provider: started.provider, modelId: started.model, id: started.jobId,
+              warnings: started.warnings, usage: null,
+              metadata: {
+                path: started.path,
+                output: started.output,
+                url: rawUrl(started.output),
+                outputText: started.outputText,
+                outputPartial: started.outputPartial,
+                task: started.task,
+                // The transcript's legend, undefined unless `diarize` was
+                // asked for. Read from the FILE like everything else here, so
+                // a page never has to know which engine wrote it.
+                speakers: written.speakers,
+                // …and how many people the clustering decided there were,
+                // present only on a run that had to work it out (D318).
+                estimatedSpeakers: written.estimatedSpeakers,
+              } }))
           .catch((cause) => {
             const err = new Error(
               "the transcript could not be read: " + ((cause && cause.message) || cause),
@@ -4198,6 +4441,7 @@
         ? (record) => { if (onProgress) onProgress(record); tail(); }
         : onProgress;
       return watcher.watch(onTick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the transcription", started.jobId);
         if (!record) {
           // The row is gone — and since the manager stopped evicting live
           // SERVER work under its cap, that no longer happens MID-RUN. It means
@@ -4346,6 +4590,9 @@
     if (hasTexts) body.texts = opts.texts;
     if (hasPaths) body.paths = opts.paths;
     if (opts.model !== undefined) body.model = opts.model;
+    // Same `provider` every other verb takes (D631); forwarded only when set,
+    // and validated server-side like the rest of the envelope.
+    if (opts.provider !== undefined) body.provider = opts.provider;
     // Forwarded only when the caller set it, exactly like `model` above: the
     // server reads an absent key as "I did not say" and applies its own
     // default, while an explicit value on a model with no retrieval convention
@@ -4363,11 +4610,15 @@
       const ownPath = new URLSearchParams(window.location.search).get("path");
       if (ownPath) body.base = ownPath;
     }
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
+      signal: signal || undefined,
     })
+      .catch(rethrowAbort("the embedding"))
       // `.catch(() => ({}))` on the parse, and the status carried past it, for
       // `aiPost`'s reason: a reply that never reached this route's own handler
       // — a proxy's 502, a framework 500, an HTML error page — is not JSON, and
@@ -4417,17 +4668,27 @@
              typeof model === "string" || model == null
                ? { model } : { capability: model.capability }),
   };
-  ai.models = aiModels;
-  ai.image = aiImage;
-  ai.video = aiVideo;
-  ai.transcribe = aiTranscribe;
-  ai.embed = aiEmbed;
-  // Stop the generation in flight on a local model, keeping it loaded — the
-  // next message answers straight away. Resolves false when there was nothing
-  // to stop, which is not an error: a Stop pressed as the last token lands
-  // should be a no-op.
-  ai.cancel = (capability) =>
-    aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled);
+  // `fused.ai` is a NAMESPACE, not a function. Text used to be the callable
+  // and the other four capabilities hung off it as properties, which made text
+  // read as the special one; it is not, and a fifth verb hanging off a
+  // function is a shape no other part of the bridge has. `fused.ai(...)`
+  // now throws "fused.ai is not a function" — a hard break taken on purpose
+  // over `ai.text = ai` (D631): an alias keeps the old reading alive in every
+  // page written from now on.
+  const ai = {
+    text: aiText,
+    models: aiModels,
+    image: aiImage,
+    video: aiVideo,
+    transcribe: aiTranscribe,
+    embed: aiEmbed,
+    // Stop the generation in flight on a local model, keeping it loaded — the
+    // next message answers straight away. Resolves false when there was
+    // nothing to stop, which is not an error: a Stop pressed as the last token
+    // lands should be a no-op.
+    cancel: (capability) =>
+      aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled),
+  };
 
   // -------------------------------------------------------------- fused.watchJob
   //

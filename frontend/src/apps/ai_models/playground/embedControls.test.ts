@@ -131,8 +131,9 @@ describe("the displayed scores say which model produced them", () => {
     // A label reading `model` would therefore name something that did not
     // compute the scores beneath it.
     expect(STAGE).toContain("const [vectorModel, setVectorModel]");
-    expect(STAGE).toContain("setVectorModel(result.model ?? model)");
-    expect(STAGE).toContain("setVectorModel(images.model ?? model)");
+    // D632: the model that ran is `response.modelId` on the result frame.
+    expect(STAGE).toContain("setVectorModel(result.response?.modelId ?? model)");
+    expect(STAGE).toContain("setVectorModel(images.response?.modelId ?? model)");
     // The label renders the recorded value, never the prop.
     expect(STAGE).toContain("{vectorModel}");
     expect(STAGE).not.toContain('pg-answer-provenance">\n                    {model}');
@@ -140,11 +141,11 @@ describe("the displayed scores say which model produced them", () => {
 
   it("prefers the SERVER's answer over the requested id", () => {
     // A bare call takes the capability's default, so the request's own `model`
-    // is not always what ran. `result.model` first, the prop only as the
-    // older-server fallback.
+    // is not always what ran. `result.response.modelId` first, the prop only
+    // as the older-server fallback.
     const setters = STAGE.match(/setVectorModel\([^)]*\)/g) ?? [];
     expect(setters.length).toBe(2);
-    for (const setter of setters) expect(setter).toContain(".model ??");
+    for (const setter of setters) expect(setter).toContain(".modelId ??");
   });
 
   it("both result surfaces carry it, texts and pictures alike", () => {

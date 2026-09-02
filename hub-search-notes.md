@@ -188,7 +188,7 @@ Context: code review + full suite run on PR #953 produced a fix list. Item 0
 was restoring `DECISIONS.md` (see note at top of this file). Notes on the
 remaining fixes are appended below as they land.
 
-- **D-numbered entries added: D631, D632, D633** (in the restored
+- **D-numbered entries added: D651, D652, D653** (in the restored
   `DECISIONS.md`, appended at the end, dated 2026-09-02). These cover the
   three real product decisions this feature made that the repo's own
   convention treats as decision-log material — a server-side `sort=fit`
@@ -473,7 +473,9 @@ rather than inventing a new one.
 ### Part D — this file, and D634/D635
 
 Highest D-number was D633 on this branch (D630 on origin/main at the time
-of resume) — D634 and D635 added, covering the measured-only quant rule and
+of resume, since renumbered to D651-D653 after a later merge collided with
+origin/main's own unrelated D631-D633; see the note at the end of this
+file) — D634 and D635 added, covering the measured-only quant rule and
 the filter server/client split + the facet-scoping correction. Both are
 genuinely non-obvious design choices with real rejected alternatives, not
 implementation detail — see `DECISIONS.md` directly rather than duplicating
@@ -523,7 +525,7 @@ scoped bun suite coverage (frontend) demonstrating the fixed behavior.
 **Known limitation, deliberately NOT fixed this session (per the fix
 brief's own scope line) — family grouping under-fills the page.**
 `groupIntoFamilies` (`hubFamilies.ts`) runs CLIENT-side, on the results
-`api_hub_search` already truncated to `limit` (D633's own row-positioning
+`api_hub_search` already truncated to `limit` (D653's own row-positioning
 fix does not change this). So a query whose top results mostly share one
 `base_model` tag returns, say, 24 raw rows that fold into far fewer than 24
 family rows on screen — the Hub's remaining candidates that could have
@@ -533,7 +535,7 @@ was fixed (an earlier finding) to count families rather than raw rows, so
 the NUMBER shown is honest, but the grid itself is still under-filled
 relative to what `limit` promises. This is the same shape of bug the
 `includeUnfit`/`fetch` overfetch fix and Part 3's filters both had to solve
-for their own drops (see D632/D635) — `api_hub_search`'s own overfetch
+for their own drops (see D652/D635) — `api_hub_search`'s own overfetch
 comments already treat "something drops rows after the Hub's answer but
 before the page sees them" as requiring the SAME `fetch` multiplier
 `includeUnfit` gets. Family grouping is the one drop that still runs
@@ -787,3 +789,20 @@ itself, whose own tests for `runModeLabel` are deleted with it.
 - Fix (3): confirm a GGUF row whose fit corrects via the lazy lookup shows
   a real dot/colour with a blank bar/number, and that the hover text reads
   sensibly rather than confusingly terse.
+
+## Merge-conflict note: D631-D633 collided with origin/main, renumbered to D651-D653
+
+Merging `origin/main` (6ddc31d1) into this branch conflicted in
+`DECISIONS.md`: main had independently used D631, D632, D633 for the
+`fused.ai` namespace/verb rewrite (an unrelated feature) while this branch
+had used the same three numbers for the Hub search decisions (server-side
+`sort=fit` ordering, `verdict:"no"` hidden by default, and `base_model`
+family grouping). Main's three keep their numbers as the authoritative
+side; this branch's three were renumbered to **D651, D652, D653**
+(preserving their original text and order, appended after this branch's
+own D650) to clear `tests/test_doc_duplicate_ids.py`. Every in-repo
+cross-reference to the branch's old D631/D632/D633 — in this file and in
+`DECISIONS.md`'s own later entries (D636, D644) — was updated to the new
+numbers; references to D631/D632/D633 elsewhere in the repo (`fused_render/
+server/ai.py`, `common.py`, `ai_runtime.py`, the AI Playground frontend
+files) are main's `fused.ai` decisions and were left untouched.
