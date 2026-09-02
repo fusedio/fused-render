@@ -237,7 +237,7 @@ where a first model comes from.
     row in the download manager before any weights are fetched. The CPU builds
     are a few hundred MB; a CUDA or ROCm build is several GB before a single
     weight arrives.
-- **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
+- **Pages can use these models.** `fused.ai.text({prompt, model: "org/name"})` runs a
   local chat model instead of Claude, `fused.ai.image({prompt})` renders a
   picture, and `fused.ai.transcribe({path})` turns a recording into text — all
   through the same download manager, so a page that asks for a model you don't
@@ -298,7 +298,7 @@ and **Indexing**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
-- **AI › Default model** — which Claude model the chat and `fused.ai()` reach
+- **AI › Default model** — which Claude model the chat and `fused.ai.text()` reach
   for when nothing else has said. A page's own `model` argument still wins, and
   a project's Claude settings win for the chat.
 - **AI › Hugging Face** — **Log in to Hugging Face** to download AI models.
@@ -341,20 +341,46 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 
 ## AI calls (`fused.ai`)
 
-Pages can ask an AI model with `fused.ai(prompt, opts?)`. It resolves with
-exactly `{text, model, usage}` — `model` is the full model id that ran, and
-`usage` is either `null` or exactly `{input_tokens, output_tokens}`
-(Anthropic-style names, not OpenAI's `prompt_tokens`/`completion_tokens`):
+`fused.ai` is a namespace of verbs — `.text`, `.image`, `.video`, `.transcribe`,
+`.embed`, plus `.models` and `.cancel` — not a function. Pages ask a text model
+with `fused.ai.text({prompt, ...opts})` — one options object, like every
+other verb. Every verb resolves with the **same frame** plus its own payload
+(`text` here; `images`, `videos`, `text`+`segments`, `embeddings` on the
+others), so you learn the shape once:
 
 ```json
 {
   "text": "the completion",
-  "model": "claude-haiku-4-5-20251001",
-  "usage": { "input_tokens": 544, "output_tokens": 73 }
+  "provider": "claude",
+  "finishReason": "stop",
+  "warnings": [],
+  "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
+  "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
+  "providerMetadata": { "claude": { "seconds": 3.1 } }
 }
 ```
 
-The server runs the
+`response.modelId` is the full model id that ran (there is no top-level
+`model`). `usage` is per verb — text uses `inputTokens`/`outputTokens`/
+`totalTokens`. `providerMetadata[provider]` holds what the serving tier
+snapped or invented (seed, size, steps, file paths, seconds); nothing you
+passed is echoed at top level.
+
+`finishReason` is `"stop"`, `"length"` (a local model hit `maxTokens`) or
+`"cancelled"`. `warnings` lists options the serving tier could not honour and
+dropped — `temperature`, `maxTokens`, `topP` on Claude, `effort` on a local
+model — as `{type: "unsupported-setting", setting, message}`. Pass a standard
+`abortSignal` to any verb to cancel it; the call rejects with
+`.type === "cancelled"`.
+
+Two tiers can answer, in a fixed order: **local** (a model resident on this
+machine, see above) and **claude**. Pass `opts.provider: "local" | "claude"` to
+pin one; leave it out and the model id decides — a Hugging Face repo id or a
+`.gguf` filename is local, anything else goes to Claude. The same `provider`
+option is on `.image`, `.video`, `.transcribe` and `.embed`, and every reply
+carries it; those four run locally only, so `"claude"` there rejects with
+`unavailable`. On the Claude tier the
+server runs the
 call through the **`claude` (Claude Code) CLI** on your machine — your existing
 Claude Code login is the credential; there is no proxy or API key to configure.
 The binary is found on `PATH`; set `FUSED_RENDER_CLAUDE_BIN` to point at a

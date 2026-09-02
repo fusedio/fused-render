@@ -302,8 +302,10 @@ export function fsPathFromLocation(): string | null {
 // round-trip untouched — then split into encoded segments.
 // Restated (not imported) by shell/current-apps-lib for the app page's
 // `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
-// module touches `location` at import. Keep the two in step.
-function encodeFsPathSegments(fsPath: string): string {
+// module touches `location` at import. Keep the two in step. Exported for the
+// explorer topbar's Migrate button, which builds the same `/apps/<folder>`
+// address and may not import the shell.
+export function encodeFsPathSegments(fsPath: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
   return norm
     .replace(/^\/+/, "")

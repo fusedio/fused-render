@@ -163,7 +163,9 @@ def test_the_curation_call_names_its_model_and_its_effort():
     with a model that honours it, now actually applies.
     """
     call = _fn_body(_read(TEMPLATE), "async function curate()")
-    options = call[call.index("{ systemPrompt: CURATION_SYSTEM"):]
+    # One options object since D631 — the prompt is a field, so the settings
+    # are the tail of that object rather than a second argument.
+    options = call[call.index("systemPrompt: CURATION_SYSTEM"):]
     options = options[:options.index("}")]
     assert 'model: "sonnet"' in options
     assert 'effort: "low"' in options
