@@ -266,7 +266,7 @@ const { text, usage, response, provider } = await fused.ai.text({
     "finishReason": "stop",
     "warnings": [],
     "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
-    "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+    "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
     "providerMetadata": { "claude": { "seconds": 3.1 } }
   }
   ```
@@ -7823,8 +7823,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   merely 404, it caches the PREVIOUS frame's bytes under a URL that is never
   requested again, so that step shows a stale picture for its whole duration.
   The cost is that the ✕ is learned one frame-write later, still on the same
-  callback. `previewUrl` is **null on the terminal tick and on the resolved
-  object**, because the file is discarded as the render unwinds and a page that
+  callback. `previewUrl` is **null on the terminal tick and absent from the
+  resolved frame** (D632: the resolved object carries `images[0].url` and
+  `providerMetadata.local.previewPath`, never a live preview address), because
+  the file is discarded as the render unwinds and a page that
   followed the last `previewUrl` would end every render on a 404 exactly where
   the finished picture belongs. Blurring and upscaling it is the page's taste, not this
   API's. **Always on, no flag**: measured at 68ms/step (1.25% of a 512²/16-step

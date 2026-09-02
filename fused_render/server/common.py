@@ -121,7 +121,9 @@ def ai_result(payload: dict, *, provider: str, model: str, warnings=None,
         "response": {
             "id": request_id,
             "modelId": model,
-            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            # One format on every verb and both sides of the wire: seconds, Z
+            # (`runtime.js`'s `resultFrame` trims toISOString() to the same).
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
         "providerMetadata": {provider: dict(metadata or {})},
     }

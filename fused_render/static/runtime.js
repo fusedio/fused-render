@@ -3279,7 +3279,10 @@
       finishReason: f.finishReason || "stop",
       warnings: f.warnings || [],
       usage: f.usage === undefined ? null : f.usage,
-      response: { id: f.id || null, modelId: f.modelId, timestamp: new Date().toISOString() },
+      // Seconds, Z — the server's format (`common.ai_result`), so the field
+      // reads the same on every verb.
+      response: { id: f.id || null, modelId: f.modelId,
+                  timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") },
       providerMetadata: { [f.provider || "local"]: meta },
       ...payload,
     };

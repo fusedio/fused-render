@@ -344,7 +344,7 @@ others), so you learn the shape once:
   "finishReason": "stop",
   "warnings": [],
   "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
-  "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+  "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
   "providerMetadata": { "claude": { "seconds": 3.1 } }
 }
 ```

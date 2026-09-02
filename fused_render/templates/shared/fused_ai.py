@@ -434,7 +434,7 @@ def _frame(payload: dict, started: dict, *, usage=None, metadata: dict | None = 
         "response": {
             "id": started.get("jobId"),
             "modelId": started.get("model"),
-            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
         "providerMetadata": {provider: meta},
         **payload,

@@ -47,7 +47,7 @@ Resolves with **the result frame** — the same six keys every `fused.ai` verb r
   "finishReason": "stop",
   "warnings": [],
   "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
-  "response": { "id": null, "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02+00:00" },
+  "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
   "providerMetadata": { "claude": { "seconds": 3.1 } }
 }
 ```
@@ -335,7 +335,7 @@ The same model also downloads differently per engine: ~4.6GB as one MLX repo aga
 Every tick carries a ready-made URL for a **~32px thumbnail of the image so far** — the worker rewrites that one file each denoising step, so an `<img>` kept on it shows a picture emerging out of noise instead of a number going up. It costs about 1% of the render; blur and upscale it in CSS. `previewPath` is the same file as a path.
 
 - **It is a promise about a path, not a file.** An early tick can 404 (the first step writes no frame), and a model whose latent space has no fitted projection never writes one — so keep the `onerror` that hides the `<img>`. From step 2 on you see the model's *current guess* at the finished image, not the raw latent.
-- **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and on the resolved object — end on `img.url`.
+- **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and absent from the resolved frame — end on `img.images[0].url`.
 - **The URL is already cache-busted** (`&step=<n>`). Adding your own is redundant; dropping the given one shows frame 2 forever.
 - Which engine served you makes no difference: the projection is keyed by the model's latent space, not the repo.
 
@@ -692,7 +692,7 @@ Same names, same options as `fused.ai` above:
 rec = fused_ai.transcribe(path="meeting.m4a")   # does not return until the job is DONE
 ```
 
-`fused_ai.transcribe()`'s settled reply carries the transcript's **contents**, not just its paths — same as `fused.ai.transcribe`'s own resolve above: `{**reply, "text", "segments", "language", "duration", "speakers", "estimatedSpeakers"}`, read off `rec["output"]` for you (`rec["output"]`/`rec["outputText"]` still ride along too, if you want the raw files). `fused_ai.image()` is different, and correctly so: `fused.ai.image` resolves with `{path, url, previewUrl, seed, ...}` and no pixel data, so `img["path"]` is genuinely the whole answer there — nothing is being left for you to read that the JS bridge already hands over.
+`fused_ai.transcribe()`'s settled reply is the same result frame `fused.ai.transcribe` resolves with: `text`, `segments` (`startSecond`/`endSecond`), `language`, `durationInSeconds` as the payload, read off the transcript file for you, and the raw file paths under `rec["providerMetadata"]["local"]` (`output`, `outputText`, `outputPartial`) if you want them. `fused_ai.image()` returns the frame too — `img["images"][0]["path"]` and no pixel data, so the path is genuinely the whole answer there; `url` is omitted on the Python side because there is no page to point an `<img>` from.
 
 For anything else, three keyword arguments:
 

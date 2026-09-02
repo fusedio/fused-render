@@ -4817,7 +4817,12 @@ def test_the_SKILL_names_every_field_an_image_resolves_with(client, fake_image_r
     """
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    fields = set(started) | {"url", "previewUrl"}
+    # D632: the started reply is TRANSPORT; the resolved frame renames three of
+    # its keys (`jobId` -> `response.id`, `model` -> `response.modelId`, `path`
+    # -> `images[0].path`) and adds the payload/frame names. `provider` and
+    # `warnings` are the frame's own and documented once, in the Text section.
+    fields = ((set(started) - {"jobId", "model", "path", "provider", "warnings"})
+              | {"images", "url", "mediaType", "response", "providerMetadata", "usage"})
     section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
@@ -4843,7 +4848,10 @@ def test_the_SKILL_names_every_field_a_video_resolves_with(client, fake_video_ru
     `/api/ai/video`'s reply."""
     started = client.post("/api/ai/video", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    fields = set(started) | {"url"}
+    # D632: same renames as the image drift guard above — transport keys that
+    # the resolved frame spells differently are swapped for the frame's names.
+    fields = ((set(started) - {"jobId", "model", "path", "provider", "warnings"})
+              | {"videos", "url", "mediaType", "response", "providerMetadata", "usage"})
     section = _skill_section("Video: `fused.ai.video({prompt, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
@@ -7871,6 +7879,20 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def _framed(segments):
+    """File-shape transcript segments -> the frame's shape `onSegment` and
+    `rec.segments` speak since D632 (`runtime.js`'s `frameSegment`)."""
+    out = []
+    for s in segments:
+        rest = {k: v for k, v in s.items() if k not in ("start", "end", "words")}
+        rest.update(startSecond=s.get("start"), endSecond=s.get("end"))
+        if isinstance(s.get("words"), list):
+            rest["words"] = [{"word": w.get("word"), "startSecond": w.get("start"),
+                              "endSecond": w.get("end")} for w in s["words"]]
+        out.append(rest)
+    return out
+
+
 def _lift_js_fn(source, marker):
     """One named `function` lifted out of `runtime.js` by its declaration
     text, body included. Shared by every harness below that drives a real
@@ -7884,8 +7906,14 @@ def _js_fn_with_helper(source, marker):
     `aiTranscribe` both call it now (D413), and it is not itself part of
     either function's own source, so a harness that lifts only the target
     function leaves the call unresolved."""
-    return (_lift_js_fn(source, "  function rejectUnknownOptions(")
-            + _lift_js_fn(source, marker))
+    # …and, since D631/D632, the frame + abort helpers every verb shares:
+    # `resultFrame`/`frameSegment` build the resolved object, the abort trio
+    # wires `opts.abortSignal`. Lifted in declaration order.
+    helpers = ("  function rejectUnknownOptions(", "  function abortSignalOf(",
+               "  function cancelledError(", "  function rethrowAbort(",
+               "  function resultFrame(", "  function frameSegment(",
+               "  function cancelJob(")
+    return "".join(_lift_js_fn(source, h) for h in helpers) + _lift_js_fn(source, marker)
 
 
 def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
@@ -7992,9 +8020,11 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert settled["ok"] is True, settled
     value = settled["value"]
     assert value["text"] == "hello world"
-    assert value["segments"][0]["end"] == 1.5
-    assert value["language"] == "en" and value["duration"] == 1.5
-    assert value["url"] == "/api/fs/raw?path=/t/out.json"
+    # D632: the AI SDK's segment names, and the transcript's own url under
+    # providerMetadata.local (the payload carries words, not files).
+    assert value["segments"][0]["endSecond"] == 1.5
+    assert value["language"] == "en" and value["durationInSeconds"] == 1.5
+    assert value["providerMetadata"]["local"]["url"] == "/api/fs/raw?path=/t/out.json"
 
 
 def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"',
@@ -8103,8 +8133,12 @@ def test_the_resolved_image_carries_the_url_and_a_NULL_preview():
     A URL to a file that is gone is worse than no URL — a page can test null."""
     settled = _run_ai_image()
     assert settled["ok"] is True, settled
-    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.png"
-    assert settled["value"]["previewUrl"] is None
+    # D632: the resolved object is the one result frame — the PNG is
+    # `images[0]`, and there is no `previewUrl` on it at all (the preview
+    # file is gone); `previewPath` survives under providerMetadata.local.
+    assert settled["value"]["images"][0]["url"] == "/api/fs/raw?path=/t/a.png"
+    assert "previewUrl" not in settled["value"]
+    assert settled["value"]["response"]["id"] == "sys:ai-image:x"
 
 
 def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
@@ -8114,7 +8148,7 @@ def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
     settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1), preview="undefined")
     assert settled["ok"] is True, settled
     assert settled["progress"][0]["previewUrl"] is None
-    assert settled["value"]["previewUrl"] is None
+    assert "previewUrl" not in settled["value"]
 
 
 def test_the_bridge_rejects_an_unrecognised_image_option_before_the_POST():
@@ -8303,7 +8337,7 @@ def _run_ai_video(record='{state: "done"}', ticks="[]",
 def test_the_resolved_video_carries_the_url():
     settled = _run_ai_video()
     assert settled["ok"] is True, settled
-    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.mp4"
+    assert settled["value"]["videos"][0]["url"] == "/api/fs/raw?path=/t/a.mp4"
     assert "previewUrl" not in settled["value"]
 
 
@@ -8715,7 +8749,7 @@ def test_a_page_gets_each_segment_WHILE_the_file_is_still_decoding():
         {"text": "hello world", "segments": [one, two], "language": "en"})
 
     assert run["settled"]["ok"] is True, run["settled"]
-    assert run["segments"] == [one, two]
+    assert run["segments"] == _framed([one, two])
 
 
 def test_a_segment_the_TAIL_already_delivered_is_not_delivered_again():
@@ -8733,7 +8767,7 @@ def test_a_segment_the_TAIL_already_delivered_is_not_delivered_again():
         [_jsonl(one)],
         {"text": "one two three", "segments": [one, two, three]})
 
-    assert run["segments"] == [one, two, three]
+    assert run["segments"] == _framed([one, two, three])
 
 
 def test_a_tail_still_IN_FLIGHT_when_the_row_finishes_cannot_double_deliver():
@@ -8748,7 +8782,7 @@ def test_a_tail_still_IN_FLIGHT_when_the_row_finishes_cannot_double_deliver():
         [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]},
         slow_ms=30)
 
-    assert run["segments"] == [one, two]
+    assert run["segments"] == _framed([one, two])
 
 
 def test_a_run_whose_partial_file_never_appears_still_delivers_EVERY_segment():
@@ -8761,7 +8795,7 @@ def test_a_run_whose_partial_file_never_appears_still_delivers_EVERY_segment():
         ["", "", ""], {"text": "one", "segments": [one]},
         partial_path="undefined")
 
-    assert run["segments"] == [one]
+    assert run["segments"] == _framed([one])
     # Nothing was tailed, because there was nothing to tail — not a request per
     # tick against a path the reply never named.
     assert [f for f in run["fetches"] if f["range"]] == []
@@ -8794,7 +8828,7 @@ def test_the_tail_asks_for_the_BYTES_IT_HAS_NOT_SEEN(  # noqa: N802
     # zero, or one counting characters, is a different number here.
     assert ranges[1] == "bytes=%d-" % len(line.encode())
     assert ranges[1] != "bytes=%d-" % len(line)
-    assert run["segments"] == [one, two]
+    assert run["segments"] == _framed([one, two])
 
 
 def test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place():
@@ -8814,7 +8848,7 @@ def test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place():
         [_jsonl(one), _jsonl(one, two)],
         {"text": "x", "segments": [one, two]})
 
-    assert run["segments"] == [one, two]
+    assert run["segments"] == _framed([one, two])
 
 
 def test_a_server_that_IGNORES_the_range_still_delivers_each_segment_once():
@@ -8827,7 +8861,7 @@ def test_a_server_that_IGNORES_the_range_still_delivers_each_segment_once():
         [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]},
         ranged=False)
 
-    assert run["segments"] == [one, two]
+    assert run["segments"] == _framed([one, two])
 
 
 def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
@@ -8865,7 +8899,8 @@ def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
     run = _run_ai_transcribe_tailing(
         [_jsonl(one)], {"text": "one", "segments": [one]},
         partial_path=json.dumps(reply["outputPartial"]))
-    assert run["segments"] == [one]
+    # `onSegment` speaks the frame's segment shape (D632), not the file's.
+    assert run["segments"] == [{"text": "one", "startSecond": 0.0, "endSecond": 1.0}]
     assert run["fetches"][0]["url"].endswith(reply["outputPartial"])
 
 
@@ -8905,7 +8940,7 @@ def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
 
     assert run["settled"]["ok"] is False, run["settled"]
     assert run["settled"]["type"] == "ai_error"
-    assert run["segments"] == [one], run["segments"]
+    assert run["segments"] == _framed([one]), run["segments"]
     # The whole assertion: nothing arrived after the caller was told it failed.
     assert run["segmentsAtSettle"] == len(run["segments"]), run
 
@@ -8925,7 +8960,7 @@ def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
     # Delivered, not dropped: a cancel removes the partial file, but whatever
     # decoded before the ✕ landed is still the honest answer to what was heard,
     # and the same final read carries it on both terminal states.
-    assert run["segments"] == [one], run["segments"]
+    assert run["segments"] == _framed([one]), run["segments"]
     assert run["segmentsAtSettle"] == len(run["segments"]), run
 
 
@@ -8952,7 +8987,7 @@ def test_a_run_whose_ROW_AGED_OUT_and_whose_TRANSCRIPT_IS_GONE_still_drains():
     assert run["settled"]["ok"] is False, run["settled"]
     assert "no longer being reported" in run["settled"]["message"]
     assert run["settled"]["outputPartial"] == "/t/out.partial.jsonl"
-    assert run["segments"] == [one], run["segments"]
+    assert run["segments"] == _framed([one]), run["segments"]
     assert run["segmentsAtSettle"] == len(run["segments"]), run
 
 
@@ -9020,7 +9055,7 @@ def test_both_artefact_bridges_survive_a_row_that_aged_out():
     source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "fused_render", "static", "runtime.js"),
                   encoding="utf-8").read()
-    assert "ai.transcribe = aiTranscribe" in source
+    assert "transcribe: aiTranscribe," in source
     transcribe = source[source.index("function aiTranscribe("):]
     transcribe = transcribe[:transcribe.index("\n  const aiModels")]
     # The page-relative half is the bridge's job (RH-1): the server can only
@@ -9172,17 +9207,26 @@ def test_a_sampling_value_out_of_range_is_refused(client, body, expected):
     assert expected in response.json()["error"]["message"]
 
 
-def test_sampling_is_refused_for_claude_rather_than_dropped(client):
-    """The CLI has `effort`, not a temperature — so accepting one would be a
-    knob the caller can watch have no effect."""
+def test_sampling_on_claude_is_a_warning_not_a_refusal(client, monkeypatch):
+    """The CLI has `effort`, not a temperature. Since D631 a tunable the tier
+    lacks is DROPPED and named in `warnings[]` rather than refused — the call
+    is not lost over a knob (`history`/`raw`/`images` still are: those change
+    the question). With no CLI on the test machine the call fails later, on
+    the CLI hop, which is precisely not a 400 about the knob."""
+    from fused_render.server import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "_claude_bin", lambda: None)
     response = client.post("/api/ai", json={
         "prompt": "hi", "temperature": 0.2,
     }, headers={"X-Fused": "1"})
-    assert response.status_code == 400
-    assert "'temperature'" in response.json()["error"]["message"]
+    body = response.json()
+    assert response.status_code != 400
+    if body.get("ok"):
+        assert [w["setting"] for w in body["result"]["warnings"]] == ["temperature"]
+    else:
+        assert "'temperature'" not in body["error"]["message"]
 
 
-def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client):
+def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client, monkeypatch):
     """WHICH sentence a bad value earns, and it is not the range one.
 
     Range-checking before the fork answered `temperature: 5.0` sent to Claude
@@ -9194,6 +9238,10 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client)
     # D631: a sampling knob on the Claude tier is a WARNING, not a 400 — the
     # call proceeds without it and the result names the dropped setting.
     # The range check still never runs on this tier ("between" is absent).
+    # No CLI: the call must reach the CLI hop (proving the knob was not a 400)
+    # and fail there, deterministically, rather than run a real `claude`.
+    from fused_render.server import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "_claude_bin", lambda: None)
     response = client.post("/api/ai", json={
         "prompt": "hi", "temperature": 5.0,
     }, headers={"X-Fused": "1"})
@@ -9396,8 +9444,8 @@ def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypa
     # The whole completion, accumulated server-side: a page streaming into a DOM
     # node has no string of its own to fall back on.
     assert done["result"]["text"] == "hello"
-    assert done["result"]["model"] == "org/chat"
-    assert done["result"]["usage"]["output_tokens"] == 2
+    assert done["result"]["response"]["modelId"] == "org/chat"
+    assert done["result"]["usage"]["outputTokens"] == 2
 
 
 def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypatch):
