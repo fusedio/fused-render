@@ -3516,9 +3516,17 @@ button.am-bench-model:focus-visible {
    every FIFTH row (`[data-band]`, set in `HubResultsTable.tsx` — see that
    file's own doc for why it counts only primary/family rows, never an
    opened variant's own sub-rows) and the existing hover tint, which is now
-   load-bearing for tracking a row sideways with no border to anchor on. */
+   load-bearing for tracking a row sideways with no border to anchor on.
+
+   `border-top` on the row that STARTS a band, not `border-bottom` on the
+   one that ends it (code review finding): a `border-bottom` on the 5th
+   family drew the separator directly below that family's OWN row, which
+   sits ABOVE its own variant disclosure rows when one is open — reading as
+   if the variants belonged to the family AFTER it. A `border-top` on the
+   family that begins the next band always lands between the previous
+   family's last rendered row and this one, open disclosure or not. */
 .am-hubtable tbody tr[data-band] td {
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 
 .am-hubtable th.num,
@@ -3647,16 +3655,20 @@ button.am-bench-model:focus-visible {
   color: var(--fg-muted);
 }
 
-.am-hubtable-dash {
-  color: var(--fg-muted);
-}
-
 /* D641 fix: a value matching the hoisted majority (Task/Capability, Quant)
    is muted rather than blanked — the column still prints every row's real
    value; a blank cell and a genuine dash (unknown) must never look the
-   same, so this is the ONLY difference a majority row gets. */
+   same, so this is the ONLY difference a majority row gets.
+
+   A dedicated colour token, never `opacity` (code review finding): this
+   table already sets `color: var(--fg-muted)` on itself, so an `opacity`
+   here used to COMPOUND with that muting rather than replace it — a
+   ~2.3:1 contrast in light mode, invisible in practice, re-creating the
+   exact blank-vs-dash ambiguity this rule exists to prevent. `--fg-faint`
+   is a known, single contrast value in each theme instead of a product of
+   two unrelated dimming rules — see `tokens.css`'s own comment on it. */
 .am-hubtable-majority {
-  opacity: 0.55;
+  color: var(--fg-faint);
 }
 
 /* The Model column: the family's own name, the curated seal, the state tag

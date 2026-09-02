@@ -19,6 +19,18 @@
   color-scheme: dark;
   --fg: #e8eaed;
   --fg-muted: #9aa0a6;
+  /* A third, dimmer text level BELOW `--fg-muted` — for a value that must
+   * stay legible but visibly de-emphasized (the Hub results table's
+   * hoisted-majority cells, D640/D642) — as its own real colour, not
+   * `--fg-muted` under an `opacity` that COMPOUNDS with whatever ink level
+   * already applies to its container (code review finding: the table sets
+   * `color: var(--fg-muted)` itself, so a further `opacity: 0.55` on top of
+   * that muted a colour that was already muted, landing at a ~2.3:1
+   * contrast in light mode and ~2.95:1 in dark — both under the 3:1 floor
+   * this token is picked to clear). Contrast against `--bg`: ~4.5:1 here,
+   * ~3.6:1 in the light palette below — a known number, not a product of
+   * two unrelated dimming rules. */
+  --fg-faint: #7a7e83;
   --border: #2a2d33;
   --bg: #131417;
   --bg-alt: #1b1d21;
@@ -297,6 +309,9 @@
   color-scheme: light;
   --fg: #1f2023;
   --fg-muted: #61656c;
+  /* See the dark palette's own comment on `--fg-faint` above — same token,
+   * ~3.6:1 against this theme's `--bg`. */
+  --fg-faint: #84878d;
   --border: #d8dade;
   --bg: #ffffff;
   --bg-alt: #f4f5f7;
