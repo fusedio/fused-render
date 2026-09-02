@@ -61,7 +61,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
+from fused_render.ai import catalog, fit, footprints, hsa_preload, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -771,7 +771,7 @@ def _mirror_ok(model: str) -> str:
         return ""
 
 
-def _child_env(token: str, model: str = "", capability: str = "") -> dict:
+def _child_env(token: str, model: str = "", capability: str = "", preload: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -816,6 +816,15 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     "this environment is a copy of the server's" reason `FUSED_MODEL_
     MIRROR_OK` is: a stale or operator-set value must not silently outlive
     the fresh computation that is supposed to produce it.
+
+    **`preload`, when given, is PREPENDED onto `LD_PRELOAD`** rather than
+    setting it outright — an operator's own `LD_PRELOAD` (say, a malloc
+    profiler, or their own ROCr override) survives untouched after whatever
+    this process adds, colon-joined the same way the loader itself parses the
+    variable. The caller decides WHETHER to preload anything at all
+    (`hsa_preload.resolve_preload`, computed from the venv `python` `_spawn`
+    already has); this function only knows how to place a path onto the
+    variable without clobbering what was there.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -833,6 +842,9 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
     else:
         env.pop("FUSED_AI_MEMORY_BUDGET_BYTES", None)
+    if preload:
+        inherited = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = f"{preload}:{inherited}" if inherited else preload
     return env
 
 
@@ -874,7 +886,39 @@ def _tail(path: str, limit: int = 2000) -> str:
 
 
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
-    """Start worker.py and wait for it to publish its port.
+    """Start worker.py and wait for it to publish its port, retrying ONCE
+    without the ROCm HSA preload (see `hsa_preload.py`) if a preloaded
+    attempt fails to come up.
+
+    `hsa_preload.resolve_preload` already checked that the system ROCm
+    runtime is a newer-or-equal minor of torch's bundled one before this
+    function ever runs — but "checked the version files agree" is not the
+    same guarantee as "actually links and runs", and a bring-up failure is
+    exactly the shape of evidence that would be missing if it didn't: a
+    worker that can't `dlopen` the substituted runtime, or one that starts
+    and immediately dies. Retrying WITHOUT the preload is the fallback that
+    keeps a mismeasured or unusual system runtime from bricking every ROCm
+    worker on the machine, at the cost of the CPU-pinning bug this whole
+    module exists to avoid — which is why the retry is logged, not silent.
+    """
+    preload = hsa_preload.resolve_preload(python)
+    try:
+        _spawn_once(runner, worker, python, preload)
+    except SupervisorError as e:
+        if not preload or str(e) == "cancelled":
+            raise
+        logger.warning(
+            "ROCm worker %s failed to start with LD_PRELOAD=%s (%s); "
+            "retrying once without it. Set FUSED_AI_HSA_PRELOAD=0 to stop "
+            "this preload being attempted at all.",
+            worker.capability, preload, e,
+        )
+        _spawn_once(runner, worker, python, None)
+
+
+def _spawn_once(runner: registry.Runner, worker: Worker, python: str, preload: str | None) -> None:
+    """One spawn attempt: start `worker.py` and wait for it to publish its
+    port.
 
     The worker writes `{port, pid}` to a status file rather than being handed a
     port: binding :0 in the child and reporting back is the only version with no
@@ -889,7 +933,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
-    env = _child_env(worker.token, worker.model, worker.capability)
+    env = _child_env(worker.token, worker.model, worker.capability, preload or "")
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
