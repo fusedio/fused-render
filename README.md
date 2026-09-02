@@ -8,7 +8,9 @@ build. Any `.html` file you open gets a tiny injected runtime that can call a
 Python `main()` function and sync its state to the URL.
 
 Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
-machine, your own trusted code.
+machine, your own trusted code; [SECURITY.md](SECURITY.md) has the trust model
+and how to report a vulnerability. Open source under the
+[MIT license](LICENSE), made by [Fused](https://www.fused.io).
 
 ## Download
 
