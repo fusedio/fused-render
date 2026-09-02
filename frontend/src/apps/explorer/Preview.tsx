@@ -313,7 +313,7 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
       disabled={busy}
     >
       {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Creating task…" : "Migrate to API v" + info.to}
+      {busy ? "Creating task…" : "Migrate to new version"}
     </button>
   );
 }

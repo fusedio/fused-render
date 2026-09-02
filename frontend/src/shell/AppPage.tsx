@@ -448,7 +448,7 @@ export default function AppPage({
               <Button
                 size="sm"
                 className="app-page-migrate"
-                variant={inProgress ? "outline" : "default"}
+                variant="outline"
                 disabled={!inProgress && migrateState !== "idle"}
                 title={
                   inProgress
@@ -469,7 +469,7 @@ export default function AppPage({
                     ? "Creating task…"
                     : migrateState === "created"
                       ? "Migration task created"
-                      : `Migrate to API v${resolved.currentApiVersion}`}
+                      : "Migrate to new version"}
               </Button>
             )}
             {/* The app full-size in the explorer (its entry page), in a new tab
