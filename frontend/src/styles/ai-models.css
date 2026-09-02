@@ -3456,14 +3456,28 @@ button.am-bench-model:focus-visible {
    Replaces the card grid the search face used to draw (`.am-grid`, above).
    Follows `.am-bench-table` above it — same app, same stylesheet, the same
    sticky-head-free plain table with tabular numbers on the right. Container
-   queries rather than `overflow-x: auto`: the plan's own requirement is that
-   COLUMNS drop as the pane narrows and the page never scrolls sideways, which
-   `.am-bench-tablewrap`'s horizontal scroll deliberately does not attempt —
-   an eleven-column table over a fit-scored search is read a row at a time,
-   not scrolled through sideways to find the number that matters. */
+   queries are the PRIMARY mechanism: COLUMNS drop as the pane narrows so the
+   page never scrolls sideways for the common case — an eleven/fourteen-
+   column table over a fit-scored search is read a row at a time, not
+   scrolled through sideways to find the number that matters.
+
+   **`overflow-x: auto` on the wrap too (code review F5), as a SAFETY NET,
+   not the primary mechanism.** The eight ladder thresholds below (900px down
+   to 380px) were chosen by the builder with no running browser to measure
+   against (`hub-search-notes.md` says so directly), and a live pass found a
+   real gap: between two drop points the surviving columns — Fit, Model, Size,
+   the action — do not all fit, and Size clipped mid-string with the action
+   column pushed off the pane's edge. Losing any of those four is worse than
+   a horizontal scrollbar confined to this table's own box, so the wrap
+   scrolls internally rather than clipping when the ladder under-shoots; it
+   stays a no-op at every width the ladder DOES cover (the table fits, so
+   there is nothing to scroll). The page body scrolling sideways is still the
+   thing this must never do — `overflow-x` here is scoped to `.am-hubtable-wrap`
+   alone, never the page. */
 .am-hubtable-wrap {
   container-type: inline-size;
   margin-top: 6px;
+  overflow-x: auto;
 }
 
 .am-hubtable {
@@ -3590,8 +3604,12 @@ button.am-bench-model:focus-visible {
 /* The GROUPING fact ("from <baseModel>") — muted, secondary, and never the
    bold name (E: identity/action/name must all be the same repo). Was
    `.am-hubtable-variant-id`, which the same rule used to render the OTHER
-   way round (the primary's own id, muted, under a base-model bold name);
-   the class stays, the meaning of what it renders flipped with it. */
+   way round (the primary's own id, muted, under a base-model bold name).
+   Corrected (code review F7): the class name did NOT stay, contrary to what
+   this comment used to claim — the JSX now emits `am-hubtable-basemodel`
+   (below), so `.am-hubtable-variant-id` would have been a dead selector had
+   one still existed under that name; there was none left to remove, only
+   this comment's stale claim about it. */
 .am-hubtable-basemodel {
   font-size: 10.5px;
   color: var(--fg-muted);
@@ -3646,6 +3664,21 @@ button.am-bench-model:focus-visible {
 
 .am-hubtable-variant-row .am-hubtable-name-inner > a {
   color: var(--fg-muted);
+}
+
+/* The family row's own base class (code review F7) — emitted in JSX
+   (`HubResultsTable.tsx`, alongside the disk-state washes below) so a family
+   row and a variant sub-row (`.am-hubtable-variant-row`) can be told apart in
+   CSS, but this had no rule of its own at all before this fix. A subtle
+   hover, matching `.am-hubtable-vartoggle`'s own hover treatment, so a row
+   under the pointer reads as the thing being scanned — most rows carry
+   neither disk-state wash, and for the few that do this briefly swaps their
+   wash for the hover tint while the pointer is over them, reverting on
+   mouseout, which is an acceptable trade for one shared rule rather than a
+   `:not(.am-card-have):not(.am-card-part-unknown):not(.am-card-arriving)`
+   guard nobody asked for. */
+.am-hubtable-row:hover {
+  background: var(--bg-hover, var(--bg-alt));
 }
 
 /* The disk-state washes themselves (`am-card-have`, `am-card-part-unknown`,

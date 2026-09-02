@@ -105,8 +105,14 @@ function HubVariantRow({
       style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
     >
       <td />
-      <td />
-      <td className="am-hubtable-name am-hubtable-variant-name" colSpan={3}>
+      {/* F4 (code review): must carry the SAME `am-col-score` class the header
+          and family row's Score placeholder do, or `ai-models.css`'s column-
+          hiding container queries have nothing to collapse here — the header
+          and family row's cell count would shrink while this row's did not,
+          shifting every cell after it out of alignment (the exact class of
+          bug commit 79aef51e fixed, one level up). */}
+      <td className="am-col-score" />
+      <td className="am-hubtable-name am-hubtable-variant-name" colSpan={2}>
         <span className="am-hubtable-name-inner">
           <a
             href={hubModelUrl(model.id)}
@@ -123,6 +129,13 @@ function HubVariantRow({
           )}
         </span>
       </td>
+      {/* Capability is deliberately OUT of the name cell's colSpan (F4): a
+          `colSpan` covers a fixed count of column SLOTS regardless of which
+          of them the header/family row hide at a given width, so folding
+          Capability's slot into a wider span here left this row's cells
+          misaligned the moment `.am-col-cap` collapsed at <=900px. Its own
+          `<td>`, carrying the same class, collapses in lockstep instead. */}
+      <td className="am-col-cap" />
       <td className="num am-col-params">{paramsLabel(model.params)}</td>
       <td className="num am-col-quant">{quantLabel(model.quant)}</td>
       <td className="num" data-hint={hubSizeTitle(model, null)}>
@@ -206,7 +219,7 @@ function HubResultRow({
   const row = useRef<HTMLTableRowElement>(null);
   const wantsTotal = !model.estimatedSize;
   const [total, setTotal] = useState<number | null>(
-    (wantsTotal ? knownTotalSize(model.id) : null) ?? null,
+    (wantsTotal ? knownTotalSize(model.id, model.file) : null) ?? null,
   );
   // Bug chain fix: `_model_row` cannot judge fit (or speed) for a row with no
   // safetensors metadata — a GGUF repo, chiefly — during SEARCH, so
@@ -217,18 +230,20 @@ function HubResultRow({
   // for a row that actually asked (`wantsTotal`), and stay unread otherwise
   // (`effectiveFit`/`effectiveSpeed` below fall back to the search's own
   // value first).
-  const [fitOverride, setFitOverride] = useState(wantsTotal ? knownFit(model.id) : undefined);
+  const [fitOverride, setFitOverride] = useState(
+    wantsTotal ? knownFit(model.id, model.file) : undefined,
+  );
   const [speedOverride, setSpeedOverride] = useState(
-    wantsTotal ? knownSpeedEstimate(model.id) : undefined,
+    wantsTotal ? knownSpeedEstimate(model.id, model.file) : undefined,
   );
 
   useEffect(() => {
     if (!wantsTotal) return;
-    const known = knownTotalSize(model.id);
+    const known = knownTotalSize(model.id, model.file);
     if (known !== undefined) {
       setTotal(known);
-      setFitOverride(knownFit(model.id));
-      setSpeedOverride(knownSpeedEstimate(model.id));
+      setFitOverride(knownFit(model.id, model.file));
+      setSpeedOverride(knownSpeedEstimate(model.id, model.file));
       return;
     }
     const el = row.current;
@@ -251,9 +266,9 @@ function HubResultRow({
       ).then((bytes) => {
         if (!alive) return;
         setTotal(bytes);
-        setFitOverride(knownFit(model.id));
-        setSpeedOverride(knownSpeedEstimate(model.id));
-        if (knownTotalSize(model.id) !== undefined) io.disconnect();
+        setFitOverride(knownFit(model.id, model.file));
+        setSpeedOverride(knownSpeedEstimate(model.id, model.file));
+        if (knownTotalSize(model.id, model.file) !== undefined) io.disconnect();
       });
     });
     io.observe(el);
