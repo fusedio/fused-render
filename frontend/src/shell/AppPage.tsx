@@ -72,7 +72,7 @@ import {
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
-import { appLandingUrl } from "@apps/builder/HomeHero";
+import { appLandingUrl } from "@platform/lib/appLanding";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
