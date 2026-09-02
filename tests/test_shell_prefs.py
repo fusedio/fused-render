@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import fused_render.shell.prefs as prefs_mod
 from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
+from _hardware_probe_helpers import force_no_accelerators
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -901,9 +902,15 @@ def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
     same reason. What is under test here is the DEGRADATION, not the coverage;
     the coverage invariant is
     `test_ai_runtime.test_every_shipped_platform_keeps_a_local_text_engine`.
+
+    Accelerators forced off (`force_no_accelerators`) so `effective` is the
+    fallthrough `llamacpp-text` regardless of whether the machine running the
+    suite has a real Vulkan GPU — the degradation this test pins is about the
+    ORDERING taking over, not about which row the ordering lands on.
     """
     monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(
@@ -940,9 +947,14 @@ def test_a_prefs_file_naming_ANOTHER_capabilitys_engine_degrades_the_same_way(
     stored engine is gone or unavailable would be false of this row. That is the
     overclaim `AiModelsEngines.tsx` was carrying, and this is the server-side
     half of its fix; `engines.test.ts` covers the rendering half.
+
+    Accelerators forced off (`force_no_accelerators`), same reason as this
+    test's `transformers-text` sibling above: `effective` must be the CPU
+    fallthrough regardless of the suite's own host hardware.
     """
     monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(
@@ -982,9 +994,14 @@ def test_a_prefs_file_naming_a_WITHDRAWN_EMBEDDING_engine_falls_back_to_the_orde
 
     Platform PINNED for the same reason its text sibling pins it: what is under
     test is the degradation, not the coverage.
+
+    Accelerators forced off (`force_no_accelerators`): `onnx-embed` is the
+    fallthrough this test pins, and `onnx-embed-cuda`/`-rocm` read the real
+    `/dev/nvidia*`/`/dev/kfd` on whatever machine runs the suite.
     """
     monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(
@@ -1010,9 +1027,15 @@ def test_the_accelerated_embedding_codes_are_stranded_the_same_way(
         tmp_path, monkeypatch):
     """All three went together, so all three have to degrade together — a fix
     that special-cased the CPU code would leave the two rows nobody thinks about
-    raising instead of falling back."""
+    raising instead of falling back.
+
+    Accelerators forced off (`force_no_accelerators`), for the same reason as
+    this test's siblings above: the fallthrough asserted (`onnx-embed`) must
+    not depend on the suite's own host hardware.
+    """
     monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     for code in ("transformers-embed-cuda", "transformers-embed-rocm"):
         client, home = _client(tmp_path / code, monkeypatch)
         home.mkdir(parents=True, exist_ok=True)

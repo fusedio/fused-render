@@ -74,3 +74,11 @@ ios/*.xcodeproj
 ios/build/
 ios/FusedRender/Info.plist
 ios/FusedRenderWidgets/Info.plist
+
+# A branch's own build/process notes for its reviewer — this repo's
+# convention for scratch that should never ship to main (see
+# CONNECTORS_PROTOTYPE_NOTES.md's own history: written, read, deleted at
+# merge, never committed). Kept on disk for a later builder picking up the
+# same branch; a stray one left tracked past merge is the bug this rule
+# prevents.
+*_NOTES.md
