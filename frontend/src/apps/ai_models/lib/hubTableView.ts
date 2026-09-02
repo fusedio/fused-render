@@ -58,18 +58,97 @@ export interface MatchCell {
   offloadLabel: "offload" | "CPU only" | null;
 }
 
-/** `matchCell`'s `stale` parameter (code review finding): true exactly when
- *  `fit` is a CLIENT-side correction that landed after the server computed
- *  `matchScore` — i.e. `HubModel.fit` was null, so the composite was scored
- *  against `_FIT_DEFAULT` (~40), and the lazy per-file lookup then resolved
- *  a real verdict the score was never recomputed against. Rendering the
- *  bar/number as if they described that corrected verdict is what let a
- *  GGUF row show a green "easy" dot beside a ~40%-long bar and a low
- *  number, while the hover claimed the number "blends memory fit" — two
- *  parts of one cell stating different things about the same row. When
- *  stale, the bar/number fall back to the dash/empty state (never a second,
- *  possibly-also-wrong number invented to fill the gap) so the colour/shape
- *  the corrected fit earns has nothing beside it to contradict it. */
+/** Which of the two things a shown fit verdict is (code review finding 2):
+ *  `"measured"` for a real byte size (either the search's own safetensors-
+ *  derived reading, or the lazy per-file `hub/size` lookup once it
+ *  resolves), `"estimated"` for a GGUF row's params x bytes-per-param guess
+ *  still standing in while that lookup is in flight, or `null` when there
+ *  is nothing to say (no fit at all, or the caller does not track this).
+ *  `matchTitle`'s only use for it — the bar/dot themselves never change,
+ *  since an estimate is still the best judgement available in the moment. */
+export type MatchFitBasis = "measured" | "estimated" | null;
+
+/** The fit actually shown for a row — pulled out of `HubResultsTable.tsx`
+ *  (code review finding 2) so the precedence rule is a pure function this
+ *  file's own test suite can drive, matching every other rule in this
+ *  module.
+ *
+ *  **A MEASURED verdict always wins over a DERIVED one — never `??`'s
+ *  left-to-right "first non-null wins".** A row with safetensors metadata
+ *  never sets `wantsTotal`, so `fitOverride` stays `undefined` there and
+ *  `modelFit` (real, safetensors-measured) is the only side with a value —
+ *  fine either way. But a GGUF row's `modelFit` can ALSO be non-null: the
+ *  params x bytes-per-param ESTIMATE `hub_models.py` feeds in for a file
+ *  whose name carries a recognized quant token. `wantsTotal` stays true for
+ *  every GGUF row regardless (its `estimatedSize` is never set — see
+ *  `hub_models.py`'s own comment on why), so the lazy per-file `hub/size`
+ *  lookup keeps firing, and once it resolves it carries REAL bytes-derived
+ *  evidence that must not lose to the earlier guess just because it
+ *  resolved second. `fitOverride !== undefined` is exactly "the lookup has
+ *  answered" — its own value may still be `null` ("asked, and there was
+ *  nothing to judge"), which is itself a real answer that outranks a stale
+ *  guess. */
+export function resolveFit(
+  modelFit: AiFitVerdict | null,
+  fitOverride: AiFitVerdict | null | undefined,
+): AiFitVerdict | null {
+  return fitOverride !== undefined ? fitOverride : (modelFit ?? null);
+}
+
+/** `resolveFit`'s sibling for the speed estimate riding the same lazy
+ *  lookup — identical precedence, same reason. */
+export function resolveSpeed(
+  modelSpeed: AiSpeedEstimate | null,
+  speedOverride: AiSpeedEstimate | null | undefined,
+): AiSpeedEstimate | null {
+  return speedOverride !== undefined ? speedOverride : (modelSpeed ?? null);
+}
+
+/** Whether the fit `resolveFit` is showing right now is a real measurement
+ *  or still a params-only guess waiting on one — `matchTitle`'s hover text,
+ *  so a reader is never left to assume an estimate is settled fact.
+ *  `modelFit` being non-null while `wantsTotal` is true is what marks the
+ *  GGUF params-only-estimate case (a safetensors-backed row with a real
+ *  `modelFit` never sets `wantsTotal` at all) — there is no dedicated wire
+ *  field for this, so the same fact `resolveFit` reads is read again here. */
+export function matchFitBasis(
+  effectiveFit: AiFitVerdict | null,
+  fitOverride: AiFitVerdict | null | undefined,
+  wantsTotal: boolean,
+): MatchFitBasis {
+  if (effectiveFit == null) return null;
+  if (fitOverride !== undefined) return "measured";
+  return wantsTotal ? "estimated" : "measured";
+}
+
+/** Whether `matchScore` was computed against a fit this row is no longer
+ *  showing — `matchCell`/`matchTitle`'s `stale` parameter, pulled out as its
+ *  own pure function (code review finding 3) for the same reason
+ *  `resolveFit` was: a rule worth a test belongs in a module that can be
+ *  driven, not inline in a component with no DOM harness to exercise it.
+ *
+ *  **True exactly when the lazy lookup handed back an ACTUAL correction —
+ *  not merely "the lookup has answered".** `modelFit == null` says the
+ *  server scored `matchScore` against `_FIT_DEFAULT` (~40) with nothing
+ *  real to judge by; `fitOverride != null` says the lookup then resolved a
+ *  REAL verdict to replace it. Both conditions are required: `fitOverride`
+ *  resolving to `null` — `knownFit`'s own pinned contract for "asked, and
+ *  there was nothing to judge" (`hubSize.test.ts`) — is not a correction of
+ *  anything, and treating it as one used to blank a perfectly valid score
+ *  for a row nothing was ever wrong with. When genuinely stale, the
+ *  bar/number fall back to the dash/empty state (never a second, possibly-
+ *  also-wrong number invented to fill the gap) so the colour/shape the
+ *  corrected fit earns has nothing beside it to contradict it — this is
+ *  what let an EARLIER bug show a GGUF row's green "easy" dot beside a
+ *  ~40%-long bar and a low number, while the hover claimed the number
+ *  "blends memory fit". */
+export function isMatchScoreStale(
+  modelFit: AiFitVerdict | null,
+  fitOverride: AiFitVerdict | null | undefined,
+): boolean {
+  return modelFit == null && fitOverride != null;
+}
+
 export function matchCell(
   fit: AiFitVerdict | null,
   matchScore: number | null | undefined,
@@ -96,6 +175,7 @@ export function matchTitle(
   fit: AiFitVerdict | null,
   matchScore: number | null | undefined,
   stale = false,
+  fitBasis: MatchFitBasis = null,
 ): string {
   const scoreText = stale
     ? "Match score not shown: this repo's memory fit was just corrected from a fuller size lookup, and the " +
@@ -114,7 +194,20 @@ export function matchTitle(
         : fit?.runMode === "gpu"
           ? " Runs on the GPU (Apple's unified memory counts as this too)."
           : "";
-  return `${scoreText} Bar colour and glyph: ${verdictText}.${modeText}`;
+  // Code review finding (2): a GGUF row's fit can come from two different
+  // places — an estimate off the parameter count and quantization alone
+  // (no real bytes read yet), or the file's own measured size once the lazy
+  // per-file lookup resolves. Both render through this same cell, so the
+  // hover has to say which one a reader is looking at rather than let an
+  // estimate read as settled fact.
+  const basisText =
+    fitBasis === "estimated"
+      ? " This fit is an estimate from the parameter count and quantization alone — a fuller size lookup for " +
+        "this specific file is still in flight and may correct it."
+      : fitBasis === "measured"
+        ? " This fit is measured from the actual file this row would download."
+        : "";
+  return `${scoreText} Bar colour and glyph: ${verdictText}.${modeText}${basisText}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,19 +305,26 @@ export function hoistValue(values: readonly (string | null)[]): Hoist | null {
  *  "unremarkable, matches the summary" from "nobody knows".
  *
  *  **`values` must cover every row the table can DISPLAY, primaries and
- *  variants alike** (code review finding) — `hoist` itself stays computed
- *  over primaries only (D640's own deliberate choice: a closed disclosure's
- *  siblings are not on screen, and the SUMMARY LINE must not silently
- *  change what it claims about the rows a reader can currently see), but
- *  presence is a different question — whether a column is worth having AT
- *  ALL — and a family's variants are precisely its quant/finetune
- *  republishes, i.e. the rows most likely to actually DIFFER on Quant or
- *  Capability. Trusting `hoist.unanimous` (primaries-only) for this hid the
- *  column header-and-all while an opened disclosure still showed variants
- *  with a genuinely different value and nothing to label it — a summary
- *  that goes false the moment a reader expands a row. So this re-checks
- *  unanimity against the FULL `values` actually passed, rather than taking
- *  `hoist`'s own (primaries-only) word for it. */
+ *  variants alike** (code review finding) — and, as of a second finding,
+ *  so must `hoist` itself. An earlier version kept `hoist`/the summary line
+ *  computed over primaries only (D640's original reasoning: a closed
+ *  disclosure's siblings are not on screen, so the summary must not
+ *  silently change what it claims about the rows a reader can currently
+ *  see) while this function alone re-checked the full set — which fixed
+ *  the blank-column bug but reopened a different contradiction one level
+ *  up: a primaries-only hoist could read "unanimous" (driving the summary
+ *  line AND `isMajorityValue`'s full-weight styling) while this function,
+ *  reading the same variants the summary ignored, correctly kept the
+ *  column visible — a summary claiming agreement above a column visibly
+ *  showing disagreement. A family's variants are precisely its
+ *  quant/finetune republishes, i.e. the rows most likely to actually
+ *  DIFFER on Quant or Capability, so ignoring them for the hoist while
+ *  counting them for presence let that happen on the very column most
+ *  likely to trigger it. The fix (`HubResultsTable.tsx`'s own call site)
+ *  is not "recheck harder here" but "stop computing `hoist` over a
+ *  different set than this function does" — `hoist` and `values` must
+ *  always be built from the SAME rows, so this function's re-check and the
+ *  summary line it accompanies can never again disagree. */
 export function columnVisible(hoist: Hoist | null, values: readonly (string | null)[]): boolean {
   const known = values.filter((v): v is string => v !== null);
   if (known.length === 0) return false;
@@ -260,6 +360,48 @@ export function hoistSummary(count: number, capabilityHoist: Hoist | null, quant
     : `${count} ${noun}`;
   if (!quantHoist) return head;
   return `${head} · ${quantHoist.unanimous ? "all" : "mostly"} ${quantHoist.value}`;
+}
+
+/** Everything `HubResultsTable` needs to draw the Task/Capability and Quant
+ *  columns' shared state — pulled out of the component (code review finding
+ *  4) so the "one value set feeds both presence and the summary" rule is a
+ *  pure function this file's own test suite can drive, the way every other
+ *  rule in this module already is.
+ *
+ *  **The whole fix, in one sentence: `capabilityHoist`/`quantHoist` and the
+ *  values `columnVisible` re-checks against must be built from the SAME
+ *  rows.** An earlier version computed the hoist over primaries only (D640:
+ *  "a closed disclosure's siblings are not on screen") while `columnVisible`
+ *  re-checked primaries+variants (a later fix for a DIFFERENT bug — a fully
+ *  hoisted column left blank cells on screen). That combination produced a
+ *  contradiction of its own: all primaries `BF16` plus one family's variant
+ *  `Q4_K_M` made the hoist read "unanimous" — driving both the summary
+ *  line's "all BF16" AND `isMajorityValue`'s full-weight styling for every
+ *  primary cell — while `columnVisible`, correctly reading the fuller set,
+ *  kept the Quant column on screen with a real `Q4_K_M` sitting in an
+ *  opened disclosure. A summary claiming agreement above a column visibly
+ *  disagreeing with it is the same class of bug the blank-column fix was
+ *  supposed to end, just one level up. So both the hoist and the presence
+ *  check here read `allCapabilityValues`/`allQuantValues` — every row the
+ *  table can DISPLAY, primaries and variants alike — and nothing else. */
+export function familyHoist(families: readonly HubFamily[]): {
+  capabilityHoist: Hoist | null;
+  quantHoist: Hoist | null;
+  summary: string | null;
+  showTask: boolean;
+  showQuant: boolean;
+} {
+  const allCapabilityValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.capability);
+  const allQuantValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.quant);
+  const capabilityHoist = hoistValue(allCapabilityValues);
+  const quantHoist = hoistValue(allQuantValues);
+  return {
+    capabilityHoist,
+    quantHoist,
+    summary: hoistSummary(families.length, capabilityHoist, quantHoist),
+    showTask: columnVisible(capabilityHoist, allCapabilityValues),
+    showQuant: columnVisible(quantHoist, allQuantValues),
+  };
 }
 
 /** "18d ago", or the dash when the Hub did not say (or said something this

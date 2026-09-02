@@ -3,14 +3,19 @@ import {
   ageLabel,
   capabilityHint,
   familyDisplay,
+  familyHoist,
   columnVisible,
   isMajorityValue,
+  isMatchScoreStale,
   hoistSummary,
   hoistValue,
   matchCell,
+  matchFitBasis,
   matchTitle,
   popLabel,
   quantLabel,
+  resolveFit,
+  resolveSpeed,
   speedLabel,
   speedTitle,
   variantLabel,
@@ -127,6 +132,114 @@ describe("matchCell", () => {
       dot: "easy",
       offloadLabel: null,
     });
+  });
+});
+
+describe("resolveFit / resolveSpeed", () => {
+  const verdict = (v: AiFitVerdict["verdict"]): AiFitVerdict => ({
+    verdict: v,
+    basis: "download",
+    footprintBytes: 1e9,
+    score: 0,
+  });
+
+  it("a measured override beats a derived model.fit, not just whichever is non-null first (code review finding 2)", () => {
+    // The reported bug: a GGUF row's `model.fit` can be a params x
+    // bytes-per-param GUESS (a recognized-quant estimate), and the lazy
+    // per-file lookup then resolves the file's REAL measured verdict. The
+    // old `??` precedence let the guess win forever because it was already
+    // non-null. `fitOverride !== undefined` — the lookup has answered —
+    // must win regardless of what `modelFit` was.
+    const guess = verdict("easy");
+    const measured = verdict("tight");
+    expect(resolveFit(guess, measured)).toBe(measured);
+  });
+
+  it("a resolved-to-null override still beats a derived model.fit — 'nothing to judge' is itself an answer", () => {
+    const guess = verdict("easy");
+    expect(resolveFit(guess, null)).toBeNull();
+  });
+
+  it("falls back to model.fit when the lookup has not answered yet (undefined)", () => {
+    const guess = verdict("easy");
+    expect(resolveFit(guess, undefined)).toBe(guess);
+  });
+
+  it("is null, never undefined, when neither side has anything", () => {
+    expect(resolveFit(null, undefined)).toBeNull();
+  });
+
+  it("resolveSpeed follows the identical precedence", () => {
+    const speed = (tokensPerSecond: number): AiSpeedEstimate => ({
+      tokensPerSecond,
+      method: "backend-constant",
+      backend: "cpu-x86",
+      bandwidthGbS: null,
+      contextTokens: 8192,
+      calibrated: false,
+      calibrationFactor: null,
+    });
+    const modelSpeed = speed(5);
+    const measuredSpeed = speed(40);
+    expect(resolveSpeed(modelSpeed, measuredSpeed)).toBe(measuredSpeed);
+    expect(resolveSpeed(modelSpeed, undefined)).toBe(modelSpeed);
+    expect(resolveSpeed(modelSpeed, null)).toBeNull();
+  });
+});
+
+describe("matchFitBasis", () => {
+  const verdict = (v: AiFitVerdict["verdict"]): AiFitVerdict => ({
+    verdict: v,
+    basis: "download",
+    footprintBytes: 1e9,
+    score: 0,
+  });
+
+  it("is null when there is no fit to show at all", () => {
+    expect(matchFitBasis(null, undefined, true)).toBeNull();
+  });
+
+  it("is 'measured' once the lazy lookup has answered, whatever it answered", () => {
+    expect(matchFitBasis(verdict("easy"), verdict("easy"), true)).toBe("measured");
+    expect(matchFitBasis(null, null, true)).toBeNull(); // no fit to show, basis is moot
+  });
+
+  it("is 'estimated' for a GGUF row's params-only guess still awaiting the lookup", () => {
+    expect(matchFitBasis(verdict("easy"), undefined, true)).toBe("estimated");
+  });
+
+  it("is 'measured' for a safetensors row that never asked for a lookup at all (wantsTotal false)", () => {
+    expect(matchFitBasis(verdict("easy"), undefined, false)).toBe("measured");
+  });
+});
+
+describe("isMatchScoreStale", () => {
+  const verdict = (v: AiFitVerdict["verdict"]): AiFitVerdict => ({
+    verdict: v,
+    basis: "download",
+    footprintBytes: 1e9,
+    score: 0,
+  });
+
+  it("is true when a null model.fit is corrected by a REAL resolved fit", () => {
+    expect(isMatchScoreStale(null, verdict("easy"))).toBe(true);
+  });
+
+  it("is false when the lookup resolves to null — nothing was corrected (code review finding 3)", () => {
+    // `knownFit`'s own pinned contract (`hubSize.test.ts`): a lookup that
+    // resolved with nothing to judge answers `null`, not `undefined`. That
+    // is not a correction of the server's `_FIT_DEFAULT`-scored matchScore
+    // — nothing case-relevant changed — so the Match cell must not blank a
+    // perfectly valid score.
+    expect(isMatchScoreStale(null, null)).toBe(false);
+  });
+
+  it("is false while the lookup has not answered yet", () => {
+    expect(isMatchScoreStale(null, undefined)).toBe(false);
+  });
+
+  it("is false when model.fit was never null to begin with", () => {
+    expect(isMatchScoreStale(verdict("easy"), verdict("tight"))).toBe(false);
   });
 });
 
@@ -402,5 +515,57 @@ describe("hoistSummary", () => {
 
   it("is null for an empty result set even with a hoist to report", () => {
     expect(hoistSummary(0, { value: "text-generation", unanimous: true }, null)).toBeNull();
+  });
+});
+
+describe("familyHoist", () => {
+  // Code review finding 4: presence (`showTask`/`showQuant`) and the
+  // summary line must come from the SAME value set — every row the table
+  // can display, primaries and variants alike — never two separate
+  // computations that can disagree about whether the result set actually
+  // agrees on something.
+  function family(id: string, quant: string | null, variantQuants: (string | null)[] = []): HubFamily {
+    const primary = model(id, { quant });
+    const variants = variantQuants.map((q, i) => model(`${id}-variant-${i}`, { quant: q }));
+    return { key: id, primary, variants };
+  }
+
+  it("unanimous across primaries AND variants: hides the column, summary says 'all'", () => {
+    const families = [family("a", "BF16"), family("b", "BF16", ["BF16"]), family("c", "BF16")];
+    const { quantHoist, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toEqual({ value: "BF16", unanimous: true });
+    expect(showQuant).toBe(false);
+    expect(summary).toContain("all BF16");
+  });
+
+  it("majority-with-a-differing-variant: the reported bug — column stays, summary says 'mostly', not 'all'", () => {
+    // All four PRIMARIES are BF16; one family's own variant is Q4_K_M. A
+    // primaries-only hoist would read "unanimous" here (the exact
+    // contradiction the reviewer caught: summary says "all BF16" while an
+    // opened disclosure shows a real Q4_K_M with the column still visible).
+    const families = [
+      family("a", "BF16"),
+      family("b", "BF16"),
+      family("c", "BF16"),
+      family("d", "BF16", ["Q4_K_M"]),
+    ];
+    const { quantHoist, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toEqual({ value: "BF16", unanimous: false });
+    expect(showQuant).toBe(true);
+    expect(summary).toContain("mostly BF16");
+    expect(summary).not.toContain("all BF16");
+  });
+
+  it("all-unknown: no hoist, no summary clause, and the column stays visible (real diversity of nothing known)", () => {
+    const families = [family("a", null), family("b", null, [null])];
+    const { quantHoist, summary, showQuant } = familyHoist(families);
+    expect(quantHoist).toBeNull();
+    // No quant clause at all when nothing is known — every fixture here
+    // shares `model()`'s default `capability: "text-generation"`, so the
+    // capability hoist is unanimous and the summary states only that.
+    expect(summary).toBe(`${families.length} text-generation models`);
+    // A column of nothing but dashes is dropped, per `columnVisible`'s own
+    // "NOTHING is known at all" case.
+    expect(showQuant).toBe(false);
   });
 });

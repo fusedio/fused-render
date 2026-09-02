@@ -50,16 +50,19 @@ import { type HubFamily } from "@apps/ai_models/lib/hubFamilies";
 import {
   ageLabel,
   capabilityHint,
-  columnVisible,
   familyDisplay,
-  hoistSummary,
+  familyHoist,
   hoistValue,
   isMajorityValue,
+  isMatchScoreStale,
   matchCell,
+  matchFitBasis,
   matchTitle,
   paramsLabel,
   popLabel,
   quantLabel,
+  resolveFit,
+  resolveSpeed,
   speedLabel,
   speedTitle,
   variantLabel,
@@ -348,19 +351,15 @@ function HubResultRow({
     };
   }, [model.id, model.file, model.capability, wantsTotal]);
 
-  // The search's own fit/speed win when they exist (a row WITH safetensors
-  // metadata never even sets `wantsTotal`, so these overrides stay
-  // `undefined` and never matter); the lazy ride-along only ever fills in
-  // for a row that had nothing to begin with.
-  const effectiveFit = model.fit ?? fitOverride ?? null;
-  const effectiveSpeed = model.speedEstimate ?? speedOverride ?? null;
-  // Code review finding: `model.matchScore` was computed server-side against
-  // `_FIT_DEFAULT` whenever `model.fit` was null — exactly the rows
-  // `fitOverride` exists to correct. Once the correction lands, the score
-  // above no longer describes the fit now shown beside it, so the cell must
-  // stop asserting one number blends the other (`matchCell`/`matchTitle`'s
-  // own `stale` parameter).
-  const matchScoreStale = model.fit == null && fitOverride !== undefined;
+  // Code review findings 2/3: precedence (a measured verdict beats a
+  // derived one) and staleness (only a REAL correction counts) are pure
+  // rules, pulled into `hubTableView.ts` — `resolveFit`/`resolveSpeed`/
+  // `matchFitBasis`/`isMatchScoreStale` — so this file's own test suite can
+  // drive them directly. See those functions' own docs for the "why".
+  const effectiveFit = resolveFit(model.fit, fitOverride);
+  const effectiveSpeed = resolveSpeed(model.speedEstimate, speedOverride);
+  const fitBasis = matchFitBasis(effectiveFit, fitOverride, wantsTotal);
+  const matchScoreStale = isMatchScoreStale(model.fit, fitOverride);
 
   const display = familyDisplay(family);
   const match = matchCell(effectiveFit, model.matchScore, matchScoreStale);
@@ -401,7 +400,10 @@ function HubResultRow({
             composite `matchScore`, bar colour AND glyph shape are the memory
             verdict, and a non-GPU run mode (D641) prints as a visible muted
             suffix rather than a second colour. */}
-        <td className="am-hubtable-match" data-hint={matchTitle(effectiveFit, model.matchScore, matchScoreStale)}>
+        <td
+          className="am-hubtable-match"
+          data-hint={matchTitle(effectiveFit, model.matchScore, matchScoreStale, fitBasis)}
+        >
           <span className="am-hubtable-match-inner">
             <span
               className={`am-hubtable-dot am-hubtable-dot-${match.dot}`}
@@ -615,34 +617,12 @@ export function HubResultsTable({
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
 }) {
-  // Hoisting (D640/D641): computed over the PRIMARY row of each family only —
-  // a closed disclosure's siblings are not on screen and must not silently
-  // change what the summary line claims about the rows a reader can
-  // actually see.
-  const primaries = families.map((f) => f.primary);
-  const capabilityValues = primaries.map((m) => m.capability);
-  const quantValues = primaries.map((m) => m.quant);
-  const capabilityHoist = hoistValue(capabilityValues);
-  const quantHoist = hoistValue(quantValues);
-  const summary = hoistSummary(families.length, capabilityHoist, quantHoist);
-  // Column PRESENCE, not just cell content (fix for a half-applied hoist a
-  // reviewer caught live: a fully-hoisted column left the `<th>` and every
-  // `<td>` rendered with nothing in them). Computed ONCE here and threaded
-  // down to the header below, `HubResultRow` and `HubVariantRow` — all
-  // three render from this single decision so the column count cannot
-  // drift out of lockstep between them (the exact class of bug commit
-  // 79aef51e and 82f53ec7 already fixed twice on this table).
-  //
-  // **Presence covers variants too, unlike the hoist/summary above** (code
-  // review finding): a family's variants are exactly its quant/finetune
-  // republishes, so "all primaries agree" says nothing about whether an
-  // OPENED disclosure's siblings do. `columnVisible` takes the full set so
-  // a variant that actually differs keeps the column (and its own cell)
-  // rather than the summary staying up while the column vanishes under it.
-  const allCapabilityValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.capability);
-  const allQuantValues = families.flatMap((f) => [f.primary, ...f.variants]).map((m) => m.quant);
-  const showTask = columnVisible(capabilityHoist, allCapabilityValues);
-  const showQuant = columnVisible(quantHoist, allQuantValues);
+  // Hoisting (D640/D641, amended by code review finding 4): presence and the
+  // summary line must be computed off ONE value set, not two that can
+  // disagree — `familyHoist` (`hubTableView.ts`) owns that computation now
+  // (and this file's test suite drives it directly); see its own doc for
+  // the contradiction two separate computations used to produce.
+  const { capabilityHoist, quantHoist, summary, showTask, showQuant } = familyHoist(families);
 
   return (
     <div className="am-hubtable-wrap">
