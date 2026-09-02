@@ -1098,20 +1098,26 @@ def _directml() -> Availability:
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
 #
-# **A capability's rows are split PER HARDWARE, and the unaccelerated build is
-# the default.** One `diffusers-image` row that installed whichever wheel index
-# a manifest happened to pin made the accelerator an invisible property of the
-# build: a machine got CUDA or it got the CPU and nothing on the page said
-# which, so the name was honest on exactly one class of hardware. There are now
-# three Diffusers rows — CPU, CUDA, ROCm — and two llama.cpp ones; the
-# unaccelerated one sits FIRST in each family and is what every "auto" machine
-# resolves to, and the accelerated ones are opt-in from the Engines tab and
-# gated on the device actually being there (`_cuda`, `_rocm`, `_vulkan`).
-# Unaccelerated-by-default is the conservative half of that decision: the
-# accelerated wheels are much larger downloads with a hardware requirement, and
-# a default that silently required one would fail on the machines least able to
-# explain why. `code` on each family's original row is UNCHANGED, so a stored
-# preference naming `diffusers-image` keeps meaning what it meant.
+# **A capability's rows are split PER HARDWARE, and the accelerated build now
+# LEADS the family.** One `diffusers-image` row that installed whichever wheel
+# index a manifest happened to pin made the accelerator an invisible property
+# of the build: a machine got CUDA or it got the CPU and nothing on the page
+# said which, so the name was honest on exactly one class of hardware. There
+# are now three Diffusers rows — CPU, CUDA, ROCm — and two llama.cpp ones; the
+# accelerated ones sit FIRST in each family, gated on the device actually
+# being there (`_cuda`, `_rocm`, `_vulkan`), and it is what every "auto"
+# machine resolves to WHEN that device is present — the unaccelerated row
+# behind it is the fallthrough for a machine with none, not the default with
+# the accelerator as an opt-in on top of it. That is a reversal of this
+# table's original policy, made deliberately: GPU-backed inference beats
+# CPU-backed inference on every capability that has both, and a user who wants
+# the CPU build back can still ask for it BY CODE from the Engines tab (D302).
+# The cost this reversal accepts, and does not hide: the accelerated wheels
+# are much larger downloads with a hardware requirement, and that download now
+# happens on a machine that never explicitly asked for it — it asked for
+# "auto" and got whichever build the hardware probe says will actually run.
+# `code` on each family's original (unaccelerated) row is UNCHANGED, so a
+# stored preference naming `diffusers-image` keeps meaning what it meant.
 #
 # **A code that is REMOVED is a different matter, and `resolve()` is where it is
 # handled rather than here** (D416): the three `transformers-text*` codes were
@@ -1152,24 +1158,70 @@ _RUNNERS: tuple[Runner, ...] = (
              "including vision weights it doesn't use.",
         _available=_apple_silicon,
     ),
-    # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
-    # local text engine on Windows and Linux, so this row is what a bare "auto"
-    # resolves to there.
+    # The Vulkan variant of `llamacpp-text` below — GPU acceleration on NVIDIA
+    # and AMD under Windows and Linux, where that row's CPU-index pin is
+    # CPU-only (Apple Silicon already gets Metal acceleration through that
+    # same CPU-index wheel, which is why this variant does not also cover
+    # macOS). This row now LEADS `llamacpp-text`, by the policy decision
+    # recorded in the block comment above the table: GPU-backed inference is
+    # preferred over CPU-backed wherever both are possible, so `auto` on a
+    # Windows or Linux machine with a usable Vulkan GPU resolves HERE, and the
+    # CPU row behind it is the fallthrough for a machine `_vulkan` refuses.
     #
-    # **That is a change of role this comment used to argue against, and the
-    # argument is worth keeping rather than deleting.** The row shipped BELOW
-    # three `transformers-text*` rows precisely so `auto` could never reach it:
-    # `llamacpp_text/pyproject.toml` records that the maintainer's wheel index
-    # is a coin-flip per release on macOS arm64 (4 of 16 sampled releases fail
-    # `testzip()`), and a capability whose INSTALL can silently fail is a poor
-    # thing to hand a machine that did not ask for it. D416 removed the rows
-    # that made "never a fallthrough" possible, on a measurement this engine won
-    # outright — 4.2x the throughput of transformers on this GPU tier, 2.4x on
-    # CPU, at a third of the download and a third of the memory — so the choice
-    # was between a default that is much better and occasionally uninstallable,
-    # and keeping an engine that lost on every axis in order to preserve a
-    # safety property. The default moved. What makes that affordable rather than
-    # reckless is that the failure is LOUD and at install time: `uv sync`
+    # **That is a further reversal of a role this comment used to argue
+    # against, and the hazard the old argument raised is an ACCEPTED risk now
+    # rather than a reason to keep this row opt-in.** `_offload_schedule`'s
+    # over-commit backoff is known not to engage on AMD — radv evicts other
+    # clients instead of erroring, which took a desktop session down during
+    # testing (PR #706) — so an over-large model on this row can still cost a
+    # user their session rather than a slow load. That hazard has been shown
+    # to the user directly and the reversal was chosen anyway: GPU-backed
+    # inference wins by default, and a radv over-commit crash is one of the
+    # costs that decision knowingly accepts rather than an argument still
+    # standing against it.
+    Runner(
+        code="llamacpp-text-vulkan",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
+        # Both names equal, for the reason the torch hardware variants' are
+        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
+        # rather than a platform aside, and the short name is what the Local
+        # card and the job row print, so two rows both reading "llama.cpp"
+        # would render as one engine everywhere but the picker.
+        label="llama.cpp (Vulkan)",
+        short_label="llama.cpp (Vulkan)",
+        family_label="llama.cpp",
+        note="Runs GGUF models on NVIDIA and AMD GPUs. Much faster than the "
+             "CPU build; much larger download.",
+        _available=_vulkan,
+        hub_filter_tags=("gguf",),
+    ),
+    # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
+    # unaccelerated local text engine on Windows and Linux. It now sits BELOW
+    # `llamacpp-text-vulkan`: GPU-backed inference is preferred over
+    # CPU-backed by policy decision (see the block comment above the table),
+    # so this is what "auto" resolves to on Windows/Linux only when the
+    # machine has no usable Vulkan GPU — `_vulkan` refuses for a missing
+    # loader, a missing driver ICD, or a platform its wheel does not ship for
+    # (see that function) — and it is what Apple Silicon falls to once
+    # `mlx-text` is unavailable, since the Vulkan wheel does not cover macOS
+    # at all.
+    #
+    # **This row's own history is worth keeping rather than deleting.** It
+    # shipped BELOW three `transformers-text*` rows precisely so `auto` could
+    # never reach it: `llamacpp_text/pyproject.toml` records that the
+    # maintainer's wheel index is a coin-flip per release on macOS arm64 (4 of
+    # 16 sampled releases fail `testzip()`), and a capability whose INSTALL can
+    # silently fail is a poor thing to hand a machine that did not ask for it.
+    # D416 removed the rows that made "never a fallthrough" possible, on a
+    # measurement this engine won outright — 4.2x the throughput of transformers
+    # on this GPU tier, 2.4x on CPU, at a third of the download and a third of
+    # the memory — so the choice was between a default that is much better and
+    # occasionally uninstallable, and keeping an engine that lost on every axis
+    # in order to preserve a safety property. The default moved onto this row
+    # then, and has since moved again onto the Vulkan row above it wherever the
+    # hardware is there. What makes both moves affordable rather than reckless
+    # is that the failure is LOUD and at install time: `uv sync`
     # reports a corrupt wheel verbatim through `envinstall` (PY-18), which is a
     # first-run error with a message, not a wrong answer later. The pinned
     # `0.3.29` Linux and Windows wheels were verified intact; macOS arm64 keeps
@@ -1219,37 +1271,6 @@ _RUNNERS: tuple[Runner, ...] = (
         # `hub_filter_tags`'s own docstring for why this is a runner field.
         hub_filter_tags=("gguf",),
     ),
-    # The Vulkan variant of the row above — GPU acceleration on NVIDIA and AMD
-    # under Windows and Linux, where `llamacpp-text`'s CPU-index pin is
-    # CPU-only (Apple Silicon already gets Metal acceleration through that
-    # same CPU-index wheel, which is why this variant does not also cover
-    # macOS). Immediately BELOW `llamacpp-text`, so reaching this row is always
-    # a CHOICE made on the Engines tab and never something `auto` falls into —
-    # the same relationship the accelerated Diffusers rows have to
-    # `diffusers-image`, and for the same reason (a much larger download with a
-    # hardware requirement). D416 moved the DEFAULT onto `llamacpp-text`; it did
-    # not move it onto this row, and must not: `_offload_schedule`'s over-commit
-    # backoff is known not to engage on AMD (radv evicts other clients instead
-    # of erroring, which took a desktop session down during testing — PR #706),
-    # so an over-large model on this row can cost a user their session rather
-    # than a slow load.
-    Runner(
-        code="llamacpp-text-vulkan",
-        capability=TEXT_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
-        # Both names equal, for the reason the torch hardware variants' are
-        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
-        # rather than a platform aside, and the short name is what the Local
-        # card and the job row print, so two rows both reading "llama.cpp"
-        # would render as one engine everywhere but the picker.
-        label="llama.cpp (Vulkan)",
-        short_label="llama.cpp (Vulkan)",
-        family_label="llama.cpp",
-        note="Runs GGUF models on NVIDIA and AMD GPUs. Much faster than the "
-             "CPU build; much larger download.",
-        _available=_vulkan,
-        hub_filter_tags=("gguf",),
-    ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
     # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured
@@ -1283,26 +1304,13 @@ _RUNNERS: tuple[Runner, ...] = (
              "Diffusers; untested below 32 GB.",
         _available=_apple_silicon,
     ),
-    Runner(
-        code="diffusers-image",
-        capability=IMAGE_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
-        # "(CPU)" for the reason `llamacpp-text` above states about its own:
-        # the qualifier names the BUILD — the wheel with no accelerator
-        # libraries in it — never a prediction about the device.
-        label="Diffusers (CPU)",
-        short_label="Diffusers (CPU)",
-        family_label="Diffusers",
-        # SAID OF THE CPU rather than of the row, because `torch_image._place()`
-        # moves the pipeline to `mps` on a Mac (D382), and a flat "minutes per
-        # image" contradicted the `mps` the loaded card reports on the very
-        # machine this row exists to catch when MLX FLUX is unavailable.
-        note="Renders on Apple Silicon's GPU, or on the CPU elsewhere. "
-             "Minutes per image on CPU.",
-        _available=_always,
-    ),
-    # The accelerated image variants, below the CPU row for the reason the text
-    # variants are below theirs.
+    # The accelerated image variants — LEADING `diffusers-image` below, by the
+    # same policy decision that reorders the llama.cpp and ONNX Embeddings
+    # families (see the block comment above the table): GPU-backed inference
+    # is preferred over CPU-backed wherever both are possible, so `auto`
+    # resolves to whichever of these two an NVIDIA or AMD machine can actually
+    # run, and `diffusers-image` behind them is the fallthrough for a machine
+    # with neither.
     Runner(
         code="diffusers-image-cuda",
         capability=IMAGE_GENERATION,
@@ -1338,10 +1346,14 @@ _RUNNERS: tuple[Runner, ...] = (
     # this app — CU masking, queue priority, rendering on a card that is not
     # driving the display — none verified, and an unverified mitigation is a
     # promise made on the driver's behalf. Naming the cost and letting the user
-    # choose is the bargain the download size already gets (D383). It is
-    # documented HERE and not in the manifest on purpose: `state_digest` hashes
-    # `pyproject.toml` whole, so a comment there would mark every already-built
-    # ROCm env stale and charge existing users a resync for a paragraph.
+    # choose is the bargain the download size already gets (D383), and it is a
+    # bargain this row's own machines now make by DEFAULT under the GPU-first
+    # policy rather than only when a user opted in from the Engines tab — the
+    # ring-stall hazard is accepted at that same level, not a reason this row
+    # stays behind `diffusers-image`. It is documented HERE and not in the
+    # manifest on purpose: `state_digest` hashes `pyproject.toml` whole, so a
+    # comment there would mark every already-built ROCm env stale and charge
+    # existing users a resync for a paragraph.
     Runner(
         code="diffusers-image-rocm",
         capability=IMAGE_GENERATION,
@@ -1354,6 +1366,24 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Renders in seconds per image on an AMD GPU under Linux. Larger "
              "download; a long render can stall the desktop.",
         _available=_rocm,
+    ),
+    Runner(
+        code="diffusers-image",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
+        # "(CPU)" for the reason `llamacpp-text` above states about its own:
+        # the qualifier names the BUILD — the wheel with no accelerator
+        # libraries in it — never a prediction about the device.
+        label="Diffusers (CPU)",
+        short_label="Diffusers (CPU)",
+        family_label="Diffusers",
+        # SAID OF THE CPU rather than of the row, because `torch_image._place()`
+        # moves the pipeline to `mps` on a Mac (D382), and a flat "minutes per
+        # image" contradicted the `mps` the loaded card reports on the very
+        # machine this row exists to catch when MLX FLUX is unavailable.
+        note="Renders on Apple Silicon's GPU, or on the CPU elsewhere. "
+             "Minutes per image on CPU.",
+        _available=_always,
     ),
     # Speech to text, and the capability that finally USED the two-runner
     # ordering this table was built for. MLX takes the Macs; CTranslate2 below
@@ -1450,34 +1480,15 @@ _RUNNERS: tuple[Runner, ...] = (
     # licensed the swap: it asserts ≥0.999 cosine between the two engines'
     # vectors on real weights, both towers.
     #
-    # Same four-row shape the torch family had: an unaccelerated build first —
-    # what every `auto` machine off Apple Silicon resolves to — then the
-    # accelerated ones, opt-in from the Engines tab and gated on the device
-    # actually being there. DirectML leads those three because it is the only
-    # one Windows can take, and unlike the CUDA/ROCm pair it is vendor-neutral,
-    # so ONE row covers every Windows GPU rather than a folder per vendor.
-    Runner(
-        code="onnx-embed",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
-        # "(CPU)" on every row of a family with siblings, the discipline
-        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
-        # `onnxruntime`, which has no GPU provider compiled in — never a
-        # prediction about the device, and a family missing it on one row prints
-        # two engines under one name.
-        label="ONNX Embeddings (CPU)",
-        short_label="ONNX Embeddings (CPU)",
-        # The format claim with the hardware taken out: these weights are the
-        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
-        family_label="ONNX Embeddings",
-        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
-        # describes the DEFAULT off a Mac, so what it leads with is what most
-        # readers get: a workload that is already fast, on an engine that is a
-        # small download.
-        note="Embeds on any machine's CPU. Tens of megabytes rather than "
-             "gigabytes.",
-        _available=_onnx_platform,
-    ),
+    # Same four-row shape the torch family had, but now LEADING with the
+    # accelerated builds rather than trailing them — the policy decision the
+    # block comment above the table records: GPU-backed inference beats
+    # CPU-backed wherever both are possible, so `auto` off Apple Silicon
+    # resolves to whichever of these three the machine can actually run, and
+    # `onnx-embed` behind them is the fallthrough for a machine with none.
+    # DirectML leads those three because it is the only one Windows can take,
+    # and unlike the CUDA/ROCm pair it is vendor-neutral, so ONE row covers
+    # every Windows GPU rather than a folder per vendor.
     Runner(
         code="onnx-embed-directml",
         capability=EMBEDDINGS,
@@ -1519,6 +1530,27 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Embeds on an AMD GPU under Linux. Larger download for a "
              "workload already fast on the CPU.",
         _available=_rocm,
+    ),
+    Runner(
+        code="onnx-embed",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
+        # "(CPU)" on every row of a family with siblings, the discipline
+        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
+        # `onnxruntime`, which has no GPU provider compiled in — never a
+        # prediction about the device, and a family missing it on one row prints
+        # two engines under one name.
+        label="ONNX Embeddings (CPU)",
+        short_label="ONNX Embeddings (CPU)",
+        # The format claim with the hardware taken out: these weights are the
+        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
+        family_label="ONNX Embeddings",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
+        # describes the FALLTHROUGH off a Mac now rather than the default: what
+        # a reader gets only once every accelerated row above has refused.
+        note="Embeds on any machine's CPU. Tens of megabytes rather than "
+             "gigabytes.",
+        _available=_onnx_platform,
     ),
     # Video generation, the fifth capability and the first with no
     # "everywhere" row: its one engine is MLX, so this capability is
