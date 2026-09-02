@@ -4524,7 +4524,7 @@ def test_a_pasted_picture_still_gets_a_chip_where_there_is_no_pane(html):
 
 
 def test_the_clone_is_the_first_answer_for_a_readable_pane(html):
-    """D620 put the capture back where D285-D287 had it. `shotPane` has exactly
+    """D634 put the capture back where D285-D287 had it. `shotPane` has exactly
     two answers: the tab share for a cross-origin pane, and the clone-and-
     rasterise for a readable one — and the clone is the one a same-origin pane
     gets, with nothing tried ahead of it. The native screen shot D611 wired in
@@ -4535,7 +4535,7 @@ def test_the_clone_is_the_first_answer_for_a_readable_pane(html):
     The cost is deliberate and is what the test also pins by NOT asserting it
     away: a WebGL or canvas pane rasterises blank, and the blank is reported
     (shotNote / blanks) rather than shipped."""
-    assert "shotNativePane" not in html, "the native pane shot is out (D620)"
+    assert "shotNativePane" not in html, "the native pane shot is out (D634)"
     assert "shot-region" not in html, \
         "no chat capture may call /api/capture/shot-region any more"
     assert "shotNativeOff" not in html and "shotScreenRect" not in html \

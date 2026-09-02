@@ -1,7 +1,7 @@
 // One picture of an app, for the export path and for "Set current view as
 // preview" (D396).
 //
-// The mechanism is a DOM CLONE (D621) — the same technique the Claude chat
+// The mechanism is a DOM CLONE (D635) — the same technique the Claude chat
 // template uses, ported to `domShot.ts`: clone the app document's body, inline
 // every computed style, put the scroll offsets back, inline the `<img>`s as
 // data: URLs, rasterise the `<canvas>`es, serialize to an SVG `<foreignObject>`
@@ -227,13 +227,20 @@ async function shootFrame(source: Element): Promise<Blob | undefined> {
   if (!r) return undefined;
   const win = frameWindow(frame);
   if (!win) return undefined;
+  // Sized by the frame's LAYOUT box, not its visual one: the card thumb lays
+  // its frame out at 1280×800 and shows it through `scale(0.25)`, and the clone
+  // draws the DOCUMENT — a picture cut to the post-transform rect would be the
+  // page's top-left quarter (Bugbot on #919). `cropRect` above still gates on
+  // the visual box, which is the thing that has to be worth drawing.
+  const width = frame.offsetWidth || r.width;
+  const height = frame.offsetHeight || r.height;
   const dpr = window.devicePixelRatio || 1;
   // Never scale the picture UP past the cap: at 2x a wide preview pane would
   // otherwise be drawn at 4k and then thrown away again by capWidth.
-  const scale = Math.min(dpr, MAX_SHOT_WIDTH / Math.max(1, r.width));
+  const scale = Math.min(dpr, MAX_SHOT_WIDTH / Math.max(1, width));
   const shot = await domShot(win, {
-    width: r.width,
-    height: r.height,
+    width,
+    height,
     scale,
     hostDocument: document,
   });

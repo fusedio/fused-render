@@ -608,7 +608,7 @@ function usePreviewFileMenu(
   // "Set Current View as Preview" (Akshil, 2026-08-27): capture what the frame
   // is showing and write it as the folder's preview.png. Same capture the
   // .fused export bakes in (appShot.captureAppPreview — a DOM clone of the
-  // shown frame's own document, D621).
+  // shown frame's own document, D635).
   //
   // No prompt and no activation deadline any more: the clone needs no OS
   // permission and no share dialog, so nothing here races the click's transient
@@ -626,7 +626,7 @@ function usePreviewFileMenu(
     const frame = document.querySelector(".preview-frame.is-shown");
     if (!cropRect(frame)) {
       // Size only — cropRect stopped requiring the frame to be fully in the
-      // viewport when the capture stopped photographing the screen (D621), so
+      // viewport when the capture stopped photographing the screen (D635), so
       // this is now reachable only for a frame too small to be worth capturing
       // or one that is not there at all.
       pushToast({

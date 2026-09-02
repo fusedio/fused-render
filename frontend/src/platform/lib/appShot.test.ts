@@ -1,7 +1,7 @@
 // The things about the export/preview capture that no screenshot and no unit
 // call can show, because they are promises made across files.
 //
-// The capture is a DOM CLONE now (D621) — the owner reverted the native screen
+// The capture is a DOM CLONE now (D635) — the owner reverted the native screen
 // shot (`POST /api/capture/shot-region`, #889). Two whole classes of constraint
 // went with it and their tests are gone: the click's transient user activation
 // (a share prompt, from the even earlier tab-capture version) and the
@@ -98,7 +98,7 @@ test("the preview header captures the SHOWN frame, which is the rendered one", (
 
 // -- the clone, and the native shot staying gone -----------------------------
 
-// The whole point of D621. A stray `shot-region` call would put the OS
+// The whole point of D635. A stray `shot-region` call would put the OS
 // permission dialog, the on-screen requirement and the side-panel geometry bug
 // straight back.
 test("nothing in the capture path calls the native screen-shot route", () => {
@@ -130,15 +130,19 @@ test("the capture clones the frame's own same-origin document", () => {
   expect(SHOT).toContain("HTMLIFrameElement");
 });
 
-test("the clone is drawn at the frame's CSS size x DPR, capped", () => {
+test("the clone is drawn at the frame's LAYOUT size x DPR, capped", () => {
   const fn = SHOT.slice(SHOT.indexOf("async function shootFrame("));
   const body = fn.slice(0, fn.indexOf("\n}"));
   expect(body).toContain("devicePixelRatio");
   // Math.min, not a bare dpr: at 2x a wide preview pane would otherwise be
   // drawn at 4k and thrown away again by capWidth.
   expect(body).toContain("Math.min(dpr, MAX_SHOT_WIDTH");
-  expect(body).toContain("width: r.width");
-  expect(body).toContain("height: r.height");
+  // The layout box, NOT getBoundingClientRect: a card thumb lays its frame out
+  // at 1280×800 behind scale(0.25), and a clone cut to the visual rect would be
+  // the page's top-left quarter (Bugbot on #919). cropRect still gates above.
+  expect(body).toContain("frame.offsetWidth || r.width");
+  expect(body).toContain("frame.offsetHeight || r.height");
+  expect(body).not.toContain("width: r.width");
 });
 
 // Every failure ships the export WITHOUT a preview rather than throwing — the
@@ -158,7 +162,7 @@ test("captureAppPreview resolves undefined for every failure", () => {
 test("the module header states the decision and the WebGL cost plainly", () => {
   const header = SHOT.slice(0, SHOT.indexOf("import "));
   expect(header).toContain("DOM CLONE");
-  expect(header).toContain("D621");
+  expect(header).toContain("D635");
   expect(header).toMatch(/RASTERISES BLANK|rasterises blank/);
   expect(header).toContain("preserveDrawingBuffer");
 });

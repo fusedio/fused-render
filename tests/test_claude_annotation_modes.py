@@ -706,7 +706,7 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     # raised at ARM time, where the user activation actually is (a mic commit
     # or a walkthrough click's fire-and-forget crop may have none). For EVERY
     # cross-origin arm: the native screen shot that used to make the prompt
-    # skippable is gone again (D620), so the share is the only picture there is.
+    # skippable is gone again (D634), so the share is the only picture there is.
     assert "if (annOn && annXO) annXOStreamGet().catch" in html
     getter = _block(html, "async function annXOStreamGet()", "\n}\n")
     assert 'readyState === "live"' in getter

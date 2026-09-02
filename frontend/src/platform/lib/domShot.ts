@@ -1,6 +1,6 @@
 // Rasterise a same-origin document by CLONING ITS DOM — the technique the
 // Claude chat template's `shotPane` uses, ported here so the shell's export /
-// preview capture can use it too (D621).
+// preview capture can use it too (D635).
 //
 // The pipeline, in the order the steps must run:
 //   1. `body.cloneNode(true)` — a detached copy of the app's tree.
