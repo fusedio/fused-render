@@ -430,6 +430,31 @@ def _health(worker: Worker) -> dict | None:
         return None
 
 
+def _apply_health_memory_fields(worker: Worker, health: dict) -> None:
+    """Copy the OS-footprint, RAM/VRAM split (D670) and placement fields
+    from one `/health` poll onto `worker`.
+
+    Each field is re-read on every poll rather than trusted from an earlier
+    one: a runner sets these inside `load()`, and a caller here is what is
+    watching when that happens. Each is coerced to `None` when the worker's
+    answer doesn't carry it (missing, or the wrong type) rather than left
+    holding a stale reading — these are display/gate-input fields describing
+    the worker right now, not a durable measurement.
+    """
+    footprint = health.get("os_footprint_bytes")
+    worker.os_footprint_bytes = footprint if isinstance(footprint, int) else None
+    host = health.get("host_resident_bytes")
+    worker.host_resident_bytes = host if isinstance(host, int) else None
+    allocated = health.get("device_allocated_bytes")
+    worker.device_allocated_bytes = (
+        allocated if isinstance(allocated, int) else None)
+    reserved = health.get("device_reserved_bytes")
+    worker.device_reserved_bytes = (
+        reserved if isinstance(reserved, int) else None)
+    placement = health.get("placement")
+    worker.placement = placement if isinstance(placement, str) else None
+
+
 def _touch(worker: Worker) -> None:
     """Re-stamp `last_activity` mid-turn, without touching `in_flight`.
 
@@ -1244,32 +1269,11 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
-                footprint = health.get("os_footprint_bytes")
-                worker.os_footprint_bytes = (
-                    footprint if isinstance(footprint, int) else None)
-                # RAM and VRAM, un-conflated (D670) — same "coerce falsy to
-                # None" shape as the two fields just above, and re-read every
-                # poll for the same reason: a runner sets these inside
-                # `load()`, and this loop is what is watching when that
-                # happens.
-                host = health.get("host_resident_bytes")
-                worker.host_resident_bytes = host if isinstance(host, int) else None
-                allocated = health.get("device_allocated_bytes")
-                worker.device_allocated_bytes = (
-                    allocated if isinstance(allocated, int) else None)
-                reserved = health.get("device_reserved_bytes")
-                worker.device_reserved_bytes = (
-                    reserved if isinstance(reserved, int) else None)
+                _apply_health_memory_fields(worker, health)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
                 worker.device = str(health.get("device") or "")
-                # Same "read every poll, coerce falsy to the sentinel" shape
-                # as `device` just above — `_place` sets this alongside
-                # `device` inside `load()`, and a runner that never calls it
-                # must report `None`, not the empty string.
-                placement = health.get("placement")
-                worker.placement = placement if isinstance(placement, str) else None
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
                     # AI-13: the idle clock starts HERE, not at construction.
@@ -3222,38 +3226,17 @@ def refresh_memory() -> None:
         # here or it is never read again.
         #
         # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
-        # the two `isinstance`-gated fields around it. Those two feed
-        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
-        # holding the last known number through a failed poll is right. This
-        # one is display-only and describes RIGHT NOW, so a worker that
-        # answers "I have no such counter" (the non-Darwin fallback) must
-        # clear the cell rather than leave a stale number standing next to a
-        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
-        # the previous value alone, which is the transient case.
+        # `resident_bytes` just above and `peak_resident_bytes` below, which
+        # feed `footprints.record` -> `fit.py`'s durable "measured" rung,
+        # where holding the last known number through a failed poll is
+        # right. `_apply_health_memory_fields` sets display/gate-input
+        # fields that describe the worker RIGHT NOW, so a worker that stops
+        # reporting one (or never had it) must clear the cell rather than
+        # leave a stale figure standing. A poll that FAILED OUTRIGHT
+        # (`health` falsy) still leaves the previous values alone, which is
+        # the transient case.
         if health:
-            footprint_now = health.get("os_footprint_bytes")
-            worker.os_footprint_bytes = (
-                footprint_now if isinstance(footprint_now, int) else None)
-            # Same "assigned whenever the worker answered, including with
-            # None" treatment as the OS footprint just above (D670): these
-            # are display/gate-input fields describing RIGHT NOW, so a
-            # worker that stops reporting a split (or never had one) must
-            # clear the cells rather than leave a stale figure standing.
-            host_now = health.get("host_resident_bytes")
-            worker.host_resident_bytes = host_now if isinstance(host_now, int) else None
-            allocated_now = health.get("device_allocated_bytes")
-            worker.device_allocated_bytes = (
-                allocated_now if isinstance(allocated_now, int) else None)
-            reserved_now = health.get("device_reserved_bytes")
-            worker.device_reserved_bytes = (
-                reserved_now if isinstance(reserved_now, int) else None)
-            # Same display-only, re-read-every-poll treatment as the OS
-            # footprint just above — `_place` only runs once, at `load()`,
-            # but re-reading it here rather than trusting the load loop's
-            # last value keeps this worker's copy honest if a future runner
-            # ever calls `set_state(placement=...)` again after `ready`.
-            placement_now = health.get("placement")
-            worker.placement = placement_now if isinstance(placement_now, str) else None
+            _apply_health_memory_fields(worker, health)
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this
