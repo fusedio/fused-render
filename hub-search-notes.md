@@ -1101,3 +1101,151 @@ does.
   loading an actual page — a human with a real, quant-diverse result set
   should confirm the table reads as "reasonably ranked, honestly unjudged"
   rather than "buried" for GGUF rows in practice.
+
+## Seventh fix-builder round: the packed-dtype size over-report, and the hoist rule's final form
+
+D661-D662 in DECISIONS.md carry the full reasoning; this is what changed and
+what this round's brief got wrong.
+
+### (1) `_estimated_bytes` packed-dtype guard (D661)
+
+Confirmed the brief's diagnosis LIVE, not just by reasoning about the
+bytes-per-param ratio. Fetched `https://huggingface.co/api/models/<id>?expand[]=safetensors`
+for the actual repos:
+
+- `mlx-community/Lens-3.8B-4bit` and `mlx-community/Lens-3.8B-8bit` both
+  report the IDENTICAL `safetensors.parameters` map:
+  `{"BF16": 27_361_664, "U32": 4_076_863_488}`, total 4,104,225,152. The old
+  unguarded sum for both: `27_361_664*2 + 4_076_863_488*4` = 16,362,177,280
+  bytes ≈ 15.24 GiB — matches the brief's "~15 GiB, identical for both
+  variants" exactly.
+- `mlx-community/Lens-3.8B-bf16` (the brief said `microsoft/Lens-3.8B-bf16`,
+  which 401s — wrong org; the real bf16 original is under `mlx-community`,
+  found via the Hub's own search API) reports `{"BF16": 4_104_225_152}` —
+  same total param count as the quantized siblings, all-float. Real size:
+  4,104,225,152 * 2 = 8,208,450,304 bytes ≈ 7.65 GiB, matching the brief's
+  "~7.6 GiB" figure.
+- `config` came back `{}` for all three (no `quantization`/
+  `quantization_config` block), confirming why `_quant` already reports `—`
+  for these rows — there's no config-declared bit width for `_quant`'s
+  second-priority source to read either.
+
+Diagnosis confirmed as stated. **One correction to the brief**: the bf16
+original's repo id is `mlx-community/Lens-3.8B-bf16`, not
+`microsoft/Lens-3.8B-bf16` (that id 401s — either private, gated, or simply
+wrong). Found the real one via the Hub's `/api/models?search=` endpoint.
+
+Fix: `_estimated_bytes` now sums packed-dtype bytes separately from the
+total and refuses (`None`) when packed bytes are a STRICT MAJORITY of the
+naive total — i.e. `packed_bytes * 2 > total_bytes`. Chose byte-share, not
+param-count share, as the "dominated by" measure: it's the direct measure of
+how wrong the returned NUMBER would be (a packed dtype's unknown packing
+factor only corrupts its own byte contribution), and it correctly protects
+the case the brief itself flagged as a legitimate mix — a small integer
+buffer (quant scale/zero-point tensor) alongside real float weights. Added
+`test_a_minority_packed_dtype_still_reports_a_size` to pin that the fix
+doesn't over-correct: a `U8` tensor at ~0.006% of naive bytes beside a
+`BF16`-dominated repo still gets a real `estimatedSize`.
+
+Did NOT add a `config`-based partial unpack (the way `_params` already does
+for the COUNT when `config` declares bits) — the brief was explicit that no
+new estimate should replace the guess this round removes, and this is a
+"make the guess a little more correct" pattern this branch has now rejected
+three times (D634, D636, D657) for the exact same reason each time: a
+whitelist/partial-fix approach keeps coming back in a new shape.
+
+### (2) The hoist rule, unanimity-only (D662)
+
+Implemented exactly option 2 as specified: `hoistValue` no longer has a
+majority branch at all — it returns a value ONLY when literally every row
+in the given set (primaries + variants, one set, per D656) agrees, and a
+`null` anywhere breaks that outright (never filtered out to manufacture
+agreement). `columnVisible` simplified to `hoist === null` after excluding
+the all-unknown case, since a non-null hoist is unanimous by construction
+now — no more `hoist.unanimous` field on `Hoist` at all (dropped from the
+interface; every returned `Hoist` is unanimous by definition).
+
+The muted-majority cell styling the old non-unanimous hoist used to double
+as is now a SEPARATE function, `majorityValue` — same 80% floor
+(`HOIST_MAJORITY`, unchanged), same modal-value logic, but it never gates
+column visibility or the summary line, only `isMajorityValue`'s cosmetic
+signal. `familyHoist` now returns both `capabilityHoist`/`quantHoist` (the
+unanimity-only pair, feeding `showTask`/`showQuant`/`summary`) AND
+`capabilityMajority`/`quantMajority` (feeding the muted-cell styling in
+`HubResultsTable.tsx` — renamed the props flowing into `HubResultRow` from
+`capabilityHoist`/`quantHoist` to `capabilityMajority`/`quantMajority` since
+that's the only thing that component ever actually used them for).
+
+`hoistSummary` dropped its "(mostly X)"/"mostly X" text entirely — with
+`hoistValue` now unanimity-only, there's no non-null-but-not-unanimous
+value left to phrase a lesser claim about; the function either states the
+unanimous fact or is silent about that column.
+
+**Denominator fix**: `familyHoist`'s call to `hoistSummary` now passes
+`allRows.length` (primaries + variants, the exact set the hoist was
+computed over) instead of `families.length`. Worth flagging precisely what
+this changes: the "N models" count in the caption now counts every
+underlying repo row (including a family's hidden quant/finetune variants),
+not just the number of distinct top-level results on screen. I judged this
+the correct literal reading of "the count and the claim measure different
+sets" — mathematically, `families.length` was never a FALSE count (a
+unanimous fact over the full set is still true of the primaries subset), so
+this is a hygiene fix for consistency rather than a correctness bug I could
+demonstrate producing a wrong on-screen claim. Flagging this as a judgment
+call in case the intended fix was actually "keep families.length for
+display, just don't let the majority branch decide a claim about it" — which
+is also satisfied by this change, since the majority branch is gone
+entirely regardless of which count is used.
+
+Four states pinned directly in `familyHoist`'s test suite (`hubTableView.test.ts`):
+unanimous across primaries+variants; a majority with a differing VARIANT
+(the exact regressed shape — 3 primaries BF16, 15 hidden variants Q4_K_M,
+at 80% majority for Q4_K_M across the full set); a majority with a
+differing PRIMARY (4 BF16 + 1 Q4_K_M primaries, 80%); and one `null` among
+otherwise-agreeing knowns. Also rewrote `hoistValue`/`columnVisible`/
+`isMajorityValue`/`hoistSummary`'s own describe blocks for the new
+signatures, and added a new `majorityValue` describe block.
+
+### What this round's brief got wrong
+
+One factual error, corrected above: the bf16 original repo id is
+`mlx-community/Lens-3.8B-bf16`, not `microsoft/Lens-3.8B-bf16` (401s). The
+diagnosis itself (the mechanism, the ~2x/~6.6x over-report, the identical
+dtype maps between 4-bit and 8-bit) was exactly right once fetched from the
+correct id.
+
+### Tests run this session
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 184 passed (182
+  before this session, 2 new: packed-majority and packed-minority
+  `_estimated_bytes` pins).
+- `.venv/bin/python -m pytest tests/test_hub_models.py tests/test_doc_duplicate_ids.py -q`:
+  187 passed together.
+- `cd frontend && bun test src/apps/ai_models`: 642 passed (was 639 before
+  this session — net +3: `majorityValue` describe block (5 tests) minus
+  removed/consolidated `hoistValue`/`columnVisible` cases from the old
+  majority-branch coverage that no longer applies).
+- `cd frontend && bun run typecheck`: clean.
+- `node frontend/scripts/check-boundaries.mjs`: clean (426 files).
+- No `mock.module` touched this round (grepped — none in
+  `frontend/src/apps/ai_models/`), so no full `bun test` run, per the
+  standing rule.
+- Grepped `tests/` (Python) for every frontend symbol touched
+  (`hoistValue`, `hoistSummary`, `familyHoist`, `isMajorityValue`,
+  `columnVisible`, `majorityValue`, `capabilityHoist`, `quantHoist`,
+  `unanimous`): no hits — this repo's pytest suite does not assert against
+  any of this session's touched lines.
+
+### Left for a human with a browser
+
+- The new hoist behavior (a genuinely diverse quant column staying visible
+  with no "mostly X" summary clause, majority cells muted) has never been
+  seen rendered on a real, quant-diverse Hub result set — confirm the
+  now-silent-on-that-column summary line reads as intentional rather than
+  as a missing sentence.
+- The `_estimated_bytes` fix's downstream effect — an MLX-quantized repo's
+  Size column now falling back to the client's lazy per-file `hub/size`
+  lookup instead of showing an (wrong) instant number — has not been
+  observed live either; confirm the column shows a real measured size after
+  the lazy lookup resolves, rather than sitting blank/dash indefinitely for
+  a repo whose measured lookup also can't produce a number.
