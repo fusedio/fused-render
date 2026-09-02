@@ -4,29 +4,41 @@
 `server/routers/engines.py`).
 A folder or template that needs a long-lived worker hands its ownership to the
 fused-render server and serves its bytes through the stable `:1777` origin, so
-a daemon death or restart never invalidates a URL the page holds. Two kinds of
-child share this one supervisor:
+a daemon death or restart never invalidates a URL the page holds. Every child —
+a built-in template's own tile daemon (the map viewer's is the first) or a
+folder's declared daemon (`[tool.fused-render.app]` in its `pyproject.toml`,
+SPEC.md §46) — shares this one supervisor and the same `Child` shape; nothing
+on `Child` names which bring-up path produced it. A folder declares its
+protocol with exactly one of two keys:
 
-- **`kind="template"`** — a built-in template's own tile daemon (the map
-  viewer's is the first). Resident for the life of the server; never
-  idle-reaped.
-- **`kind="background"`** — a folder's declared daemon
-  (`[tool.fused-render.app]` in its `pyproject.toml`, SPEC.md §46). A folder
-  declares its protocol with exactly one of two keys:
-  - `daemon = "server.py"` — the author's own HTTP surface, reached through
-    the proxy at whatever paths the author's script defines. Resident by
-    default (`idle_timeout_s=0`, never reaped) since the author's own process
-    owns its lifetime.
-  - `main = "compute.py"` — the shipped `fused_render/engine_worker.py`
-    (`DEFAULT_DAEMON`) imports it once and answers `POST /call` by splatting
-    the request body into `compute.py`'s `main(**params)`, keeping module-level
-    imports and globals warm between calls. Reaped after `idle_timeout_s`
-    (default 900s) of no calls; the next call re-warms it.
+- `daemon = "server.py"` — the author's own HTTP surface, reached through
+  the proxy at whatever paths the author's script defines. Resident by
+  default (`idle_timeout_s=0`, never reaped) since the author's own process
+  owns its lifetime.
+- `main = "compute.py"` — the shipped `fused_render/engine_worker.py`
+  (`DEFAULT_DAEMON`) imports it once and answers `POST /call` by splatting
+  the request body into `compute.py`'s `main(**params)`, keeping module-level
+  imports and globals warm between calls. Reaped after `idle_timeout_s`
+  (default 900s) of no calls; the next call re-warms it.
 
-  `idle_timeout_s` is a plain float on `Child`, not derived from protocol or
-  kind — a `daemon =` author may set it to opt into idle retirement, and a
-  `main =` author may set it to `0` to stay resident. `0` means "never
-  reaped."
+`idle_timeout_s` is a plain float on `Child`, not derived from protocol — a
+`daemon =` author may set it to opt into idle retirement, and a `main =`
+author may set it to `0` to stay resident. `0` means "never reaped." A
+built-in template is always resident (`idle_timeout_s == 0`, never reaped)
+and never has `child.module` set, exactly like a `daemon =` folder — it
+differs only in where `_validate` looks for its daemon file (a hardcoded
+blessed template root, not the folder's own manifest).
+
+The manifest also carries `retry_post` (default `False`): whether a proxied
+POST to this daemon is safely re-runnable, so a heal-restart mid-call may
+retry it instead of surfacing the failure. A `daemon =` author's own HTTP
+surface can have arbitrary side effects, so the safe default is at-most-once;
+a folder opts in with `retry_post = true`. The map template's own
+`pyproject.toml` declares `daemon = "daemon.py"` and `retry_post = true` for
+exactly this reason — its describe traffic is safely re-runnable — but that
+declaration is read for `retry_post` only: `_validate` still requires its
+daemon to resolve under a blessed template root, never through the folder's
+own manifest the way a background app's daemon is validated.
 
 ## Current shape (separation of concerns)
 
@@ -52,8 +64,9 @@ The server owns a reusable subsystem keyed by an opaque `engine_id`:
   `/forget`, and an opaque `ANY /api/engines/{id}/proxy/{path...}` passthrough
   (forwarded via `engine_forward`; proxied POST needs `X-Fused`, GET is an open
   read; `..`/backslash path segments are rejected). A proxied POST to a
-  non-template child is sent `at_most_once`, since a heal-restart must not
-  silently re-send a call that may already have run side-effecting code.
+  child whose manifest does not declare `retry_post = true` is sent
+  `at_most_once`, since a heal-restart must not silently re-send a call that
+  may already have run side-effecting code.
 - `server/routers/background_apps.py` — the folder-facing surface:
   start/stop/restart/autostart/status for a folder's own declared daemon, on
   top of `ensure_background`/`background_apps.bring_up_args` for the actual
