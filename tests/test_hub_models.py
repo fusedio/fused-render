@@ -1526,6 +1526,7 @@ def test_no_fit_without_a_resolved_file(client, monkeypatch):
 
 
 def test_quant_is_the_dominant_measured_dtype(client, hub_cache, monkeypatch):
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/m", safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
     )]))
@@ -1535,6 +1536,7 @@ def test_quant_is_the_dominant_measured_dtype(client, hub_cache, monkeypatch):
 
 def test_quant_picks_the_dtype_with_the_most_bytes(client, hub_cache, monkeypatch):
     # A tiny embedding table at a different width must not decide the label.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/m", safetensors={"parameters": {"F32": 1_000, "F16": 8_000_000_000}},
     )]))
@@ -1578,6 +1580,7 @@ def test_quant_prefers_configs_declared_bit_width_over_the_packed_dtype(client, 
     # `mlx-community/Qwen3.8-27B-4bit`'s own shape, live-verified: BF16 scales
     # beside a U32-packed 4-bit weight matrix, with `config.quantization_config
     # = {"bits": 4}` declaring the real precision.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/mlx-4bit",
         safetensors={"parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120}},
@@ -1590,6 +1593,7 @@ def test_quant_prefers_configs_declared_bit_width_over_the_packed_dtype(client, 
 def test_quant_still_reports_a_float_dtype_with_no_config(client, hub_cache, monkeypatch):
     # Unchanged from before this fix: a plain BF16 checkpoint has no packed
     # container to misreport, so the dtype itself is still real evidence.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/bf16", safetensors={"parameters": {"BF16": 8_000_000_000}},
     )]))
@@ -1603,6 +1607,7 @@ def test_params_unpacks_a_packed_dtype_using_configs_declared_bit_width(client, 
     # is the bug (a declared-27B model reporting "Under 8B"). Unpacking the
     # U32 count by the declared 4-bit width recovers ~28B, matching the
     # model's own name.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/mlx-4bit",
         safetensors={
@@ -1629,6 +1634,7 @@ def test_params_band_reclassifies_the_unpacked_model_correctly(client, hub_cache
 def test_params_without_a_declared_bit_width_stays_the_raw_undercount(client, hub_cache, monkeypatch):
     # No `config` at all: there is no honest way to know the packing ratio, so
     # this is unchanged from before the fix — an undercount, not a guess.
+    _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/packed-no-config", safetensors={"parameters": {"U32": 3_361_669_120}},
     )]))
