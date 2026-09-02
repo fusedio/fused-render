@@ -25,13 +25,18 @@
 // already had the cards, the download plumbing and, crucially, the LISTING: the
 // join that makes an in-app Hub search worth having is "you already have this
 // one", and the page's own walk is the only honest source for it.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ControlMenu } from "./SearchControls";
 import { HubResultsTable } from "./HubResultsTable";
 import { type DiskCard, type SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
 import { groupIntoFamilies } from "@apps/ai_models/lib/hubFamilies";
 import {
+  activeFitLevel,
+  activeParamsBand,
   bySizeAscending,
+  FIT_LEVELS,
   needsHubLogin,
+  PARAMS_BANDS,
   resultsSummary,
   searchChrome,
   sortsOnPage,
@@ -51,6 +56,109 @@ import {
 } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
+import type { MenuEntry } from "@platform/ui/ContextMenu";
+
+/** Part B's four explicit facets — fit level, quant, params band, publisher —
+ *  rendered HERE, in the search face's own component, rather than in
+ *  `SearchControls` above both faces.
+ *
+ *  **Why this row lives in the search face and not the shared header.** All
+ *  four only mean anything once there is a Hub result set to sift — the idle
+ *  "your models" face lists a handful of repos the reader already chose to
+ *  keep, and a publisher/quant/params control that visibly narrows nothing
+ *  on that short a list is worse than no control: it teaches the reader that
+ *  the row does nothing. Splitting it out here, rather than conditionally
+ *  showing four of `SearchControls`' own controls, also removes any question
+ *  of which grid a control affects — there is only ever one grid in scope
+ *  wherever this component is mounted.
+ *
+ *  Reuses `ControlMenu`/`SORT_ICONS`-style icon choices from
+ *  `SearchControls.tsx` verbatim rather than a second dropdown — see that
+ *  file's own doc for why a hand-rolled third menu is exactly the drift the
+ *  app's one menu surface exists to prevent. Quant/publisher stay plain text
+ *  inputs for the same reason they did there: both are open sets (an
+ *  author's own quant token, any Hub org) with no glossary to offer a menu
+ *  of. */
+function HubFilterBar({
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
+}: {
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
+}) {
+  const activeFit = activeFitLevel(fitLevel);
+  const activeParams = activeParamsBand(paramsBand);
+
+  // Fit level reuses the info glyph, same as the "Fit" ordering in
+  // `SearchControls`: what both add over a plain result is a judgement
+  // ABOUT THIS MACHINE.
+  const fitLevelItems: MenuEntry[] = FIT_LEVELS.map((l) => ({
+    label: l.label,
+    icon: MenuIcons.info,
+    active: l.value === fitLevel,
+    onClick: () => onFitLevel(l.value),
+  }));
+
+  // Params band reuses the drive glyph — the same reuse the "Size" ordering
+  // makes in `SearchControls`, for the same reason: both are about how much
+  // weight a model carries.
+  const paramsBandItems: MenuEntry[] = PARAMS_BANDS.map((b) => ({
+    label: b.label,
+    icon: MenuIcons.drive,
+    active: b.value === paramsBand,
+    onClick: () => onParamsBand(b.value),
+  }));
+
+  return (
+    <div className="am-hub-controls am-hub-facets">
+      <ControlMenu
+        icon={MenuIcons.info as ReactNode}
+        label={activeFit.label}
+        title={activeFit.title}
+        ariaLabel={"Filter by fit: " + activeFit.label}
+        items={fitLevelItems}
+      />
+      <ControlMenu
+        icon={MenuIcons.drive as ReactNode}
+        label={activeParams.label}
+        title={activeParams.title}
+        ariaLabel={"Filter by parameter count: " + activeParams.label}
+        items={paramsBandItems}
+      />
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={quant}
+        placeholder="Quant (e.g. Q4_K_M)"
+        aria-label="Filter by exact quantization"
+        title="Show only results with this exact measured quantization"
+        onChange={(e) => onQuant(e.target.value)}
+      />
+      <input
+        className="am-hub-textfilter"
+        type="text"
+        value={publisher}
+        placeholder="Publisher/org"
+        aria-label="Filter by publisher or organization"
+        title="Show only results published by this Hub user or organization"
+        onChange={(e) => onPublisher(e.target.value)}
+      />
+    </div>
+  );
+}
 
 /** A settled query — what the debounce hands over, and the only thing this
  *  section is keyed on. */
@@ -226,6 +334,10 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
 
 export function HubResults({
   settled,
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
   cards,
   runners,
   curated,
@@ -233,9 +345,22 @@ export function HubResults({
   pulling,
   onDownload,
   onCancel,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
   onBack,
 }: {
   settled: SettledQuery;
+  /** The LIVE (not yet debounced) filter values `HubFilterBar` edits — kept
+   *  apart from `settled.fitLevel`/etc for the same reason `query`/`task` are
+   *  live in `LocalTab` while `settled.q`/`settled.task` drive the fetch: a
+   *  quant/publisher keystroke is one of several before the debounce settles,
+   *  and a menu click is instantaneous either way. */
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
   /** What this machine already has, from the page's ONE walk — never the
    *  `local` field on the search reply, which is frozen at the moment of the
    *  search. Null while the walk has not answered. */
@@ -252,6 +377,10 @@ export function HubResults({
   pulling: (id: string) => boolean;
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
   /** Clears query AND task filter — the same act as the ✕ in the box. */
   onBack: () => void;
 }) {
@@ -458,6 +587,18 @@ export function HubResults({
           , limited to models an engine here can load.
         </p>
       )}
+      {/* The four facets, in this face only (see `HubFilterBar`'s own doc for
+          why they do not live in `SearchControls`, above both faces). */}
+      <HubFilterBar
+        fitLevel={fitLevel}
+        paramsBand={paramsBand}
+        quant={quant}
+        publisher={publisher}
+        onFitLevel={onFitLevel}
+        onParamsBand={onParamsBand}
+        onQuant={onQuant}
+        onPublisher={onPublisher}
+      />
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {/* Only where a gated result needs it (`needsHubLogin`) — a standing
           offer of an account on every search would be this page recommending

@@ -1169,6 +1169,15 @@
   min-width: 180px;
 }
 
+/* Part B's four facets (`HubFilterBar`, in `HubResults.tsx`) reuse
+   `.am-hub-controls`'s flex-wrap row, but this one sits INSIDE the search
+   section — between the "Searching huggingface.co" disclosure and the
+   table it narrows — rather than above a section swap, so it wears a
+   smaller gap than the section-changing row above it. */
+.am-hub-facets {
+  margin: 0 0 10px;
+}
+
 /* The one checkbox on this row — a filter over the results, not a menu, so it
    wears the plainest control that says "on/off" rather than borrowing the two
    menus' bordered-trigger skin. */
