@@ -580,6 +580,16 @@ def _spill_idle_weights(pipe):
     `_loaded["spill_path"]` is one path for this process's whole life, so
     every call after the first overwrites the same file instead of leaking a
     new one.
+
+    A failure here is swallowed but never silent: it writes a stderr
+    breadcrumb naming the error and its class, the same convention
+    `_register_extra_quantizers` follows, since a spill that fails does so on
+    every load and every idle tick from then on — the only symptom otherwise
+    is that RSS never drops. A successful spill writes `mmap_spill.spill`'s
+    own stats dict to stderr too: it is the only way to tell "spilled 6 GB"
+    from "spilled 400 MB of an 8 GB model", the latter being what
+    `enumerate_spillable` missing most of a component's tensors would look
+    like from the outside.
     """
     if pipe is None:
         return
@@ -588,9 +598,17 @@ def _spill_idle_weights(pipe):
         if path is None:
             path = mmap_spill.spill_path()
             _loaded["spill_path"] = path
-        mmap_spill.spill(pipe.components, path)
-    except Exception:  # noqa: BLE001 - an optimization must never break load/release
-        pass
+        stats = mmap_spill.spill(pipe.components, path)
+    except Exception as error:  # noqa: BLE001 - an optimization must never break load/release
+        sys.stderr.write(
+            "[fused] mmap spill failed, weights stay resident in anonymous "
+            f"RAM: {error.__class__.__name__}: {error}\n")
+        return
+    sys.stderr.write(
+        "[fused] mmap spill: "
+        f"{stats['tensors']} tensors, {stats['bytes']} bytes, "
+        f"{stats['contiguous_copies']} contiguous copies, "
+        f"{stats['dedup_count']} deduped, {stats['write_seconds']:.2f}s\n")
 
 
 def load(model_id, fetched):

@@ -799,9 +799,13 @@ def test_place_spills_idle_weights_after_landing_on_offload(monkeypatch, base):
                             vae_bytes=int(0.17 * _GIB),
                             text_encoder_bytes=int(8.05 * _GIB))
     calls = []
+
+    def fake_spill(components, path):
+        calls.append((components, path))
+        return dict(worker.mmap_spill._EMPTY_STATS)
+
     monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
-    monkeypatch.setattr(worker.mmap_spill, "spill",
-                        lambda components, path: calls.append((components, path)))
+    monkeypatch.setattr(worker.mmap_spill, "spill", fake_spill)
 
     worker._place(pipe)
 
@@ -824,6 +828,51 @@ def test_place_does_not_spill_when_placement_is_all_gpu(monkeypatch, base):
     worker._place(pipe)
 
     assert calls == []
+
+
+def test_spill_idle_weights_writes_a_breadcrumb_when_spill_raises(monkeypatch, base, capsys):
+    """`_spill_idle_weights` swallows every exception `mmap_spill.spill` can
+    raise — an optimization must never break load/release — but a spill that
+    fails does so on every load and every idle tick, forever, with RSS never
+    dropping as the only symptom. The swallow has to leave a breadcrumb
+    naming the error and the consequence (weights stay resident in anonymous
+    RAM), the same convention `_register_extra_quantizers` follows."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
+
+    def raising_spill(components, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(worker.mmap_spill, "spill", raising_spill)
+    pipe = types.SimpleNamespace(components={})
+
+    worker._spill_idle_weights(pipe)  # must not raise
+
+    err = capsys.readouterr().err
+    assert "OSError" in err
+    assert "disk full" in err
+    assert "anonymous" in err
+
+
+def test_spill_idle_weights_surfaces_stats_on_success(monkeypatch, base, capsys):
+    """`mmap_spill.spill`'s stats dict is the only way to tell "spilled 6 GB"
+    from "spilled 400 MB of an 8 GB model" — the latter being what
+    `enumerate_spillable` missing most of a component's tensors would look
+    like. The sole call site must not discard it."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
+    stats = {"tensors": 400, "bytes": 6_000_000_000, "contiguous_copies": 2,
+             "dedup_count": 1, "write_seconds": 1.23}
+    monkeypatch.setattr(worker.mmap_spill, "spill", lambda components, path: dict(stats))
+    pipe = types.SimpleNamespace(components={})
+
+    worker._spill_idle_weights(pipe)
+
+    err = capsys.readouterr().err
+    assert "400" in err
+    assert "6000000000" in err
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
