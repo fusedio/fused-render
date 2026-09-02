@@ -430,7 +430,8 @@ def resurrect_autostart(shutdown_event=None) -> None:
             engine_host.ensure_background(
                 engine_id, interpreter, daemon,
                 cache_dir_for(engine_id), version, folder,
-                idle_timeout_s=manifest.idle_timeout_s, module=module)
+                idle_timeout_s=manifest.idle_timeout_s, module=module,
+                retry_post=manifest.retry_post)
             if shutdown_event is not None and shutdown_event.is_set():
                 # Shutdown began WHILE this one was spawning — stop_all() may
                 # already have run (and missed it, per the docstring above),

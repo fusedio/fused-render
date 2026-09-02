@@ -7,6 +7,7 @@ against the folder's own manifest (independent of autostart, D511), and
 exempt from the warm-app idle reaper.
 """
 import os
+import shutil
 import sys
 import threading
 import time
@@ -758,7 +759,7 @@ def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, 
         pid=1)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         calls.append(folder)
         return fake_child
 
@@ -795,6 +796,22 @@ def _bg_folder(tmp_path, name="app"):
     return folder
 
 
+def _retry_post_bg_folder(tmp_path, name="retryapp"):
+    """A real, spawnable background-app folder (the fixture daemon, copied
+    in rather than symlinked so each test gets its own manifest) whose
+    manifest declares `retry_post = true` — for tests that must exercise the
+    real `ensure_background` bring-up and check the flag actually reaches
+    the resulting `Child`, not a placeholder `# daemon\\n` stub that exits
+    immediately once spawned."""
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\ndaemon = "daemon.py"\nretry_post = true\n')
+    shutil.copy(os.path.join(FIXTURE_APP, "daemon.py"), folder / "daemon.py")
+    (folder / "index.html").write_text("<html></html>")
+    return folder
+
+
 def test_api_start_calls_ensure_background_without_touching_autostart(
         client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
@@ -807,7 +824,7 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
         cache="c", version="v1", pid=4242)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         calls.append((engine_id, python, daemon, cache, version))
         return fake_child
 
@@ -822,6 +839,29 @@ def test_api_start_calls_ensure_background_without_touching_autostart(
     assert calls[0][2] == str(folder / "daemon.py")
     # D511, the whole point: start() must NEVER persist autostart.
     assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
+
+
+def test_api_start_threads_manifests_retry_post_into_ensure_background(
+        client, tmp_path, monkeypatch):
+    # Real, unmocked bring-up (manifest -> load_manifest -> ensure_background
+    # -> Child.retry_post): a manifest declaring `retry_post = true` must
+    # actually reach the spawned Child through the real endpoint, not just
+    # through a hand-built Child in a proxy test. Fails if
+    # api_background_start's ensure_background call ever drops the
+    # `retry_post=manifest.retry_post` kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    try:
+        child = engine_host.current(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
 
 
 def test_api_start_requires_x_fused_header(client, tmp_path):
@@ -849,7 +889,7 @@ def test_api_start_falls_back_to_sys_executable_when_project_venv_not_built(
         pid=5150)
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         used.append(python)
         return fake_child
 
@@ -874,7 +914,7 @@ def test_api_start_reports_an_actionable_error_when_the_sys_executable_fallback_
                         lambda f: "/definitely/not/a/real/python")
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         raise engine_host.EngineError(
             f"the {engine_id} engine exited before it started (code 1)")
 
@@ -974,7 +1014,7 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
         cache="c", version="v1", pid=9191)
 
     def fake_ensure(eid, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         ensured.append(eid)
         return fake_child
 
@@ -986,6 +1026,31 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     assert body["ok"] is True
     assert body["pid"] == 9191
     assert ensured == [engine_id]  # fell back to a fresh bring-up, not engine_host.restart
+
+
+def test_api_restart_fresh_bring_up_threads_manifests_retry_post_into_ensure_background(
+        client, tmp_path, monkeypatch):
+    # Real, unmocked bring-up through restart's fresh-bring-up branch (no
+    # live child to hand to engine_host.restart): fails if that branch's
+    # ensure_background call ever drops the `retry_post=manifest.retry_post`
+    # kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    engine_id = background_apps.engine_id_for(str(folder))
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    monkeypatch.setattr(engine_host, "current", lambda eid: None)  # no live child
+
+    resp = client.post("/api/apps/background/restart", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    try:
+        # Read the registry directly rather than through `current` — that
+        # name is still monkeypatched to return None (simulating "no live
+        # child") for the duration of this test.
+        child = engine_host._children.get(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
 
 
 def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
@@ -1173,6 +1238,25 @@ def test_autostart_set_through_one_alias_and_cleared_through_another_fully_clear
 # ---------------------------------------------------------------- resurrection
 
 
+def test_resurrect_autostart_threads_manifests_retry_post_into_ensure_background(
+        tmp_path, monkeypatch):
+    # Real, unmocked bring-up through the startup resurrection path: fails
+    # if resurrect_autostart's ensure_background call ever drops the
+    # `retry_post=manifest.retry_post` kwarg again.
+    folder = _retry_post_bg_folder(tmp_path)
+    background_apps.set_autostart(str(folder), True)
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    background_apps.resurrect_autostart()
+    try:
+        child = engine_host._children.get(engine_id)
+        assert child is not None
+        assert child.retry_post is True
+    finally:
+        engine_host.stop(engine_id)
+
+
 def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path, monkeypatch):
     good = _bg_folder(tmp_path, "good")
     bad = _bg_folder(tmp_path, "bad")
@@ -1184,7 +1268,7 @@ def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path,
     started = []
 
     def fake_ensure(engine_id, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         if "bad" in daemon:
             raise engine_host.EngineError("boom")
         started.append(engine_id)
@@ -1248,7 +1332,7 @@ def test_resurrect_autostart_stops_a_child_that_finished_spawning_during_shutdow
         cache="c", version="v1")
 
     def fake_ensure(eid, python, daemon, cache, version, folder="",
-                    idle_timeout_s=0.0, module=""):
+                    idle_timeout_s=0.0, module="", retry_post=False):
         # Simulate shutdown landing WHILE this spawn was still running — by
         # the time it returns (registering the child), the server has
         # already started tearing down.

@@ -139,7 +139,8 @@ async def api_background_start(body: dict = Body(...),
         child = await asyncio.to_thread(
             engine_host.ensure_background, engine_id, interpreter,
             daemon, background_apps.cache_dir_for(engine_id), version,
-            folder, manifest.idle_timeout_s, module)
+            folder, manifest.idle_timeout_s, module,
+            retry_post=manifest.retry_post)
     except (engine_host.EngineError, OSError) as e:
         # The sys.executable fallback above (D631) already tried; when it
         # then fails, the folder's own unbuilt venv is the known, actionable
@@ -219,7 +220,8 @@ async def api_background_restart(body: dict = Body(...),
             child = await asyncio.to_thread(
                 engine_host.ensure_background, engine_id, interpreter,
                 daemon, background_apps.cache_dir_for(engine_id), version,
-                folder, manifest.idle_timeout_s, module)
+                folder, manifest.idle_timeout_s, module,
+                retry_post=manifest.retry_post)
         else:
             child = await asyncio.to_thread(
                 engine_host.restart, engine_id, None, version=version)
