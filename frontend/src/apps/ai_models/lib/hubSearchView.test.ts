@@ -268,7 +268,7 @@ describe("wireSort", () => {
     // Stated over the whole menu rather than value by value, because the failure
     // this prevents is a sort ADDED to the menu and not to the mapper: a new
     // page-level ordering would reach the API as itself and be rejected there.
-    const allowed = ["downloads", "likes", "updated", "created", "trending", "fit"];
+    const allowed = ["downloads", "likes", "updated", "created", "trending", "fit", "best"];
     for (const s of SORTS) expect(allowed).toContain(wireSort(s.value));
   });
 
@@ -281,13 +281,15 @@ describe("wireSort", () => {
     expect(sortsOnPage("created")).toBe(false);
     expect(sortsOnPage("fit")).toBe(false);
     expect(sortsOnPage("trending")).toBe(false);
+    expect(sortsOnPage("best")).toBe(false);
   });
 
-  it("offers size, and offers it last", () => {
-    // It is the only ordering that costs a measurement, so the cheap answers
-    // come first — and it exists, which is the half of D426's refinement a
-    // reader of this table would come here to check.
+  it("offers 'best' first (D639's default) and size last", () => {
+    // Size is the only ordering that costs a measurement, so the cheap
+    // answers come first; "best" leads because index 0 is what `activeSort`
+    // falls back to for a missing/unrecognised sort — see `SORTS`'s own doc.
     expect(SORTS.map((s) => s.value)).toEqual([
+      "best",
       "downloads",
       "likes",
       "updated",

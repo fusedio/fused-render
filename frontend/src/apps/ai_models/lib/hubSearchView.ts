@@ -148,13 +148,27 @@ export interface SortOption {
   title: string;
 }
 
-/** Every ordering the page offers, in the order the menu lists them: the three
- *  ways the Hub ranks a search, then the one the page ranks itself.
+/** Every ordering the page offers, in the order the menu lists them.
  *
- *  Size is LAST and not first even though it is the most concrete of them,
- *  because it is the only one that costs a measurement (see `wireSort`) and the
- *  menu reads best when the cheap answers come first. */
+ *  **"Best match" is FIRST, and that is what makes it the default** (D639):
+ *  `activeSort` falls back to `SORTS[0]` for a value the page does not
+ *  recognise — the same mechanism `readHubUrl` already relies on for a
+ *  missing `?hubSort=` — so putting the composite ranking at index 0 is
+ *  what makes it the default sort with no second "what does an empty
+ *  `sort` mean" rule to keep in sync. Downloads used to hold this slot;
+ *  see D639 for why raw downloads rewards age and CI traffic over
+ *  usefulness. Size is LAST, unchanged, because it is the only ordering
+ *  that costs a measurement (see `wireSort`) and the menu reads best when
+ *  the cheap answers come first. */
 export const SORTS: readonly SortOption[] = [
+  {
+    value: "best",
+    label: "Best match",
+    title:
+      "This machine's own ranking: blends how well each result fits its memory, how much of its " +
+      "capacity the model uses, estimated speed, how recently it was published, and popularity — " +
+      "see the Match column's own hover for the full breakdown.",
+  },
   { value: "downloads", label: "Downloads", title: "Most downloaded in the last month" },
   { value: "likes", label: "Likes", title: "Most liked on the Hub" },
   { value: "updated", label: "Updated", title: "Changed most recently" },
@@ -168,8 +182,9 @@ export const SORTS: readonly SortOption[] = [
     value: "fit",
     label: "Fit",
     title:
-      "Best-fitting on THIS machine first. Ranked here, not by the Hub: it asks for the " +
-      "most-downloaded results and reorders them by how comfortably each one would run.",
+      "Memory fit only, on THIS machine — narrower than \"Best match\": it asks for the " +
+      "most-downloaded results and reorders them by how comfortably each one would run, with no " +
+      "regard to speed, size or popularity.",
   },
   {
     value: "size",

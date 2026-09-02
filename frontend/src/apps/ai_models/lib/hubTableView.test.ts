@@ -1,13 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import {
   ageLabel,
+  capabilityHint,
   familyDisplay,
-  fitCell,
+  columnVisible,
+  isMajorityValue,
+  hoistSummary,
+  hoistValue,
+  matchCell,
+  matchTitle,
   popLabel,
   quantLabel,
   runModeLabel,
-  scoreLabel,
   speedLabel,
+  speedTitle,
   variantLabel,
 } from "./hubTableView";
 import type { AiFitVerdict, AiSpeedEstimate, HubModel } from "@platform/lib/api";
@@ -42,6 +48,7 @@ function model(id: string, extra: Partial<HubModel> = {}): HubModel {
     file: null,
     local: { state: "none" },
     url: `https://huggingface.co/${id}`,
+    matchScore: 50,
     ...extra,
   };
 }
@@ -61,22 +68,73 @@ describe("ageLabel", () => {
   });
 });
 
-describe("fitCell", () => {
-  const verdict = (score: number, v: AiFitVerdict["verdict"]): AiFitVerdict => ({
+describe("matchCell", () => {
+  const verdict = (v: AiFitVerdict["verdict"], runMode?: AiFitVerdict["runMode"]): AiFitVerdict => ({
     verdict: v,
     basis: "download",
     footprintBytes: 1e9,
-    score,
+    score: 0,
+    runMode,
   });
 
-  it("carries the bar percent and the three-way dot together", () => {
-    expect(fitCell(verdict(60, "easy"))).toEqual({ percent: 60, dot: "easy" });
-    expect(fitCell(verdict(31, "tight"))).toEqual({ percent: 31, dot: "tight" });
-    expect(fitCell(verdict(0, "no"))).toEqual({ percent: 0, dot: "no" });
+  it("bars and prints the COMPOSITE score, not the memory-only fit score", () => {
+    // D639/D640: the merged cell's number is `matchScore`, and the verdict
+    // object's own `score` (memory-only) never leaks into either field —
+    // that would silently un-merge the two facts this cell exists to keep
+    // together but distinct.
+    expect(matchCell(verdict("easy"), 87.6)).toEqual({
+      percent: 87.6,
+      scoreText: "88",
+      dot: "easy",
+      offloadLabel: null,
+    });
   });
 
-  it("is null — not a zero-width bar — when nothing was judged", () => {
-    expect(fitCell(null)).toBeNull();
+  it("colours (and shapes) the dot by the MEMORY verdict regardless of the score", () => {
+    expect(matchCell(verdict("tight"), 91).dot).toBe("tight");
+    expect(matchCell(verdict("no"), 91).dot).toBe("no");
+  });
+
+  it("is the neutral 'unknown' dot — not 'no' — for a row with no fit verdict at all", () => {
+    // "no" means JUDGED and does not fit; a row nothing could be judged for
+    // is a different, honest fourth state.
+    expect(matchCell(null, 40).dot).toBe("unknown");
+  });
+
+  it("bars at 0 with a dash, never a bare 0, when there is no matchScore to show", () => {
+    expect(matchCell(verdict("easy"), null)).toEqual({
+      percent: 0,
+      scoreText: "—",
+      dot: "easy",
+      offloadLabel: null,
+    });
+  });
+
+  it("carries a visible offload suffix for a non-GPU run mode, and none for gpu", () => {
+    expect(matchCell(verdict("tight", "cpu-offload"), 50).offloadLabel).toBe("offload");
+    expect(matchCell(verdict("tight", "cpu-only"), 50).offloadLabel).toBe("CPU only");
+    expect(matchCell(verdict("easy", "gpu"), 50).offloadLabel).toBeNull();
+    expect(matchCell(verdict("easy"), 50).offloadLabel).toBeNull();
+  });
+});
+
+describe("matchTitle", () => {
+  it("names the axes the composite blends", () => {
+    const title = matchTitle({ verdict: "easy", basis: "declared", footprintBytes: 1, score: 100 }, 72);
+    expect(title).toContain("Match score 72/100");
+    expect(title).toContain("memory fit");
+    expect(title).toContain("speed");
+    expect(title).toContain("comfortably fits");
+  });
+
+  it("says the score is unavailable rather than inventing one", () => {
+    expect(matchTitle(null, null)).toContain("unavailable");
+  });
+
+  it("folds the run mode in — D641's replacement for the deleted Mode column", () => {
+    expect(
+      matchTitle({ verdict: "tight", basis: "declared", footprintBytes: 1, runMode: "cpu-offload" }, 40),
+    ).toContain("CPU offload");
   });
 });
 
@@ -90,48 +148,55 @@ describe("speedLabel", () => {
     calibrated: false,
     calibrationFactor: null,
   });
+  const BILLION = 1_000_000_000;
 
   it("shows one decimal of tok/s under 10", () => {
-    expect(speedLabel(estimate(2.13))).toBe("2.1");
+    expect(speedLabel(estimate(2.13), 7 * BILLION)).toBe("2.1");
   });
 
   it("shows a plain rounded integer from 10 up to 999", () => {
-    expect(speedLabel(estimate(24.13))).toBe("24");
-    expect(speedLabel(estimate(342.9))).toBe("343");
+    expect(speedLabel(estimate(24.13), 7 * BILLION)).toBe("24");
+    expect(speedLabel(estimate(342.9), 7 * BILLION)).toBe("343");
   });
 
   it("compacts anything at or past 1000 with one decimal and a 'k' — never a raw 5-digit figure", () => {
-    // The bug this fixes: a 2M-param model's bandwidth-bound estimate prints
-    // "17324.6" with no cap or sane rounding — a number nobody reads as
-    // tokens per second at a glance.
-    expect(speedLabel(estimate(17_324.6))).toBe("17.3k");
-    expect(speedLabel(estimate(1000))).toBe("1.0k");
+    expect(speedLabel(estimate(1200), 7 * BILLION)).toBe("1.2k");
+    expect(speedLabel(estimate(1000), 7 * BILLION)).toBe("1.0k");
+  });
+
+  it("is a dash below the formula's own validated anchor — the bug this fixes", () => {
+    // The exact repro: `tiny-Qwen2ForCausalLM-2.5`, 2M parameters, printing a
+    // confident "17.3k" — a number `speed.py:283`'s own documented anchor
+    // rule (`params_b >= 1.0`) says the formula has no business producing.
+    expect(speedLabel(estimate(17_324.6), 2_000_000)).toBe("—");
+  });
+
+  it("is NOT dashed at or above the one-billion-parameter anchor", () => {
+    expect(speedLabel(estimate(24), BILLION)).toBe("24");
   });
 
   it("is a dash, never '0 tok/s', when there is no estimate", () => {
-    // The exact llmfit failure mode this plan calls out by name: a search
-    // table filled with `-` is useless, but a search table showing "0" for
-    // "we do not know" is actively wrong, not merely unhelpful.
-    expect(speedLabel(null)).toBe("—");
+    expect(speedLabel(null, 7 * BILLION)).toBe("—");
+  });
+
+  it("is a dash when params is unknown too — no anchor to check, and no estimate either way", () => {
+    expect(speedLabel(null, null)).toBe("—");
   });
 
   it("is a dash for a non-finite figure rather than a formatting crash", () => {
-    expect(speedLabel(estimate(Number.NaN))).toBe("—");
-    expect(speedLabel(estimate(Number.POSITIVE_INFINITY))).toBe("—");
+    expect(speedLabel(estimate(Number.NaN), 7 * BILLION)).toBe("—");
+    expect(speedLabel(estimate(Number.POSITIVE_INFINITY), 7 * BILLION)).toBe("—");
   });
 });
 
-describe("scoreLabel", () => {
-  it("rounds the 0-100 fit score to a whole number", () => {
-    expect(scoreLabel({ verdict: "easy", basis: "declared", footprintBytes: 1, score: 87.6 })).toBe("88");
+describe("speedTitle", () => {
+  it("names the anchor rule below one billion parameters", () => {
+    expect(speedTitle(2_000_000)).toContain("one billion parameters");
   });
 
-  it("is a dash when the fit object carries no score (an older cached shape)", () => {
-    expect(scoreLabel({ verdict: "easy", basis: "declared", footprintBytes: 1 })).toBe("—");
-  });
-
-  it("is a dash when there is no fit to score at all", () => {
-    expect(scoreLabel(null)).toBe("—");
+  it("is undefined at or above the anchor, and for unknown params", () => {
+    expect(speedTitle(1_000_000_000)).toBeUndefined();
+    expect(speedTitle(null)).toBeUndefined();
   });
 });
 
@@ -202,5 +267,122 @@ describe("familyDisplay", () => {
     const display = familyDisplay(family(primary));
     expect(display.name).toBe("tencent/Hy4-preview");
     expect(display.baseModel).toBeNull();
+  });
+});
+
+describe("capabilityHint", () => {
+  it("is undefined when the Hub's task label and the capability slug agree", () => {
+    // The common case this column collapse (D641) exists for: both strings
+    // read "text-generation" (or "text generation"/"text-generation" before
+    // the merge) — the same fact stated twice with nothing to disclose.
+    expect(capabilityHint({ task: "text-generation", capability: "text-generation" })).toBeUndefined();
+  });
+
+  it("names the Hub's own task label when it genuinely differs from the capability", () => {
+    const hint = capabilityHint({ task: "image-classification", capability: "image-embedding" });
+    expect(hint).toContain("image-classification");
+  });
+
+  it("is undefined when the Hub gave no task label at all", () => {
+    expect(capabilityHint({ task: null, capability: "text-generation" })).toBeUndefined();
+  });
+});
+
+describe("hoistValue", () => {
+  it("is unanimous when every row shares one value", () => {
+    expect(hoistValue(["a", "a", "a"])).toEqual({ value: "a", unanimous: true });
+  });
+
+  it("hoists the modal value, not unanimous, at or above the 80% majority", () => {
+    // 4 of 5 = 80%, the documented floor.
+    expect(hoistValue(["a", "a", "a", "a", "b"])).toEqual({ value: "a", unanimous: false });
+  });
+
+  it("hoists nothing just under the majority threshold", () => {
+    // 3 of 4 = 75%, below 80%.
+    expect(hoistValue(["a", "a", "a", "b"])).toBeNull();
+  });
+
+  it("never counts a null as agreement, and nulls still count toward the denominator", () => {
+    // 4 of 5 known values agree, but the fifth (null) still counts against
+    // the total — 4/5 = 80% still clears it here, but the null must not be
+    // silently dropped from the count entirely.
+    expect(hoistValue(["a", "a", "a", "a", null])).toEqual({ value: "a", unanimous: false });
+    expect(hoistValue([null, null, null])).toBeNull();
+  });
+
+  it("is null for an empty result set", () => {
+    expect(hoistValue([])).toBeNull();
+  });
+});
+
+describe("columnVisible", () => {
+  it("is absent (false) when every row agrees — the unanimous case", () => {
+    expect(columnVisible({ value: "BF16", unanimous: true }, ["BF16", "BF16", "BF16"])).toBe(false);
+  });
+
+  it("is present (true) under a majority hoist, so the minority stays legible", () => {
+    expect(columnVisible({ value: "BF16", unanimous: false }, ["BF16", "BF16", "BF16", "BF16", "Q4_K_M"])).toBe(
+      true,
+    );
+  });
+
+  it("is present when there is no hoist at all — real diversity, below the majority floor", () => {
+    expect(columnVisible(null, ["BF16", "Q4_K_M", "Q8_0", "F16"])).toBe(true);
+  });
+
+  it("is absent when NOTHING is known — a column of dashes states nothing", () => {
+    expect(columnVisible(null, [null, null, null])).toBe(false);
+  });
+
+  it("is absent for an empty result set", () => {
+    expect(columnVisible(null, [])).toBe(false);
+  });
+});
+
+describe("isMajorityValue", () => {
+  it("is true for a row matching a non-unanimous hoist's own value", () => {
+    expect(isMajorityValue("BF16", { value: "BF16", unanimous: false })).toBe(true);
+  });
+
+  it("is false for the minority row under that same hoist", () => {
+    expect(isMajorityValue("Q4_K_M", { value: "BF16", unanimous: false })).toBe(false);
+  });
+
+  it("is false under a UNANIMOUS hoist — that column is not rendered at all, so styling is moot", () => {
+    expect(isMajorityValue("BF16", { value: "BF16", unanimous: true })).toBe(false);
+  });
+
+  it("is false with no hoist, and false for a null (unknown) value", () => {
+    expect(isMajorityValue("BF16", null)).toBe(false);
+    expect(isMajorityValue(null, { value: "BF16", unanimous: false })).toBe(false);
+  });
+});
+
+describe("hoistSummary", () => {
+  it("states the unanimous capability and the count together", () => {
+    expect(hoistSummary(21, { value: "text-generation", unanimous: true }, null)).toBe(
+      "21 text-generation models",
+    );
+  });
+
+  it("says 'mostly' for a majority-only capability hoist", () => {
+    expect(hoistSummary(5, { value: "text-generation", unanimous: false }, null)).toBe(
+      "5 models (mostly text-generation)",
+    );
+  });
+
+  it("appends the quant hoist after the capability one", () => {
+    expect(
+      hoistSummary(21, { value: "text-generation", unanimous: true }, { value: "BF16", unanimous: false }),
+    ).toBe("21 text-generation models · mostly BF16");
+  });
+
+  it("uses the singular noun for exactly one model", () => {
+    expect(hoistSummary(1, null, null)).toBe("1 model");
+  });
+
+  it("is null for an empty result set even with a hoist to report", () => {
+    expect(hoistSummary(0, { value: "text-generation", unanimous: true }, null)).toBeNull();
   });
 });

@@ -53,6 +53,10 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
  *  "fetch this again" everywhere else in the app — this is a fact about the
  *  repo, not an action. */
 const SORT_ICONS: Record<ResultSort, ReactNode> = {
+  // Best match (D639) — the default. A target/bullseye: this ordering is a
+  // judgement blending several facts into one ranking, not a fact about
+  // the repo the way every other ordering below is.
+  best: MenuIcons.target,
   downloads: MenuIcons.download,
   likes: MenuIcons.heart,
   updated: MenuIcons.clock,

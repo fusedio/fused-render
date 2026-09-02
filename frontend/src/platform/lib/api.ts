@@ -3085,6 +3085,14 @@ export interface HubModel {
    *  GGUF file's own published quant token — never a guess from the repo's
    *  name. Null when nothing measured it. */
   quant: string | null;
+  /** 0-100, D639 — the composite the DEFAULT sort ranks by and the merged
+   *  Fit+Score cell (D640) both bars and prints. Blends memory fit,
+   *  params-as-capability, speed, recency and popularity, plus a small
+   *  on-disk bonus — see `hub_models.py::_composite_score`'s own docstring
+   *  and DECISIONS.md's D639 for the weights and why. Always present:
+   *  every axis has an honest default for missing evidence, so this is
+   *  never null the way `fit`/`speedEstimate` can be. */
+  matchScore: number;
   local: HubModelLocal;
   url: string;
 }
@@ -3114,8 +3122,12 @@ export interface HubSearchResult {
  *  "fit" is a real value the SERVER accepts even though it is not a field the
  *  HUB has: the server asks the Hub for `downloads` (the same honest default
  *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
- *  "trending" IS a Hub field (`trendingScore`), sent straight through. */
-export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit";
+ *  "trending" IS a Hub field (`trendingScore`), sent straight through.
+ *
+ *  "best" (D639) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
+ *  is the identical shape as "fit": not a Hub field, same downloads
+ *  candidate set, reordered by the composite score after the join. */
+export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit" | "best";
 
 /** Fit level — Part 3's own filter, the same three-way ladder `AiFitVerdict`
  *  reports. "any" is the no-op default: nothing is excluded on it. */

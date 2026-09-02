@@ -1,15 +1,32 @@
 // The dense results table search replaces the card grid with (task 4). One
-// row per model FAMILY (`hubFamilies.groupIntoFamilies`), eleven columns wide,
-// following `BenchmarkTab.tsx`'s own `<table>` — `scope="col"` headers, the
-// same `am-bench-*` conventions this file's `am-hubtable-*` classes sit
-// beside in `ai-models.css`.
+// row per model FAMILY (`hubFamilies.groupIntoFamilies`), following
+// `BenchmarkTab.tsx`'s own `<table>` — `scope="col"` headers, the same
+// `am-bench-*` conventions this file's `am-hubtable-*` classes sit beside in
+// `ai-models.css`.
 //
 // **Why a table replaces the grid rather than joining it.** A card can carry
 // two or three facts before it sprawls, which is why the grid it replaces
-// showed popularity and size and nothing about THIS machine. Eleven columns
+// showed popularity and size and nothing about THIS machine. Many columns
 // only become legible in a row, and a row is only worth reading once it is
-// SCORED — see `hubTableView.ts` for the cell rules and the plan this
-// implements for the fuller argument.
+// SCORED — see `hubTableView.ts` for the cell rules and D639/D640/D641 in
+// DECISIONS.md for the fuller argument.
+//
+// **Eleven columns, after three collapses this file has been through.**
+// Task and Capability used to be two columns stating the same fact twice
+// (`text generation` / `text-generation` on every row); Fit and Score used
+// to be two renderings of the SAME memory-only number (D639/D640); Mode
+// used to be its own column even though on Apple Silicon it is a structural
+// constant and everywhere else it is a coarser restatement of the Fit
+// verdict already on screen (D641, folded into the Match cell's own hint
+// and a visible offload suffix instead). Match, Model, Size and the action
+// are the columns `ai-models.css`'s drop ladder never hides — Task is the
+// FIRST to drop now that it is often already stated in the summary line.
+//
+// **Constants identical across the result set are HOISTED into one summary
+// line** (`hoistValue`/`hoistSummary`, `hubTableView.ts`) rather than
+// repeated on every row — task/capability and quant are the two candidates
+// left after D641 folded Mode away. See that module's own doc for the
+// unanimous/majority thresholds.
 //
 // **The lazy total-size lookup stays viewport-gated**, moved here verbatim
 // from `HubResultCard` (RecommendedCard.tsx) rather than rewritten: a dense
@@ -32,14 +49,19 @@ import { gateChrome } from "@apps/ai_models/lib/hubSearchView";
 import { type HubFamily } from "@apps/ai_models/lib/hubFamilies";
 import {
   ageLabel,
+  capabilityHint,
+  columnVisible,
   familyDisplay,
-  fitCell,
+  hoistSummary,
+  hoistValue,
+  isMajorityValue,
+  matchCell,
+  matchTitle,
   paramsLabel,
   popLabel,
   quantLabel,
-  runModeLabel,
-  scoreLabel,
   speedLabel,
+  speedTitle,
   variantLabel,
 } from "@apps/ai_models/lib/hubTableView";
 import {
@@ -54,6 +76,16 @@ import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { DownloadGlyph } from "@apps/ai_models/shared/ModelProgress";
 import { getHubModelSize, type HubModel } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
+
+/** Row banding (D640): a stronger rule every FIFTH row, replacing the old
+ *  per-row hairline that made a whole page of rows read as one grey field.
+ *  A plain `:nth-child` cannot do this once variant disclosure rows are
+ *  interleaved between family rows, so the family index is computed here
+ *  and carried down as a data attribute instead — and it counts only
+ *  PRIMARY/family rows, never a disclosed variant's own sub-rows, so
+ *  opening one never shifts where the next band line falls relative to the
+ *  family rows around it. */
+const BAND_EVERY = 5;
 
 /** One variant's disclosure row — id, size, disk state, and its own action —
  *  rendered under a family's own row once "N variants" is opened.
@@ -76,6 +108,8 @@ function HubVariantRow({
   runner,
   busy,
   job,
+  showTask,
+  showQuant,
   onDownload,
   onCancel,
 }: {
@@ -84,6 +118,13 @@ function HubVariantRow({
   runner: SectionRunner | null;
   busy: boolean;
   job: Job | undefined;
+  /** Whether the Task/Capability and Quant columns exist AT ALL this render
+   *  — the same decision (`columnVisible`, computed once in
+   *  `HubResultsTable`) the header and the family row above this one
+   *  render from, so all three stay in lockstep on column COUNT, not just
+   *  cell content. */
+  showTask: boolean;
+  showQuant: boolean;
   onDownload: () => void;
   onCancel: (job: Job) => void;
 }) {
@@ -104,15 +145,10 @@ function HubVariantRow({
       }
       style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
     >
-      <td />
-      {/* F4 (code review): must carry the SAME `am-col-score` class the header
-          and family row's Score placeholder do, or `ai-models.css`'s column-
-          hiding container queries have nothing to collapse here — the header
-          and family row's cell count would shrink while this row's did not,
-          shifting every cell after it out of alignment (the exact class of
-          bug commit 79aef51e fixed, one level up). */}
-      <td className="am-col-score" />
-      <td className="am-hubtable-name am-hubtable-variant-name" colSpan={2}>
+      {/* The merged Match cell's own slot — blank for a sibling row, same as
+          every other placeholder cell below. */}
+      <td className="am-hubtable-match" />
+      <td className="am-hubtable-name am-hubtable-variant-name">
         <span className="am-hubtable-name-inner">
           <a
             href={hubModelUrl(model.id)}
@@ -129,20 +165,21 @@ function HubVariantRow({
           )}
         </span>
       </td>
-      {/* Capability is deliberately OUT of the name cell's colSpan (F4): a
-          `colSpan` covers a fixed count of column SLOTS regardless of which
-          of them the header/family row hide at a given width, so folding
-          Capability's slot into a wider span here left this row's cells
-          misaligned the moment `.am-col-cap` collapsed at <=900px. Its own
-          `<td>`, carrying the same class, collapses in lockstep instead. */}
-      <td className="am-col-cap" />
+      {/* Task/Capability's merged slot (D641) — presence follows the SAME
+          decision the header and family row render from (`showTask`), so
+          the column count matches exactly. A variant row does not
+          re-derive its own majority styling (that is a fact about the
+          RESULT SET, not this one sibling) — it just states its own value
+          plainly, same as an unhoisted column always would. */}
+      {showTask && <td className="am-col-task">{model.capability}</td>}
       <td className="num am-col-params">{paramsLabel(model.params)}</td>
-      <td className="num am-col-quant">{quantLabel(model.quant)}</td>
-      <td className="num" data-hint={hubSizeTitle(model, null)}>
+      {showQuant && <td className="num am-col-quant">{quantLabel(model.quant)}</td>}
+      <td className="num am-col-size" data-hint={hubSizeTitle(model, null)}>
         {size ?? "—"}
       </td>
-      <td className="num am-col-tok">{speedLabel(model.speedEstimate)}</td>
-      <td className="am-col-mode">{runModeLabel(model.fit?.runMode)}</td>
+      <td className="num am-col-tok" data-hint={speedTitle(model.params)}>
+        {speedLabel(model.speedEstimate, model.params)}
+      </td>
       <td className="num am-col-pop">{popLabel(model.downloads)}</td>
       <td className="num am-col-new">{ageLabel(model.created)}</td>
       <td />
@@ -191,6 +228,11 @@ function HubVariantRow({
  */
 function HubResultRow({
   family,
+  banded,
+  capabilityHoist,
+  quantHoist,
+  showTask,
+  showQuant,
   cards,
   runners,
   curated,
@@ -201,6 +243,20 @@ function HubResultRow({
   onCancel,
 }: {
   family: HubFamily;
+  /** True on every fifth family row (see `BAND_EVERY`) — a data attribute
+   *  rather than a class the CSS keys directly, so a reader inspecting the
+   *  DOM can see the count is deliberate rather than a `:nth-child` guess
+   *  that cannot see the variant rows it has to skip. */
+  banded: boolean;
+  /** Used only for the MAJORITY-value styling hint (`isMajorityValue`) on a
+   *  column that IS rendered — column presence itself is `showTask`/
+   *  `showQuant`, computed once in `HubResultsTable` from these same
+   *  objects so the header, this row and `HubVariantRow` cannot disagree
+   *  about how many columns there are. */
+  capabilityHoist: ReturnType<typeof hoistValue>;
+  quantHoist: ReturnType<typeof hoistValue>;
+  showTask: boolean;
+  showQuant: boolean;
   cards: ReadonlyMap<string, DiskCard> | null;
   runners: ReadonlyMap<string, SectionRunner>;
   curated: ReadonlySet<string>;
@@ -286,17 +342,21 @@ function HubResultRow({
   const effectiveSpeed = model.speedEstimate ?? speedOverride ?? null;
 
   const display = familyDisplay(family);
-  const fit = fitCell(effectiveFit);
+  const match = matchCell(effectiveFit, model.matchScore);
   const size = hubSizeLabel(model, total);
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
   const loadable = !runner || runner.available;
   const arriving = jobFraction(job);
   const curatedFlag = curated.has(model.id);
+  const taskHint = capabilityHint(model);
+  const taskIsMajority = isMajorityValue(model.capability, capabilityHoist);
+  const quantIsMajority = isMajorityValue(model.quant, quantHoist);
 
   return (
     <>
       <tr
         ref={row}
+        data-band={banded ? "" : undefined}
         // The same three washes every other card on this page wears for the
         // same three states (D436) — a row IS a claim about this disk exactly
         // like a card is, and two colour grammars for one fact would be two
@@ -316,25 +376,31 @@ function HubResultRow({
         }
         style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
       >
-        <td className="am-hubtable-fit">
-          <span className="am-hubtable-fit-inner">
-            {fit ? (
-              <>
-                <span className={`am-hubtable-dot am-hubtable-dot-${fit.dot}`} aria-hidden="true" />
-                <span
-                  className="am-hubtable-bar"
-                  role="img"
-                  aria-label={`Fit: ${fit.dot}, ${Math.round(fit.percent)}%`}
-                >
-                  <i className={`am-hubtable-dot-${fit.dot}`} style={{ width: `${fit.percent}%` }} />
-                </span>
-              </>
-            ) : (
-              <span className="am-hubtable-dash" title="Not enough is known about this repo to judge">—</span>
-            )}
+        {/* The merged Match cell (D639/D640): bar length + number are the
+            composite `matchScore`, bar colour AND glyph shape are the memory
+            verdict, and a non-GPU run mode (D641) prints as a visible muted
+            suffix rather than a second colour. */}
+        <td className="am-hubtable-match" data-hint={matchTitle(effectiveFit, model.matchScore)}>
+          <span className="am-hubtable-match-inner">
+            <span
+              className={`am-hubtable-dot am-hubtable-dot-${match.dot}`}
+              aria-hidden="true"
+            >
+              {match.dot === "easy" ? "●" : match.dot === "tight" ? "▲" : match.dot === "no" ? "■" : "?"}
+            </span>
+            <span
+              className="am-hubtable-bar"
+              role="img"
+              aria-label={`Match ${match.scoreText}, memory fit: ${match.dot}${
+                match.offloadLabel ? `, ${match.offloadLabel}` : ""
+              }`}
+            >
+              <i className={`am-hubtable-dot-${match.dot}`} style={{ width: `${match.percent}%` }} />
+            </span>
+            <span className="am-hubtable-score-num">{match.scoreText}</span>
+            {match.offloadLabel && <span className="am-hubtable-offload">{match.offloadLabel}</span>}
           </span>
         </td>
-        <td className="num am-col-score">{scoreLabel(effectiveFit)}</td>
         <td className="am-hubtable-name">
           <span className="am-hubtable-name-inner">
             {/* The row's identity is the PRIMARY's own id — the same repo the
@@ -387,15 +453,34 @@ function HubResultRow({
             )}
           </span>
         </td>
-        <td>{model.task ?? "—"}</td>
-        <td className="am-col-cap">{model.capability}</td>
+        {/* Task/Capability, merged (D641): the value is `model.capability` —
+            what the download path and runner resolution actually key on —
+            with the Hub's own `task` label folded into the hint ONLY where
+            it genuinely disagrees. The COLUMN itself only exists at all
+            when `showTask` says the result set is not unanimous on it
+            (`columnVisible`) — a fully-hoisted column is dropped, header
+            and all, rather than left present with every cell blank. When
+            it IS shown, every row prints its own real value; a row
+            matching the stated majority is only muted (`am-hubtable-
+            majority`), never blanked — a blank cell and a real dash
+            (unknown) must not look the same. */}
+        {showTask && (
+          <td className={"am-col-task" + (taskIsMajority ? " am-hubtable-majority" : "")} data-hint={taskHint}>
+            {model.capability}
+          </td>
+        )}
         <td className="num am-col-params">{paramsLabel(model.params)}</td>
-        <td className="num am-col-quant">{quantLabel(model.quant)}</td>
-        <td className="num" data-hint={hubSizeTitle(model, total)}>
+        {showQuant && (
+          <td className={"num am-col-quant" + (quantIsMajority ? " am-hubtable-majority" : "")}>
+            {quantLabel(model.quant)}
+          </td>
+        )}
+        <td className="num am-col-size" data-hint={hubSizeTitle(model, total)}>
           {size ?? "—"}
         </td>
-        <td className="num am-col-tok">{speedLabel(effectiveSpeed)}</td>
-        <td className="am-col-mode">{runModeLabel(effectiveFit?.runMode)}</td>
+        <td className="num am-col-tok" data-hint={speedTitle(model.params)}>
+          {speedLabel(effectiveSpeed, model.params)}
+        </td>
         <td className="num am-col-pop">{popLabel(model.downloads)}</td>
         <td className="num am-col-new">{ageLabel(model.created)}</td>
         <td className="num">
@@ -478,6 +563,8 @@ function HubResultRow({
             runner={runners.get(variant.capability) ?? null}
             busy={pulling(variant.id)}
             job={jobByModel.get(variant.id)}
+            showTask={showTask}
+            showQuant={showQuant}
             onDownload={() => onDownload(variant.id, variant.capability)}
             onCancel={onCancel}
           />
@@ -507,21 +594,42 @@ export function HubResultsTable({
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
 }) {
+  // Hoisting (D640/D641): computed over the PRIMARY row of each family only —
+  // a closed disclosure's siblings are not on screen and must not silently
+  // change what the summary line claims about the rows a reader can
+  // actually see.
+  const primaries = families.map((f) => f.primary);
+  const capabilityValues = primaries.map((m) => m.capability);
+  const quantValues = primaries.map((m) => m.quant);
+  const capabilityHoist = hoistValue(capabilityValues);
+  const quantHoist = hoistValue(quantValues);
+  const summary = hoistSummary(families.length, capabilityHoist, quantHoist);
+  // Column PRESENCE, not just cell content (fix for a half-applied hoist a
+  // reviewer caught live: a fully-hoisted column left the `<th>` and every
+  // `<td>` rendered with nothing in them). Computed ONCE here and threaded
+  // down to the header below, `HubResultRow` and `HubVariantRow` — all
+  // three render from this single decision so the column count cannot
+  // drift out of lockstep between them (the exact class of bug commit
+  // 79aef51e and 82f53ec7 already fixed twice on this table).
+  const showTask = columnVisible(capabilityHoist, capabilityValues);
+  const showQuant = columnVisible(quantHoist, quantValues);
+
   return (
     <div className="am-hubtable-wrap">
+      {summary && <p className="cc-caption am-hubtable-summary">{summary}</p>}
       <table className="am-hubtable">
         <thead>
           <tr>
-            <th scope="col">Fit</th>
-            <th scope="col" className="num am-col-score">Score</th>
+            <th scope="col">Match</th>
             <th scope="col">Model</th>
-            <th scope="col">Task</th>
-            <th scope="col" className="am-col-cap">Capability</th>
+            {/* Labelled "Capability", not "Task" — the cells beneath it
+                render `model.capability` (D641), and a header must not
+                name a different field than its own cells do. */}
+            {showTask && <th scope="col" className="am-col-task">Capability</th>}
             <th scope="col" className="num am-col-params">Params</th>
-            <th scope="col" className="num am-col-quant">Quant</th>
-            <th scope="col" className="num">Size</th>
+            {showQuant && <th scope="col" className="num am-col-quant">Quant</th>}
+            <th scope="col" className="num am-col-size">Size</th>
             <th scope="col" className="num am-col-tok">tok/s</th>
-            <th scope="col" className="am-col-mode">Mode</th>
             <th scope="col" className="num am-col-pop">Pop.</th>
             <th scope="col" className="num am-col-new">New</th>
             <th scope="col" className="num">Var.</th>
@@ -529,10 +637,15 @@ export function HubResultsTable({
           </tr>
         </thead>
         <tbody>
-          {families.map((family) => (
+          {families.map((family, i) => (
             <HubResultRow
               key={family.key}
               family={family}
+              banded={(i + 1) % BAND_EVERY === 0}
+              capabilityHoist={capabilityHoist}
+              quantHoist={quantHoist}
+              showTask={showTask}
+              showQuant={showQuant}
               cards={cards}
               runners={runners}
               curated={curated}

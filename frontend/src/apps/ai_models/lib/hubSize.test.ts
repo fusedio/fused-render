@@ -40,6 +40,7 @@ function row(extra: Partial<HubModel> = {}): HubModel {
     file: null,
     local: { state: "none" },
     url: "https://huggingface.co/org/m",
+    matchScore: 50,
     ...extra,
   };
 }

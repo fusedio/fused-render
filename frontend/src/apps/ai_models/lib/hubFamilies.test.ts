@@ -29,6 +29,7 @@ function model(id: string, extra: Partial<HubModel> = {}): HubModel {
     quant: null,
     local: { state: "none" },
     url: `https://huggingface.co/${id}`,
+    matchScore: 50,
     ...extra,
   };
 }

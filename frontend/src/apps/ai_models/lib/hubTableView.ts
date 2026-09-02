@@ -12,13 +12,216 @@
 // keep apart: an unmeasured size must never render `0 GB`, and a null
 // `speedEstimate` must never render `0 tok/s` — both would be a LOUDER wrong
 // answer than the dash they replace.
-import type { AiFitVerdict, AiSpeedEstimate } from "@platform/lib/api";
+import type { AiFitVerdict, AiSpeedEstimate, HubModel } from "@platform/lib/api";
 import { formatParams, timeAgo } from "@platform/lib/format";
 import type { HubFamily } from "./hubFamilies";
 
 /** The dash every absent cell in this table shows — one glyph, so a reader's
  *  eye can learn it once rather than per column. */
 const DASH = "—";
+
+// ---------------------------------------------------------------------------
+// D639/D640/D641 — the merged Match (Fit+Score) cell.
+//
+// Before D639, "Fit" and "Score" were two renderings of the SAME memory-only
+// number, which is why a capable machine's table showed an identical bar and
+// "100" on every row. D639 makes SCORE a composite (`HubModel.matchScore`,
+// server-computed) that blends memory fit with capability, speed, recency
+// and popularity; D640 folds the two columns into one now that they carry
+// different facts: bar LENGTH and the printed number are the composite, bar
+// COLOUR (and the glyph's SHAPE — see below) stay the memory verdict.
+
+/** What one row's merged Match cell renders — the bar/number pair, the
+ *  verdict's colour+shape, and (D641) a visible "offload" suffix for a row
+ *  that would not run on the GPU/unified memory. `dot` is `"unknown"` for a
+ *  row with no fit verdict to judge at all — a fourth, neutral state
+ *  distinct from "no" (which means "judged, and it does not fit"). */
+export interface MatchCell {
+  /** Bar fill width, 0-100 — the composite score, or 0 when there is none to
+   *  show (never a bare fallback to the memory score alone: a row with no
+   *  `matchScore` at all is a row this table has nothing to rank it by). */
+  percent: number;
+  /** The printed number, or the dash when `matchScore` is absent. */
+  scoreText: string;
+  dot: AiFitVerdict["verdict"] | "unknown";
+  /** D641: MODE was cut as its own column — on Apple Silicon it is a
+   *  structural constant (`fit.py`'s own doc: unified memory always reads
+   *  "gpu"), and where it DOES vary it is derived from the same footprint
+   *  arithmetic the fit verdict already is, so a separate column was a
+   *  coarser restatement of this one. What survives is visible, not just a
+   *  hover fact: a non-GPU run mode is a real cost a reader should see
+   *  without hovering, so it prints beside the score as a muted suffix —
+   *  never a colour change, since colour here already carries the memory
+   *  verdict and must not carry two meanings on top of each other. `null`
+   *  for "gpu" (the overwhelmingly common, unremarkable case) or no fit at
+   *  all. */
+  offloadLabel: "offload" | "CPU only" | null;
+}
+
+export function matchCell(fit: AiFitVerdict | null, matchScore: number | null | undefined): MatchCell {
+  const percent = typeof matchScore === "number" ? matchScore : 0;
+  const scoreText = typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
+  const dot = fit?.verdict ?? "unknown";
+  const offloadLabel = fit?.runMode === "cpu-offload" ? "offload" : fit?.runMode === "cpu-only" ? "CPU only" : null;
+  return { percent, scoreText, dot, offloadLabel };
+}
+
+const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
+  easy: "comfortably fits this machine's memory",
+  tight: "would be a squeeze on this machine's memory",
+  no: "will not fit this machine's memory",
+};
+
+/** The merged cell's hover text — has to explain BOTH encodings the cell
+ *  carries (D640): what the composite number is made of, and what the bar's
+ *  colour+shape mean, PLUS the run mode D641 folded in here once Mode
+ *  stopped being its own column. */
+export function matchTitle(fit: AiFitVerdict | null, matchScore: number | null | undefined): string {
+  const scoreText =
+    typeof matchScore === "number"
+      ? `Match score ${Math.round(matchScore)}/100 — blends memory fit, how much of this machine's capacity ` +
+        "the model's size uses, estimated speed, how recently it was published, and popularity, with a small " +
+        "bonus if it is already on this disk."
+      : "Match score is unavailable — nothing here to rank this repo by yet.";
+  const verdictText = fit?.verdict ? VERDICT_SENTENCE[fit.verdict] : "memory fit for this repo is unknown";
+  const modeText =
+    fit?.runMode === "cpu-offload"
+      ? " Runs via CPU offload: part of the model spills out of fast memory, which costs real speed."
+      : fit?.runMode === "cpu-only"
+        ? " Runs on the CPU only — no GPU or unified-memory path was available to judge it against."
+        : fit?.runMode === "gpu"
+          ? " Runs on the GPU (Apple's unified memory counts as this too)."
+          : "";
+  return `${scoreText} Bar colour and glyph: ${verdictText}.${modeText}`;
+}
+
+// ---------------------------------------------------------------------------
+// D641 — Task and Capability were the same fact twice (`text generation` /
+// `text-generation`) on every row this table has ever shown for a single
+// capability. The visible column is now keyed on `capability` — the value
+// the download path and runner resolution actually act on — with the Hub's
+// own `task` label folded into the hover ONLY where it genuinely differs,
+// so a real discrepancy stays inspectable rather than silently dropped.
+
+/** The hover note for the merged Task/Capability cell — present only when
+ *  the Hub's own task label and this app's capability slug actually
+ *  disagree (they are usually the same string, `"text-generation"` twice,
+ *  which is the bug this column collapse fixes). */
+export function capabilityHint(model: Pick<HubModel, "capability" | "task">): string | undefined {
+  if (model.task && model.task !== model.capability) {
+    return `The Hub's own task label for this repo is "${model.task}".`;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// D640 — hoisting a value that is identical (or nearly so) across the whole
+// result set out of every row's cell and into one summary line above the
+// table. A value repeated on 21 of 21 rows is noise in a cell and
+// information in a header.
+
+/** One column's hoisted fact: the value worth stating once, and whether
+ *  EVERY row shares it (`unanimous` — the column is DROPPED entirely, see
+ *  `columnVisible`) or only a strong majority does (the column stays, every
+ *  row prints its own real value, and `isMajorityValue` is only a styling
+ *  hint for which ones are the common case). */
+export interface Hoist {
+  value: string;
+  unanimous: boolean;
+}
+
+/** The majority threshold (design review, 2026-09-02): a plain majority
+ *  (just over half) would still be wrong for close to half the rows a
+ *  summary line claims to describe, which defeats the point of stating it
+ *  once. 80% is high enough that the stated fact is still true of the row a
+ *  reader is actually looking at nineteen times out of twenty, while still
+ *  catching the overwhelmingly common case (one task filter, one machine's
+ *  hardware, one popular quantization) that a strict 100% would miss over
+ *  a handful of outliers. */
+export const HOIST_MAJORITY = 0.8;
+
+/** Whether a column's values are uniform enough to hoist, and what the
+ *  hoisted value is. `null` values are never evidence of agreement — a row
+ *  with nothing to say about this column does not count toward EITHER the
+ *  majority or the total the majority is measured against being satisfied
+ *  by coincidence; it simply cannot be hoisted alongside if it would need
+ *  to be the modal value itself (it can't: `null` is filtered out before
+ *  counting), but it DOES count in the denominator, so a column half full
+ *  of unknowns cannot reach an 80% majority off the known half alone. */
+export function hoistValue(values: readonly (string | null)[]): Hoist | null {
+  if (values.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const v of values) {
+    if (v === null) continue;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  let modal: string | null = null;
+  let modalCount = 0;
+  for (const [v, c] of counts) {
+    if (c > modalCount) {
+      modal = v;
+      modalCount = c;
+    }
+  }
+  if (modal === null || modalCount === 0) return null;
+  if (modalCount === values.length) return { value: modal, unanimous: true };
+  if (modalCount / values.length >= HOIST_MAJORITY) return { value: modal, unanimous: false };
+  return null;
+}
+
+/** Whether a column should exist in the table AT ALL — presence, not just
+ *  cell content (fix for a half-applied hoist: a fully-hoisted column used
+ *  to leave every cell blank while the `<th>` and every `<td>` still
+ *  rendered, which is a labelled column stating nothing 21 times over).
+ *
+ *  HIDDEN in two cases: every row agrees (`hoist.unanimous`, already stated
+ *  once in the summary line — repeating it as a column of identical text
+ *  would be the exact noise this whole redesign removes), or NOTHING is
+ *  known at all (every value `null`) — a column of nothing but dashes
+ *  states nothing either, so it is not worth its width.
+ *
+ *  SHOWN in every other case, including a strong-majority (non-unanimous)
+ *  hoist: `hubTableView`'s cell rule for a shown column always prints the
+ *  row's own real value (see `isMajorityValue` for the muted/full-weight
+ *  split) — it never blanks a majority row's cell while the column is
+ *  visible, because that produced a real ambiguity a reviewer caught live:
+ *  a blank cell and a genuine dash (unknown) are two different facts, and
+ *  rendering both as "no visible text" left a reader with no way to tell
+ *  "unremarkable, matches the summary" from "nobody knows". */
+export function columnVisible(hoist: Hoist | null, values: readonly (string | null)[]): boolean {
+  if (hoist?.unanimous) return false;
+  return values.some((v) => v !== null);
+}
+
+/** Whether ONE row's value is the majority value of a non-unanimous hoist —
+ *  purely a STYLING signal (de-emphasize the value everyone already knows
+ *  is common, per the summary line) and never a reason to omit the text:
+ *  the cell always prints `value` (or the dash for a genuinely unknown one)
+ *  regardless of this function's answer. `false` for a unanimous hoist too
+ *  — that column is not rendered at all (`columnVisible`), so there is no
+ *  cell left to style. */
+export function isMajorityValue(value: string | null, hoist: Hoist | null): boolean {
+  return !!hoist && !hoist.unanimous && value !== null && value === hoist.value;
+}
+
+/** The one line above the table naming whatever the result set agrees on
+ *  (D640) — task/capability and quant are the two candidates left after
+ *  D641 folded Mode into the Match cell's own hint. Size, Params, tok/s,
+ *  Pop. and New are never hoisted: they are the columns a reader compares
+ *  row-to-row on a RANKED list, so even a coincidental cluster must stay
+ *  visible per row. `null` when there is nothing to say (no rows yet, or
+ *  neither column reached even a majority). */
+export function hoistSummary(count: number, capabilityHoist: Hoist | null, quantHoist: Hoist | null): string | null {
+  if (count <= 0) return null;
+  const noun = count === 1 ? "model" : "models";
+  const head = capabilityHoist
+    ? capabilityHoist.unanimous
+      ? `${count} ${capabilityHoist.value} ${noun}`
+      : `${count} ${noun} (mostly ${capabilityHoist.value})`
+    : `${count} ${noun}`;
+  if (!quantHoist) return head;
+  return `${head} · ${quantHoist.unanimous ? "all" : "mostly"} ${quantHoist.value}`;
+}
 
 /** "18d ago", or the dash when the Hub did not say (or said something this
  *  page cannot parse) — `created` is an ISO8601 string or null, and
@@ -31,34 +234,32 @@ export function ageLabel(created: string | null): string {
   return timeAgo(ms / 1000) ?? DASH;
 }
 
-/** The Fit column's two readings of one number — the continuous bar and the
- *  three-way dot — bundled together because a cell that drew one without the
- *  other would be answering half the question the column exists for. `null`
- *  when nothing was judged (no safetensors size, no params): a bar drawn at
- *  0% would read as "does not fit" rather than "unknown", which is a
- *  different and false claim. */
-export function fitCell(fit: AiFitVerdict | null): { percent: number; dot: AiFitVerdict["verdict"] } | null {
-  if (!fit || typeof fit.score !== "number") return null;
-  return { percent: fit.score, dot: fit.verdict };
-}
+/** Below this many parameters, `speed.py`'s own bandwidth formula is
+ *  documented as UNVALIDATED (`speed.py:283`'s own anchor rule, llmfit's
+ *  `params_b >= 1.0 and not is_moe`): a sub-billion-parameter model's tok/s
+ *  is dominated by fixed per-call overhead the formula does not model at
+ *  all, so a number it produces down there is not evidence of anything.
+ *  This table has no MoE flag to check the other half of that rule against
+ *  (a Hub search row carries no such fact), so the params-only half is what
+ *  it can honestly apply. */
+const SPEED_ANCHOR_PARAMS = 1_000_000_000;
 
 /** tok/s, scaled to how many digits a reader actually needs — or the dash,
  *  never "0 tok/s", which reads as a measurement rather than as "nobody
  *  knows".
  *
- *  **The bug this fixes:** a 2M-parameter model's bandwidth-bound formula
- *  produces something like `17324.6` with no cap and no sane rounding — five
- *  digits and a decimal that nobody reads as "tokens per second" at a
- *  glance, in a column meant to be scanned. Three bands, each the precision
- *  that band actually needs: under 10 keeps one decimal (a real distinction
- *  at conversational speeds), 10-999 rounds to a whole token (nobody reads
- *  "24.1" as different from "24" at that scale), and 1000+ compacts to
- *  `formatParams`'s own K-step so the column stays a fixed few characters
- *  wide instead of growing with the estimate. This is a FORMATTING fix only
- *  — the underlying number still comes from `speed.estimate_tok_s` unchanged;
- *  whether that number is itself a realistic estimate for a model this tiny
- *  is a question for that formula, not for how the table prints its answer. */
-export function speedLabel(speed: AiSpeedEstimate | null): string {
+ *  **The bug this fixes:** `tiny-Qwen2ForCausalLM-2.5` (2M parameters) shows
+ *  a confident five-digit `17.3k` — a number the formula's own documented
+ *  anchor rule (see `SPEED_ANCHOR_PARAMS`) says it has no business
+ *  producing for anything this small. Below the anchor the honest render is
+ *  the dash, with the reason in the hover (`speedTitle`) — a formatting fix
+ *  cannot repair a number that should not have been shown at all. At or
+ *  above the anchor, three precision bands: under 10 keeps one decimal (a
+ *  real distinction at conversational speeds), 10-999 rounds to a whole
+ *  token, and 1000+ compacts to `formatParams`'s own K-step so the column
+ *  stays a fixed few characters wide. */
+export function speedLabel(speed: AiSpeedEstimate | null, params: number | null): string {
+  if (params !== null && params < SPEED_ANCHOR_PARAMS) return DASH;
   if (!speed || typeof speed.tokensPerSecond !== "number" || !Number.isFinite(speed.tokensPerSecond)) {
     return DASH;
   }
@@ -68,15 +269,17 @@ export function speedLabel(speed: AiSpeedEstimate | null): string {
   return `${(tps / 1000).toFixed(1)}k`;
 }
 
-/** The Fit column's raw 0-100 score, rounded to a whole number — a numeric
- *  companion to the bar `fitCell` already draws, for a reader who wants to
- *  compare two rows precisely rather than eyeball two bars. The dash for the
- *  same two reasons `fitCell` returns null: nothing was judged, or an older
- *  cached shape carries no `score` at all (`AiFitVerdict.score` is optional
- *  for exactly that reason). */
-export function scoreLabel(fit: AiFitVerdict | null): string {
-  if (!fit || typeof fit.score !== "number") return DASH;
-  return Math.round(fit.score).toString();
+/** The tok/s cell's hover — states the anchor-rule reason for the dash when
+ *  that is why it is one, rather than leaving a reader to guess whether
+ *  "unknown" means "not measured" or "not modelled at this size". */
+export function speedTitle(params: number | null): string | undefined {
+  if (params !== null && params < SPEED_ANCHOR_PARAMS) {
+    return (
+      "Not estimated: below one billion parameters, tok/s is dominated by fixed per-call overhead " +
+      "the bandwidth formula does not model, so a number here would not be a real estimate."
+    );
+  }
+  return undefined;
 }
 
 /** The row's measured quantization (`HubModel.quant`, server-derived — see
