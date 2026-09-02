@@ -448,7 +448,7 @@ export default function AppPage({
               <Button
                 size="sm"
                 className="app-page-migrate"
-                variant={inProgress ? "outline" : "default"}
+                variant="outline"
                 disabled={!inProgress && migrateState !== "idle"}
                 title={
                   inProgress
