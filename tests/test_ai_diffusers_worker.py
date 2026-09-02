@@ -669,7 +669,7 @@ class _FakePlacementPipe:
     _exclude_from_cpu_offload = []
 
     def __init__(self, nn, components, model_cpu_offload_seq, to_raises_on=None,
-                 group_offload_raises=False):
+                 group_offload_raises=False, group_offload_fails_at=None):
         self.nn = nn
         self.components = components
         self.model_cpu_offload_seq = model_cpu_offload_seq
@@ -678,16 +678,27 @@ class _FakePlacementPipe:
         #: all-gpu MOVE itself into a failure, as opposed to the size PROBE
         #: that `mem_get_info_raises` already covers.
         self._to_raises_on = to_raises_on
-        #: `enable_group_offload` raises — simulating whatever diffusers
-        #: version/backend combination makes the new rung itself unusable,
-        #: which must degrade to plain offload exactly like a raising
-        #: `.to("cuda")` does for the all-gpu case.
+        #: `enable_group_offload` raises immediately, before hooking ANY
+        #: component — simulating whatever diffusers version/backend
+        #: combination makes the new rung itself unusable outright, which
+        #: must degrade to plain offload exactly like a raising `.to("cuda")`
+        #: does for the all-gpu case.
         self._group_offload_raises = group_offload_raises
+        #: The real `enable_group_offload` hooks pipeline components ONE AT A
+        #: TIME in a loop (`pipelines/pipeline_utils.py`), so a raise on
+        #: component N leaves components before it already hooked. Naming a
+        #: component here reproduces exactly that: every component ahead of
+        #: it in `self.components` (that survives `exclude_modules`) gets
+        #: recorded into `group_offloaded_names` before the raise, so
+        #: `_maybe_raise_error_if_group_offload_active` has something real to
+        #: find.
+        self._group_offload_fails_at = group_offload_fails_at
         for name, component in components.items():
             setattr(self, name, component)
         self.to_calls = []
         self.offload_calls = 0
         self.group_offload_calls = []
+        self.group_offloaded_names = []
         self.hooked_names = []
         self.placed_names = []
 
@@ -696,10 +707,31 @@ class _FakePlacementPipe:
         if device == self._to_raises_on:
             raise RuntimeError("HIP out of memory")
 
-    def enable_group_offload(self, **kwargs):
-        self.group_offload_calls.append(kwargs)
+    def enable_group_offload(self, exclude_modules=None, **kwargs):
+        self.group_offload_calls.append({"exclude_modules": exclude_modules, **kwargs})
         if self._group_offload_raises:
             raise RuntimeError("group offload unsupported here")
+        exclude_modules = exclude_modules or []
+        for name, component in self.components.items():
+            if name in exclude_modules or not isinstance(component, self.nn.Module):
+                continue
+            if name == self._group_offload_fails_at:
+                raise RuntimeError(f"group offload unsupported for {name!r}")
+            self.group_offloaded_names.append(name)
+
+    def _maybe_raise_error_if_group_offload_active(self, raise_error=False):
+        """Mirrors the real pipeline method
+        (`pipelines/pipeline_utils.py:_maybe_raise_error_if_group_offload_
+        active`) closely enough for `_place`'s fallback guard to exercise it:
+        true when ANY component still carries a group-offload hook, and
+        raises instead of returning when asked to."""
+        active = bool(self.group_offloaded_names)
+        if active and raise_error:
+            raise ValueError(
+                "You are trying to apply model/sequential CPU offloading to a "
+                "pipeline that contains components with group offloading enabled."
+            )
+        return active
 
     def enable_model_cpu_offload(self):
         self.offload_calls += 1
@@ -742,7 +774,8 @@ _GIB = 1 << 30
 
 
 def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
-                    to_raises_on=None, group_offload_raises=False):
+                    to_raises_on=None, group_offload_raises=False,
+                    group_offload_fails_at=None):
     """A 4-component pipeline (`text_encoder`, `transformer`, `vae`, plus a
     non-Module `tokenizer` that `_place` must skip when summing bytes and
     never mistake for something `enable_model_cpu_offload` places)."""
@@ -755,7 +788,8 @@ def _placement_pipe(nn, transformer_bytes, vae_bytes, text_encoder_bytes,
     seq = "->".join(name for name, component in components.items()
                     if isinstance(component, nn.Module))
     return _FakePlacementPipe(nn, components, seq, to_raises_on=to_raises_on,
-                              group_offload_raises=group_offload_raises)
+                              group_offload_raises=group_offload_raises,
+                              group_offload_fails_at=group_offload_fails_at)
 
 
 def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
@@ -801,6 +835,12 @@ def test_place_uses_group_offload_when_it_does_not_all_fit(monkeypatch, base):
     assert "offload_to_disk_path" not in kwargs
     # Unsettled pending the hardware gate (SPEC/D) — must not be forced on.
     assert kwargs.get("use_stream") is not True
+    # The VAE must reach `enable_group_offload` as an EXCLUSION, not silently
+    # absorbed into block offload — `AutoencoderKLFlux2` (the klein recipe's
+    # VAE) has no `_group_offload_block_modules`, so block-offloading it would
+    # leave its weights on the offload device when `.decode(...)` is called,
+    # which never fires a group-offload hook (only `.forward()` does).
+    assert kwargs["exclude_modules"] == ["vae"]
     assert {"placement": "group-offload"} in base.state_calls
 
 
@@ -827,6 +867,41 @@ def test_place_falls_back_to_plain_offload_when_group_offload_raises(monkeypatch
     assert set(pipe.hooked_names) == {"transformer", "vae", "text_encoder"}
     assert {"placement": "offload"} in base.state_calls
     assert {"placement": "group-offload"} not in base.state_calls
+
+
+def test_place_reraises_original_error_when_group_offload_fails_partway(monkeypatch, base):
+    """Finding #2: `enable_group_offload` hooks components ONE AT A TIME in a
+    loop, so a raise on the second component (`transformer`, after `text_
+    encoder` already got hooked — `vae` is excluded and never reached) leaves
+    `text_encoder` group-offloaded even though the call overall failed.
+    `enable_model_cpu_offload` opens with `_maybe_raise_error_if_group_
+    offload_active(raise_error=True)` and refuses to run AT ALL while any
+    component still carries a group-offload hook, so blindly falling back to
+    it here would replace the real failure with a confusing `ValueError`
+    about group offload being active — on a load that plain offload could
+    never have completed anyway. `_place` must detect that partial state via
+    `_maybe_raise_error_if_group_offload_active(raise_error=False)` and
+    re-raise the ORIGINAL error instead of attempting (and failing) the
+    fallback."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB),
+                            group_offload_fails_at="transformer")
+
+    with pytest.raises(RuntimeError, match="transformer"):
+        worker._place(pipe)
+
+    # The partial hook is real — `text_encoder` got group-offloaded before
+    # the raise on `transformer`.
+    assert pipe.group_offloaded_names == ["text_encoder"]
+    # The fallback must not even be attempted: `enable_model_cpu_offload`
+    # would only raise its own confusing error over this state.
+    assert pipe.offload_calls == 0
+    assert {"placement": "group-offload"} not in base.state_calls
+    assert {"placement": "offload"} not in base.state_calls
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):

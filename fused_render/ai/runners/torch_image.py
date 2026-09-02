@@ -434,21 +434,45 @@ def _place(pipe):
     2. **Group offload** — the probe ran and said it does not fit: diffusers'
        own `pipe.enable_group_offload(onload_device="cuda", offload_device=
        "cpu", offload_type="block_level", num_blocks_per_group=_num_blocks_
-       per_group())`, memory mode only — no `offload_to_disk_path`. It moves
-       one group of blocks onto the GPU at a time instead of parking every
-       weight in system RAM for the process's whole life, which lowers the
-       VRAM ceiling a render needs without accelerate's offload ever
-       entering the picture. REPLACES case 3 here, never stacks on it:
-       `_raise_error_if_accelerate_model_or_sequential_hook_present` makes
-       diffusers' own hooks and accelerate's mutually exclusive, so a
-       pipeline cannot carry both at once. `use_stream` is left at its
-       default (unset) — SPEC/D's gate on the RX 9060 XT is what settles
-       whether streaming is safe on ROCm, by measurement, and that gate has
-       not run; this rung must not force it on ahead of that answer.
-    3. **Offload** — group offload itself raised, or the probe raised before
-       it could answer whether the model fits: today's unconditional
-       `enable_model_cpu_offload()`, unchanged, and still the terminal
-       fallback either way.
+       per_group(), exclude_modules=["vae"])`, memory mode only — no
+       `offload_to_disk_path`. It moves one group of blocks onto the GPU at a
+       time instead of parking every weight in system RAM for the process's
+       whole life, which lowers the VRAM ceiling a render needs without
+       accelerate's offload ever entering the picture. REPLACES case 3 here,
+       never stacks on it: `_raise_error_if_accelerate_model_or_sequential_
+       hook_present` makes diffusers' own hooks and accelerate's mutually
+       exclusive, so a pipeline cannot carry both at once. `use_stream` is
+       left at its default (unset) — SPEC/D's gate on the RX 9060 XT is what
+       settles whether streaming is safe on ROCm, by measurement, and that
+       gate has not run; this rung must not force it on ahead of that answer.
+
+       `exclude_modules=["vae"]` is load-bearing, not an optimization: block
+       offload's hooks only fire on a module's `forward`, and diffusers'
+       `AutoencoderKL` is the ONE VAE class that opts a decode-only call path
+       into the same hooking via `_group_offload_block_modules = ["quant_
+       conv", "post_quant_conv", "encoder", "decoder"]`
+       (`diffusers/models/autoencoders/autoencoder_kl.py`), which makes
+       `apply_group_offloading` recurse into the encoder/decoder so their
+       inner `ModuleList`s each get their own hook. `AutoencoderKLFlux2` —
+       the klein recipe's VAE — declares no such attribute, so its encoder,
+       decoder and quant_conv all land in one "unmatched group" whose hook
+       sits on the VAE's own `forward`. Every FLUX pipeline decodes via
+       `self.vae.decode(latents, return_dict=False)`, never `.forward(...)`,
+       and diffusers' `@apply_forward_hook` decorator
+       (`diffusers/utils/accelerate_utils.py`) only fires accelerate's own
+       `_hf_hook` on `.decode`/`.encode` — it has no idea group offload's
+       hooks exist. A block-offloaded `AutoencoderKLFlux2` would therefore
+       decode with its weights still parked on the offload device against
+       CUDA latents, and die there after the whole denoising loop had
+       already run. Excluding it moves it once to the onload device instead
+       and leaves it resident — at 0.17 GiB, cheap enough next to the
+       transformer this rung exists for that it is not worth measuring.
+    3. **Offload** — group offload itself raised with nothing left hooked, or
+       the probe raised before it could answer whether the model fits:
+       today's unconditional `enable_model_cpu_offload()`, unchanged, and
+       still the terminal fallback either way. (A group-offload raise that
+       left some components already hooked cannot reach this cleanly — see
+       the `except` below.)
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
@@ -465,9 +489,17 @@ def _place(pipe):
     competing process (or a component whose real device cost exceeds `numel
     * element_size`) can turn a move that looked safe into a raise. A load
     that would have SUCCEEDED via plain offload must not fail outright just
-    because a faster path was tried first, so a raising `.to("cuda")` or a
-    raising `enable_group_offload(...)` both fall back to `enable_model_cpu_
-    offload()` exactly like case 3.
+    because a faster path was tried first, so a raising `.to("cuda")` falls
+    back to `enable_model_cpu_offload()` exactly like case 3. A raising
+    `enable_group_offload(...)` falls back the same way ONLY when the raise
+    left nothing hooked: the method hooks components one at a time in a
+    loop, and `enable_model_cpu_offload` opens by refusing to run at all
+    (`_maybe_raise_error_if_group_offload_active(raise_error=True)`) while
+    any component still carries a group-offload hook. A raise that hit
+    component N after already hooking components before it cannot be undone
+    through any supported diffusers call, so that case re-raises the
+    ORIGINAL error instead of trading it for a confusing "group offload
+    active" `ValueError` — see the `except` below for the exact check.
 
     **A fourth case — pinning the "hot" set (denoiser + VAE) resident while
     leaving the text encoder to offload's per-call fetch — was built,
@@ -547,11 +579,13 @@ def _place(pipe):
     Every case reports which one happened via `set_state(placement=...)`,
     which reaches the WORKER's own `/health` endpoint (`worker_base.snapshot`)
     and, from there, `Worker.placement` and `describe()`'s `"placement"` key
-    — the app's own `/health`-adjacent API and the AI Models page. Both the
-    load loop and `refresh_memory()` lift it out of `/health` the same way
-    `device` is lifted, and `describe()` emits it beside `residentBytes`, so
-    the page can say which of the three placements a worker actually chose
-    rather than only which device it landed on.
+    — the app's own `/health`-adjacent API. Both the load loop and
+    `refresh_memory()` lift it out of `/health` the same way `device` is
+    lifted, and `describe()` emits it beside `residentBytes`, so the value
+    rides all the way out to the API response. Nothing in `frontend/` reads
+    it yet — `AiLoadedModel` (`frontend/src/platform/lib/api.ts`) has no
+    `placement` field — so the AI Models page cannot show it; wiring that up
+    is a separate, frontend-only change.
     """
     import torch
 
@@ -586,9 +620,36 @@ def _place(pipe):
                     offload_device=torch.device("cpu"),
                     offload_type="block_level",
                     num_blocks_per_group=_num_blocks_per_group(),
+                    # The VAE decodes via `.decode(...)`, never `.forward(...)`
+                    # — block offload only hooks `forward`, so a VAE without
+                    # `_group_offload_block_modules` (AutoencoderKLFlux2, the
+                    # klein recipe's VAE) would silently never come back off
+                    # the offload device. See the docstring above for the
+                    # full mechanism. 0.17 GiB resident is not worth the risk
+                    # of getting this wrong.
+                    exclude_modules=["vae"],
                 )
                 placement = "group-offload"
             except Exception:  # noqa: BLE001 - REPLACES plain offload, never stacks on it
+                # `enable_group_offload` hooks components one at a time in a
+                # loop, so a raise partway through can leave earlier
+                # components already group-offloaded even though this call
+                # failed overall. `enable_model_cpu_offload` opens with
+                # `_maybe_raise_error_if_group_offload_active(raise_error=
+                # True)` and refuses to run AT ALL while any component still
+                # carries a group-offload hook — calling it unconditionally
+                # here would trade the real failure for a confusing
+                # `ValueError` about group offload being active, on a load
+                # that the docstring promises will fall back to plain
+                # offload. Ask the same question with `raise_error=False`
+                # first: a clean failure (nothing got hooked) still falls
+                # through to plain offload exactly as before; a partial
+                # failure re-raises the ORIGINAL error, since there is no
+                # supported diffusers call to strip a partially-applied set
+                # of group-offload hooks back off and let plain offload
+                # proceed.
+                if pipe._maybe_raise_error_if_group_offload_active(raise_error=False):
+                    raise
                 pipe.enable_model_cpu_offload()
                 placement = "offload"
         else:
