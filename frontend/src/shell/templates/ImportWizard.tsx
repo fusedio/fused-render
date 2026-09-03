@@ -4,7 +4,7 @@ import { commitImport, importTemplates } from "@platform/lib/api";
 import type { ImportItem, ImportResolution, ImportStageResult } from "@platform/lib/api";
 import { cn } from "@platform/lib/utils";
 import { TemplatesDialog } from "@shell/templates/TemplatesDialog";
-import { FilterGroup, KeyPill, WarnText } from "@shell/templates/chips";
+import { FilterGroup, WarnText } from "@shell/templates/chips";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";

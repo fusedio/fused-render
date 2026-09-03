@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { getConfig, mkdir } from "@platform/lib/api";
 import { Button } from "@platform/shadcn/ui/button";
 import { uploadFile } from "./client";
+import { Lightbox } from "./controls";
 import type { AttachedImage } from "./imageInput";
 
 /** The live camera, as one hook: whether it is open, the ref for the overlay's
@@ -135,23 +136,20 @@ export function WebcamOverlay({
   onClose: () => void;
 }) {
   return (
-    <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={onClose}>
-      <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
-        <video ref={videoRef} className="pg-webcam-video" playsInline muted />
-        <Button variant="outline" onClick={onCapture}>
-          Capture
-        </Button>
-      </div>
-      <button
-        type="button"
-        className="pg-lightbox-close"
-        title="Close without a picture"
-        aria-label="Close without a picture"
-        onClick={onClose}
-      >
-        ✕
-      </button>
-    </div>
+    <Lightbox open onClose={onClose} label="Webcam" closeLabel="Close without a picture">
+      {/* The live view, mirrored the way every video-call self-view is: an
+          unmirrored preview makes aiming the camera feel inverted. Only the
+          PREVIEW is flipped — the capture draws the raw frame. */}
+      <video
+        ref={videoRef}
+        className="max-h-[calc(100vh-11rem)] max-w-full -scale-x-100 rounded-md bg-muted"
+        playsInline
+        muted
+      />
+      <Button variant="outline" onClick={onCapture}>
+        Capture
+      </Button>
+    </Lightbox>
   );
 }
 

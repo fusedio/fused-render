@@ -12,7 +12,7 @@ export function KeyBuilder({
 }: {
   onChange: (key: string, valid: boolean) => void;
   inputId?: string;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  inputRef?: React.RefObject<HTMLInputElement>;
 }) {
   const [kind, setKind] = useState<KeyKind>("simple");
   const [raw, setRaw] = useState("");
