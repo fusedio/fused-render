@@ -918,9 +918,9 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
    own bottom margin is for sitting above a grid; here it is the last thing. */
 .access-denied {
   /* Full width of the listing like the strip is on Home (a band, not a
-     floating plate), with the same ~28px gutters Home's column has: the cell's
-     own 24px of padding plus a little margin here. */
-  margin: 4px 4px 12px;
+     floating plate). Side gutters: the cell's own 24px of padding plus 40px
+     here — wider than Home's 28px on purpose, the listing is a wider column. */
+  margin: 8px 40px 16px;
   /* The listing's td is `white-space: nowrap` (one entry per line); this cell
      holds prose and a card, both of which must wrap inside the 640px. */
   white-space: normal;
