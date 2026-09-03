@@ -141,12 +141,16 @@ def test_detach_kwargs_are_setsid_on_posix(monkeypatch):
     assert agent._DETACH == {"start_new_session": True}
 
 
-def test_start_detaches_with_the_platform_kwargs(tmp_path):
+def test_start_detaches_with_the_platform_kwargs(tmp_path, monkeypatch):
     """start_new_session is silently ignored on Windows, so the run must be
     detached with creationflags there instead. `_start` Popens session_host.py
     now, not the CLI directly — the CLI is spawned (with this SAME `_DETACH`)
     one process further in, by the host itself — so this is the process whose
-    kwargs the platform's detach discipline actually has to be asserted on."""
+    kwargs the platform's detach discipline actually has to be asserted on.
+    `subprocess` is the one real, shared stdlib module — patching its Popen
+    has to go through monkeypatch so it is undone at teardown, not a raw
+    attribute assignment, which would leak into every later test in the
+    process (including ones that spawn real subprocesses of their own)."""
     captured = {}
 
     class FakeStdin:
@@ -170,7 +174,7 @@ def test_start_detaches_with_the_platform_kwargs(tmp_path):
         target = tmp_path / "sample.html"
         target.write_text("<html></html>")
         agent.RUNS = str(tmp_path / "runs")
-        agent.subprocess.Popen = fake_popen
+        monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
         result = agent._start(str(target), "hello", "", "", "")
     # Every patch above is undone by here — a failure in the assertions below
     # is an ordinary pytest failure, not a crashed worker.
