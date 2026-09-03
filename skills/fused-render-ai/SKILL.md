@@ -24,7 +24,7 @@ Universal rules:
 - Relative file paths resolve beside page.
 - Rejections: Error with `.type` (+ `.jobId` when job existed) — table below.
 - Calls run concurrent — disable buttons in flight (image/video/transcribe serialize silently server-side).
-- Local-only. Export refuses pages containing literal text `fused.ai.text(` — `fused.env` guard does NOT help. Other verbs pass check, then fail hosted. Keep AI in local-only companion page.
+- Needs a local runtime, so it depends on WHICH export. **Hosted** export refuses any page containing the literal text `fused.ai.text(` — `fused.env` guard does NOT help; other verbs pass the check, then fail served. Only there is a local-only companion page the answer. A **`.fused` app file** deliberately allows `fused.ai.text(` (D388): it opens inside the recipient's own fused-render, and one without claude or a local model just gets the `ai_unavailable` rejection you already handle.
 
 ## Provider / model
 
@@ -71,7 +71,7 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 | `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb) |
 | `bad_request` | Call wrong — read `.message` |
 | `ai_error` | Ran, failed (bad id, OOM, crash, render past cap) |
-| `timeout` | Text, 600 s |
+| `timeout` | Text: 600 s on Claude, 900 s local (image 900 s, video 2 h, transcribe far longer) — size a UI timeout off the tier you're calling, not off 600 |
 | `cancelled` | abortSignal / cancel / row ✕ — not a failure |
 
 Debug machine (not page): `which claude`; `GET /api/ai/runtime`; `POST /api/ai` with `X-Fused: 1` (required on every POST).

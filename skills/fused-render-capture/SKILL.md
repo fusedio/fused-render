@@ -7,7 +7,7 @@ description: Use when page records screen/mic or grabs screenshot — fused.capt
 
 Native capture → result = FILE on this machine: path known before recording ends, file written live — `rec.path`/`rec.url` usable mid-recording (tail it, feed `fused.ai.transcribe({path})` after). Survives navigation (it's a download-manager job row). Local only — no `fused.capture` on exported pages.
 
-**Draw UI off `await fused.capture.sources()`** (never prompts) — `{video: {available, reason}, displays, microphones}`. `displays` empty on Linux/Wayland by design. Don't sniff platform; read refusals + `reason`s.
+**Draw UI off `await fused.capture.sources()`** (never prompts — the permission dialog rides the first real capture) — `{video, audio, systemAudio, screenshot}`, EACH `{available, granted, reason}`, plus `displays` and `microphones`. Gate every control off its own key (mic button off `audio`, `audio: "system"`/`"both"` off `systemAudio`) — `available: false` always carries a `reason`, and a start rejects `unavailable` with that same sentence. `displays` empty on Linux/Wayland by design. Don't sniff platform; read refusals + `reason`s.
 
 Platform matrix:
 
@@ -30,7 +30,7 @@ So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings t
 
 `fused.capture.list()` finds live recordings (incl. pre-reload); `attach(id)` returns handle. Check on load before starting second recording. Microphone names empty until browser mic permission granted once.
 
-Rejections: `.type` `"unavailable"` (machine can't — show `.message`) or `"bad_request"` (your args).
+Rejections: `.type` `"unavailable"` (machine can't — show `.message`), `"bad_request"` (your args), or — on `stop()`/`cancel()` only — `"capture_error"`: the call went through but the file failed to write, so there is no playable recording. Handle all three; a two-branch `switch` swallows a lost take.
 
 ## Two rules
 

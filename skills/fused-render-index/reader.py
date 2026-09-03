@@ -3,16 +3,7 @@
 Copy this file into the app (declare `duckdb` in its pyproject.toml) — app
 venvs cannot `import fused_render`.
 """
-import json, os, re, duckdb
-
-
-def _branch_ref(ref):
-    # Must match sanitize() in fused_render/_branch.py — the server resolved the
-    # store path through it, so any drift here silently opens the WRONG store.
-    if not ref or ref.lower() in ("main", "master", "head"):
-        return ""  # a default branch IS the baseline: no branches/ nesting
-    collapsed = re.sub(r"[^a-z0-9]+", "-", ref.lower()).strip("-")
-    return collapsed[:12].rstrip("-")  # _MAX_LEN = 12
+import json, os, duckdb
 
 
 def store_dir(location=None):
@@ -20,10 +11,17 @@ def store_dir(location=None):
     # below is the fallback (fused.runPython inherits os.environ).
     if location:
         return location
-    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    ref = _branch_ref(os.environ.get("FUSED_RENDER_BRANCH"))
-    if ref:
-        home = os.path.join(home, "branches", ref)
+    # FUSED_RENDER_HOME_DIR is exported by the server ALREADY BRANCH-RESOLVED
+    # (server/app.py:export_app_env), so re-derive nothing from it: no branches/
+    # nesting, no ref sanitizing. Duplicating those rules is how the copies
+    # drift, and a branch build's baked ref is not even in the environment —
+    # same reasoning as templates/shared/appenv.py:home_dir (SPEC PY-15, D166).
+    home = os.environ.get("FUSED_RENDER_HOME_DIR")
+    if not home:
+        # No server around: the un-branched baseline, the same override the app
+        # honors. A branch-scoped store is only findable via the server.
+        home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+            "~/.fused-render")
     return os.path.join(home, "index")
 
 

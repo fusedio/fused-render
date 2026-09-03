@@ -90,7 +90,21 @@ Params ARE state. Controls write params; `onChange` = single re-render path; `dr
 
 Shell renders pages nobody opened: /apps cards, listing peeks, hovers — stamped `_preview=1` (+`_nofocus=1`), many boot at once. Ungated boot = N cold starts on home page.
 
-- Read flag AND climb parent frames (inherited; only ancestor URL may carry it). Copy `isPreview()` from `fused_render/templates/fusedapp/template.html`.
+- Read flag AND climb parent frames — inherited, and only an ANCESTOR URL may carry it. Reading `location.search` alone answers `false` for a framed page and boots it. Copy this (the runtime's own `selfOrAncestorHasFlag`, `fused_render/static/runtime.js`):
+
+```js
+function isPreview() {
+  if (new URLSearchParams(location.search).get("_preview") === "1") return true;
+  try {
+    let w = window;
+    while (w.parent && w.parent !== w) {
+      w = w.parent;
+      if (new URLSearchParams(w.location.search).get("_preview") === "1") return true;
+    }
+  } catch (e) { /* cross-origin ancestor: the climb ends here */ }
+  return false;
+}
+```
 - Under preview: cheap static placeholder. NO runPython, network, model loads, daemon starts, capture, writeFile, trackJob, timers, websockets, state mutation, dependency installs.
 - Forward `?_preview=1&_nofocus=1` to iframes you mount.
 - Param sync stops at each embed shell boundary — nested embeds keep params independent (tabs don't share state).
@@ -138,5 +152,5 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - `writeFile` on existing file without `expectedMtime` = silent clobber; create-if-absent = `{create: true}`, not stat-then-write.
 - `readFile` for media → use `rawUrl`.
 - Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
-- `fused.ai` in exportable page → exporter rejects textually; env guard no help (`fused-render-ai`).
+- `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
 - Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.

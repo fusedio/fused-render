@@ -15,7 +15,7 @@ fused-render keeps parquet index of filesystem (one row per file, one per dir). 
 
 ## Readiness rule (the one that matters)
 
-Zero rows means BOTH "no matches" and "no index yet". Rendering second as first = silent lie this design exists to prevent. Both JS calls resolve with `ready: {indexed, scanning, stale, reason}` (`reason`: `no-index` / `outdated` / `not-covered` / null); Python reader returns `(None, None)` for empty store. `indexed: false` → "building / not indexed", never "no results". `stale` never means "matches fs" — index always slightly behind.
+Zero rows means BOTH "no matches" and "no index yet". Rendering second as first = silent lie this design exists to prevent. Both JS calls resolve with `ready: {indexed, scanning, stale, reason}` (`reason`: `no-index` / `not-covered` / null — `outdated` is a `/api/git-repos` value only, never on the bridge); Python reader returns `(None, None)` for empty store. `indexed: false` → "building / not indexed", never "no results". `stale` never means "matches fs" — index always slightly behind.
 
 ## JS: `fused.fileIndex`
 
@@ -30,7 +30,18 @@ Facts:
 - Failures reject Error with `.message` (duckdb/server text), `.type`, `.status` — render `.message`.
 - Index calls **not superseded like `runPython`'s**: slower earlier keystroke's reply can land last. Guard own renders (below).
 - Page of rows ≠ match count — ask `count(*)` separately to page.
-- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/scan-folder`, `/api/index/cancel`, `/api/index/rank`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/lookup`, `/api/index/runs`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. Shapes: `fused_render/server/routers/` + `fused_render/static/runtime.js` comments. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
+- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/scan-folder`, `/api/index/cancel`, `/api/index/rank`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/lookup`, `/api/index/runs`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
+
+  Params that bite (rest: `fused_render/server/routers/index.py`):
+
+  | Route | Params |
+  |---|---|
+  | `GET /api/index/lookup` | `q`, `limit` (100, capped 5000), `offset`, `sort` (`mtime`; **unknown value silently falls back to it**, no 400) |
+  | `GET /api/index/search` | `root` (**required**, else 400), `q`, `limit` (200000 — whole corpus), `fmt` (`""` = per-entry objects; `"columns"` = parallel arrays; anything else = `""`) |
+  | `GET /api/index/stats` | `root` (`""` → manifest's `last_root`, not every root) |
+  | `GET /api/index/status` | `run_id` (`""` → most recent run), `since`. Answers `has_index`+`indexed`, `scanning`, `files_indexed`, `last_completed_at`+`updated`, plus the run readout `run_id, root, phase, dirs, files, reused, current, summary, cancelled, error, running`. `scanning: true` means "say indexing…", NOT "stop using the index" |
+  | `GET /api/index/rank` | `root`, `q`, `limit` (200) |
+
 - Store location fixed: `home_dir()/index` — `/api/index/config` edits roots/ignore, cannot relocate store (only `FUSED_RENDER_HOME` at server start moves it).
 
 ### The canonical shape (per-keystroke)
@@ -55,9 +66,9 @@ App venvs cannot `import fused_render` — copy `reader.py` (beside this SKILL.m
 - **THE trap: never glob `files/*.parquet`.** Old generations stay on disk beside new — glob double-counts (~2x) silently, only on machines scanned twice. Open exactly what `partitions.json` names.
 - Relation API (`con.read_parquet(list).create_view("files")`) — `CREATE VIEW ... read_parquet(?)` refuses prepared params.
 - No manifest / zero partitions / no dirs.parquet → return "not indexed" to page, don't raise.
-- Dev worktrees = branch-scoped stores (`FUSED_RENDER_HOME` + `branches/<sanitized ref>/`, `fused_render/_branch.py`). Pass `location` that `/api/index/stats` reports; don't resolve path yourself.
+- **Never re-derive the store path.** Dev worktrees and packaged branch builds nest it (`branches/<sanitized ref>/`), and the ref may be BAKED IN — not in the environment at all. Best: pass the `location` that `/api/index/stats` reports. Else read `FUSED_RENDER_HOME_DIR`, which the server exports already branch-resolved, verbatim (SPEC PY-15 / D166, same rule as `fused_render/templates/shared/appenv.py:home_dir`). `FUSED_RENDER_BRANCH` + a hand-rolled sanitize opens the WRONG store and the page then says "not indexed" over a full one.
 
-Deeper reference: `fused_render/index/query.py` (+ sanitize rule in `fused_render/_branch.py`).
+Deeper reference: `fused_render/index/query.py`.
 
 ## Deriving entity kinds
 
