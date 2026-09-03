@@ -19,7 +19,7 @@ import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
-import { openOnboarding } from "@shell/onboarding/state";
+import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -605,13 +605,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     label: "Help",
     icon: TOURS_ICON,
     submenu: [
-      // The first-run wizard, on demand. Reopening touches neither flag — it
-      // is a replay, like the tours below it.
-      {
-        href: "/preferences#setup",
-        label: "Setup wizard",
-        onPick: () => openOnboarding(),
-      },
+      // The first-run wizard, on demand — its own page (shell/onboarding).
+      // Reopening touches neither flag until the user finishes or closes it.
+      { href: ONBOARDING_PATH, label: "Setup wizard" },
       ...TOURS.map((tour) => ({
         href: `/preferences#tour-${tour.id}`,
         label: tour.title,

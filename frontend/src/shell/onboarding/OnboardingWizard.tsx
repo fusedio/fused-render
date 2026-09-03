@@ -1,6 +1,7 @@
-// The first-run wizard: a full-screen takeover, four steps, every one of them
-// skippable. Mounted at the app root (App.tsx) above every route, because a
-// pre-app surface cannot live inside one.
+// The first-run wizard: the `/onboarding` page, four steps, every one of them
+// skippable. App.tsx renders it ALONE on that route — no sidebar, no status
+// bar — and redirects a fresh install there at boot (shell/onboarding/state
+// has the rule). Leaving is a navigation like any other.
 //
 //   1 About        — what FusedRender is (download-page copy + video)
 //   2 Claude Code  — installed / new enough / signed in / on PATH, with buttons
@@ -8,25 +9,23 @@
 //   4 First app    — the Home composer, or a showcase local-AI app
 //
 // Steps 1–3 write nothing. Step 4's create (or a showcase open) is the only
-// durable action and doubles as "complete". "Skip for now" / ✕ / Escape record
-// a DISMISS — a different flag, so a later build can tell the two apart. Both
-// stop the auto-show; neither is undone by reopening from Help › Setup.
-//
-// While open, App.tsx holds the auto-tours (shell/onboarding/state); they fire
-// on the route the user lands on once this closes.
+// durable action and doubles as "complete". ✕ / Escape record a DISMISS — a
+// different flag, so a later build can tell the two apart. Both stop the
+// auto-show; neither is undone by reopening from Help › Setup wizard.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
 import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
+import { navigateUrl } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
+import { FusedMark } from "@platform/ui/FusedMark";
 
 import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
-import { closeOnboarding, openOnboarding, shouldAutoShow, useOnboardingOpen } from "./state";
 
 type StepId = "about" | "claude" | "fda" | "app";
 
@@ -37,6 +36,9 @@ const STEPS: { id: StepId; label: string }[] = [
   { id: "app", label: "First app" },
 ];
 
+// Where the wizard lets go: the front door.
+const EXIT_PATH = "/home";
+
 // Full Disk Access is a macOS concept. The server says which platform it is
 // on (claude health carries `platform`); until that lands, the browser's own
 // hint decides so the strip does not jump when the probe answers.
@@ -45,20 +47,7 @@ function isMac(platform: string | null | undefined): boolean {
   return /Mac/i.test(navigator.platform || navigator.userAgent);
 }
 
-export function OnboardingWizard({ config, pathname }: { config: Config; pathname: string }) {
-  const open = useOnboardingOpen();
-
-  // Auto-show once, from the flag the server handed over at boot.
-  useEffect(() => {
-    if (shouldAutoShow(config)) openOnboarding();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot-time decision
-  }, []);
-
-  if (!open) return null;
-  return <Wizard config={config} pathname={pathname} />;
-}
-
-function Wizard({ config, pathname }: { config: Config; pathname: string }) {
+export function OnboardingWizard({ config }: { config: Config }) {
   const [index, setIndex] = useState(0);
   // ONE setup machine for the whole wizard, not one per step: a sign-in done
   // on step 2 must be what step 4 reads, and two hook instances would each
@@ -71,36 +60,44 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
   // Counted over the steps this machine actually has (no FDA off macOS).
   const eyebrow = `Step ${index + 1} of ${steps.length}`;
 
-  // Fire-and-forget: the flag is a courtesy to the NEXT launch, and a failed
-  // write must not hold the overlay over the app the user is trying to reach.
+  // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
+  // to the NEXT launch, and a failed write must not hold the page over the
+  // app the user is trying to reach.
+  const settled = useRef(false);
   const markComplete = useCallback(() => {
+    if (settled.current) return;
+    settled.current = true;
     completeOnboarding().catch(() => undefined);
   }, []);
   const finish = useCallback(
     (how: "complete" | "dismiss") => {
       if (how === "complete") markComplete();
-      else dismissOnboarding().catch(() => undefined);
-      closeOnboarding();
+      else if (!settled.current) {
+        settled.current = true;
+        dismissOnboarding().catch(() => undefined);
+      }
+      navigateUrl(EXIT_PATH);
     },
     [markComplete],
   );
 
-  // Step 4's actions (the composer's create, a showcase card) NAVIGATE — the
-  // overlay closes when the route changes, not when the action starts. The
-  // composer's own `task_error` ("folder created, Claude didn't start") lands
-  // in a composer that is still on screen, where the user can read it, instead
-  // of dying with an overlay that closed on `onCreated`.
+  // Step 4's actions (the composer's create, a showcase card) NAVIGATE — App
+  // swaps this page out on the route change, not when the action starts, so
+  // the composer's own `task_error` ("folder created, Claude didn't start")
+  // lands in a composer that is still on screen where the user can read it.
   //
   // A navigation off the last step IS completion (a showcase card opened, or
   // the composer landed on the new app) — so cards need no click hook, and a
   // click that does not navigate (a card's export icon) completes nothing.
-  const firstPath = useRef(pathname);
-  useEffect(() => {
-    if (pathname === firstPath.current) return;
-    if (last) markComplete();
-    closeOnboarding();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to the route only
-  }, [pathname]);
+  // The unmount is that navigation.
+  const lastRef = useRef(last);
+  lastRef.current = last;
+  useEffect(
+    () => () => {
+      if (lastRef.current) markComplete();
+    },
+    [markComplete],
+  );
 
   const next = useCallback(() => {
     if (last) finish("complete");
@@ -125,29 +122,18 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [finish, next, last]);
 
-  // Body scroll stays put underneath.
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, []);
-
   return (
     <div
-      className="onboarding fixed inset-0 z-[60] flex flex-col bg-background text-foreground"
-      role="dialog"
-      aria-modal="true"
+      className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
       aria-label="Set up FusedRender"
     >
-      {/* Top bar: brand · progress · skip */}
+      {/* Top bar: brand · steps · close */}
       <div className="flex items-center gap-4 border-b border-border px-5 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <span className="grid size-6 place-items-center rounded-md bg-primary text-[11px] font-bold text-primary-foreground">
-            F
+        <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
+          <span className="flex shrink-0 items-center text-[var(--accent)]">
+            <FusedMark size={20} />
           </span>
-          <span className="truncate">Set up FusedRender</span>
+          <span className="truncate">Fused Render</span>
         </div>
 
         {/* Every step is a link, in both directions: nothing before step 4
@@ -191,14 +177,15 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
           })}
         </ol>
 
-        <div className="ml-auto flex items-center gap-1 sm:ml-0">
-          <Button variant="ghost" size="sm" onClick={() => finish("dismiss")}>
-            Skip for now
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => finish("dismiss")} aria-label="Close setup">
-            <X />
-          </Button>
-        </div>
+        <button
+          type="button"
+          onClick={() => finish("dismiss")}
+          aria-label="Close setup"
+          title="Skip for now"
+          className="ml-auto grid size-8 cursor-pointer appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:ml-0"
+        >
+          <X className="size-4" />
+        </button>
       </div>
 
       {/* Body */}
