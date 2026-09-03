@@ -478,3 +478,48 @@ export function trackSeenIds(
   }
   return { seen: next, hasNew };
 }
+
+// ---- What the status-bar chip says about the work (statusbar redesign) -----
+//
+// The bar has room for ONE word per chip. For a single running job that word
+// is what the job itself says it is doing, read off the LEADING -ing VERB of,
+// in order: its `detail` (the live phase a reporter writes — "Denoising",
+// "Decoding" — the same word the page shows under its own progress bar, so
+// the bar and the page never disagree), then its `title` ("Erasing text using
+// flux" → "Erasing"; an image prompt has no verb and yields nothing). Anything
+// else falls back to the kind: a download is "Downloading", every other task
+// is "Working", and a job parked on a question is "Waiting".
+function leadingVerb(text: string): string | null {
+  const first = text.trim().split(/\s+/)[0] ?? "";
+  const word = first.replace(/[^\p{L}\p{N}-]/gu, "");
+  if (!/ing$/i.test(word) || word.length < 5 || word.length > 14) return null;
+  return word[0].toUpperCase() + word.slice(1);
+}
+
+export function jobTypeLabel(job: Job): string {
+  if (job.state === "waiting") return "Waiting";
+  const detail = job.detail || "";
+  // The one non-verb status a reporter writes: a Claude call parked behind
+  // another ("Queued — another Claude call is in flight", server/ai.py).
+  if (/^queued\b/i.test(detail.trim())) return "Queued";
+  const verb = leadingVerb(detail) ?? leadingVerb(job.title);
+  if (verb) return verb;
+  if (job.kind === "download") return "Downloading";
+  // A scheduled Claude run's title is the prompt and its detail the target
+  // path — neither carries a verb — so it names its own kind of work.
+  if (job.id.startsWith(SCHEDULE_JOB_PREFIX)) return "Running";
+  return "Working";
+}
+
+// One progress figure for the whole bar: the mean fraction of the RUNNING
+// jobs that report one. `undefined` = nothing running, draw no line at all;
+// `null` = running but nobody has a total yet, draw the indeterminate sweep.
+// A mean, not Σdone/Σtotal, because units differ per job (bytes vs seconds
+// vs steps) and summing them is meaningless.
+export function aggregateProgress(jobs: readonly Job[]): number | null | undefined {
+  const running = jobs.filter(isRunning);
+  if (running.length === 0) return undefined;
+  const known = running.map(jobFraction).filter((f): f is number => f !== null);
+  if (known.length === 0) return null;
+  return known.reduce((a, b) => a + b, 0) / known.length;
+}

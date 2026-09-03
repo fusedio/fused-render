@@ -74,11 +74,11 @@
 // reporting page reads on its next tick and acts on. The row therefore says
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import StatusDot from "@platform/ui/StatusDot";
-import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { useStatusChip } from "@platform/lib/statusChip";
+import StatusChip from "@platform/ui/StatusChip";
 import {
+  jobTypeLabel,
+  aggregateProgress,
   cancelJob,
   dismissJob,
   engineDuration,
@@ -684,7 +684,7 @@ export function DownloadManagerView({
    *  `mock.module`: a process-wide replacement has contaminated unrelated
    *  suites here before. */
   initialCollapsed?: boolean;
-  /** Has the first /api/jobs read landed (autoExpand.ts's `ready`)? Optional
+  /** Has the first /api/jobs read landed (kept for callers; the chip no longer auto-opens on it)? Optional
    *  so a test mounting this view with a fixed list keeps the old behaviour. */
   ready?: boolean;
   /** The Background tasks section (formerly EnginesDock's own chip). Optional
@@ -700,10 +700,11 @@ export function DownloadManagerView({
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
+  // Hover previews, click pins, nothing auto-opens — `lib/statusChip.ts`.
+  // `initialCollapsed` is a test seam: false mounts the panel already pinned.
+  const chip = useStatusChip("activity", !(initialCollapsed ?? true));
   // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
   // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
   // Forward the FULL snapshot to whoever asked (`onJobsReported`), independent
   // of `jobs` below (what this card draws). In an effect and not in the render
   // body: it can set state in a parent, and doing that while rendering is what
@@ -746,27 +747,7 @@ export function DownloadManagerView({
   // this card draws nothing for it to occupy — so nothing about a terminal
   // job goes into `alsoDrawn` here either; that guarantee belongs to
   // `RepoUpdatesDock.tsx`, the panel that actually draws those rows.
-  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    jobs.map((j) => `job:${j.id}`),
-    collapsed,
-    ready,
-    { alsoDrawn: (engines?.engines ?? []).map((e) => `engine:${e.engine_id}`) },
-  );
-  // OPEN is the persisted preference OR a transient auto-open (D574) — never
-  // `collapsed` alone from here down, and the auto-open half is deliberately
-  // not written back to localStorage (autoExpand.ts's own header on why that
-  // write, not the opening, was D567's actual defect).
-  // The saved preference, overridden in EITHER direction by whichever
-  // transient flag is standing (D580 adds the closing half; the two are
-  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
-  // not two independent booleans). `autoClose` is tested first because a
-  // drained list beats a stale auto-open that the same drain is retiring.
-  const open = autoClose ? false : !collapsed || autoOpen;
-
-  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
-  // section, and only transiently — see `exclusiveSection.ts` on why the
-  // arbiter must not touch the saved preference.
-  useExclusiveSection("activity", open, forceClose);
+  const open = chip.open;
 
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
   // used to describe): the bar's sections are always on screen, this one
@@ -802,26 +783,7 @@ export function DownloadManagerView({
   // the outcome, so clearing the override is the whole of the work and
   // nothing is persisted. A click on a chip whose state came from the
   // preference itself still flips and saves it, exactly as before.
-  const toggle = () => {
-    const wantOpen = !open;
-    acknowledge();
-    if (collapsed === wantOpen) setCollapsed(!wantOpen);
-  };
-
-  // Backgrounding the panel (outside pointer-down, Escape). A hand-opened
-  // panel persists the close, same as clicking the chip would; an auto-opened
-  // one only drops the transient flag.
-  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
-  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
-  // click on a SIBLING CHIP is outside it, so the persisting version turned
-  // "the user opened Models" into `jobs-collapsed = "1"` plus
-  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
-  // preference became write-only — the exact "the app decided, not the user"
-  // failure the D567 guard exists to prevent, arriving through the dismiss
-  // path instead of through `forceClose`. So this now IS `forceClose`: the
-  // panel goes away, and what the user last chose is left alone.
-  const close = forceClose;
-  useDismissOnOutside(hostRef, open, close);
+  const toggle = chip.toggle;
 
   // THE DOT ANSWERS "IS THERE WORK RIGHT NOW", NOT "IS THERE ANYTHING TO SHOW"
   // (status-bar merge, brief's own rule): jobs running or waiting fill it; a
@@ -830,44 +792,42 @@ export function DownloadManagerView({
   // having it (see `idle`, above, which DOES count it). A machine running a
   // background engine and no jobs therefore draws an active, clickable
   // "Activity" chip with an outlined (unfilled) dot.
+  // THE CHIP READS (D673, statusbar redesign):
+  //   nothing          "Activity", muted
+  //   one live job     the job's own phase verb — "Denoising", "Downloading" —
+  //                    with its progress drawn as a line along the chip's top
+  //   2+ jobs          "Activity N", line = the mean of the running fractions
+  // A running engine — persistent STATE, not work — keeps the chip un-muted
+  // (`idle`) but is not counted and draws no line, same rule the old dot had.
+  // `only` must be LIVE work: a lone terminal row is not "what the machine is
+  // doing" — its chip stays "Activity".
   const runningCount = jobs.length;
+  const live = (j: Job) => isRunning(j) || j.state === "waiting";
+  const only = jobs.length === 1 && live(jobs[0]) ? jobs[0] : null;
+  const label = only ? jobTypeLabel(only) : "Activity";
+  const chipCount = runningCount >= 2 ? runningCount : 0;
+  const progress = aggregateProgress(jobs);
+  const ariaLabel = idle
+    ? "Activity, nothing running"
+    : only
+      ? `Activity: ${only.title}`
+      : runningCount === 0
+        ? `Activity, ${engineCount} background task${engineCount === 1 ? "" : "s"}`
+        : `Activity, ${runningCount} running`;
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — a status-bar item there is a label you click, not a
-          disclosure triangle; hover is the only affordance, at rest and
-          idle alike). `.is-idle` is the ONE remaining signal that this
-          section has nothing in it — muted text, same clickable chip,
-          same hover wash — now that the idle SENTENCE ("No jobs", D579) has
-          moved into the panel below rather than living in the chip. */}
-      <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
-        onClick={toggle}
-        aria-expanded={open}
+    <div className="dl-host" {...chip.hostProps}>
+      <StatusChip
+        label={label}
+        count={chipCount}
+        tone={idle ? "idle" : "on"}
+        progress={progress}
+        open={open}
+        pinned={chip.pinned}
         title={open ? "Hide activity" : "Show activity"}
-      >
-        {/* `Activity` (status-bar merge): this chip is no longer only jobs —
-            it now also carries the running engines that used to be their own
-            chip beside it, so `Jobs` (D579's own word for the narrower set)
-            no longer names everything it shows. `Activity` was rejected back
-            then for being the vaguest of three labels over a chip that was
-            ONLY jobs; it is the right word again now that the chip covers
-            both. (Models made this same trip during the merge and then split
-            back out into its own chip — `shell/ModelsDock.tsx` — so it is not
-            one of the things "Activity" has to cover any more.) */}
-        {/* The label, and the bar's one shared indicator beside it (D588,
-            D590). `StatusDot` must stay a DIRECT child of this button — that
-            is what centres it (its own header has the argument). It answers
-            "is there work right now" — see `runningCount`, above — not "is
-            there anything to show", which is `idle`'s question. */}
-        <span className="dl-summary">Activity</span>
-        <StatusDot
-          on={runningCount > 0}
-          label={runningCount > 0 ? "jobs running" : "no jobs running"}
-        />
-      </button>
+        ariaLabel={ariaLabel}
+        onClick={toggle}
+      />
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed
           turning false, there is no separate "peek" state. Collapsed shows NO

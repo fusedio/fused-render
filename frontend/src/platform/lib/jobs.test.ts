@@ -4,6 +4,9 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
+  aggregateProgress,
+  jobTypeLabel,
+  SCHEDULE_JOB_PREFIX,
   activeJobByModel,
   GRACE_MS,
   jobAmount,
@@ -353,4 +356,50 @@ test("terminalNotifications still drops a scheduled run's own job", () => {
 test("terminalNotifications leaves an ordinary terminal job alone", () => {
   const jobs = [job({ id: "dl", state: "done" })];
   expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
+});
+
+// ---- the chip's one word and one line (D673, statusbar redesign) ------------
+
+test("a single job's chip word is its title's own -ing verb, capitalised", () => {
+  expect(jobTypeLabel(job({ title: "erasing text using flux" }))).toBe("Erasing");
+  expect(jobTypeLabel(job({ title: "Transcribing meeting.mp3" }))).toBe("Transcribing");
+});
+
+test("the live phase in `detail` wins over the title — the bar says what the page says", () => {
+  expect(
+    jobTypeLabel(job({ title: "Studio photograph of a polished chrome robot", detail: "Denoising · 0 / 4" })),
+  ).toBe("Denoising");
+  expect(jobTypeLabel(job({ title: "Erasing text", detail: "Decoding" }))).toBe("Decoding");
+  expect(jobTypeLabel(job({ title: "Erasing text", detail: "step 3 of 9" }))).toBe("Erasing");
+});
+
+test("a title with no leading verb falls back to the kind", () => {
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download" }))).toBe("Downloading");
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "task" }))).toBe("Working");
+  expect(jobTypeLabel(job({ title: "Ring sizing", kind: "task" }))).toBe("Working");
+});
+
+test("a scheduled Claude run says Running; a queued Claude call says Queued", () => {
+  expect(
+    jobTypeLabel(job({ id: SCHEDULE_JOB_PREFIX + "abc", kind: "task", title: "Summarise the inbox", detail: "/Users/me/mail" })),
+  ).toBe("Running");
+  expect(jobTypeLabel(job({ title: "Claude", detail: "Queued — another Claude call is in flight" }))).toBe("Queued");
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download", detail: "Preparing MLX…" }))).toBe("Preparing");
+});
+
+test("a job parked on a question says Waiting whatever its title", () => {
+  expect(jobTypeLabel(job({ title: "Erasing text", state: "waiting" }))).toBe("Waiting");
+});
+
+test("aggregate progress: nothing running draws no line, no totals sweep, else the mean", () => {
+  expect(aggregateProgress([])).toBeUndefined();
+  expect(aggregateProgress([job({ state: "done", done: 1, total: 1 })])).toBeUndefined();
+  expect(aggregateProgress([job({ state: "running", done: null, total: null })])).toBeNull();
+  expect(
+    aggregateProgress([
+      job({ state: "running", done: 25, total: 100 }),
+      job({ state: "running", done: 75, total: 100 }),
+      job({ state: "running", done: null, total: null }),
+    ]),
+  ).toBeCloseTo(0.5);
 });
