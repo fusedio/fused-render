@@ -11933,20 +11933,17 @@ logwrap.addEventListener("scroll", () => {
 // of the turn arrived off-screen — the reported "some elements come in and mess
 // that behaviour".
 //
-// So growth is observed instead of announced. A ResizeObserver on the two
-// children of the scrollport fires on any height change whatever caused it, and
-// the answer is the same one flag: if the reader is following, follow. This
-// makes followBottom() at a write site a belt-and-braces nicety rather than the
-// mechanism, which is why none of them had to be hunted down.
+// So growth is observed instead of announced. A ResizeObserver on the
+// scrollport's transcript log fires on any height change whatever caused it,
+// and the answer is the same one flag: if the reader is following, follow.
+// This makes followBottom() at a write site a belt-and-braces nicety rather
+// than the mechanism, which is why none of them had to be hunted down.
 //
 // Writing scrollTop cannot resize anything, so this observer cannot re-enter
 // itself — no "ResizeObserver loop" noise of the kind fitComposerChrome had to
 // be restructured around (see the column observer above).
-// Both children by id rather than `queueEl`, which is declared with the queue's
-// own code several thousand lines below and is still in its temporal dead zone
-// here.
 const followGrowth = new ResizeObserver(followBottom);
-for (const el of [log, document.getElementById("queue")]) followGrowth.observe(el);
+followGrowth.observe(log);
 // Belt and braces for the one growth a ResizeObserver can miss: a replaced
 // element that reserves its box up front (an <img> with width/height, an iframe
 // with a fixed height) paints into a box that never changes size, and any
