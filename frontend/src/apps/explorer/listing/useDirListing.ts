@@ -2,7 +2,7 @@
 // Load-more pagination for truncated listings, the WebSocket dir watch that
 // drives refreshes, and the "new row" tint cue.
 import { useEffect, useRef, useState } from "react";
-import { clearListPrefetch, listDir, prefetchListDir } from "@platform/lib/api";
+import { clearListPrefetch, listDir, prefetchListDir, type HttpError } from "@platform/lib/api";
 import { appearedKeys } from "@platform/lib/flip";
 import { pushToast } from "@platform/lib/toast";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
@@ -42,7 +42,8 @@ export function useDirListing(fsPath: string) {
           truncated: !!data.truncated,
           cursor: data.cursor ?? null,
         }),
-      (err: Error) => alive && setState({ status: "error", message: err.message })
+      (err: HttpError) =>
+        alive && setState({ status: "error", message: err.message, httpStatus: err.status })
     );
     return () => {
       alive = false;

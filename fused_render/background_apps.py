@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -152,7 +153,14 @@ def load_manifest(folder: str) -> Manifest | None:
         return target
 
     idle_timeout_s = app.get("idle_timeout_s")
-    if not isinstance(idle_timeout_s, (int, float)) or isinstance(idle_timeout_s, bool):
+    if (not isinstance(idle_timeout_s, (int, float)) or isinstance(idle_timeout_s, bool)
+            or not math.isfinite(idle_timeout_s)):
+        # TOML admits `inf`/`nan` for a float key, and `isinstance` alone
+        # cannot see that: an unbounded value would ride `Child.idle_timeout_s`
+        # all the way to `GET /api/engines/running`, where Starlette's
+        # `allow_nan=False` encoder turns it into a 500 the instant that
+        # daemon is live. As unusable as a wrong-typed value, so it falls back
+        # to the protocol's own default the same way a missing key does.
         idle_timeout_s = None
     retry_post = app.get("retry_post")
     if not isinstance(retry_post, bool):

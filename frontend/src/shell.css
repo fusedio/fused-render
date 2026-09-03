@@ -44,6 +44,11 @@
    adds only the rows new to it — the two checkboxes, title and description,
    the past-time note. */
 @import "./styles/new-task.css";
+/* Fourth of the family and last of it: the Cards view borrows the Board's card
+   surface (--tasks-card-bg, the 8px radius, the status ring) and adds only the
+   wall it lays them out on and the live pane inside one — so it must come after
+   both files whose vocabulary it is layering over. */
+@import "./styles/task-cards.css";
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
 @import "./styles/app-page.css";

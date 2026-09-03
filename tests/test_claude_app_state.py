@@ -1491,36 +1491,72 @@ def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
 # ------------------------------------------------- Escape has three claimants
 
 def test_escape_prefers_the_smallest_undo_it_can_do(html):
-    """Four features bind Escape in this pane, and the order is least-destructive
-    first. Closing the screenshot viewer undoes nothing at all, dismissing a
-    popover is small and repeatable, leaving annotate mode is reversible with one
-    click, killing a live turn is none of those — so an Escape pressed with a text
-    box open means the text box, and one pressed while annotating means annotate
-    mode, not the run.
+    """Three features bind Escape in this pane, and the order is
+    least-destructive first. Closing the screenshot viewer undoes nothing at all,
+    dismissing a popover is small and repeatable, leaving annotate mode is
+    reversible with one click — so an Escape pressed with a text box open means
+    the text box, and one pressed while annotating means annotate mode.
 
     The viewer leads for a stronger reason than cheapness: it is MODAL, so every
-    other claimant is literally behind it, and an Escape that stopped a run the
-    user could not see would be the worst thing this key can do."""
-    def act(viewer, open_, annotating, run):
+    other claimant is literally behind it."""
+    def act(viewer, open_, annotating):
         return _node(["function escapeAction("],
-                     "console.log(JSON.stringify(escapeAction(%s, %s, %s, %s)));"
+                     "console.log(JSON.stringify(escapeAction(%s, %s, %s)));"
                      % (json.dumps(viewer), json.dumps(open_),
-                        json.dumps(annotating), json.dumps(run)),
+                        json.dumps(annotating)),
                      html)
 
-    # the viewer outranks every other claimant, including a live run
-    assert act(True, True, True, "run-7") == "close-viewer"
-    assert act(True, False, False, None) == "close-viewer"
-    assert act(False, True, False, "run-7") == "close-composer"
-    assert act(False, True, True, None) == "close-composer"
-    # The banner says "Esc or click to stop", so Escape must leave annotate mode —
-    # and must do it in preference to ending the turn.
-    assert act(False, False, True, None) == "exit-annotate"
-    assert act(False, False, True, "run-7") == "exit-annotate"
-    assert act(False, False, False, "run-7") == "stop-run"
+    assert act(True, True, True) == "close-viewer"
+    assert act(True, False, False) == "close-viewer"
+    assert act(False, True, False) == "close-composer"
+    assert act(False, True, True) == "close-composer"
+    # The banner says "Esc or click to stop", so Escape must leave annotate mode.
+    assert act(False, False, True) == "exit-annotate"
     # Inert otherwise: this page is in an iframe and must not swallow the shell's
     # Escape for nothing.
-    assert act(False, False, False, None) == ""
+    assert act(False, False, False) == ""
+
+
+def test_escape_never_stops_a_live_run(html):
+    """It used to, as the last claimant — so a reader who reached for the key out
+    of habit (a popover this page had already closed, backing out of the shell's
+    own UI) lost the whole turn to a keystroke never aimed at the run (Akshil,
+    2026-09-03). Work in progress is not something a bare keypress may throw
+    away. Stopping is now a deliberate press on a control that says so: the stop
+    square the send button becomes, and the tasks queue card's ✕.
+
+    Pinned three ways, because any one of them alone can be reintroduced without
+    the others noticing: the decision has no stop branch, it does not even take
+    the run to branch on, and no keydown handler in the page calls stopRun()."""
+    decision = html[html.index("function escapeAction("):]
+    decision = decision[:decision.index("\n}\n")]
+    assert "stop-run" not in decision
+    assert "runId" not in decision, "the decision still takes a run to kill"
+
+    handler = html[html.index("function onEscape(e) {"):]
+    handler = handler[:handler.index("\n}\n")]
+    assert "stopRun" not in handler
+
+    # ...and nothing else reaches it from a key either. Every keydown binding in
+    # the page is swept; the stop button's own `onsubmit` paths are untouched by
+    # this and are what still call stopRun().
+    at = html.find('addEventListener("keydown"')
+    seen = 0
+    while at >= 0:
+        # The handler only, not the code that happens to follow it: every one of
+        # these bindings closes on a `});` at the start of a line (or is a
+        # one-liner naming a function), and reading past that swept in the send
+        # button's `onsubmit`, which legitimately stops runs.
+        eol = html.find("\n", at)
+        if html[at:eol].rstrip().endswith(");"):
+            end = eol                       # a one-liner naming its handler
+        else:
+            end = min(x for x in (html.find("\n});", at),
+                                  html.find("\n}, true);", at)) if x > 0)
+        seen += 1
+        assert "stopRun" not in html[at:end], html[at:end]
+        at = html.find('addEventListener("keydown"', at + 1)
+    assert seen > 3, "the keydown sweep found almost nothing to sweep"
 
 
 def test_escape_is_bound_inside_the_framed_app_too(html):
@@ -1535,10 +1571,11 @@ def test_escape_is_bound_inside_the_framed_app_too(html):
     assert "document.addEventListener(\"keydown\", onEscape" in html
 
 
-def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
+def test_the_composers_escape_does_not_also_reach_the_next_claimant(html):
     """The textarea's handler runs first and hides the popover, so without a
     stopPropagation the document binding would look at an already-closed
-    composer and end the turn as well."""
+    composer, fall through, and leave annotate mode as well. One press, one
+    undo."""
     start = html.index("annTa.addEventListener(\"keydown\"")
     head = html[start:start + 400]
     assert "stopPropagation" in head, head
