@@ -65,11 +65,12 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import ScheduleCalendar, {
-  ICON_VIEW_BOARD,
-  ICON_VIEW_CALENDAR,
-  ICON_VIEW_LIST,
-} from "./ScheduleCalendar";
+import { Calendar, Columns3, List, Plus } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
+import { Muted, Page, PageHeader } from "@platform/ui/flow/Typography";
+import ScheduleCalendar from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -471,178 +472,118 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   }, [editId, state]);
 
   return (
-    // `schedule-page` is not decoration: it is what lets the card sections opt
-    // out of the 760px content column `.prefs-page > *` imposes, while the prose
-    // inside them stays at that measure. See styles/schedule.css.
-    <div className="prefs-page schedule-page">
-      {/* Title only — no description, no mechanics paragraph: the page says
-          what it is by shape, and the line under it was buying nothing but
-          vertical space the views wanted. The app-must-be-running caveat lives
-          where a person meets its consequence — the Queued strip. */}
+    // `data-tasks-page` is the wheel-forwarding anchor TaskList reads (a wheel
+    // in the margins is handed to the list). Scoped inside the app page, the
+    // frame there owns the gutter, so the page's own inline padding goes.
+    <Page data-tasks-page className="flex-1">
       {/* Scoped, the app page's own header names the app and the tab already
           says "Tasks"; a second heading would be the page saying its name twice. */}
-      {!scope && (
-        <header className="schedule-header">
-          <h1>Tasks</h1>
-        </header>
-      )}
+      {!scope && <PageHeader title="Tasks" className="py-3" />}
 
-      {loadError && <ErrorBanner>Failed to load tasks: {loadError}</ErrorBanner>}
-      {!state && !loadError && <SkeletonLines rows={2} label="Loading tasks" />}
+      <div className={cn("flex flex-1 min-h-0 flex-col gap-3 py-3", scope ? "px-0" : "px-6")}>
+        {loadError && <ErrorBanner>Failed to load tasks: {loadError}</ErrorBanner>}
+        {!state && !loadError && <SkeletonLines rows={2} label="Loading tasks" />}
 
-      {state && (
-        <section className="prefs-section schedule-main">
-          <div className="schedule-toolbar">
-            {/* The view toggle leads, at the far left of every view — it is the
-                one control that must never change address, and anchoring it to
-                the start of the row is what guarantees that regardless of what
-                sits beside it. List first and default: the page's question is
-                "what is running", and the calendar is the drill-down for the
-                scheduled subset of it. */}
-            {/* Icon + label on each half, added 2026-08-18. The three words are
-                short and near-identical in weight, so the row read as a block of
-                text you had to actually read; a list, a set of columns and a
-                calendar are shapes you recognise before you read anything. The
-                labels stay — an icon-only switcher for a control this central
-                would be recognition traded for guessing (design-principles §4)
-                — and the marks are lucide's, at the same 14px every other glyph
-                on this page uses (ScheduleCalendar's `icon`). */}
-            {/* `schedule-view-seg` and the per-button `data-view` are the Tasks
-                tour's anchors (platform/lib/tours/tasks.ts): three other
-                controls in the app wear `.schedule-form-seg` (the calendar's
-                range, the modal's Ends), so the shared class cannot name this
-                one. Styling still hangs off `.schedule-form-seg`. */}
-            <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
-              <button type="button"
-                      data-view="list"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
-                      aria-pressed={view === "list"}
-                      onClick={() => pickView("list")}>
-                {ICON_VIEW_LIST}
-                List
-              </button>
-              <button type="button"
-                      data-view="board"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
-                      aria-pressed={view === "board"}
-                      onClick={() => pickView("board")}>
-                {ICON_VIEW_BOARD}
-                Board
-              </button>
-              <button type="button"
-                      data-view="calendar"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
-                      aria-pressed={view === "calendar"}
-                      onClick={() => pickView("calendar")}>
-                {ICON_VIEW_CALENDAR}
-                Calendar
-              </button>
+        {state && (
+          <>
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* The view toggle leads, at the far left of every view — the one
+                  control that must never change address. List first and default.
+                  `schedule-view-seg` and the per-button `data-view` are the Tasks
+                  tour's anchors (platform/lib/tours/tasks.ts). */}
+              <ToggleGroup
+                value={[view]}
+                onValueChange={(v) => {
+                  const next = v[0];
+                  if (next === "list" || next === "board" || next === "calendar") pickView(next);
+                }}
+                variant="outline"
+                size="sm"
+                spacing={0}
+                className="schedule-view-seg"
+                aria-label="View"
+              >
+                <ToggleGroupItem value="list" data-view="list" className="gap-1.5">
+                  <List className="size-3.5" aria-hidden />
+                  List
+                </ToggleGroupItem>
+                <ToggleGroupItem value="board" data-view="board" className="gap-1.5">
+                  <Columns3 className="size-3.5" aria-hidden />
+                  Board
+                </ToggleGroupItem>
+                <ToggleGroupItem value="calendar" data-view="calendar" className="gap-1.5">
+                  <Calendar className="size-3.5" aria-hidden />
+                  Calendar
+                </ToggleGroupItem>
+              </ToggleGroup>
+              {/* Search, Status and Project, on ALL THREE views: views are lenses
+                  on one dataset, and a control that vanishes when you change lens
+                  makes them read as three different pages. */}
+              <div className="flex-1" />
+              <TaskFilterControls
+                filters={filters}
+                projects={projects}
+                home={home}
+                onChange={setFilters}
+                hideArchiveStatus={view === "calendar"}
+              />
+              <Button size="sm" className="schedule-new" onClick={() => openForm("blank", null)}>
+                <Plus className="size-3.5" aria-hidden />
+                New task
+              </Button>
             </div>
-            {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
-                used to be hidden on the calendar, on the argument that it
-                answers "when" and a week with tasks filtered out of it is a week
-                that lies. That reading did not survive contact: the filters are
-                not a claim about what exists, they are how you read the page
-                this minute — the same three lenses, and a person who has just
-                narrowed the List to one project and switched to Calendar meant
-                to keep looking at that project, not to be handed everything
-                back. Views are lenses on one dataset (design-principles §1), and
-                a control that vanishes when you change lens makes them read as
-                three different pages.
 
-                They sit AFTER the toggle, which owns the row's only auto margin,
-                so nothing here can move either end of the bar. */}
-            <TaskFilterControls
-              filters={filters}
-              projects={projects}
-              home={home}
-              onChange={setFilters}
-              hideArchiveStatus={view === "calendar"}
-            />
-            <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => openForm("blank", null)}>
-              + New task
-            </button>
-          </div>
+            {tasksFailed && (
+              // One quiet line, not a banner: the form still works and only the
+              // tasks are missing.
+              <Muted className="text-xs">Tasks could not be loaded.</Muted>
+            )}
 
-          {/* No chip row under the toolbar: each filter menu already carries its
-              own count on its trigger (Status ①, Project ①), so a second row
-              restating the same thing was duplication, not reassurance — and it
-              only ever appeared for one of the two filters, which made the page
-              look like it had lost the other. Clearing is where setting is: in
-              the menu. */}
-          {tasksFailed && (
-            // One quiet line, not a banner: the form still works and only the
-            // tasks are missing. Shown on the calendar too since 2026-08-18 —
-            // its chips come from the same feed, so an empty week and an
-            // unreadable one looked identical there.
-            <p className="schedule-tv-note">Tasks could not be loaded.</p>
-          )}
-
-          {view === "calendar" ? (
-            <ScheduleCalendar
-              // The FILTERED set, same as the other two views get: the toolbar's
-              // three controls are live here now, and a filter that is shown but
-              // does nothing is worse than one that is hidden.
-              tasks={shown}
-              entries={entries}
-              queued={queued}
-              running={running}
-              onReload={reload}
-              onCreateAt={(t) => openForm(t, null)}
-              onEditEntry={editEntry}
-            />
-          ) : view === "board" ? (
-            <TaskBoard tasks={shown} home={home} onReload={reload} />
-          ) : (
-            <TaskList
-              tasks={shown}
-              home={home}
-              // A failed poll empties `tasks` too, and the List cannot tell that
-              // apart from a filter that matched nothing — but it must, because
-              // one is a reason to forget where the reader was and the other is
-              // a reason to hold onto it. See `stale` in TaskList.
-              stale={tasksFailed}
-              onEditEntry={editEntry}
-              // The folder chip as a TAG: pressing one narrows the page to that
-              // project, pressing the pinned one again clears it. It REPLACES
-              // the project selection rather than adding to it — the gesture
-              // means "show me this folder", and a press that quietly widened
-              // an existing selection would be the opposite of what it looks
-              // like. Everything else about the filters is left alone, so a
-              // status or a search already on stays on.
-              onPickProject={(project) =>
-                setFilters((f) => ({
-                  ...f,
-                  // A TOGGLE, because the chip stays on screen wearing the
-                  // state: pressing the folder you are already filtered to is
-                  // the obvious way to let it go, and it is the only way that
-                  // does not send the reader to the toolbar popover to undo a
-                  // gesture they made in the list.
-                  projects:
-                    f.projects.length === 1 && f.projects[0] === project
-                      ? []
-                      : [project],
-                }))
-              }
-              // Which project the page is pinned to — so the chip survives the
-              // filter that makes every row agree, and shows that it is on.
-              pinnedProjects={filters.projects}
-              // Cancelling a message changes server state. The 20s poll would
-              // catch it anyway, so this is about the row not looking stuck for
-              // twenty seconds, not about correctness.
-              onReload={reload}
-              emptyLabel={
-                inScope.length === 0
-                  ? scope
-                    ? "No tasks for this app yet."
-                    : "No tasks yet. Everything Claude runs for you shows up here."
-                  : "Nothing matches these filters."
-              }
-            />
-          )}
-        </section>
-      )}
+            {view === "calendar" ? (
+              <ScheduleCalendar
+                tasks={shown}
+                entries={entries}
+                queued={queued}
+                running={running}
+                onReload={reload}
+                onCreateAt={(t) => openForm(t, null)}
+                onEditEntry={editEntry}
+              />
+            ) : view === "board" ? (
+              <TaskBoard tasks={shown} home={home} onReload={reload} />
+            ) : (
+              <TaskList
+                tasks={shown}
+                home={home}
+                // A failed poll empties `tasks` too, and the List must tell that
+                // apart from a filter that matched nothing (see `stale`).
+                stale={tasksFailed}
+                onEditEntry={editEntry}
+                // The folder chip as a TAG: a press REPLACES the project selection
+                // (or clears it when it is the pinned one); everything else stays.
+                onPickProject={(project) =>
+                  setFilters((f) => ({
+                    ...f,
+                    projects:
+                      f.projects.length === 1 && f.projects[0] === project
+                        ? []
+                        : [project],
+                  }))
+                }
+                pinnedProjects={filters.projects}
+                onReload={reload}
+                emptyLabel={
+                  inScope.length === 0
+                    ? scope
+                      ? "No tasks for this app yet."
+                      : "No tasks yet. Everything Claude runs for you shows up here."
+                    : "Nothing matches these filters."
+                }
+              />
+            )}
+          </>
+        )}
+      </div>
 
       {(creating !== null || editing) && state && (
         <NewJobModal
@@ -698,6 +639,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           onCreated={reload}
         />
       )}
-    </div>
+    </Page>
   );
 }

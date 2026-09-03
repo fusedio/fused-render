@@ -41,6 +41,7 @@ import {
   useRefreshOnReturn,
 } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
@@ -209,7 +210,7 @@ function StatErrorView({
         <button type="button" disabled={busy} onClick={reconnect}>
           {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
         </button>
-        {mountErr && <div className="deploy-error">{mountErr}</div>}
+        {mountErr && <ErrorBanner className="mt-3">{mountErr}</ErrorBanner>}
       </div>
     );
   }
@@ -444,7 +445,7 @@ function ClaudeConfigView() {
   const available = useClaudeConfigAvailable();
   return (
     <div id="content">
-      <div className="cc-page">
+      <div className="flex min-h-0 flex-1 flex-col">
         {available ? (
           <Suspense fallback={<RouteFallback />}>
             <ClaudeConfig />
@@ -884,7 +885,7 @@ export default function App({ config }: { config: Config }) {
     // so React replaces the subtree regardless.
     main = (
       <div id="content">
-        <div className="cc-page">
+        <div className="flex min-h-0 flex-1 flex-col">
           <Suspense fallback={<RouteFallback />}>
             <AiModels />
           </Suspense>

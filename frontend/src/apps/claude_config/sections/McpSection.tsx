@@ -7,7 +7,12 @@
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
 import { useCallback, useId, useState } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Plus } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import { PropertyList, PropertyRow } from "@platform/ui/flow/PropertyRow";
+import { StatusBadge } from "@platform/ui/flow/StatusIcon";
+import type { StatusBucket } from "@platform/ui/status-colors";
 import * as cc from "../api";
 import type { CliResult, McpKind, McpServer, McpStatus } from "../api";
 import {
@@ -15,13 +20,14 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  Code,
   DisclosureButton,
   Empty,
-  Icon,
+  ErrorNote,
+  Group,
   List,
   ListRow,
   ListSkeleton,
-  Pill,
   SKELETON_ROWS,
   SectionToolbar,
   guard,
@@ -30,14 +36,15 @@ import {
   useChangePreview,
   useModuleData,
 } from "../bits";
-import type { PillTone } from "../bits";
 
-const STATUS: Record<McpStatus, { label: string; tone: PillTone }> = {
-  connected: { label: "connected", tone: "on" },
-  "needs-auth": { label: "needs auth", tone: "ro" },
-  failed: { label: "failed", tone: "err" },
-  pending: { label: "pending approval", tone: "neutral" },
-  unknown: { label: "unknown", tone: "neutral" },
+// Status → label + colour bucket. connected is healthy, needs-auth waits on
+// the user, failed is broken, pending is in flight, unknown is neutral.
+const STATUS: Record<McpStatus, { label: string; bucket: StatusBucket }> = {
+  connected: { label: "connected", bucket: "green" },
+  "needs-auth": { label: "needs auth", bucket: "orange" },
+  failed: { label: "failed", bucket: "red" },
+  pending: { label: "pending approval", bucket: "yellow" },
+  unknown: { label: "unknown", bucket: "neutral" },
 };
 
 const GROUPS: { kind: McpKind; heading: string }[] = [
@@ -166,49 +173,45 @@ export default function McpSection() {
           <Card>
             <CardTitle>Add a server</CardTitle>
             <CardSub>
-              Registers a user-scoped MCP server via{" "}
-              <span className="cc-mono">claude mcp add-json</span>.
+              Registers a user-scoped MCP server via <Code>claude mcp add-json</Code>.
             </CardSub>
             <CardActions>
-          <input
-            className="field-control"
-            aria-label="Server name"
-            placeholder="name"
-            value={name}
-            disabled={busy}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            className="field-control cc-grow"
-            aria-label="Server definition (JSON)"
-            placeholder='{"type":"stdio","command":"my-mcp","args":[]}'
-            value={json}
-            disabled={busy}
-            onChange={(e) => setJson(e.target.value)}
-          />
-          {/* The `Refresh` button that used to sit here is gone: re-listing the
-              servers has nothing to do with adding one, and it now lives in the
-              toolbar's refresh slot like every other tab's. */}
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
-            Add
-          </button>
+              <Input
+                className="w-48"
+                aria-label="Server name"
+                placeholder="name"
+                value={name}
+                disabled={busy}
+                onChange={(e) => setName(e.target.value)}
+              />
+              <Input
+                className="flex-1 min-w-64 font-mono md:text-xs"
+                aria-label="Server definition (JSON)"
+                placeholder='{"type":"stdio","command":"my-mcp","args":[]}'
+                value={json}
+                disabled={busy}
+                onChange={(e) => setJson(e.target.value)}
+              />
+              <Button disabled={busy} onClick={add}>
+                Add
+              </Button>
             </CardActions>
           </Card>
         </div>
       )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       {/* The module's own refusal (the CLI missing, or a non-zero list) is a
           200 with {ok:false} — it is the section's whole content when it
-          happens, so it reads as an empty state rather than a banner. */}
+          happens, so it reads as an empty state rather than an error. */}
       {data && !data.ok && <Empty>{data.error || "Could not list MCP servers."}</Empty>}
       {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading MCP servers" />}
       {data?.ok && servers.length === 0 && (
         <Empty
           action={
-            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
-              <Icon name="plus" />
+            <Button size="sm" onClick={() => setAdding(true)}>
+              <Plus />
               Add a server
-            </button>
+            </Button>
           }
         >
           No MCP servers configured. Add one to connect Claude to an external tool.
@@ -219,71 +222,58 @@ export default function McpSection() {
           const list = servers.filter((s) => s.kind === kind);
           if (!list.length) return null;
           return (
-            <div className="cc-group" key={kind}>
-              <h3 className="cc-group-title">{heading}</h3>
+            <Group key={kind} title={heading}>
               <List>
                 {list.map((s) => {
                   const st = STATUS[s.status] ?? STATUS.unknown;
                   // `canAuth` says the transport COULD hold a session, not that
-                  // there is anything to do: a connected stdio-less server with
-                  // no auth state offers neither button, and the row must then
-                  // have no action bar at all rather than an empty one.
+                  // there is anything to do: a connected server with no auth
+                  // state offers neither button.
                   const showLogin = s.canAuth && s.needsAuth;
                   const showLogout = s.canAuth && s.connected;
                   return (
                     <ListRow
                       key={s.name}
                       name={s.name}
-                      pills={<Pill tone={st.tone}>{st.label}</Pill>}
+                      pills={<StatusBadge bucket={st.bucket}>{st.label}</StatusBadge>}
                       secondary={s.endpoint}
                       secondaryTitle={s.endpoint}
                       secondaryMono
                       // The endpoint is the long part and the row cuts it, so the
-                      // panel restates it whole — plus the transport and kind,
-                      // which used to be pills competing with the status for the
-                      // one thing on this tab you actually read.
+                      // panel restates it whole — plus the transport and kind.
                       details={
-                        <dl className="cc-lrow-dl">
-                          <dt className="cc-lrow-dt">Endpoint</dt>
-                          <dd className="cc-lrow-dd cc-mono">{s.endpoint || "—"}</dd>
-                          <dt className="cc-lrow-dt">Transport</dt>
-                          <dd className="cc-lrow-dd">{s.transport}</dd>
-                          <dt className="cc-lrow-dt">Status</dt>
-                          <dd className="cc-lrow-dd">{st.label}</dd>
+                        <PropertyList className="max-w-xl">
+                          <PropertyRow label="Endpoint">
+                            <span className="font-mono text-xs">{s.endpoint || "—"}</span>
+                          </PropertyRow>
+                          <PropertyRow label="Transport">{s.transport}</PropertyRow>
+                          <PropertyRow label="Status">{st.label}</PropertyRow>
                           {/* Why, in the CLI's own words. This is the whole
-                              reason a failed row is worth expanding: the pill can
-                              only say "failed", and what the user needs is
-                              "Authorization header is badly formatted". */}
+                              reason a failed row is worth expanding. */}
                           {s.statusDetail && (
-                            <>
-                              <dt className="cc-lrow-dt">Detail</dt>
-                              <dd className="cc-lrow-dd">{s.statusDetail}</dd>
-                            </>
+                            <PropertyRow label="Detail" className="[&>dd]:flex-1 [&>dd]:whitespace-normal [&>dd]:text-left">
+                              {s.statusDetail}
+                            </PropertyRow>
                           )}
-                          <dt className="cc-lrow-dt">Registered by</dt>
-                          <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
-                        </dl>
+                          <PropertyRow label="Registered by">{KIND_LABEL[s.kind]}</PropertyRow>
+                        </PropertyList>
                       }
                       actions={
                         <>
                           {showLogin && (
-                            <button type="button" className="btn" onClick={() => login(s)}>
+                            <Button variant="outline" size="sm" onClick={() => login(s)}>
                               Authenticate
-                            </button>
+                            </Button>
                           )}
                           {showLogout && (
-                            <button type="button" className="btn" onClick={() => logout(s)}>
+                            <Button variant="outline" size="sm" onClick={() => logout(s)}>
                               Log out
-                            </button>
+                            </Button>
                           )}
                           {s.removable && (
-                            <button
-                              type="button"
-                              className="btn btn-danger"
-                              onClick={() => remove(s)}
-                            >
+                            <Button variant="destructive" size="sm" onClick={() => remove(s)}>
                               Remove
-                            </button>
+                            </Button>
                           )}
                         </>
                       }
@@ -291,7 +281,7 @@ export default function McpSection() {
                   );
                 })}
               </List>
-            </div>
+            </Group>
           );
         })}
     </>

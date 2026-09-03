@@ -39,7 +39,12 @@ import {
   type Job,
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
+import { ExternalLink, LoaderCircle } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { bucketText } from "@platform/ui/status-colors";
+import { Button } from "@platform/shadcn/ui/button";
 import DownloadManager from "@platform/ui/DownloadManager";
+import { DockDismiss, DockLine, DockRow, DockRowHead, DockTitle } from "@platform/ui/statusbar/DockRow";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
   drawnIds,
@@ -163,34 +168,13 @@ function useRunningEngines(): { engines: RunningEngine[]; refresh: () => void } 
   return { engines, refresh };
 }
 
-// lucide `external-link`, drawn here rather than pulled in as a package — the
-// house pattern for every icon in this shell.
-const ICON_OPEN = (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path
-      d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
-
-// lucide `loader-circle`, same house rule as ICON_OPEN. It stands where a ✕
-// cannot: a claimed entry is a brief state the server will not withdraw, and the
-// slot has to look occupied on purpose rather than empty by accident. Decorative
-// — the sentence under the title is what carries the meaning.
+// Stands where a ✕ cannot: a claimed entry is a brief state the server will not
+// withdraw, and the slot has to look occupied on purpose rather than empty by
+// accident. Decorative — the sentence under the title carries the meaning. The
+// spin is guarded (motion-safe:) and parks still under reduced motion.
 const ICON_STARTING = (
-  <span className="q-spin" aria-hidden="true">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M21 12a9 9 0 1 1-6.219-8.56"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
+  <span className="ml-auto inline-flex size-6 shrink-0 items-center justify-center text-muted-foreground" aria-hidden="true">
+    <LoaderCircle size={12} className="motion-safe:animate-spin" />
   </span>
 );
 
@@ -232,39 +216,43 @@ function QueueRowView({
 
   const title = firstLine(entry.message) || "Scheduled message";
   return (
-    <div className="q-row">
-      <div className="q-row-head">
-        <span className="q-title" title={entry.message || undefined}>
+    <DockRow>
+      <DockRowHead>
+        {/* The title does not grow: the controls FOLLOW the text (D573), and
+            only the trailing ✕ takes the slack (D609). */}
+        <DockTitle token className="flex-none max-w-full" title={entry.message || undefined}>
           {title}
-        </span>
-        <button
-          type="button"
-          className="q-open"
+        </DockTitle>
+        {/* The reason this card exists: a run parked on a permission prompt was
+            unreachable. The icon is the row's way THERE, beside its way out. */}
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
           title="Open in Explorer"
           aria-label={`Open ${title} in Explorer`}
           onClick={() => navigateUrl(href)}
         >
-          {ICON_OPEN}
-        </button>
+          <ExternalLink />
+        </Button>
         {kind === "none" ? (
           ICON_STARTING
         ) : (
-          <button
-            type="button"
-            className="q-x"
+          <DockDismiss
             onClick={cancel}
             disabled={busy}
             title={kind === "job" ? "Stop this run" : "Cancel this message"}
             aria-label={kind === "job" ? `Stop ${title}` : `Cancel ${title}`}
-          >
-            ✕
-          </button>
+          />
         )}
-      </div>
-      <div className={"q-status" + (row.role === "live" ? " is-running" : "")}>
+      </DockRowHead>
+      {/* A live row's sentence wears the app's one "running" treatment: the In
+          Progress yellow (status-colors) with the house shimmer, which the
+          token sheet guards under prefers-reduced-motion. */}
+      <DockLine clamp={2} className={cn(row.role === "live" && [bucketText.yellow, "shimmer-text"])}>
         {roleText(row, jobLine)}
-      </div>
-    </div>
+      </DockLine>
+    </DockRow>
   );
 }
 
@@ -287,7 +275,7 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
   const failedIds = useRef("");
   const forwardFailed = useCallback((next: Job[]) => {
     const failed = failedJobs(next);
-    const key = failed.map((j) => j.id).join(" ");
+    const key = failed.map((j) => j.id).join("\u0000");
     if (key === failedIds.current) return;
     failedIds.current = key;
     onFailedRef.current?.(failed);
@@ -351,17 +339,19 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
           />
         )),
         cancelAll: showCancelAll(rows) ? (
-          <button
-            type="button"
-            className="q-all"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={cancelAll}
             disabled={busy}
             title="Cancel every queued message"
           >
             Cancel queued
-          </button>
+          </Button>
         ) : null,
-        note: note ? <div className="q-note">{note}</div> : null,
+        note: note ? (
+          <div className="border-t border-border px-2.5 py-1.5 text-xs leading-snug text-muted-foreground">{note}</div>
+        ) : null,
       }}
       engines={{ engines, onStop: onStopEngine }}
     />

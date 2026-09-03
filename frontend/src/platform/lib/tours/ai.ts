@@ -84,14 +84,14 @@ export const aiTour: Tour = {
       },
     },
     {
-      element: '.am-tab[data-tab="local"]',
+      element: '[data-tab="local"]',
       popover: {
         title: "Get more models",
         description: "Search and download more models, then try them in the Playground.",
       },
     },
     {
-      element: '.am-tab[data-tab="benchmark"]',
+      element: '[data-tab="benchmark"]',
       popover: {
         title: "Compare speed",
         description: "Run a benchmark to see each model's speed.",

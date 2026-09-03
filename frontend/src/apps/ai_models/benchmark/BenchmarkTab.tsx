@@ -32,7 +32,7 @@
 // twice (once properly, with an axis, once as an unlabelled sliver in each
 // row) was the duplicated ink. `ModelTrendChart` keeps its own spot,
 // correctly secondary, for the model a reader picks by clicking a leaderboard
-// row — see the D481 comment above `.am-bench-rows`' render loop for why that
+// row — see the D481 comment above the ledger's render loop for why that
 // spot moved from a block below the whole list to right under the clicked
 // row itself.
 //
@@ -67,7 +67,7 @@
 //
 // **This tab's OWN busy row is a second, complementary view of the same run —
 // phase plus a REAL elapsed clock, never an invented percentage** (see
-// `busyRowText` in lib/benchmark.ts, and the ai-models.css comment near line
+// `busyRowText` in lib/benchmark.ts, and the comment near
 // 1282 for the house rule against invented bars). It reuses `lib/aiRuntime.ts`'s
 // already-polled table rather than adding a second poll: while that table
 // still reports the model loading, the row says so; once it does not, the row
@@ -143,9 +143,28 @@ import {
   type AiBenchmarkWorkload,
   type AiRuntime,
 } from "@platform/lib/api";
+import { ChevronRightIcon, InfoIcon, Loader2Icon, PlayIcon, SquareIcon, XIcon } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@platform/shadcn/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@platform/shadcn/ui/table";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
+import { Muted, SectionTitle, Stat, Tiny } from "@platform/ui/flow/Typography";
+import { bucketText } from "@platform/ui/status-colors";
+import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { MenuIcons } from "@platform/ui/MenuIcons";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+
+/** The leaderboard row's own grid: a fixed chevron column, the model name, the
+ *  measurement, then the Run button. Shared by the row and nothing else, but
+ *  named because the fixed leading column is what keeps every row's disclosure
+ *  indicator at one x down the whole list. */
+const ROW_GRID = "grid grid-cols-[16px_minmax(0,30ch)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2";
+
+/** A capability section's explanatory line — the muted sentence a section uses
+ *  when it has an answer in words rather than an instrument. */
+function GroupNote({ children }: { children: React.ReactNode }) {
+  return <Muted className="mb-4 max-w-[110ch] text-xs leading-relaxed">{children}</Muted>;
+}
 
 export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   const { data, repos, scanEpoch } = scan;
@@ -512,7 +531,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // too, or `aria-expanded="true"` on an open row would be a control with no
   // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
   // accordion header now, not a small chevron target inside it — see the
-  // big comment above `.am-bench-rows`' render loop): already-open closes
+  // big comment above the ledger's render loop): already-open closes
   // it (writes THIS capability's own `closedSentinel`, never a bare `""` —
   // a bare flag would still read as "closed" after switching to a different
   // capability, since `modelParam` is one piece of state shared across all
@@ -569,9 +588,14 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
   return (
-    <div className="am-bench">
+    // 1000px, raised on a genuinely large viewport. The cap was never about
+    // the tab as a whole — it is about the ONE instrument that separates a name
+    // from its number as it grows, the comparison chart, which now carries its
+    // own narrower cap (ComparisonChart.tsx). The trend chart and the run
+    // archive both read MORE easily with more room.
+    <div className="max-w-[1000px] min-[1440px]:max-w-[1320px] space-y-4">
       <ErrorBanner>{error}</ErrorBanner>
-      {stopped && <p className="am-bench-stopped">{stopped}</p>}
+      {stopped && <Muted>{stopped}</Muted>}
       {/* THE CAPABILITY SELECTOR. A native `<select>`, unlabelled ON SCREEN — the
           reader asked for the redundant "Capability" caption gone, since the
           option text (a capability's own name, e.g. "Text generation")
@@ -587,21 +611,24 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           any more — the reader asked for that gone too, and `capabilityCounts`
           still drives `resolveCapability`'s default pick, it just no longer
           prints itself. */}
-      <div className="am-bench-controls">
-        <select
-          id="am-bench-cap"
-          aria-label="Capability"
-          className="field-control am-bench-capsel-input"
-          value={selected ?? ""}
-          onChange={(e) => setFocus(e.target.value)}
-        >
+      <Select
+        value={selected ?? ""}
+        items={all.map((capability) => ({ value: capability, label: capabilityLabel(capability) }))}
+        onValueChange={(value) => {
+          if (typeof value === "string") setFocus(value);
+        }}
+      >
+        <SelectTrigger id="am-bench-cap" aria-label="Capability" className="min-w-56">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="start">
           {all.map((capability) => (
-            <option key={capability} value={capability}>
+            <SelectItem key={capability} value={capability}>
               {capabilityLabel(capability)}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-      </div>
+        </SelectContent>
+      </Select>
       {selected && (
         <CapabilitySection
           key={selected}
@@ -788,7 +815,10 @@ function CapabilitySection({
   const measuredVersion = runs && runs.length > 0 ? runs[runs.length - 1]!.appVersion : null;
 
   return (
-    <section className="am-section">
+    // The capability panel: a squared card, the same face every other list on
+    // this page sits in, so a reader who knows what a card means elsewhere does
+    // not learn a second vocabulary here.
+    <section className="rounded-lg border border-border bg-card px-5 pb-5 pt-4">
       {/* The heading STAYS a plain `<h3>` — this `<section>` also frames the
           leaderboard (every model, not just the selected one) and the run
           archive below, and a landmark section needs its own accessible
@@ -832,9 +862,9 @@ function CapabilitySection({
           invert the same way), and still said only once: the old
           per-model-name-plus-unit pill on the trend heading below is GONE
           too. */}
-      <div className="am-section-head am-bench-section-head">
-        <div className="am-bench-section-heading">
-          <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5">
+          <SectionTitle>{capabilityLabel(capability)}</SectionTitle>
           {/* What a Run press on this capability actually DOES (D483) — the
               page's only other words about this were the tab-level subtitle,
               "a fixed workload per capability, timed on this machine", which
@@ -859,7 +889,7 @@ function CapabilitySection({
               sentence the visible line used to say, workload name and
               revision included, unchanged.
 
-              Placed beside the HEADING, not inside `.am-bench-headtools`
+              Placed beside the HEADING, not in the head's control group
               with the Metric select and Share: it explains the SECTION as
               a whole (what a Run press on ANY row here measures), not
               those two controls, and that group is already this row's
@@ -867,14 +897,14 @@ function CapabilitySection({
               (`note` — a capability with none, video generation today,
               gets no dead glyph pointing at nothing). */}
           {note && (
-            <button
-              type="button"
-              className="am-bench-workload-info"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               data-hint={note}
               aria-label="What this benchmark measures"
             >
-              {MenuIcons.info}
-            </button>
+              <InfoIcon />
+            </Button>
           )}
         </div>
         {/* The head's controls, as one group: the Metric select and — only
@@ -882,23 +912,30 @@ function CapabilitySection({
             rather than over the chart because what it shares is this
             section's current selection (capability + metric), which is
             precisely what these two controls between them decide. */}
-        <div className="am-bench-headtools">
+        <div className="flex flex-wrap items-center gap-3">
           {metricSpecs.length > 0 && (
-            <div className="am-bench-metricsel">
-              <select
+            <Select
+              value={metric?.key ?? ""}
+              items={metricSpecs.map((spec) => ({ value: spec.key, label: metricOptionLabel(spec) }))}
+              onValueChange={(value) => {
+                if (typeof value === "string") onSelectMetric(value);
+              }}
+            >
+              <SelectTrigger
                 id={`am-bench-metric-${capability}`}
-                className="field-control am-bench-capsel-input"
                 aria-label="Metric"
-                value={metric?.key ?? ""}
-                onChange={(e) => onSelectMetric(e.target.value)}
+                className="min-w-56"
               >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
                 {metricSpecs.map((spec) => (
-                  <option key={spec.key} value={spec.key}>
+                  <SelectItem key={spec.key} value={spec.key}>
                     {metricOptionLabel(spec)}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
-            </div>
+              </SelectContent>
+            </Select>
           )}
           {/* Rendered on exactly the condition the chart itself is (below): a
               Share button above "no runs recorded yet" offers to send an empty
@@ -923,9 +960,10 @@ function CapabilitySection({
         // Answered, and empty. It says WHICH nothing — no model rather than no
         // benchmark — and points at the next step rather than leaving the
         // reader to guess where a model would come from.
-        <p className="am-group-note">
+        <GroupNote>
           No {capabilityLabel(capability).toLowerCase()} model is downloaded yet. Get one from the{" "}
           <a
+            className="underline underline-offset-4 hover:text-foreground"
             href={tabHref("local")}
             onClick={(e) => {
               if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
@@ -937,7 +975,7 @@ function CapabilitySection({
             {tabLabel("local")} tab
           </a>
           .
-        </p>
+        </GroupNote>
       ) : (
         <>
           {/* INSTRUMENT ONE, THE HERO: the comparison chart — one bar per
@@ -956,9 +994,9 @@ function CapabilitySection({
           {metric && bars.length > 0 ? (
             <ComparisonChart bars={bars} metric={metric} />
           ) : (
-            <p className="am-group-note">
+            <GroupNote>
               No {(metric?.label ?? "runs").toLowerCase()} recorded for any {capabilityLabel(capability).toLowerCase()} model yet — press Run on one below.
-            </p>
+            </GroupNote>
           )}
           {/* RUN ALL — benchmarks every runnable model in this section, one
               after another, reusing the exact same `start()` a single "Run"
@@ -967,7 +1005,7 @@ function CapabilitySection({
               history. Sits between the two chart instruments and the ledger
               rows it drives, since it acts on exactly that list — and now
               (D479) sits FLUSH against those rows in the markup's own order
-              (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
+              (the Run All group carries the bottom margin, not the rows): the
               button is that list's control, not a third, orphaned instrument
               floating in the gap the chart and the rows each already own a
               margin into.
@@ -982,7 +1020,7 @@ function CapabilitySection({
               already `gone`.
 
               **Idle branch is `--fg`-outlined, glyph-led, plain text (D479)**
-              — not the accent outline `.am-card-try` wears on the Models tab,
+              — not a filled plate and not an accent outline,
               and not a filled plate. Accent on THIS tab is already spoken
               for as DATA ink: the comparison chart's bars, the metric values
               in each row, and the selected row's ring all draw in it, so an
@@ -999,36 +1037,36 @@ function CapabilitySection({
               disk, the single most expensive thing a press can start here.
               It should be findable, which the border and full-opacity text
               do; it should not be the loudest thing on the page competing
-              with the chart above it. The glyph is `MenuIcons.play`, the
+              with the chart above it. The glyph is the play triangle, the
               exact triangle every row below already wears on its own Run
               button — "run all" is that same act N times over, so it borrows
               the row's own vocabulary instead of inventing a second one; a
               bare word here would say the same thing in a different
               language than the list it operates on. */}
           {runnable.length > 0 && (
-            <div className="am-bench-runall">
+            <div className="mb-2 flex flex-wrap items-center gap-2.5 text-sm">
               {status === "running" && queue ? (
                 <>
-                  <span className="am-bench-runall-progress" role="status">
-                    <span className="am-runtime-dot" />
+                  <span className="inline-flex items-center gap-1.5 text-muted-foreground" role="status">
+                    <StatusDot status="loading" pulse />
                     Running {queue.started} of {queue.models.length} —{" "}
                     {shortModelName(queue.current!)}
                   </span>
-                  <button
-                    type="button"
-                    className="cc-iconbtn"
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
                     onClick={() => onStopAll(capability)}
                     title="Stop"
                     aria-label="Stop"
                   >
-                    {MenuIcons.stop}
-                  </button>
+                    <SquareIcon />
+                  </Button>
                 </>
               ) : (
                 <>
-                  <button
-                    type="button"
-                    className="am-bench-runall-btn"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
                     title={
                       busy
@@ -1037,9 +1075,9 @@ function CapabilitySection({
                     }
                     onClick={() => onRunAll(capability, runnable)}
                   >
-                    {MenuIcons.play}
+                    <PlayIcon />
                     Run all {runnable.length} models
-                  </button>
+                  </Button>
                   {/* The one category Run All silently leaves out — say so,
                       rather than a count that quietly excludes it with no
                       explanation. Each `gone` row already states its own
@@ -1047,9 +1085,7 @@ function CapabilitySection({
                       same fact stated once for the button that skips all of
                       them at once. */}
                   {gone.size > 0 && (
-                    <span className="am-bench-runall-note">
-                      {gone.size} not on this machine — skipped
-                    </span>
+                    <Tiny>{gone.size} not on this machine — skipped</Tiny>
                   )}
                   {/* The tally from the LAST completed or stopped run, until
                       the next one starts (a fresh `startQueue` clears
@@ -1057,14 +1093,14 @@ function CapabilitySection({
                       this branch is ever reached again). Says WHICH ended it
                       — a stop reads differently from simply finishing. */}
                   {status && queue && (
-                    <span className="am-bench-runall-tally">
+                    <Tiny>
                       {(() => {
                         const tally = queueTally(queue);
                         const parts = [`${tally.succeeded} succeeded`, `${tally.failed} failed`];
                         if (status === "stopped") parts.push(`${tally.remaining} not run — stopped`);
                         return parts.join(", ");
                       })()}
-                    </span>
+                    </Tiny>
                   )}
                 </>
               )}
@@ -1079,14 +1115,12 @@ function CapabilitySection({
               TOGGLES it: an already-open row closes, any other opens (and
               closes whichever row was open before it — exactly one at a
               time). Open is the one full-width expansion rendered as that
-              row's sibling in `.am-bench-rows`, holding BOTH the per-run
+              row's sibling in the ledger group, holding BOTH the per-run
               detail/failure text and INSTRUMENT THREE, the trend, for
               `selectedModel` — and visually FUSED to its row into one card
-              that grew (ai-models.css: the open row's own bottom corners
-              square off and its bottom border drops, the expansion picks
-              up the matching side/bottom border and radius and the same
-              accent wash, so there is no seam between "the header" and
-              "the part that opened").
+              that grew (the open row and its expansion share the group's
+              border and the same accent wash, so there is no seam between
+              "the header" and "the part that opened").
 
               **One row, one open state, one hit target — three passes to
               get here.** Pass one put the trend behind a SEPARATE
@@ -1127,7 +1161,9 @@ function CapabilitySection({
               (`closedModelSentinel`, lib/benchmark.ts) so a marker closed
               elsewhere fails the equality check here and falls through to
               this capability's own default instead. */}
-          <div className="am-bench-rows">
+          {/* Dense bordered rows in one squared group, not spaced cards: the
+              whole point of the ledger is to be swept top to bottom. */}
+          <div className="overflow-hidden rounded-lg border border-border">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
                 ? undefined
@@ -1163,7 +1199,7 @@ function CapabilitySection({
                     }}
                   />
                   {/* The row's single expansion (D481): full row width for
-                      free, since this is a SIBLING of `.am-bench-row`'s grid
+                      free, since this is a SIBLING of the row's own grid
                       rather than a cell inside it — the trend chart needs
                       the whole width, which is exactly what a `<details>`
                       living in the row's own grid cell could never give it.
@@ -1190,20 +1226,20 @@ function CapabilitySection({
                       just none that measured it) says so in words rather
                       than drawing an empty axis. */}
                   {model === selectedModel && row !== null && (detail || metric) && (
-                    <div id={expansionId} className="am-bench-rowexpand">
-                      {detail && <p className="am-bench-rowexpand-detail">{detail}</p>}
+                    <div id={expansionId} className="border-b border-border bg-accent/30 px-4 pb-3 pt-2 last:border-b-0">
+                      {detail && (
+                        <p className="m-0 mb-2.5 max-w-[60ch] whitespace-pre-wrap text-xs text-muted-foreground">{detail}</p>
+                      )}
                       {metric &&
                         (trend === "trend" ? (
                           <ModelTrendChart runs={trendRuns} metric={metric} />
                         ) : trend === "single" ? (
-                          <div className="am-bench-trend-single">
-                            <span className="am-bench-trend-value">
-                              {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
-                            </span>
-                            <span className="am-bench-trend-note">one run · run again to see a trend</span>
+                          <div className="flex items-baseline gap-2.5">
+                            <Stat>{formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}</Stat>
+                            <Tiny>one run · run again to see a trend</Tiny>
                           </div>
                         ) : (
-                          <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
+                          <Muted className="text-xs">No {metric.label.toLowerCase()} recorded for this model yet.</Muted>
                         ))}
                     </div>
                   )}
@@ -1264,7 +1300,7 @@ function BenchmarkRow({
    *  below): the expansion can still hold a trend worth opening even when
    *  there is no extra detail line to go with it. */
   detail: string | null;
-  /** DOM id of this row's own expansion sibling in `.am-bench-rows`
+  /** DOM id of this row's own expansion sibling in the ledger group
    *  (`benchExpandId`) — the model-name button's `aria-controls` target.
    *  Only actually points at something real while `open` is true (that is
    *  the only time the sibling exists at all), which is exactly when the
@@ -1314,7 +1350,7 @@ function BenchmarkRow({
   // (`row === null`, "Never benchmarked") must not LOOK openable — no
   // chevron glyph (the column itself still reserves its width, so the
   // model name stays aligned with every other row's — see
-  // `.am-bench-rowdetail-chevron` in ai-models.css), no hand cursor, no
+  // ROW_GRID's fixed leading track), no hand cursor, no
   // `aria-expanded` implying a state that does not exist, and a click
   // that does nothing rather than writing a pointless selection.
   const expandable = row !== null;
@@ -1325,13 +1361,13 @@ function BenchmarkRow({
   const open = selected && expandable;
   const nameCell = (
     <>
-      {/* Budget (28) is a hair under the column's own 30ch so the CSS
-          `overflow: hidden` safety net (ai-models.css) never has to fire
+      {/* Budget (28) is a hair under the column's own 30ch so the cell's
+          `overflow-hidden` safety net never has to fire
           for a monospace glyph at this size — see `middleEllipsis`'s own
           comment for why the ellipsis goes in the MIDDLE rather than the
           tail. */}
-      <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
-      {gone && <span className="am-bench-gone">not on this machine any more</span>}
+      <span className="font-mono text-xs">{middleEllipsis(shortModelName(model), 28)}</span>
+      {gone && <span className="block text-xs text-muted-foreground">not on this machine any more</span>}
     </>
   );
   return (
@@ -1350,19 +1386,31 @@ function BenchmarkRow({
     // see its own comment — everything else (the model name, the headline,
     // empty space) is left to bubble to `onClick` below.
     <div
-      className={"am-bench-row" + (open ? " selected" : "") + (expandable ? " expandable" : "")}
+      className={cn(
+        ROW_GRID,
+        "border-b border-border text-sm last:border-b-0",
+        expandable && "cursor-pointer hover:bg-accent/50",
+        // An open row and its expansion are ONE card that grew: the row drops
+        // its own bottom border so no hairline sits across the seam, and the
+        // expansion below carries the group's border instead.
+        open && "bg-accent/30 hover:bg-accent/30 border-b-0",
+      )}
       onClick={expandable ? onToggle : undefined}
     >
-      {/* The row's LEADING column, reserved on every row (ai-models.css'
-          `.am-bench-row` grid-template gives it a fixed width, not `auto`)
+      {/* The row's LEADING column, reserved on every row (ROW_GRID's
+          template gives it a fixed 16px width, not `auto`)
           so an accordion indicator sits at one consistent x down the whole
           list rather than drifting with the length of the headline/delta
           text that used to precede it. Empty, not omitted, for a
-          non-expandable row — see `.am-bench-rowdetail-chevron`'s own
-          comment for why the column still has to exist even with nothing
-          drawn inside it. */}
-      <span className="am-bench-rowdetail-chevron" aria-hidden="true">
-        {expandable && MenuIcons.chevron}
+          non-expandable row: the column still has to exist even with
+          nothing drawn inside it, so the model name stays aligned with
+          every other row's. */}
+      <span className="flex items-center justify-center text-muted-foreground" aria-hidden="true">
+        {expandable && (
+          <ChevronRightIcon
+            className={cn("size-3.5 motion-safe:transition-transform", open && "rotate-90")}
+          />
+        )}
       </span>
       {expandable ? (
         // The row's ONE focusable disclosure control. A real `<button>`,
@@ -1377,18 +1425,24 @@ function BenchmarkRow({
         // and Enter/Space on a focused `<button>` fires that same native
         // click for free, so the row's toggle needs no separate keyboard
         // handler either.
-        <button type="button" className="am-bench-model" title={model} aria-expanded={open} aria-controls={open ? expansionId : undefined}>
+        <button
+          type="button"
+          className="block w-full min-w-0 [cursor:inherit] overflow-hidden whitespace-nowrap text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          title={model}
+          aria-expanded={open}
+          aria-controls={open ? expansionId : undefined}
+        >
           {nameCell}
         </button>
       ) : (
         // Not expandable — a plain, inert cell. No button, no `aria-
         // expanded`, nothing implying this row does something a click on
         // it will not actually do.
-        <div className="am-bench-model" title={model}>
+        <div className="min-w-0 overflow-hidden whitespace-nowrap" title={model}>
           {nameCell}
         </div>
       )}
-      <div className="am-bench-latest">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
         {button?.busy ? (
           // A plain spinner, not `ModelProgress`: that component draws a
           // download-manager row's OWN detail and byte counts, and reading it
@@ -1400,8 +1454,8 @@ function BenchmarkRow({
           // percentage — "Loading weights into memory…" while the AI runtime
           // still reports this model coming up, then "Measuring — 1:24"
           // ticking from the moment Run was pressed.
-          <span className="am-bench-busy" role="status">
-            <span className="am-runtime-dot" />
+          <span className="inline-flex items-center gap-1.5 text-muted-foreground" role="status">
+            <StatusDot status="loading" pulse />
             {busyText}
           </span>
         ) : row ? (
@@ -1415,19 +1469,22 @@ function BenchmarkRow({
                 to drift with how long this headline/delta text happened to
                 be, which is the opposite of what a disclosure indicator's
                 column is supposed to give a reader. */}
-            <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
+            <span className="min-w-0 shrink tabular-nums">{rowHeadline(row.latest, metric)}</span>
             {row.delta && (
               // The sign is not the meaning — on a lower-is-better metric a
               // negative change is the improvement — so `better` decides the
               // class and the sign is only printed.
-              <span className={"am-bench-delta" + (row.delta.better ? " better" : " worse")}>
+              // Better and worse read through the shared status buckets — green
+              // for an improvement, orange for a regression — rather than a
+              // colour invented at this call site.
+              <span className={cn("shrink-0 text-xs tabular-nums", row.delta.better ? bucketText.green : bucketText.orange)}>
                 {row.delta.percent >= 0 ? "+" : ""}
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
           </>
         ) : (
-          <span className="am-bench-never">Never benchmarked</span>
+          <span className="text-muted-foreground">Never benchmarked</span>
         )}
       </div>
       {!gone && button && (
@@ -1442,9 +1499,9 @@ function BenchmarkRow({
         // (wired in `CapabilitySection`) opens this row via `onOpenModel`
         // before starting the run, so the row still opens on a first press;
         // it simply never gets a chance to close on a second one.
-        <button
-          type="button"
-          className="cc-iconbtn"
+        <Button
+          variant="ghost"
+          size="icon-xs"
           disabled={button.blocked}
           onClick={(e) => {
             e.stopPropagation();
@@ -1456,13 +1513,11 @@ function BenchmarkRow({
           {/* `button.busy`'s spinner is still disabled (`button.blocked` is
               true whenever `busy` is — `runButtonState`, lib/benchmark.ts) —
               this is a status glyph on a dead button, not a second way to
-              start or stop the run. `.am-icon-spin` (ai-models.css) is the
-              only thing that turns the static ring into motion; the glyph
-              itself does not encode spinning. */}
-          <span className={button.busy ? "am-icon-spin" : undefined}>
-            {button.busy ? MenuIcons.spinner : MenuIcons.play}
-          </span>
-        </button>
+              start or stop the run. The spin is `motion-safe:animate-spin`,
+              so a reader who asked for reduced motion gets a still glyph
+              rather than none at all. */}
+          {button.busy ? <Loader2Icon className="motion-safe:animate-spin" /> : <PlayIcon />}
+        </Button>
       )}
     </div>
   );
@@ -1537,19 +1592,22 @@ function RunTable({
   });
 
   return (
-    <details className="am-bench-history" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary>
+    <details className="mt-4 text-sm" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer py-1 text-muted-foreground">
         {runs.length} recorded {runs.length === 1 ? "run" : "runs"}
       </summary>
-      <div className="am-bench-tablewrap">
-        <table className="am-bench-table">
-          <thead>
-            <tr>
+      <div className="mt-1.5">
+        <Table className="whitespace-nowrap">
+          <TableHeader>
+            <TableRow>
               {COLUMNS.map((col) => (
-                <th key={col.key} className={col.numeric ? "num" : undefined}>
+                <TableHead
+                  key={col.key}
+                  className={cn("h-auto p-0 font-semibold text-muted-foreground", col.numeric && "text-right")}
+                >
                   <button
                     type="button"
-                    className="am-bench-sort"
+                    className="w-full cursor-pointer px-2 py-1.5 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
                     aria-sort={
                       sort.key === col.key ? (sort.desc ? "descending" : "ascending") : "none"
                     }
@@ -1567,58 +1625,58 @@ function RunTable({
                     {col.key === "metric" ? (metric?.label ?? "Result") : col.label}
                     {sort.key === col.key && <span aria-hidden="true">{sort.desc ? " ↓" : " ↑"}</span>}
                   </button>
-                </th>
+                </TableHead>
               ))}
               {/* No header for the delete column: a heading over a column of ✕
                   buttons names the action, not the data. */}
-              <th />
-            </tr>
-          </thead>
-          <tbody>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {ordered.map((run) => (
-              <tr key={run.id} className={run.ok ? undefined : "failed"}>
+              <TableRow key={run.id} className={run.ok ? undefined : "[&>td]:text-destructive"}>
                 {/* Locale date and time, not a relative age: two runs an hour
                     apart are the interesting case, and "3 days ago" cannot tell
                     them apart. */}
-                <td className="num">{new Date(run.startedAt * 1000).toLocaleString()}</td>
-                <td className="cc-mono">{run.model}</td>
+                <TableCell className="text-right tabular-nums">{new Date(run.startedAt * 1000).toLocaleString()}</TableCell>
+                <TableCell className="font-mono text-xs">{run.model}</TableCell>
                 {/* A failed run's cell carries the REASON rather than a dash:
                     the row exists because something went wrong, and the dash
                     would make it look like a page bug. */}
-                <td className="num" title={run.ok ? undefined : (run.error ?? "")}>
+                <TableCell className="text-right tabular-nums" title={run.ok ? undefined : (run.error ?? "")}>
                   {run.ok ? formatPrimary(run) : "failed"}
-                </td>
-                <td className="num">{formatMemory(run)}</td>
-                <td className="num">{formatLoad(run)}</td>
-                <td>{run.device ?? DASH}</td>
-                <td>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{formatMemory(run)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatLoad(run)}</TableCell>
+                <TableCell>{run.device ?? DASH}</TableCell>
+                <TableCell>
                   {run.appVersion}
                   {/* The workload revision, shown only where it is NOT the
                       newest one in this section — a seam the reader has to know
                       about, because runs either side of it are not comparable
                       and the chart deliberately draws no delta across it. */}
                   {run.workload.revision !== newestRevision(runs) && (
-                    <span className="am-bench-rev" title="A different workload version — not comparable with the newest runs">
+                    <span className={cn("text-xs", bucketText.orange)} title="A different workload version — not comparable with the newest runs">
                       {" "}
                       w{run.workload.revision}
                     </span>
                   )}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="am-bench-forget"
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
                     title="Forget this run"
                     aria-label={`Forget the run from ${new Date(run.startedAt * 1000).toLocaleString()}`}
                     onClick={() => onForget(run.id)}
                   >
-                    ✕
-                  </button>
-                </td>
-              </tr>
+                    <XIcon />
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </details>
   );

@@ -6,11 +6,22 @@
 // (search, create, sign out), and open one — which clones it under
 // ~/.fused-render/canvases/<name> and lands on the workspace page
 // (/canvases/<name>: Claude-editable local files, watch-and-push sync,
-// embedded live workbench). Styling lives in styles/canvases.css.
+// embedded live workbench). Tailwind + shadcn primitives + the flow
+// composites; the gallery tile itself is ./CanvasCard.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import previewTile from "@assets/canvas-preview-tile.png";
+import { LayoutGrid, Plus } from "lucide-react";
 import { navigateUrl } from "@platform/lib/router";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@platform/shadcn/ui/empty";
+import { Input } from "@platform/shadcn/ui/input";
+import { Muted, Page, PageBody, PageHeader } from "@platform/ui/flow/Typography";
 import {
   cloneCanvas,
   createCanvas,
@@ -23,6 +34,7 @@ import {
   type CanvasEntry,
   type CanvasesStatus,
 } from "./api";
+import { CanvasCard } from "./CanvasCard";
 import { publishLoggedIn } from "./logged-in";
 
 // `fused login`'s own browser callback times out server-side; polling any
@@ -31,49 +43,6 @@ const LOGIN_POLL_MS = 1500;
 
 // Same rule the server (and the CLI's push) enforces.
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
-
-// A canvas with no uploaded preview gets the hosted gallery's stand-in: one
-// dark map tile per UDF, laid out in a grid, so the card still reads as a
-// canvas of N things instead of an empty box. The tile is the workbench's own
-// `preview_thumbnail_1.png` (fused-magic S3, main_marketing_website/), vendored
-// into the bundle rather than hot-linked — this app runs locally and a card
-// that needs the network to look right is a card that breaks offline.
-const TILE_CAP = 16;
-
-// The gallery's grid shapes, keyed by the layout each count rounds up into: 5
-// tiles use the 6 layout with an empty cell, 7 uses the 8, and so on. Copied
-// from the client's `getGridTemplateByCount` so the two gardens match.
-type TileLayout = { gridTemplateColumns: string; gridTemplateRows: string };
-
-const TILE_LAYOUTS: Record<number, TileLayout> = {
-  1: { gridTemplateColumns: "1fr", gridTemplateRows: "1fr" },
-  2: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr" },
-  3: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  4: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  6: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  8: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  9: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
-  12: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
-  15: {
-    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
-    gridTemplateRows: "1fr 1fr 1fr",
-  },
-  16: {
-    gridTemplateColumns: "1fr 1fr 1fr 1fr",
-    gridTemplateRows: "1fr 1fr 1fr 1fr",
-  },
-};
-
-function tileLayout(count: number): TileLayout {
-  const size = [1, 2, 3, 4, 6, 8, 9, 12, 15, 16].find((n) => n >= count) ?? 16;
-  return TILE_LAYOUTS[size];
-}
-
-// Full locale date+time, seconds and four-digit year included — the same string
-// the hosted workbench's gallery prints under a canvas name.
-function formatModified(mtime: number): string {
-  return new Date(mtime * 1000).toLocaleString();
-}
 
 export default function Canvases() {
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
@@ -288,187 +257,146 @@ export default function Canvases() {
     return shown;
   }, [canvases, query]);
 
+  const canCreate = NAME_RE.test(newName.trim());
+
+  // Header actions exist only once signed in; the gate below the header is
+  // the whole page until then.
+  const actions = status?.logged_in ? (
+    <>
+      <Input
+        className="w-56"
+        type="search"
+        placeholder="Search canvases"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {creating ? (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void onCreate();
+          }}
+        >
+          <Input
+            className="w-48"
+            autoFocus
+            placeholder="new_canvas_name"
+            value={newName}
+            // Spaces aren't legal in canvas names — typing one lands an
+            // underscore instead of silently disabling Create.
+            onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
+            disabled={createBusy}
+          />
+          <Button type="submit" disabled={createBusy || !canCreate}>
+            {createBusy ? "Creating…" : "Create"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setCreating(false);
+              setNewName("");
+            }}
+            disabled={createBusy}
+          >
+            Cancel
+          </Button>
+        </form>
+      ) : (
+        <Button onClick={() => setCreating(true)}>
+          <Plus />
+          New canvas
+        </Button>
+      )}
+      <Button variant="outline" onClick={() => void onLogout()}>
+        Sign out
+      </Button>
+    </>
+  ) : undefined;
+
   return (
-    <div className="canvases-page">
-      <div className="canvases-inner">
-        <div className="canvases-head">
-          <h1 className="canvases-title">Workbench Canvases</h1>
-          {status?.logged_in && (
-            <div className="canvases-head-actions">
-              <input
-                className="field-control canvases-search"
-                type="search"
-                placeholder="Search canvases"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              {creating ? (
-                <form
-                  className="canvases-new-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void onCreate();
-                  }}
-                >
-                  <input
-                    className="field-control"
-                    autoFocus
-                    placeholder="new_canvas_name"
-                    value={newName}
-                    // Spaces aren't legal in canvas names — typing one lands
-                    // an underscore instead of silently disabling Create.
-                    onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
-                    disabled={createBusy}
-                  />
-                  <button
-                    className="btn btn-primary"
-                    type="submit"
-                    disabled={createBusy || !NAME_RE.test(newName.trim())}
-                  >
-                    {createBusy ? "Creating…" : "Create"}
-                  </button>
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => {
-                      setCreating(false);
-                      setNewName("");
-                    }}
-                    disabled={createBusy}
-                  >
-                    Cancel
-                  </button>
-                </form>
-              ) : (
-                <button className="btn btn-primary" onClick={() => setCreating(true)}>
-                  + New canvas
-                </button>
-              )}
-              <span className="canvases-account">
-                <button className="btn" onClick={() => void onLogout()}>
-                  Sign out
-                </button>
-              </span>
-            </div>
-          )}
-        </div>
-        <p className="canvases-sub">
-          Develop workbench canvases locally: pick a canvas, edit its files with
-          Claude Code, and every save is pushed back to the hosted workbench.
-        </p>
-        {error && <ErrorBanner>{error}</ErrorBanner>}
+    <Page>
+      <PageHeader
+        title="Workbench Canvases"
+        description="Develop workbench canvases locally: pick a canvas, edit its files with Claude Code, and every save is pushed back to the hosted workbench."
+        actions={actions}
+      />
+      <PageBody>
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
         {status && !status.cli_found && (
-          <p>
-            The fused CLI is not available in this server&rsquo;s environment.
-            Install it with <code>pip install &quot;fused-render[fused]&quot;</code>{" "}
-            or set <code>FUSED_RENDER_FUSED_BIN</code>.
-          </p>
+          <Muted>
+            The fused CLI is not available in this server&rsquo;s environment. Install it
+            with{" "}
+            <code className="font-mono text-xs text-foreground">
+              pip install &quot;fused-render[fused]&quot;
+            </code>{" "}
+            or set <code className="font-mono text-xs text-foreground">FUSED_RENDER_FUSED_BIN</code>.
+          </Muted>
         )}
         {status && status.cli_found && !status.logged_in && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button className="btn btn-primary" onClick={onLogin} disabled={loggingIn}>
+          <div className="flex items-center gap-3">
+            <Button onClick={onLogin} disabled={loggingIn}>
               {loggingIn ? "Waiting for browser sign-in…" : "Sign in to Fused"}
-            </button>
+            </Button>
             {loggingIn && (
-              <span className="canvases-sub">
-                Complete the sign-in in the browser window that just opened.
-              </span>
+              <Muted>Complete the sign-in in the browser window that just opened.</Muted>
             )}
           </div>
         )}
-        {status?.logged_in && filtered === null && !error && <p>Loading canvases…</p>}
+        {status?.logged_in && filtered === null && !error && <Muted>Loading canvases…</Muted>}
         {status?.logged_in && filtered !== null && filtered.length === 0 && (
-          <p className="canvases-empty">
-            {query
-              ? "No canvases match your search."
-              : "No canvases in this account yet — create one to get started."}
-          </p>
+          <Empty className="py-16">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <LayoutGrid />
+              </EmptyMedia>
+              <EmptyTitle>
+                {query ? "No canvases match your search" : "No canvases in this account yet"}
+              </EmptyTitle>
+              {!query && (
+                <EmptyDescription>Create one to start developing it locally.</EmptyDescription>
+              )}
+            </EmptyHeader>
+            {!query && !creating && (
+              <Button onClick={() => setCreating(true)}>
+                <Plus />
+                New canvas
+              </Button>
+            )}
+          </Empty>
         )}
         {status?.logged_in && filtered !== null && filtered.length > 0 && (
-          <div className="canvases-grid">
-            {filtered.map((canvas) => {
-              // Either the free public URL from the listing, or the signed one
-              // the previews batch filled in afterwards (D364).
-              const thumb =
-                canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
-              // Local clone mtime when we have one, else the control plane's
-              // last_updated — the same expression the sort above orders by.
-              const modified = canvas.mtime ?? canvas.updated_at;
-              // The clone's own *.py count wins when we have one (it sees local
-              // edits the workbench hasn't been pushed yet); otherwise the
-              // listing's count, which exists for every canvas in the account.
-              const nUdfs = canvas.n_udfs ?? canvas.n_code_udfs ?? null;
-              // An account whose listing predates the count field (or came from
-              // the bare-name CLI fallback) still gets a map rather than an
-              // empty box — one tile, standing for "a canvas", not for a count.
-              const tiles = nUdfs === null ? 1 : Math.min(nUdfs, TILE_CAP);
-              return (
-              <button
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+            {filtered.map((canvas) => (
+              <CanvasCard
                 key={canvas.name}
-                className="canvas-card"
-                onClick={() => void onOpen(canvas)}
+                canvas={canvas}
+                // Either the free public URL from the listing, or the signed
+                // one the previews batch filled in afterwards (D364).
+                thumb={
+                  canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null
+                }
+                broken={brokenPreviews}
+                onBroken={(url) =>
+                  setBrokenPreviews((prev) => {
+                    const next = new Set(prev);
+                    next.add(url);
+                    return next;
+                  })
+                }
+                cloning={busy === canvas.name}
                 disabled={busy !== null || createBusy}
-              >
-                <span className="canvas-card-thumb">
-                  {thumb && !brokenPreviews.has(thumb) ? (
-                    <img
-                      className="canvas-card-img"
-                      src={thumb}
-                      alt=""
-                      loading="lazy"
-                      onError={() =>
-                        setBrokenPreviews((prev) => {
-                          const next = new Set(prev);
-                          next.add(thumb);
-                          return next;
-                        })
-                      }
-                    />
-                  ) : tiles > 0 ? (
-                    <span className="canvas-card-tiles" style={tileLayout(tiles)}>
-                      {Array.from({ length: tiles }, (_, i) => (
-                        <img
-                          key={i}
-                          className="canvas-card-tile"
-                          src={previewTile}
-                          alt=""
-                        />
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="canvas-card-noshot">
-                      No UDFs present in the canvas
-                    </span>
-                  )}
-                </span>
-                <span className="canvas-card-body">
-                  <span className="canvas-card-name" title={canvas.name}>
-                    {canvas.name}
-                  </span>
-                  <span className="canvas-card-stat">
-                    {busy === canvas.name
-                      ? "Cloning…"
-                      : nUdfs === null
-                        ? "Not cloned yet — click to clone & open"
-                        : `${nUdfs} UDF${nUdfs === 1 ? "" : "s"}${
-                            // The count now exists before the clone does, but
-                            // an uncloned card still needs to say what a click
-                            // will do — it is the only affordance it has.
-                            canvas.cloned ? "" : " · click to clone & open"
-                          }`}
-                  </span>
-                  {modified !== null && (
-                    <span className="canvas-card-meta">
-                      Last modified: {formatModified(modified)}
-                    </span>
-                  )}
-                </span>
-              </button>
-              );
-            })}
+                onOpen={() => void onOpen(canvas)}
+              />
+            ))}
           </div>
         )}
-      </div>
-    </div>
+      </PageBody>
+    </Page>
   );
 }

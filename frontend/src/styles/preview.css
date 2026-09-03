@@ -53,7 +53,10 @@
    own. Everything that does bring its own opts out by name, and the opt-out
    list is the whole mechanism — a control that carries a class but is not
    named here silently loses to this rule:
-     * `.bar-ctl` — the shared bar recipe (explorer.css), the buttons in the bar;
+     * `[data-slot="button"]` — every shadcn Button, which is what a BarButton
+       and every bar dropdown's trigger now is (apps/explorer/bar/BarButton);
+     * `.bar-ctl` — the class family those replaced, kept in the list because a
+       control that carries a class but is not named here silently loses;
      * `.bar-menu-item` — the rows of a dropdown OPENED from the bar, which are
        descendants of the slot too, and which the `.active` rule below painted
        solid lime (a menu's active row and a toggle's active state share the
@@ -62,7 +65,7 @@
    outranked (0,3,1 against its 0,2,0) until the `:not()` stopped it MATCHING
    rather than trying to outrank it. That button is gone (D264); the mechanism
    it taught is why the two above are named and not re-asserted. */
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
+.preview-actions button:not([data-slot="button"]):not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -74,13 +77,13 @@
   cursor: pointer;
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
+.preview-actions button:not([data-slot="button"]):not(.bar-ctl):not(.bar-menu-item).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
+.preview-actions button:not([data-slot="button"]):not(.bar-ctl):not(.bar-menu-item):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
@@ -145,12 +148,6 @@
   }
 }
 
-
-
-.pane-mode-item.pending {
-  opacity: 0.55;
-  cursor: default;
-}
 
 /* Body placeholder while a URL-requested gated mode (or an all-conditional
    list) is still resolving. */
@@ -458,23 +455,7 @@ html.side-reopening iframe {
   font-size: 12px;
   border-top: 1px solid var(--border);
 }
-.listing-load-more {
-  margin-left: 10px;
-  padding: 3px 10px;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.listing-load-more:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.listing-load-more:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+/* The Load more button is a shadcn outline Button (Listing.tsx). */
 
 /* Error panel: dark maroon card + red border + mono red text, matching the
    fused_render/static/runtime.js overlay reference. Canonical error style —
@@ -667,66 +648,14 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   display: none;
 }
 
-/* The shared bar recipe (explorer.css) at pane scale: 24px controls, 14px
-   icons. Same grammar as the title bar, one size down — panel mode used to
-   feel like a different app, and the size was most of the reason. */
-.panel-bar .bar-ctl {
-  height: 24px;
-  padding: 0 6px;
-  font-size: 11px;
-}
-
-.panel-bar .bar-ctl-icon {
-  width: 24px;
-  padding: 0;
-}
-
-/* :not(.bar-caret) because the caret has its own smaller size below, and a
-   bare `.panel-bar .bar-ctl > svg` outweighed `.panel-bar .bar-caret` on
-   specificity — the mode menu's caret silently kept the 14px icon size it was
-   explicitly excluded from. */
-.panel-bar .bar-ctl > svg:not(.bar-caret) {
-  width: 14px;
-  height: 14px;
-}
-
-.panel-bar .mode-menu-icon,
-.panel-bar .mode-menu-icon svg,
-.panel-bar .mode-menu-icon .mode-icon-mask,
-.panel-bar .mode-menu-icon .mode-icon-placeholder {
-  width: 14px;
-  height: 14px;
-}
-
-.panel-bar .bar-caret {
-  width: 11px;
-  height: 11px;
-}
-
-.panel-bar .bar-rule {
-  margin: 0 6px;
-}
-
-/* The layout bookmark's ★, at the pane bar's left edge — pane scale, and it
-   must not be squeezed by the flex:1 crumbs beside it. */
-.panel-bar .bookmark-star-btn {
-  padding: 3px;
-}
-
-.panel-bar .bookmark-star-btn svg {
-  width: 13px;
-  height: 13px;
-}
-
-.panel-bar .star-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-}
-
-/* Close keeps the right-most slot and its error-red hover. */
-.panel-bar .bar-ctl.close:hover:not(:disabled) {
-  color: var(--error);
-}
+/* THE PANE-SCALE RE-SCALING HAS LEFT THIS FILE. Eight rules used to shrink
+   `.bar-ctl` / `.bar-ctl-icon` / their glyphs / `.mode-menu-icon` /
+   `.bar-caret` / `.bar-rule` / the two stars from the title bar's 28px/16px to
+   the pane's 24px/14px, and the close button's destructive hover with them.
+   That whole step is the `dense` prop on BarButton / ModeGlyph / BookmarkStar /
+   UpdateBookmarkButton / ModeMenu / OverflowMenu (apps/explorer/bar/), which
+   Panel.tsx passes on every control in its bar — same grammar as the title bar,
+   one size down, and now impossible to get half-applied. */
 
 .panel-pane iframe {
   flex: 1 1 auto;
@@ -743,171 +672,20 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   opacity: 1;
 }
 
-/* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
-   visible at a time (SPEC §15). Bar of tab buttons on top, iframes fill the
-   rest; the active tab's iframe is shown, the others display:none. */
-.tabs-root {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
+/* TAB MODE'S CHROME AND THE PANE/TAB MODE MENU have left this file (Tabs.tsx,
+   PaneModeMenu.tsx). `.tabs-root`, `.tabs-bar`, `.tab`, `.tab-label`,
+   `.tab-close`, `.tab-open-plain` and the whole `.pane-mode-*` set are
+   Tailwind utilities on their own elements now.
 
-.tabs-bar {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  min-height: 30px;
-  padding: 3px 6px 0;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  scrollbar-width: none;
-  white-space: nowrap;
-  user-select: none;
-}
+   TWO CLASS NAMES ON THOSE ELEMENTS ARE NOT OURS AND STAY: `.tab-add` and
+   `.tabs-body` (with `.tabs-body iframe.tab-frame.is-loaded`, the load fade
+   TabFrame arms imperatively) are styled in styles/notifications.css.
 
-.tabs-bar::-webkit-scrollbar {
-  display: none;
-}
+   The tab variant of the mode menu is deliberately NOT the shared
+   DropdownMenu: its trigger is a <span> nested inside the tab's own <button>,
+   where a real button would be invalid HTML and a focus-managed popup would
+   pull focus out of the tab. It keeps a `position: fixed` popup off the
+   trigger's rect, inline in the component, because the tab bar clips its
+   overflow. */
 
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  max-width: 200px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 5px 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-
-.tab:hover {
-  color: var(--fg);
-}
-
-.tab.active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-  background: var(--bg-alt);
-}
-
-.tab-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tab-open-plain {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  border-radius: 3px;
-  color: var(--fg-muted);
-}
-
-.tab-open-plain:hover {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.08);
-}
-
-.tab-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  border-radius: 3px;
-  color: var(--fg-muted);
-  font-size: 14px;
-  line-height: 1;
-}
-
-.tab-close:hover {
-  color: var(--error);
-  background: rgba(var(--tint), 0.08);
-}
-
-/* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
-   dropdown lists icon + name per mode. Dropdown is position:fixed (inline
-   top/left from the trigger's rect) — .panel-pane clips overflow, and the tab
-   bar would too. */
-.pane-mode-menu {
-  display: inline-flex;
-  flex: 0 0 auto;
-}
-
-.pane-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 5px;
-  border-radius: 4px;
-}
-
-.pane-mode-btn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
-/* Inside a tab button: match the tab-open-plain / tab-close chrome sizing. */
-.tab .pane-mode-btn {
-  width: 15px;
-  height: 15px;
-  padding: 0;
-}
-
-.tab .pane-mode-btn .mode-icon-mask,
-.tab .pane-mode-btn .mode-icon-placeholder,
-.tab .pane-mode-btn svg {
-  width: 13px;
-  height: 13px;
-}
-
-.pane-mode-dropdown {
-  position: fixed;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 120px;
-  padding: 4px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px var(--shadow-md);
-}
-
-.pane-mode-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.pane-mode-item:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
-.pane-mode-item.active {
-  color: var(--fg);
-}
 

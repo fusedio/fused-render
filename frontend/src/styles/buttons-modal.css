@@ -1,12 +1,20 @@
-/* ---- Unified button vocabulary + modal chassis -------------------------- */
-/* One .btn base and four variants for every modal/form action, with ONE
-   disabled treatment and ONE focus-visible ring. The selectors are grouped for
-   the bare, .deploy-body and .prefs-section contexts so .btn wins over the
-   generic `.deploy-body button` / `.prefs-section button` skins by specificity
-   (0,2,x) regardless of source order. */
-.btn,
-.deploy-body .btn,
-.prefs-section .btn {
+/* ---- One legacy button, awaiting its last caller ------------------------- */
+/* What is left of the unified button vocabulary + modal chassis. The chassis
+   went first: platform/ui/modal/Modal.tsx is a shadcn Dialog and carries
+   `.modal-footer`, `.modal-dirty-hint` and the armed-✕ tint as utilities, the
+   last off `bucketBadge.orange` (the status map's waiting-on-the-user bucket)
+   rather than a hand-rolled warning wash.
+   Then the CONTEXTS went. Every selector here used to be grouped three ways —
+   bare, `.deploy-body .btn` and `.prefs-section .btn` — so `.btn` would out-
+   specify the generic `.deploy-body button` / `.prefs-section button` skins
+   whatever the source order. deploy.css and the prefs-* rules are both deleted,
+   so there is no generic skin left to beat and the two descendant copies of
+   each rule matched nothing. Likewise `.btn-secondary`, `.btn-danger` and
+   `.btn-danger-text`: no element carries them any more.
+   ONE caller survives, using `btn btn-primary`: src/apps/explorer/Preview.tsx
+   at lines 2119 and 2149. Convert those two to the shadcn Button and this file
+   goes. */
+.btn {
   font: inherit;
   font-size: 13px;
   height: 32px;
@@ -24,121 +32,26 @@
   align-self: auto;
 }
 
-.btn:disabled,
-.deploy-body .btn:disabled,
-.prefs-section .btn:disabled {
+.btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.btn:focus-visible,
-.deploy-body .btn:focus-visible,
-.prefs-section .btn:focus-visible {
+.btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* Quiet primary: accent-tinted, not accent-filled — still the strongest button
-   in a footer, without the neon pop of a solid lime fill on the dark surface. */
 /* Neutral filled primary — reads strongest through contrast, not accent
    (Akshil: accent buttons pop too much). Accent stays for focus/selection. */
-.btn-primary,
-.deploy-body .btn-primary,
-.prefs-section .btn-primary {
+.btn-primary {
   background: var(--fg);
   border-color: transparent;
   color: var(--bg);
   font-weight: 600;
 }
 
-.btn-primary:hover:not(:disabled),
-.deploy-body .btn-primary:hover:not(:disabled),
-.prefs-section .btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled) {
   background: var(--on-fg);
   border-color: transparent;
 }
-
-.btn-secondary,
-.deploy-body .btn-secondary,
-.prefs-section .btn-secondary {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--fg);
-}
-
-.btn-secondary:hover:not(:disabled),
-.deploy-body .btn-secondary:hover:not(:disabled),
-.prefs-section .btn-secondary:hover:not(:disabled) {
-  background: transparent;
-  border-color: var(--fg-muted);
-}
-
-.btn-danger,
-.deploy-body .btn-danger,
-.prefs-section .btn-danger {
-  background: rgba(var(--error-rgb), 0.1);
-  border-color: var(--error);
-  color: var(--error);
-}
-
-.btn-danger:hover:not(:disabled),
-.deploy-body .btn-danger:hover:not(:disabled),
-.prefs-section .btn-danger:hover:not(:disabled) {
-  background: rgba(var(--error-rgb), 0.18);
-  border-color: var(--error);
-}
-
-/* Text-only destructive action; margin-right:auto anchors it to the far left of
-   a footer row so the primary/cancel stay right-aligned. */
-.btn-danger-text,
-.deploy-body .btn-danger-text,
-.prefs-section .btn-danger-text {
-  background: none;
-  border-color: transparent;
-  color: var(--error);
-  margin-right: auto;
-}
-
-.btn-danger-text:hover:not(:disabled),
-.deploy-body .btn-danger-text:hover:not(:disabled),
-.prefs-section .btn-danger-text:hover:not(:disabled) {
-  background: rgba(var(--error-rgb), 0.12);
-  border-color: transparent;
-}
-
-/* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the
-   Modal component applies both classes, so descendant .deploy-* skins keep
-   working). Footer row follows the footer grammar: destructive far left
-   (via .btn-danger-text margin-right:auto), Cancel then primary at the right. */
-.modal-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-}
-
-.modal-dirty-hint {
-  color: var(--fg-muted);
-  font-size: 12px;
-  margin-right: auto;
-}
-
-/* ARMED ✕ — the next press discards. The hint in the footer says it in words;
-   this says it at the corner the user actually pressed, which is the half that
-   was missing (QA, 2026-08-18: the first press "looked like a dead click").
-
-   Reads as WARM rather than destructive: discarding a draft is not deleting a
-   task, and borrowing the Delete button's filled --error treatment would
-   overstate it. The hover rule is repeated for the same reason it is on
-   `.new-task-delete.is-armed` — moving the mouse must not cool the state back
-   down while it is still live. */
-.deploy-close.is-armed,
-.deploy-close.is-armed:hover:not(:disabled) {
-  background: rgba(var(--warning-rgb), 0.16);
-  color: var(--warning);
-  border-radius: 4px;
-}
-

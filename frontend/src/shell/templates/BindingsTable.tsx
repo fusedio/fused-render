@@ -1,6 +1,15 @@
 import { useState } from "react";
+import { PlusIcon, TriangleAlertIcon } from "lucide-react";
 import type { RegistryEntry, RegistryResult } from "@platform/lib/api";
 import { sourceLabel, type BindFilter } from "@shell/templates/helpers";
+import { FilterGroup, TemplateChip, Toolbar, WarnText } from "@shell/templates/chips";
+import { SourceSelect } from "@shell/templates/SourceSelect";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@platform/shadcn/ui/table";
+import { Identifier, Muted, PageBody } from "@platform/ui/flow/Typography";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
 
 export function BindingsTable({
   registry,
@@ -33,102 +42,117 @@ export function BindingsTable({
     .sort((a, b) => Number(b.overridesCore) - Number(a.overridesCore));
 
   return (
-    <section className="templates-tabpanel">
-      <div className="templates-toolbar">
-        <input
+    <PageBody className="space-y-4">
+      <Toolbar
+        actions={
+          <Button size="sm" onClick={onAdd}>
+            <PlusIcon data-icon="inline-start" />
+            Add extension
+          </Button>
+        }
+      >
+        <Input
           type="text"
-          className="templates-search"
+          className="w-64"
           placeholder="Search by key or template…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <div className="templates-seg">
-          <button
-            type="button"
-            className={"templates-seg-btn" + (filter === "all" ? " active" : "")}
-            onClick={() => setFilter("all")}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={"templates-seg-btn" + (filter === "modified" ? " active" : "")}
-            onClick={() => setFilter("modified")}
-          >
-            Modified
-          </button>
-        </div>
-        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
-          <option value="all">All sources</option>
-          {registry.sources.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="btn btn-primary templates-toolbar-push" onClick={onAdd}>
-          + Add extension
-        </button>
-      </div>
+        <FilterGroup<BindFilter>
+          ariaLabel="Filter bindings"
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: "all", label: "All" },
+            { value: "modified", label: "Modified" },
+          ]}
+        />
+        <SourceSelect value={sourceFilter} onChange={setSourceFilter} sources={registry.sources} />
+      </Toolbar>
       {rows.length === 0 ? (
-        <div className="deploy-muted">No bindings match.</div>
+        <Muted>No bindings match.</Muted>
       ) : (
-        <table className="templates-table">
-          <thead>
-            <tr>
-              <th>Pattern</th>
-              <th>Templates</th>
-              <th>Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((e) => (
-              <tr key={e.key} onClick={() => onEdit(e)} className="templates-row">
-                <td className="templates-col-pattern">
-                  {e.overridesCore && <span className="templates-dot" title="User override" />}
-                  <code className="templates-key-pill">{e.key}</code>
-                </td>
-                <td className="templates-col-templates">
-                  {e.disabled ? (
-                    <span className="templates-pill">Disabled</span>
-                  ) : (
-                    e.templates.map((t, i) => (
-                      <span
-                        key={t.name + i}
-                        className={
-                          "templates-chip small" +
-                          (i === 0 ? " default" : "") +
-                          (t.exists ? "" : " broken")
-                        }
-                        title={
-                          !t.exists
-                            ? "no template folder resolves to this name"
-                            : i === 0
-                              ? "default mode"
-                              : undefined
-                        }
-                      >
-                        {i === 0 && <span className="templates-chip-badge">default</span>}
-                        {t.name}
-                      </span>
-                    ))
-                  )}
-                  {e.error && (
-                    <div className="templates-key-error" title={e.error}>
-                      ⚠ {e.error}
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="h-8 px-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Pattern
+                </TableHead>
+                <TableHead className="h-8 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Templates
+                </TableHead>
+                <TableHead className="h-8 px-4 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Source
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((e) => (
+                <TableRow
+                  key={e.key}
+                  onClick={() => onEdit(e)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault();
+                      onEdit(e);
+                    }
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  className="cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-none"
+                >
+                  <TableCell className="w-48 px-4 py-1.5">
+                    <span className="inline-flex items-center gap-2">
+                      {/* A user override isn't a lifecycle status — neutral dot. */}
+                      {e.overridesCore ? (
+                        <StatusDot bucket="neutral" label="User override" className="bg-foreground" />
+                      ) : (
+                        <span className="inline-block size-1.5 shrink-0" aria-hidden />
+                      )}
+                      <Identifier className="text-foreground">{e.key}</Identifier>
+                    </span>
+                  </TableCell>
+                  <TableCell className="px-2 py-1.5 whitespace-normal">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {e.disabled ? (
+                        <Badge variant="outline">Disabled</Badge>
+                      ) : (
+                        e.templates.map((t, i) => (
+                          <TemplateChip
+                            key={t.name + i}
+                            small
+                            name={t.name}
+                            isDefault={i === 0}
+                            broken={!t.exists}
+                            title={
+                              !t.exists
+                                ? "no template folder resolves to this name"
+                                : i === 0
+                                  ? "default mode"
+                                  : undefined
+                            }
+                          />
+                        ))
+                      )}
                     </div>
-                  )}
-                </td>
-                <td>
-                  <span className={"registry-source " + (e.overridesCore ? "user" : "")}>
-                    {sourceLabel(registry, e.resolvedSource)}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    {e.error && (
+                      <WarnText className="mt-1 inline-flex items-center gap-1" title={e.error}>
+                        <TriangleAlertIcon className="size-3.5" /> {e.error}
+                      </WarnText>
+                    )}
+                  </TableCell>
+                  <TableCell className="w-32 px-4 py-1.5 text-right">
+                    <Badge variant={e.overridesCore ? "secondary" : "outline"}>
+                      {sourceLabel(registry, e.resolvedSource)}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
-    </section>
+    </PageBody>
   );
 }

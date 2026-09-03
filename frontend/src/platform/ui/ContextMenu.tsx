@@ -14,8 +14,24 @@
 // it at the trigger's rect (`{x: r.left, y: r.bottom + 4}`) and the clamp below
 // keeps it on screen. The AI models page's task/sort menus are that (D426).
 //
-// Styling lives in shell.css (.context-menu*), matching the pane-mode-dropdown.
+// Drawn like the shadcn DropdownMenu (bg-popover, ring, square surface, curved
+// rows) so a right-click menu and a trigger menu are one vocabulary; positioning
+// stays this component's own (cursor coords + viewport clamp), since a context
+// menu has no anchor element.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRightIcon } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+
+// The DropdownMenuContent surface.
+const SURFACE =
+  "fixed z-[1000] flex min-w-[220px] flex-col gap-px rounded-lg bg-popover p-1 text-left text-sm text-popover-foreground shadow-sm ring-1 ring-foreground/10 select-none";
+// Grows out of whichever corner sits under the cursor (transform-origin is set
+// inline from the clamp result). Guarded for reduced motion.
+const ENTER = "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95 motion-safe:duration-100";
+
+function Separator() {
+  return <div className="-mx-1 my-1 h-px bg-border" />;
+}
 
 export interface MenuItem {
   label: string;
@@ -74,15 +90,23 @@ function Row({
 }) {
   return (
     <div
-      className={
-        "context-menu-item" +
-        (item.disabled ? " disabled" : "") +
-        (item.dimmed ? " dimmed" : "") +
-        (item.danger ? " danger" : "") +
-        (item.active ? " active" : "") +
-        (item.submenu ? " has-submenu" : "") +
-        (open ? " open" : "")
-      }
+      data-slot="context-menu-item"
+      data-disabled={item.disabled || undefined}
+      data-open={open || undefined}
+      className={cn(
+        "flex min-h-7 cursor-default items-center gap-2 rounded-md px-2 py-1 text-sm whitespace-nowrap outline-hidden",
+        // Hover wash — the same accent as DropdownMenuItem's focus state; `open`
+        // holds it on the parent row while its submenu is up.
+        !item.disabled && "hover:bg-accent hover:text-accent-foreground data-open:bg-accent data-open:text-accent-foreground",
+        item.disabled && "text-muted-foreground opacity-50",
+        // Destructive action (Delete).
+        item.danger && "text-destructive hover:bg-destructive/10 hover:text-destructive",
+        // RADIO semantics: the choice in force. Semibold + a stronger wash than
+        // hover so the two never blur; the row keeps its own icon — the wash
+        // replaced a trailing checkmark, and on these menus the icons ARE the
+        // vocabulary.
+        item.active && "bg-accent font-semibold hover:bg-muted",
+      )}
       /* Radio semantics are announced as well as drawn, and only where the
          caller asked for them — an ordinary action row is not an unchecked
          anything, so a role it never opted into would mis-describe it. */
@@ -94,13 +118,22 @@ function Row({
         onActivate();
       }}
     >
+      {/* Fixed-width icon column so labels align even for iconless rows. The
+          glyph is muted until the row is hovered / active / danger. */}
       {showIcon && (
-        <span className="context-menu-icon" aria-hidden="true">
+        <span
+          className={cn(
+            "inline-flex w-5 shrink-0 items-center justify-center [&_svg]:size-4",
+            !(item.active || item.danger || open) && "text-muted-foreground",
+          )}
+          aria-hidden="true"
+        >
           {item.icon}
         </span>
       )}
-      <span className="context-menu-label">{item.label}</span>
-      {item.submenu && <span className="context-menu-arrow">›</span>}
+      {/* A cut entry is shown dimmed until pasted (still clickable). */}
+      <span className={cn("flex-1", item.dimmed && "opacity-50")}>{item.label}</span>
+      {item.submenu && <ChevronRightIcon className="ml-3 size-4 text-muted-foreground" aria-hidden="true" />}
     </div>
   );
 }
@@ -253,14 +286,22 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   return (
     <div
       ref={rootRef}
-      className={"context-menu" + (pos ? " placed" : " measuring")}
+      data-slot="context-menu"
+      // The clamp pass needs the menu's real size before it can decide where
+      // the menu goes, so the first — pre-paint — render is hidden rather than
+      // painted at the raw cursor coords and then moved.
+      // `context-menu` is a MARKER, not a style hook: apps/explorer/Breadcrumb.tsx
+      // tests `closest(".context-menu")` to keep a click inside the menu from
+      // counting as outside its own popup.
+      className={cn("context-menu", SURFACE, pos ? ENTER : "invisible")}
       style={{ left, top, transformOrigin: origin }}
     >
       {items.map((it, i) =>
         it === "separator" ? (
-          <div key={i} className="context-menu-sep" />
+          <Separator key={i} />
         ) : (
-          <div key={i} className="context-menu-row">
+          // Wrapper for an item + its (absolutely positioned) submenu.
+          <div key={i} className="relative">
             <Row
               item={it}
               open={openSub === i}
@@ -270,17 +311,25 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
             />
             {it.submenu && openSub === i && (
               <div
-                className={"context-menu context-submenu placed" + (subLeft ? " left" : "")}
+                // Opens to the item's right by default, or its left near the
+                // viewport edge. The small negative top aligns the first submenu
+                // row with its parent row.
+                className={cn(
+                  SURFACE,
+                  ENTER,
+                  "absolute -top-1",
+                  subLeft ? "right-full mr-0.5 origin-top-right" : "left-full ml-0.5 origin-top-left",
+                )}
                 /* Moving into the submenu must cancel a close that a sibling
                    row queued on the way here. */
                 onMouseEnter={cancelHover}
               >
                 {subItems === null ? (
-                  <div className="context-menu-item disabled">Loading…</div>
+                  <div className="min-h-7 px-2 py-1 text-sm text-muted-foreground opacity-50">Loading…</div>
                 ) : (
                   subItems.map((s, j) =>
                     s === "separator" ? (
-                      <div key={j} className="context-menu-sep" />
+                      <Separator key={j} />
                     ) : (
                       <Row
                         key={j}

@@ -33,6 +33,7 @@ import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
 import { BookmarkStar, UpdateBookmarkButton } from "@apps/explorer/Breadcrumb";
+import { BarButton, BarRule, BarZone } from "@apps/explorer/bar/BarButton";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -229,8 +230,8 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
             would offer to bookmark its own chromeless /embed/_panel URL —
             opening that bookmark later lands on a page with no navigation at
             all. IS_EMBED is the same gate useUpdateButton already applies. */}
-        {!IS_EMBED && <BookmarkStar name="Panel" />}
-        {!IS_EMBED && first && <UpdateBookmarkButton />}
+        {!IS_EMBED && <BookmarkStar name="Panel" dense />}
+        {!IS_EMBED && first && <UpdateBookmarkButton dense />}
         <div className="panel-crumbs" ref={crumbsRef}>
           {crumbs}
         </div>
@@ -255,39 +256,40 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
             }}
           />
         </span>
-        <span className="bar-rule" aria-hidden="true" />
-        <div className="bar-zone">
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-icon"
+        <BarRule className="bar-rule mx-1.5" />
+        <BarZone>
+          <BarButton
+            icon
+            dense
             title="Split right"
             aria-label="Split right"
             onClick={() => ctx.split(node.id, "row")}
           >
             {ICONS.splitRight}
-          </button>
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-icon"
+          </BarButton>
+          <BarButton
+            icon
+            dense
             title="Split down"
             aria-label="Split down"
             onClick={() => ctx.split(node.id, "col")}
           >
             {ICONS.splitDown}
-          </button>
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-icon"
+          </BarButton>
+          <BarButton
+            icon
+            dense
             title={maximized ? "Restore" : "Maximize"}
             aria-label={maximized ? "Restore" : "Maximize"}
             onClick={() => setMaximized((m) => !m)}
           >
             {maximized ? ICONS.restore : ICONS.max}
-          </button>
+          </BarButton>
           {/* "Open in a new tab" used to be a glyph inside the crumb strip,
               hugging the last segment. Same action, now where the other
               one-shots live. */}
           <OverflowMenu
+            dense
             items={[
               {
                 label: "Open in a new tab",
@@ -295,17 +297,18 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
               },
             ]}
           />
-          {/* Close keeps the right-most slot and its --error hover. */}
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-icon close"
+          {/* Close keeps the right-most slot and its destructive hover. */}
+          <BarButton
+            icon
+            dense
+            className="hover:text-destructive"
             title="Close pane"
             aria-label="Close pane"
             onClick={() => ctx.close(node.id)}
           >
             {ICONS.close}
-          </button>
-        </div>
+          </BarButton>
+        </BarZone>
       </div>
       <iframe ref={iframeRef} src={srcRef.current} onLoad={onLoad} />
     </div>

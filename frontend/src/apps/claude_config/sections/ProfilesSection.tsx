@@ -14,8 +14,17 @@
 //     already read the config that just got swapped underneath it, and a
 //     targeted refresh of ten sections is a worse contract than one reload.
 import { useCallback, useId, useState } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
+import { Input } from "@platform/shadcn/ui/input";
+import { Label } from "@platform/shadcn/ui/label";
 import * as cc from "../api";
 import type { DirtyRefusal, ZipEntry } from "../api";
 import {
@@ -23,7 +32,10 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  Code,
   DisclosureButton,
+  Empty,
+  ErrorNote,
   List,
   ListRow,
   ListSkeleton,
@@ -62,33 +74,34 @@ function bucket(entries: ZipEntry[]): PickGroup[] {
   return groups;
 }
 
-// A checkbox whose `indeterminate` state is driven by its children — the group
-// and select-all rows of the import picker. (Same DOM-property-only problem as
-// the tri-state toggle in bits.tsx.)
-function TriCheckbox({
+// One row of the picker: a checkbox and its label, as a label so the whole
+// line is the target. The Checkbox primitive has a real `indeterminate` prop,
+// so the group and select-all rows no longer need a DOM-property ref.
+function PickRow({
   checked,
   indeterminate,
   label,
   onChange,
+  children,
+  className,
 }: {
   checked: boolean;
-  indeterminate: boolean;
+  indeterminate?: boolean;
   label: string;
   onChange: (next: boolean) => void;
+  children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <input
-      // Inline callback ref: React re-runs it on every render (the function's
-      // identity changes), which is exactly when the derived indeterminate flag
-      // needs re-applying to the DOM property.
-      ref={(el) => {
-        if (el) el.indeterminate = indeterminate;
-      }}
-      type="checkbox"
-      aria-label={label}
-      checked={checked}
-      onChange={(e) => onChange(e.target.checked)}
-    />
+    <Label className={className}>
+      <Checkbox
+        aria-label={label}
+        checked={checked}
+        indeterminate={indeterminate}
+        onCheckedChange={(next) => onChange(next)}
+      />
+      {children}
+    </Label>
   );
 }
 
@@ -105,6 +118,7 @@ function ImportPicker({
   const all = groups.flatMap((g) => g.paths);
   const [branch, setBranch] = useState("");
   const [selected, setSelected] = useState<string[]>(all);
+  const nameId = useId();
 
   const isOn = (p: string) => selected.includes(p);
   const setGroup = (g: PickGroup, on: boolean) =>
@@ -126,76 +140,72 @@ function ImportPicker({
   };
 
   return (
-    <Modal
-      title="Import into a new profile"
-      width={620}
-      onClose={onCancel}
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-primary" onClick={submit}>
-            Import
-          </button>
-        </>
-      }
-    >
-      <label className="field">
-        <span className="field-label">New profile name</span>
-        <input
-          className="field-control"
-          placeholder="e.g. imported"
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-        />
-      </label>
-      {all.length === 0 ? (
-        <div className="cc-empty">Empty archive.</div>
-      ) : (
-        <>
-          <label className="cc-pick cc-pick-all">
-            <TriCheckbox
+    <Dialog open onOpenChange={(o) => !o && onCancel()}>
+      <DialogContent className="sm:max-w-[620px]">
+        <DialogHeader>
+          <DialogTitle>Import into a new profile</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor={nameId}>New profile name</Label>
+          <Input
+            id={nameId}
+            placeholder="e.g. imported"
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+          />
+        </div>
+        {all.length === 0 ? (
+          <Empty>Empty archive.</Empty>
+        ) : (
+          <div className="border border-border rounded-lg max-h-72 overflow-y-auto scrollbar-auto-hide text-sm">
+            <PickRow
               label="Select all"
               checked={selected.length === all.length}
               indeterminate={selected.length > 0 && selected.length < all.length}
               onChange={(on) => setSelected(on ? all : [])}
-            />
-            <span className="cc-unset">Select all</span>
-          </label>
-          {groups.map((g) => {
-            const on = g.paths.filter(isOn).length;
-            return (
-              <div key={g.key}>
-                <label className="cc-pick cc-pick-group">
-                  <TriCheckbox
+              className="px-3 py-2 border-b border-border text-muted-foreground"
+            >
+              Select all
+            </PickRow>
+            {groups.map((g) => {
+              const on = g.paths.filter(isOn).length;
+              return (
+                <div key={g.key} className="border-b border-border last:border-b-0">
+                  <PickRow
                     label={g.label}
                     checked={on === g.paths.length}
                     indeterminate={on > 0 && on < g.paths.length}
                     onChange={(next) => setGroup(g, next)}
-                  />
-                  <span className="cc-pick-grouplabel">{g.label}</span>
-                </label>
-                {g.paths.map((p) => (
-                  <label className="cc-pick cc-pick-file" key={p}>
-                    <input
-                      type="checkbox"
+                    className="px-3 py-1.5 font-mono text-xs font-medium"
+                  >
+                    {g.label}
+                  </PickRow>
+                  {g.paths.map((p) => (
+                    <PickRow
+                      key={p}
+                      label={p}
                       checked={isOn(p)}
-                      onChange={(e) =>
-                        setSelected((prev) =>
-                          e.target.checked ? [...prev, p] : prev.filter((x) => x !== p),
-                        )
+                      onChange={(next) =>
+                        setSelected((prev) => (next ? [...prev, p] : prev.filter((x) => x !== p)))
                       }
-                    />
-                    <span className="cc-mono">{p}</span>
-                  </label>
-                ))}
-              </div>
-            );
-          })}
-        </>
-      )}
-    </Modal>
+                      className="pl-8 pr-3 py-1 font-mono text-xs font-normal text-muted-foreground"
+                    >
+                      {p}
+                    </PickRow>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button onClick={submit}>Import</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -252,8 +262,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       res = await guard(cc.profiles.switch(target, message));
       // Report the change BEFORE branching on success: the retry's whole job is
       // to commit first, so the drift may well be gone even when the switch
-      // that followed it failed. Reporting only on success left the History
-      // card above still offering to commit changes that no longer exist.
+      // that followed it failed.
       onChanged();
       if (!res) return false;
     }
@@ -385,9 +394,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
         }
         onRefresh={reload}
       >
-        {/* Two disclosures behind two buttons, one open at a time — these were
-            two permanently-expanded cards, which put ~200px of forms above the
-            profile list on a page that already opens with a drift card. */}
+        {/* Two disclosures behind two buttons, one open at a time. */}
         <DisclosureButton
           open={form === "new"}
           controls={newId}
@@ -406,21 +413,20 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
           <Card>
             <CardTitle>New profile</CardTitle>
             <CardSub>
-              Forks the current profile (<span className="cc-mono">{data?.current ?? "…"}</span>)
-              and switches into it.
+              Forks the current profile (<Code>{data?.current ?? "…"}</Code>) and switches into it.
             </CardSub>
             <CardActions>
-              <input
-                className="field-control"
+              <Input
+                className="w-64"
                 aria-label="New profile name"
                 placeholder="e.g. work, experiment"
                 value={newName}
                 disabled={busy}
                 onChange={(e) => setNewName(e.target.value)}
               />
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
+              <Button disabled={busy} onClick={create}>
                 Create &amp; switch
-              </button>
+              </Button>
             </CardActions>
           </Card>
         </div>
@@ -430,12 +436,12 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
           <Card>
             <CardTitle>Import profile</CardTitle>
             <CardSub>
-              Pick files/folders from an exported <span className="cc-mono">.zip</span> to overlay
-              onto a new profile. Your current profile is untouched.
+              Pick files/folders from an exported <Code>.zip</Code> to overlay onto a new profile.
+              Your current profile is untouched.
             </CardSub>
             <CardActions>
-              <input
-                className="field-control"
+              <Input
+                className="w-80"
                 type="file"
                 accept=".zip"
                 aria-label="Profile archive"
@@ -450,7 +456,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
           </Card>
         </div>
       )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading profiles" />}
       {/* No chevron: a profile is a branch name and two flags, all of which fit
           on the line — the interesting detail about a profile is the diff, and
@@ -470,21 +476,17 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
               actions={
                 <>
                   {!p.current && (
-                    <button type="button" className="btn" onClick={() => switchInto(p.name)}>
+                    <Button variant="outline" size="sm" onClick={() => switchInto(p.name)}>
                       Switch
-                    </button>
+                    </Button>
                   )}
-                  <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
+                  <Button variant="outline" size="sm" onClick={() => exportProfile(p.name)}>
                     Export .zip
-                  </button>
+                  </Button>
                   {!p.current && !p.isDefault && (
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      onClick={() => remove(p.name)}
-                    >
+                    <Button variant="destructive" size="sm" onClick={() => remove(p.name)}>
                       Delete
-                    </button>
+                    </Button>
                   )}
                 </>
               }

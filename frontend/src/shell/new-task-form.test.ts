@@ -1430,7 +1430,7 @@ describe("the past-time note", () => {
 describe("the past-time note never blocks Save", () => {
   test("`ready` does not consult it", async () => {
     const src = await Bun.file(
-      new URL("./NewJobModal.tsx", import.meta.url).pathname,
+      new URL("./new-task/NewJobModal.tsx", import.meta.url).pathname,
     ).text();
     const ready = src.slice(src.indexOf("const ready ="));
     expect(ready).not.toBe("");
@@ -1468,7 +1468,7 @@ describe("defaultTargetOf", () => {
 // ---- the when-row opens on now -------------------------------------------------
 describe("the when-row's default", () => {
   test("is the current time, not an hour from it", () => {
-    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
     // A task typed into this card is overwhelmingly one to RUN (Akshil,
     // 2026-08-18). Opening an hour out made the commonest case a two-step: wind
     // the time back, then save.
@@ -1492,7 +1492,7 @@ describe("the when-row's default", () => {
 // affordance §4 asks for — so the home page's list leads this one.
 describe("the folder recents come from the app's own recents", () => {
   test("the leading tier is the Claude sessions source, top five", () => {
-    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
     // Both surfaces use the same server-side ordering. Home takes its bounded
     // endpoint; the form retains the exhaustive API and slices its five rows.
     expect(src).toContain("getClaudeSessionFolders()");
@@ -1515,7 +1515,7 @@ describe("the folder recents come from the app's own recents", () => {
   });
 
   test("the form's own memory follows it, and nothing is offered twice", () => {
-    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
     // Order: the app's recents, then folders picked through Browse or saved on a
     // task, then existing tasks' targets as padding. The middle tier is KEPT — a
     // folder deliberately chosen here may hold no Claude session at all, so the
@@ -1593,13 +1593,13 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
   test("a new folder does not block Save — only a bad path does", () => {
     // The verdict feeds two separate pieces of state, and only `bad` becomes
     // `pathError`. The new-folder row is not a refusal.
-    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
     expect(src).toContain('setPathError(v.kind === "bad" ? v.text : null);');
     expect(src).toContain('setNewFolder(v.kind === "new-folder" ? v.name : null);');
   });
 
   test("the picker's New folder only NAMES one — nothing is written on cancel", () => {
-    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
     // No /api/fs/mkdir from this modal: the folder is created by the save, so
     // backing out of the card leaves nothing behind on disk.
     expect(src).not.toContain("mkdir");
@@ -1615,7 +1615,7 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
 // card down as you typed; it now renders as the first row of the path field's
 // own dropdown, in the row shape of the folders listed under it.
 describe("where the new-folder answer is shown", () => {
-  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const src = () => readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
   const css = () =>
     readFileSync(join(import.meta.dir, "../styles/schedule.css"), "utf8");
 
@@ -1663,7 +1663,7 @@ describe("where the new-folder answer is shown", () => {
 
 // ---- The second verb: "+ New folder" under Browse ----------------------------
 describe("the + New folder button below Browse", () => {
-  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const src = () => readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
 
   test("it sits after Browse in the same dropdown", () => {
     const s = src();
@@ -1777,7 +1777,7 @@ describe("what the primary button says it will do", () => {
 });
 
 describe("where the when-row lives", () => {
-  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const src = () => readFileSync(join(import.meta.dir, "new-task", "NewJobModal.tsx"), "utf8");
 
   test("it is inside More options, which opens itself on a planning card", () => {
     const s = src();

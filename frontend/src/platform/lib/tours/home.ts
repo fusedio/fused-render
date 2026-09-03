@@ -15,7 +15,7 @@ export const homeTour: Tour = {
   // forever. The caller retries.
   readyWhen: () =>
     !!document.querySelector(
-      "#home-sec-apps .app-pcard:not(.home-skel-card), #home-sec-apps .fh-empty"
+      "#home-sec-apps .app-pcard:not(.home-skel-card), #home-sec-apps [data-empty]"
     ),
   startPath: "/home",
   steps: () => [

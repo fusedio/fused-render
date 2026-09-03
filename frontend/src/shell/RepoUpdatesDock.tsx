@@ -49,14 +49,15 @@ import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import StatusDot from "@platform/ui/StatusDot";
 // `JobRow` reused verbatim for a failed job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
 import type { Job } from "@platform/lib/jobs";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { Button } from "@platform/shadcn/ui/button";
+import { DockEmpty, DockFooter, DockRows, StatusBarSection } from "@platform/ui/statusbar/StatusBarSection";
+import { DockAction, DockDismiss, DockLine, DockRow, DockRowHead, DockTitle } from "@platform/ui/statusbar/DockRow";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -183,16 +184,13 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
     }
   };
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title">{event.name} paired</span>
-        <button type="button" className="dl-x" onClick={dismiss} title="Dismiss"
-                aria-label={`Dismiss ${event.name} paired`}>
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</div>
-    </div>
+    <DockRow>
+      <DockRowHead>
+        <DockTitle>{event.name} paired</DockTitle>
+        <DockDismiss onClick={dismiss} title="Dismiss" aria-label={`Dismiss ${event.name} paired`} />
+      </DockRowHead>
+      <DockLine>It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</DockLine>
+    </DockRow>
   );
 }
 
@@ -225,19 +223,8 @@ function useDismissed() {
   return { dismissed, dismissOne, dismissAll };
 }
 
-// MIGRATED ONTO `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-status` (status-bar
-// merge, brief item 4), off the parallel `.q-row`/`.q-row-head`/`.q-title`/
-// `.q-status` family this row used to share with ActivityDock's own scheduled-
-// message rows. The dismiss ✕ was already `.dl-x`, so this is the last of
-// this row's classes to converge. `.q-all` STAYS for the primary action
-// (Update/Switch) and for "Fix with Claude" below: `.dl-row-cancel` — the
-// nearest `.dl-*` equivalent — is documented in notifications.css as reserved
-// for a specific verb family (Unload/Stop/Cancel, "prominent, not alarming"),
-// which this row's actions are not, so reusing it would misapply that
-// weight. `shell/ActivityDock.tsx`'s own queue rows (pending/live scheduled
-// messages) are UNTOUCHED by this migration — the brief names this card's
-// repo rows specifically — so `.q-row`/`.q-row-head`/`.q-title`/`.q-status`
-// stay live, still drawn by those rows.
+// The same DockRow shape every panel row wears: title, one action, the ✕
+// pinned to the row's right edge (D609), a status sentence under it.
 function RepoRowView({
   row,
   onDone,
@@ -285,55 +272,26 @@ function RepoRowView({
   };
 
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title" title={row.repo.root}>
-          {row.name}
-        </span>
-        {/* The one action, then the dismiss ✕ — the same left-to-right
-            order every row in this card follows. The ✕ is not merely NEXT,
-            though: notifications.css pins it to the row's right edge with an
-            auto margin (D609, user: "the x icon should always be at the very
-            right of the card"), so any slack in the head falls between the
-            action and the ✕ rather than after it. That is a statement about
-            what the ✕ is — a dismissal of this ROW, not a third step in the
-            action group it would otherwise read as part of — so it belongs on
-            the row's boundary. The ORDER here is unchanged; only where the
-            leftover width goes is. */}
-        <button
-          type="button"
-          className="q-all"
-          onClick={() => run(row.primaryAction)}
-          disabled={busyAction !== null}
-        >
+    <DockRow>
+      <DockRowHead>
+        <DockTitle title={row.repo.root}>{row.name}</DockTitle>
+        <DockAction onClick={() => run(row.primaryAction)} disabled={busyAction !== null}>
           {busyAction === row.primaryAction
             ? "Working…"
             : repoActionLabel(row.primaryAction, row.repo.default_branch)}
-        </button>
-        <button
-          type="button"
-          className="dl-x"
-          onClick={onDismiss}
-          title="Dismiss"
-          aria-label={`Dismiss ${row.name}`}
-        >
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">{failure ? failure.message : repoStatusText(row)}</div>
-      {/* Refusal, not error text alone — the same failure-toast rule the git
-          companion's own rows follow: a refusal is spoken AND offers a way
-          out, never just swallowed. This surface has no chat of its own
-          (unlike the git companion), so the way out is navigating to the
-          repo and staging the ask for whatever Claude-capable surface mounts
-          there (pending-claude-ask.ts) rather than calling
-          `window._fusedClaudeAsk` directly. */}
+        </DockAction>
+        <DockDismiss onClick={onDismiss} title="Dismiss" aria-label={`Dismiss ${row.name}`} />
+      </DockRowHead>
+      <DockLine>{failure ? failure.message : repoStatusText(row)}</DockLine>
+      {/* Refusal, not error text alone: a refusal is spoken AND offers a way
+          out. This surface has no chat of its own, so the way out is navigating
+          to the repo and staging the ask (pending-claude-ask.ts). */}
       {failure && (
-        <button type="button" className="q-all" onClick={fixWithClaude}>
+        <Button variant="outline" size="xs" className="mt-1.5" onClick={fixWithClaude}>
           Fix with Claude
-        </button>
+        </Button>
       )}
-    </div>
+    </DockRow>
   );
 }
 
@@ -412,151 +370,74 @@ export function RepoUpdatesCardView({
   // and something failed" — an `error` row in here is always terminal, so the
   // extra clause had nothing left to say.
   const hasFailure = failed.length > 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME and one circle, and
-          the idle sentence moves into the panel below; see
-          `DownloadManagerView`'s own header comment for the fuller
-          reasoning, identical here). `repoUpdatesSummary`, which used to
-          render the richer "N updates available" phrasing here, is DELETED —
-          nothing rendered it after D573 and its docstring had gone stale
-          claiming this card does not draw with zero rows (finding 8, code
-          review 2026-08-27). */}
-      <button
-        className={
-          "dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")
-        }
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show notifications" : "Hide notifications"}
-      >
-        {/* `Notifications`, NOT `Updates` (D579, user: "git updates does not
-            make sense out of an app. it belongs to 'notifications'") — a repo
-            being behind upstream is ONE KIND of notification, not a top-level
-            category beside Models and Activity, and `Updates` also collided
-            with `Activity` (both read as "stuff that changed", neither says
-            whose). ONLY THE LABEL CHANGED — the chip carried a count when this
-            rename landed and carries none since D588/D590, but that is a
-            separate decision and not part of the renaming. Nothing else was
-            renamed either: this
-            file, its `.dl-*`/`.q-*` classes and `repoRows`/`visibleRepoRows`
-            all still say "repo updates", which is exactly what they hold —
-            `Notifications` is the extensible CATEGORY, so an alert that is
-            not a repo update gets a home here without a fourth section. */}
-        {/* The label and the shared indicator (D590). Filled when this section
-            holds anything — a repo update, a failed job, or both. It is also
-            the QUIET SIGNAL for an error-sourced notification (D586): a
-            background failure fills it and opens no panel, since failures are
-            absent from the ids the auto-open hook is given. */}
-        <span className="dl-summary">Notifications</span>
-        <StatusDot
-          on={total > 0}
-          label={total > 0 ? "notifications waiting" : "no notifications"}
-        />
-      </button>
-      {/* The panel — floats ABOVE the status bar, anchored to this chip, and
-          exists only while expanded. Collapsed shows no panel at all — see
-          this component's own doc comment on why the fold takes every row,
-          no exemption, including Clear now that it lives here rather than
-          in a header that used to survive the fold. An idle section now
-          opens a panel too (D573) — the idle sentence ("No notifications") lives
-          there instead of in the chip, which no longer has room for it. */}
-      {!collapsed && (
-        <div className="dl-panel">
-          {idle ? (
-            <div className="dl-panel-empty">No notifications</div>
-          ) : (
-            <>
-              {/* ONE list, TWO row kinds (D586). Repo updates first, then
-                  failures: the repo rows are the actionable ones (Update /
-                  Switch), and a failure is a record of something that already
-                  ended. `JobRow` is reused verbatim rather than a new row shape
-                  being invented for this — it already draws the title, the
-                  failure sentence and the ✕, and it already carries D572's
-                  rejected-request surfacing, which is the behaviour a dismiss
-                  here most needs to keep. */}
-              <div className="dl-rows">
-                {/* Pairings first: the newest kind of news, and the only one
-                    with nothing to act on beyond reading it. */}
-                {pairings.map((event) => (
-                  <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
-                ))}
-                {visible.map((row) => (
-                  <RepoRowView
-                    key={row.repo.root}
-                    row={row}
-                    onDone={onDone}
-                    onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
-                  />
-                ))}
-                {failed.map((job) => (
-                  <JobRow
-                    key={job.id}
-                    job={job}
-                    onChanged={onJobsChanged ?? NOOP}
-                    // A REAL patcher (D586): `JobRow`'s dismiss calls
-                    // `onPatch(js => js.filter(...))` on success, and the
-                    // shell's own `failed` state is exactly that list — so the
-                    // row goes the instant the server confirms, instead of
-                    // lingering until the next poll. D572's rejected-request
-                    // sentence still shows on failure, because the patch only
-                    // runs when the request landed.
-                    onPatch={onFailedPatch ?? NOOP_PATCH}
-                  />
-                ))}
-              </div>
-              {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
-                  up"). These bulk actions used to render ABOVE the rows, where
-                  a full-width padded band holding one small right-aligned
-                  button read as a blank row that had failed to render — the
-                  first thing in the panel. It was a header when it also
-                  carried a count and a title on its left; D588/D590 removed
-                  both and left a header with nothing to head. Under the list,
-                  the same button reads as acting on what is above it, which is
-                  what it does. */}
-              {/* Clear takes only the REPO rows — the ones this card's own
-                  client-side dismissal model covers. A failed job's dismissal
-                  is server-side and permanent (`dismissJob`), so sweeping both
-                  under one button would hide two different promises behind it;
-                  a failure is dismissed by its own row's ✕ (D586). Omitted
-                  entirely when there is no repo row to clear, rather than
-                  offering a button that would do nothing. */}
-              {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
-                  one-row panel: "the notification card size is still not
-                  done"). Clear is dismiss-ALL, so at exactly one row it is
-                  redundant — that row's own ✕ does the identical thing in one
-                  click, adjacent to the thing it affects — and the band it
-                  needs cost 32px of an 88px card, ~36% of the height, most of
-                  it empty to the left of one small button with a hairline
-                  making the emptiness look deliberate.
-                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
-                  withdrawable rows for exactly this reason ("for a single one
-                  the row's own ✕ — right there on screen — is the same action
-                  with a better name on it"); this brings the sibling controls
-                  into line with a rule the codebase had already settled. */}
-              {visible.length > 1 && (
-                <div className="dl-head">
-                  <button
-                    className="dl-clear"
-                    onClick={() => onDismissAll(visible)}
-                    title="Dismiss every visible update"
-                  >
-                    Clear
-                  </button>
-                </div>
-              )}
-            </>
+    <StatusBarSection
+      // `Notifications`, not `Updates` (D579): a repo behind upstream is ONE
+      // KIND of notification; the category is extensible (failures, pairings).
+      label="Notifications"
+      // Filled when this section holds anything (D590) — also the QUIET SIGNAL
+      // for a failure (D586): it fills the circle and opens no panel.
+      on={total > 0}
+      dotLabel={total > 0 ? "notifications waiting" : "no notifications"}
+      idle={idle}
+      failure={hasFailure}
+      open={!collapsed}
+      hasRows={!idle}
+      title={collapsed ? "Show notifications" : "Hide notifications"}
+      onToggle={onToggle}
+      onDismiss={onClose ?? NOOP}
+    >
+      {idle ? (
+        <DockEmpty>No notifications</DockEmpty>
+      ) : (
+        <>
+          {/* ONE list, three row kinds: pairings (news to read), repo updates
+              (actionable), then failures — `JobRow` reused verbatim, since it
+              already carries D572's rejected-request surfacing. */}
+          <DockRows>
+            {pairings.map((event) => (
+              <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
+            ))}
+            {visible.map((row) => (
+              <RepoRowView
+                key={row.repo.root}
+                row={row}
+                onDone={onDone}
+                onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
+              />
+            ))}
+            {failed.map((job) => (
+              <JobRow
+                key={job.id}
+                job={job}
+                onChanged={onJobsChanged ?? NOOP}
+                // A REAL patcher (D586): the shell's own `failed` state is the
+                // list JobRow's dismiss filters, so the row goes the instant
+                // the server confirms.
+                onPatch={onFailedPatch ?? NOOP_PATCH}
+              />
+            ))}
+          </DockRows>
+          {/* A footer, not a header (D602). Clear takes only the REPO rows —
+              a failed job's dismissal is server-side and permanent — and is
+              plurality-gated (D604): at one row the row's own ✕ is the same
+              action with a better name. */}
+          {visible.length > 1 && (
+            <DockFooter>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => onDismissAll(visible)}
+                title="Dismiss every visible update"
+              >
+                Clear
+              </Button>
+            </DockFooter>
           )}
-        </div>
+        </>
       )}
-    </div>
+    </StatusBarSection>
   );
 }
 

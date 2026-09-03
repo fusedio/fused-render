@@ -88,6 +88,7 @@ import {
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { BarButton } from "@apps/explorer/bar/BarButton";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
@@ -105,6 +106,8 @@ import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
+import { Input } from "@platform/shadcn/ui/input";
+import { Button } from "@platform/shadcn/ui/button";
 
 // The search row hangs in the crumb bar when there is one to hang in, and
 // stays put otherwise. Either way it is the SAME React element — the query,
@@ -1369,9 +1372,14 @@ export default function Listing({
   // snapshot's or a panel pane's listing never had that menu — and its "Split
   // right" would rewrite the SHELL's URL from inside a nested surface.
   const headerMenuBtn = !ownsBarChrome ? null : (
-    <button
-      type="button"
-      className="listing-head-menu"
+    <BarButton
+      icon
+      // Pinned to the last header cell's right edge; the sticky <th> is the
+      // positioned ancestor, so this needs no wrapper. Centred by transform
+      // rather than by matching the header's height, which its text sets.
+      // Left muted with the labels beside it: it is chrome for the folder, not
+      // a fourth column heading, and it must not out-weigh the sorted column.
+      className="listing-head-menu absolute top-1/2 right-1.5 size-[22px] -translate-y-1/2"
       aria-haspopup="menu"
       aria-label="Folder actions"
       title="Folder actions"
@@ -1379,7 +1387,7 @@ export default function Listing({
       onClick={openHeaderMenu}
     >
       <EllipsisIcon />
-    </button>
+    </BarButton>
   );
 
   // --- table body -----------------------------------------------------------
@@ -1603,14 +1611,15 @@ export default function Listing({
           Showing first {sortedEntries.length} entries — directory listing is
           partial.
           {state.cursor && (
-            <button
-              type="button"
-              className="listing-load-more"
+            <Button
+              variant="outline"
+              size="xs"
+              className="listing-load-more ml-2.5"
               disabled={loadingMore}
               onClick={loadMore}
             >
               {loadingMore ? "Loading…" : "Load more"}
-            </button>
+            </Button>
           )}
         </td>
       </tr>
@@ -1742,9 +1751,9 @@ export default function Listing({
                   Clicking pins the box open and focuses it; blurring it still
                   empty hands the strip back to the path. */}
               {tightBar && !searching && !pinnedOpen && (
-                <button
-                  type="button"
-                  className="bar-ctl listing-search-open"
+                <BarButton
+                  icon
+                  className="listing-search-open"
                   aria-label="Search this folder"
                   title="Search"
                   onClick={() => setPinnedOpen(true)}
@@ -1753,7 +1762,7 @@ export default function Listing({
                     <circle cx="11" cy="11" r="7" />
                     <line x1="16.5" y1="16.5" x2="21" y2="21" />
                   </svg>
-                </button>
+                </BarButton>
               )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
@@ -1782,10 +1791,15 @@ export default function Listing({
                     <line x1="16.5" y1="16.5" x2="21" y2="21" />
                   </svg>
                 </span>
-                <input
+                <Input
                   ref={searchInputRef}
                   type="search"
-                  className="listing-search-input"
+                  // `listing-search-input` is a HOOK: usePaneFocusGuard finds
+                  // this field by class to hand a pane's focus back to it, and
+                  // explorer.css keys the pinned-chip padding reservation, the
+                  // `.iconized` fold and the strip-wide expand off it. The
+                  // field's own chrome is the shadcn Input's.
+                  className="listing-search-input h-[30px] rounded-md bg-muted pr-2.5 pl-7 text-[13px]"
                   // Just "Search…": the row shares the crumb bar now, and the
                   // resting box is deliberately small (focus hands it the whole
                   // strip), so the placeholder has to fit that box rather than
@@ -1886,14 +1900,13 @@ export default function Listing({
                   open-on-click (onRowPointerUp), reused rather than reinvented: no
                   new view and no `_mode`, just the file. */}
               {!paneOpen && appEntryPath && (
-                <button
-                  type="button"
-                  className="bar-ctl bar-ctl-strong"
+                <BarButton
+                  tone="strong"
                   title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
                   onClick={openAppEntry}
                 >
                   Open app
-                </button>
+                </BarButton>
               )}
               {pane.on && !sideState.open && (
                 <SideToggleButton

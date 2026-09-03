@@ -37,6 +37,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { modeTitle } from "@platform/lib/mode-name";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton } from "@apps/explorer/SideChrome";
+import { BarTail } from "@apps/explorer/bar/BarButton";
 import {
   publishPreviewSideSlot,
   retractPreviewSideSlot,
@@ -301,8 +302,8 @@ export default function PreviewSidebar({
               rendered. The listing pane's header opens with the same button. */}
           <SideCloseButton what={modeTitle(active)} onClick={onClose} />
           {/* The shared mode control, over the companions, at the strip's far end
-              (the tail's auto margin packs it there — .side-header-tail, the same
-              wrapper the listing pane's header uses).
+              (the tail's auto margin packs it there — BarTail, the same wrapper
+              the listing pane's header uses).
 
               ALWAYS a menu now. This used to fall back to a flat, unclickable
               label whenever `entries` was down to one, because BarMenu hides a
@@ -312,9 +313,9 @@ export default function PreviewSidebar({
               and carrying the reason (lib/preview-side's `menu`), so there is
               always a menu to draw and always more in it than the mode you are
               looking at. */}
-          <div className="side-header-tail">
+          <BarTail className="side-header-tail">
             <ModeMenu entries={entries} active={active} onSelect={onSelect} />
-          </div>
+          </BarTail>
         </div>
         {src === null ? (
           /* The chosen sidebar mode is gate-pending (CT-12): hold the column

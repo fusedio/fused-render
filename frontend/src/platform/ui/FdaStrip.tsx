@@ -1,5 +1,5 @@
 // Full Disk Access warning — a strip on the front door, in the same posture
-// and styling as ClaudeHealthStrip.
+// and styling as ClaudeHealthStrip (SetupStrip).
 //
 // It replaced the touch-triggered notification card (FdaCard). The card only
 // appeared once the session read under a protected folder, on the theory that
@@ -28,6 +28,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { dismissFdaNudge, getConfig, openFdaSettings } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
+import { Button } from "@platform/shadcn/ui/button";
+import { SetupIssue, SetupStrip } from "@platform/ui/SetupStrip";
 
 //: While showing, watch for the grant landing. Most grants only apply to a
 //: relaunched process, but when macOS relaunches the app for us the fresh
@@ -167,60 +169,41 @@ export function FdaStrip() {
   };
 
   return (
-    <section className="claude-health" role="status" aria-label="Full Disk Access setup">
-      <div className="claude-health-head">
-        {/* Says what is still needed, not that something is broken — same
-            posture as ClaudeHealthStrip (SPEC §42: "Nothing red"). */}
-        <h2 className="claude-health-title">Give FusedRender Full Disk Access</h2>
-        <div className="claude-health-head-actions">
-          <button
-            type="button"
-            className="claude-health-close"
-            onClick={close}
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="claude-health-issues">
-        <li className="claude-health-issue">
-          <p className="claude-health-issue-detail">
-            macOS just refused FusedRender access to a file or folder —
-            sometimes it does this with no permission prompt at all, just
-            "permission denied". Granting Full Disk Access once fixes Desktop,
-            Documents, Downloads and external volumes permanently. FusedRender
-            is completely local: your files are read on this Mac and no data
-            ever leaves your computer.
+    // Says what is still needed, not that something is broken — same posture
+    // as ClaudeHealthStrip (SPEC §42: "Nothing red").
+    <SetupStrip label="Full Disk Access setup" title="Give FusedRender Full Disk Access" onDismiss={close}>
+      <SetupIssue>
+        <p className="m-0 text-muted-foreground">
+          macOS just refused FusedRender access to a file or folder — sometimes it does this with no
+          permission prompt at all, just "permission denied". Granting Full Disk Access once fixes
+          Desktop, Documents, Downloads and external volumes permanently. FusedRender is completely
+          local: your files are read on this Mac and no data ever leaves your computer.
+        </p>
+        {waiting ? (
+          <p className="m-0 text-muted-foreground">
+            In System Settings: turn on FusedRender under Full Disk Access, then relaunch when asked.
           </p>
-          {waiting ? (
-            <p className="claude-health-issue-detail">
-              In System Settings: turn on FusedRender under Full Disk Access,
-              then relaunch when asked.
-            </p>
-          ) : (
-            <ol className="claude-health-issue-detail fda-steps">
-              <li>Open System Settings</li>
-              <li>Privacy &amp; Security → Full Disk Access</li>
-              <li>Turn on FusedRender, relaunch when asked</li>
-            </ol>
-          )}
-          <div className="claude-health-actions">
-            <button
-              type="button"
-              className="claude-health-action"
-              onClick={() => {
-                setWaiting(true);
-                openFdaSettings().catch(() => {});
-              }}
-            >
-              {waiting ? "Reopen System Settings" : "Open System Settings"}
-            </button>
-          </div>
-        </li>
-      </ul>
-    </section>
+        ) : (
+          <ol className="m-0 list-decimal pl-5 text-muted-foreground">
+            <li>Open System Settings</li>
+            <li>Privacy &amp; Security → Full Disk Access</li>
+            <li>Turn on FusedRender, relaunch when asked</li>
+          </ol>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              setWaiting(true);
+              openFdaSettings().catch(() => {});
+            }}
+          >
+            {waiting ? "Reopen System Settings" : "Open System Settings"}
+          </Button>
+        </div>
+      </SetupIssue>
+    </SetupStrip>
   );
 }
 

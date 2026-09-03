@@ -22,6 +22,7 @@ import {
 } from "@platform/lib/mode-visibility";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
+import { cn } from "@platform/lib/utils";
 
 // Split a pane query at its raw `_layout=(...)` span (kept byte-identical —
 // it may contain literal `&`), so the head is plain params URLSearchParams
@@ -164,23 +165,50 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
         }))}
         active={active.mode}
         onSelect={applyMode}
+        dense
       />
     );
   }
 
+  // The tab trigger is a <span>, not a button, and stays one: it lives INSIDE
+  // the tab's own <button>, where a nested button would be invalid HTML.
+  // 15px box to match the tab's other two trailing glyphs.
   return (
-    <span className="pane-mode-menu" ref={rootRef}>
-      <span className="pane-mode-btn" title={"Mode: " + modeTitle(active.mode)} onClick={toggle}>
+    <span className="inline-flex shrink-0" ref={rootRef}>
+      <span
+        role="button"
+        aria-haspopup="menu"
+        aria-expanded={pos !== null}
+        className="inline-flex size-[15px] shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none [&_.mode-icon-mask]:size-3.5 [&_.mode-icon-placeholder]:size-3.5 [&_svg]:size-3.5"
+        title={"Mode: " + modeTitle(active.mode)}
+        onClick={toggle}
+      >
         {templateModeIcon(active)}
       </span>
       {pos && (
-        <span className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
+        // position:fixed off the trigger's rect: the tab bar clips its overflow
+        // (and so does .panel-pane), so an in-flow popup would be invisible in
+        // exactly the surface this variant exists for. Not the shared
+        // DropdownMenu, because that would move focus out of the tab button the
+        // trigger is nested inside.
+        <span
+          role="menu"
+          aria-label="View mode"
+          className="fixed z-[200] flex min-w-30 flex-col gap-px rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-sm"
+          style={{ top: pos.top, left: pos.left }}
+        >
           {visible.map((t) => (
             <span
               key={t.mode}
-              className={
-                "pane-mode-item" + (t.mode === active.mode ? " active" : "") + (isPending(t) ? " pending" : "")
-              }
+              role="menuitemradio"
+              aria-checked={t.mode === active.mode}
+              aria-disabled={isPending(t) || undefined}
+              className={cn(
+                "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs whitespace-nowrap text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                t.mode === active.mode && "text-foreground",
+                isPending(t) && "cursor-default opacity-55",
+                "[&_.mode-icon-mask]:size-4 [&_.mode-icon-placeholder]:size-4 [&_.mode-icon-spinner]:size-3 [&_svg]:size-4",
+              )}
               title={isPending(t) ? "Checking if this view applies…" : undefined}
               onClick={(e) => {
                 if (!isPending(t)) select(e, t.mode);

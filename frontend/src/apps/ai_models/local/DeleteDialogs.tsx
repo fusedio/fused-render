@@ -4,22 +4,19 @@
 // reason the flow has a `Pending` state at all: no click goes straight to a
 // delete, every one becomes a target the user reads back first. It states the
 // bytes it frees, because that number is the whole reason someone is here.
-//
-// There was a SECOND dialog here, for deleting one revision of a repo, and it
-// went with the revision UI on 2026-08-24 (see `RepoCard`'s headstone). It was
-// the most carefully written dialog on the page — it stated the blobs a
-// revision shares with its siblings and therefore does NOT free — and none of
-// that was a question anyone brought to this page: it asked a reader to pick a
-// git commit off a folder whose only real question is what it costs. The whole
-// repo is the target now, which is the number the card shows.
-//
-// Split out of the page file so the Local tab reads as its grid plus a dialog
-// prop, rather than as a grid with 90 lines of modal markup hanging off the
-// bottom of the same component.
 import { type Pending } from "./LocalTab";
 import { type AiModelDeleteTarget } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
+import { Identifier } from "@platform/ui/flow/Typography";
 
 export function DeleteDialogs({
   pending,
@@ -31,47 +28,45 @@ export function DeleteDialogs({
   pending: Pending | null;
   busy: boolean;
   onClose: () => void;
-  /** `label` is the past-tense phrase the toast reports — built HERE, where the
-   *  target's name is already in hand, rather than reconstructed by the caller
-   *  from the target list it was handed back. */
+  /** `label` is the past-tense phrase the toast reports — built HERE, where
+   *  the target's name is already in hand. */
   onConfirm: (targets: AiModelDeleteTarget[], label: string) => void;
 }) {
+  const repo = pending?.kind === "repo" ? pending.repo : null;
   return (
-    <>
-    {pending?.kind === "repo" && (
-      <Modal
-        title={`Delete ${pending.repo.id}?`}
-        busy={busy}
-        onClose={onClose}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy}
-              onClick={onClose}
-            >
+    <Dialog
+      open={repo !== null}
+      onOpenChange={(open) => {
+        // A delete in flight is not dismissable — the listing on screen is
+        // about to change and the dialog is what says so.
+        if (!open && !busy) onClose();
+      }}
+    >
+      {repo && (
+        <DialogContent showCloseButton={!busy} aria-busy={busy || undefined}>
+          <DialogHeader>
+            <DialogTitle>Delete {repo.id}?</DialogTitle>
+            <DialogDescription>
+              Removes every revision of <b className="text-foreground">{repo.id}</b> from this machine and
+              frees <b className="text-foreground">{formatSize(repo.size)}</b>. Anything that needs it again
+              downloads it again.
+            </DialogDescription>
+          </DialogHeader>
+          <Identifier className="break-all">{repo.path}</Identifier>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger"
+            </Button>
+            <Button
+              variant="destructive"
               disabled={busy}
-              onClick={() => onConfirm([{ dir: pending.repo.dir }], `deleted ${pending.repo.id}`)}
+              onClick={() => onConfirm([{ dir: repo.dir }], `deleted ${repo.id}`)}
             >
-              {busy ? "Deleting…" : `Delete · ${formatSize(pending.repo.size)}`}
-            </button>
-          </>
-        }
-      >
-        <p>
-          Removes every revision of <b>{pending.repo.id}</b> from this machine and frees{" "}
-          <b>{formatSize(pending.repo.size)}</b>. Anything that needs it again downloads it again.
-        </p>
-        <p className="cc-mono cc-unset">{pending.repo.path}</p>
-      </Modal>
-    )}
-
-    </>
+              {busy ? "Deleting…" : `Delete · ${formatSize(repo.size)}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      )}
+    </Dialog>
   );
 }

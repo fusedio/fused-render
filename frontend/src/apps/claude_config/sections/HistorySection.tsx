@@ -2,9 +2,8 @@
 // you care about it:
 //
 //   1. Uncommitted changes — the drift that exists right now, and the one
-//      button that commits it. This is what the git badge pinned to the old
-//      section nav used to do; the nav is gone, so the SIGNAL (a dirty dot)
-//      lives on the tab strip's History button and the ACTION lives here.
+//      button that commits it. The SIGNAL (a dirty dot) lives on the header's
+//      git chip and the ACTION lives here.
 //   2. Profiles — a profile IS a git branch over this same repo, so it belongs
 //      with the history rather than as a tab of its own. Composed, not copied:
 //      ProfilesSection stays the owner of that flow.
@@ -17,7 +16,7 @@
 // every pending edit into ONE commit, so what it is about to sweep up has to be
 // visible before it happens — hence the same drift preview.
 import { useCallback } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import * as cc from "../api";
 import {
   Card,
@@ -25,10 +24,12 @@ import {
   CardSub,
   CardTitle,
   Empty,
+  ErrorNote,
   Group,
   List,
   ListRow,
   ListSkeleton,
+  Meta,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -59,9 +60,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
   // On THIS page, "something changed the config" always also means "the drift
   // card is stale" — the card is right there under the thing that changed it.
   // Every mutation on the page routes through here (restore, and everything
-  // ProfilesSection does) rather than each remembering to re-check: the tab
-  // strip's dot going clean while the card below still offers to commit three
-  // changes is exactly the contradiction that gap produces.
+  // ProfilesSection does) rather than each remembering to re-check.
   const pageChanged = useCallback(() => {
     onChanged();
     recheck();
@@ -122,8 +121,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
       {/* One toolbar for the page, in the slot every other tab puts it: it
           summarises the repo (drift + log length) and its refresh re-reads both
           of the things this page is about. Profiles keeps a toolbar of its own
-          further down — it is a separate list with its own controls, and
-          ProfilesSection owns that data. */}
+          further down — it is a separate list with its own controls. */}
       <SectionToolbar
         summary={
           (status?.dirty ? `${status.files.length} uncommitted change(s) · ` : "") +
@@ -144,7 +142,6 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
                 : status.dirty
                   ? `${status.files.length} uncommitted change(s)`
                   : "Everything is committed"}
-            {status?.dirty && " "}
             {status?.dirty && <Pill tone="ro">drift</Pill>}
           </CardTitle>
           <CardSub>
@@ -161,9 +158,9 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
               believe it. */}
           {status?.dirty && (
             <CardActions>
-              <button type="button" className="btn btn-primary" onClick={commit}>
+              <Button size="sm" onClick={commit}>
                 Review &amp; commit
-              </button>
+              </Button>
             </CardActions>
           )}
         </Card>
@@ -172,7 +169,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
         <ProfilesSection onChanged={pageChanged} />
       </Group>
       <Group title="Commits">
-        {error && <ErrorBanner>{error}</ErrorBanner>}
+        {error && <ErrorNote>{error}</ErrorNote>}
         {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading history" />}
         {data && !data.log.length && (
           <Empty>No history yet. Your first edit to any setting commits here.</Empty>
@@ -185,21 +182,27 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
             {data.log.map((e, i) => (
               <ListRow
                 key={e.sha}
-                secondary={e.message}
+                // The `secondary` slot, but not secondary CONTENT: on every
+                // other list the description sits beside a name and reads
+                // muted, while here the message is the whole row and the date
+                // and sha beside it are the metadata. Lifted back to
+                // foreground at the call site rather than by a new ListRow
+                // prop — the slot's truncation and title still apply.
+                secondary={<span className="text-foreground">{e.message}</span>}
                 secondaryTitle={e.message}
                 meta={
                   <>
-                    <span className="cc-lrow-meta">{new Date(e.date).toLocaleString()}</span>
-                    <span className="cc-lrow-meta cc-mono">{e.sha.slice(0, 8)}</span>
+                    <Meta>{new Date(e.date).toLocaleString()}</Meta>
+                    <Meta mono>{e.sha.slice(0, 8)}</Meta>
                   </>
                 }
                 actions={
                   i === 0 ? (
                     <Pill tone="on">current</Pill>
                   ) : (
-                    <button type="button" className="btn" onClick={() => restore(e.sha)}>
+                    <Button variant="outline" size="sm" onClick={() => restore(e.sha)}>
                       Restore
-                    </button>
+                    </Button>
                   )
                 }
               />

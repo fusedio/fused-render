@@ -1,42 +1,26 @@
 // The Engines tab of /ai-models (SPEC §40, D302) — which local-model backend
 // serves each capability.
 //
-// **It lived on Preferences, and moving it is the point of this module.** The
-// setting is about MODELS, and every consequence of changing it is on this
-// page: which cards can be loaded, what their engine tags say, and what the
-// Local tab recommends. On the settings page a user had to know that "Inference
-// engines" was the answer to "why can't I load this?" — a question they were
-// asking with the unloadable card in front of them, two navigations away from
-// the control. Here the control and its consequences are one page apart by a
-// tab click, and every sentence that used to read "switch it in Preferences →
-// Inference engines" now points at a tab beside the one you are on.
+// It lived on Preferences, and moving it is the point of this module: the
+// setting is about MODELS, and every consequence of changing it is on this page
+// — which cards can be loaded, what their engine tags say, and what the Local
+// tab recommends. The SENTENCES live in `@apps/ai_models/lib/engines` with
+// `engines.test.ts` driving them; this file is the rows.
 //
-// A TAB rather than a panel above the listing: it is a settings surface, and
-// stacking it on top of the grid would put a second heading hierarchy in front
-// of the section headings the Local tab just gained.
-//
-// The rendering is four lines of JSX per row; the SENTENCES are where this can
-// be wrong, and they live in `@apps/ai_models/lib/engines` with `engines.test.ts` driving
-// them. Not one of them changed in the move. What the move DID add there is
-// `switchOutcome`: on Preferences the consequences of a switch were on another
-// page and arriving here refetched them, and now they are the tab next door.
-//
-// **The `.prefs-*` classes did NOT survive the move, and the argument for
-// keeping them did not survive contact with the rendered page.** It was that a
-// switch which unloads a model should not look like one more thing on an
-// inventory page. What it produced was three bare native `<select>`s adrift on
-// an empty page, each under a heading and beside a repeated "Engine" label,
-// with its resolved status stranded on a line below — a form somebody forgot to
-// lay out, in an app where the two tabs beside it are made of cards. The
-// setting is not made less consequential by sharing the page's vocabulary; it
-// is made findable. One card per capability, one row inside it: the name, the
-// control, the reality.
-import { useEffect, useState } from "react";
+// One bordered row per capability: the name, the control, the reality — and
+// under them, only the lines that have something to say (a runner's note, a
+// stored preference this machine is not honouring, the outcome of a switch).
+import { useEffect, useState, type ReactNode } from "react";
 import { getPrefs, putAiIdleUnloadMinutes, putEngineForCapability } from "@platform/lib/api";
 import type { CapabilityEngine, Prefs } from "@platform/lib/api";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Input } from "@platform/shadcn/ui/input";
+import { EntityList } from "@platform/ui/flow/EntityRow";
+import { Tiny } from "@platform/ui/flow/Typography";
+import { bucketText } from "@platform/ui/status-colors";
+import { cn } from "@platform/lib/utils";
 import EngineSelect from "@apps/ai_models/engines/EngineSelect";
+import { ErrorNote } from "@apps/ai_models/shared/ErrorNote";
+import { Loading } from "@apps/ai_models/shared/Loading";
 import {
   capabilityLabel,
   engineNote,
@@ -47,33 +31,39 @@ import {
   switchOutcome,
 } from "@apps/ai_models/lib/engines";
 
-// One capability's engine: a listbox (`EngineSelect`) holding Automatic and
-// every backend.
-//
-// A dropdown rather than a radio list, so that a machine with three engines for
-// one capability is one line high instead of four — and so this reads like
-// every other choice-of-several in this app's settings, which are all selects.
-//
-// **This used to be a native `<select>`, and the reason it is not any more is
-// entirely about what an `<option>` can render.** The reason an unavailable
-// engine cannot be picked used to be folded into its own option's plain-text
-// label — "MLX Whisper (Apple Silicon) — needs Apple Silicon (this is
-// windows/amd64)" — because a disabled `<option>` has nowhere else to say
-// anything and its `title` is not reliably shown at all. A registry sentence
-// is not always that short ("Diffusers (CUDA) — needs an NVIDIA GPU with its
-// driver loaded — there is no /dev/nvidiactl or /dev/nvidia0 on this machine
-// (this is linux/x86_64)"), and a native menu neither wraps nor styles that
-// text — it just clips it. `EngineSelect` is a listbox built for exactly this:
-// each option is up to two lines, a label and a muted wrapped description, so
-// the reason reads as a sentence instead of a truncated run-on.
-//
-// Unavailable engines stay in the menu, disabled. Hidden, a Windows user would
-// have no way to learn that the MLX path exists and why it is not for them —
-// and a stored preference for one is what the control still SHOWS as its
-// value (the trigger's own label), because "your choice, and why it is not in
-// force" is exactly what the muted lines underneath go on to explain. It is
-// the same rule the cards on the Local tab follow for their own controls:
-// disabled and explained, never absent.
+/** One setting row: label, control, what is actually in force, then notes.
+ *  The label is a plain span (or a <label> for a native input) — for the
+ *  engine picker `EngineSelect` composes its own accessible name from the
+ *  label's id, see there for why `htmlFor` is the wrong tool. */
+function SettingRow({
+  label,
+  control,
+  serving,
+  children,
+}: {
+  label: ReactNode;
+  control: ReactNode;
+  serving?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="border-b border-border px-4 py-2 text-sm last:border-b-0">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="w-40 shrink-0 font-medium">{label}</span>
+        {control}
+        {serving != null && <Tiny className="min-w-0 truncate">{serving}</Tiny>}
+      </div>
+      {children != null && <div className="mt-1.5 flex flex-col gap-1 pl-[10.75rem]">{children}</div>}
+    </div>
+  );
+}
+
+function Note({ className, children }: { className?: string; children: ReactNode }) {
+  return <p className={cn("text-xs text-muted-foreground", className)}>{children}</p>;
+}
+
+// One capability's engine: a select holding Automatic and every backend.
+// Unavailable engines stay in the menu, disabled and explained (EngineSelect).
 function CapabilityEngineRow({
   row,
   auto,
@@ -94,6 +84,7 @@ function CapabilityEngineRow({
   const stranded = strandedSelection(row, auto);
   const label = capabilityLabel(row.capability);
   const serving = servingLine(row, auto);
+  const labelId = `engine-${row.capability}-label`;
 
   const choose = async (code: string) => {
     if (busy || code === row.selected) return;
@@ -101,18 +92,13 @@ function CapabilityEngineRow({
     setError(null);
     try {
       const next = await putEngineForCapability(row.capability, code);
-      // `row` is still the row this closure captured, i.e. the one the PUT
-      // replaced — which is the only state the "did anything move" half of the
-      // outcome can be measured against. Read `switchOutcome` for what each of
-      // the two halves is answering and who answers it.
+      // `row` is the row the PUT replaced — the only state the "did anything
+      // move" half of the outcome can be measured against (`switchOutcome`).
       const outcome = switchOutcome(row, code, auto, next);
       onChange(next);
       setChanged(outcome);
-      // The Local tab is one tab click away and is STILL MOUNTED behind this
-      // one: its listing was fetched under the preference that just changed, so
-      // anything the switch moved has to reach it now. Nothing else would tell
-      // it — this page no longer remounts on the way here (it was a Preferences
-      // tab, and the navigation back is what used to refetch).
+      // The Local tab is STILL MOUNTED behind this one: anything the switch
+      // moved has to reach it now.
       if (outcome) onSwitched();
     } catch (e) {
       setError((e as Error).message);
@@ -122,34 +108,11 @@ function CapabilityEngineRow({
   };
 
   return (
-    <div className="cc-mdcard am-engine-card">
-      {/* Capability, control, reality — one row, in that order. The three used
-          to be three stacked blocks, which is what made "Engine" a visible
-          label at all: a select on its own line has to say what it is for.
-          Beside the capability's own name it does not, and the repeated word
-          down a column of three was the loudest thing on the tab. The name IS
-          the label — but a <label htmlFor> pointing at the trigger is NOT how
-          that gets said to a screen reader: `for`/`htmlFor` makes the label
-          the control's WHOLE accessible name (HTML-AAM ranks it above the
-          button's own content), so a reader heard "Speech to text, button"
-          and never which engine was actually selected. A plain <span> with an
-          id, and `EngineSelect` builds its own `aria-labelledby` from it
-          (see that component's comment) that names BOTH the capability and
-          the current value. This also stops a click on the label from
-          forwarding to the button while the popup is open (a `<label>`'s
-          default behaviour, and the second half of the same bug: mousedown
-          closed the popup as an outside click, and the forwarded click then
-          reopened it). */}
-      <div className="am-engine-row">
-        <span id={`engine-${row.capability}-label`} className="am-engine-cap">
-          {label}
-        </span>
-        {/* The stranded stored code (`strandedSelection`) and each real
-            choice's disabled-reason (`choiceReason`) are both rendered INSIDE
-            the popup by `EngineSelect` itself — see its own comment for why a
-            listbox can say what a native `<select>` could not. */}
+    <SettingRow
+      label={<span id={labelId}>{label}</span>}
+      control={
         <EngineSelect
-          labelId={`engine-${row.capability}-label`}
+          labelId={labelId}
           auto={auto}
           selected={row.selected}
           choices={row.choices}
@@ -158,72 +121,32 @@ function CapabilityEngineRow({
           disabled={busy}
           onChange={choose}
         />
-        {/* What is ACTUALLY serving this capability, beside the control rather
-            than under it: the trigger shows the choice, this reports reality,
-            and they are allowed to differ — which only reads as a pair when
-            they are on one line. Null (via `servingLine`) exactly when they
-            cannot differ in a way worth saying: a concrete, honoured selection
-            that already IS what is serving, which the trigger's own label
-            already names. */}
-        {serving && <span className="am-engine-serving">{serving}</span>}
-      </div>
-      {/* What running on the engine in force is LIKE — the memory ceiling on
-          MLX FLUX, MLX Whisper's GPU speed. It sat over the Discover tab's
-          capability sections, which was the wrong page twice: three of six
-          runners have a note, so those sections came out blotchy and the
-          sentences read as noise; and the FLUX one is not a fact but a
-          CAUTION — it is what tells somebody on a 16GB Mac to move back to
-          Diffusers, and it was two tabs away from the control that does it.
-          Here it sits under the select it is about.
-
-          MUTED: this is not a report of a problem, it describes what a
-          backend is like. */}
-      {note && <div className="am-engine-note">{note}</div>}
-      {/* The one line on this card that IS reporting a problem — a stored
-          preference this machine is not honouring — so it carries the
-          `.warning` modifier and the app's `--warning` colour rather than the
-          muted grey every other line here uses. Everything else on the card
-          describes normal state; this one says a choice silently didn't
-          take. */}
-      {warning && <div className="am-engine-note warning">{warning}</div>}
-      {/* The consequence, in four words at most. It stays because an unload is
-          a real thing that just happened to the user's machine and nothing else
-          on screen would report it — but the paragraph explaining WHY the model
-          was unloaded and how suggestion lists work was an essay after picking
-          a menu item.
-
-          TWO sentences because there are two outcomes, and the shorter one is
-          not a weaker version of the longer: "Switched." is the whole truth
-          when the engine moved and no model was resident to lose. */}
-      {changed && (
-        <div className="am-engine-note">
-          {changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}
-        </div>
-      )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+      }
+      // What is ACTUALLY serving this capability, beside the control: the
+      // trigger shows the choice, this reports reality, and they may differ.
+      serving={serving}
+    >
+      {/* What running on the engine in force is LIKE — muted: it describes a
+          backend, it does not report a problem. */}
+      {note && <Note>{note}</Note>}
+      {/* The one line that IS a problem — a stored preference this machine is
+          not honouring — in the warning colour. */}
+      {warning && <Note className={bucketText.orange}>{warning}</Note>}
+      {changed && <Note>{changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}</Note>}
+      {error && <ErrorNote>{error}</ErrorNote>}
+    </SettingRow>
   );
 }
 
 // The idle-unload window (SPEC AI-13): a resident local model this machine
-// hasn't used in a while gives its gigabytes back on its own. A card below
-// the per-capability rows rather than a fourth column inside them — it is not
-// about any one capability, it is a global number the reaper reads once per
-// tick.
-//
-// The env override gets the SAME locked-control treatment as the call log's
-// retention window (Preferences.tsx): the number shown is still the STORED
-// choice (a PUT round-trips it, and it applies once the variable is
-// removed), the field is disabled while an override is genuinely in force,
-// and the muted line names both what is actually happening and what is
-// forcing it.
-function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+// hasn't used in a while gives its gigabytes back on its own. The env override
+// gets the locked-control treatment: the number shown is the STORED choice, the
+// field is disabled while an override is in force, and the note names both.
+function AiIdleWindowRow({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const idle = prefs.ai_idle;
   const locked = idle.forced_by !== null;
-  // Local text, not `idle.minutes` directly: a bare number input has to let
-  // you clear the field and type a new one without every keystroke racing a
-  // PUT, so the value commits on blur/Enter and this only resyncs from the
-  // server after a commit actually lands (see the effect below).
+  // Local text, not `idle.minutes` directly: the value commits on blur/Enter
+  // and only resyncs from the server after a commit actually lands.
   const [value, setValue] = useState(String(idle.minutes));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -233,11 +156,8 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
   }, [idle.minutes]);
 
   const commit = async () => {
-    // `parseAiIdleMinutes` is what stands between an empty/whitespace field
-    // (the ordinary intermediate state of editing a number input) and a
-    // silent PUT of `0` — `Number("")` is `0`, and this input has no other
-    // guard against it. `null` covers that case and every other invalid one
-    // the same way: snap back to the stored value rather than guess.
+    // `parseAiIdleMinutes` stands between an emptied field and a silent PUT
+    // of `0`; null snaps back to the stored value rather than guessing.
     const parsed = parseAiIdleMinutes(value);
     if (parsed === null) {
       setValue(String(idle.minutes));
@@ -257,17 +177,15 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
   };
 
   return (
-    <div className="cc-mdcard am-engine-card">
-      <div className="am-engine-row">
-        <label className="am-engine-cap" htmlFor="ai-idle-minutes">
-          Idle unload
-        </label>
-        <input
+    <SettingRow
+      label={<label htmlFor="ai-idle-minutes">Idle unload</label>}
+      control={
+        <Input
           id="ai-idle-minutes"
           type="number"
           min={0}
           max={1440}
-          className="field-control am-engine-select"
+          className="w-24"
           value={value}
           disabled={busy || locked}
           onChange={(e) => setValue(e.target.value)}
@@ -276,32 +194,28 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
         />
-        <span className="am-engine-serving">
-          {idle.effective_minutes === 0
-            ? "Never unloads on its own."
-            : `Unloads an idle model after ${idle.effective_minutes} min.`}
-        </span>
-      </div>
-      <p className="am-engine-note">Minutes before an unused model is unloaded. 0 = never.</p>
+      }
+      serving={
+        idle.effective_minutes === 0
+          ? "Never unloads on its own."
+          : `Unloads an idle model after ${idle.effective_minutes} min.`
+      }
+    >
+      <Note>Minutes before an unused model is unloaded. 0 = never.</Note>
       {locked && (
-        <p className="am-engine-note">
-          Locked by <code>FUSED_RENDER_AI_IDLE_MINUTES={idle.forced_by}</code> for this process;
-          the value above applies once the variable is removed.
-        </p>
+        <Note>
+          Locked by <code className="font-mono">FUSED_RENDER_AI_IDLE_MINUTES={idle.forced_by}</code> for this
+          process; the value above applies once the variable is removed.
+        </Note>
       )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+      {error && <ErrorNote>{error}</ErrorNote>}
+    </SettingRow>
   );
 }
 
 /** The tab's whole content: one row per capability, over its own copy of prefs.
- *
- *  It fetches `/api/prefs` itself rather than being handed them, because this is
- *  the only thing on /ai-models that reads a preference — threading a prefs
- *  load through the page would make every visit to the Local tab pay for a
- *  request nothing on it uses. The tab is not mounted until it is selected, so
- *  the fetch happens on the click.
- */
+ *  It fetches `/api/prefs` itself: this is the only thing on /ai-models that
+ *  reads a preference, and the tab is not mounted until it is selected. */
 export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -317,22 +231,14 @@ export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
   }, []);
 
   return (
-    <div className="am-engines">
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <SkeletonLines rows={3} label="Loading engines" />}
+    <div className="flex flex-col gap-4">
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {!prefs && !error && <Loading rows={3} label="Loading engines" />}
       {prefs && (
-        <>
-          {/* No heading and no intro paragraph. The page's own head already
-              says "AI Models" over "Which backend runs each kind of local
-              model", so an <h2> reading "Inference engines" above a
-              paragraph reading "Which backend runs local models" was the tab
-              restating its own chrome twice before saying anything. What
-              cannot be inferred from three controls is what their first
-              option means — that sentence used to live here as the tab's one
-              paragraph, and now lives on the Automatic option itself
-              (`EngineSelect`'s `buildOptions`), where it is read at the
-              moment it answers a question rather than skimmed past above
-              three closed controls. */}
+        // No heading and no intro paragraph: the page head already says what
+        // this tab is, and what the first option means lives on the Automatic
+        // option itself (`EngineSelect`).
+        <EntityList>
           {prefs.engines.capabilities.map((row) => (
             <CapabilityEngineRow
               key={row.capability}
@@ -342,8 +248,8 @@ export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
               onSwitched={onSwitched}
             />
           ))}
-          <AiIdleWindowCard prefs={prefs} onChange={setPrefs} />
-        </>
+          <AiIdleWindowRow prefs={prefs} onChange={setPrefs} />
+        </EntityList>
       )}
     </div>
   );

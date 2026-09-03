@@ -1,22 +1,18 @@
-// "Current apps" — the sidebar section above Bookmarks (D487, redesigned
+// "Projects" — the sidebar section above Bookmarks (D487, "Current apps" until
 // 2026-08-26): the apps on the user's desk, read from a STORE of their own
-// (`GET /api/current-apps`, fused_render/current_apps.py) — every kind of app,
-// workspace or linked. A row opens the app's PAGE (`/apps/<folder>`,
-// shell/AppPage.tsx, D488) — the one door that page has; its cross REMOVES the
-// app from the desk and, as the side effect, archives every task under it.
+// (`GET /api/current-apps`, fused_render/current_apps.py). A row opens the app's
+// PAGE (`/apps/<folder>`, shell/AppPage.tsx, D488); its cross REMOVES the app
+// from the desk and, as the side effect, archives every task under it.
 //
 // The desk is NOT the task list. A new task puts its app on the desk; nothing
 // takes it off but the cross. So this section fetches the table itself, and
-// re-fetches when the task pulse shows a task key it has not seen — the only
-// event that can add a row. The pulse is still read for one thing: the running
-// dot. That is a subscription this sidebar already holds, not a second poll.
+// re-fetches when the task pulse shows a task key it has not seen. The pulse is
+// still read for the running/unread dots — a subscription this sidebar already
+// holds, not a second poll.
 //
-// The ORDER is a sequence per app, not the added order it is seeded from
-// (current-apps-lib.ts): a row moves only when the user drags it, so new work
-// does not reshuffle the list under the cursor. The store is the module-level
-// `appOrder` below, hydrated from localStorage at import and written back BY A
-// DRAG AND ONLY BY A DRAG, so an arrangement survives a reload and the next
-// launch without a fetch ever having an opinion about it.
+// The ORDER is a sequence per app (current-apps-lib.ts): a row moves only when
+// the user drags it. The store is the module-level `appOrder` below, hydrated
+// from localStorage at import and written back BY A DRAG AND ONLY BY A DRAG.
 import React, {
   useCallback,
   useEffect,
@@ -24,6 +20,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { ChevronRight, Plus, Sparkle, X } from "lucide-react";
 import {
   archiveCurrentAppTasks,
   getCurrentApps,
@@ -37,9 +34,21 @@ import {
 import IconPicker from "@platform/ui/IconPicker";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
+import { cn } from "@platform/lib/utils";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { Modal } from "@platform/ui/modal/Modal";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
+import { Input } from "@platform/shadcn/ui/input";
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
@@ -63,9 +72,8 @@ import {
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
- *  fixed size, transparent ground (a colour emoji carries its own colours, so
- *  it reads on both themes; see skills/fused-render-app-icon). The same file
- *  a hand-authored icon.svg would be, just generated. */
+ *  fixed size, transparent ground. The same file a hand-authored icon.svg
+ *  would be, just generated. */
 function emojiIconSvg(emoji: string): string {
   const safe = emoji
     .replace(/&/g, "&amp;")
@@ -90,20 +98,12 @@ function readCollapsed(): boolean {
 }
 
 // The last table this document fetched, kept at module level so the rows do not
-// blink empty on every per-navigation remount of the sidebar while the fetch
-// round-trips.
+// blink empty on every per-navigation remount of the sidebar.
 let knownApps: CurrentAppEntry[] = [];
 
-// The displayed order: a module-level Map (it outlives the sidebar's
-// per-navigation remount — pushState routing) hydrated from localStorage at
-// import, so the order is already in hand before the first render and there is
-// no window where the fetch wins a race against what the user dragged.
-//
-// Every store touch sits inside a try: a blocked or full store costs the saved
-// order, not the section. Reading a JSON array of paths (top first) rather than
-// the sequence numbers themselves keeps the stored shape the one thing that
-// matters — nothing on disk has to agree with a numbering scheme this module is
-// free to change.
+// The displayed order: a module-level Map hydrated from localStorage at import,
+// so the order is in hand before the first render. Every store touch sits
+// inside a try: a blocked store costs the saved order, not the section.
 const appOrder: AppOrder = new Map();
 
 function readSavedOrder(): string[] {
@@ -115,14 +115,9 @@ function readSavedOrder(): string[] {
 }
 
 // Called from the DROP HANDLER and nowhere else — that placement is the whole
-// cross-tab design, so it is worth stating plainly. A persist effect keyed on
-// the app list looks equivalent and is not: two tabs then take turns saving
-// their own view of a world they briefly disagree about (Bugbot twice,
-// 2026-08-26 — first a second tab clobbering a drag, then an outright write
-// loop). A drag is one user gesture. There is no second writer to race.
-//
-// The equality guard is belt-and-braces on top of that: re-dragging a row back
-// where it was writes nothing.
+// cross-tab design: a persist effect keyed on the app list would have two tabs
+// take turns saving their own view of a world they briefly disagree about. A
+// drag is one user gesture; there is no second writer to race.
 function saveOrder(paths: string[]): void {
   try {
     const next = JSON.stringify(paths);
@@ -133,12 +128,7 @@ function saveOrder(paths: string[]): void {
   }
 }
 
-/** Take `paths` as the whole order, replacing what this page held. Empty is NOT
- *  an order — a missing or cleared key must leave the live order alone rather
- *  than flattening it. A live app the incoming list does not mention gets a
- *  fresh sequence and goes on top, which is correct: the tab that dragged did
- *  not have that app, so its arrangement has nothing to say about where it
- *  belongs. Nothing answers back — adopting never writes. */
+/** Take `paths` as the whole order. Empty is NOT an order. Adopting never writes. */
 function adoptSavedOrder(slugs: string[]): void {
   if (!slugs.length) return;
   appOrder.clear();
@@ -150,9 +140,7 @@ const orderListeners = new Set<() => void>();
 
 try {
   adoptSavedOrder(readSavedOrder());
-  // `storage` fires only in OTHER documents, which makes it exactly the
-  // cross-tab channel — the same wiring App.tsx uses to hear the chat's
-  // activity stamp. Without it the two tabs disagree until a reload.
+  // `storage` fires only in OTHER documents — exactly the cross-tab channel.
   window.addEventListener("storage", (e: StorageEvent) => {
     if (e.key !== ORDER_KEY) return;
     adoptSavedOrder(parseSavedOrder(e.newValue));
@@ -162,10 +150,8 @@ try {
   // No store and no window: the order lives and dies with this page.
 }
 
-/** The desk's table, fetched on mount and again whenever `signal` changes —
- *  the caller passes the pulse's set of task keys, since a task this document
- *  has not seen is the one thing that can add a row. Errors keep the last
- *  answer: a failed read is not an empty desk. */
+/** The desk's table, fetched on mount and again whenever `signal` changes.
+ *  Errors keep the last answer: a failed read is not an empty desk. */
 function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[] {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
   useEffect(() => {
@@ -193,6 +179,14 @@ interface RowDragProps {
   onDragEnd: () => void;
 }
 
+// The desk's row chrome, shared by every project row and the "+ New app" door:
+// a 14px glyph slot, the name, then whatever trails. Drag marks ride data
+// attributes (`data-drag`, `data-dragging`) painted here, so the drop handler
+// can toggle them without a stylesheet.
+const ROW_CLASS =
+  "group/row relative flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm cursor-pointer select-none hover:bg-sidebar-accent motion-safe:transition-colors motion-safe:duration-100 data-[active]:bg-sidebar-accent data-[dragging]:opacity-40 data-[drag=above]:[box-shadow:0_-2px_0_0_var(--ring)] data-[drag=below]:[box-shadow:0_2px_0_0_var(--ring)]";
+const GLYPH_CLASS = "flex size-3.5 shrink-0 items-center justify-center text-muted-foreground";
+
 function CurrentAppRow({
   app,
   active,
@@ -205,16 +199,13 @@ function CurrentAppRow({
   active: boolean;
   drag: RowDragProps;
   onRemoved: () => void;
-  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
+  onGlyphClick: (e: React.MouseEvent<HTMLElement>, path: string) => void;
   onMenu: (e: React.MouseEvent, app: CurrentApp) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
-  // apps from the Files tab lands on the next app's Files tab, so the sidebar
-  // reads as "same view, other app". Only `_tab` rides along — a tab's own
-  // params (`?file=`, `?view=`) name things inside ONE app and are dropped.
-  // Off an app page the default tab it is. Read at render: the sidebar
-  // remounts on every navigation (App.tsx), so the href cannot go stale.
+  // apps from the Files tab lands on the next app's Files tab. Only `_tab`
+  // rides along. Read at render: the sidebar remounts on every navigation.
   const onAppPage = appPathFromPath(location.pathname) !== null;
   const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
   const href = appPageUrl(app.path, tab);
@@ -222,8 +213,7 @@ function CurrentAppRow({
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    // The row for the page already on screen, on the tab it already shows, is
-    // a no-op; the tab's own params would be the only thing the click cleared.
+    // The row for the page already on screen is a no-op.
     if (!active) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
@@ -233,8 +223,8 @@ function CurrentAppRow({
     setBusy(true);
     try {
       // One call: the server drops the row AND archives every task under the
-      // folder (the side effect the owner asked for). The tasks surfaces learn
-      // through the poke; the desk through the refetch the caller runs.
+      // folder. The tasks surfaces learn through the poke; the desk through
+      // the refetch the caller runs.
       await removeCurrentApp(app.path);
     } catch {
       // A failed remove leaves the row; the refetch below shows the truth.
@@ -251,60 +241,42 @@ function CurrentAppRow({
     (app.running ? " — running" : "");
   return (
     <div
-      className={
-        "bookmark-row current-app-row" +
-        (active ? " active" : "") +
-        (app.exists ? "" : " is-missing") +
-        (app.running ? " is-running" : "") +
-        (app.unread && !app.running ? " is-unread" : "")
-      }
+      className={ROW_CLASS}
+      data-active={active ? "" : undefined}
       title={tip}
       draggable
       onContextMenu={(e) => onMenu(e, app)}
       {...drag}
     >
-      {/* The glyph is the icon picker's toggle — the Bookmarks pattern
-          (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
-          disk as the folder's icon.svg rather than in the bookmarks tree. */}
-      {/* `current-app-icon-toggle` marks the glyphs that toggle THIS
-          section's picker — the selector the IconPicker below whitelists.
-          The "+ New app" glyph deliberately lacks it, so a click there
-          closes an open picker instead of leaving it under the modal. */}
-      <span
-        className="bookmark-glyph current-app-glyph current-app-icon-toggle"
+      {/* The glyph is the icon picker's toggle — the Bookmarks pattern, except
+          the pick lands on disk as the folder's icon.svg. `current-app-icon-
+          toggle` is the selector IconPicker whitelists (a JS hook, not a style);
+          the "+ New app" glyph deliberately lacks it. */}
+      <button
+        type="button"
+        className={cn(GLYPH_CLASS, "current-app-icon-toggle relative z-10 cursor-pointer border-0 bg-transparent p-0")}
         title="Change icon"
+        aria-label={`Change icon for ${app.name}`}
         onClick={(e) => onGlyphClick(e, app.path)}
       >
         {app.iconUrl ? (
-          // The app's own icon.svg in the generic mark's slot, drawn as is —
-          // the author's colours, no mask or tint (owner, 2026-08-27). Not
-          // draggable: an <img> drags natively, and the glyph is the natural
-          // handle for the row reorder (same as the name's draggable={false}).
-          <img
-            className="current-app-icon"
-            src={app.iconUrl}
-            alt=""
-            draggable={false}
-          />
+          // The app's own icon.svg, drawn as is — the author's colours, no
+          // tint (owner, 2026-08-27). Not draggable: the glyph is the natural
+          // handle for the row reorder.
+          <img className="block size-3.5 object-contain" src={app.iconUrl} alt="" draggable={false} />
         ) : (
-          // The brand's four-point star (the app icon's sparkle) as the
-          // generic mark, on currentColor so it follows the glyph's tokens
-          // (muted at rest, accent on the active row) — the SidebarFrame
-          // cube's own posture.
-          <svg
-            className="current-app-star"
-            width="12"
-            height="12"
-            viewBox="0 0 64 64"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
-          </svg>
+          // The brand's four-point star as the generic mark.
+          <Sparkle size={12} fill="currentColor" aria-hidden="true" />
         )}
-      </span>
+      </button>
+      {/* `data-sidebar-row` is the arrow-key chain's hook (sidebarArrowNav.ts);
+          the ::after-stretched link makes the whole row the click target. */}
       <a
-        className="bookmark-name"
+        className={cn(
+          "min-w-0 flex-1 truncate text-sidebar-foreground no-underline after:absolute after:inset-0 after:content-[''] focus-visible:outline-none",
+          !app.exists && "line-through opacity-55",
+        )}
+        data-sidebar-row=""
         href={href}
         draggable={false}
         aria-current={active ? "page" : undefined}
@@ -312,37 +284,25 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
-      {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never
-          covers the app's icon: the glyph slot is identity, the dot is state. */}
-      {app.running && (
-        <span
-          className="sidebar-rail-dot is-running current-app-running"
-          aria-hidden="true"
-        />
-      )}
-      {/* The unread dot: a task under this app finished and has not been read —
-          the Tasks row's green, worn per app, in the running dot's own slot
-          after the name (owner, 2026-08-31). Yellow outranks green (one dot per
-          row, the Tasks rule), so it hides while anything runs; it clears when
-          the task is read, since it draws the raw doneUnread state, not a
-          visit-stamped one. */}
-      {app.unread && !app.running && (
-        <span
-          className="sidebar-rail-dot is-unread current-app-unread"
-          aria-hidden="true"
-        />
-      )}
-      <span className="bookmark-actions">
-        <button
-          className="icon-btn delete-btn current-app-archive"
-          title="Hide from projects (archives its tasks)"
-          aria-label={`Hide ${app.name} from projects and archive its tasks`}
-          disabled={busy}
-          onClick={onRemove}
-        >
-          ✕
-        </button>
-      </span>
+      {/* The state dot sits AFTER the name (owner, 2026-08-27) so it never
+          covers the identity glyph. Yellow outranks green (one dot per row): the
+          unread dot hides while anything runs, and clears when the task is read
+          — it draws the raw doneUnread state, not a visit-stamped one. */}
+      {app.running && <StatusDot bucket="yellow" label="running" className="relative z-10" />}
+      {app.unread && !app.running && <StatusDot bucket="green" label="finished, unread" className="relative z-10" />}
+      {/* Hover-revealed cross — `invisible` keeps it out of the tab order while
+          hidden, the fade rides opacity. */}
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className="relative z-10 -my-1 -mr-1.5 size-5 shrink-0 appearance-none bg-transparent text-muted-foreground opacity-0 invisible group-hover/row:visible group-hover/row:opacity-100 focus-visible:visible focus-visible:opacity-100 hover:text-foreground motion-safe:transition-opacity"
+        title="Hide from projects (archives its tasks)"
+        aria-label={`Hide ${app.name} from projects and archive its tasks`}
+        disabled={busy}
+        onClick={onRemove}
+      >
+        <X className="size-3" />
+      </Button>
     </div>
   );
 }
@@ -351,7 +311,6 @@ export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
   // The set of task keys, as one string: it changes exactly when a task
   // appears or leaves, and a new task is the only thing that can add an app.
-  // Order-independent (sorted) so a re-sorted pulse does not refetch.
   const keySignal = useMemo(
     () =>
       rows
@@ -364,9 +323,8 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => r.status === "in_progress").map((r) => r.project || ""),
     [rows],
   );
-  // The projects with a finished-and-unread task — the raw doneUnread state
-  // the Tasks row's count chip reads, not the visit-stamped `unseen`: a dot
-  // per app clears by the task being READ, not by glancing at some page.
+  // The projects with a finished-and-unread task — the raw doneUnread state,
+  // not the visit-stamped `unseen`: a dot per app clears by the task being READ.
   const unreadProjects = useMemo(
     () => rows.filter(isDoneUnread).map((r) => r.project || ""),
     [rows],
@@ -378,19 +336,14 @@ export default function CurrentAppsSection() {
   const [orderEpoch, setOrderEpoch] = useState(0);
   const apps = useMemo(() => {
     const found = currentApps(entries, runningProjects, unreadProjects);
-    // Assigning during render is safe because it is idempotent: an app that
-    // already has a sequence keeps it, so a double-invoked render (StrictMode)
-    // or a re-run on the same rows cannot renumber anything.
+    // Assigning during render is safe because it is idempotent.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
   }, [entries, runningProjects, unreadProjects, orderEpoch]);
-  // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
-  // those move rows on screen and write nothing to the store; the saved order is
-  // an arrangement the user made, and only they can change it.
+  // NOTHING is saved here: the saved order is an arrangement the user made.
 
-  // Repaint when another tab drags. The adopt already happened at the module
-  // listener; this is only the render half of it.
+  // Repaint when another tab drags.
   useEffect(() => {
     const bump = () => setOrderEpoch((n) => n + 1);
     orderListeners.add(bump);
@@ -400,23 +353,23 @@ export default function CurrentAppsSection() {
   }, []);
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
-  // every navigation (App.tsx), so a stale read cannot outlive a route change.
+  // every navigation, so a stale read cannot outlive a route change.
   const onPath = appPathFromPath(location.pathname);
 
   // ---- reordering by drag ----------------------------------------------------
   // A flat list, so the only question a drop asks is "above or below this row",
-  // answered by the row's own midpoint. Deliberately NOT the bookmarks tree's
-  // machinery (BookmarksSection): no folders, no subtree guard, no drop-into.
-  // The zone and fade CLASSES are that section's, though — the rows already
-  // carry `bookmark-row`, so `.dragging` / `.drag-above` / `.drag-below` are
-  // painted by sidebar.css with nothing new added.
+  // answered by the row's own midpoint. The marks are data attributes the row
+  // class paints (`ROW_CLASS`).
   const draggedRef = useRef<string | null>(null);
   const clearDrag = () => {
-    const marks = ["drag-above", "drag-below", "dragging"];
-    const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
     document
-      .querySelectorAll(sel)
-      .forEach((el) => el.classList.remove(...marks));
+      .querySelectorAll<HTMLElement>("[data-sidebar-row]")
+      .forEach((a) => {
+        const row = a.parentElement;
+        if (!row) return;
+        row.removeAttribute("data-drag");
+        row.removeAttribute("data-dragging");
+      });
   };
   const isBelow = (e: React.DragEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -425,7 +378,7 @@ export default function CurrentAppsSection() {
   const dragProps = (path: string): RowDragProps => ({
     onDragStart: (e) => {
       draggedRef.current = path;
-      e.currentTarget.classList.add("dragging");
+      e.currentTarget.setAttribute("data-dragging", "");
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", path); // Firefox needs a payload to start
     },
@@ -434,23 +387,19 @@ export default function CurrentAppsSection() {
       if (from === null || from === path) return;
       e.preventDefault(); // required to allow a drop
       e.dataTransfer.dropEffect = "move";
-      const after = isBelow(e);
-      e.currentTarget.classList.toggle("drag-above", !after);
-      e.currentTarget.classList.toggle("drag-below", after);
+      e.currentTarget.setAttribute("data-drag", isBelow(e) ? "below" : "above");
     },
-    onDragLeave: (e) =>
-      e.currentTarget.classList.remove("drag-above", "drag-below"),
+    onDragLeave: (e) => e.currentTarget.removeAttribute("data-drag"),
     onDrop: (e) => {
       const from = draggedRef.current;
       // Reset BEFORE the re-render: it detaches the source row, and Chrome
-      // skips dragend on a removed element (the lesson BookmarksSection
-      // records at its own drop handler).
+      // skips dragend on a removed element.
       draggedRef.current = null;
       clearDrag();
       if (from === null || from === path) return;
       e.preventDefault();
-      // Moved within the WHOLE store, not the visible run. They are the same
-      // list — the store is pruned to the desk on every assignment.
+      // Moved within the WHOLE store, not the visible run — they are the same
+      // list, since the store is pruned to the desk on every assignment.
       const next = moveSlug(orderedSlugs(appOrder), from, path, isBelow(e));
       reorderTo(appOrder, next);
       saveOrder(next);
@@ -466,19 +415,16 @@ export default function CurrentAppsSection() {
   const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
 
   // ---- the icon picker -------------------------------------------------------
-  // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to
-  // itself. A pick is wrapped in a standalone svg and written to the folder's
-  // icon.svg (POST /api/apps/icon) — the file the row and the tab favicon
-  // already read — and the refetch brings back the new mtime, which is what
-  // busts the <img> cache. Remove deletes the file; the row falls back to the
-  // generic mark.
+  // A pick is wrapped in a standalone svg and written to the folder's icon.svg
+  // (POST /api/apps/icon); the refetch brings back the new mtime, which busts
+  // the <img> cache. Remove deletes the file; the row falls back to the mark.
   const [iconPicker, setIconPicker] = useState<{
     path: string;
     top: number;
     left: number;
   } | null>(null);
   const onGlyphClick = useCallback(
-    (e: React.MouseEvent<HTMLSpanElement>, path: string) => {
+    (e: React.MouseEvent<HTMLElement>, path: string) => {
       e.preventDefault();
       e.stopPropagation();
       const rect = e.currentTarget.getBoundingClientRect();
@@ -502,9 +448,6 @@ export default function CurrentAppsSection() {
   };
 
   // ---- the row's right-click menu ---------------------------------------------
-  // "Open app" is the app page header's own button (AppPage.tsx) — the entry
-  // page in a new tab. The rest are the desk's own verbs — the dot, the
-  // tasks, the row itself.
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -516,9 +459,8 @@ export default function CurrentAppsSection() {
     setMenu({ x: e.clientX, y: e.clientY, app });
   }, []);
 
-  // The rename dialog: prefilled with the folder's current name; submit renames
-  // the FOLDER on disk and the server carries the app's sessions and stores
-  // along (the D548 move settlement).
+  // The rename dialog: submit renames the FOLDER on disk and the server carries
+  // the app's sessions and stores along (the D548 move settlement).
   const [renaming, setRenaming] = useState<CurrentApp | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -538,20 +480,14 @@ export default function CurrentAppsSection() {
     try {
       const r = await renameCurrentApp(app.path, name);
       // Carry the row's SEQUENCE to the new path in memory, so the rename does
-      // not reshuffle the list (assignSequences would put an unknown path on
-      // top). The OLD path's entry is left in place: the fetched table still
-      // names it until the refetch lands, and deleting it early hands the row
-      // a fresh top-of-list sequence in that window (Bugbot). The prune on the
-      // next assignment drops it. Deliberately NOT saved — the store is
-      // written by a drag and only by a drag (the cross-tab rule above).
+      // not reshuffle the list. The OLD path's entry is left for the prune.
+      // Deliberately NOT saved — the store is written by a drag only.
       const seq = appOrder.get(app.path);
       if (seq !== undefined && !appOrder.has(r.path)) {
         appOrder.set(r.path, seq);
       }
       setRenaming(null);
       pokeTasks();
-      // Refetch UNCONDITIONALLY — the desk row changed either way. Then, if
-      // we are on the renamed app's page, follow it to the new folder.
       refetch();
       if (app.path === onPath) {
         navigateUrl(appPageUrl(r.path, appPageTabFromSearch(location.search)));
@@ -568,8 +504,8 @@ export default function CurrentAppsSection() {
 
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      // The app page header's own "Open app": the entry page full-size in the
-      // explorer, in a new tab so the current page stays put.
+      // The app page header's own "Open app": the entry page full-size, in a
+      // new tab so the current page stays put.
       label: "Open app",
       icon: MenuIcons.open,
       disabled: !app.exists || !app.entry,
@@ -634,12 +570,11 @@ export default function CurrentAppsSection() {
     [onPath, apps, refetch, onGlyphClick, onRowMenu],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
-  // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
+  // dialog (D489). The section ALWAYS renders: a door to "make one" is exactly
   // what an empty desk wants.
   const [composing, setComposing] = useState(false);
-  // Whole-section fold, the Bookmarks heading's pattern: local to this machine
-  // (localStorage) — sidebar layout, not desk data. The count chip carries the
-  // collapsed signal, no chevron.
+  // Whole-section fold, the Bookmarks heading's pattern: local to this machine.
+  // The count chip carries the collapsed signal beside the chevron.
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const toggleCollapsed = () => {
     const next = !collapsed;
@@ -651,23 +586,33 @@ export default function CurrentAppsSection() {
     setCollapsed(next);
   };
   return (
-    <div className="sidebar-section sidebar-current-apps">
-      <div
-        className={
-          "sidebar-heading recents-heading current-apps-heading" +
-          (collapsed ? " collapsed" : "")
-        }
+    <div className="flex shrink-0 flex-col gap-px p-2 pt-0">
+      {/* A foldable section heading: the sm/semibold/uppercase/muted scale, with
+          a chevron that says "this folds" — right when collapsed, down when open. */}
+      <button
+        type="button"
+        className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-md border-0 bg-transparent px-2.5 pb-1 pt-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
         title={collapsed ? "Show projects" : "Hide projects"}
+        aria-expanded={!collapsed}
         onClick={toggleCollapsed}
       >
         Projects
-        <span className="sidebar-heading-chevron" aria-hidden="true" />
-        {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
-      </div>
+        <ChevronRight
+          size={12}
+          aria-hidden="true"
+          className={cn("shrink-0 motion-safe:transition-transform motion-safe:duration-100", !collapsed && "rotate-90")}
+        />
+        {collapsed && (
+          <Badge variant="secondary" className="ml-auto h-4 px-1.5 text-xs tabular-nums">
+            {apps.length}
+          </Badge>
+        )}
+      </button>
       {!collapsed && apps.map(render)}
       {!collapsed && (
+        // Muted so it reads as a door rather than another app, full colour on hover.
         <div
-          className="bookmark-row current-app-row current-app-new"
+          className={cn(ROW_CLASS, "text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring")}
           role="button"
           tabIndex={0}
           title="New app"
@@ -679,10 +624,10 @@ export default function CurrentAppsSection() {
             }
           }}
         >
-          <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
-            +
+          <span className={cn(GLYPH_CLASS, "text-current")} aria-hidden="true">
+            <Plus size={14} />
           </span>
-          <span className="bookmark-name">New app</span>
+          <span className="min-w-0 flex-1 truncate">New app</span>
         </div>
       )}
       {menu && (
@@ -693,53 +638,40 @@ export default function CurrentAppsSection() {
           onClose={() => setMenu(null)}
         />
       )}
-      {renaming && (
-        <Modal
-          title={"Rename " + renaming.name}
-          busy={renameBusy}
-          onClose={() => setRenaming(null)}
-          width={420}
-          footer={
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={renameBusy}
-                onClick={() => setRenaming(null)}
-              >
+      <Dialog open={renaming !== null} onOpenChange={(o) => !o && !renameBusy && setRenaming(null)}>
+        {renaming && (
+          <DialogContent className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Rename {renaming.name}</DialogTitle>
+              <DialogDescription>
+                Renames the app&apos;s folder on disk. Its tasks and Claude sessions move with it.
+              </DialogDescription>
+            </DialogHeader>
+            <Input
+              type="text"
+              value={renameDraft}
+              autoFocus
+              disabled={renameBusy}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitRename();
+                }
+              }}
+            />
+            <DialogFooter>
+              <Button variant="outline" disabled={renameBusy} onClick={() => setRenaming(null)}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={renameBusy || !renameDraft.trim()}
-                onClick={submitRename}
-              >
+              </Button>
+              <Button disabled={renameBusy || !renameDraft.trim()} onClick={submitRename}>
                 {renameBusy ? "Renaming…" : "Rename"}
-              </button>
-            </>
-          }
-        >
-          <p>
-            Renames the app&apos;s folder on disk. Its tasks and Claude
-            sessions move with it.
-          </p>
-          <input
-            type="text"
-            className="field-control"
-            value={renameDraft}
-            autoFocus
-            onFocus={(e) => e.currentTarget.select()}
-            onChange={(e) => setRenameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void submitRename();
-              }
-            }}
-          />
-        </Modal>
-      )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
       {iconPicker && (
         <IconPicker
           anchor={iconPicker}
@@ -749,25 +681,20 @@ export default function CurrentAppsSection() {
           onClose={() => setIconPicker(null)}
         />
       )}
-      {composing && (
-        // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
-        // it names, scaffolds and navigates into the new app's chat itself,
-        // and that navigation remounts the sidebar (App.tsx), which is what
-        // unmounts this modal. `onCreated` closes it for the case where the
-        // composer stays put (no chat run started).
-        <Modal
-          title="New app"
-          onClose={() => setComposing(false)}
-          width={640}
-          dialogClassName="current-apps-compose"
-          // The composer arrives with its own skin (chips, pickers, the round
-          // send button); the chassis' form vocabulary would re-style every
-          // button in it. Owner: "we should not be redesigning anything".
-          plainBody
-        >
-          <HeroComposer onCreated={() => setComposing(false)} />
-        </Modal>
-      )}
+      {/* The SAME composer /apps and /home show (apps/builder/HomeHero.tsx): it
+          names, scaffolds and navigates into the new app's chat itself, and that
+          navigation remounts the sidebar, which unmounts this dialog.
+          `onCreated` closes it for the case where the composer stays put. */}
+      <Dialog open={composing} onOpenChange={(o) => !o && setComposing(false)}>
+        {composing && (
+          <DialogContent className="sm:max-w-[640px]">
+            <DialogHeader>
+              <DialogTitle>New app</DialogTitle>
+            </DialogHeader>
+            <HeroComposer onCreated={() => setComposing(false)} />
+          </DialogContent>
+        )}
+      </Dialog>
     </div>
   );
 }

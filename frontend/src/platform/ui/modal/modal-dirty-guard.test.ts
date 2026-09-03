@@ -16,30 +16,18 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { decideClose, isDisarmingInteraction } from "./dirty-guard";
 
 let modal: string;
-let css: string;
 
 beforeAll(async () => {
   modal = await Bun.file(new URL("./Modal.tsx", import.meta.url).pathname).text();
-  css = await Bun.file(
-    new URL("../../../styles/buttons-modal.css", import.meta.url).pathname,
-  ).text();
 });
 
 describe("the armed ✕", () => {
-  test("the close button carries the armed class while the guard is up", () => {
-    // The class is conditional on `confirmClose` — the same state the footer
-    // hint already keys off, so the two halves cannot disagree about whether the
-    // guard is up.
-    expect(modal).toContain('(confirmClose ? " is-armed" : "")');
-  });
-
-  test("…and the stylesheet actually gives that class a look", () => {
-    // The half a typo would silently eat: a class nothing styles is exactly the
-    // dead click this fixes. Pinned to the selector, and to the fact that it
-    // repeats itself for :hover — without that, moving the mouse cools the
-    // button back down while the guard is still live.
-    expect(css).toContain(".deploy-close.is-armed");
-    expect(css).toContain(".deploy-close.is-armed:hover:not(:disabled)");
+  test("the armed state actually gets a look, off the same flag as the hint", () => {
+    // The half a typo would silently eat: a state nothing styles is exactly the
+    // dead click this fixes. The tint comes from the status map (orange = waiting
+    // on the user), applied off `confirmClose` — the same state the footer hint
+    // keys off, so the two halves cannot disagree about whether the guard is up.
+    expect(modal).toContain("confirmClose && bucketBadge.orange");
   });
 
   test("it says what the next press will do, in the tooltip and to a screen reader", () => {
@@ -56,7 +44,6 @@ describe("the armed ✕", () => {
     // Two channels on purpose: the button says WHERE, the hint says WHAT. The
     // hint is also `role="status"`, which is what announces the change at the
     // moment it happens.
-    expect(modal).toContain("modal-dirty-hint");
     expect(modal).toContain("Unsaved changes — close again to discard");
     expect(modal).toContain('role="status"');
   });
@@ -159,8 +146,10 @@ describe("the close button while busy", () => {
   test("is not rendered at all, rather than rendered dead", () => {
     expect(modal).toContain("{!busy && (");
     // The old spelling, gone: the ✕ never carries a disabled attribute now.
-    const close = modal.slice(modal.indexOf('className={"modal-close'));
-    expect(close.slice(0, close.indexOf("</button>"))).not.toContain("disabled={busy}");
+    // The control is the shadcn DialogClose stamped `data-modal-close` (the
+    // attribute dirty-guard.ts's CLOSE_CONTROL_SELECTOR looks for).
+    const close = modal.slice(modal.indexOf("data-modal-close"));
+    expect(close.slice(0, close.indexOf("</DialogClose>"))).not.toContain("disabled={busy}");
   });
 
   test("still refuses Esc and the backdrop, which is the actual guard", () => {

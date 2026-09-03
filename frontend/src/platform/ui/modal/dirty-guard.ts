@@ -17,7 +17,7 @@
 
 // The close control lives INSIDE the dialog, so the disarm listener has to be
 // able to tell "the user went back to editing" from "the user pressed ✕ again".
-export const CLOSE_CONTROL_SELECTOR = ".modal-close";
+export const CLOSE_CONTROL_SELECTOR = "[data-modal-close]";
 
 // What a close attempt (✕ / Esc / backdrop) should do right now.
 //   "close" — run the close, discarding the form

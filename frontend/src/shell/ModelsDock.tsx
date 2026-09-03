@@ -51,17 +51,18 @@
 // RepoUpdatesCardView use, for the identical reason: no polling, no network,
 // no `window`/`document`, so ModelsDock.test.tsx can render the view
 // directly with a fixed model list rather than mocking `useAiRuntime`.
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import StatusDot from "@platform/ui/StatusDot";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { cn } from "@platform/lib/utils";
+import { bucketText } from "@platform/ui/status-colors";
+import { DockEmpty, DockRows, StatusBarSection } from "@platform/ui/statusbar/StatusBarSection";
+import { DockAction, DockLine, DockRow, DockRowHead, DockTitle } from "@platform/ui/statusbar/DockRow";
 
-/** For a caller that mounts the view without an `onClose` — the pure view's
- *  outside-pointer-down handler needs a function, not a branch. */
+/** For a caller that mounts the view without an `onClose`. */
 const NOOP = () => {};
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -77,15 +78,10 @@ const NOOP = () => {};
 // The transient `autoOpen`/`autoClose` overrides are untouched; opening is an
 // explicit click within the session.
 
-// Reuses `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-amount`/`.dl-status` —
-// the job row's own classes (notifications.css) — rather than a parallel
-// `m-` set: a model row is shaped exactly like a job row (a name, a number,
-// an action, an optional status line under it), and notifications.css
-// already draws that shape correctly in both themes. `.dl-row-cancel` is
-// Unload's, the same "text, not a ✕" control JobRow's own Cancel wears
-// (round 1: two controls, one meaning each) — Unload is a distinct verb
-// from Cancel, but the same visual language: a row-scoped, quietly-styled
-// text button, not a glyph.
+// A model row is shaped exactly like a job row (a name, a number, an action, an
+// optional status line), so it composes the same DockRow pieces
+// (platform/ui/statusbar/DockRow.tsx). Unload is a text action, not a ✕: two
+// controls, one meaning each.
 /** THE ROW'S MEMORY FIGURES. Both are INSTANTANEOUS now, and one is a genuine
  *  subset of the other, which is what makes the pair readable at all (D600 —
  *  the user's own pick from three spelled-out options): `1.8 GB now (24 GB
@@ -142,7 +138,10 @@ function MemoryCell({
   // most. Against the ceiling, the HELD figure is the only one on this row a
   // colour can honestly answer "how close is this to the limit" for.
   const band = memoryBand(heldBytes, ceilingBytes);
-  const bandClass = band ? ` is-mem-${band}` : "";
+  // The three bands are the status map's own colours (status-colors.ts):
+  // easy = green, tight = yellow, no (exceeds the ceiling) = red.
+  const bandClass =
+    band === "easy" ? bucketText.green : band === "tight" ? bucketText.yellow : band === "no" ? bucketText.red : "";
   const now = formatSize(model.residentBytes);
   const held = formatSize(heldBytes);
   const cost = formatSize(model.footprintBytes);
@@ -172,7 +171,7 @@ function MemoryCell({
   // null on any worker whose counter could not be read, which means we do not
   // know the pressure, and an uncoloured row is the correct rendering of that.
   const heldCell = held ? (
-    <span className={"dl-mem-live" + bandClass}>{held} held</span>
+    <span className={cn("text-muted-foreground", bandClass)}>{held} held</span>
   ) : null;
 
   // Three shapes rather than one clever expression, because the degenerate
@@ -180,13 +179,13 @@ function MemoryCell({
   // stranded "(… held)" with nothing in front of it.
   if (!now) {
     return (
-      <span className="dl-amount" title={title}>
+      <span className="text-xs text-muted-foreground tabular-nums" title={title}>
         {heldCell}
       </span>
     );
   }
   return (
-    <span className="dl-amount" title={title}>
+    <span className="text-xs text-muted-foreground tabular-nums" title={title}>
       {`${now} now`}
       {heldAddsSomething ? <> ({heldCell})</> : null}
     </span>
@@ -259,38 +258,29 @@ function ModelRow({
   };
 
   return (
-    <div className="dl-row">
-      {/* NAME + ACTION ONLY — the figures are on their own line below (see
-          `.dl-row-figures`'s comment in notifications.css). */}
-      <div className="dl-row-head">
-        {/* The MODEL name only, not the whole `owner/model` repo id — the
-            same trim `.dl-model` uses on the job row, for the same reason:
-            the owner never distinguishes anything and eats width a narrow
-            bar has none of. Full id stays on hover.
-            `dl-title-id` (notifications.css) is what keeps this on ONE line
-            instead of inheriting `.dl-title`'s two-line, wrap-anywhere job-row
-            rule — a model id is a single unbreakable token, not a prompt. */}
-        <span className="dl-title dl-title-id" title={model.model}>
+    <DockRow>
+      {/* Name + action on the head; the figures on their own line below (the
+          head is short of LINES, not width). The MODEL name only — full id on
+          hover; a model id is one unbreakable token, so one line, ellipsised. */}
+      <DockRowHead>
+        <DockTitle token title={model.model}>
           {repoName(model.model)}
-        </span>
-        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
+        </DockTitle>
+        <DockAction onClick={unload} disabled={busy}>
           {busy ? "Unloading…" : "Unload"}
-        </button>
-      </div>
-      {/* The figures, on their own line — `.dl-row-figures` in
-          notifications.css. A non-ready worker holds no weights yet, so there
-          is no cost to report — its STATE is the honest thing to show here
-          instead, and the bring-up's real progress (percentage, cancel) is a
-          job row in Jobs/Activity, reported by `supervisor._report` (D588). */}
-      <div className="dl-row-figures">
+        </DockAction>
+      </DockRowHead>
+      {/* A non-ready worker holds no weights yet, so its STATE is the honest
+          thing to show; the bring-up's progress is a job row in Activity. */}
+      <div className="mt-1">
         {model.state === "ready" ? (
           <MemoryCell model={model} ceilingBytes={ceilingBytes} />
         ) : (
-          <span className="dl-amount">{model.state}</span>
+          <span className="text-xs text-muted-foreground">{model.state}</span>
         )}
       </div>
-      {failure && <div className="dl-status">{failure}</div>}
-    </div>
+      {failure && <DockLine>{failure}</DockLine>}
+    </DockRow>
   );
 }
 
@@ -338,58 +328,31 @@ export function ModelsCardView({
   // (as the merged Activity chip's did) answers a different question than
   // the one the user relies on this dot for.
   const idle = models.length === 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME and nothing that
-          varies in width, and the idle sentence moves into the panel; see
-          `DownloadManagerView`'s own header for why a resident model or a
-          running engine alone leaves ITS dot unfilled — that rule does not
-          apply here). The label is "Models" whether or not anything is
-          resident — the ONLY difference between idle and active is whether the
-          circle beside it is outlined or filled, plus `.is-idle`'s muting. */}
-      <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show loaded models" : "Hide loaded models"}
-      >
-        {/* THE SAME CIRCLE AS EVERY OTHER CHIP (D590, user: "lets just stick
-            to a circle for all items"). Filled whenever ANY model is
-            resident — the one signal the user calls out by name as the
-            reason this chip must stand apart from Activity's own dot (which
-            answers "is there work right now", not "is memory held"). */}
-        <span className="dl-summary">Models</span>
-        <StatusDot
-          on={models.length > 0}
-          label={models.length > 0 ? "models loaded" : "no models loaded"}
-        />
-      </button>
-      {!collapsed && (
-        <div className="dl-panel">
-          {idle ? (
-            <div className="dl-panel-empty">No models loaded</div>
-          ) : (
-            <div className="dl-rows">
-              {models.map((m) => (
-                <ModelRow
-                  key={m.model}
-                  model={m}
-                  ceilingBytes={ceilingBytes}
-                  onUnload={onUnload}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+    <StatusBarSection
+      label="Models"
+      // Filled whenever ANY model is resident (D590) — the one signal the user
+      // calls out as the reason this chip stands apart from Activity's dot.
+      on={models.length > 0}
+      dotLabel={models.length > 0 ? "models loaded" : "no models loaded"}
+      idle={idle}
+      open={!collapsed}
+      hasRows={!idle}
+      title={collapsed ? "Show loaded models" : "Hide loaded models"}
+      onToggle={onToggle}
+      onDismiss={onClose ?? NOOP}
+    >
+      {idle ? (
+        <DockEmpty>No models loaded</DockEmpty>
+      ) : (
+        <DockRows>
+          {models.map((m) => (
+            <ModelRow key={m.model} model={m} ceilingBytes={ceilingBytes} onUnload={onUnload} />
+          ))}
+        </DockRows>
       )}
-    </div>
+    </StatusBarSection>
   );
 }
 

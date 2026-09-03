@@ -52,6 +52,9 @@ import {
 } from "@platform/lib/hooks";
 import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
+import { cn } from "@platform/lib/utils";
+import { Input } from "@platform/shadcn/ui/input";
+import { BarButton, BarZone } from "@apps/explorer/bar/BarButton";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -253,15 +256,15 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
 
 // 14px, not the bars' usual 16px: this glyph's neighbour is 12px monospace
 // crumb text, not another control, and at 16px it read as an oversized
-// ornament rather than a sibling of the path. The button keeps its 24px box
-// (padding absorbs the 2px), so the hit area and the hover pill are unchanged.
-// The remaining half-pixel of optical correction — a five-pointed star's mass
-// sits below its box centre — is a CSS nudge on .bookmark-star-btn svg.
-function StarIcon({ filled }: { filled: boolean }) {
+// ornament rather than a sibling of the path. The button keeps its 24px box,
+// so the hit area and the hover pill are unchanged. The remaining half-pixel
+// of optical correction lives on the button (BookmarkStar).
+function StarIcon({ filled, dense = false }: { filled: boolean; dense?: boolean }) {
+  const size = dense ? 13 : 14;
   return (
     <svg
-      width="14"
-      height="14"
+      width={size}
+      height={size}
       viewBox="0 0 16 16"
       fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
@@ -332,34 +335,25 @@ function FolderSearchSlot() {
 // the button live. A dead-looking control that was wrong teaches the user the
 // control is broken; a live one that no-ops costs a click.
 //
-// `.bar-ctl-icon`, so they sit on the same 28px square recipe as every other
-// glyph button in these bars, in a `.crumb-nav` group whose 2px internal gap
-// (matching `.bar-zone`) is what makes the pair read as one control.
+// Glyph BarButtons, so they sit on the same 28px square recipe as every other
+// control in these bars, inside a BarZone whose 2px internal gap is what makes
+// the pair read as one control rather than two adjacent buttons.
 function CrumbNav() {
   const reach = useNavReach();
+  // `crumb-nav` is a HOOK: over a folder, a search box pinned open or holding a
+  // query takes the whole bar, and explorer.css hides this pair (and the ★)
+  // through `#breadcrumb:has(.listing-search.expanded)`. Hidden, not
+  // unmounted — the ★ has to stay mounted so a keystroke can't disarm a
+  // bookmark.
   return (
-    <div className="crumb-nav">
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
-        title="Back"
-        aria-label="Back"
-        disabled={!reach.back}
-        onClick={goBack}
-      >
+    <BarZone className="crumb-nav">
+      <BarButton icon title="Back" aria-label="Back" disabled={!reach.back} onClick={goBack}>
         <Chevron dir="left" />
-      </button>
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
-        title="Forward"
-        aria-label="Forward"
-        disabled={!reach.forward}
-        onClick={goForward}
-      >
+      </BarButton>
+      <BarButton icon title="Forward" aria-label="Forward" disabled={!reach.forward} onClick={goForward}>
         <Chevron dir="right" />
-      </button>
-    </div>
+      </BarButton>
+    </BarZone>
   );
 }
 
@@ -380,7 +374,18 @@ function CrumbNav() {
 // Which is exactly why `id` is a prop and not baked in: the bar renders ONE
 // star and passes the id, a split panel renders one per pane and passes none.
 // A hardcoded id would emit duplicate `#bookmark-btn` nodes in a split.
-export function BookmarkStar({ name, id }: { name: string; id?: string }) {
+export function BookmarkStar({
+  name,
+  id,
+  dense = false,
+  className,
+}: {
+  name: string;
+  id?: string;
+  // Pane scale (the split panel's bars) — a 20px box around a 13px glyph.
+  dense?: boolean;
+  className?: string;
+}) {
   useUrlVersion();
   useBookmarksVersion();
   const matchesCurrent = (b: { url: string }) => {
@@ -402,14 +407,32 @@ export function BookmarkStar({ name, id }: { name: string; id?: string }) {
   };
 
   return (
-    <button
+    <BarButton
+      icon
       id={id}
-      className={"bookmark-star-btn" + (starred ? " active" : "")}
+      // Subtle: bare glyph, no box — muted until hovered, a FILLED FOREGROUND
+      // star when the view is bookmarked or an armed bookmark is live.
+      // Deliberately neutral rather than chromatic: bookmarking is state, not
+      // a status, and status colour is single-sourced.
+      className={cn(
+        // `bookmark-star-btn` is a HOOK, not styling: explorer.css hides this
+        // button (with the ‹ › pair) while the folder's search box holds the
+        // bar, through `#breadcrumb:has(.listing-search.expanded)`.
+        "bookmark-star-btn",
+        // Optical, not geometric: the star box centres on the crumb row's
+        // centre line, but a five-pointed star carries its visual mass below
+        // its own box centre, so it reads as sitting low beside the crumb
+        // text. Half a pixel up lands its perceived centre on the text's.
+        "[&>svg]:-translate-y-[0.5px]",
+        dense ? "size-5" : "size-6",
+        starred && "bg-muted text-foreground",
+        className,
+      )}
       title={starred ? "Remove bookmark" : "Bookmark this view"}
       onClick={onBookmark}
     >
-      <StarIcon filled={starred} />
-    </button>
+      <StarIcon filled={starred} dense={dense} />
+    </BarButton>
   );
 }
 
@@ -418,7 +441,7 @@ export function BookmarkStar({ name, id }: { name: string; id?: string }) {
 // Exported for Panel, which lost the title row that used to carry it — it
 // renders in the FIRST pane's bar only (unlike the star, this one is wide
 // enough that one per pane would be noise).
-export function UpdateBookmarkButton() {
+export function UpdateBookmarkButton({ dense = false }: { dense?: boolean } = {}) {
   const urlVersion = useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
   const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
@@ -434,14 +457,15 @@ export function UpdateBookmarkButton() {
   };
 
   return (
-    <button
+    <BarButton
+      tone="bordered"
+      dense={dense}
       id="update-bookmark-btn"
-      className="star-btn starred"
       title="Update bookmark to current params"
       onClick={onUpdate}
     >
       Update bookmark
-    </button>
+    </BarButton>
   );
 }
 
@@ -457,7 +481,18 @@ function TopbarActionsSlot() {
     if (el) publishTopbarSlot(el);
     return () => retractTopbarSlot(el);
   }, []);
-  return <div ref={ref} id="topbar-mode-slot" className="crumb-actions preview-actions" />;
+  // TWO CLASSES, both HOOKS rather than styling. `crumb-actions` is named in
+  // BAR_EDIT_EXCLUDE, so a click on this cluster (its gaps included) is not
+  // read as "open the path field". `preview-actions` is shared with
+  // shell/App.tsx's loading scaffold, and preview.css gives a portaled control
+  // that brings no chrome of its own a fallback box through it.
+  return (
+    <div
+      ref={ref}
+      id="topbar-mode-slot"
+      className="crumb-actions preview-actions flex shrink-0 items-center gap-2"
+    />
+  );
 }
 
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
@@ -593,6 +628,10 @@ export function Breadcrumb({
 }) {
   const crumbsRef = useRef<HTMLDivElement | null>(null);
   const [editing, setEditing] = useState(false);
+  // Whether a FOLDER has claimed this bar (its search row portals into the
+  // right end). Read here as well as in FolderSearchSlot because it decides
+  // which element claims the bar's free width — see the ★ below.
+  const searchClaimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   // Read by the always-on click-away listener, which must not rebind on every toggle.
   const editingRef = useRef(false);
   editingRef.current = editing;
@@ -863,8 +902,13 @@ export function Breadcrumb({
     <>
       <CrumbNav />
       {editing ? (
-        <input
-          className="crumb-edit"
+        // Same monospace as the crumbs, fills the strip, and takes a lifted
+        // plate so it reads as the bar turning editable rather than a popped-in
+        // widget. `crumb-edit` stays as a HOOK — the click-away listener above
+        // tests for it by class to tell "a press inside the field" from "a
+        // press that should dismiss it".
+        <Input
+          className="crumb-edit h-7 min-w-0 flex-auto rounded-md bg-muted px-1.5 font-mono text-xs"
           defaultValue={displayPath}
           spellCheck={false}
           autoFocus
@@ -900,7 +944,22 @@ export function Breadcrumb({
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
           for the path alone, and a star inside it would scroll away with the
           crumbs on a long path, which is the one place it is most wanted. */}
-      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+      {/* THE STAR TAKES THE BAR'S SLACK, and it has to be whatever is
+          genuinely last in the PATH zone — which is now the star, since it
+          moved to the path's tail. Without one claimant the free width is
+          spread between every item in the row and the ★, the path and the
+          right-hand cluster drift apart by a window-width-dependent amount.
+          It stands down over a FOLDER: the search row's own auto margin is the
+          claimant there, and two in one row split the slack between them,
+          which is the layout this pair exists to prevent. Edit mode has no
+          claimant either — the field's own `flex-auto` eats the width.
+          `-ml-1.5` tightens the last-crumb/★ pair out of the bar's zone gap
+          and into the path's own rhythm. */}
+      <BookmarkStar
+        id="bookmark-btn"
+        name={renderedTitle || basename(fsPath)}
+        className={cn("-ml-1.5", !searchClaimed && !editing && "mr-auto")}
+      />
       {/* THE PATH `⋮` IS GONE, both of them. Over a FOLDER the listing took its
           actions into the right end of its own column header (Listing.tsx), where
           they sit with the folder's other operations instead of being split
@@ -930,7 +989,12 @@ export function StaticBreadcrumb({ label }: { label: string }) {
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>
-      <BookmarkStar id="bookmark-btn" name={label} />
+      {/* The label bar has the same three-part opening and the same slack
+          problem: without a claimant the `space-between`-era layout opened up
+          INSIDE the trio, floating the label mid-bar and flinging the star to
+          the far right. These routes never carry a folder search row, so the
+          star claims it unconditionally. */}
+      <BookmarkStar id="bookmark-btn" name={label} className="mr-auto -ml-1.5" />
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
     </>

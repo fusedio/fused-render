@@ -21,6 +21,7 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
+import { Identifier, SectionHeading } from "@platform/ui/flow/Typography";
 
 interface LanAppRow {
   name: string;
@@ -54,13 +55,6 @@ function writeFilter(value: string) {
   } catch {
     /* private mode */
   }
-}
-
-// A hue from the name, stable across visits: same app, same colour.
-function hueOf(name: string): number {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return h % 360;
 }
 
 function bucketOf(recency: number, now: number): string {
@@ -155,20 +149,18 @@ export function LanApp() {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
-      <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
+    <main className="mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))] text-sm">
+      <header className="sticky top-0 z-10 -mx-4 bg-background/90 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
         {/* Inside the native shell the top bar already says "Apps"; the page
             keeps only the search and filters. */}
         {!IN_APP && (
           <div className="flex items-baseline justify-between gap-3 pb-3">
-            <h1 className="text-[22px] font-semibold tracking-[-0.01em]">Apps</h1>
-            <span className="lan-mono text-xs text-[var(--fg-muted)]">
-              {apps ? `${shown.length}/${apps.length}` : ""}
-            </span>
+            <h1 className="m-0 text-xl font-bold">Apps</h1>
+            <Identifier>{apps ? `${shown.length}/${apps.length}` : ""}</Identifier>
           </div>
         )}
         <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--fg-muted)]" />
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
             inputMode="search"
@@ -179,7 +171,7 @@ export function LanApp() {
             aria-label="Search apps"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="h-11 rounded-xl pl-9 pr-9 text-base"
+            className="h-11 rounded-md pl-9 pr-9 text-base"
           />
           {query && (
             <Button
@@ -194,7 +186,7 @@ export function LanApp() {
           )}
         </div>
         {tags.length > 1 && (
-          <div className="lan-strip -mx-4 mt-3 overflow-x-auto px-4">
+          <div className="lan-strip -mx-4 mt-3 overflow-x-auto px-4 [scrollbar-width:none]">
             <ToggleGroup
               value={[filter]}
               onValueChange={(v) => onFilter((v[0] as string) ?? "")}
@@ -210,7 +202,7 @@ export function LanApp() {
               {tags.map((t) => (
                 <ToggleGroupItem key={t.value} value={t.value} className="rounded-full px-3">
                   {t.label}
-                  <span className="lan-mono ml-1.5 text-[11px] opacity-60">{t.count}</span>
+                  <span className="ml-1.5 font-mono text-xs tabular-nums opacity-60">{t.count}</span>
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
@@ -235,7 +227,7 @@ export function LanApp() {
       {!error && apps === null && (
         <div className="grid grid-cols-2 gap-3 pt-4 sm:grid-cols-3">
           {Array.from({ length: 6 }, (_, i) => (
-            <Skeleton key={i} className="aspect-[4/5] rounded-2xl" />
+            <Skeleton key={i} className="aspect-[4/5] rounded-lg motion-reduce:animate-none" />
           ))}
         </div>
       )}
@@ -268,9 +260,7 @@ export function LanApp() {
 
       {groups.map((g) => (
         <section key={g.label} className="pt-4">
-          <h2 className="lan-mono mb-2 text-[11px] font-medium tracking-[0.08em] text-[var(--fg-muted)] uppercase">
-            {g.label}
-          </h2>
+          <SectionHeading className="m-0 mb-2 text-xs">{g.label}</SectionHeading>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {g.rows.map((a) => (
               <AppCard key={a.path} app={a} now={now} />
@@ -288,35 +278,36 @@ function AppCard({ app, now }: { app: LanAppRow; now: number }) {
   return (
     <a
       href={app.url}
-      className="lan-card flex flex-col overflow-hidden rounded-2xl border border-[var(--sh-border)] bg-[var(--card)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
+      className={cn(
+        "flex flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-sm outline-none",
+        "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+        // Press feedback under the thumb; guarded.
+        "motion-safe:transition-transform motion-safe:duration-100 motion-safe:active:scale-[0.97]",
+      )}
     >
-      <div
-        className={cn(
-          "lan-tile flex aspect-[3/2] items-center justify-center overflow-hidden",
-          (app.preview || app.icon) && "lan-tile--icon",
-        )}
-        style={{ ["--tile-h" as string]: hueOf(app.name) }}
-        aria-hidden
-      >
+      {/* The tile: preview.png full-bleed, else the author's icon.svg as-is,
+          else the app's initial on the muted surface (neutral — status colour
+          is the only chroma on the page). */}
+      <div className="flex aspect-[3/2] items-center justify-center overflow-hidden bg-muted text-muted-foreground" aria-hidden>
         {app.preview ? (
           <img src={app.preview} alt="" className="size-full object-cover" loading="lazy" />
         ) : app.icon ? (
           <img src={app.icon} alt="" className="size-12 object-contain" />
         ) : (
-          <span className="text-[44px] leading-none font-semibold tracking-[-0.04em]">{initial}</span>
+          <span className="text-2xl font-bold leading-none">{initial}</span>
         )}
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-        <div className="line-clamp-2 text-[15px] leading-snug font-medium">{label}</div>
+        <div className="line-clamp-2 text-sm leading-snug font-medium">{label}</div>
         <div className="mt-auto flex items-center justify-between gap-2">
           {app.tag ? (
-            <Badge variant="secondary" className="max-w-[70%] truncate rounded-full px-2 text-[11px]">
+            <Badge variant="secondary" className="max-w-[70%] truncate rounded-full px-2 text-xs">
               {app.linked ? "linked" : app.tag}
             </Badge>
           ) : (
             <span />
           )}
-          <span className="lan-mono text-[11px] text-[var(--fg-muted)]">{ago(app.recency, now)}</span>
+          <Identifier className="tabular-nums">{ago(app.recency, now)}</Identifier>
         </div>
       </div>
     </a>

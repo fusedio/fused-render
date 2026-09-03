@@ -2,7 +2,16 @@
 // names (haiku via /api/ai), scaffolds (POST /api/apps/new), and lands in the
 // new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
+import { ArrowUp, Gauge, RefreshCw, Sparkles, X, type LucideIcon } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Card } from "@platform/shadcn/ui/card";
+import { Input } from "@platform/shadcn/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@platform/shadcn/ui/select";
+import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Tiny } from "@platform/ui/flow/Typography";
 import {
   aiComplete,
   createApp,
@@ -18,7 +27,6 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { startersFor } from "./starterPrompts";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { Select, TextArea, TextInput } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
@@ -129,7 +137,7 @@ async function createAppUnderFreeName(
 // enough now (starterPrompts.tsx) that three was showing a smaller share of it
 // than the row had room for. The row is ONE line always: the chips sit in a
 // no-wrap strip that scrolls sideways when four of them are wider than the
-// composer (`.home-composer-sample-strip`), with the shuffle button outside
+// composer, with the shuffle button outside
 // the strip so it stays visible however far the chips are scrolled.
 const SAMPLE_ROW = 4;
 
@@ -166,41 +174,24 @@ const EFFORT_CHOICES: { value: SessionEffort; label: string }[] = [
   { value: "max", label: "max" },
 ];
 
-// A glyph each, because the two pickers sit side by side with no border to tell
-// them apart: the icon is what says which control you are looking at before the
-// value is read — and it is what lets the labels stay bare words ("Auto",
-// "high") instead of spelling their own axis out. Drawn in the composer's own weight (13px,
-// 2px stroke) rather than borrowed from MenuIcons, which is tuned 1.5px for menu
-// rows — a menu glyph beside these chips reads thin and unrelated.
-const PICK_GLYPHS = {
-  // Model — the sparkle MenuIcons uses for "new", the app's existing mark for
-  // the AI doing something on your behalf.
-  model: (
-    <path d="M11 3.5l1.6 4.4 4.4 1.6-4.4 1.6L11 15.5 9.4 11.1 5 9.5l4.4-1.6L11 3.5zM17.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z" />
-  ),
-  // Effort — a gauge: a needle on a dial is the one figure that reads as "how
-  // hard is this being pushed" without a word beside it.
-  effort: (
-    <>
-      <path d="M4.5 17a8 8 0 1 1 15 0" />
-      <path d="M12 15l3.5-4" />
-    </>
-  ),
-};
+// One quiet picker: lucide glyph, then a shadcn Select whose trigger is
+// UNBORDERED and unfilled at rest — the pickers are settings ON the send, not
+// things to press. The glyph is inside the trigger so it shares the hit area.
+//
+// base-ui's Select rejects "" as an item value, so the "no flag" choice
+// travels through the control as AUTO and is mapped back to "" at this
+// boundary — the state, and therefore the CLI flags, never see the sentinel.
+const AUTO = "auto";
 
-// One borderless picker: glyph, then a native select carrying its own chevron.
-// A <label> around both so the glyph is part of the control's hit area rather
-// than decoration beside it — the pill has no border to aim at, so the target
-// has to be the whole thing.
 function ComposerPick<T extends string>({
-  glyph,
+  icon: Icon,
   label,
   value,
   choices,
   disabled,
   onPick,
 }: {
-  glyph: keyof typeof PICK_GLYPHS;
+  icon: LucideIcon;
   label: string;
   value: T;
   choices: { value: T; label: string }[];
@@ -208,35 +199,41 @@ function ComposerPick<T extends string>({
   onPick: (next: T) => void;
 }) {
   return (
-    <label className="home-composer-pick">
-      <span className="home-composer-pick-glyph" aria-hidden="true">
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          {PICK_GLYPHS[glyph]}
-        </svg>
-      </span>
-      <Select
-        className="home-composer-pick-sel"
+    <Select
+      value={value === "" ? AUTO : value}
+      disabled={disabled}
+      onValueChange={(v) => onPick((v === AUTO ? "" : v) as T)}
+    >
+      <SelectTrigger
+        size="sm"
         aria-label={label}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onPick(e.target.value as T)}
+        className="h-7 gap-1 rounded-full border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-accent hover:text-foreground focus-visible:ring-0 focus-visible:border-transparent focus-visible:bg-accent focus-visible:text-foreground dark:bg-transparent dark:hover:bg-accent [&_svg:not([class*='size-'])]:size-3.5"
       >
+        <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="min-w-28">
         {choices.map((c) => (
-          <option key={c.value} value={c.value}>
+          <SelectItem key={c.value} value={c.value === "" ? AUTO : c.value}>
             {c.label}
-          </option>
+          </SelectItem>
         ))}
-      </Select>
-    </label>
+      </SelectContent>
+    </Select>
+  );
+}
+
+// A starter/shuffle chip: outline pill, never shrinks or wraps (the strip
+// scrolls instead). Used by both the idea chips and the shuffle button.
+function Chip({ className, ...props }: ComponentProps<typeof Button>) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={cn("shrink-0 snap-start rounded-full text-xs text-muted-foreground hover:text-foreground", className)}
+      {...props}
+    />
   );
 }
 
@@ -277,7 +274,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   );
 
   // Grow the box with its content, capped at the shared COMPOSER_MAX_LINES —
-  // the same ten lines `.home-composer-input`'s max-height names, and the same
+  // the same ten lines the box's max-height names, and the same
   // hook the Playground's composers use. Keyed on `prompt`, which is what makes
   // a starter chip's brief (the longest text that lands in here, and it never
   // goes through onChange) open at its full height rather than three lines with
@@ -430,35 +427,41 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   };
 
   return (
-    <div className="home-composer-wrap">
-      <div
-        className={
-          "home-composer" +
-          (phase === "naming" || phase === "creating" ? " is-busy" : "")
-        }
+    <div className="flex w-full flex-col gap-2.5">
+      <Card
+        size="sm"
+        className={cn(
+          "gap-0 border border-border py-0 shadow-sm ring-0 transition-[border-color,opacity] focus-within:border-ring motion-reduce:transition-none",
+          (phase === "naming" || phase === "creating") && "opacity-75",
+        )}
       >
         {annotation && (
-          <div className="home-composer-annots">
-            <span className="home-composer-annot" title={annotation.detail}>
-              <span className="home-composer-annot-at" aria-hidden="true">
+          <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+            <Badge variant="secondary" title={annotation.detail} className="h-6 gap-1 pr-1">
+              <span className="opacity-60" aria-hidden="true">
                 @
               </span>
               {annotation.name}
-              <button
+              <Button
                 type="button"
-                className="home-composer-annot-x"
+                variant="ghost"
+                size="icon-xs"
+                className="size-4 rounded-full"
                 aria-label={`Remove ${annotation.name} annotation`}
                 disabled={busy}
                 onClick={() => setAnnotation(null)}
               >
-                ✕
-              </button>
-            </span>
+                <X className="size-3" />
+              </Button>
+            </Badge>
           </div>
         )}
-        <TextArea
+        <Textarea
           ref={inputRef}
-          className="home-composer-input"
+          // Chrome off: the card is the border. `field-sizing-fixed` because
+          // useAutoGrow writes the height inline (3–10 lines; the max-height
+          // here is the backstop naming the same ten lines as COMPOSER_MAX_LINES).
+          className="field-sizing-fixed max-h-[230px] min-h-[83px] resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3.5 pt-3.5 pb-1.5 text-sm leading-[1.5] shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
           placeholder="What do you want to build?"
           aria-label="What do you want to build?"
           value={prompt}
@@ -474,30 +477,26 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
             }
           }}
         />
-        <div className="home-composer-bar">
-          {/* The bar's left end used to spell out ↵ / ⇧↵. Those are the two
-              keystrokes every chat box on the machine already answers to, and
-              the space is worth more spent on the one thing this composer could
-              not say at all: WHICH Claude builds the app. The pickers
-              stay mounted while a create is in flight — disabled, like the
-              starter chips — and the phase text takes the space beside them
-              rather than replacing them, so nothing moves when it appears. */}
+        <div className="flex items-center justify-between gap-2.5 px-2.5 pt-1.5 pb-2.5 pl-3.5">
+          {/* The pickers stay mounted while a create is in flight — disabled,
+              like the starter chips — and the phase text takes the space beside
+              them rather than replacing them, so nothing moves when it appears. */}
           {/* Naming failed — say so and ask, rather than shipping a slug of the
               prompt. The row replaces the pickers while it is up: the name is
               the one decision left before the create, and model/effort are
               already chosen. Enter confirms, Escape backs out to the prompt. */}
           {phase === "askName" ? (
             <div
-              className="home-composer-name"
+              className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
               role="group"
               aria-label="Name your app"
             >
-              <span className="home-composer-name-why">
+              <span className="text-xs text-muted-foreground">
                 Couldn't name it automatically — pick a name:
               </span>
-              <TextInput
+              <Input
                 ref={nameRef}
-                className="home-composer-name-input"
+                className="h-7 w-44 font-mono text-xs"
                 aria-label="App name"
                 aria-invalid={!nameOk}
                 value={nameDraft}
@@ -522,18 +521,14 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
                   }
                 }}
               />
-              <button
-                type="button"
-                className="home-composer-name-cancel"
-                onClick={cancelName}
-              >
+              <Button type="button" variant="ghost" size="xs" onClick={cancelName}>
                 Cancel
-              </button>
+              </Button>
             </div>
           ) : (
-            <div className="home-composer-picks">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <ComposerPick
-                glyph="model"
+                icon={Sparkles}
                 label="Model"
                 value={model}
                 choices={MODEL_CHOICES}
@@ -541,24 +536,25 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
                 onPick={setModel}
               />
               <ComposerPick
-                glyph="effort"
+                icon={Gauge}
                 label="Effort"
                 value={effort}
                 choices={EFFORT_CHOICES}
                 disabled={busy}
                 onPick={setEffort}
               />
-              <span className="home-composer-hint">
+              <Tiny>
                 {phase === "naming" && "Naming your app…"}
                 {phase === "creating" && "Creating the app…"}
-              </span>
+              </Tiny>
             </div>
           )}
           {/* In askName the send button confirms the name — same spot, same
               arrow, so the gesture that started the create finishes it. */}
-          <button
+          <Button
             type="button"
-            className="home-composer-send"
+            size="icon-sm"
+            className="rounded-full"
             aria-label={
               phase === "askName" ? "Create with this name" : "Build it"
             }
@@ -566,52 +562,45 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
             disabled={phase === "askName" ? !nameOk : !canSubmit}
             onClick={phase === "askName" ? confirmName : submit}
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 19V5M5 12l7-7 7 7" />
-            </svg>
-          </button>
+            <ArrowUp aria-hidden="true" />
+          </Button>
         </div>
-      </div>
-      <div className="home-composer-samples">
-        <div className="home-composer-sample-strip" ref={stripRef}>
+      </Card>
+      {/* Starter-idea chips under the composer — click fills the box, never
+          submits. Always ONE line: the chips scroll sideways inside the strip
+          when they don't fit, while the shuffle button lives outside the strip
+          so it never scrolls away. Centred under the box: the strip is
+          shrink-to-fit, so a row narrower than the composer sits centred and
+          only goes edge-to-edge once the chips actually overflow. min-w-0 on
+          the strip is load-bearing: without it a flex item's auto min-size
+          keeps it at content width and the row overflows instead of scrolling. */}
+      <div className="flex min-w-0 flex-nowrap items-center justify-center gap-2">
+        <div
+          className="flex min-w-0 flex-[0_1_auto] flex-nowrap snap-x snap-proximity gap-2 overflow-x-auto [overscroll-behavior-x:contain] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          ref={stripRef}
+        >
           {Array.from(
             { length: Math.min(SAMPLE_ROW, samples.length) },
             (_, i) => {
               const s = samples[(sampleOffset + i) % samples.length];
               return (
-                <button
+                <Chip
                   key={s.label}
-                  type="button"
-                  className="home-composer-sample"
                   title={s.prompt}
                   disabled={busy}
                   onClick={() => setPrompt(s.prompt)}
                 >
-                  <span
-                    className="home-composer-sample-glyph"
-                    aria-hidden="true"
-                  >
+                  <span className="inline-flex text-muted-foreground" aria-hidden="true">
                     {s.glyph}
                   </span>
                   {s.label}
-                </button>
+                </Chip>
               );
             },
           )}
         </div>
-        <button
-          type="button"
-          className="home-composer-sample home-composer-shuffle"
+        <Chip
+          className="px-2"
           aria-label="More ideas"
           title="More ideas"
           disabled={busy}
@@ -619,20 +608,8 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
             setSampleOffset((o) => (o + SAMPLE_ROW) % samples.length)
           }
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" />
-          </svg>
-        </button>
+          <RefreshCw aria-hidden="true" />
+        </Chip>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {/* THE OTHER PLACE A USER REACHES FOR CLAUDE, and the one where being
@@ -647,7 +624,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
           facts={{ page: location.pathname + location.search }}
           onRetry={() => setSessionError(null)}
         >
-          <span className="deploy-muted">
+          <span className="text-sm text-muted-foreground">
             The app folder was created — only the task failed.
           </span>
         </TroubleCard>
@@ -659,28 +636,19 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
 // The hero card itself — wordmark, headline, and the prompt composer.
 // Exported so /apps can show the exact same hero above its grid; `onCreated`
 // lets each page refresh its own app list once the folder exists.
+// `home-hero` stays on the element as a DOM hook only — the welcome tour
+// (platform/lib/tours/home.ts) anchors its first step to it; no stylesheet
+// styles it any more.
 export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
-    <header className="home-hero">
-      {/* Fused mark + headline. The "App" wordmark that used to sit between
-          them is gone — the sidebar entry that got you here already names the
-          page — so the mark stands alone beside the tagline. Both theme
-          renders are in the DOM; CSS shows the one matching data-theme. */}
-      <h1 className="home-hero-brand">
-        <img
-          className="home-hero-logo home-hero-logo-dark"
-          src={logoMarkDark}
-          alt=""
-          aria-hidden="true"
-        />
-        <img
-          className="home-hero-logo home-hero-logo-light"
-          src={logoMarkLight}
-          alt=""
-          aria-hidden="true"
-        />
-        <span className="home-hero-tagline">
-          Build your next <span className="home-hero-accent">local app</span>
+    <header className="home-hero mx-auto w-full max-w-3xl px-4 pt-8 pb-6">
+      {/* Fused mark + headline. Both theme renders are in the DOM; the `dark`
+          variant (keyed on data-theme) shows the one matching the theme. */}
+      <h1 className="mb-4 flex flex-wrap items-center justify-center gap-x-0.5 gap-y-1 text-center">
+        <img className="hidden h-12 dark:block" src={logoMarkDark} alt="" aria-hidden="true" />
+        <img className="block h-12 dark:hidden" src={logoMarkLight} alt="" aria-hidden="true" />
+        <span className="text-xl font-medium tracking-tight text-muted-foreground">
+          Build your next <span className="text-foreground">local app</span>
         </span>
       </h1>
       {/* The hero's only verb, prompt-first: describe the app right here

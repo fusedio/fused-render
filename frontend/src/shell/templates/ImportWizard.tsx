@@ -1,10 +1,26 @@
 import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { commitImport, importTemplates } from "@platform/lib/api";
 import type { ImportItem, ImportResolution, ImportStageResult } from "@platform/lib/api";
-import { Modal } from "@platform/ui/modal/Modal";
+import { cn } from "@platform/lib/utils";
+import { TemplatesDialog } from "@shell/templates/TemplatesDialog";
+import { FilterGroup, WarnText } from "@shell/templates/chips";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Field, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
+import { Label } from "@platform/shadcn/ui/label";
+import { Identifier, Muted, Tiny } from "@platform/ui/flow/Typography";
 
 type WizardStep = "choose" | "manifest" | "done";
+
+const STEPS: { id: WizardStep; label: string }[] = [
+  { id: "choose", label: "Choose zip" },
+  { id: "manifest", label: "Review" },
+  { id: "done", label: "Done" },
+];
 
 // One binding chip in step 2. "custom" = user-added via "+ add"; the other
 // statuses come from the staging response's recommendedKeys.
@@ -125,7 +141,7 @@ export function ImportWizard({
         Object.keys(bindings).length > 0 ? bindings : undefined,
       );
       // The import already landed server-side — refresh the parent even if this
-      // wizard unmounted mid-commit. The result/done screen is modal-local, so
+      // wizard unmounted mid-commit. The result/done screen is dialog-local, so
       // it stays alive-guarded.
       onImported();
       if (!alive.current) return;
@@ -162,67 +178,56 @@ export function ImportWizard({
   let footer: ReactNode = null;
   if (step === "choose") {
     footer = (
-      <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+      <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
         Cancel
-      </button>
+      </Button>
     );
   } else if (step === "manifest" && staged) {
     footer = (
       <>
-        <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+        <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
           Cancel
-        </button>
-        <button
-          type="submit"
-          form={formId}
-          className="btn btn-primary"
-          disabled={busy || validCount === 0}
-        >
+        </Button>
+        <Button type="submit" form={formId} size="sm" disabled={busy || validCount === 0}>
           {busy
             ? "Importing…"
             : hasRecs
               ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
                 (bindingCount > 0 ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}` : "")
               : "Import"}
-        </button>
+        </Button>
       </>
     );
   } else if (step === "done" && result) {
     footer = (
-      <button type="button" className="btn btn-primary" onClick={onClose}>
+      <Button type="button" size="sm" onClick={onClose}>
         Done
-      </button>
+      </Button>
     );
   }
 
   return (
-    <Modal
-      title="Import templates"
-      onClose={onClose}
-      busy={busy}
-      dialogClassName="templates-import"
-      footer={footer}
-    >
+    <TemplatesDialog title="Import templates" onClose={onClose} busy={busy} footer={footer}>
+      <Stepper current={step} />
+
       {step === "choose" && (
         <>
-          <p className="deploy-muted">
-            Choose a <code>.zip</code> of template folders. Each top-level folder with a{" "}
-            <code>template.html</code> is a template. The registry is never imported (folders
-            only).
-          </p>
-          <div className="templates-field">
-            <label htmlFor={fileInputId} className="templates-field-label">
-              Template zip
-            </label>
-            <input
+          <Muted>
+            Choose a <Identifier>.zip</Identifier> of template folders. Each top-level folder with a{" "}
+            <Identifier>template.html</Identifier> is a template. The registry is never imported
+            (folders only).
+          </Muted>
+          <Field>
+            <FieldLabel htmlFor={fileInputId}>Template zip</FieldLabel>
+            <Input
               id={fileInputId}
               type="file"
               accept=".zip"
               disabled={busy}
               onChange={(e) => onFile(e.target.files?.[0])}
             />
-          </div>
-          {busy && <div className="deploy-muted">Staging…</div>}
+          </Field>
+          {busy && <Tiny>Staging…</Tiny>}
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </>
       )}
@@ -230,74 +235,69 @@ export function ImportWizard({
       {step === "manifest" && staged && (
         <form
           id={formId}
+          className="flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
             void doCommit();
           }}
         >
           {staged.warnings.length > 0 && (
-                <div className="templates-warnings">
-                  {staged.warnings.map((w, i) => (
-                    <div key={i} className="deploy-muted">
-                      ⚠ {w}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {hasRecs && validCount > 0 && (
-                <div className="templates-recs-toggle">
-                  <label className="templates-recs-toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={applyRecs}
-                      onChange={(e) => setApplyRecs(e.target.checked)}
+            <div className="space-y-1">
+              {staged.warnings.map((w, i) => (
+                <WarnText key={i} className="flex items-start gap-1.5">
+                  <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+                  <span>{w}</span>
+                </WarnText>
+              ))}
+            </div>
+          )}
+          {hasRecs && validCount > 0 && (
+            <div className="space-y-1">
+              <Label className="cursor-pointer">
+                <Checkbox checked={applyRecs} onCheckedChange={(c) => setApplyRecs(c === true)} />
+                <span>Apply author's recommended bindings</span>
+              </Label>
+              <Tiny className="block pl-6">
+                {applyRecs
+                  ? "Author of this bundle suggests file extensions for each template. Toggle chips to accept or reject."
+                  : "Bindings skipped — templates import as unbound. Bind later in File bindings tab."}
+              </Tiny>
+            </div>
+          )}
+          {validCount === 0 ? (
+            <Muted>
+              No valid template folders found in this zip (each needs a{" "}
+              <Identifier>template.html</Identifier>).
+            </Muted>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-border bg-card">
+              {staged.items.map((it) => (
+                <Fragment key={it.name}>
+                  <ImportRow
+                    item={it}
+                    resolution={resolutions[it.name] ?? "skip"}
+                    onResolution={(r) => setRes(it.name, r)}
+                  />
+                  {it.valid && (chips[it.name]?.length ?? 0) > 0 && (
+                    <ChipStrip
+                      chips={chips[it.name]}
+                      enabled={applyRecs}
+                      skipped={isSkipped(it)}
+                      keepBoth={isKeepBoth(it)}
+                      onToggle={(key) => toggleChip(it.name, key)}
+                      onAdd={(key) => addChip(it.name, key)}
                     />
-                    <span>Apply author's recommended bindings</span>
-                  </label>
-                  <div className="templates-recs-subline deploy-muted">
-                    {applyRecs
-                      ? "Author of this bundle suggests file extensions for each template. Toggle chips to accept or reject."
-                      : "Bindings skipped — templates import as unbound. Bind later in File bindings tab."}
-                  </div>
-                </div>
-              )}
-              {validCount === 0 ? (
-                <div className="deploy-muted">
-                  No valid template folders found in this zip (each needs a{" "}
-                  <code>template.html</code>).
-                </div>
-              ) : (
-                <table className="templates-import-table">
-                  <tbody>
-                    {staged.items.map((it) => (
-                      <Fragment key={it.name}>
-                        <ImportRow
-                          item={it}
-                          resolution={resolutions[it.name] ?? "skip"}
-                          onResolution={(r) => setRes(it.name, r)}
-                        />
-                        {it.valid && (chips[it.name]?.length ?? 0) > 0 && (
-                          <ChipStrip
-                            item={it}
-                            chips={chips[it.name]}
-                            enabled={applyRecs}
-                            skipped={isSkipped(it)}
-                            keepBoth={isKeepBoth(it)}
-                            onToggle={(key) => toggleChip(it.name, key)}
-                            onAdd={(key) => addChip(it.name, key)}
-                          />
-                        )}
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                  )}
+                </Fragment>
+              ))}
+            </div>
+          )}
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </form>
       )}
 
       {step === "done" && result && (
-        <div className="templates-result">
+        <div className="space-y-1">
           <ResultLine label="Imported" names={result.imported} />
           <ResultLine
             label="Renamed"
@@ -307,18 +307,46 @@ export function ImportWizard({
           <ResultLine label="Skipped" names={result.skipped} />
           {(result.bindingsApplied?.length ?? 0) > 0 && (
             <>
-              <div className="templates-result-line">
-                <span className="deploy-muted">Bindings applied:</span>{" "}
-                {result.bindingsApplied!.length}
+              <div>
+                <Tiny>Bindings applied:</Tiny> {result.bindingsApplied!.length}
               </div>
-              <div className="templates-result-line templates-result-bindings">
-                {groupAppliedBindings(result.bindingsApplied!)}
-              </div>
+              <Identifier className="block whitespace-normal">{groupAppliedBindings(result.bindingsApplied!)}</Identifier>
             </>
           )}
         </div>
       )}
-    </Modal>
+    </TemplatesDialog>
+  );
+}
+
+// Tabs-like stepper: the current step is the filled pill, completed steps
+// show a check, upcoming steps are muted. Display-only — the wizard advances
+// by staging / committing, never by clicking a step.
+function Stepper({ current }: { current: WizardStep }) {
+  const idx = STEPS.findIndex((s) => s.id === current);
+  return (
+    <ol className="flex items-center gap-1" aria-label="Import steps">
+      {STEPS.map((s, i) => {
+        const state = i < idx ? "done" : i === idx ? "current" : "todo";
+        return (
+          <li key={s.id} className="flex items-center gap-1">
+            {i > 0 && <span className="h-px w-4 bg-border" aria-hidden />}
+            <Button
+              type="button"
+              size="xs"
+              variant={state === "current" ? "default" : "ghost"}
+              disabled={state !== "current"}
+              aria-current={state === "current" ? "step" : undefined}
+              className={cn(state === "todo" && "text-muted-foreground", state === "done" && "disabled:opacity-100")}
+              tabIndex={-1}
+            >
+              {state === "done" ? <CheckIcon data-icon="inline-start" /> : <span className="tabular-nums">{i + 1}</span>}
+              {s.label}
+            </Button>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -339,8 +367,8 @@ function groupAppliedBindings(applied: { key: string; template: string }[]): str
 function ResultLine({ label, names }: { label: string; names: string[] }) {
   if (names.length === 0) return null;
   return (
-    <div className="templates-result-line">
-      <span className="deploy-muted">{label}:</span> {names.join(", ")}
+    <div>
+      <Tiny>{label}:</Tiny> {names.join(", ")}
     </div>
   );
 }
@@ -355,7 +383,6 @@ function isValidCustomKey(key: string): boolean {
 // non-interactive) when the master toggle is off or the template resolves to
 // skip — nothing is sent for those.
 function ChipStrip({
-  item,
   chips,
   enabled,
   skipped,
@@ -363,7 +390,6 @@ function ChipStrip({
   onToggle,
   onAdd,
 }: {
-  item: ImportItem;
   chips: BindingChip[];
   enabled: boolean;
   skipped: boolean;
@@ -391,92 +417,102 @@ function ChipStrip({
   const reEnabled = chips.filter((c) => c.status === "disabled" && c.on);
   const anyOn = chips.some((c) => c.on && (keepBoth || c.status !== "already-bound"));
 
+  const chipCls =
+    "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-mono text-xs transition-colors disabled:pointer-events-none";
+
   return (
-    <tr className={"templates-rec-strip" + (inert ? " inert" : "")}>
-      <td colSpan={3}>
-        <div className="templates-rec-row">
-          <span className="templates-rec-label">Recommended for:</span>
-          {chips.map((c) =>
-            // "already bound" only holds for the ORIGINAL name — under
-            // keep-both the copy lands renamed and unbound, so these chips
-            // become normal toggles (default ON, badge dropped).
-            c.status === "already-bound" && !keepBoth ? (
-              <span key={c.key} className="templates-rec-chip bound">
-                <span className="templates-rec-key">{c.key}</span>
-                <span className="templates-rec-badge bound">already bound</span>
-              </span>
-            ) : (
-              <button
-                key={c.key}
-                type="button"
-                className={"templates-rec-chip" + (c.on ? " on" : " off")}
-                onClick={() => onToggle(c.key)}
-                disabled={inert}
-                title={c.on ? "Click to skip binding " + c.key : "Click to bind " + c.key}
-              >
-                <span className="templates-rec-key">
-                  {c.on ? "✓ " : ""}
-                  {c.key}
-                </span>
-                {c.status === "disabled" && (
-                  <span className="templates-rec-badge disabled">disabled by you</span>
-                )}
-              </button>
-            ),
-          )}
-          {adding ? (
-            <input
-              type="text"
-              className={"templates-rec-add-input" + (draftErr ? " err" : "")}
-              value={draft}
-              placeholder=".ext or dir/"
-              autoFocus
-              onChange={(e) => {
-                setDraft(e.target.value);
-                setDraftErr(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitDraft();
-                if (e.key === "Escape") {
-                  // Cancel the draft without letting the wizard's window-level
-                  // Escape handler close the whole modal.
-                  e.stopPropagation();
-                  setDraft("");
-                  setDraftErr(false);
-                  setAdding(false);
-                }
-              }}
-              onBlur={() => {
-                if (draft.trim() === "") {
-                  setAdding(false);
-                  setDraftErr(false);
-                }
-              }}
-            />
+    <div className={cn("border-b border-border bg-muted/30 px-4 py-2 last:border-b-0", inert && "opacity-50")}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Tiny className="mr-1">Recommended for:</Tiny>
+        {chips.map((c) =>
+          // "already bound" only holds for the ORIGINAL name — under
+          // keep-both the copy lands renamed and unbound, so these chips
+          // become normal toggles (default ON, badge dropped).
+          c.status === "already-bound" && !keepBoth ? (
+            <span key={c.key} className={cn(chipCls, "border-dashed border-border text-muted-foreground")}>
+              {c.key}
+              <Tiny className="font-sans">already bound</Tiny>
+            </span>
           ) : (
             <button
+              key={c.key}
               type="button"
-              className="templates-rec-chip add"
-              onClick={() => setAdding(true)}
+              aria-pressed={c.on}
+              className={cn(
+                chipCls,
+                c.on
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-transparent text-muted-foreground line-through hover:text-foreground",
+              )}
+              onClick={() => onToggle(c.key)}
               disabled={inert}
-              title="Bind an extra extension to this template"
+              title={c.on ? "Click to skip binding " + c.key : "Click to bind " + c.key}
             >
-              + add
+              {c.on && <CheckIcon className="size-3" />}
+              {c.key}
+              {c.status === "disabled" && (
+                <span className="font-sans text-[10px] opacity-80">disabled by you</span>
+              )}
             </button>
-          )}
-        </div>
-        {!inert && reEnabled.map((c) => (
-          <div key={c.key} className="templates-rec-warn">
-            Checking {c.key} re-enables an extension you disabled.
-          </div>
-        ))}
-        {!inert && keepBoth && anyOn && (
-          <div className="templates-rec-warn">
-            Will bind under the renamed copy — added after your existing templates on these extensions.
-          </div>
+          ),
         )}
-      </td>
-    </tr>
+        {adding ? (
+          <Input
+            type="text"
+            className="h-6 w-28 font-mono text-xs"
+            value={draft}
+            placeholder=".ext or dir/"
+            autoFocus
+            aria-invalid={draftErr || undefined}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setDraftErr(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitDraft();
+              }
+              if (e.key === "Escape") {
+                // Cancel the draft without letting the dialog's Escape handler
+                // close the whole wizard.
+                e.stopPropagation();
+                setDraft("");
+                setDraftErr(false);
+                setAdding(false);
+              }
+            }}
+            onBlur={() => {
+              if (draft.trim() === "") {
+                setAdding(false);
+                setDraftErr(false);
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className={cn(chipCls, "border-dashed border-border text-muted-foreground hover:border-solid hover:text-foreground")}
+            onClick={() => setAdding(true)}
+            disabled={inert}
+            title="Bind an extra extension to this template"
+          >
+            + add
+          </button>
+        )}
+      </div>
+      {!inert &&
+        reEnabled.map((c) => (
+          <WarnText key={c.key} className="mt-1">
+            Checking {c.key} re-enables an extension you disabled.
+          </WarnText>
+        ))}
+      {!inert && keepBoth && anyOn && (
+        <WarnText className="mt-1">
+          Will bind under the renamed copy — added after your existing templates on these extensions.
+        </WarnText>
+      )}
+    </div>
   );
 }
 
@@ -491,56 +527,40 @@ function ImportRow({
 }) {
   if (!item.valid) {
     return (
-      <tr className="templates-import-invalid">
-        <td className="templates-import-name">{item.name}</td>
-        <td colSpan={2} className="deploy-muted">
-          skipped — no <code>template.html</code>
-        </td>
-      </tr>
+      <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-sm text-muted-foreground last:border-b-0">
+        <span className="font-medium line-through">{item.name}</span>
+        <Tiny>
+          skipped — no <Identifier>template.html</Identifier>
+        </Tiny>
+      </div>
     );
   }
   return (
-    <tr>
-      <td className="templates-import-name">
-        {item.name}
-        <span className="deploy-muted"> · {item.fileCount} files</span>
-      </td>
-      <td>
+    <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-sm last:border-b-0">
+      <span className="font-medium">{item.name}</span>
+      <Tiny>{item.fileCount} files</Tiny>
+      <span className="ml-auto flex items-center gap-3">
         {item.conflictsExisting ? (
-          <span className="templates-pill warn">conflicts existing</span>
+          <>
+            <Badge variant="outline">conflicts existing</Badge>
+            <FilterGroup<ImportResolution>
+              ariaLabel={"Resolution for " + item.name}
+              value={resolution}
+              onChange={onResolution}
+              options={[
+                { value: "overwrite", label: "Overwrite", title: "Replace the existing folder (destructive)", className: "data-pressed:bg-destructive/15 data-pressed:text-destructive aria-pressed:bg-destructive/15 aria-pressed:text-destructive" },
+                { value: "skip", label: "Skip", title: "Keep the existing folder, drop this one" },
+                { value: "keep-both", label: "Keep both", title: "Land as a new -2 folder" },
+              ]}
+            />
+          </>
         ) : (
-          <span className="deploy-muted">new</span>
+          <>
+            <Tiny>new</Tiny>
+            <Tiny>will import</Tiny>
+          </>
         )}
-      </td>
-      <td>
-        {item.conflictsExisting ? (
-          <div className="templates-seg">
-            {(["overwrite", "skip", "keep-both"] as ImportResolution[]).map((r) => (
-              <button
-                key={r}
-                type="button"
-                className={
-                  "templates-seg-btn" +
-                  (resolution === r ? " active" : "") +
-                  (r === "overwrite" ? " danger" : "")
-                }
-                onClick={() => onResolution(r)}
-                title={
-                  r === "overwrite"
-                    ? "Replace the existing folder (destructive)"
-                    : r === "keep-both"
-                      ? "Land as a new -2 folder"
-                      : "Keep the existing folder, drop this one"
-                }
-              >
-                {r === "keep-both" ? "Keep both" : r === "overwrite" ? "Overwrite" : "Skip"}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <span className="deploy-muted">will import</span>
-        )}
-      </td>
-    </tr>
+      </span>
+    </div>
   );
 }

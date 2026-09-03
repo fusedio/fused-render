@@ -11,8 +11,8 @@
 //
 // **The outcome is SAID, not assumed — but through the global toast (D480),
 // not an inline note beside the button.** An inline `<span>` here used to sit
-// inside `.am-bench-share`, inside `.am-bench-headtools`, inside the
-// right-aligned `.am-section-head` row — so the instant a receipt like "Copied
+// inside the share slot, inside the heading's control row, inside the
+// right-aligned section heading — so the instant a receipt like "Copied
 // as an image" appeared, the whole control group got pushed left (measured:
 // the Metric `<select>`'s left edge jumped from x≈1183 to x≈962, ~220px) and
 // the button the reader had just pressed moved out from under their pointer.
@@ -24,7 +24,8 @@
 // already owns auto-dismiss (`lib/toast.ts`'s ~6s TTL), so there is no local
 // timer to keep in step with it here.
 import { useEffect, useRef, useState } from "react";
-import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Loader2Icon, Share2Icon } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
 import { pushToast } from "@platform/lib/toast";
 import {
   deliverShareCard,
@@ -91,23 +92,23 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
   return (
     // Icon-only, per the icon-buttons pass — "Share chart" (and, while busy,
     // "Preparing…") survives as `aria-label`/`title` rather than on screen,
-    // and the RECEIPT now travels as a toast rather than living on this row
-    // at all (see the file-top comment for why that moved). No wrapping
-    // `<span>` any more either: with the inline note gone this button is the
-    // whole control, so it sits directly in `.am-bench-headtools`'s flex row
-    // like the Metric select beside it, instead of inside a now-empty
-    // single-child flex box that existed only to hold the note.
-    <button
-      type="button"
-      className="cc-iconbtn"
+    // and the RECEIPT travels as a toast rather than living on this row at all
+    // (see the file-top comment for why that moved). No wrapping `<span>`
+    // either: with the inline note gone this button is the whole control, so it
+    // sits directly in the section heading's own control row like the Metric
+    // select beside it, instead of inside a now-empty single-child flex box
+    // that existed only to hold the note.
+    <Button
+      variant="ghost"
+      size="icon-xs"
       disabled={busy}
       title={busy ? "Preparing…" : "Save this chart, with your hardware, as a PNG you can share"}
       aria-label={busy ? "Preparing…" : "Share chart"}
       onClick={() => void share()}
     >
-      <span className={busy ? "am-icon-spin" : undefined}>
-        {busy ? MenuIcons.spinner : MenuIcons.share}
-      </span>
-    </button>
+      {/* The spin is motion-safe, so a reader who asked for reduced motion gets
+          a still spinner glyph rather than none at all. */}
+      {busy ? <Loader2Icon className="motion-safe:animate-spin" /> : <Share2Icon />}
+    </Button>
   );
 }

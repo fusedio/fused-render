@@ -1,6 +1,6 @@
 // The number beside a search result's name: which figure it is, what it
 // measures, and how the second one gets asked for. Read by the Local tab's
-// search face (local/RecommendedCard.tsx's `HubResultCard`).
+// search face (local/RecommendedRow.tsx's `HubResultRow`).
 //
 // There are TWO sizes on this page and they are not the same measurement.
 //

@@ -75,6 +75,8 @@ import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import { PageHeader } from "@platform/ui/flow/Typography";
+import { cn } from "@platform/lib/utils";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { basename } from "@platform/lib/format";
 import { opensElsewhere, tildePath } from "./tasks-lib";
@@ -108,12 +110,26 @@ type TabCtx = {
   gitTpl: TemplateEntry | null;
 };
 
+// The framed app / template: fills the panel's flex share, one hairline,
+// square corners (rounded-lg is 0px by the token contract).
+const FRAME = "min-h-0 w-full flex-1 rounded-lg border border-border bg-background";
+
+// The frame-column width story (memory: NEVER widen this): 1050px, the Tasks
+// page's own column cap (schedule.css), so the two pages line up. The head
+// shares it so the heading lines up with the tab strip and the frame.
+const COLUMN = "mx-auto w-[min(1050px,calc(100%-48px))]";
+
+// An empty panel's one sentence.
+function EmptyNote({ children }: { children: ReactNode }) {
+  return <p className="m-0 py-6 text-sm text-muted-foreground [&_a]:text-foreground [&_a]:underline">{children}</p>;
+}
+
 /** A folder template in a frame — the explorer's folder-peek shape
  *  (`/render?path=<template>&_file=<folder>`), no `_preview`: a real open. */
 function templateFrame(dir: string, tpl: TemplateEntry, title: string) {
   return (
     <iframe
-      className="app-page-frame"
+      className={FRAME}
       src={
         `/render?path=${encodeURIComponent(tpl.path as string)}` +
         `&_file=${encodeURIComponent(dir)}`
@@ -137,24 +153,33 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     keepMounted: true,
     render: ({ slug, entry, folderHref }) =>
       entry ? (
-        <div className="app-page-frame-wrap">
+        <div className="relative flex min-h-0 flex-1 flex-col">
           <iframe
-            className="app-page-frame"
+            className={FRAME}
             src={`/render?path=${encodeURIComponent(entry)}`}
             title={`App: ${slug}`}
           />
         </div>
       ) : (
-        <p className="app-page-empty">
+        <EmptyNote>
           This folder has no entry page yet.{" "}
           <a href={folderHref}>Open the folder</a> to see what is there.
-        </p>
+        </EmptyNote>
       ),
   },
   tasks: {
     label: "Tasks",
     Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
-    render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
+    // The nested Tasks page used to bring its own page padding and 1050px
+    // column, which inside the gutter frame read as a second gutter — so this
+    // wrapper reached in and zeroed them by class. It answers for itself now:
+    // a `scope` drops its own padding and page header, so the wrapper is only
+    // the flex column.
+    render: ({ dir }) => (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Scheduled scope={{ project: dir }} />
+      </div>
+    ),
   },
   files: {
     label: "Files",
@@ -180,9 +205,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       gitTpl ? (
         templateFrame(dir, gitTpl, `Git: ${slug}`)
       ) : (
-        <p className="app-page-empty">
-          This folder is not inside a git repository.
-        </p>
+        <EmptyNote>This folder is not inside a git repository.</EmptyNote>
       ),
   },
 };
@@ -429,25 +452,30 @@ export default function AppPage({
   };
 
   return (
-    <div className="app-page">
-      <header className="app-page-head">
-        <div className="app-page-title">
-          <h1>{slug}</h1>
-          {/* Reads as the folder and IS the folder: opens its listing in the
-              explorer. The app itself is the "Open app" button opposite. */}
-          <a className="app-page-folder" href={folderHref} title={dir}>
+    <div className="flex min-h-0 flex-1 flex-col bg-background text-foreground">
+      <PageHeader
+        className={cn(COLUMN, "items-center border-b-0 px-0 pt-3.5 pb-2.5")}
+        title={slug}
+        description={
+          /* Reads as the folder and IS the folder: opens its listing in the
+             explorer. The app itself is the "Open app" button opposite. */
+          <a
+            className="block truncate text-xs text-muted-foreground no-underline hover:text-foreground hover:underline"
+            href={folderHref}
+            title={dir}
+          >
             {tildePath(dir, home)}
           </a>
-        </div>
-        {entry && (
-          <div className="app-page-actions">
+        }
+        actions={
+          entry && (
+          <>
             {behind && resolved?.kind === "app" && (
               /* The app is on an older fused API than the runtime: one click
                  creates the migration task on its entry page, carrying the
                  changelog for every version being crossed. */
               <Button
                 size="sm"
-                className="app-page-migrate"
                 variant="outline"
                 disabled={!inProgress && migrateState !== "idle"}
                 title={
@@ -477,25 +505,27 @@ export default function AppPage({
             <Button
               size="sm"
               variant="outline"
-              className="app-page-open"
               onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
             >
               Open app
               <ExternalLink data-icon="inline-end" />
             </Button>
-          </div>
-        )}
-      </header>
+          </>
+          )
+        }
+      />
       {migrateError && (
-        <ErrorBanner>Could not create the migration task: {migrateError}</ErrorBanner>
+        <div className={COLUMN}>
+          <ErrorBanner>Could not create the migration task: {migrateError}</ErrorBanner>
+        </div>
       )}
 
-      <div className="app-page-body">
+      <div className={cn(COLUMN, "flex min-h-0 flex-1 flex-col gap-3.5 py-4")}>
         {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
             ctrl/middle-click on a trigger opens the address elsewhere without
             also switching this page. Real anchors under the triggers (base-ui's
             `render`), same reason as before — a tab is an address (D420). */}
-        <Tabs value={tab} className="app-page-tabs flex-none">
+        <Tabs value={tab} className="flex-none">
           <TabsList
             variant="line"
             aria-label="App page"
@@ -514,6 +544,9 @@ export default function AppPage({
                   nativeButton={false}
                   render={
                     <a
+                      // No underline on the anchor; NOT its colour — the
+                      // trigger's own state colours must win (Bugbot on #851).
+                      className="no-underline"
                       href={appPageUrl(dir, id, location.search)}
                       onClick={(e) => pickTab(e, id)}
                     />
@@ -547,11 +580,12 @@ export default function AppPage({
             const active = tab === id;
             if (!active && !def.keepMounted) return null;
             return (
+              // A `keepMounted` panel — the Overview — stays behind the active
+              // one as display:none (`hidden`), not unmounted, so the running
+              // app keeps its state.
               <section
                 key={id}
-                className={
-                  "app-page-panel app-page-" + id + (active ? "" : " is-hidden")
-                }
+                className={cn("flex min-h-0 flex-1 flex-col", !active && "hidden")}
                 role="tabpanel"
                 aria-hidden={!active}
               >

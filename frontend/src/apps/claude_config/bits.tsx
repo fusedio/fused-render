@@ -1,7 +1,7 @@
 // Shared pieces of the Claude-config app: the ONE list row every tab's items
 // render as (`ListRow`), the card/pill/group vocabulary around it, the
-// three-state toggle, the change-preview modal, the load-once-with-reload hook
-// every section uses, and the git-status hook the tab strip and the History
+// three-state toggle, the change-preview dialog, the load-once-with-reload hook
+// every section uses, and the git-status hook the header chip and the History
 // page share. They lived in ClaudeConfig.tsx; they sit here so a section and
 // the panel can both reach them without importing across pages.
 //
@@ -11,29 +11,50 @@
 // was written on a different day. So: one row, one toolbar, one skeleton
 // length, one empty-state shape.
 //
-// Nothing here re-invents something the shell already ships. Toasts are
-// @platform/lib/toast (the app-root NotificationHost surface — the original
-// app's own fixed-position #toast would have been a second one), the modal
-// chassis is @platform/ui/modal/Modal (focus trap, Esc, backdrop, portal),
-// loading is @platform/ui/Skeleton and failures @platform/ui/ErrorBanner. What
-// IS local is the vocabulary the old app invented — .card/.pill/.row/.group and
-// the tri-state switch — because no shell equivalent exists.
+// Flow design language (the .claude/skills/flow-design-language rules): every
+// piece here composes the shadcn primitives under @platform/shadcn/ui and the
+// flow composites under @platform/ui/flow. Colour is semantic tokens only, and
+// the only chromatic colour comes through status-colors.ts via StatusBadge /
+// StatusDot. Toasts are @platform/lib/toast (the app-root NotificationHost
+// surface).
 import {
   useCallback,
   useEffect,
   useId,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { ChevronDown, Plus, RefreshCw } from "lucide-react";
+import { cn } from "@platform/lib/utils";
 import { pushToast } from "@platform/lib/toast";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
+import {
+  Empty as EmptyRoot,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+} from "@platform/shadcn/ui/empty";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { EntityList } from "@platform/ui/flow/EntityRow";
+import { StatusBadge } from "@platform/ui/flow/StatusIcon";
+import { SectionHeading } from "@platform/ui/flow/Typography";
+import type { StatusBucket } from "@platform/ui/status-colors";
 import * as cc from "./api";
 import type { ChangePreview } from "./api";
 
 // Every section gets the same two capabilities: report that the on-disk config
-// changed (so the nav's git badge re-reads), and nothing else. Sections own
+// changed (so the header's git chip re-reads), and nothing else. Sections own
 // their own data and reload it themselves.
 export interface SectionProps {
   onChanged: () => void;
@@ -94,43 +115,56 @@ export function useModuleData<T>(load: () => Promise<T>): Loaded<T> {
 
 // -- layout vocabulary --------------------------------------------------------
 
+// The control reset for a bare `<button>` — one this app styles itself rather
+// than taking from the shadcn Button. Tailwind ships with no preflight here, so
+// tailwind.css does that reset in `@layer base`, but scoped to
+// `button[data-slot]`: a `<button>` without that attribute is left with the
+// browser's native widget painting (a grey fill and an outset border) UNDER
+// whatever utilities it wears, and `border-transparent` cannot stop it because
+// the native appearance is painted, not bordered. It goes FIRST in a `cn()`, so
+// a caller's own padding still wins over the `p-0` here (twMerge keeps the last
+// of two conflicting utilities).
+export const BARE_BUTTON =
+  "appearance-none border-0 bg-transparent p-0 [font:inherit] text-inherit";
+
+// A failure, in the same voice everywhere: shadcn's destructive Alert.
+export function ErrorNote({ children }: { children: ReactNode }) {
+  if (children == null || children === false) return null;
+  return (
+    <Alert variant="destructive">
+      <AlertDescription>{children}</AlertDescription>
+    </Alert>
+  );
+}
+
 export function Group({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
-    <div className="cc-group">
-      <h3 className="cc-group-title">{title}</h3>
+    <section className="space-y-2">
+      <SectionHeading>{title}</SectionHeading>
       {children}
-    </div>
+    </section>
   );
 }
 
-// A dir/path heading keeps its own casing and monospace (the CLAUDE.md tab's
-// groups are filesystem paths, not category names).
-export function PathGroup({ title, children }: { title: ReactNode; children: ReactNode }) {
+// A bordered, square-cornered card (Flow: cards are surfaces, so rounded-lg =
+// 0px). Used for the one-off statement blocks — the drift card, the inline
+// add forms — that are not lists.
+export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className="cc-group">
-      <h3 className="cc-group-title cc-group-path cc-mono">{title}</h3>
+    <div className={cn("border border-border rounded-lg bg-card px-4 py-3 space-y-1", className)}>
       {children}
     </div>
   );
-}
-
-export function Card({ children }: { children: ReactNode }) {
-  return <div className="cc-card">{children}</div>;
 }
 
 // One bordered card per list, rows inside it separated by hairlines rather
-// than free-floating on the page background — see claude-config.css's .cc-list
-// for the defect this fixes (a row's content stopping well short of the page's
-// full-bleed width, with a hairline running under the void it left).
+// than free-floating on the page background.
 export function List({ children }: { children: ReactNode }) {
-  return <div className="cc-list">{children}</div>;
+  return <EntityList>{children}</EntityList>;
 }
 
-// A list's loading state, in the same card shape it will resolve into —
-// shadcn's own Skeleton primitive rather than the app-wide shimmer-bar
-// pattern (SkeletonLines), so a list's "loading" and "loaded" states share one
-// silhouette instead of a generic bar block that vanishes into a differently
-// shaped card once the rows land.
+// A list's loading state, in the same card shape it will resolve into, so a
+// list's "loading" and "loaded" states share one silhouette.
 export function ListSkeleton({
   rows = SKELETON_ROWS,
   label = "Loading",
@@ -139,38 +173,40 @@ export function ListSkeleton({
   label?: string;
 }) {
   return (
-    <div className="cc-list" role="status" aria-busy="true" aria-label={label}>
+    <EntityList role="status" aria-busy="true" aria-label={label}>
       {Array.from({ length: rows }, (_, i) => (
-        <div className="cc-lrow" key={i}>
-          <div className="cc-lrow-line">
-            {/* Skeleton's own default fill is shadcn's bg-muted — the
-                Tailwind grayscale palette, not this app's tokens. In light
-                theme that resolves within ~1% contrast of .cc-list's own
-                --bg-alt, so every list's loading state was an empty bordered
-                card. --border is what every hairline in this app already
-                uses for "visible against --bg-alt in both themes". */}
-            <Skeleton className="h-3 w-28 shrink-0 rounded-full bg-[var(--border)]" />
-            <Skeleton className="h-3 w-full max-w-64 rounded-full bg-[var(--border)]" />
-          </div>
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0" key={i}>
+          <Skeleton className="h-3 w-28 shrink-0 rounded-full" />
+          <Skeleton className="h-3 w-full max-w-64 rounded-full" />
         </div>
       ))}
-    </div>
+    </EntityList>
   );
 }
 
 export function CardTitle({ children, mono }: { children: ReactNode; mono?: boolean }) {
-  return <div className={"cc-card-title" + (mono ? " cc-mono" : "")}>{children}</div>;
+  return (
+    <div className={cn("text-sm font-medium flex items-center gap-2", mono && "font-mono text-xs")}>
+      {children}
+    </div>
+  );
 }
 
 export function CardSub({ children, mono }: { children: ReactNode; mono?: boolean }) {
-  return <div className={"cc-card-sub" + (mono ? " cc-mono" : "")}>{children}</div>;
+  return <div className={cn("text-sm text-muted-foreground", mono && "font-mono text-xs")}>{children}</div>;
 }
 
 export function CardActions({ children }: { children: ReactNode }) {
-  return <div className="cc-card-actions">{children}</div>;
+  return <div className="flex flex-wrap items-center gap-2 pt-2">{children}</div>;
 }
 
-// A settings row: label + doc on the left, control on the right.
+// Inline code inside prose: a command, a key, a filename.
+export function Code({ children }: { children: ReactNode }) {
+  return <span className="font-mono text-xs">{children}</span>;
+}
+
+// A settings row: label + doc on the left, control on the right. Rows stack
+// inside a <List>, which draws the shared border.
 export function Row({
   label,
   doc,
@@ -181,12 +217,16 @@ export function Row({
   control: ReactNode;
 }) {
   return (
-    <div className="cc-row">
-      <div className="cc-row-meta">
-        <div className="cc-row-label">{label}</div>
-        {doc ? <div className="cc-row-doc">{doc}</div> : null}
+    // Stacked below `sm`, two columns above it — the breakpoint the deleted
+    // claude-config.css carried for this row. A 240px control column crushed
+    // into a narrow window is illegible, and the label is the half that has
+    // somewhere to go.
+    <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6 px-4 py-2.5 text-sm border-b border-border last:border-b-0">
+      <div className="min-w-0 max-w-prose">
+        <div className="font-medium">{label}</div>
+        {doc ? <div className="text-xs text-muted-foreground mt-0.5">{doc}</div> : null}
       </div>
-      <div className="cc-row-control">{control}</div>
+      <div className="flex items-center gap-2 shrink-0">{control}</div>
     </div>
   );
 }
@@ -197,10 +237,12 @@ export function Row({
 // each section remembers to add.
 export function Empty({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
-    <div className="cc-empty">
-      <div>{children}</div>
-      {action ? <div className="cc-empty-action">{action}</div> : null}
-    </div>
+    <EmptyRoot className="border border-dashed border-border py-8">
+      <EmptyHeader>
+        <EmptyDescription>{children}</EmptyDescription>
+      </EmptyHeader>
+      {action ? <EmptyContent>{action}</EmptyContent> : null}
+    </EmptyRoot>
   );
 }
 
@@ -208,9 +250,7 @@ export function Empty({ children, action }: { children: ReactNode; action?: Reac
 
 // The header row every tab opens with: a plain summary of what you are looking
 // at on the left, the tab's own controls, then — in the same slot on every tab —
-// the refresh icon. Before this, each tab hand-rolled its own header, which is
-// how MCP ended up with a text `Refresh` button INSIDE its add-a-server form,
-// where refreshing has nothing to do with adding.
+// the refresh icon.
 //
 // `summary` is deliberately a fact and not a title ("12 marketplaces", "4
 // servers · 3 connected"): the caption above already names the file, and the tab
@@ -219,8 +259,8 @@ export function SectionToolbar({
   summary,
   children,
   onRefresh,
-  // Override only where "refresh" is the wrong word for the same act (MD Files
-  // re-runs a filesystem scan; Statusline re-runs the preview command).
+  // Override only where "refresh" is the wrong word for the same act
+  // (Statusline re-runs the preview command).
   refreshLabel = "Refresh",
   refreshBusy,
 }: {
@@ -238,35 +278,28 @@ export function SectionToolbar({
   refreshBusy?: boolean;
 }) {
   return (
-    <div className="cc-toolbar">
-      <span className="cc-summary" title={typeof summary === "string" ? summary : undefined}>
+    <div className="flex flex-wrap items-center gap-2 min-h-8">
+      <span
+        className="text-sm text-muted-foreground truncate min-w-0"
+        title={typeof summary === "string" ? summary : undefined}
+      >
         {summary}
       </span>
-      {/* Every control after the summary travels as ONE flex item — see
-          .cc-toolbar-controls in claude-config.css. That is what stops the
-          toolbar wrapping into a ragged stack at a narrow width: the summary
-          drops to its own line first, and the controls keep their single row
-          for as long as there is room for any of them. `-solo` (no children,
-          just the refresh icon — Memory, Skills) is the one exception: at a
-          narrow width the base rule still forces the summary onto its own
-          full line even though a single icon button had room to share it,
-          which read as a dead row under "10 skill(s)". The modifier lets the
-          narrow media query recognize that case and keep them together. */}
       {(children || onRefresh) && (
-        <div className={"cc-toolbar-controls" + (children ? "" : " cc-toolbar-controls-solo")}>
+        <div className="ml-auto flex items-center gap-2">
           {children}
           {onRefresh && (
-            <button
-              type="button"
-              className="cc-iconbtn"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
               aria-label={refreshLabel}
               aria-busy={refreshBusy || undefined}
               disabled={refreshBusy}
               onClick={onRefresh}
             >
-              <Icon name="refresh" />
-            </button>
+              <RefreshCw className={cn(refreshBusy && "motion-safe:animate-spin")} />
+            </Button>
           )}
         </div>
       )}
@@ -274,11 +307,8 @@ export function SectionToolbar({
   );
 }
 
-// The toolbar control that opens an add form inline above the list. Three tabs
-// (Marketplaces, MCP, Profiles) used to OPEN with their add form expanded —
-// Profiles with two of them stacked — so the content you came for started half
-// a page down on a tab you mostly visit to look at what's already there.
-// Adding is the rarer act, so it asks first, and the same button cancels.
+// The toolbar control that opens an add form inline above the list. Adding is
+// the rarer act, so it asks first, and the same button cancels.
 export function DisclosureButton({
   open,
   controls,
@@ -293,26 +323,23 @@ export function DisclosureButton({
   onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className={"btn" + (open ? " cc-btn-on" : "")}
+    <Button
+      variant={open ? "secondary" : "outline"}
+      size="sm"
       aria-expanded={open}
       aria-controls={controls}
       onClick={onToggle}
     >
-      {open ? "Cancel" : <><Icon name="plus" />{label}</>}
-    </button>
+      {open ? "Cancel" : <><Plus />{label}</>}
+    </Button>
   );
 }
 
 // -- one list row -------------------------------------------------------------
 
-// Every list in this app renders through this: Plugins, Marketplaces, Skills,
-// MCP, Profiles, Memory and History's log. (MD Files keeps its card grid —
-// browse-and-preview is a different job — and Preferences keeps .cc-row, which
-// is label-plus-control, not an item.) Before this there were four shapes for
-// one job, which is four sets of paddings, fonts and action placements for the
-// user to re-learn per tab.
+// Every list in this app renders through this: Plugins, Skills, MCP, Profiles,
+// Memory and History's log. (Preferences keeps <Row>, which is label-plus-
+// control, not an item.)
 //
 // One line AT REST, never wrapping, so every row is the same height and twenty
 // of them can be scanned. But one line must not mean information thrown away:
@@ -326,6 +353,9 @@ export function DisclosureButton({
 // ARIA expects of two buttons controlling one region. The open state is the
 // row's own — a tab change remounts the section, so it resets by construction
 // and never belongs in the URL.
+//
+// Local rather than the flow EntityRow: that composite is a single flex line
+// and cannot host the details panel under it.
 export function ListRow({
   lead,
   name,
@@ -336,9 +366,9 @@ export function ListRow({
   // Hover text for the ellipsized secondary: the inline text may be cut, so the
   // full string stays reachable without expanding.
   secondaryTitle,
-  // One extra class on the secondary. Exists for exactly one case — a PATH,
-  // which must ellipsize from the left so the tail survives (MD Files).
-  secondaryClass,
+  // Clamp the secondary to two lines instead of one (Skills, Memory — where the
+  // description IS the content).
+  secondaryClamp2,
   meta,
   actions,
   details,
@@ -350,7 +380,7 @@ export function ListRow({
   secondary?: ReactNode;
   secondaryMono?: boolean;
   secondaryTitle?: string;
-  secondaryClass?: string;
+  secondaryClamp2?: boolean;
   meta?: ReactNode;
   actions?: ReactNode;
   details?: ReactNode;
@@ -361,15 +391,19 @@ export function ListRow({
 
   const inner = (
     <>
-      {name != null && <span className={"cc-lrow-name" + (nameMono ? " cc-mono" : "")}>{name}</span>}
+      {name != null && (
+        <span className={cn("font-medium shrink-0 truncate max-w-[40%]", nameMono && "font-mono text-xs")}>
+          {name}
+        </span>
+      )}
       {pills}
       {secondary != null && (
         <span
-          className={
-            "cc-lrow-sub" +
-            (secondaryMono ? " cc-mono" : "") +
-            (secondaryClass ? " " + secondaryClass : "")
-          }
+          className={cn(
+            "text-muted-foreground min-w-0",
+            secondaryClamp2 ? "line-clamp-2 text-xs" : "truncate",
+            secondaryMono && "font-mono text-xs",
+          )}
           title={secondaryTitle}
         >
           {secondary}
@@ -378,17 +412,27 @@ export function ListRow({
     </>
   );
 
+  const bodyCls = "flex-1 min-w-0 flex items-center gap-2 text-left text-sm";
+
   return (
-    <div className={"cc-lrow" + (open ? " open" : "")}>
-      <div className="cc-lrow-line">
+    <div className="border-b border-border last:border-b-0 group/row">
+      <div className="flex items-center gap-3 px-4 py-2 min-h-10">
         {/* A fixed-width slot rather than the control's own natural width —
             it keeps a lead control (Toggle3) from becoming the loudest thing
             on the line just because it happens to be the widest. */}
-        {lead != null && <span className="cc-lrow-lead">{lead}</span>}
+        {lead != null && <span className="shrink-0 flex items-center w-8">{lead}</span>}
         {details ? (
           <button
             type="button"
-            className="cc-lrow-body"
+            // A bare <button>, so it carries the control reset itself: the
+            // base layer's is scoped to `button[data-slot]` (the shadcn
+            // primitives) and this element is not one, which without the reset
+            // leaves Chrome painting its native grey widget under the row.
+            className={cn(
+              BARE_BUTTON,
+              bodyCls,
+              "cursor-pointer rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            )}
             aria-expanded={open}
             aria-controls={panelId}
             onClick={toggle}
@@ -396,32 +440,57 @@ export function ListRow({
             {inner}
           </button>
         ) : (
-          <span className="cc-lrow-body cc-lrow-body-flat">{inner}</span>
+          <span className={bodyCls}>{inner}</span>
         )}
-        {meta}
-        <div className="cc-lrow-actions">
-          {actions}
-          {details && (
-            <button
-              type="button"
-              className="cc-iconbtn cc-lrow-chev"
-              aria-expanded={open}
-              aria-controls={panelId}
-              aria-label={open ? "Hide details" : "Show details"}
-              title={open ? "Hide details" : "Show details"}
-              onClick={toggle}
-            >
-              <Icon name="chevron" />
-            </button>
-          )}
-        </div>
+        {meta != null && (
+          <span className="shrink-0 flex items-center gap-3 text-xs text-muted-foreground">{meta}</span>
+        )}
+        {(actions || details) && (
+          <div className="shrink-0 flex items-center gap-1">
+            {actions}
+            {details && (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-expanded={open}
+                aria-controls={panelId}
+                aria-label={open ? "Hide details" : "Show details"}
+                title={open ? "Hide details" : "Show details"}
+                onClick={toggle}
+              >
+                <ChevronDown className={cn("motion-safe:transition-transform", open && "rotate-180")} />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       {details && open && (
-        <div className="cc-lrow-details" id={panelId}>
+        <div className="px-4 pb-3 pt-1 text-sm space-y-2" id={panelId}>
           {details}
         </div>
       )}
     </div>
+  );
+}
+
+// Meta text inside a ListRow's `meta` slot: tiny, muted, optionally mono.
+// `title` is for the callers that clip it to a fixed column — the hover text is
+// what keeps the full value reachable once the inline one ellipsizes.
+export function Meta({
+  children,
+  mono,
+  className,
+  title,
+}: {
+  children: ReactNode;
+  mono?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <span className={cn("text-xs text-muted-foreground", mono && "font-mono", className)} title={title}>
+      {children}
+    </span>
   );
 }
 
@@ -430,10 +499,22 @@ export function ListRow({
 // the section that day.
 export const SKELETON_ROWS = 4;
 
+// -- pills --------------------------------------------------------------------
+
+// neutral = a fact ("default", "not installed"); on = healthy/active; ro =
+// waiting on the user (read-only, drift, needs auth); err = broken. The three
+// chromatic tones are status buckets, single-sourced in status-colors.ts.
 export type PillTone = "neutral" | "on" | "ro" | "err";
 
+const TONE_BUCKET: Record<Exclude<PillTone, "neutral">, StatusBucket> = {
+  on: "green",
+  ro: "orange",
+  err: "red",
+};
+
 export function Pill({ tone = "neutral", children }: { tone?: PillTone; children: ReactNode }) {
-  return <span className={"cc-pill cc-pill-" + tone}>{children}</span>;
+  if (tone === "neutral") return <Badge variant="secondary">{children}</Badge>;
+  return <StatusBadge bucket={TONE_BUCKET[tone]}>{children}</StatusBadge>;
 }
 
 // -- three-state toggle -------------------------------------------------------
@@ -446,9 +527,10 @@ export function Pill({ tone = "neutral", children }: { tone?: PillTone; children
 //     position, so the page states what Claude will actually do, but stays
 //     dashed and muted so it reads as inherited rather than chosen. The
 //     "Claude default" text beside it is what carries set-vs-unset in words.
-//   * we don't -> `value: null`, the indeterminate middle. Reserved for
-//     genuinely not knowing. (`indeterminate` has no JSX attribute — it is a DOM
-//     property only — hence the ref write.)
+//   * we don't -> `value: null`, the unknown middle. Reserved for genuinely not
+//     knowing. A role="switch" has no indeterminate state, so this renders as
+//     the same dashed, muted treatment at the off position and the caller's
+//     sr-only text carries the fact in words.
 export function Toggle3({
   value,
   label,
@@ -456,7 +538,7 @@ export function Toggle3({
   inherited,
   onChange,
 }: {
-  // null = unset with no known default (renders indeterminate).
+  // null = unset with no known default.
   value: boolean | null;
   label: string;
   disabled?: boolean;
@@ -465,26 +547,21 @@ export function Toggle3({
   inherited?: boolean;
   onChange: (next: boolean) => void;
 }) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = value === null;
-  }, [value]);
+  const muted = inherited || value === null;
   return (
-    <span className={"cc-switch" + (inherited ? " inherited" : "")}>
-      <input
-        ref={ref}
-        type="checkbox"
-        aria-label={label}
-        checked={value === true}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span className="cc-slider" aria-hidden="true" />
-    </span>
+    <Switch
+      size="sm"
+      aria-label={label}
+      data-inherited={muted || undefined}
+      checked={value === true}
+      disabled={disabled}
+      onCheckedChange={(next) => onChange(next)}
+      className={cn(muted && "border-dashed border-muted-foreground opacity-70 data-checked:bg-primary/50")}
+    />
   );
 }
 
-// -- change-preview modal -----------------------------------------------------
+// -- change-preview dialog ----------------------------------------------------
 
 export interface PreviewButton<T> {
   label: string;
@@ -508,8 +585,12 @@ interface AskState {
   resolve: (v: unknown) => void;
 }
 
-// An imperative confirm/preview modal: `await ask({...})` resolves the clicked
-// button's value, or `false` if the modal was dismissed (Esc / backdrop / ✕).
+// git status letters → status bucket: added is fresh, modified is in flight,
+// deleted is gone. Anything else (renamed, untracked) stays neutral.
+const FSTAT_BUCKET: Record<string, StatusBucket> = { A: "green", M: "yellow", D: "red" };
+
+// An imperative confirm/preview dialog: `await ask({...})` resolves the clicked
+// button's value, or `false` if the dialog was dismissed (Esc / backdrop / ✕).
 // Promise-shaped rather than declarative because the flows it serves are
 // sequential — a profile switch previews, then may ask to commit first, then
 // switches — and expressing that as nested render state would scatter one
@@ -541,50 +622,56 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
   const hasDiff = files.length > 0 || settings.length > 0;
 
   const node = (
-    <Modal
-      title={title}
-      width={620}
-      onClose={() => settle(false)}
-      footer={buttons.map((b) => (
-        <button
-          key={b.label}
-          type="button"
-          className={
-            "btn" + (b.primary ? (b.danger ? " btn-danger" : " btn-primary") : "")
-          }
-          onClick={() => settle(b.value)}
-        >
-          {b.label}
-        </button>
-      ))}
-    >
-      {note ? <p className="cc-note">{note}</p> : null}
-      {settings.length > 0 && (
-        <>
-          <h4 className="cc-delta-head">Settings changes</h4>
-          {settings.map((d) => (
-            <div className="cc-delta" key={d.key}>
-              <span className="cc-delta-key">{d.key}</span>{" "}
-              <span className="cc-delta-fromto cc-mono">
-                {JSON.stringify(d.from)} → {JSON.stringify(d.to)}
-              </span>
+    <Dialog open onOpenChange={(o) => !o && settle(false)}>
+      <DialogContent className="sm:max-w-[620px]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {note ? <DialogDescription>{note}</DialogDescription> : null}
+        </DialogHeader>
+        {settings.length > 0 && (
+          <div className="space-y-1">
+            <SectionHeading className="text-xs">Settings changes</SectionHeading>
+            {settings.map((d) => (
+              <div className="flex items-baseline gap-2 text-sm" key={d.key}>
+                <span className="font-medium">{d.key}</span>
+                <span className="font-mono text-xs text-muted-foreground truncate">
+                  {JSON.stringify(d.from)} → {JSON.stringify(d.to)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {files.length > 0 && (
+          <div className="space-y-1">
+            <SectionHeading className="text-xs">Files</SectionHeading>
+            {/* The same bordered log block Statusline's preview uses — see the
+                note there for why the fill alone isn't enough in dark. */}
+            <div className="border border-border bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200 space-y-0.5 max-h-64 overflow-y-auto">
+              {files.map((f) => (
+                <div className="flex items-baseline gap-2" key={f.status + f.path}>
+                  <StatusBadge bucket={FSTAT_BUCKET[f.status] ?? "neutral"} className="font-mono w-6 justify-center px-0">
+                    {f.status}
+                  </StatusBadge>
+                  <span className="truncate">{f.path}</span>
+                </div>
+              ))}
             </div>
+          </div>
+        )}
+        {!hasDiff && !note && <Empty>No changes.</Empty>}
+        <DialogFooter>
+          {buttons.map((b) => (
+            <Button
+              key={b.label}
+              variant={b.primary ? (b.danger ? "destructive" : "default") : "outline"}
+              onClick={() => settle(b.value)}
+            >
+              {b.label}
+            </Button>
           ))}
-        </>
-      )}
-      {files.length > 0 && (
-        <>
-          <h4 className="cc-delta-head">Files</h4>
-          {files.map((f) => (
-            <div className="cc-delta" key={f.status + f.path}>
-              <span className={"cc-fstat cc-fstat-" + f.status}>{f.status}</span>{" "}
-              <span className="cc-mono">{f.path}</span>
-            </div>
-          ))}
-        </>
-      )}
-      {!hasDiff && !note && <Empty>No changes.</Empty>}
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
   return { node, ask };
 }
@@ -601,10 +688,10 @@ export interface GitStatusState {
 }
 
 // One `git status` read per epoch, shared by the two places that need it: the
-// tab strip's History button (which only renders the dirty dot) and the History
-// page's "Uncommitted changes" card (which acts on it). A hook rather than a
-// component because those two render the same fact completely differently, and
-// the thing worth sharing is the fetch — one status call per epoch, no more.
+// header's git chip (which only renders the dirty dot) and the History page's
+// "Uncommitted changes" card (which acts on it). A hook rather than a component
+// because those two render the same fact completely differently, and the thing
+// worth sharing is the fetch — one status call per epoch, no more.
 export function useGitStatus(epoch: number): GitStatusState {
   const [status, setStatus] = useState<cc.GitStatus | null>(null);
   const [failed, setFailed] = useState(false);
@@ -643,114 +730,4 @@ export function fileToB64(file: File): Promise<string> {
     r.onerror = () => reject(new Error("could not read file"));
     r.readAsDataURL(file);
   });
-}
-
-// Feather-style stroke icons for the card actions. stroke=currentColor so each
-// one inherits its button's text colour, including a danger hover.
-export function Icon({
-  name,
-}: {
-  name:
-    | "edit"
-    | "eye"
-    | "folder"
-    | "trash"
-    | "refresh"
-    | "clock"
-    | "copy"
-    | "chevron"
-    | "plus"
-    | "undo"
-    | "info"
-    | "kebab"
-    | "check";
-}) {
-  const paths: Record<string, ReactNode> = {
-    // The Preferences unset-value hint (title= carries the actual text —
-    // see .cc-row-hint in claude-config.css for why it isn't inline text).
-    info: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <line x1="12" y1="11" x2="12" y2="16" />
-        <line x1="12" y1="8" x2="12.01" y2="8" />
-      </>
-    ),
-    // Memory's per-project Commit — a plain checkmark, distinct from the
-    // trash (Clear) and folder (Reveal) glyphs beside it.
-    check: <polyline points="20 6 9 17 4 12" />,
-    // Per-marketplace menu, in the Plugins rail. One trailing slot for every
-    // action a row has, in place of the two icon buttons and the read-only
-    // lock that used to sit there — three glyphs' worth of a 180px column,
-    // spent on a row whose main job is to show a name and a count.
-    kebab: (
-      <>
-        <circle cx="12" cy="5" r="1.4" />
-        <circle cx="12" cy="12" r="1.4" />
-        <circle cx="12" cy="19" r="1.4" />
-      </>
-    ),
-    // The Preferences "reset to default" ghost icon button — a corner-arrow
-    // undo, deliberately not the refresh icon's rotation glyph, so the two
-    // don't read as the same action.
-    undo: (
-      <>
-        <polyline points="9 14 4 9 9 4" />
-        <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
-      </>
-    ),
-    // Points down at rest; .cc-lrow.open rotates it (CSS, so no second glyph).
-    chevron: <polyline points="6 9 12 15 18 9" />,
-    plus: (
-      <>
-        <line x1="12" y1="5" x2="12" y2="19" />
-        <line x1="5" y1="12" x2="19" y2="12" />
-      </>
-    ),
-    clock: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <polyline points="12 7 12 12 15.5 14" />
-      </>
-    ),
-    copy: (
-      <>
-        <rect x="9" y="9" width="12" height="12" rx="2" />
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-      </>
-    ),
-    edit: <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />,
-    eye: (
-      <>
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-        <circle cx="12" cy="12" r="3" />
-      </>
-    ),
-    folder: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,
-    trash: (
-      <>
-        <polyline points="3 6 5 6 21 6" />
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      </>
-    ),
-    refresh: (
-      <>
-        <polyline points="23 4 23 10 17 10" />
-        <path d="M20.5 15a9 9 0 1 1-2.6-9.4L23 10" />
-      </>
-    ),
-  };
-  return (
-    <svg
-      className="cc-icon"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {paths[name]}
-    </svg>
-  );
 }

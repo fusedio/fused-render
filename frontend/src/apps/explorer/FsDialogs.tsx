@@ -1,6 +1,5 @@
-// Small modal dialogs for the explorer's file operations, reusing the Deploy
-// modal's overlay/dialog chrome (.deploy-* in shell.css) — same pattern as
-// views/Mounts.tsx's Modal. Two shapes:
+// Small modal dialogs for the explorer's file operations, on the shadcn
+// Dialog. Two shapes:
 //   • PromptDialog — a single prefilled text input for New File / New Folder /
 //     Rename. Enter confirms, Escape (or a backdrop click) cancels. The name is
 //     validated inline: non-empty and no "/" (a rename can't move across dirs).
@@ -10,6 +9,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
 
 // Validate a single path SEGMENT (a file/folder name, never a path). Returns an
 // inline error message or null when the (already-trimmed) name is usable. Beyond
@@ -48,11 +57,18 @@ function useDialogClose(onCancel: () => void) {
   return { closing, close };
 }
 
-function Overlay({
+// The shared frame: `open` flips false the moment a close is requested, so the
+// Dialog plays its exit inside the deferred window before the caller unmounts
+// it. Escape is caught at the window in the CAPTURE phase so it beats the
+// listing's document-level key handlers (the primitive's own Escape handling
+// does not stop propagation).
+function Frame({
+  title,
   onCancel,
   closing,
   children,
 }: {
+  title: string;
   onCancel: () => void;
   closing: boolean;
   children: ReactNode;
@@ -64,27 +80,31 @@ function Overlay({
         onCancel();
       }
     };
-    // Capture so this beats the listing's document-level key handlers.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onCancel]);
 
   return (
-    <div
-      className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel();
+    <Dialog
+      open={!closing}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
       }}
     >
-      <div
-        className="modal-dialog deploy-dialog fs-dialog"
-        role="dialog"
-        aria-modal="true"
+      <DialogContent
+        className="sm:max-w-sm"
+        // Every key inside stays inside: the listing's document-level handlers
+        // (Enter opens the selected row, Cmd+Backspace trashes it) must not
+        // fire behind the dialog. Each dialog's own Enter logic runs first.
+        onKeyDown={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
         {children}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -112,14 +132,19 @@ export function PromptDialog({
 
   // Focus on open, preselecting the stem (name without extension) for a rename
   // and the whole value otherwise. Reads `initialValue`, never the live `value`,
-  // so it doesn't reselect on every keystroke.
+  // so it doesn't reselect on every keystroke. Deferred a frame: the popup
+  // mounts through a portal and the primitive moves focus into it on open, so
+  // a synchronous focus() here would be overridden.
   useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    const dot = initialValue.lastIndexOf(".");
-    if (selectStem && dot > 0) el.setSelectionRange(0, dot);
-    else el.select();
+    const id = requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      const dot = initialValue.lastIndexOf(".");
+      if (selectStem && dot > 0) el.setSelectionRange(0, dot);
+      else el.select();
+    });
+    return () => cancelAnimationFrame(id);
   }, [initialValue, selectStem]);
 
   const trimmed = value.trim();
@@ -131,18 +156,12 @@ export function PromptDialog({
   };
 
   return (
-    <Overlay onCancel={cancel} closing={closing}>
-      <div className="modal-head deploy-head">
-        <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={cancel} aria-label="Close">
-          ✕
-        </button>
-      </div>
-      <div className="modal-body deploy-body">
-        <input
+    <Frame title={title} onCancel={cancel} closing={closing}>
+      <div className="space-y-3">
+        <Input
           ref={inputRef}
-          className="fs-dialog-input"
           value={value}
+          aria-invalid={!!error && trimmed !== ""}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -156,16 +175,16 @@ export function PromptDialog({
           }}
         />
         {error && trimmed !== "" && <ErrorBanner>{error}</ErrorBanner>}
-        <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={cancel}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-primary" disabled={!!error} onClick={submit}>
-            {confirmLabel}
-          </button>
-        </div>
       </div>
-    </Overlay>
+      <DialogFooter>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+        <Button disabled={!!error} onClick={submit}>
+          {confirmLabel}
+        </Button>
+      </DialogFooter>
+    </Frame>
   );
 }
 
@@ -189,24 +208,18 @@ export function ConfirmDialog({
   const cancel = () => close(onCancel);
   const confirm = () => close(onConfirm);
 
-  // Move focus into the modal on open so the confirm button owns Enter/Space —
-  // otherwise focus stays on document.body and the listing's document-level
-  // handlers (Enter to open a row, Cmd+Backspace to trash) fire behind the
-  // dialog. Escape is contained by Overlay's capture-phase listener.
+  // Move focus onto the confirm button on open so it owns Enter/Space —
+  // otherwise the primitive's initial focus lands on the first tabbable
+  // (Cancel) and Enter would dismiss. Deferred a frame for the same portal
+  // reason as PromptDialog's focus.
   useEffect(() => {
-    confirmRef.current?.focus();
+    const id = requestAnimationFrame(() => confirmRef.current?.focus());
+    return () => cancelAnimationFrame(id);
   }, []);
 
   return (
-    <Overlay onCancel={cancel} closing={closing}>
-      <div className="modal-head deploy-head">
-        <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={cancel} aria-label="Close">
-          ✕
-        </button>
-      </div>
+    <Frame title={title} onCancel={cancel} closing={closing}>
       <div
-        className="modal-body deploy-body"
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             // Contain the Enter so it can't reach the listing's document-level
@@ -220,21 +233,16 @@ export function ConfirmDialog({
           }
         }}
       >
-        <p>{message}</p>
-        <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={cancel}>
-            Cancel
-          </button>
-          <button
-            ref={confirmRef}
-            type="button"
-            className={"btn " + (danger ? "btn-danger" : "btn-primary")}
-            onClick={confirm}
-          >
-            {confirmLabel}
-          </button>
-        </div>
+        <DialogDescription>{message}</DialogDescription>
       </div>
-    </Overlay>
+      <DialogFooter>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+        <Button ref={confirmRef} variant={danger ? "destructive" : "default"} onClick={confirm}>
+          {confirmLabel}
+        </Button>
+      </DialogFooter>
+    </Frame>
   );
 }

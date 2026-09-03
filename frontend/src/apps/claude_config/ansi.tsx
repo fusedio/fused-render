@@ -2,18 +2,16 @@
 // the basic foreground colours, so the preview reads the way the terminal does.
 // Unknown codes are ignored (a statusline is not a terminal emulator).
 //
-// The original app mapped each code to a hardcoded hex tuned for its own dark
-// canvas. Here a code maps to a CLASS instead, and styles/claude-config.css
-// resolves that class to a shell palette token — so the preview follows
-// light/dark like everything else on the page, and no colour literal has to
-// live in a stylesheet (tests/test_theme.py).
-//
-// Consequence worth stating: the bright variants (90–97) resolve to the same
-// eight hues as their normal counterparts. The shell palette has one token per
-// hue, and inventing a second tier of them for a status-line preview would add
-// sixteen tokens to the app's vocabulary to encode a distinction almost no
-// statusline draws. `bold` still separates emphasis from plain.
+// A code maps to Tailwind classes, not a hex: the preview sits in the dark
+// log-viewer block (bg-neutral-950), so the hues are the status-colour buckets
+// from status-colors.ts where a bucket exists (red / green / yellow / blue) and
+// neutral greys otherwise. Cyan borrows the blue bucket (its nearest hue);
+// magenta has no bucket and no neutral home, so it renders as the base text —
+// bold/dim still separate it from plain. The bright variants (90–97) resolve
+// to the same hues as their normal counterparts; the block is always dark, so
+// there is no light-theme tier to pick from.
 import type { ReactNode } from "react";
+import { bucketText } from "@platform/ui/status-colors";
 
 type Hue = "gray" | "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white";
 
@@ -36,6 +34,24 @@ const FG: Record<number, Hue> = {
   97: "white",
 };
 
+// The dark block never flips with the theme, so the `dark:` half of each bucket
+// pair is what should show: pick it out rather than depend on the ancestor.
+const darkOf = (pair: string) => pair.split(" ").find((c) => c.startsWith("dark:"))?.slice(5) ?? pair;
+
+// The log block's error tint — the same red-400 the ANSI red resolves to.
+export const LOG_ERROR_CLASS = darkOf(bucketText.red);
+
+const HUE_CLASS: Record<Hue, string | undefined> = {
+  gray: "text-neutral-400",
+  red: darkOf(bucketText.red),
+  green: darkOf(bucketText.green),
+  yellow: darkOf(bucketText.yellow),
+  blue: darkOf(bucketText.blue),
+  magenta: undefined,
+  cyan: darkOf(bucketText.blue),
+  white: "text-neutral-50",
+};
+
 interface Style {
   hue?: Hue;
   bold?: boolean;
@@ -51,9 +67,9 @@ const SGR = new RegExp("^" + ESC + "\\[([0-9;]*)m$");
 
 function classOf(s: Style): string | undefined {
   const parts = [
-    s.hue ? "cc-ansi-" + s.hue : "",
-    s.bold ? "cc-ansi-bold" : "",
-    s.dim ? "cc-ansi-dim" : "",
+    s.hue ? HUE_CLASS[s.hue] : "",
+    s.bold ? "font-semibold" : "",
+    s.dim ? "opacity-60" : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" ") : undefined;
 }

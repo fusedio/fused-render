@@ -1,8 +1,13 @@
 // One transient notification (an error, or a non-red "info" confirmation).
 // Purely presentational: the global store (lib/toast) owns the queue and the
 // auto-dismiss timer, and NotificationHost owns where it sits, so this renders
-// only the banner + optional action + dismiss button. Styling is .toast* in
-// shell.css.
+// only the card + optional action + dismiss button. Tone is said by the status
+// dot (status-colors: red = error, green = a confirmation), not by the border.
+import { XIcon } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
+
 export type ToastTone = "error" | "info";
 
 // An optional call-to-action rendered before the dismiss button (e.g. the
@@ -30,30 +35,34 @@ export default function Toast({
 }) {
   return (
     <div
-      className={"toast" + (tone === "info" ? " toast-info" : "") + (leaving ? " toast-leaving" : "")}
+      data-slot="toast"
+      className={cn(
+        "flex min-h-0 max-w-full items-center gap-2.5 overflow-hidden rounded-lg border border-border bg-popover py-2 pr-2 pl-3 text-sm text-popover-foreground shadow-sm",
+        "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-2 motion-safe:duration-150",
+        leaving && "translate-y-1 opacity-0 transition-[opacity,transform] duration-150 motion-safe:animate-none motion-reduce:transition-none",
+      )}
       role={tone === "info" ? "status" : "alert"}
       aria-hidden={leaving || undefined}
     >
-      <span className="toast-msg">{msg}</span>
+      <StatusDot bucket={tone === "error" ? "red" : "green"} />
+      {/* Wraps instead of ellipsising — these are sentences whose second half
+          says what to do — clamped so a pathological one can't own the screen. */}
+      <span className="line-clamp-4 min-w-0 flex-1 leading-snug">{msg}</span>
       {action && (
-        <button
-          type="button"
-          className="toast-action"
-          disabled={leaving}
-          onClick={action.onClick}
-        >
+        <Button type="button" variant="outline" size="xs" disabled={leaving} onClick={action.onClick}>
           {action.label}
-        </button>
+        </Button>
       )}
-      <button
+      <Button
         type="button"
-        className="toast-close"
+        variant="ghost"
+        size="icon-xs"
         onClick={onClose}
         disabled={leaving}
         aria-label="Dismiss"
       >
-        ✕
-      </button>
+        <XIcon />
+      </Button>
     </div>
   );
 }

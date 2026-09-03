@@ -10,6 +10,7 @@
 // Links open in a new tab with the opener severed; only http(s) hrefs become
 // links at all — a `javascript:` URL in model output stays inert text.
 import { Fragment, type ReactNode } from "react";
+import { Button } from "@platform/shadcn/ui/button";
 
 function inline(text: string, keyBase: string): ReactNode[] {
   // One pass, one combined pattern: code spans win over emphasis (backticks
@@ -48,11 +49,14 @@ function inline(text: string, keyBase: string): ReactNode[] {
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
   return (
-    <div className="pg-md-code">
-      <div className="pg-md-code-head">
+    <div className="mb-2.5 overflow-hidden rounded-lg border border-border bg-background">
+      <div className="flex items-center justify-between border-b border-border bg-muted/30 px-2.5 py-0.5 text-[11px] text-muted-foreground">
         <span>{lang || "code"}</span>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="xs"
+          className="h-5 px-1.5 text-[11px] text-muted-foreground"
           onClick={(e) => {
             void navigator.clipboard.writeText(code);
             const button = e.currentTarget;
@@ -63,12 +67,27 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
           }}
         >
           Copy
-        </button>
+        </Button>
       </div>
-      <pre>{code}</pre>
+      <pre className="m-0 overflow-x-auto px-3 py-2.5 font-mono text-xs leading-relaxed">{code}</pre>
     </div>
   );
 }
+
+/** The rendered reply's typography, as utilities on the wrapper: paragraphs
+ *  soft-wrapped, headings on the fixed scale, code spans tinted, links
+ *  underlined. */
+const MD_CLASS = [
+  "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+  "[&_p]:mb-2.5 [&_p]:whitespace-pre-wrap",
+  "[&_h3]:mt-3.5 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:leading-snug",
+  "[&_h4]:mt-3.5 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4]:leading-snug",
+  "[&_h5]:mt-3.5 [&_h5]:mb-1.5 [&_h5]:text-sm [&_h5]:font-medium [&_h5]:leading-snug",
+  "[&_ul]:mb-2.5 [&_ul]:list-disc [&_ul]:pl-5.5 [&_ol]:mb-2.5 [&_ol]:list-decimal [&_ol]:pl-5.5 [&_li]:my-0.5",
+  "[&_code]:rounded-sm [&_code]:bg-muted [&_code]:px-1 [&_code]:py-px [&_code]:font-mono [&_code]:text-xs",
+  "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
+  "[&_a]:underline [&_a]:underline-offset-2 [&_a]:hover:text-foreground",
+].join(" ");
 
 /** Render one model reply. Streaming-safe: an unterminated fence renders as a
  *  code block of what has arrived so far. */
@@ -141,5 +160,5 @@ export function renderMarkdown(text: string): ReactNode {
       </p>,
     );
   }
-  return <div className="pg-md">{blocks}</div>;
+  return <div className={MD_CLASS}>{blocks}</div>;
 }
