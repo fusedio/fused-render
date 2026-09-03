@@ -564,26 +564,27 @@ def test_busy_poisoning_by_an_orphan_holds_the_board(client, target, spawned,
     assert _board_status(client, "sess-p") == "in_progress"
 
 
-def test_done_job_row_survives_long_enough_for_the_dock(target, spawned):
-    """SYMPTOM 2's dock half: the `done` job row must survive at least until
-    FINISHED_TTL_S (now a few seconds, not the old 30s) — the budget the dock
-    relies on. That budget only holds because the dock's poll (`pollInterval`
-    in jobs.ts) keeps its 1s ACTIVE cadence for a grace window after the last
-    running job disappears, instead of dropping to its 5s idle cadence and
-    missing a sweep this short. Pin both that the row exists right after the
-    verdict and that the sweep takes it inside 60s."""
+def test_done_job_row_stays_until_dismissed_same_as_error(target, spawned):
+    """Named for "the dock" originally, back when a schedule job row's only
+    reader was the queue card polling `/api/jobs` on a short budget it needed
+    the row to outlive. Neither half of that is still true: no dock draws a
+    schedule row at all now (`isScheduleJob`/`jobRows` excludes every
+    `sys:schedule:*` id from what the Activity/Notifications cards render,
+    since a schedule run already gets its own toast and its own row on the
+    Scheduled page), and D657 stopped sweeping ANY terminal state on a clock —
+    `done` is kept exactly as long as `error` already was, until something
+    reads and dismisses it. What is left worth pinning is the job REGISTRY's
+    own contract, which other consumers (`fused.watchJob`, the Scheduled
+    page's own poll) still rely on: a `done` row is not a `error`-only
+    exemption, and nothing about its age evicts it on its own."""
     entry = schedule.create(str(target), "watch me finish", _in(-5))
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
                         {"session_id": "s", "done": True})
-    t0 = time.time()
     assert _job(entry["id"])["state"] == "done"
-    # still there through the TTL window...
-    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S - 1, mark_read=True)
-    assert any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
-    # ...and swept after it
-    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S + 60, mark_read=True)
-    assert not any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
+    rows = jobs.list_jobs(now=time.time() + 3600, mark_read=True)
+    assert any(j["id"] == "sys:schedule:" + entry["id"]
+               and j["state"] == "done" for j in rows)
 
 
 def test_error_job_row_stays_until_dismissed(target, spawned):
