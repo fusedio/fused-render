@@ -18,17 +18,10 @@
 @import "./styles/explorer.css";
 @import "./styles/preview.css";
 @import "./styles/notifications.css";
-@import "./styles/fields.css";
 @import "./styles/buttons-modal.css";
 /* The driver.js popover skin. NOT a legacy surface sheet and not deletable by
    a reference sweep: the library writes those class names at runtime, so no
    grep of src can see them (see the file's own header). */
 @import "./styles/tour.css";
 @import "./styles/claude-config.css";
-/* Immediately before tasks.css, and the order is load-bearing: the Tasks
-   page's List/Board reuse this file's vocabulary (the status ring, the live
-   ping, the folder chip, the board's lanes and rails) and tasks.css adds only
-   what is new — so the two must be adjacent, and the additions come second. */
-@import "./styles/schedule.css";
-@import "./styles/tasks.css";
 @import "./styles/reduced-motion.css";

@@ -275,7 +275,7 @@ export default function ActivityDock({ onFailed }: { onFailed?: (jobs: Job[]) =>
   const failedIds = useRef("");
   const forwardFailed = useCallback((next: Job[]) => {
     const failed = failedJobs(next);
-    const key = failed.map((j) => j.id).join(" ");
+    const key = failed.map((j) => j.id).join("\u0000");
     if (key === failedIds.current) return;
     failedIds.current = key;
     onFailedRef.current?.(failed);
