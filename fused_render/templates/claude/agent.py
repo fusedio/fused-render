@@ -3447,6 +3447,140 @@ def _tool_detail(name, inp) -> str:
     return d if len(d) <= 80 else d[:77] + "…"
 
 
+def _read_poll_cursor(run_dir: str, size: int) -> int:
+    """The byte offset in `out.jsonl` that `_poll` last proved safe to resume
+    from — see the advance logic at the bottom of `_read_current_turn` for
+    what "safe" means. Anything that doesn't resolve to a real offset inside
+    the CURRENT file — missing (first poll ever, or an old run predating this
+    file), garbage (hand-edited, truncated write), or past `size` (the file
+    got shorter somehow, or this cursor is stale from before something reset
+    the run dir) — falls back to 0, a full parse from the start. A bad cursor
+    must never make `_poll` skip real rows; the worst a wrong fallback costs
+    is one slow poll, so the check errs toward re-reading."""
+    try:
+        with open(os.path.join(run_dir, "cursor"), encoding="utf-8") as fh:
+            value = int(fh.read().strip())
+    except (OSError, ValueError):
+        return 0
+    if value < 0 or value > size:
+        return 0
+    return value
+
+
+def _write_poll_cursor(run_dir: str, value: int) -> None:
+    try:
+        with _private_open(os.path.join(run_dir, "cursor")) as fh:
+            fh.write(str(value))
+    except OSError:
+        pass  # costs the next poll a full re-parse; never worth raising over
+
+
+def _read_current_turn(run_dir: str) -> tuple:
+    """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
+    offset onward, and the offset `_poll` should persist for next time.
+
+    A run used to be one turn, so re-parsing the whole file every ~400ms was
+    cheap. Tasks 2-4 made a run a whole SESSION: one `claude` process, many
+    turns, one `out.jsonl` that only grows. Re-scanning it in full on every
+    poll turned an O(1)-per-tick cost into an O(session length) one: for a
+    page (or `claude_spawn.record_session_when_ready`) that has been watching
+    a run continuously, ticking every ~400ms, this bounds each read to just
+    what changed since the LAST tick — which, steady-state, is one turn's
+    worth of rows or less. A page attaching to an already-multi-turn run for
+    the first time still pays for a full scan, same as before this existed —
+    a one-time cost, not a per-tick one.
+
+    That steady-state narrowing also happens to fix a latent correctness bug,
+    not just a perf one: `_poll`'s per-turn state (`text_parts`, `saw_result`,
+    …) never reset at a `result` boundary, so a continuously-polled multi-turn
+    session used to concatenate every turn's streamed text into one blob
+    forever, and could mask a turn that crashed mid-stream because an EARLIER
+    turn's `result` row already made `saw_result` true for the whole file.
+    Once the cursor has advanced past a turn, later polls simply never see
+    its rows again, so that accumulation stops happening — except on the one
+    cold-attach read above, whose rows are a real, once-only reflection of
+    everything that already happened, not an ongoing leak.
+
+    The cursor only ever advances past a `result` row that has something
+    AFTER it in the bytes just read — another complete line, or even a
+    half-written one. That is deliberate: a `result` with nothing after it
+    yet is exactly the D415 "turn might still be open" case (see `_poll`'s own
+    comment on `done`) — the CLI could still wake itself for another turn on
+    the same held-open stdin, and next poll needs to see whatever that wake
+    writes. A `result` already followed by more bytes has no such ambiguity:
+    the turn it closed is provably over, so everything through its newline is
+    dead weight for every future poll (this one included, once written back).
+
+    Reads via binary seek-then-decode, not a text-mode file's `.seek()`, on
+    the same reasoning `_scan_transcript` already leans on: the offset being
+    seeked to is one *this process* computed and persisted as a byte count,
+    and only a binary seek is guaranteed to land exactly there — a text-mode
+    file object's `.seek()` argument is an opaque cookie on some platforms,
+    not necessarily a raw byte offset, once `errors="replace"` decoding is in
+    the picture."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return [], 0
+
+    cursor = _read_poll_cursor(run_dir, size)
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(cursor)
+            blob = fh.read()
+    except OSError:
+        return [], cursor
+
+    # `blob.split(b"\n")` on "a\nb\n" gives [b"a", b"b", b""] — every element
+    # but the last was followed by a real newline byte; the last is either
+    # that trailing empty artifact (blob ends exactly on a newline) or a
+    # half-written final line (the writer's `\n` hasn't landed yet). Only the
+    # former group can ever move the cursor — the latter needs to be re-read
+    # from scratch next poll however it turns out, no matter what it parses to
+    # now.
+    parts = blob.split(b"\n")
+    complete, tail = parts[:-1], parts[-1]
+
+    # This call still returns every row from `cursor` to EOF, wake
+    # continuations included — a `result` followed by a `<task-notification>`
+    # wake is not a turn boundary from the page's point of view (see the
+    # `done`/`idle` comment on `_poll` itself: nothing genuinely ends until
+    # the process goes quiet), and `_segments_from_rows` is what turns that
+    # combined stream into a "notice" divider, not a second, isolated turn.
+    # `advance_to` only moves the offset the NEXT call starts from; it never
+    # trims what THIS call hands back. That keeps a page that has been
+    # watching a run continuously exactly as fast as one that just attached
+    # to it (both see, and pay for, only what has happened since either of
+    # them last looked) while a page that attaches to an already-multi-turn
+    # run for the very first time still gets its full history in that one
+    # read, same as the pre-cursor behavior — a one-time cost, not a
+    # per-poll one.
+    rows = []
+    pos = cursor
+    advance_to = None
+    n = len(complete)
+    for i, raw_line in enumerate(complete):
+        pos += len(raw_line) + 1
+        try:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
+            continue  # a stray blank/garbage line; not this poll's problem
+        rows.append(row)
+        if row.get("type") == "result" and (i < n - 1 or tail):
+            advance_to = pos  # more bytes follow this close — see docstring
+
+    if tail:
+        try:
+            rows.append(json.loads(tail.decode("utf-8", "replace")))
+        except ValueError:
+            pass  # half-written last line; next poll gets it, same as before
+
+    if advance_to is not None:
+        _write_poll_cursor(run_dir, advance_to)
+    return rows, cursor
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -3538,25 +3672,15 @@ def _poll(run_id: str, file: str = "") -> dict:
     agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
     after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
-    # the loop is done. Collected rather than parsed a second time: the file is
-    # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
-    # over the whole turn is the cost worth avoiding — this list only holds a
-    # second reference to objects the loop already built. A half-written last
-    # line never reaches it, for the same reason it never reaches anything else
-    # here: the `continue` below is above the append.
+    # the loop is done. Collected rather than parsed a second time: `rows`
+    # (below) already did the one `json.loads` pass this poll needs, over just
+    # the bytes since the last closed turn — see `_read_current_turn` — so this
+    # list only holds a second reference to objects that pass already built.
     parsed = []
 
-    try:
-        lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                     errors="replace").read().splitlines()
-    except FileNotFoundError:
-        lines = []
+    rows, _cursor = _read_current_turn(run_dir)
 
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue  # half-written last line; next poll gets it
+    for row in rows:
         parsed.append(row)
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
