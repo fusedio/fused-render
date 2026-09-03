@@ -571,6 +571,29 @@ export function indexGap(reason: RankReason, scanning: boolean | null): IndexGap
 }
 
 /**
+ * Whether AI search is worth offering.
+ *
+ * AI search is not a second engine. The spec the model produces is executed
+ * against the SAME file index — `routers/search._search_index`, whose
+ * docstring says "the only engine" — so with nothing built it raises
+ * `IndexUnavailable` and reports "the file index has not been built yet". That
+ * is the message the note is standing next to, which makes "AI search can
+ * answer in the meantime" false in exactly the state that printed it, and the
+ * "Search with AI" row a click into the same wall.
+ *
+ * A root the index deliberately does not cover (mount / package / ignored) is
+ * a different case: the index is built, so AI search does answer — just not
+ * about that root's files. `has_index` is the right question either way.
+ *
+ * `null` — no poll answer yet — offers it. `has_index` is false on a cold
+ * poll, and hiding the row for the first second of every page load would be
+ * its own wrong answer.
+ */
+export function aiSearchUsable(status: { has_index: boolean } | null): boolean {
+  return status === null || status.has_index;
+}
+
+/**
  * A scan this page asked for that the status poll has not accounted for yet.
  *
  * `at` is `Date.now()` when the request went out, `completedAt` the

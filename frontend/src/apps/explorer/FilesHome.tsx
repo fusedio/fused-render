@@ -45,6 +45,7 @@ import {
   MIN_QUERY_CHARS,
   RANK_FETCH_LIMIT,
   activeRow,
+  aiSearchUsable,
   answerFrom,
   formatElapsed,
   homeCountNote,
@@ -820,6 +821,11 @@ export function FilesSearch({
     displayAnswer !== null && !displayAnswer.covered
       ? indexGap(displayAnswer.reason, liveScanning)
       : null;
+  // Whether AI search has anything to answer WITH. It executes its spec
+  // against the same file index (`routers/search._search_index`), so with no
+  // index built it fails the same way the instant search did — see
+  // `aiSearchUsable`'s doc comment.
+  const aiUsable = aiSearchUsable(indexScan);
   const [pendingBuild, setPendingBuild] = useState<PendingScan | null>(null);
   // Scoped to the query it was raised on. The note is per-query real estate,
   // and this message REPLACES the "your files aren't indexed yet" diagnosis:
@@ -867,11 +873,13 @@ export function FilesSearch({
   // row, then files, then at most one AI row. `showOpenRow` forces the other
   // two off — the request that would have produced file hits was never sent
   // (7c), and a paid model call is never the intent for something shaped like
-  // a path (7e, independent of whether it actually resolved).
+  // a path (7e, independent of whether it actually resolved). `aiUsable`
+  // gates it too: offering a paid model call that will fail on the same
+  // missing index is a dead end, not an offer.
   const rowModel: RowModel = {
     openRow: showOpenRow,
     fileCount: showOpenRow ? 0 : hits.length,
-    aiRow: searchable && !showOpenRow && address === null,
+    aiRow: searchable && !showOpenRow && address === null && aiUsable,
   };
   const current = activeRow(highlight, rowModel, settled);
 
@@ -973,6 +981,28 @@ export function FilesSearch({
         <AiResults home={home} query={ai.query} result={ai.result} />
       ) : (
         <div className="fh-panel">
+          {/* The one action this screen asks of the user, promoted out of the
+              muted footnote and into a real CTA — a link-button buried mid-
+              sentence at 12px was invisible in testing. The note chain below
+              still has a `gap === "buildable"` case, but it renders nothing:
+              this block is the whole message for that state. */}
+          {gap === "buildable" && (
+            <div className="fh-index-cta">
+              <span className="fh-index-cta-text">
+                {buildFailure !== ""
+                  ? `The scan could not be started: ${buildFailure}`
+                  : "Your files aren’t indexed yet — one scan is all it takes."}
+              </span>
+              <button
+                type="button"
+                className="btn btn-primary fh-index-cta-btn"
+                disabled={starting}
+                onClick={startBuild}
+              >
+                {starting ? "Starting the scan…" : "Index my files"}
+              </button>
+            </div>
+          )}
           <p className="fh-result-note">
             {/* Branch on the ANSWER IN HAND, not on the request state: while a
                 new query is in flight the previous answer is what is on screen,
@@ -1037,34 +1067,22 @@ export function FilesSearch({
                 indexScan && indexScan.files > 0
                   ? ` (${indexScan.files.toLocaleString()} files so far)`
                   : ""
-              } — AI search can answer in the meantime.`
+              }${aiUsable ? " — AI search can answer in the meantime." : ""}`
             ) : gap === "buildable" ? (
-              // Nothing is scanning and nothing will start on its own: the
-              // startup scheduler ran once at boot (and may have been
-              // refused, debounce-skipped, or lost its worker), and this page
-              // — unlike the in-folder box — never asks for a scan. Telling
-              // the user to wait here is a promise the app cannot keep, so
-              // say what is true and offer the scan instead.
-              <>
-                {buildFailure !== ""
-                  ? `The index scan could not be started: ${buildFailure} `
-                  : "Your files aren’t indexed yet. "}
-                <button
-                  type="button"
-                  className="fh-link-button"
-                  disabled={starting}
-                  onClick={startBuild}
-                >
-                  {starting ? "Starting the scan…" : "Index them now"}
-                </button>
-                {" — AI search can answer in the meantime."}
-              </>
+              // Owned by the `.fh-index-cta` block above, not this note — a
+              // paragraph AND a callout saying the same thing would say it
+              // twice. Kept as its own branch so the chain still accounts
+              // for every `IndexGap` value.
+              null
             ) : gap === "unavailable" ? (
               // mount / package / ignored: no scan will ever cover this root,
               // so offering one would be a button that cannot work. There is
               // no live walk on this page to fall back to either (that is the
-              // listing's), which leaves AI search as the honest offer.
-              "This location can’t be indexed — AI search can still answer."
+              // listing's), which leaves AI search as the honest offer —
+              // when the index backing it actually exists.
+              aiUsable
+                ? "This location can’t be indexed — AI search can still answer."
+                : "This location can’t be indexed."
             ) : hits.length === 0 && settled && rowModel.aiRow ? (
               // `hits`, not `answer.hits`: `settled` already rules out
               // `behind` (see `hits`'s own comment — `rankingSettled` is

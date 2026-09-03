@@ -701,12 +701,14 @@ describe("an uncovered index with no scan running offers the scan", () => {
   const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
 
   test("says the files are not indexed rather than that something is coming", async () => {
+    // The message lives in the .fh-index-cta callout, and there only: the
+    // note renders nothing for `buildable`, so it cannot say it twice.
     const box = mount(scanStatus({ scanning: false }));
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer(uncovered)));
-    const note = noteText(box);
-    expect(note).toContain("aren’t indexed yet");
-    expect(note).not.toContain("still building");
+    expect(findByClass(box, "fh-index-cta-text")).toHaveLength(1);
+    expect(noteText(box)).not.toContain("aren’t indexed yet");
+    expect(noteText(box)).not.toContain("still building");
     box.unmount();
   });
 
@@ -717,8 +719,8 @@ describe("an uncovered index with no scan running offers the scan", () => {
     const box = mount(scanStatus({ scanning: false }));
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer(uncovered)));
-    expect(noteText(box)).toContain("Index them now");
-    const button = findByClass(box, "fh-link-button") as { props: { onClick: () => void } }[];
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+    const button = findByClass(box, "fh-index-cta-btn") as { props: { onClick: () => void } }[];
     expect(button).toHaveLength(1);
     await flush(() => button[0].props.onClick());
     expect(scanCalls).toEqual(["/api/index/scan"]);
@@ -731,21 +733,22 @@ describe("an uncovered index with no scan running offers the scan", () => {
 
   test("does not re-offer the button while the poll has yet to see the scan", async () => {
     // The POST returns in milliseconds; the poll answers when it answers. In
-    // between, the note used to go straight back to "Index them now" — a
+    // between, the CTA used to go straight back to "Index my files" — a
     // click that reads as a no-op on the one screen whose whole point is that
     // waiting is futile, and whose obvious response is to click again.
     const box = mount(scanStatus({ scanning: false }));
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer(uncovered)));
     type Button = { props: { onClick: () => void; disabled?: boolean } };
-    const button = findByClass(box, "fh-link-button") as Button[];
+    const button = findByClass(box, "fh-index-cta-btn") as Button[];
     await flush(() => button[0].props.onClick());
-    expect(noteText(box)).toContain("Starting the scan…");
-    expect((findByClass(box, "fh-link-button") as Button[])[0].props.disabled).toBe(true);
+    expect((findByClass(box, "fh-index-cta-btn") as Button[])[0].props.disabled).toBe(true);
     // Poll catches up: now "building" is the true claim, and it comes with a
-    // count.
+    // count, back in the note (the CTA disappears once `gap` is no longer
+    // `buildable`).
     box.poll(scanStatus({ scanning: true, files: 21 }));
     expect(noteText(box)).toContain("still building");
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
     box.unmount();
   });
 
@@ -760,7 +763,7 @@ describe("an uncovered index with no scan running offers the scan", () => {
     await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "scanning" })));
     const note = noteText(box);
     expect(note).not.toContain("still building");
-    expect(note).toContain("Index them now");
+    expect(findByClass(box, "fh-index-cta-btn")).toHaveLength(1);
     box.unmount();
   });
 
@@ -807,6 +810,45 @@ describe("an uncovered index with no scan running offers the scan", () => {
     const note = noteText(box);
     expect(note).toContain("can’t be indexed");
     expect(note).not.toContain("Index them now");
+    box.unmount();
+  });
+});
+
+// AI search executes its spec against the same file index
+// (routers/search._search_index), so offering it — or promising it "can
+// answer in the meantime" — when there is no index built is a dead end: the
+// click produces the exact "file index has not been built yet" error the
+// note was standing next to. `aiSearchUsable`/`has_index` gate that offer.
+describe("the AI offer is gated on has_index", () => {
+  const uncovered = { covered: false, reason: "mount" as const, hits: [], total: 0 };
+
+  test("has_index: false hides the Search with AI row entirely", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: false }));
+    await type(box, "zzzqqqnomatch");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [], total: 0 })));
+    expect(findByClass(box, "fh-ai-row")).toHaveLength(0);
+    expect(noteText(box)).not.toContain("AI search");
+    box.unmount();
+  });
+
+  test("has_index: false drops the AI clause from an uncoverable-root note", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).not.toContain("AI search");
+    box.unmount();
+  });
+
+  test("has_index: true keeps the Search with AI row and the note's AI clause", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).toContain("AI search");
+    expect(findByClass(box, "fh-ai-row")).toHaveLength(1);
     box.unmount();
   });
 });

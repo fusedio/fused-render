@@ -3,6 +3,7 @@ import {
   HOME_RESULT_CAP,
   SCAN_START_GRACE_MS,
   activeRow,
+  aiSearchUsable,
   answerFrom,
   formatElapsed,
   homeCountNote,
@@ -574,6 +575,25 @@ describe("redirectsToSearch", () => {
     // Not merely redundant: focusing on every keystroke would reset the caret
     // to the end, so editing the middle of a query would be impossible.
     expect(redirectsToSearch(key({ tagName: "INPUT", isSearchInput: true }))).toBe(false);
+  });
+});
+
+describe("aiSearchUsable", () => {
+  it("offers AI search before the poll has answered", () => {
+    // `null` is "no status yet"; hiding the row for the first second of every
+    // page load would be its own wrong answer.
+    expect(aiSearchUsable(null)).toBe(true);
+  });
+
+  it("withholds the offer with no index built", () => {
+    // AI search executes its spec against the same file index
+    // (routers/search._search_index) — with nothing built it raises
+    // IndexUnavailable, so offering the row is a click into a wall.
+    expect(aiSearchUsable({ has_index: false })).toBe(false);
+  });
+
+  it("offers it once the index exists", () => {
+    expect(aiSearchUsable({ has_index: true })).toBe(true);
   });
 });
 
