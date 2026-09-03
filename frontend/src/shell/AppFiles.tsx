@@ -395,10 +395,10 @@ export default function AppFiles({
                 </Tabs>
               )}
             </header>
-            <div className="flex min-h-0 flex-1 flex-col [&>.error-banner]:m-4 [&>.skel-lines]:m-4">
+            <div className="flex min-h-0 flex-1 flex-col [&>.skel-lines]:m-4">
               {stat.kind === "loading" && <SkeletonLines rows={2} label="Loading file" />}
               {stat.kind === "error" && (
-                <ErrorBanner>
+                <ErrorBanner className="m-4">
                   Could not open {rel}: {stat.message}
                 </ErrorBanner>
               )}

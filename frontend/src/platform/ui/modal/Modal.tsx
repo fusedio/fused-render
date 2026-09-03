@@ -229,7 +229,7 @@ export function Modal({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className={cn("-mr-1 shrink-0" + (confirmClose ? " is-armed" : ""), confirmClose && bucketBadge.orange)}
+                    className={cn("-mr-1 shrink-0", confirmClose && bucketBadge.orange)}
                   />
                 }
                 // The label carries the state for a screen reader, which has no

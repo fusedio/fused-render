@@ -9,13 +9,10 @@
 @import "./styles/sidebar.css";
 @import "./styles/explorer.css";
 @import "./styles/preview.css";
-@import "./styles/context-menu.css";
-@import "./styles/dialogs.css";
 @import "./styles/notifications.css";
 @import "./styles/deploy.css";
 @import "./styles/fields.css";
 @import "./styles/buttons-modal.css";
-@import "./styles/shortcuts.css";
 @import "./styles/account.css";
 @import "./styles/preferences.css";
 /* Next to preferences.css: the Claude config app (/claude-config)

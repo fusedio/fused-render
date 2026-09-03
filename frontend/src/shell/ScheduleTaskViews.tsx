@@ -437,7 +437,7 @@ export function TaskList({
   // Whether a row draws its folder chip: only when the rows span folders
   // (spansProjects) — or a project is pinned, so the control that narrowed the
   // list stays on screen wearing the state.
-  const pinnedKey = pinnedProjects.join(" ");
+  const pinnedKey = pinnedProjects.join("\u0000");
   const showProject = useMemo(
     () => spansProjects(tasks) || pinnedKey !== "",
     [tasks, pinnedKey],

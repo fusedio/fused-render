@@ -114,7 +114,7 @@ getConfig().then(
     // the user reading it has an unusable app and no idea whether to reinstall,
     // restart, or ask someone.
     root.render(
-      <div className="trouble-page">
+      <div className="flex justify-center px-6 py-12">
         <TroubleCard
           what="loading the app's configuration at startup (GET /api/config)"
           error={String(err.message || err)}

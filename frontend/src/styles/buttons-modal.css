@@ -106,39 +106,10 @@
   border-color: transparent;
 }
 
-/* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the
-   Modal component applies both classes, so descendant .deploy-* skins keep
-   working). Footer row follows the footer grammar: destructive far left
-   (via .btn-danger-text margin-right:auto), Cancel then primary at the right. */
-.modal-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-}
-
-.modal-dirty-hint {
-  color: var(--fg-muted);
-  font-size: 12px;
-  margin-right: auto;
-}
-
-/* ARMED ✕ — the next press discards. The hint in the footer says it in words;
-   this says it at the corner the user actually pressed, which is the half that
-   was missing (QA, 2026-08-18: the first press "looked like a dead click").
-
-   Reads as WARM rather than destructive: discarding a draft is not deleting a
-   task, and borrowing the Delete button's filled --error treatment would
-   overstate it. The hover rule is repeated for the same reason it is on
-   `.new-task-delete.is-armed` — moving the mouse must not cool the state back
-   down while it is still live. */
-.deploy-close.is-armed,
-.deploy-close.is-armed:hover:not(:disabled) {
-  background: rgba(var(--warning-rgb), 0.16);
-  color: var(--warning);
-  border-radius: 4px;
-}
+/* The shared modal chrome that used to live here — `.modal-footer`,
+   `.modal-dirty-hint` and the armed-✕ `.deploy-close.is-armed` tint — is gone:
+   platform/ui/modal/Modal.tsx is a shadcn Dialog now and carries all three as
+   utilities, the armed tint off `bucketBadge.orange` (the status map's
+   waiting-on-the-user bucket) rather than a hand-rolled warning wash.
+   The `.btn*` vocabulary above stays until the surfaces still using it convert. */
 

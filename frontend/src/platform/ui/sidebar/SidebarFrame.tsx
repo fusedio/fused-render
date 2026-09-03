@@ -62,8 +62,15 @@ export interface SidebarFrameProps {
 // sidebar-accent wash on hover and on the current page. Never wraps: the
 // expand glide lays these rows out at every width between 44px and the settled
 // one, and a wrapping label would flash a phantom second line mid-glide.
+//
+// `appearance-none border-0 bg-transparent` is what keeps a row that happens to
+// be a <button> (the Settings menu trigger) a GHOST row like its <a> siblings:
+// the token sheet ships without Tailwind's preflight, so a bare button paints
+// the platform's own widget — grey fill, outset border. The wash utilities that
+// follow all carry a pseudo-class or attribute selector, so they still out-rank
+// the flat `bg-transparent` and the row highlights exactly as before.
 export const NAV_ITEM_CLASS =
-  "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground whitespace-nowrap no-underline cursor-pointer select-none hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring aria-[current=page]:bg-sidebar-accent data-[active]:bg-sidebar-accent motion-safe:transition-colors motion-safe:duration-100";
+  "flex w-full appearance-none items-center gap-2.5 rounded-md border-0 bg-transparent px-2.5 py-1.5 text-sm text-sidebar-foreground whitespace-nowrap no-underline cursor-pointer select-none hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring aria-[current=page]:bg-sidebar-accent data-[active]:bg-sidebar-accent motion-safe:transition-colors motion-safe:duration-100";
 
 // A plain sidebar nav row: highlights on exact pathname match, navigates
 // in-shell, keeps href for middle-click/copy-link.
@@ -112,7 +119,7 @@ export function NavItem({
 // 28px square, 16px glyph: the rail reads as a column of the same controls the
 // bars use. Rail items come as <a> (navigate) or <button> (expand) — one look.
 export const RAIL_BTN_CLASS =
-  "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground no-underline cursor-pointer hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-foreground [&_svg]:size-4 motion-safe:transition-colors motion-safe:duration-100";
+  "relative flex size-7 shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent text-muted-foreground no-underline cursor-pointer hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-foreground [&_svg]:size-4 motion-safe:transition-colors motion-safe:duration-100";
 
 export function SidebarFrame({ title, homeHref = "/apps", rail, children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
@@ -248,7 +255,7 @@ export function SidebarFrame({ title, homeHref = "/apps", rail, children }: Side
             <Button
               variant="ghost"
               size="icon-sm"
-              className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              className="appearance-none bg-transparent text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
               aria-label="Expand sidebar"
               title="Expand sidebar"
               onClick={toggleSidebarCollapsed}
@@ -326,7 +333,7 @@ export function SidebarFrame({ title, homeHref = "/apps", rail, children }: Side
             <Button
               variant="ghost"
               size="icon-xs"
-              className="ml-auto shrink-0 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              className="ml-auto shrink-0 appearance-none bg-transparent text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
               aria-label="Collapse sidebar"
               title="Collapse sidebar"
               onClick={toggleSidebarCollapsed}

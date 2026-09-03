@@ -22,17 +22,11 @@ beforeAll(async () => {
 });
 
 describe("the armed ✕", () => {
-  test("the close button carries the armed class while the guard is up", () => {
-    // The class is conditional on `confirmClose` — the same state the footer
-    // hint already keys off, so the two halves cannot disagree about whether the
-    // guard is up.
-    expect(modal).toContain('(confirmClose ? " is-armed" : "")');
-  });
-
-  test("…and the armed state actually gets a look", () => {
+  test("the armed state actually gets a look, off the same flag as the hint", () => {
     // The half a typo would silently eat: a state nothing styles is exactly the
     // dead click this fixes. The tint comes from the status map (orange = waiting
-    // on the user), applied off the same flag.
+    // on the user), applied off `confirmClose` — the same state the footer hint
+    // keys off, so the two halves cannot disagree about whether the guard is up.
     expect(modal).toContain("confirmClose && bucketBadge.orange");
   });
 
