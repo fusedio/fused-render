@@ -918,6 +918,9 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
    own bottom margin is for sitting above a grid; here it is the last thing. */
 .access-denied {
   max-width: 640px;
+  /* The listing's td is `white-space: nowrap` (one entry per line); this cell
+     holds prose and a card, both of which must wrap inside the 640px. */
+  white-space: normal;
 }
 .access-denied-text {
   margin: 0 0 12px;
