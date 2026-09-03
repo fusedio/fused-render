@@ -551,8 +551,10 @@ export interface IndexRankHit {
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other three never (see listing/index-source, which is the only place that
-// switches on this). `disabled` is the one of those three that can become
+// other three never. Two places switch on this: listing/index-source picks the
+// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
+// turns it into what the home box tells the user. `disabled` is the one of
+// those three that can become
 // fixable again — turning the indexing preference back on — but the client
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the

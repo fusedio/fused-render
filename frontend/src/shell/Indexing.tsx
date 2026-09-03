@@ -24,6 +24,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import {
   missingDefaults,
   patternsToText,
+  scanErrorLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -193,7 +194,9 @@ export function IndexingPanel({
             while idle: mid-scan this is the PREVIOUS run's verdict, and the
             counts above are the live story. */}
         {status && status.error && !scanning && (
-          <ErrorBanner>The last scan did not finish: {status.error}</ErrorBanner>
+          <ErrorBanner>
+            The last scan did not finish: {scanErrorLine(status.error)}
+          </ErrorBanner>
         )}
         <div className="prefs-actions">
           <button

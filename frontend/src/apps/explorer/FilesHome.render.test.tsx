@@ -51,6 +51,10 @@ const statCalls: StatCall[] = [];
 /** Every POST /api/index/scan, by URL — the observable trace of the note's
  * "index them now" button actually asking for a scan. */
 const scanCalls: string[] = [];
+/** How many times the box told its parent to re-poll the index status — the
+ * one thing that turns the parent's idle ten-second beat into a look NOW, so
+ * that a scan this box started is not invisible until then. */
+let scanRequested = 0;
 /** Every `history.pushState(..., url)` the router's `navigate()` makes — the
  * observable trace of a navigation, since `navigate` itself is a frozen ES
  * module export this file cannot spy on (see the file-header comment on why
@@ -132,6 +136,7 @@ beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
   scanCalls.length = 0;
+  scanRequested = 0;
   navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
   // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
@@ -208,17 +213,26 @@ function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
 
 function mount(
   indexScan: IndexStatus | null = null,
-): { renderer: ReactTestRenderer; input: () => any; unmount: () => void } {
+): {
+  renderer: ReactTestRenderer;
+  input: () => any;
+  /** Hand down a fresh poll reading, the way the parent's re-render would. */
+  poll: (next: IndexStatus | null) => void;
+  unmount: () => void;
+} {
   let renderer!: ReactTestRenderer;
+  const element = (scan: IndexStatus | null) =>
+    createElement(FilesSearch, {
+      home: HOME,
+      initialQuery: "",
+      indexScan: scan,
+      onActiveChange: () => {},
+      onScanRequested: () => {
+        scanRequested += 1;
+      },
+    });
   act(() => {
-    renderer = create(
-      createElement(FilesSearch, {
-        home: HOME,
-        initialQuery: "",
-        indexScan,
-        onActiveChange: () => {},
-      }),
-    );
+    renderer = create(element(indexScan));
   });
   // Tracked for the unconditional afterEach sweep (above) — removed here on a
   // NORMAL unmount so that sweep does not try to unmount an already-unmounted
@@ -227,6 +241,7 @@ function mount(
   return {
     renderer,
     input: () => renderer.root.findByProps({ className: "files-search-input" }),
+    poll: (next: IndexStatus | null) => act(() => renderer.update(element(next))),
     // Unmount INSIDE act(): effect cleanups (the pending timers, the
     // document listener) must run in the same batched world the rest of the
     // test drives, or React can warn about — or in practice mis-schedule —
@@ -707,6 +722,45 @@ describe("an uncovered index with no scan running offers the scan", () => {
     expect(button).toHaveLength(1);
     await flush(() => button[0].props.onClick());
     expect(scanCalls).toEqual(["/api/index/scan"]);
+    // And the parent is told to look at the status again NOW: its poll is on a
+    // ten-second idle beat, so without this the run the user just started
+    // would not exist as far as this note is concerned.
+    expect(scanRequested).toBe(1);
+    box.unmount();
+  });
+
+  test("does not re-offer the button while the poll has yet to see the scan", async () => {
+    // The POST returns in milliseconds; the poll answers when it answers. In
+    // between, the note used to go straight back to "Index them now" — a
+    // click that reads as a no-op on the one screen whose whole point is that
+    // waiting is futile, and whose obvious response is to click again.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    type Button = { props: { onClick: () => void; disabled?: boolean } };
+    const button = findByClass(box, "fh-link-button") as Button[];
+    await flush(() => button[0].props.onClick());
+    expect(noteText(box)).toContain("Starting the scan…");
+    expect((findByClass(box, "fh-link-button") as Button[])[0].props.disabled).toBe(true);
+    // Poll catches up: now "building" is the true claim, and it comes with a
+    // count.
+    box.poll(scanStatus({ scanning: true, files: 21 }));
+    expect(noteText(box)).toContain("still building");
+    box.unmount();
+  });
+
+  test("a stale `scanning` gives way to the poll saying nothing runs", async () => {
+    // The other route into the twenty-minute wedge: this answer was ranked
+    // while the startup scan was alive, then that worker died. Status reports
+    // idle (after ABANDONED_RUN_S), `last_completed_at` never moves so no
+    // lifecycle event re-ranks anything, and trusting `reason` would leave
+    // "still building" — with a frozen file count — on screen forever.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "scanning" })));
+    const note = noteText(box);
+    expect(note).not.toContain("still building");
+    expect(note).toContain("Index them now");
     box.unmount();
   });
 

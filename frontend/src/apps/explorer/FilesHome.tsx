@@ -58,10 +58,12 @@ import {
   positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  scanStarting,
   stepHighlight,
   submitRow,
   type HomeAnswer,
   type HomeHit,
+  type PendingScan,
   type RowModel,
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight } from "@apps/explorer/listing/bits";
@@ -339,12 +341,21 @@ export function FilesSearch({
   initialQuery,
   indexScan,
   onActiveChange,
+  onScanRequested,
 }: {
   home: string;
   initialQuery: string;
   /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
   indexScan: IndexStatus | null;
   onActiveChange: (active: boolean) => void;
+  /**
+   * A scan was just started from in here, so the shared poll should look
+   * again NOW. Owning the poll is the parent's job (one poller, several
+   * consumers), which also means only the parent can shorten its beat: while
+   * idle it is on a ten-second timer, and a run that this box asked for should
+   * not have to wait that out to be admitted to exist.
+   */
+  onScanRequested: () => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
@@ -799,34 +810,49 @@ export function FilesSearch({
   // Why an uncovered answer is uncovered, and — for the one value of that the
   // user can act on — the action itself (lib/home-search's `indexGap`).
   //
-  // `indexScan?.scanning` is fed in alongside the answer's own `reason` so a
-  // scan started since the last keystroke counts: the button below flips the
-  // note to "building" off the poll, a second later, rather than sitting on
-  // "not indexed" until something else re-ranks.
+  // The poll's scan state is fed in alongside the answer's own `reason`, as a
+  // TRI-STATE: `null` while the poll has not answered, so that a definite
+  // "nothing is running" can contradict a `reason` frozen at rank time in
+  // either direction (see `indexGap`). `indexScan?.scanning === true` would
+  // collapse "no answer yet" into "idle" and lose half of that.
+  const liveScanning = indexScan === null ? null : indexScan.scanning;
   const gap =
     displayAnswer !== null && !displayAnswer.covered
-      ? indexGap(displayAnswer.reason, indexScan?.scanning === true)
+      ? indexGap(displayAnswer.reason, liveScanning)
       : null;
-  const [building, setBuilding] = useState(false);
-  const [buildError, setBuildError] = useState("");
+  const [pendingBuild, setPendingBuild] = useState<PendingScan | null>(null);
+  // Scoped to the query it was raised on. The note is per-query real estate,
+  // and this message REPLACES the "your files aren't indexed yet" diagnosis:
+  // held across keystrokes, one failed click (a 409 from the pref being
+  // flipped in another window, say) would prefix every later uncovered query
+  // with a stale complaint and hide the actual state. Typing is the retry
+  // gesture here, the same as `retryNonce`.
+  const [buildError, setBuildError] = useState<{ query: string; message: string } | null>(
+    null,
+  );
+  const buildFailure = buildError !== null && buildError.query === q ? buildError.message : "";
+  const starting = scanStarting(pendingBuild, liveScanning, indexScan?.last_completed_at ?? null, Date.now());
   // POST /api/index/scan with no root — every configured root, and NOT
   // `requestFolderScan`, whose 15-minute debounce is right for a keystroke and
   // wrong for a button: the whole reason the user is looking at this button is
   // that a scan started minutes ago and left nothing behind, which is exactly
   // what that debounce would refuse.
   //
-  // `building` only covers the request. Once it returns, the status poll owns
-  // the state — it is what `gap` reads, and it is what survives this component
-  // remounting mid-scan.
+  // `pendingBuild` covers the request AND the wait for the poll to see the run
+  // it started (`scanStarting`); after that the poll owns the state, because
+  // the poll is what `gap` reads and what survives this component remounting
+  // mid-scan. `onScanRequested` re-fires that poll immediately rather than
+  // leaving the run unseen until the next idle beat — the latch is the honest
+  // bridge across the round trip, not a substitute for asking.
   const startBuild = () => {
-    if (building) return;
-    setBuilding(true);
-    setBuildError("");
+    if (starting) return;
+    setPendingBuild({ at: Date.now(), completedAt: indexScan?.last_completed_at ?? null });
+    setBuildError(null);
     startIndexScan().then(
-      () => setBuilding(false),
+      () => onScanRequested(),
       (err: Error) => {
-        setBuilding(false);
-        setBuildError(err.message);
+        setPendingBuild(null);
+        setBuildError({ query: q, message: err.message });
       },
     );
   };
@@ -1014,16 +1040,16 @@ export function FilesSearch({
               // the user to wait here is a promise the app cannot keep, so
               // say what is true and offer the scan instead.
               <>
-                {buildError !== ""
-                  ? `The index scan could not be started: ${buildError} `
+                {buildFailure !== ""
+                  ? `The index scan could not be started: ${buildFailure} `
                   : "Your files aren’t indexed yet. "}
                 <button
                   type="button"
                   className="fh-link-button"
-                  disabled={building}
+                  disabled={starting}
                   onClick={startBuild}
                 >
-                  {building ? "Starting…" : "Index them now"}
+                  {starting ? "Starting the scan…" : "Index them now"}
                 </button>
                 {" — AI search can answer in the meantime."}
               </>
@@ -1249,7 +1275,10 @@ export default function FilesHome({ config }: { config: Config }) {
   // starting mid-session would otherwise go unnoticed by the box. One poller,
   // two consumers, the listing's rule (poll only while a search is open) still
   // honoured for the search half.
-  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching);
+  // Bumped when the search box starts a scan: `useIndexStatus` restarts on a
+  // new nonce, which turns the idle ten-second beat into an immediate look.
+  const [indexNonce, setIndexNonce] = useState(0);
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching, indexNonce);
   // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
   // "completes". Completion was the previous trigger and it was subtly wrong:
   // `last_completed_at` is read off the manifest, and a cancelled, failed or
@@ -1337,6 +1366,7 @@ export default function FilesHome({ config }: { config: Config }) {
             initialQuery={initialQuery}
             indexScan={indexScan}
             onActiveChange={setSearching}
+            onScanRequested={() => setIndexNonce((n) => n + 1)}
           />
         </header>
 
