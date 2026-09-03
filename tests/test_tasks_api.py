@@ -1337,9 +1337,9 @@ def test_a_never_run_message_that_was_cancelled_draws_no_chip(client, tmp_path):
     ({"state": schedule.MISSED}, "done"),
     # Cancelled is filed away, so the message under it speaks again.
     ({"state": schedule.CANCELLED}, "done"),
-    ({"state": schedule.ERROR, "error": "target vanished"}, "failed"),
-    ({"state": schedule.SENT, "turn": "failed", "fired": T12}, "failed"),
-    ({"state": schedule.SENT, "turn": "unknown", "fired": T12}, "failed"),
+    ({"state": schedule.ERROR, "error": "target vanished"}, "blocked"),
+    ({"state": schedule.SENT, "turn": "failed", "fired": T12}, "blocked"),
+    ({"state": schedule.SENT, "turn": "unknown", "fired": T12}, "blocked"),
 ])
 def test_the_newest_message_with_a_verdict_speaks(client, projects_dir, fields,
                                                   expected):
@@ -1622,7 +1622,7 @@ def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
                            fired=_near_now(-30), turn="failed",
                            claude_session_id="sess-a")])
     task = _by_key(client)["sess-a"]
-    assert task["status"] == "failed"
+    assert task["status"] == "blocked"
     assert task["live"] is False
 
 
@@ -1737,7 +1737,7 @@ def test_a_recorded_done_does_not_overrule_a_broken_run(client, projects_dir,
     (state_dir / "triage.json").write_text(
         json.dumps({"sess-a": {"status": "done"}}))
     task = _by_key(client)["sess-a"]
-    assert task["status"] == "failed"
+    assert task["status"] == "blocked"
     assert task["failed"] is True
 
 
@@ -1795,7 +1795,7 @@ def test_filing_the_newest_message_hands_the_word_back_to_the_one_before(
         _entry("e2", "and again", T12, state=schedule.CANCELLED,
                claude_session_id="sess-a"),
     ])
-    assert _by_key(client)["sess-a"]["status"] == "failed"
+    assert _by_key(client)["sess-a"]["status"] == "blocked"
 
 
 def test_an_unreadable_created_stamp_still_leaves_a_row(client, tmp_path):
@@ -1824,7 +1824,7 @@ def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["failed"] is True
     assert task["messages"][0]["state"] == "error"
-    assert task["status"] == "failed"
+    assert task["status"] == "blocked"
 
 
 def test_a_skipped_occurrence_does_not_speak_for_the_task(client,
@@ -1964,8 +1964,8 @@ def test_unarchiving_reports_the_derived_lane_not_the_one_dropped_on(
 
     r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "failed"
-    assert _by_key(client)["sess-a"]["status"] == "failed"
+    assert r.json()["status"] == "blocked"
+    assert _by_key(client)["sess-a"]["status"] == "blocked"
 
 
 def test_unarchiving_keeps_the_note_the_tag_and_the_read_mark(client,
@@ -2550,3 +2550,215 @@ def test_a_replaced_transcript_is_re_read_from_the_top(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["message_count"] == 1
     assert task["messages"][0]["body"] == "only"
+
+
+# ------------------------------------------------- a run that is asking
+# `needs_attention` is the status above In Progress: the run is in flight and it
+# has raised a permission or question card nobody has answered, which is the one
+# kind of in-flight that never ends on its own. The server decides it (nothing
+# else can — the fact lives in the run dir, not in the store or the transcript),
+# and these hold the three halves of that: the SCAN that finds it, the
+# PRECEDENCE that puts it above In Progress, and the ORDER that puts it on top.
+
+
+class _FakeAgent:
+    """The parts of the claude template's agent.py this router reads.
+
+    A stand-in rather than the real module because the real one is a TEMPLATE
+    (outside the package's import graph by design, SPEC PY-15) reached through
+    `claude_spawn.load_agent()`, and because what is being tested is what the
+    router does with the answers — not agent.py's own parsing, which has its own
+    suite."""
+
+    ANSWERABLE_TOOL = "AskUserQuestion"
+
+    def __init__(self, runs_dir, runs, alive=()):
+        self.RUNS = str(runs_dir)
+        self._runs = runs           # name -> list of permission dicts
+        self._alive_set = set(alive)
+
+    def _permissions(self, run_dir):
+        return self._runs.get(os.path.basename(run_dir), [])
+
+    def _alive(self, run_dir):
+        return os.path.basename(run_dir) in self._alive_set
+
+    def _session_from_out(self, run_dir):
+        return ""
+
+    def _tool_detail(self, name, inp):
+        return str((inp or {}).get("command") or "")
+
+
+def _stage_run(runs_dir, name, session_id, resumed_from=""):
+    d = runs_dir / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps({"file": "/p",
+                                             "resumed_from": resumed_from}))
+    if session_id:
+        (d / "session").write_text(session_id)
+    return d
+
+
+@pytest.fixture()
+def parked(tmp_path, monkeypatch):
+    """Install a fake runs tree, and hand back a function that fills it in."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+
+    def install(per_run, alive):
+        agent = _FakeAgent(runs, per_run, alive)
+        monkeypatch.setattr(tasks_mod, "_agent_module", lambda: agent)
+        return agent
+
+    install.dir = runs
+    return install
+
+
+def _running(projects_dir):
+    """A task whose turn is genuinely in flight — the state `needs_attention`
+    refines. Without this it would read In Progress from nothing and the
+    precedence under test would be untestable."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), claude_session_id="sess-a")])
+
+
+def test_a_run_parked_on_a_card_needs_attention_not_in_progress(
+        client, projects_dir, parked):
+    """The whole feature in one row. In Progress is a true sentence about a
+    parked run and a useless one: it is the sentence a reader waits out, and
+    this run will still be sitting there tomorrow."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                     "input": {"command": "rm -rf build"}}]}, alive={"r-1"})
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "needs_attention"
+    assert task["blocked_reason"] == "permission"
+    assert task["attention"] == {"tool": "Bash", "summary": "rm -rf build"}
+
+
+def test_answering_the_card_gives_the_run_back_to_in_progress(
+        client, projects_dir, parked):
+    """Nothing is remembered and nothing has to be undone: the decision files
+    are read on every poll, so answering a card is a row that has already moved
+    by the next one."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "allow",
+                     "input": {"command": "rm -rf build"}}]}, alive={"r-1"})
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "in_progress"
+    assert task["attention"] is None
+    assert task["blocked_reason"] == ""
+
+
+def test_a_question_card_is_a_question_and_says_what_it_asked(
+        client, projects_dir, parked):
+    """AskUserQuestion is the one card that is not an approval, and the row says
+    so — "AskUserQuestion" alone names the machinery rather than the ask."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "q1", "tool": "AskUserQuestion", "decision": "",
+                     "input": {"questions": [{"question": "Ship it?"}]}}]},
+           alive={"r-1"})
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "needs_attention"
+    assert task["blocked_reason"] == "question"
+    assert task["attention"]["summary"] == "Ship it?"
+
+
+def test_a_card_in_a_DEAD_run_is_not_waiting_on_anybody(
+        client, projects_dir, parked):
+    """A dead process cannot be unblocked and its last card sits in the run dir
+    for ever. A row for it would be a lane that only ever fills up, with an Open
+    button onto a conversation nobody can answer."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
+           alive=set())
+
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_the_run_is_found_by_either_spelling_of_its_session(
+        client, projects_dir, parked):
+    """A run knows the session it RESUMED and the one the CLI minted for it, and
+    either can be the id a task row carries. Matching on one is how a parked run
+    goes unnoticed for exactly the runs that forked."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "", resumed_from="sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
+           alive={"r-1"})
+
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+
+def test_a_task_that_is_not_running_is_never_waiting(client, projects_dir,
+                                                     parked):
+    """`parked` only ever describes a live process, and the status still asks
+    whether anything is running before it reads it: a settled task cannot be
+    waiting on an answer."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="ok", claude_session_id="sess-a")])
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
+           alive={"r-1"})
+
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
+def test_a_broken_run_says_blocked_and_why(client, projects_dir):
+    """The other half of the Blocked lane. The word alone cannot tell a reader
+    which button to reach for — Retry for a run that broke, Open for one that is
+    asking — so the row says which."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="failed", claude_session_id="sess-a")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "blocked"
+    assert task["blocked_reason"] == "failed"
+    assert task["attention"] is None
+
+
+def test_the_listing_puts_what_wants_hands_on_top():
+    """Recency is the right order for a page you READ and the wrong one for a
+    page you WORK: a run parked at 6am is the most urgent row on the machine and,
+    sorted by activity, sinks below every chat typed since."""
+    rows = [
+        {"key": "fresh", "status": "in_progress", "last_active": 500.0},
+        {"key": "broke", "status": "blocked", "last_active": 100.0},
+        {"key": "asking", "status": "needs_attention", "last_active": 10.0},
+        {"key": "old", "status": "done", "last_active": 400.0},
+    ]
+    rows.sort(key=tasks_mod._row_order)
+    assert [r["key"] for r in rows] == ["asking", "broke", "fresh", "old"]
+    # ...and inside a rank it is still recency, which is the page's one honest
+    # question once urgency has had its say.
+    same = [
+        {"key": "older", "status": "needs_attention", "last_active": 1.0},
+        {"key": "newer", "status": "needs_attention", "last_active": 2.0},
+    ]
+    same.sort(key=tasks_mod._row_order)
+    assert [r["key"] for r in same] == ["newer", "older"]
+
+
+def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
+        client, projects_dir, parked):
+    """Delete refuses a run in flight, and a waiting run is one. The guard reads
+    both words so that a row whose status is the finer one is not a hole in it."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
+           alive={"r-1"})
+
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 409, r.text

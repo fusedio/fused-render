@@ -269,24 +269,69 @@ export function assignLanes<T extends { time: Date }>(
 // word — which meant the calendar had to keep its own vocabulary to say what
 // had happened. It says it here instead, once, for every view.
 //
-// FAILED BEFORE DONE, swapped on 2026-08-18 (Akshil, "swap places for failed and
+// BLOCKED BEFORE DONE, swapped on 2026-08-18 (Akshil, "swap places for failed and
 // done status in list and kanban board"). The board is read left to right, and a
 // lane that wants a person's hands belongs on the near side of one that wants
-// only their eyes: a failed run needs a decision, a done run needs reading.
+// only their eyes: a run that stopped needs a decision, a done run needs reading.
 //
-// THIS IS THE LIST'S ORDER TOO, and a test holds the two arrays to the same
-// sequence (tasks-lib.LIST_ORDER, whose note carries the argument): a reader
-// moving between the views carries ONE mental picture of where a status sits, so
-// the five facts are ranked here once and the list follows.
+// THAT LANE IS "BLOCKED" AND NOT "FAILED" since 2026-09-03 (Akshil: "failed
+// status could be renamed as blocked … for fail retry, for block a reason"). The
+// wider word is what lets one lane hold both of the ways a task stops moving —
+// a run that broke, and a run parked on a card nobody answered — which is the
+// point: from the reader's side those are one fact ("this is not going to
+// finish by itself"), and two lanes for it would split the one column a person
+// works out of. WHICH of the two it is stays on the row: `Task.failed` paints
+// the ring red and `Task.blocked_reason` names it in a word, so the button can
+// still be Retry for one and Open for the other.
+//
+// SIX KEYS, FIVE LANES. `needs_attention` is a STATUS — its own word, its own
+// hue, its own rank at the top of the List — and it draws in the Blocked lane
+// rather than a sixth column of its own (see BOARD_LANES). A board is read by
+// sweeping across it, and a lane that is empty except during the minutes
+// somebody is being waited on is a lane that teaches the reader to skip it.
+//
+// THIS IS THE LIST'S VOCABULARY TOO, and a test holds the two arrays to the same
+// sequence apart from the two ranks the List hoists (tasks-lib.LIST_ORDER, whose
+// note carries the argument): a reader moving between the views carries ONE
+// mental picture of what a status IS, even where urgency reorders them.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },
-  { key: "failed", label: "Failed" },
+  { key: "needs_attention", label: "Needs attention" },
+  { key: "blocked", label: "Blocked" },
   { key: "done", label: "Done" },
   { key: "archived", label: "Archive" },
 ] as const;
 
 export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"];
+
+/** A column the BOARD actually draws. Every status is one except
+ *  `needs_attention`, which shares the Blocked lane — see `laneOf`. */
+export type BoardLane = Exclude<BoardColumn, "needs_attention">;
+
+/**
+ * The lanes, left to right — BOARD_COLUMNS minus the one that shares.
+ *
+ * Derived rather than written out a second time, so a status added to the list
+ * above cannot be a status the board silently does not draw. The cast is the
+ * price of `filter` widening a literal tuple; the FILTER is the claim, and the
+ * type keeps `needs_attention` out of every lane-shaped position after it.
+ */
+export const BOARD_LANES = BOARD_COLUMNS.filter(
+  (c) => c.key !== "needs_attention",
+) as readonly { key: BoardLane; label: string }[];
+
+/**
+ * Which lane a status is DRAWN in. Identity for five of the six.
+ *
+ * The one mapping is the whole of "needs attention lives in Blocked", written
+ * once here rather than as an `=== "needs_attention"` in each of the board's
+ * three passes (bucketing, drop legality, the rail's count) — three places that
+ * would each have to be remembered again the next time a status is added.
+ */
+export function laneOf(column: BoardColumn): BoardLane {
+  return column === "needs_attention" ? "blocked" : column;
+}
 
 export function boardColumn(entry: ScheduledMessage): BoardColumn {
   const tone = stateTone(entry);
@@ -297,7 +342,10 @@ export function boardColumn(entry: ScheduledMessage): BoardColumn {
   // NOW, which is exactly what In Progress means for a session too.
   if (tone === "sending") return "in_progress";
   // Settled BADLY has its own word since 2026-08-17, and every view says it.
-  if (tone === "error" || tone === "missed") return "failed";
+  // An ENTRY never reads as `needs_attention`: this narrows a scheduled
+  // message's own two fields, and whether the run it started is parked on a
+  // card is a fact about the RUN, which only the server's task row carries.
+  if (tone === "error" || tone === "missed") return "blocked";
   if (entry.state === "sent") return "done";
   return "upcoming";
 }
@@ -1605,10 +1653,10 @@ export function lateText(m: TaskMessage): string {
 }
 
 // ---- One status vocabulary ---------------------------------------------------------
-// The Board and the List say Upcoming / In Progress / Done / Failed / Archive
-// about a task. The calendar used to say Scheduled / Ran / Failed / Projected
-// about a run, and the split read as two products (Akshil, 2026-08-17). There is
-// now ONE set of words and the calendar speaks it.
+// The Board and the List say Upcoming / In Progress / Needs attention / Blocked
+// / Done / Archive about a task. The calendar used to say Scheduled / Ran /
+// Failed / Projected about a run, and the split read as two products (Akshil,
+// 2026-08-17). There is now ONE set of words and the calendar speaks it.
 //
 // FAILURE IS A WORD, not a red ring inside Done — that was the first cut of this
 // change and the user rejected it: "if we can't show failed tasks, then let's
@@ -1641,8 +1689,9 @@ export interface RunTone {
 
 export interface RunStatus {
   column: BoardColumn;
-  /** Settled, but not well. The word already says "Failed"; this is what paints
-   * it red as well, and what a caller filters on. */
+  /** Settled, but not well. The word already says "Blocked"; this is what paints
+   * it red as well, and what a caller filters on — and, since Blocked also
+   * holds a run parked on a card, what tells the two apart. */
   failed: boolean;
   /** Cron arithmetic, not a message yet: dashed ring, dashed pill. */
   projected: boolean;
@@ -1653,8 +1702,8 @@ export interface RunStatus {
   detail: string;
 }
 
-/** The Board's word for one of the four columns. BOARD_COLUMNS is the single
- * source; a hand-written second map is how the two views drift apart. */
+/** The Board's word for one status. BOARD_COLUMNS is the single source; a
+ * hand-written second map is how the two views drift apart. */
 export function columnLabel(column: BoardColumn): string {
   return BOARD_COLUMNS.find((c) => c.key === column)?.label ?? column;
 }
@@ -1663,13 +1712,13 @@ export function columnLabel(column: BoardColumn): string {
  * One message, in the one vocabulary. `tone` is tasks-lib.messageTone(m).
  *
  * The one thing done here rather than read: a tone that is settled-but-failed
- * lands in the `failed` COLUMN. tasks-lib filed those under `done` back when
+ * lands in the `blocked` COLUMN. tasks-lib filed those under `done` back when
  * failure was only a red ring, and this promotes the flag it already sets into
  * the word the user asked for. It is a bridge, not a second opinion — the day
  * tasks-lib returns `failed` itself, this line becomes a no-op and can go.
  */
 export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
-  const column = tone.failed ? "failed" : tone.column;
+  const column = tone.failed ? "blocked" : tone.column;
   return {
     column,
     failed: tone.failed,
@@ -1702,8 +1751,8 @@ export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
  *
  * `failed` collapses into the COLUMN rather than staying a flag beside it, which
  * is the same bridge runStatus makes and matches StatusIcon's own text exactly:
- * a task triaged to `done` whose newest run broke says Failed, and so does a
- * task the server already filed under `failed`.
+ * a task triaged to `done` whose newest run broke says Blocked, and so does a
+ * task the server already filed under `blocked`.
  *
  * NEVER `projected` (Akshil, 2026-08-19). The pill used to inherit the clicked
  * chip's dashes, but the dashes mean "nothing on this day is written down yet" —
@@ -1712,10 +1761,14 @@ export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
  * never itself a projection, so its pill is always solid.
  */
 export function taskStatus(column: BoardColumn, failed: boolean): RunStatus {
-  const c = failed ? "failed" : column;
+  // NOT over `needs_attention`. The flag says the newest run BROKE, and a task
+  // whose run is parked on a card right now is a task whose run is still going —
+  // collapsing it into Blocked here would put "Blocked" in the header of a
+  // panel whose footer offers to open the card and answer it.
+  const c = failed && column !== "needs_attention" ? "blocked" : column;
   return {
     column: c,
-    failed: c === "failed",
+    failed: c === "blocked",
     projected: false,
     label: columnLabel(c),
     // A task has no finer reading to keep: `detail` exists for the run-level

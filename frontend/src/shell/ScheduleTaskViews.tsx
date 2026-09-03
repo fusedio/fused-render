@@ -44,8 +44,8 @@ import {
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
-import type { BoardColumn } from "./schedule-lib";
+import { BOARD_COLUMNS, BOARD_LANES, columnLabel, laneOf } from "./schedule-lib";
+import type { BoardColumn, BoardLane } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
@@ -67,6 +67,8 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
+  attentionSummary,
+  needsAttention,
   laneRolledUp,
   laneUnread,
   sortByLane,
@@ -286,6 +288,11 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  * column: a failed or missed run IS settled, but folding away the only failure
  * signal would let a dead turn read as a clean one.
  *
+ * `needs_attention` is In Progress's own yellow with a "!" struck through the
+ * middle (schedule.css) rather than a hue of its own — a waiting run IS in
+ * progress, and what is different about it is that it has stopped and is
+ * asking, which is a thing a glyph can say and a shade cannot.
+ *
  * SHAPE is the read-state (2026-08-18). The centre dot used to mean "settled" and
  * was drawn on every Done and Failed ring; it now means "not looked at yet", and a
  * read one is hollow. That is the whole of the unread vocabulary on this page — the
@@ -347,7 +354,7 @@ export function StatusIcon({
   /** What that fill stands for, on a container. Omitted on a leaf. */
   count?: number;
 }) {
-  const text = label ?? (failed ? "Failed" : (STATUS_LABELS[status] ?? status));
+  const text = label ?? (failed ? "Blocked" : (STATUS_LABELS[status] ?? status));
   const many = taskUnreadLabel(count ?? 0);
   // What the FILL is worth in words. The count when there is one, the bare word
   // when there is not — and nothing at all on a hollow ring, which is the point:
@@ -1627,6 +1634,13 @@ function TaskNode({
   // offered and nothing is marked. Asked with the count this row is DRAWING, so
   // a second press on an already-cleared task posts nothing.
   const chat = openThreadIntent(task, unread);
+  // Is this row waiting on the READER — a permission or question card its live
+  // run raised and nobody has answered (server: tasks.py `_parked_runs`) — and
+  // what is being asked for. The status decides the first (tasks-lib
+  // .needsAttention); the second is null whenever there is nothing worth
+  // printing, including on an older server that sends no summary at all.
+  const waiting = needsAttention(task);
+  const asking = attentionSummary(task);
   const label = firstLine(task.title) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
@@ -2195,6 +2209,24 @@ function TaskNode({
         >
           {label}
         </span>
+        {/* WHAT IT IS ASKING FOR — "Bash · rm -rf build" — on the one row that is
+            waiting on somebody. The row's ring says a person is needed and the
+            title says which task; neither says what the answer would be about,
+            and a reader who has to open the chat to find out is a reader who has
+            to open every waiting chat.
+
+            AFTER the title rather than under it, which is the one departure from
+            design.md's "sub-line": this row is a single flex line by
+            construction (one auto margin, the title as the only element that
+            shrinks — see `.tasks-grow` below), and stacking a second line under
+            the title would change the height of every row on the page to serve
+            the rare one. It ellipsises before the title does, so the fact never
+            costs the task's own name. */}
+        {asking && (
+          <span className="tasks-asking" title={asking}>
+            {asking}
+          </span>
+        )}
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file
             mark, on the tasks whose target is a FILE rather than the folder.
             The row already says which project the work happened in; what it
@@ -2334,12 +2366,26 @@ function TaskNode({
             row's OWN click is still not this (see `activate`): on an accordion it
             toggles and opens nothing, and on a leaf it opens that leaf's single
             message through the message path, marking that one message. */}
-        {SHOW_ROW_ACTIONS && chat && (
+        {/* A WAITING ROW DRAWS IT WHATEVER SHOW_ROW_ACTIONS SAYS, and draws it
+            at rest rather than on hover (Akshil, 2026-09-03: "when we click we
+            go to the page and unblock the task"). The strip is hidden because a
+            list at rest must grow no chrome (§2 — only CRITICAL actions get a
+            visible button), and this is the one row where the rule points the
+            other way: the run has stopped and will not start again until
+            somebody answers the card, so the way to the card is the critical
+            action on the page.
+
+            The WORD is "Open" and not "Open chat" — the thing being opened is
+            the ask, and the row's own sub-line above has just said what it is.
+            No Approve or Deny here (design.md): answering means reading what is
+            being asked, and a two-button row that can say yes to `rm -rf` from a
+            list nobody has scrolled is exactly the gesture not to build. */}
+        {(SHOW_ROW_ACTIONS || waiting) && chat && (
           <button
             type="button"
-            className="tasks-act"
-            title="Open chat"
-            aria-label="Open chat"
+            className={"tasks-act" + (waiting ? " is-shown" : "")}
+            title={waiting ? "Open the chat and answer what it is asking" : "Open chat"}
+            aria-label={waiting ? "Open" : "Open chat"}
             onClick={(e) => {
               e.stopPropagation();
               openChat(chat);
@@ -2754,12 +2800,12 @@ export function TaskBoard({
   // deliberately not persisted: opening a column with nothing in it is a peek,
   // and a peek is answered and over (tasks-lib, above `laneCollapsed`). A remount
   // — every navigation back to this page — starts the board with none.
-  const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());
+  const [peeked, setPeeked] = useState<Set<BoardLane>>(() => new Set());
   const [visible, setVisible] = useState<Record<string, number>>({});
   // The card in flight and the lane under it. Native HTML5 drag — a column
   // move needs nothing fancier than the platform's own.
   const [dragging, setDragging] = useState<Task | null>(null);
-  const [overLane, setOverLane] = useState<BoardColumn | null>(null);
+  const [overLane, setOverLane] = useState<BoardLane | null>(null);
   // What the server said about the last move the board asked for — a drop, or a
   // card's own Archive button. One line above the lanes, because both are the
   // same kind of news about the same board.
@@ -2789,13 +2835,13 @@ export function TaskBoard({
   // dashed legal-drop outline says nothing about which of the two it is.
   const runLane = useMemo(() => {
     if (!dragging) return null;
-    for (const col of BOARD_COLUMNS) {
+    for (const col of BOARD_LANES) {
       if (dropAction(dragging, col.key)?.kind === "run") return col.key;
     }
     return null;
   }, [dragging]);
 
-  const drop = async (lane: BoardColumn) => {
+  const drop = async (lane: BoardLane) => {
     const task = dragging;
     setDragging(null);
     setOverLane(null);
@@ -2904,7 +2950,7 @@ export function TaskBoard({
   // Shared by expanded lane bodies AND collapsed rails, so a rolled-up lane —
   // an empty one, or one the reader closed — still catches the drop most cards
   // are allowed.
-  const dropProps = (lane: BoardColumn) => ({
+  const dropProps = (lane: BoardLane) => ({
     onDragOver: (ev: ReactDragEvent) => {
       if (!dragging || !allowed.has(lane)) return;
       ev.preventDefault();
@@ -2931,7 +2977,7 @@ export function TaskBoard({
   // reader does to an empty column can outlive the sitting. The peek is a
   // straight toggle because it is the only thing the empty case has: closing a
   // peeked lane is removing the peek, not recording "collapsed".
-  const toggleLane = (key: BoardColumn, nowCollapsed: boolean) => {
+  const toggleLane = (key: BoardLane, nowCollapsed: boolean) => {
     if ((byLane.get(key)?.length ?? 0) === 0) {
       setPeeked((cur) => {
         const next = new Set(cur);
@@ -2970,8 +3016,13 @@ export function TaskBoard({
   return (
     <>
       {note && <p className="schedule-tv-note">{note}</p>}
+      {/* The LANES, not every status: `needs_attention` draws inside Blocked
+          (schedule-lib.BOARD_LANES / laneOf, and groupByColumn puts those cards
+          at the top of it). A board is read by sweeping across it, and a sixth
+          column that is empty except during the minutes somebody is being
+          waited on is a column that teaches the reader to skip it. */}
       <div className="schedule-tv-board">
-        {BOARD_COLUMNS.map((col) => {
+        {BOARD_LANES.map((col) => {
           const lane = byLane.get(col.key) ?? [];
           // How many CARDS in this column still hold something nobody has read —
           // the same fact the List's task rows carry, one level up. It matters
@@ -3183,17 +3234,27 @@ function TaskCard({
   // function the List row asks, so the two views cannot describe one run
   // differently.
   const outcome = outcomeTag(task);
-  // The lane this card is IN. Not passed down: `groupByColumn` files every card
-  // by `taskColumn`, so asking it here is asking the same function that decided
-  // which lane header the card is sitting under — a prop would be a second
-  // opinion about a fact the board has already settled.
-  const lane = taskColumn(task);
+  // The lane this card is IN — the COLUMN it is drawn under, which is why it is
+  // `laneOf` and not the status alone: a waiting card sits in Blocked, and the
+  // header above it says Blocked. Not passed down either way: `groupByColumn`
+  // files every card by exactly this, so asking it here is asking the function
+  // that decided which header the card is sitting under, where a prop would be a
+  // second opinion about a fact the board has already settled.
+  const status = taskColumn(task);
+  const lane = laneOf(status);
   // Whether the ring would SAY anything on this card. See the head below: the
   // ring is drawn only when it disagrees with the lane, and `isFailedTask` is the
-  // one place that knows what "reads as failed" means (the failed lane, or the
+  // one place that knows what "reads as failed" means (the blocked lane, or the
   // flag that repaints a Done ring red). The lane check is what turns that into
-  // "disagrees": in the failed lane the two agree and the header has said it.
-  const failedOffLane = isFailedTask(task) && lane !== "failed";
+  // "disagrees": in the blocked lane the two agree and the header has said it.
+  //
+  // A WAITING CARD ALWAYS DRAWS ONE, because its status and its lane are
+  // genuinely different facts — "Blocked" is the column it is filed under and
+  // "Needs attention" is what is true of it — and that is the one card whose
+  // ring is the difference between "somebody has to look at this eventually" and
+  // "somebody has to answer this now".
+  const failedOffLane = isFailedTask(task) && lane !== "blocked";
+  const waiting = needsAttention(task);
   const [busy, setBusy] = useState(false);
   const refile = async (intent: FilingIntent) => {
     setBusy(true);
@@ -3283,10 +3344,19 @@ function TaskCard({
             TITLE'S WEIGHT now: unread cards read bold, read cards read normal. See
             the title below.
 
+            THE SECOND SUCH CARD is a waiting one (2026-09-03). Its status is
+            `needs_attention` and its lane is Blocked — genuinely two different
+            facts about it, which is the exact condition above — so it wears its
+            own amber ring for the same reason and by the same rule. It is also
+            the difference between "somebody has to look at this eventually" and
+            "somebody has to answer this now", which is worth a glyph.
+
             So the head is the id, and a ring on the one card whose status its lane
             does not mention. */}
         <span className="schedule-tv-card-head">
-          {failedOffLane && <StatusIcon status={lane} failed />}
+          {waiting
+            ? <StatusIcon status="needs_attention" />
+            : failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
           {outcome && <OutcomePill outcome={outcome} />}
         </span>

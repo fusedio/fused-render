@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS } from "./schedule-lib";
+import { BOARD_COLUMNS, BOARD_LANES, laneOf } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
@@ -35,6 +35,8 @@ import {
   isDraggable,
   isExpandable,
   isFailedTask,
+  attentionSummary,
+  needsAttention,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -961,19 +963,87 @@ describe("taskColumn", () => {
     expect(taskColumn({ ...task(), status: "weird" as Task["status"] })).toBe("done");
   });
 
-  it("speaks the board's five words, not a list of its own", () => {
-    // The fifth arrived a round after the first four; a hardcoded list here is
-    // how a real lane silently empties itself into Done.
+  it("speaks the board's own words, not a list of its own", () => {
+    // The fifth arrived a round after the first four and the sixth a fortnight
+    // after that; a hardcoded list here is how a real status silently empties
+    // itself into Done.
     for (const col of BOARD_COLUMNS) {
       expect(taskColumn({ ...task(), status: col.key as Task["status"] })).toBe(col.key);
     }
-    // Lane order, left to right. Failed sits BEFORE Done (Akshil, 2026-08-18): a
-    // lane that wants a person's hands comes before one that wants only their
-    // eyes. The List reads the SAME sequence — LIST_ORDER's own test holds the two
-    // arrays equal.
+    // Status order. Blocked sits BEFORE Done (Akshil, 2026-08-18): a lane that
+    // wants a person's hands comes before one that wants only their eyes.
+    // `needs_attention` sits beside it and is DRAWN inside it — see BOARD_LANES.
     expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
-      "upcoming", "in_progress", "failed", "done", "archived",
+      "upcoming", "in_progress", "needs_attention", "blocked", "done", "archived",
     ]);
+    // The LANES are those minus the one that shares, in the same order — the
+    // board draws five columns and every status is drawn in one of them.
+    expect(BOARD_LANES.map((c) => c.key)).toEqual([
+      "upcoming", "in_progress", "blocked", "done", "archived",
+    ]);
+    expect(laneOf("needs_attention")).toBe("blocked");
+    for (const col of BOARD_LANES) expect(laneOf(col.key)).toBe(col.key);
+  });
+});
+
+// ---- a run that has stopped and is asking -------------------------------------
+// The status the server derives when a live run has raised a permission or
+// question card nobody has answered (tasks.py `_parked_runs`). Everything the
+// client does with it hangs off the STATUS; the two extra fields on the row are
+// what the page says about it, never what decides it.
+
+describe("needsAttention", () => {
+  it("reads the status and nothing beside it", () => {
+    expect(needsAttention(task({ status: "needs_attention" }))).toBe(true);
+    expect(needsAttention(task({ status: "in_progress" }))).toBe(false);
+    // An older server sends no `attention` and no `blocked_reason` at all. The
+    // status is still the answer, so the row paints and the extras are captions:
+    // a predicate reading them would disagree with the ring beside it.
+    const bare = task({ status: "needs_attention" });
+    delete (bare as Partial<Task>).attention;
+    expect(needsAttention(bare)).toBe(true);
+    // ...and a task carrying the fields without the status is not waiting. The
+    // server writes both together; this is the direction that must not be
+    // guessed at.
+    expect(needsAttention(task({
+      status: "in_progress",
+      attention: { tool: "Bash", summary: "rm -rf build" },
+    }))).toBe(false);
+  });
+
+  it("is not read as FAILED, even though it draws in the Blocked lane", () => {
+    // The lane holds both, and the verb on the row is the difference: Retry for
+    // a run that broke, Open for one that is asking.
+    expect(isFailedTask(task({ status: "needs_attention" }))).toBe(false);
+    expect(laneOf(taskColumn(task({ status: "needs_attention" })))).toBe("blocked");
+  });
+});
+
+describe("attentionSummary", () => {
+  it("says which tool, and what it wants to do", () => {
+    expect(attentionSummary(task({
+      status: "needs_attention",
+      attention: { tool: "Bash", summary: "rm -rf build" },
+    }))).toBe("Bash · rm -rf build");
+  });
+
+  it("says nothing at all rather than half a sentence", () => {
+    // A caption reading "Bash · " puts a gap where the row promised to say what
+    // is being asked for, which is worse than no caption.
+    expect(attentionSummary(task({
+      status: "needs_attention",
+      attention: { tool: "Bash", summary: "" },
+    }))).toBe("Bash");
+    expect(attentionSummary(task({
+      status: "needs_attention",
+      attention: { tool: "", summary: "" },
+    }))).toBe(null);
+    expect(attentionSummary(task({ status: "needs_attention" }))).toBe(null);
+    // And never on a row that is not waiting, whatever a stale field says.
+    expect(attentionSummary(task({
+      status: "done",
+      attention: { tool: "Bash", summary: "rm -rf build" },
+    }))).toBe(null);
   });
 });
 
@@ -1003,7 +1073,7 @@ const T18 = Math.floor(Date.parse("2026-08-17T18:00:00") / 1000);
  * the four-word union this round started with — the server writes the word and
  * the board already draws its lane. The cast can go the moment that union
  * gains it; nothing else in this file has to change when it does. */
-const FAILED = "failed" as Task["status"];
+const FAILED = "blocked" as Task["status"];
 
 describe("dropLanes", () => {
   // THE MATRIX, ONE LANE PER CASE. Written out per lane rather than as a loop
@@ -1078,7 +1148,7 @@ describe("dropLanes", () => {
     const t = task({ status: "archived" });
     expect(dropLanes(t)).toEqual([]);
     expect(isDraggable(t)).toBe(false);
-    for (const lane of ["upcoming", "in_progress", "done", "failed"] as const) {
+    for (const lane of ["upcoming", "in_progress", "done", "blocked"] as const) {
       expect(dropAction(t, lane)).toBeNull();
     }
   });
@@ -1143,7 +1213,7 @@ describe("dropLanes", () => {
     // go, and the move is unarchive rather than "make it that lane" — see the
     // unarchive cases above.
     for (const status of ["upcoming", "in_progress", "done"] as const) {
-      for (const lane of ["upcoming", "failed", "done"] as const) {
+      for (const lane of ["upcoming", "blocked", "done"] as const) {
         expect(dropLanes(task({ status })).includes(lane)).toBe(false);
       }
     }
@@ -1294,7 +1364,7 @@ describe("dropAction", () => {
     expect(dropAction(task({ status: "done" }), "done")).toBe(null);
     expect(dropAction(task({ status: "done" }), "upcoming")).toBe(null);
     expect(dropAction(task({ status: "upcoming" }), "in_progress")).toBe(null);
-    expect(dropAction(task({ status: "done" }), "failed")).toBe(null);
+    expect(dropAction(task({ status: "done" }), "blocked")).toBe(null);
     expect(dropAction(upcoming([T9], { status: FAILED }), "done")).toBe(null);
     // In Progress refuses everything as a SOURCE; Archive refuses only itself.
     for (const lane of ["in_progress", "archived"] as const) {
@@ -1317,7 +1387,7 @@ describe("dropAction", () => {
 // it is not a choice of lane, and it is not a run.
 
 describe("the unarchive drag", () => {
-  const LANES = ["upcoming", "in_progress", "done", "failed"] as const;
+  const LANES = ["upcoming", "in_progress", "done", "blocked"] as const;
 
   it("is not a drag at all any more — the group pins the lock", () => {
     // (Akshil, 2026-08-19.) The two things the move is NOT became three: not a
@@ -1340,7 +1410,7 @@ describe("the unarchive drag", () => {
     }
     // No lane on the whole board reads as a run for an archived card, which is
     // what the Board's `runLane` hint asks — so it draws no run outline.
-    for (const col of BOARD_COLUMNS) {
+    for (const col of BOARD_LANES) {
       expect(dropAction(pending, col.key)?.kind === "run").toBe(false);
     }
   });
@@ -1368,7 +1438,7 @@ describe("the unarchive drag", () => {
   it("is the call the Board makes, and it sends no lane", () => {
     // The handler's own half of the rule, read out of the source: one call over
     // the task key, and the `lane` the drop was made on is not in it.
-    const from = VIEWS.indexOf('const drop = async (lane: BoardColumn)');
+    const from = VIEWS.indexOf('const drop = async (lane: BoardLane)');
     const handler = VIEWS.slice(from, VIEWS.indexOf("onReload();", from));
     expect(handler).toContain('action.kind === "unarchive"');
     // Through the shared helper — one call over the task key, and the `lane` the
@@ -1655,7 +1725,7 @@ describe("filingIntent", () => {
       // NO BUTTON ⇒ NO FILING DROP ANYWHERE, in either direction. A run-now drop
       // is a different verb and may still be legal.
       if (!a) {
-        for (const col of BOARD_COLUMNS) {
+        for (const col of BOARD_LANES) {
           const action = dropAction(t, col.key);
           expect(action === null || action.kind === "run").toBe(true);
         }
@@ -1840,7 +1910,7 @@ describe("isUpcomingTask", () => {
   it("is false for every other lane, however far ahead its next run is", () => {
     // A Done task usually has a next run scheduled too, and its title is history
     // that HAS happened. The lane is half the question, not a proxy for it.
-    for (const status of ["done", "in_progress", "failed", "archived"] as const) {
+    for (const status of ["done", "in_progress", "blocked", "archived"] as const) {
       const t = task({
         status,
         messages: [
@@ -1956,8 +2026,12 @@ describe("the unread mark", () => {
       CARD.indexOf('className={"schedule-tv-card-title"'),
     );
     expect(head).toContain("<IdChip");
-    expect(head).toContain("{failedOffLane && <StatusIcon status={lane} failed />}");
-    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(1);
+    expect(head).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
+    // TWO, and both are the same exception: the ring is drawn when the card's
+    // status is not the lane it sits under — once for a broken run filed
+    // elsewhere, once for a waiting one drawn inside Blocked. One of the two
+    // arms renders, never both (they are the arms of one ternary).
+    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(2);
     // The SAME mark this page already uses one level down, so a card and an unread
     // message row make the same claim the same way.
     expect(TASKS_CSS).toMatch(
@@ -2345,7 +2419,7 @@ describe("the board card's status ring", () => {
   );
 
   /** Exactly what the card asks: does the ring say anything the lane has not? */
-  const saysSomething = (t: Task) => isFailedTask(t) && taskColumn(t) !== "failed";
+  const saysSomething = (t: Task) => isFailedTask(t) && taskColumn(t) !== "blocked";
 
   it("says nothing extra on a card whose status IS its lane", () => {
     // The common card, and the whole of what was asked for. Every lane, including
@@ -2354,7 +2428,7 @@ describe("the board card's status ring", () => {
     for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
       expect(saysSomething(task({ status }))).toBe(false);
     }
-    expect(saysSomething(task({ status: "failed", failed: true }))).toBe(false);
+    expect(saysSomething(task({ status: "blocked", failed: true }))).toBe(false);
     // A lane the client does not recognise is filed under Done (taskColumn), and it
     // agrees with the lane it was filed into, so it draws nothing either.
     expect(saysSomething(task({ status: "invented-later" as Task["status"] }))).toBe(false);
@@ -2374,11 +2448,16 @@ describe("the board card's status ring", () => {
     // `isFailedTask` is the single notion of "reads as failed" (the failed lane, or
     // the flag that repaints a Done ring red). A second inline reading of
     // `task.failed` here is how the card and the List row would drift apart.
-    expect(CARD).toContain("{failedOffLane && <StatusIcon status={lane} failed />}");
+    expect(CARD).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
+    // The waiting card's own ring, by the same rule: its status and its lane are
+    // two different facts (Needs attention, drawn under Blocked), which is
+    // exactly the condition the ring is drawn for.
+    expect(CARD).toContain('<StatusIcon status="needs_attention" />');
     expect(CARD).toContain("<IdChip");
     const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
-    expect(card).toContain('isFailedTask(task) && lane !== "failed"');
-    expect(card).toContain("const lane = taskColumn(task)");
+    expect(card).toContain('isFailedTask(task) && lane !== "blocked"');
+    expect(card).toContain("const status = taskColumn(task);");
+    expect(card).toContain("const lane = laneOf(status);");
     // ONE reason and one reading. Unread was briefly a second reason to draw a
     // ring (2026-08-18, for half a day) and that put the repetition straight back;
     // it has a dot of its own now, so this predicate is alone again.
@@ -3079,7 +3158,7 @@ describe("the one-message row's missing chevron", () => {
     // through the shared performer, so it still clears the thread on the way out.
     // (It is behind SHOW_ROW_ACTIONS as of 2026-08-17, which is about whether it is
     // DRAWN — see "the hidden row actions" — not about what it is.)
-    expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
+    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
     expect(ROW).toContain("openChat(chat)");
     expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
     expect(VIEWS).toMatch(/const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/);
@@ -3290,7 +3369,7 @@ describe("an upcoming row's click", () => {
     expect(upcomingEditEntry(soon)).toBe(null);
     // Every other lane declines too, so a row that has run is never the form.
     expect(upcomingEditEntry(task({ status: "done" }))).toBe(null);
-    expect(upcomingEditEntry(task({ status: "failed" }))).toBe(null);
+    expect(upcomingEditEntry(task({ status: "blocked" }))).toBe(null);
     expect(upcomingEditEntry(task({ status: "in_progress" }))).toBe(null);
     // The COUNT is asked of what the row HOLDS, as soleMessage's is — so a row the
     // listing calls one message but whose fetched thread holds two is the accordion,
@@ -3620,11 +3699,15 @@ describe("the archive action", () => {
     expect(CARD).toMatch(/\{file && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
     // group's, and their order survives whichever of them are rendered.
-    for (const guarded of ["seen", "run", "chat"]) {
+    for (const guarded of ["seen", "run"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
+    // Open is the one whose guard has a second arm — a WAITING row draws it
+    // whatever the flag says, because the run has stopped until somebody answers
+    // the card and getting to that card is the critical action on the page.
+    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
     expect(ROW.indexOf("{SHOW_ROW_ACTIONS && run && (")).toBeLessThan(
-      ROW.indexOf("{SHOW_ROW_ACTIONS && chat && ("),
+      ROW.indexOf("{(SHOW_ROW_ACTIONS || waiting) && chat && ("),
     );
     // And Archive is no longer IN that strip at all (2026-08-18): it is at the
     // row's LEADING edge, in the mark slot, ahead of every one of them — see "the
@@ -3779,8 +3862,12 @@ describe("the archive action", () => {
     expect(reveal).toContain("pointer-events: auto");
     // The keyboard arm is in the SAME rule, so a tabbed-to button is graspable
     // too rather than visible-but-inert.
+    // `.tasks-act:focus-visible` no longer ENDS that selector list — the
+    // always-drawn Open on a waiting row was added after it — so the arm is
+    // asserted as a member of the list rather than as its last line.
+    expect(TASKS_CSS).toContain(".tasks-act:focus-visible,");
     expect(TASKS_CSS).toMatch(
-      /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
+      /\.tasks-act\.is-shown \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
     );
   });
 
@@ -4049,14 +4136,19 @@ describe("the hidden row actions", () => {
     // too — one flag, so the two views cannot diverge when it flips. Per-button
     // rather than per-group since 2026-08-18, which is what let Archive out
     // without moving it in the order (see "the archive action").
-    for (const guarded of ["seen", "run", "chat"]) {
+    for (const guarded of ["seen", "run"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
+    // Open's guard carries the one exception, and it is a status and not a
+    // second flag: a row waiting on an answer draws it either way.
+    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
     expect(CARD).toContain("{SHOW_ROW_ACTIONS && run && (");
-    // FIVE guards and no more: the task row's three, the board card's Run now,
-    // and the message row's Edit/Cancel pair — every hover-revealed action in the
-    // List except Archive. (The name also appears in prose, which is not a gate.)
-    expect((VIEWS.match(/SHOW_ROW_ACTIONS &&/g) ?? []).length).toBe(6);
+    // FIVE guards and no more: the task row's three (one of which now reads
+    // `(SHOW_ROW_ACTIONS || waiting) &&`, counted below), the board card's Run
+    // now, and the message row's Edit/Cancel pair — every hover-revealed action
+    // in the List except Archive. (The name also appears in prose, not a gate.)
+    expect((VIEWS.match(/SHOW_ROW_ACTIONS &&/g) ?? []).length).toBe(5);
+    expect((VIEWS.match(/SHOW_ROW_ACTIONS \|\| waiting\) &&/g) ?? []).length).toBe(1);
     const msgFrom = VIEWS.indexOf('className={"tasks-msg"');
     const msgRow = VIEWS.slice(msgFrom, VIEWS.indexOf("{why && <p", msgFrom));
     expect(msgRow).toContain("{SHOW_ROW_ACTIONS && (");
@@ -4612,7 +4704,7 @@ describe("opening a thread, from either view", () => {
     // Both sides gate their gesture on the intent being non-null, so neither can
     // navigate to nowhere and neither marks a thread it never showed.
     expect(CARD).toContain("if (open) onOpen(open);");
-    expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
+    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
   });
 
   it("draws the MERGED count on both sides, so the mark goes on the press", () => {
@@ -4681,7 +4773,7 @@ describe("opening a thread, from either view", () => {
 
     // The named Open chat button is still there behind the flag, still with its
     // own stopPropagation, so it cannot double-fire with the link beneath it.
-    const openBtn = ROW.indexOf('title="Open chat"');
+    const openBtn = ROW.indexOf('openChat(chat);');
     expect(openBtn).toBeGreaterThan(-1);
     const btn = ROW.slice(openBtn);
     expect(btn.indexOf("e.stopPropagation();")).toBeLessThan(
@@ -4840,18 +4932,40 @@ describe("groupByColumn", () => {
       task({ key: "b", status: "upcoming" }),
       task({ key: "c", status: "done" }),
     ]);
-    // Every lane the board draws, in the board's own order — Failed between
-    // Done and Archive.
-    expect([...map.keys()]).toEqual(BOARD_COLUMNS.map((c) => c.key));
+    // Every lane the board DRAWS, in the board's own order — Blocked between
+    // In Progress and Done, and no `needs_attention` key: those cards are filed
+    // into Blocked (laneOf), which is the column they are drawn under.
+    expect([...map.keys()]).toEqual(BOARD_LANES.map((c) => c.key));
     expect(map.get("done")!.map((t) => t.key)).toEqual(["a", "c"]);
     expect(map.get("in_progress")).toEqual([]);
-    expect(map.get("failed")).toEqual([]);
+    expect(map.get("blocked")).toEqual([]);
   });
 
   it("files a failed task in its own lane, not in Done", () => {
     const map = groupByColumn([task({ key: "x", status: FAILED })]);
-    expect(map.get("failed")!.map((t) => t.key)).toEqual(["x"]);
+    expect(map.get("blocked")!.map((t) => t.key)).toEqual(["x"]);
     expect(map.get("done")).toEqual([]);
+  });
+
+  it("draws a WAITING task in Blocked, and puts it at the top of it", () => {
+    // Two statuses in one lane, and the order inside it is the point: the lane
+    // sorts by last run, which says nothing about which of its cards somebody is
+    // being waited on by — and a parked run under three broken ones is the one
+    // card in the column a person can still act on.
+    const at = 1_700_000_000;
+    const rows = [
+      task({ key: "broke-new", status: FAILED, last_active: at + 20,
+             messages: [msg({ ran_at: at + 20, at: at + 20, state: "error" })] }),
+      task({ key: "parked", status: "needs_attention", last_active: at,
+             messages: [msg({ ran_at: at, at })] }),
+      task({ key: "broke-old", status: FAILED, last_active: at + 10,
+             messages: [msg({ ran_at: at + 10, at: at + 10, state: "error" })] }),
+    ];
+    const map = groupByColumn(rows, (at + 100) * 1000);
+    expect(map.get("blocked")!.map((t) => t.key))
+      .toEqual(["parked", "broke-new", "broke-old"]);
+    // ...and recency still orders what is left, so nothing else moved.
+    expect(map.get("needs_attention" as never)).toBeUndefined();
   });
 });
 
@@ -4969,7 +5083,7 @@ describe("nextRunAt / lastRunAt", () => {
   it("falls back to `at` for a run with no ran_at, and skips the ones that never ran", () => {
     // A missed one-off never ran, so `at` is the closest time it has — and it
     // is the event the Failed lane exists to show, so it must still have one.
-    const missed = laned("a", "failed", [
+    const missed = laned("a", "blocked", [
       msg({ state: "missed", at: SEC("2026-08-15T09:00:00"), ran_at: 0 }),
     ]);
     expect(lastRunAt(missed)).toBe(SEC("2026-08-15T09:00:00"));
@@ -5178,7 +5292,7 @@ describe("lane order", () => {
         msg({ state: "error", at: SEC("2026-08-16T09:00:00"), ran_at: SEC("2026-08-16T09:02:00") }),
       ]),
     ];
-    expect(keys(groupByColumn(tasks), "failed")).toEqual(["broke-now", "broke-old"]);
+    expect(keys(groupByColumn(tasks), "blocked")).toEqual(["broke-now", "broke-old"]);
   });
 
   it("puts the most recently started work at the top of In Progress", () => {
@@ -5859,11 +5973,11 @@ describe("which board lanes are rolled up", () => {
     // The peek is component state and is persisted NOWHERE — not localStorage,
     // not the URL — so a remount (every navigation back to this page) starts the
     // board with none.
-    expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());");
+    expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardLane>>(() => new Set());");
     // WHICH store a press lands in is decided by the lane's contents. A press on
     // a lane with cards is a preference and is written down; a press on an empty
     // one is a peek and stays in memory.
-    const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardColumn"));
+    const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardLane"));
     const body = toggle.slice(0, toggle.indexOf("\n  };"));
     expect(body).toContain("if ((byLane.get(key)?.length ?? 0) === 0) {");
     expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("localStorage.setItem"));
@@ -6233,25 +6347,33 @@ describe("the tasks toolbar", () => {
 // (Akshil, 2026-08-18).
 
 describe("sortByLane", () => {
-  it("names every lane exactly once, in the list's order", () => {
+  it("names every status exactly once, in the list's order", () => {
     expect(LIST_ORDER).toEqual([
+      "needs_attention",
+      "blocked",
       "upcoming",
       "in_progress",
-      "failed",
       "done",
       "archived",
     ]);
-    // ONE ORDER FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling). The two
-    // briefly disagreed about Failed and Done — the List ranking work owed, the
-    // Board running a pipeline — and a reader moving between them carries one
-    // mental picture of where a status sits, so the disagreement was wrong in
-    // whichever view they were not looking at. The SEQUENCE is asserted identical,
-    // not merely the same set: that is what a drift would break.
-    // The literal above already pins Failed before Done, so this equality is the
-    // whole of the second view's order too — no separate per-array check, which
-    // would only be able to fail if this line had already failed.
-    expect(LIST_ORDER).toEqual(BOARD_COLUMNS.map((c) => c.key));
-    // Same set, so a sixth lane cannot be silently unsortable.
+    // ONE VOCABULARY FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling), with
+    // ONE deliberate difference (2026-09-03: "in list view they should be at
+    // top"). The two views briefly disagreed about Failed and Done — the List
+    // ranking work owed, the Board running a pipeline — and a reader moving
+    // between them carries one mental picture of where a status sits, so the
+    // disagreement was wrong in whichever view they were not looking at.
+    //
+    // What the List may do that the Board cannot is HOIST: a board's columns sit
+    // side by side and are all equally near the reader, a list has a top. So the
+    // two ranks that want hands are lifted out, and everything under them is
+    // still the board's sequence, asserted here as a sequence rather than as a
+    // set — that is what a drift would break.
+    const HOISTED: BoardColumn[] = ["needs_attention", "blocked"];
+    expect(LIST_ORDER.slice(0, HOISTED.length)).toEqual(HOISTED);
+    expect(LIST_ORDER.filter((k) => !HOISTED.includes(k))).toEqual(
+      BOARD_COLUMNS.map((c) => c.key).filter((k) => !HOISTED.includes(k)),
+    );
+    // Same set, so a seventh status cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
     );
@@ -6264,20 +6386,22 @@ describe("sortByLane", () => {
       task({ key: "b", status: FAILED }),
       task({ key: "a", status: "upcoming" }),
     ];
-    expect(sortByLane(rows).map((t) => t.key)).toEqual(["a", "b", "c", "d"]);
+    expect(sortByLane(rows).map((t) => t.key)).toEqual(["b", "a", "c", "d"]);
     expect(sortByLane([])).toEqual([]);
   });
 
-  it("puts Failed above Done and Archive last, whatever the input order", () => {
+  it("puts what wants hands on top and Archive last, whatever the input order", () => {
     const rows = [
       task({ key: "done", status: "done" }),
       task({ key: "arch", status: "archived" }),
       task({ key: "fail", status: FAILED }),
       task({ key: "run", status: "in_progress" }),
       task({ key: "soon", status: "upcoming" }),
+      task({ key: "ask", status: "needs_attention" }),
     ];
+    // Waiting first, then broken, then the board's own sequence underneath.
     expect(sortByLane(rows).map((t) => t.key))
-      .toEqual(["soon", "run", "fail", "done", "arch"]);
+      .toEqual(["ask", "fail", "soon", "run", "done", "arch"]);
   });
 
   // ---- and, inside a rank, by the time the row PRINTS ------------------------
@@ -6368,8 +6492,10 @@ describe("sortByLane", () => {
       upcoming([S("2026-08-16T13:00:00")], { key: "up-soon" }),
       ran("fail-old", S("2026-08-16T08:00:00"), { status: FAILED }),
     ];
+    // Blocked is HOISTED above Upcoming on the List (LIST_ORDER), so the two
+    // broken rows lead — and inside each rank the printed time still orders.
     expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual([
-      "up-soon", "up-late", "fail-new", "fail-old", "done-new", "done-old",
+      "fail-new", "fail-old", "up-soon", "up-late", "done-new", "done-old",
     ]);
   });
 
@@ -6737,9 +6863,9 @@ describe("dayPill", () => {
       ran("2026-08-15T20:00:00"),
     ];
     const now = new Date("2026-08-17T08:00:00");
-    expect(dayPill(rows, day, now, false).label).toBe("Failed");
+    expect(dayPill(rows, day, now, false).label).toBe("Blocked");
     // Order of the hand-over must not matter — this is a rollup, not a "newest".
-    expect(dayPill([...rows].reverse(), day, now, false).label).toBe("Failed");
+    expect(dayPill([...rows].reverse(), day, now, false).label).toBe("Blocked");
   });
 
   it("a day still AHEAD is Upcoming, whatever it holds", () => {
@@ -6779,7 +6905,7 @@ describe("dayPill", () => {
     const clean = [ran("2026-08-15T09:00:00"), ran("2026-08-15T23:00:00")];
     expect(dayPill(clean, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Done");
     const broke = [ran("2026-08-15T09:00:00", { state: "error" }), ran("2026-08-15T23:00:00")];
-    expect(dayPill(broke, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Failed");
+    expect(dayPill(broke, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Blocked");
   });
 
   it("a past day whose slots never ran is Archive, never Upcoming", () => {
@@ -6825,7 +6951,7 @@ describe("popoverPill", () => {
     });
     // failed folds into the column, exactly as StatusIcon reads it...
     const f = task({ status: "done", failed: true });
-    expect(popoverPill(f, false, false, f.messages, day, later).label).toBe("Failed");
+    expect(popoverPill(f, false, false, f.messages, day, later).label).toBe("Blocked");
     // ...and the day's contents cannot move a one-off's word: it IS its task.
     expect(popoverPill(t, false, false, [broke], day, later).label).toBe("Done");
   });
@@ -6837,7 +6963,7 @@ describe("popoverPill", () => {
     expect(popoverPill(rule, true, false, [done, broke], day, later)).toEqual(
       dayPill([done, broke], day, later, false),
     );
-    expect(popoverPill(rule, true, false, [done, broke], day, later).label).toBe("Failed");
+    expect(popoverPill(rule, true, false, [done, broke], day, later).label).toBe("Blocked");
     expect(popoverPill(rule, true, true, [done], day, later).label).toBe("In Progress");
   });
 
@@ -7152,5 +7278,34 @@ describe("mergeTaskChanges", () => {
 
   it("a key both upserted and gone is gone", () => {
     expect(mergeTaskChanges([row("a", 1)], [row("a", 5)], ["a"])).toEqual([]);
+  });
+});
+
+describe("the waiting row's own affordances", () => {
+  const ROW_SRC = (() => {
+    const from = VIEWS.indexOf('className={"tasks-row"');
+    return VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
+  })();
+
+  it("prints what is being asked, beside the title", () => {
+    expect(VIEWS).toContain("const asking = attentionSummary(task);");
+    expect(ROW_SRC).toContain('className="tasks-asking"');
+    // It ellipsises BEFORE the title does — the ask must never cost the task its
+    // own name — which is a CSS fact and so is read out of the sheet.
+    const rule = block(TASKS_CSS, ".tasks-asking");
+    expect(rule).toContain("flex: 0 1 auto");
+    expect(rule).toContain("text-overflow: ellipsis");
+    expect(rule).toContain("var(--status-attention)");
+  });
+
+  it("offers Open and nothing that could answer the card from a list", () => {
+    // No Approve/Deny here (design.md): answering means reading what is being
+    // asked, and a two-button row that can say yes to `rm -rf` from a list
+    // nobody has scrolled is exactly the gesture not to build.
+    // The words appear in the comment that says why they are absent, so this
+    // looks for a CONTROL rather than for the strings.
+    expect(ROW_SRC).not.toMatch(/aria-label=\{?"?(Approve|Deny)/);
+    expect(ROW_SRC).not.toContain("answerPermission");
+    expect(ROW_SRC).toContain('aria-label={waiting ? "Open" : "Open chat"}');
   });
 });

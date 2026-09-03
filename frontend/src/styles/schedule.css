@@ -2572,7 +2572,7 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-/* The five hues. One mark wears them — the status ring. A board card's unread dot
+/* The hues. One mark wears them — the status ring. A board card's unread dot
    wore them too for part of 2026-08-18; it is the card TITLE'S WEIGHT now, which
    costs no hue at all, so the list is back to naming the one mark that has a
    lane. */
@@ -2581,13 +2581,48 @@ input.schedule-when-field {
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }
 
-/* Failed is a COLUMN of its own since 2026-08-17, and the red is its hue rather
-   than an override. The second selector stays because the override case has not
-   gone away: a row whose column is Done but whose `failed` flag is set (an older
-   caller, or a task the server still files under done) must still read red, and
-   it has to outrank the done green to do it. */
+/* Blocked is a COLUMN of its own since 2026-08-17 (it was called Failed until
+   2026-09-03), and the red is its hue rather than an override. The second
+   selector stays because the override case has not gone away: a row whose column
+   is Done but whose `failed` flag is set (an older caller, or a task the server
+   still files under done) must still read red, and it has to outrank the done
+   green to do it. */
+.schedule-ring--blocked,
 .schedule-ring--failed,
 .schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
+
+/* NEEDS ATTENTION IS IN PROGRESS'S OWN YELLOW, deliberately, and the mark that
+   separates the two is the "!" the ring wears rather than a seventh hue
+   (`--status-attention`, which is that same yellow under its own name so a
+   caller reads the intent and not the coincidence).
+
+   A hue of its own was the first cut and it was wrong twice over. The page
+   already spends five colours on five lanes, and the sixth would have had to be
+   distinguishable from BOTH the In Progress yellow beside it in meaning and the
+   Blocked red beside it on the board — which on a 16px ring, in two themes, is a
+   colour that does not exist. And it would have said the wrong thing: a waiting
+   run IS in progress. What is different about it is that it has stopped and is
+   asking, and a glyph says that where a shade cannot.
+
+   The bar and dot are drawn from `currentColor` at the ring's own centre, so the
+   mark inherits the hue and needs no second token. The unread fill (`::after`)
+   is not drawn on this ring at the same time — a waiting run has nothing to have
+   read — but the rule below is `--unread` alone, so if the server ever says both
+   the fill wins the centre and the "!" moves nowhere: they are the same 8px. */
+.schedule-ring--needs_attention { color: var(--status-attention); }
+
+.schedule-ring--needs_attention::before {
+  content: "!";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: currentColor;
+}
 
 /* -- The inner dot: UNREAD, not merely settled ---------------------------------
    The centre used to be drawn on every Done and Failed ring and meant "this is

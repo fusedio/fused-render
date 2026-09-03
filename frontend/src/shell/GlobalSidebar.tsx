@@ -26,7 +26,7 @@ import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
-import { pulseTitle, runningLabel } from "@shell/tasks-lib";
+import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
@@ -525,8 +525,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not also need sending to the page mid-run. The hues are the status ring's
   // own (--status-progress / --status-done, schedule.css) — one status, one
   // colour, on every surface that names it (design-principles §1).
+  //
+  // WAITING OUTRANKS BOTH (2026-09-03). A task parked on a permission card is
+  // counted in `running` — its turn genuinely is in flight — so without this it
+  // wore the plain yellow and the sidebar said nothing about the one state that
+  // is asking for the reader. Same yellow, `is-attention` on top of it: the dot
+  // pulses rather than sitting still, which is the rail's version of the "!" the
+  // status ring wears, and nothing else in the corner moves.
   const tasksDot =
-    pulse.running > 0 ? (
+    pulse.attention > 0 ? (
+      <span className="sidebar-rail-dot is-running is-attention" title={tasksTip} />
+    ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
     ) : unseen > 0 ? (
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
@@ -541,7 +550,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const tasksTrailing =
     pulse.running > 0 || pulse.doneUnread > 0 ? (
       <>
-        {pulse.running > 0 && (
+        {/* The waiting count SPEAKS INSTEAD of the running one when there is
+            one, rather than beside it: they are the same rows counted twice
+            (tasks-lib.tasksPulse), and printing "1 waiting for you · 1 running"
+            about one task would read as two. The one that asks for something
+            wins the words; the total is still in the tooltip. */}
+        {pulse.attention > 0 ? (
+          <span className="sidebar-running is-attention" title={tasksTip}>
+            {attentionLabel(pulse.attention)}
+          </span>
+        ) : pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
             {runningLabel(pulse.running)}
           </span>

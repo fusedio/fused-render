@@ -360,7 +360,7 @@ def test_spawn_failure_agrees_everywhere(client, target, monkeypatch):
     assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_FAILED]
     key = tasks_store.pending_key(entry["id"])
     row = {t["key"]: t for t in _board(client)}[key]
-    assert row["status"] == "failed" and row["failed"] is True
+    assert row["status"] == "blocked" and row["failed"] is True
 
 
 def test_sent_and_watched_job_row_is_running_and_cancellable(target, spawned):
@@ -400,7 +400,7 @@ def test_turn_done_error_all_surfaces(client, target, spawned):
     assert _job(entry["id"])["state"] == "error"
     assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_FAILED]
     row = {t["key"]: t for t in _board(client)}["sess-bad"]
-    assert row["status"] == "failed" and row["failed"] is True
+    assert row["status"] == "blocked" and row["failed"] is True
 
 
 def test_cancel_from_the_dock_all_surfaces(client, target, spawned):
@@ -442,7 +442,7 @@ def test_watch_ending_without_verdict_all_surfaces(client, target, spawned):
     assert stored["turn"] == "unknown"
     assert _job(entry["id"])["state"] == "error"
     row = {t["key"]: t for t in _board(client)}["sess-dark"]
-    assert row["status"] == "failed" and row["failed"] is True
+    assert row["status"] == "blocked" and row["failed"] is True
 
 
 def test_chain_writeback_teaches_template_and_successor(target, spawned):

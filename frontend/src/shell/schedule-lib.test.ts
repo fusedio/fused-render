@@ -115,9 +115,9 @@ describe("boardColumn", () => {
     // Settled WELL is Done; settled badly has had its own word since
     // 2026-08-17, and every view says it rather than showing a red Done.
     expect(boardColumn(entry({ state: "sent", turn: "ok", fired: "x" }))).toBe("done");
-    expect(boardColumn(entry({ state: "sent", turn: "failed", fired: "x" }))).toBe("failed");
-    expect(boardColumn(entry({ state: "missed" }))).toBe("failed");
-    expect(boardColumn(entry({ state: "error" }))).toBe("failed");
+    expect(boardColumn(entry({ state: "sent", turn: "failed", fired: "x" }))).toBe("blocked");
+    expect(boardColumn(entry({ state: "missed" }))).toBe("blocked");
+    expect(boardColumn(entry({ state: "error" }))).toBe("blocked");
     expect(boardColumn(entry({ state: "cancelled" }))).toBe("archived");
     expect(boardColumn(entry({ state: "cancelled", template_id: "t" }))).toBe("archived");
   });
@@ -156,7 +156,7 @@ describe("missed recurring runs", () => {
     // and since 2026-08-17 the board has a word for that.
     const missedOneShot = entry({ state: "missed" });
     expect(stateLabelOf(missedOneShot)).toBe("Missed");
-    expect(boardColumn(missedOneShot)).toBe("failed");
+    expect(boardColumn(missedOneShot)).toBe("blocked");
   });
 });
 
@@ -1513,11 +1513,12 @@ describe("msgNote", () => {
 describe("the one status vocabulary", () => {
   const status = (m: TaskMessage) => runStatus(m, taskMessageTone(m));
 
-  it("speaks only the app's five words", () => {
+  it("speaks only the app's own words", () => {
     expect(columnLabel("upcoming")).toBe("Upcoming");
     expect(columnLabel("in_progress")).toBe("In Progress");
     expect(columnLabel("done")).toBe("Done");
-    expect(columnLabel("failed")).toBe("Failed");
+    expect(columnLabel("blocked")).toBe("Blocked");
+    expect(columnLabel("needs_attention")).toBe("Needs attention");
     expect(columnLabel("archived")).toBe("Archive");
     const words = [
       status(msg({ at: 1, state: "pending" })),
@@ -1529,23 +1530,26 @@ describe("the one status vocabulary", () => {
       status(msg({ at: 1, state: "skipped" })),
       status(msg({ at: 1, state: "sent", turn: "unknown" })),
     ].map((s) => s.label);
+    // No "Needs attention" among them, and that is not an omission: a
+    // SCHEDULED MESSAGE cannot be waiting on a card. Whether the run it started
+    // is parked is a fact about the RUN, which only a task row carries.
     expect(new Set(words)).toEqual(
-      new Set(["Upcoming", "In Progress", "Done", "Failed", "Archive"]),
+      new Set(["Upcoming", "In Progress", "Done", "Blocked", "Archive"]),
     );
   });
 
-  it("a failed run SAYS Failed — the red is reinforcement, not the signal", () => {
+  it("a failed run SAYS Blocked — the red is reinforcement, not the signal", () => {
     const failed = status(msg({ at: 1, state: "error" }));
-    expect(failed.label).toBe("Failed");
+    expect(failed.label).toBe("Blocked");
     expect(failed.failed).toBe(true);
     const clean = status(msg({ at: 1, state: "sent", turn: "done" }));
     expect(clean.label).toBe("Done");
     expect(clean.failed).toBe(false);
     // A turn that stopped reporting is a failure too, and says so.
     expect(status(msg({ at: 1, state: "sent", turn: "unknown" })))
-      .toMatchObject({ label: "Failed", failed: true });
+      .toMatchObject({ label: "Blocked", failed: true });
     // A missed ONE-OFF is a fault: the run the user asked for never happened.
-    expect(status(msg({ at: 1, state: "missed" }))).toMatchObject({ label: "Failed" });
+    expect(status(msg({ at: 1, state: "missed" }))).toMatchObject({ label: "Blocked" });
   });
 
   it("a skipped occurrence reads Archive — filed away, never attempted", () => {
@@ -1596,7 +1600,7 @@ describe("the one status vocabulary", () => {
       ],
     });
     // The day genuinely does contain a failure — that is not in dispute...
-    expect(status(rule.messages[0]).label).toBe("Failed");
+    expect(status(rule.messages[0]).label).toBe("Blocked");
     // ...but the pill is about the task, and the task is Upcoming. This is the
     // pill that used to read "Failed" beside a button reading "Run now".
     expect(pillOf(rule)).toMatchObject({ label: "Upcoming", failed: false });
@@ -1615,7 +1619,17 @@ describe("the one status vocabulary", () => {
     for (const col of BOARD_COLUMNS) {
       const t = task({ key: `f-${col.key}`, status: col.key, failed: true });
       expect(isFailedTask(t)).toBe(true);
-      expect(pillOf(t)).toMatchObject({ label: "Failed", column: "failed", failed: true });
+      // ...except on a task that is WAITING: its run is still going, so the
+      // flag (which is about its newest SETTLED run) does not get to relabel it.
+      if (col.key === "needs_attention") {
+        expect(pillOf(t)).toMatchObject({
+          label: "Needs attention", column: "needs_attention",
+        });
+        continue;
+      }
+      expect(pillOf(t)).toMatchObject({
+        label: "Blocked", column: "blocked", failed: true,
+      });
     }
     // And a status this build has never heard of lands where taskColumn puts it
     // rather than inventing a sixth word.
@@ -2156,7 +2170,7 @@ describe("the calendar popover's run action", () => {
     // Still pending underneath: the smaller, truer action wins and it is
     // run-now, but the WORD is the one a person needs.
     const withPending = task({
-      key: "sess-1", status: "failed", messages: [pending],
+      key: "sess-1", status: "blocked", messages: [pending],
     });
     expect(taskRunIntent(withPending)).toMatchObject({
       kind: "run-now", label: "Re-run", entryId: "e-pending",
@@ -2164,7 +2178,7 @@ describe("the calendar popover's run action", () => {
     // The common failed task: the run that broke SPENT its entry, so there is
     // nothing to bring forward and the other verb is the only one left.
     const spent = task({
-      key: "sess-2", status: "failed",
+      key: "sess-2", status: "blocked",
       messages: [msg({
         message_id: "MSG-001", at: at(2026, 7, 18, 9), entry_id: "e-broke",
         state: "error",
@@ -2342,7 +2356,7 @@ describe("the popover's header rail (Akshil, 2026-08-19)", () => {
     // the task is working. Upcoming/archived offer NO verb — the design's
     // Delete waits on a server endpoint that does not exist yet.
     expect(CAL_SRC).toContain(
-      '!liveNow && (task.failed || col === "done" || col === "failed")',
+      '!liveNow && (task.failed || col === "done" || col === "blocked")',
     );
     // The same single door the List's button and the Board's drop file through.
     expect(CAL_SRC).toContain("await archiveTask(task.key);");

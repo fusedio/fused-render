@@ -72,17 +72,48 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "d", status: "upcoming" }),
       task({ key: "e", status: "archived", unread: 3 }),
     ];
-    expect(tasksPulse(tasks, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
+    expect(tasksPulse(tasks, {}))
+      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
-  it("does not paint a FAILED run green", () => {
-    // Failed is a status of its own on this page (taskColumn), and the green mark
-    // means "work you were waiting on is ready". A broken run wearing the done
-    // hue would be the one place in the app where a colour disagreed with the
-    // ring the row itself draws (design-principles §1).
-    const broke = [task({ key: "f", status: "failed", unread: 1 })];
-    expect(tasksPulse(broke, {})).toEqual({ running: 0, doneUnread: 0, unseen: 0 });
+  it("does not paint a BLOCKED run green", () => {
+    // Blocked is a status of its own on this page (taskColumn), and the green
+    // mark means "work you were waiting on is ready". A broken run wearing the
+    // done hue would be the one place in the app where a colour disagreed with
+    // the ring the row itself draws (design-principles §1).
+    const broke = [task({ key: "f", status: "blocked", unread: 1 })];
+    expect(tasksPulse(broke, {}))
+      .toEqual({ running: 0, attention: 0, doneUnread: 0, unseen: 0 });
+  });
+
+  it("counts a WAITING task as running, and again as waiting", () => {
+    // Both are true of it and neither replaces the other: its turn is in flight
+    // (so the rail's yellow is honest), and it is the one kind of in-flight that
+    // will never end by itself — which is the number the sidebar exists to put
+    // in front of somebody. One row, two facts, never two rows.
+    const parked = [
+      task({ key: "p", status: "needs_attention" }),
+      task({ key: "a", status: "in_progress" }),
+    ];
+    expect(tasksPulse(parked, {}))
+      .toEqual({ running: 2, attention: 1, doneUnread: 0, unseen: 0 });
+    // And it is what the tooltip leads with: the one line in it that asks the
+    // reader for something goes first.
+    expect(pulseTitle(tasksPulse(parked, {})))
+      .toBe("1 waiting for you · 2 running");
+  });
+
+  it("gives the waiting dot the rail, over plain running and over unread", () => {
+    // Three states can be true at once and the corner draws ONE dot. Waiting
+    // outranks both, because it is the only one that cannot resolve itself.
+    expect(SIDEBAR).toContain("pulse.attention > 0 ? (");
+    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-running is-attention"');
+    // The same yellow, moving: a second hue would have claimed a waiting run is
+    // not running, which is exactly what it is.
+    expect(SIDEBAR_CSS).toContain(".sidebar-rail-dot.is-attention {");
+    expect(SIDEBAR_CSS).toContain("sidebar-attention-pulse");
+    expect(SIDEBAR_CSS).toContain("@media (prefers-reduced-motion: reduce)");
   });
 
   it("keeps the COUNT through a visit and drops only the dot", () => {
@@ -91,7 +122,8 @@ describe("the sidebar's tasks pulse", () => {
     // about unread work, and glancing at the list does not make it untrue.
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
     const before = [task({ key: "a", status: "in_progress" }), finished];
-    expect(tasksPulse(before, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
+    expect(tasksPulse(before, {}))
+      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
 
     const seen = seenAfterVisit(before);
     const after = tasksPulse(before, seen);
@@ -174,11 +206,15 @@ describe("the sidebar's tasks pulse", () => {
     // mark-seen effect runs on every published pulse — value equality is what
     // keeps that from looping. `unseen` is in the comparison: it is the field the
     // dismissal moves, and a publish that skipped it would leave the dot up.
-    const p = { running: 1, doneUnread: 1, unseen: 1 };
-    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 1 })).toBe(true);
-    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 0 })).toBe(false);
-    expect(samePulse(p, { running: 1, doneUnread: 2, unseen: 1 })).toBe(false);
-    expect(samePulse(p, { running: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    const p = { running: 1, attention: 0, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, attention: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    // ...and `attention` is in the comparison too: it is the field that decides
+    // which dot the rail draws, so a publish that skipped it would leave a
+    // waiting task wearing the plain running mark until something else moved.
+    expect(samePulse(p, { running: 1, attention: 1, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -189,9 +225,10 @@ describe("the sidebar's tasks pulse", () => {
     // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
     // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, doneUnread: 1, unseen: 0 }))
       .toBe("2 running \u00b7 1 finished, not read");
-    expect(pulseTitle({ running: 0, doneUnread: 3, unseen: 1 })).toBe("3 finished, not read");
+    expect(pulseTitle({ running: 0, attention: 0, doneUnread: 3, unseen: 1 }))
+      .toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
 });
@@ -533,10 +570,26 @@ describe("pokeTasks", () => {
     // platform may not import shell (check-boundaries), so scheduleEvents takes
     // the callback and App supplies the store's pokeTasks.
     expect(EVENTS).toMatch(
-      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
+      /e\.kind === "done" \|\| e\.kind === "failed"/,
     );
+    // ...and an `attention` event too: no run ended, but a row just changed into
+    // the one status the page puts at the top.
+    expect(EVENTS).toContain('e.kind === "attention"');
     expect(EVENTS).not.toContain("@shell/");
-    expect(APP).toContain("useScheduleEvents(pokeTasks)");
+    expect(APP).toContain("useScheduleEvents(pokeTasks, explorerUrl)");
+  });
+
+  it("sends an attention toast to the CHAT, and everything else to /tasks", () => {
+    // The action on a toast about a parked run has to land on the card the run
+    // is waiting on (Akshil, 2026-09-03: "when we click we go to the page and
+    // unblock the task"). platform cannot build that URL — `explorerUrl` is
+    // shell's — so the builder is handed in the same way `pokeTasks` is, and the
+    // fallback is the page, which is also what an event with no target gets.
+    expect(EVENTS).toContain("chatHref?: (target: string, sessionId: string) => string");
+    expect(EVENTS).toContain("t.open && t.open.target && href.current");
+    expect(EVENTS).toContain('navigateUrl(to);');
+    expect(EVENTS).toContain(': "/tasks";');
+    expect(EVENTS).not.toContain("@shell/");
   });
 
   it("an interactive chat turn pokes too — through the storage stamp", () => {
