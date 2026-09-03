@@ -15004,6 +15004,11 @@ async function sendFollowUp(text) {
     if (working) log.insertBefore(bare, working);
     else log.appendChild(bare);
   }
+  // A follow-up landed as its own bubble above — bump so any pollLoop
+  // streaming into an OLDER assistant bubble (positioned before this one)
+  // knows to start a NEW one after it, rather than keep growing text that
+  // would render above the reader's own just-sent message.
+  followupSeq++;
   scrollBottom();
   pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
   const wireViews = pics.map((s) => {
@@ -15100,6 +15105,11 @@ let sending = false;
 // the new loop's Stop chrome; a new send's gate was wiped the same way).
 let sendSeq = 0;
 let loopSeq = 0;
+// Bumped whenever a follow-up lands its own bubble mid-turn (sendFollowUp) —
+// pollLoop compares this against what it last saw so it knows to start a
+// NEW assistant bubble after the follow-up rather than keep growing the one
+// already positioned before it (see the reset check inside pollLoop).
+let followupSeq = 0;
 // The generation of the visible log. The back button bumps it when it wipes
 // the transcript, and a streaming pollLoop that wakes to a bumped number
 // bails before touching the DOM or the URL params — the run itself keeps
@@ -15133,6 +15143,9 @@ async function pollLoop(run_id, gen = logGen) {
   let segBody = null;    // the element the segment views are rendered into
   let segMode = false;   // this turn returned segments, so they are the truth
   let tailText = null;   // the trailing text segment, for typer.finish()
+  // The `followupSeq` value as of the last iteration — see the reset check
+  // inside the loop below.
+  let seenFollowupSeq = followupSeq;
   // Ticks of THIS loop, so the artifacts read below is one in every eight polls
   // (~3.2s) rather than one every 400ms: a publish is a rare event in a turn and
   // a transcript read is an open() of a file that is being appended to.
@@ -15158,6 +15171,14 @@ async function pollLoop(run_id, gen = logGen) {
       // is the flat legacy field and is NOT rendered as well when segments
       // exist: on a run that carried stream deltas the text segments join back
       // to exactly that string, so rendering both prints the reply twice.
+      // A follow-up landed mid-turn (see sendFollowUp) — the assistant text
+      // that streams in from here on belongs after it, not appended into a
+      // `reply` bubble the DOM already has positioned before that follow-up.
+      if (followupSeq !== seenFollowupSeq) {
+        seenFollowupSeq = followupSeq;
+        reply = null; typer = null; segBody = null; segMode = false;
+        tailText = null;
+      }
       const segs = Array.isArray(data.segments) ? data.segments : [];
       if (segs.length || data.text) {
         if (!reply) {
