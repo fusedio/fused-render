@@ -280,36 +280,40 @@ test("unavailable storage reads as NOT dismissed, and never throws", () => {
 
 const STRIP = readFileSync(
   join(import.meta.dir, "..", "ui", "ClaudeHealthStrip.tsx"), "utf8");
+// The machine itself — load, focus re-check, install poll — moved to
+// lib/claude-setup so the first-run wizard could share it; the strip keeps
+// only the render and the dismissal. Pins follow the code they pin.
+const SETUP = readFileSync(join(import.meta.dir, "claude-setup.ts"), "utf8");
 
 test("mounting always re-asks; the module cache only seeds the first paint", () => {
   // The regression: `if (cached !== null) return` skipped the fetch, so the
   // only thing that ever refreshed the strip was its own button. A user who
   // signed in and navigated back still faced a card telling them to sign in.
-  expect(STRIP).not.toContain("if (cached !== null) return");
-  expect(STRIP).toContain("useEffect(() => {\n    load(false);\n  }, [load]);");
+  expect(SETUP).not.toContain("if (cached !== null) return");
+  expect(SETUP).toContain("useEffect(() => {\n    load(false);\n  }, [load]);");
 });
 
 test("returning to the window re-checks, and only while something is showing", () => {
   // Every fix this card asks for happens elsewhere — a terminal, an installer —
   // so coming back is exactly when the claim should be re-tested and the card
   // allowed to disappear on its own.
-  expect(STRIP).toContain('window.addEventListener("focus", onFocus)');
-  expect(STRIP).toContain('document.addEventListener("visibilitychange", onFocus)');
-  expect(STRIP).toContain("if (!showing) return;");
+  expect(SETUP).toContain('window.addEventListener("focus", onFocus)');
+  expect(SETUP).toContain('document.addEventListener("visibilitychange", onFocus)');
+  expect(SETUP).toContain("if (!watching) return;");
   // Forced, because the server cache is age-bounded and a sign-in usually lands
   // inside that window — a plain read is the one that would still say "signed out".
-  expect(STRIP).toContain("load(true);");
+  expect(SETUP).toContain("load(true);");
   // Both listeners are removed, or navigating away leaves probes firing forever.
-  expect(STRIP).toContain('window.removeEventListener("focus", onFocus)');
-  expect(STRIP).toContain('document.removeEventListener("visibilitychange", onFocus)');
+  expect(SETUP).toContain('window.removeEventListener("focus", onFocus)');
+  expect(SETUP).toContain('document.removeEventListener("visibilitychange", onFocus)');
 });
 
 test("focus bursts collapse into one check", () => {
-  expect(STRIP).toContain("Date.now() - lastCheck.current < FOCUS_RECHECK_MS");
+  expect(SETUP).toContain("Date.now() - lastCheck.current < FOCUS_RECHECK_MS");
 });
 
 test("a hidden document does not count as coming back", () => {
-  expect(STRIP).toContain('document.visibilityState === "hidden"');
+  expect(SETUP).toContain('document.visibilityState === "hidden"');
 });
 
 test("dismissal is decided only by the signature check, never a local flag", () => {
@@ -466,10 +470,10 @@ test("dismissing a broken install does not hide a later, different problem", () 
 });
 
 test("the strip polls only while an install is running, and re-probes when it ends", () => {
-  expect(STRIP).toContain('if (install?.state !== "running") return;');
+  expect(SETUP).toContain('if (install?.state !== "running") return;');
   // A finished install changed the machine, so the claim on screen is now stale.
-  expect(STRIP).toContain('if (next.state === "done") load(true);');
-  expect(STRIP).toContain("window.clearInterval(timer)");
+  expect(SETUP).toContain('if (next.state === "done") load(true);');
+  expect(SETUP).toContain("window.clearInterval(timer)");
 });
 
 test("the strip discloses the command beside the button that runs it", () => {
@@ -481,9 +485,9 @@ test("the strip recovers an install already running when it remounts", () => {
   // navigation. Starting from `null` with no fetch meant the remounted strip
   // showed no progress and a second press got a 409 for an install the user
   // could not see.
-  expect(STRIP).toContain("getClaudeInstall().then(");
+  expect(SETUP).toContain("getClaudeInstall().then(");
   // ONLY a running record is adopted: a finished one from earlier in the session
   // belongs to a problem that is already gone, and picking it up would render
   // "Done" on a button whose issue is still on screen.
-  expect(STRIP).toContain('if (rec.state === "running") setInstall(rec);');
+  expect(SETUP).toContain('if (rec.state === "running") setInstall(rec);');
 });
