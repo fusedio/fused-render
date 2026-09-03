@@ -6,45 +6,26 @@
 // for the life of the app.
 import { describe, expect, test } from "bun:test";
 
+import { installDomShim } from "./testDomShim";
+
 // fixSessionUrl pulls urlForFsPath from router.ts, which reads `location` at
 // MODULE scope (IS_EMBED). Bun's runtime has no DOM and a static import is
-// hoisted above any shim, so the stub goes first and the module comes in
-// dynamically after it — the same dance as appEntry.test.ts.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/",
-  search: "",
-  href: "http://localhost/",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
+// hoisted above any shim, so the shared shim goes first and the module comes
+// in dynamically after it — the same dance as appEntry.test.ts. `window` is
+// part of that shim too (`noteFixStarted` dispatches on it); see
+// testDomShim.ts for why it is one shared stub and not one per file.
+installDomShim();
 
-// `noteFixStarted` writes localStorage and dispatches on `window`; neither
-// exists in bun's runtime. Minimal stand-ins, shared like the two above.
+// `noteFixStarted` also writes localStorage, which bun's runtime has no more
+// of than it has a `window`. `localStorage` is not one of the three globals
+// the shared shim owns (nothing reads it at MODULE scope, and this file wants
+// to read the store back), so it is stubbed here — still `??=`, still never
+// deleted, for the same process-wide reason.
 const store = new Map<string, string>();
 (globalThis as { localStorage?: unknown }).localStorage ??= {
   getItem: (k: string) => store.get(k) ?? null,
   setItem: (k: string, v: string) => void store.set(k, v),
 };
-// A COMPLETE ENOUGH `window`, not just the one method this file needs. Whoever
-// installs it first wins for the whole process (`bun test` shares one), so a
-// stub that carries only `dispatchEvent` hands every later file a `window` that
-// is truthy and half-missing — `toast.ts` does `window.setTimeout(...)` and gets
-// "window.setTimeout is not a function", which is not a failure this file's own
-// tests would ever show. Same reasoning as the `??=` above: install a superset,
-// never a subset, and never delete it afterwards.
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent: () => true,
-  addEventListener() {},
-  removeEventListener() {},
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-  setInterval: globalThis.setInterval.bind(globalThis),
-  clearInterval: globalThis.clearInterval.bind(globalThis),
-};
-
 // Record what `noteFixStarted` dispatches, by swapping the method IN THE TEST
 // rather than by owning the `window` stub: bun shares globals across suites and
 // several set `window` themselves (one of them unconditionally), so which

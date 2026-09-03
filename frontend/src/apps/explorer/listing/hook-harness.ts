@@ -20,6 +20,7 @@
 // interval — and asserts on what the hook returned.
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
+import { restoreGlobal } from "@platform/lib/testDomShim";
 
 interface Timer {
   at: number;
@@ -32,11 +33,27 @@ export class Clock {
   private timers = new Map<number, Timer>();
   private nextId = 1;
   private realNow = Date.now;
+  private savedWindow: unknown;
+  private savedLocation: unknown;
 
   install(): void {
     const self = this;
-    // The hook schedules through `window.setTimeout`; there is no window here.
-    (globalThis as Record<string, unknown>).window = {
+    const g = globalThis as Record<string, unknown>;
+    // SAVED, not assumed absent: the shared DOM shim
+    // (platform/lib/testDomShim.ts) is preloaded before the first test file,
+    // so `window`/`location` are already standing when this runs. `restore()`
+    // puts these two back rather than deleting them — a delete leaves the
+    // next file to evaluate a module with module-scope DOM reads (router.ts)
+    // with no `location` at all, which is a failure in a file that never
+    // touched this harness. See testDomShim.ts.
+    this.savedWindow = g.window;
+    this.savedLocation = g.location;
+    // The hook schedules through `window.setTimeout`, and it has to be the
+    // VIRTUAL one, so this replaces the shim's window rather than extending
+    // it — spread first so every other member the shim carries survives for
+    // whatever this harness's component tree reaches for.
+    g.window = {
+      ...(this.savedWindow as Record<string, unknown> | undefined),
       setTimeout: (fn: () => void, ms = 0) => {
         const id = self.nextId++;
         self.timers.set(id, { at: self.now + ms, fn });
@@ -48,14 +65,14 @@ export class Clock {
     // `location` is read for the URL-synced query. Every test here runs the
     // hook with urlSync=false (the embedded mode), but the initial read
     // happens before that is consulted.
-    (globalThis as Record<string, unknown>).location = { search: "", pathname: "/x" };
+    g.location = { search: "", pathname: "/x" };
     Date.now = () => self.now;
   }
 
   restore(): void {
     Date.now = this.realNow;
-    delete (globalThis as Record<string, unknown>).window;
-    delete (globalThis as Record<string, unknown>).location;
+    restoreGlobal("window", this.savedWindow);
+    restoreGlobal("location", this.savedLocation);
     this.timers.clear();
   }
 

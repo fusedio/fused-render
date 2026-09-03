@@ -15,6 +15,7 @@ import { act, create } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
 import type { ClaudeHealth, Config } from "@platform/lib/api";
 import type { SelfFixReadinessState } from "@platform/lib/hooks";
+import { installDomShim } from "./testDomShim";
 
 // --- the module boundary ------------------------------------------------------
 let reply: () => Promise<Config>;
@@ -35,29 +36,14 @@ mock.module("@platform/lib/api", () => ({
   },
 }));
 
-// hooks.ts pulls in the router and the sidebar store, which read `location` and
-// register listeners at module scope; bun has no DOM. Same `??=` shim as
-// router.test.ts and toast.test.ts — never an assignment, and never a delete
-// afterwards: the suite shares one process, so a file that OVERWRITES `window`
-// hands the toast queue a stub with no `setTimeout`, and one that removes it
-// takes the shim out from under every file whose own `??=` already ran.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/",
-  search: "",
-  href: "http://localhost/",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-(globalThis as { window?: unknown }).window ??= {
-  addEventListener() {},
-  removeEventListener() {},
-  dispatchEvent() {},
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-};
+// hooks.ts pulls in the router and the sidebar store, which read `location`
+// and register listeners at module scope; bun has no DOM. The ONE shared
+// shim, same as router.test.ts and toast.test.ts — not a stub hand-rolled
+// here: the suite shares one process, so a per-file stub carrying only the
+// members this file happens to need hands every later file a global that is
+// truthy and half-missing (the toast queue's `window.setTimeout` is the one
+// that bites). See testDomShim.ts.
+installDomShim();
 
 const { useSelfFixReadiness, resetSelfFixReadiness } = await import("@platform/lib/hooks");
 

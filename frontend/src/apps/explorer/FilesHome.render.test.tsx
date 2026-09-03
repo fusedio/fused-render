@@ -31,6 +31,7 @@ import type { IndexRankResult, StatResult } from "@platform/lib/api";
 import { Clock } from "@apps/explorer/listing/hook-harness";
 import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
 import { resetFsMutations } from "@platform/lib/index-freshness";
+import { restoreGlobal } from "@platform/lib/testDomShim";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
 interface RankCall {
@@ -113,6 +114,10 @@ const clock = new Clock();
 // (running every file in one process) can.
 const mounted: ReactTestRenderer[] = [];
 
+// What `beforeEach` displaced, so `afterEach` can put it back.
+let savedHistory: unknown;
+let savedDocument: unknown;
+
 beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
@@ -137,6 +142,13 @@ beforeEach(() => {
   // anything that reaches `navigate()` (an Enter that commits a resolved
   // address) throws without this.
   (globalThis as unknown as { window: Record<string, unknown> }).window.dispatchEvent = () => true;
+  //
+  // SAVED and put back in `afterEach`, not deleted: `history` comes from the
+  // preloaded shared shim (platform/lib/testDomShim.ts) and the files that
+  // import router.ts statically need it standing when their module graph
+  // evaluates, whatever ran before them.
+  savedHistory = (globalThis as Record<string, unknown>).history;
+  savedDocument = (globalThis as Record<string, unknown>).document;
   (globalThis as Record<string, unknown>).history = {
     state: null,
     replaceState: () => {},
@@ -156,8 +168,8 @@ afterEach(() => {
   }
   globalThis.fetch = realFetch;
   clock.restore();
-  delete (globalThis as Record<string, unknown>).history;
-  delete (globalThis as Record<string, unknown>).document;
+  restoreGlobal("history", savedHistory);
+  restoreGlobal("document", savedDocument);
   resetFsMutations();
 });
 
