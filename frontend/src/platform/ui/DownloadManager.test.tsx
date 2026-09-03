@@ -1097,6 +1097,58 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(text(rows[0])).toContain("Could not stop");
   });
 
+  test("a fresh poll clears a stuck failure instead of hiding the row's detail forever", async () => {
+    // Rows are keyed `key={e.engine_id}` (never remounted while an engine
+    // stays up), so `EngineRow`'s own `failure` state survives every 10s
+    // poll on its own. A Stop that fails once (the server briefly down) must
+    // not paint over the kind/uptime/retire line for the rest of the panel's
+    // life once connectivity returns — the next snapshot arriving is exactly
+    // the signal that it has.
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <DownloadManagerView
+          reported={[]}
+          engines={{
+            engines: [runningEngine({ folder: "/apps/x" })],
+            onStop: async () => {
+              throw new Error("no");
+            },
+          }}
+          initialCollapsed={false}
+          refresh={() => {}}
+          patch={() => {}}
+        />,
+      );
+    });
+    await act(async () => {
+      findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row-cancel")[0].props.onClick();
+    });
+    expect(text(findAll(renderer!.toJSON() as ReactTestRendererJSON, "dl-status")[0])).toContain(
+      "Could not stop",
+    );
+
+    // A new poll hands down a fresh (structurally equal but newly-fetched)
+    // engine snapshot — connectivity is back, and the row should say so.
+    act(() => {
+      renderer!.update(
+        <DownloadManagerView
+          reported={[]}
+          engines={{
+            engines: [runningEngine({ folder: "/apps/x" })],
+            onStop: async () => {},
+          }}
+          initialCollapsed={false}
+          refresh={() => {}}
+          patch={() => {}}
+        />,
+      );
+    });
+    const status = text(findAll(renderer!.toJSON() as ReactTestRendererJSON, "dl-status")[0]);
+    expect(status).not.toContain("Could not stop");
+    expect(status).toContain("Background app");
+  });
+
   test("the row carries no wire field beyond what RunningEngine declares", () => {
     // Guards against the class of defect where a fixture supplies a field
     // (`kind`, say) the server no longer sends and the panel silently

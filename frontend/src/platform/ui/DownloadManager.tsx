@@ -436,6 +436,17 @@ function EngineRow({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
+  // Rows are keyed `key={e.engine_id}` (below), so this component stays
+  // mounted — and `failure` stays set — for the whole life of a running
+  // engine, across every 10s poll. A fresh `engine` prop IS the signal that
+  // the poll landed again (`shell/ActivityDock.tsx` always hands down a
+  // newly-fetched object), so clearing here on its arrival, rather than
+  // leaving a once-failed Stop stuck on the row forever, is what makes the
+  // kind/uptime/retire line come back once connectivity does.
+  useEffect(() => {
+    setFailure(null);
+  }, [engine]);
+
   const stop = async () => {
     setBusy(true);
     setFailure(null);
@@ -462,8 +473,9 @@ function EngineRow({
         </button>
       </div>
       {/* The failure REPLACES the detail line rather than stacking under it:
-          a row whose Stop just failed has one thing worth reading, and the
-          uptime is still there in the next poll's row. */}
+          a row whose Stop just failed has one thing worth reading. It clears
+          itself on the next poll (the `useEffect` above), so it stays there
+          only until the row has something fresh to say. */}
       <div className="dl-status">{failure || engineDetail(engine)}</div>
     </div>
   );
