@@ -462,15 +462,16 @@ function ClaudeConfigView() {
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
-  // FAILED JOBS, ON THEIR WAY FROM Activity TO Notifications (D586). `ActivityDock`
-  // already receives `DownloadManager`'s full jobs snapshot on every poll and
-  // forwards just the `error` rows here; `RepoUpdatesDock` draws them beside
-  // its repo rows. This lives in `App` because it is the only place both
-  // sections are in scope — `StatusBar` deliberately takes them as opaque
-  // `ReactNode`s and must not learn what its children are. `ActivityDock` only
-  // calls up when the error-id SET changes, so this does not re-render the
-  // shell on every poll.
-  const [failedJobs, setFailedJobs] = useState<Job[]>([]);
+  // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
+  // broadened by D656 to every terminal state — done/error/cancelled, not
+  // only error). `ActivityDock` already receives `DownloadManager`'s full
+  // jobs snapshot on every poll and forwards the terminal subset here;
+  // `RepoUpdatesDock` draws them beside its repo rows. This lives in `App`
+  // because it is the only place both sections are in scope — `StatusBar`
+  // deliberately takes them as opaque `ReactNode`s and must not learn what
+  // its children are. `ActivityDock` only calls up when the terminal-id SET
+  // changes, so this does not re-render the shell on every poll.
+  const [terminalJobs, setTerminalJobs] = useState<Job[]>([]);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -1007,14 +1008,14 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
-            /* D586: failures are re-routed from Activity to Notifications, and
-               this is the one place both sections are in scope. Plain prop
-               wiring on purpose — the alternative was a shared store, which
-               would be a new subsystem for a list that one section already
-               polls and the other only reads. */
-            activity={<ActivityDock onFailed={setFailedJobs} />}
+            /* D586/D656: every terminal job is re-routed from Activity to
+               Notifications, and this is the one place both sections are in
+               scope. Plain prop wiring on purpose — the alternative was a
+               shared store, which would be a new subsystem for a list that
+               one section already polls and the other only reads. */
+            activity={<ActivityDock onTerminalJobs={setTerminalJobs} />}
             repoUpdates={
-              <RepoUpdatesDock failed={failedJobs} onFailedPatch={setFailedJobs} />
+              <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
             }
           />
         )}

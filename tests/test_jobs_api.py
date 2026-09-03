@@ -361,6 +361,26 @@ def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
     assert [r["id"] for r in listing(client)] == ["run"]
 
 
+def test_clear_does_not_take_a_waiting_row(client):
+    """`clear_finished` used to take any row where `state != RUNNING`, which
+    includes `WAITING` — a row sitting in front of an open, answerable
+    question (uv's "Install anyway" compile prompt), not finished work.
+    Notifications' own "Clear" button (`RepoUpdatesDock.tsx`) is gated on and
+    titled around TERMINAL rows only, so a `WAITING` row was reachable by a
+    control that neither shows it nor counts it toward its own gate — and
+    `_forget` blocks the id from being re-created by a later tick, so the
+    open prompt could never come back either. `clear_finished` must survive
+    scoped to `TERMINAL_STATES` so it only ever takes what it claims to."""
+    jobs.upsert({"id": "prompt", "title": "compile foolib", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=1000.0)
+    report(client, id="ok", title="b", state="done")
+    report(client, id="bad", title="c", state="error", message="boom")
+
+    res = client.post("/api/jobs/clear", headers={"X-Fused": "1"})
+    assert res.json() == {"cleared": 2}
+    assert [r["id"] for r in listing(client)] == ["prompt"]
+
+
 def test_clear_does_not_sweep_a_stalled_but_still_running_row():
     """`clear_finished` used to take any record where `state != RUNNING` OR
     `is_stalled(...)` — so a Clear press swept a RUNNING job whose reporter
@@ -402,49 +422,32 @@ def test_dismiss_still_takes_one_stalled_row_at_a_time():
 # ---------------------------------------------------------------- the sweeper
 
 
-def test_a_read_row_ages_out_but_an_error_never_does():
-    """The retention clock starts at first READ (`list_jobs`), not at
-    completion — so the first read below has to establish that clock without
-    ALSO being the read that sweeps the row (see `list_jobs`'s own comment on
-    ordering)."""
+def test_a_done_row_now_stays_until_dismissed_same_as_an_error(client):
+    """D586, broadened by D656: every terminal job — not only `error` — now
+    routes to the shell's Notifications list, which is meant to hold a log,
+    not a "what's happening right now" snapshot. A `done`/`cancelled` row
+    used to age out `FINISHED_TTL_S` after its first read; that would delete
+    the very entry Notifications exists to keep, out from under a user who
+    had not yet looked. Both now get the same unconditional exemption
+    `error` already had."""
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
     jobs.upsert({"id": "bad", "title": "b", "state": "error", "message": "boom"}, now=1000.0)
+    jobs.upsert({"id": "stopped", "title": "c", "state": "cancelled"}, now=1000.0)
 
     first_read = {r["id"] for r in read_jobs(now=1000.0)}
-    assert first_read == {"ok", "bad"}, "a row must not be swept on the read that first reveals it"
+    assert first_read == {"ok", "bad", "stopped"}
 
-    still_there = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S - 1)}
-    assert still_there == {"ok", "bad"}
-
-    # An error is the one outcome the user may have to act on, so it stays
-    # until dismissed — the persistent-error toast's rule.
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
-    assert later == {"bad"}
+    assert later == {"ok", "bad", "stopped"}, "no terminal state ages out on its own any more"
 
 
-def test_an_unread_finished_row_survives_indefinitely_until_the_backstop():
-    """Nobody has ever called `list_jobs` for this row, so `FINISHED_TTL_S`
-    has not started counting — only `FINISHED_UNREAD_DROP_S`, the backstop for
-    a headless server or a browser tab that never comes back."""
+def test_an_unread_done_row_outlives_the_unread_backstop_too():
+    """`FINISHED_UNREAD_DROP_S` was the ceiling for an unread terminal row
+    while `done`/`cancelled` still aged out on the read-gated clock — now
+    that they get the same unconditional exemption `error` already had,
+    neither backstop applies to them at all; `MAX_JOBS` is what bounds them."""
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
-
-    # Long past FINISHED_TTL_S, but never read — still there.
-    still_there = read_jobs(now=1000.0 + jobs.FINISHED_TTL_S * 100)
-    assert [r["id"] for r in still_there] == ["ok"]
-
-    # That very call was the first read, so its OWN retention clock now
-    # starts from here — not from the original `finished_at` of 1000.0.
-    read_at = 1000.0 + jobs.FINISHED_TTL_S * 100
-    assert read_jobs(now=read_at + jobs.FINISHED_TTL_S - 1) != []
-    assert read_jobs(now=read_at + jobs.FINISHED_TTL_S + 1) == []
-
-
-def test_a_never_read_row_is_still_bounded_by_the_unread_backstop():
-    """`MAX_JOBS` is capacity pressure, not a statement that work is over
-    (`_sweep`'s own docstring) — a lone unread row well under the cap needs a
-    DIFFERENT ceiling, or a headless process would carry it forever."""
-    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
-    assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) == []
+    assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
 
 
 def test_an_unread_error_outlives_even_the_unread_backstop():
@@ -467,7 +470,7 @@ def test_an_unread_waiting_row_outlives_even_the_unread_backstop():
     assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
 
 
-def test_a_waiting_row_is_not_swept_by_the_finished_ttl_either():
+def test_a_waiting_row_and_a_done_row_both_survive_the_finished_ttl():
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
     jobs.upsert({"id": "q", "title": "b", "state": jobs.WAITING,
                  "message": "waiting for your approval to compile foolib"}, now=1000.0)
@@ -476,7 +479,7 @@ def test_a_waiting_row_is_not_swept_by_the_finished_ttl_either():
     assert first_read == {"ok", "q"}
 
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
-    assert later == {"q"}, "a WAITING row must stay exactly like an error row does"
+    assert later == {"ok", "q"}, "a WAITING row and a done row both stay, exactly like error does"
 
 
 def test_request_cancel_does_nothing_to_a_waiting_row(client):
@@ -505,39 +508,16 @@ def test_a_waiting_row_can_be_dismissed_like_a_finished_one(client):
     assert listing(client) == []
 
 
-def test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock():
-    """`jobs.list_jobs()` is not only the shell's `GET /api/jobs` —
-    `supervisor._cancel_state` (polled every 0.5s for the whole duration of
-    every model load) and `capture._cancel_requested` call it too, with no
-    client ever having asked to see the row. If a plain `list_jobs()` call
-    started the retention clock, a scheduled run finishing while any model
-    happened to be loading would get `first_read_at` stamped by that internal
-    poll within half a second, and the row would sweep `FINISHED_TTL_S` later
-    with nobody having ever actually seen it — precisely the failure the read
-    gate exists to prevent, reached through a different door, and silently:
-    the same run would be visible or invisible depending on whether a model
-    happened to be loading at the time.
-
-    So a plain `jobs.list_jobs()` (the shape every internal caller uses, and
-    the shape a future internal caller would reach for first) must leave the
-    row exactly as unread as it found it — proven here by reading it a great
-    many times without `mark_read`, then confirming a REAL read still gets
-    the row's full `FINISHED_TTL_S` window from that point.
-    """
-    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
-
-    # Simulates the supervisor's cancel poll: many reads, none of them real.
-    for i in range(20):
-        rows = jobs.list_jobs(now=1000.0 + i * 0.5)
-        assert any(r["id"] == "ok" for r in rows), "swept despite never being read"
-
-    # A real read finally arrives, long after the row finished — and it must
-    # still get the FULL FINISHED_TTL_S window from HERE, not find the row
-    # already gone or already partway through a clock nobody started for it.
-    real_read_at = 1000.0 + 20 * 0.5
-    assert any(r["id"] == "ok" for r in read_jobs(now=real_read_at))
-    assert any(r["id"] == "ok" for r in read_jobs(now=real_read_at + jobs.FINISHED_TTL_S - 1))
-    assert not any(r["id"] == "ok" for r in read_jobs(now=real_read_at + jobs.FINISHED_TTL_S + 1))
+# `test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock` is
+# deleted rather than rewritten (D656): its whole premise was that a `done`
+# row's retention clock (`first_read_at` / `FINISHED_TTL_S`) must not be
+# started by an internal, non-`mark_read` `list_jobs()` poll — but a `done`
+# row no longer runs that clock at all (`_sweep` keeps every terminal state
+# until dismissed; see its docstring). The read-gate machinery this test
+# pinned (`first_read_at`, `FINISHED_TTL_S`) is left in `jobs.py` because
+# `mark_read` still has other callers with their own reasons, but no
+# reachable job state exercises it any more, so there is nothing left for
+# this test to prove.
 
 
 def test_a_reporter_that_went_quiet_reads_as_stalled_then_disappears():
@@ -559,19 +539,22 @@ def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
     A reporter with no `fused.trackJob()` handle to remember it already finished (the
     documented direct-HTTP path: a detached worker POSTing its whole status each
     tick) would otherwise re-create the record the moment it aged out, and again
-    every FINISHED_TTL_S after that: a finished download blinking back onto the
-    screen every few seconds for as long as the worker kept posting.
+    every tick after that: a finished download blinking back onto the screen
+    every few seconds for as long as the worker kept posting.
+
+    A `done` row no longer ages out at all (D656: every terminal state is kept
+    until dismissed), so the still-reachable age-out this exercises is a
+    RUNNING row going stale (`STALE_DROP_S`, its reporter gone silent) — the
+    dismissal protection it proves (`_forget` / `_dismissed`, in `upsert`) is
+    the same one either age-out path funnels through.
     """
     jobs.upsert({"id": "w", "title": "Model", "state": "running"}, now=1000.0)
-    jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=1001.0)
-    # The row has to be READ before FINISHED_TTL_S starts counting against it
-    # — this call is that read, and establishes the clock at `read_at`.
-    read_at = 1001.0
-    assert read_jobs(now=read_at) != []
-    aged = read_at + jobs.FINISHED_TTL_S + 1
+    aged = 1000.0 + jobs.STALE_DROP_S + 1
     assert read_jobs(now=aged) == []
 
-    jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=aged + 0.1)
+    # A late progress tick from the same dead reporter must not re-raise the
+    # row it was just dismissed from...
+    jobs.upsert({"id": "w", "title": "Model", "done": 5}, now=aged + 0.1)
     assert read_jobs(now=aged + 0.2) == []
 
     # ...and the one case that SHOULD bring it back still does: a new run
@@ -735,6 +718,27 @@ def test_a_stale_server_row_is_still_dropped_by_the_AGE_sweep():
 def test_a_dead_reporter_cannot_wedge_the_list_for_the_session():
     jobs.upsert({"id": "a", "title": "t"}, now=1000.0)
     assert read_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
+
+
+def test_a_long_open_waiting_row_is_not_the_first_thing_evicted():
+    """`evictable`'s sort key, `(state == RUNNING, updated_at)`, puts every
+    non-running row first and orders each group oldest-`updated_at`-first. A
+    `WAITING` row's reporter has already exited (the worker that raised the
+    question is gone), so its `updated_at` never advances again — under that
+    key alone it becomes the single OLDEST-updated evictable row, the very
+    first thing the cap drops once the registry fills. That is exactly the
+    outcome the `WAITING` sweep exemption exists to prevent: a long-open
+    "Install anyway" prompt disappearing under capacity pressure from an
+    unrelated queue of downloads. `WAITING` must be excluded from `evictable`
+    entirely, not merely favoured by the sort."""
+    jobs.upsert({"id": "prompt", "title": "compile foolib", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=900.0)
+    for i in range(jobs.MAX_JOBS):
+        jobs.upsert({"id": f"j{i}", "title": "x", "state": "done"}, now=1000.0 + i * 0.01)
+    at = 1000.0 + jobs.MAX_JOBS * 0.01
+
+    ids = {r["id"] for r in read_jobs(now=at)}
+    assert "prompt" in ids, "the open prompt was evicted ahead of finished downloads"
 
 
 def test_over_the_cap_the_live_work_is_what_survives():

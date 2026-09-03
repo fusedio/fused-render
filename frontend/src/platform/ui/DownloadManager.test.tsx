@@ -25,12 +25,10 @@ import {
   DownloadManagerView,
   engineLabel,
   engineDetail,
-  engineDuration,
   engineKind,
   type EnginesSlot,
-  type QueueSlot,
 } from "@platform/ui/DownloadManager";
-import { jobAmount, type Job } from "@platform/lib/jobs";
+import { engineDuration, jobAmount, type Job } from "@platform/lib/jobs";
 import type { RunningEngine } from "@platform/lib/api";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
@@ -115,38 +113,12 @@ test("a section always starts collapsed, with nothing persisted to say otherwise
   expect(findAll(tree, "dl-panel")).toHaveLength(0); // ...and nothing is open
 });
 
-function fullQueue(queue: Partial<QueueSlot>): QueueSlot {
-  return {
-    waiting: 0,
-    running: 0,
-    rows: null,
-    drawn: [],
-    ...queue,
-  };
-}
-
-function renderCardWithQueue(
-  reported: Job[],
-  queue: Partial<QueueSlot>,
-): ReactTestRendererJSON | null {
-  return create(
-    <DownloadManagerView
-      reported={reported}
-      queue={fullQueue(queue)}
-      initialCollapsed={false}
-      refresh={() => {}}
-      patch={() => {}}
-    />,
-  ).toJSON() as ReactTestRendererJSON | null;
-}
-
 // For tests that need to actually PRESS the toggle (collapsing is real
 // component state, not a prop) rather than just inspect one static render.
-function renderInstance(reported: Job[], queue?: Partial<QueueSlot>): ReactTestRenderer {
+function renderInstance(reported: Job[]): ReactTestRenderer {
   return create(
     <DownloadManagerView
       reported={reported}
-      queue={queue ? fullQueue(queue) : undefined}
       initialCollapsed={false}
       refresh={() => {}}
       patch={() => {}}
@@ -212,16 +184,16 @@ test("a done job and a failed job together leave this section with nothing to dr
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
 });
 
-test("a scheduled run's own terminal row still counts and draws — the exemption is for stand-ins, not for AI rows", () => {
-  // A scheduled run's own outcome row (`sys:schedule:*`) deliberately does
-  // NOT vanish on success like an ordinary AI row does — "a run appears,
-  // works, and vanishes mid-sentence" is the bug that exists to prevent.
-  // `isVanishedOnSuccess` must not blanket every "done" job or it would
-  // re-break that.
+test("a scheduled run's own job never draws a row here, in any state (D655)", () => {
+  // D655 (user: "a task is not something I even want in the activity. that
+  // was added unintentionally"): `jobRows` now excludes every `sys:schedule:*`
+  // job unconditionally, so a scheduled run's own row cannot appear here no
+  // matter what state it is in — there is no more "exempt only while running"
+  // carve-out.
   const scheduleDone: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
-  const tree = renderCard([scheduleDone]);
-  expect(tree).not.toBeNull();
-  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  const scheduleRunning: Job = { ...BASE, id: "sys:schedule:entry-2", state: "running" };
+  const tree = renderCard([scheduleDone, scheduleRunning]);
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
 });
 
 test("a stalled but still-running job alone offers no Clear button", () => {
@@ -252,48 +224,11 @@ test("a stalled running row draws and is NOT clearable, with no failure beside i
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
-// D604, THE BOUNDARY for the Jobs footer, both directions. `Clear` is
-// dismiss-all, so at exactly one terminal row it duplicates that row's own
-// dismiss — and the band cost 32px of an 88px card to say so.
-// `queue-dock-lib.ts`'s `showCancelAll` already required two withdrawable rows
-// for the same reason, so this aligns the sibling control with a rule the
-// codebase had already settled.
-test("Clear is absent at one clearable row and present at two", () => {
-  const done = (id: string): Job => ({ ...BASE, id, state: "done", detail: "Saved" });
-  // `sys:schedule:*` survives success where an ordinary AI row vanishes, which
-  // is what makes it usable as a terminal row that actually draws.
-  const one = renderCard([done("sys:schedule:a")]);
-  expect(findAll(one, "dl-row")).toHaveLength(1);
-  expect(findAll(one, "dl-head")).toHaveLength(0);
-  expect(findAll(one, "dl-clear")).toHaveLength(0);
-  // The row's own dismiss is what covers the single case.
-  expect(findAll(one, "dl-x")).toHaveLength(1);
-
-  const two = renderCard([done("sys:schedule:a"), done("sys:schedule:b")]);
-  expect(findAll(two, "dl-head")).toHaveLength(1);
-  expect(findAll(two, "dl-clear")).toHaveLength(1);
-});
-
-// `queue?.cancelAll` is a SEPARATE control with its own threshold, decided by
-// the shell (`showCancelAll`, already >= 2). The band renders if EITHER guard
-// is true, so a cancelAll node must still bring the footer up on its own even
-// with no clearable row at all.
-test("a cancelAll node alone still brings the footer up", () => {
-  const cancelAll = <button className="q-all">Cancel queued</button>;
-  const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
-  const tree = renderCardWithQueue([running], { waiting: 2, cancelAll });
-  expect(findAll(tree, "dl-head")).toHaveLength(1);
-  expect(findAll(tree, "q-all")).toHaveLength(1);
-  // ...and no Clear beside it, since nothing is clearable.
-  expect(findAll(tree, "dl-clear")).toHaveLength(0);
-});
-
 test("the panel's head is OMITTED, not a blank band, when nothing to offer — code review finding #3", () => {
-  // One job running, nothing queued, nothing terminal: `queue?.cancelAll`
-  // is undefined (no queue slot at all here) and `clearable` is 0, so
-  // before this fix `.dl-head` still rendered — an empty ~30px padded band
-  // over the row list, since the header used to always hold at least the
-  // toggle before the chip/panel split moved the toggle out of it.
+  // One job running, nothing terminal, nothing clearable: before this fix
+  // `.dl-head` still rendered — an empty ~30px padded band over the row list,
+  // since the header used to always hold at least the toggle before the
+  // chip/panel split moved the toggle out of it.
   const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
   const tree = renderCard([running]);
   expect(tree).not.toBeNull();
@@ -326,16 +261,6 @@ test("a failure beside live work leaves only the live row and a count of one", (
   const tree = renderCard([running, errored]);
   expect(findAll(tree, "dl-row")).toHaveLength(1);
   expect(circleFilled(tree)).toBe(true);
-});
-
-test("cancelled and done rows do NOT move — only failures did", () => {
-  // The scope of D586 is `state === "error"` and nothing else: a cancel is
-  // user-initiated and ages out on its own, and a success has its artefact on
-  // disk. `sys:schedule:*` survives success where an ordinary AI row vanishes,
-  // which is what makes it usable as the "still here" case.
-  const done: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
-  const tree = renderCard([done]);
-  expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
 // ----------------------------------------- the model-load merge (SPEC §36) —
@@ -377,12 +302,12 @@ test("a waiter and the load it is blocked on render as ONE row, carrying the loa
   expect(text(findAll(rows[0], "dl-status")[0])).toBe("Loading weights into memory…");
 });
 
-test("once the waiter goes terminal, the load's row reappears — a stale waiting_for does not keep hiding it", () => {
-  // `error` is excluded from THIS card entirely (D586 — a failure moves to
-  // Notifications), so `cancelled` is what exercises "terminal, still drawn
-  // here" without that unrelated filter also removing the row. The pure-
-  // function case for a real failure (both rows visible, D266) is covered in
-  // jobs.test.ts, where `isFailure`'s D586 re-route is not in the way.
+test("once the waiter goes terminal, only the load's row is left — the waiter moved to Notifications", () => {
+  // D586, broadened by D656: EVERY terminal state (done/error/cancelled), not
+  // only `error`, leaves this card for Notifications. So a waiter that goes
+  // `cancelled` does not linger here with a stale `waiting_for` pointed at a
+  // still-running load — it is simply gone, and the load's own row is all
+  // that is left to draw.
   const waiter: Job = {
     ...BASE,
     id: "sys:ai-image:x",
@@ -392,7 +317,9 @@ test("once the waiter goes terminal, the load's row reappears — a stale waitin
   };
   const load: Job = { ...BASE, id: "sys:ai-model:m", title: "org/m", state: "running" };
   const tree = renderCard([waiter, load]);
-  expect(findAll(tree, "dl-row")).toHaveLength(2);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(findAll(rows[0], "dl-title")[0])).toBe(load.title);
 });
 
 // -------------------------------------------------- the collapse toggle (D562)
@@ -423,45 +350,36 @@ function clickToggle(renderer: ReactTestRenderer) {
   });
 }
 
-test("the toggle is a real button even with only queue rows to fold", () => {
-  const tree = renderCardWithQueue([], { waiting: 1, running: 0 });
-  expect(tree).not.toBeNull();
-  const toggles = findAll(tree, "dl-toggle");
-  expect(toggles).toHaveLength(1);
-  expect(toggles[0].type).toBe("button");
-});
-
-test("the toggle is a real button even with only a lone scheduled stand-in row", () => {
+test("the toggle is a real button even with a lone job to fold, a scheduled run beside it drawing nothing", () => {
+  // D655: a scheduled run's own row never draws here, in any state — this
+  // pins that its ABSENCE does not also take the toggle down with it, as
+  // long as a real job row is still present.
   const liveSchedule: Job = {
     ...BASE,
     id: "sys:schedule:entry-1",
     state: "running",
     stalled: false,
   };
-  const tree = renderCard([liveSchedule]);
+  const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
+  const tree = renderCard([liveSchedule, running]);
   expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
   const toggles = findAll(tree, "dl-toggle");
   expect(toggles).toHaveLength(1);
   expect(toggles[0].type).toBe("button");
 });
 
-test("collapsing hides every row — queue rows and job rows alike, no exemption", () => {
+test("collapsing hides every row", () => {
   const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
-  const renderer = renderInstance([running], {
-    waiting: 0,
-    running: 0,
-    rows: <div className="q-row">a queued message</div>,
-  });
+  const renderer = renderInstance([running]);
 
   const before = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(before, "dl-row")).toHaveLength(1);
-  expect(findAll(before, "q-row")).toHaveLength(1);
 
   clickToggle(renderer);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "q-row")).toHaveLength(0);
   expect(findAll(after, "dl-rows")).toHaveLength(0); // no empty box left behind
 });
 
@@ -508,25 +426,6 @@ test("the collapsed chip carries NO aggregate percentage — per-row progress li
   expect(circleFilled(after)).toBe(true);
 });
 
-test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D563)", () => {
-  // The old behaviour this replaces (D562) dropped `showCancelAll`'s
-  // threshold to one row once collapsed, because the header — and this
-  // button with it — stayed on screen folded. Now the button is a plain,
-  // pre-decided node (queue-dock-lib.ts `showCancelAll` no longer takes
-  // `collapsed` at all) that this card only ever places inside the panel,
-  // which does not exist while collapsed.
-  const cancelAll = <button className="q-all">Cancel queued</button>;
-  const renderer = renderInstance([], { waiting: 1, running: 0, cancelAll });
-
-  const before = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(before, "q-all")).toHaveLength(1);
-
-  clickToggle(renderer); // collapse
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-all")).toHaveLength(0);
-});
-
 // ------------------------------------- a quiet dot on a new arrival (D567)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562
@@ -541,16 +440,9 @@ test("Cancel queued renders only inside the expanded panel — the collapsed chi
 // tested on its own in jobs.test.ts; these pin the CARD actually wiring it
 // in.
 
-function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Partial<QueueSlot>) {
+function updateInstance(renderer: ReactTestRenderer, reported: Job[]) {
   act(() => {
-    renderer.update(
-      <DownloadManagerView
-        reported={reported}
-        queue={queue ? fullQueue(queue) : undefined}
-        refresh={() => {}}
-        patch={() => {}}
-      />,
-    );
+    renderer.update(<DownloadManagerView reported={reported} refresh={() => {}} patch={() => {}} />);
   });
 }
 
@@ -645,52 +537,6 @@ test("a section closed while EMPTY still auto-opens on its first arrival", () =>
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(1);
   expect(findAll(after, "dl-row")).toHaveLength(1);
-});
-
-// CODE REVIEW 2026-08-28, FINDING 1 — the drain gate was fed the JOB ids only,
-// but this panel draws the scheduled queue's rows above them. So one live
-// scheduled message plus one download meant the download finishing took the
-// hook's list to `[]` and slammed the panel shut over the queue rows still
-// rendered inside it — including that live turn's only ✕, the one control the
-// user needs at exactly that moment. `queue.drawn` now goes in as `alsoDrawn`,
-// so "empty" means the panel is empty rather than one of its two sources being.
-test("a job draining does NOT close the panel while the queue is still drawing rows", () => {
-  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const queue = {
-    waiting: 0,
-    running: 1,
-    drawn: ["entry-1"],
-    rows: <div className="q-row">a live turn</div>,
-  };
-  const renderer = renderInstance([job], queue);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(1);
-
-  updateInstance(renderer, [], queue); // the download finished; the turn has not
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "q-row")).toHaveLength(1);
-});
-
-// The mirror, so the fix above cannot be "never close again": once the queue
-// half lets go too, the panel does close — whichever of the two sources emptied
-// last.
-test("the panel closes once the queue rows drain as well", () => {
-  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const queue = {
-    waiting: 0,
-    running: 1,
-    drawn: ["entry-1"],
-    rows: <div className="q-row">a live turn</div>,
-  };
-  const renderer = renderInstance([job], queue);
-  updateInstance(renderer, [], queue); // ids drain, panel stays (above)
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
-
-  updateInstance(renderer, [], { waiting: 0, running: 0, drawn: [], rows: null });
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
 test("one job finishing while another still runs closes nothing", () => {
@@ -963,13 +809,11 @@ const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
 
 function renderActivity(props: {
   reported?: Job[];
-  queue?: Partial<QueueSlot>;
   engines?: EnginesSlot;
 }): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView
       reported={props.reported ?? []}
-      queue={props.queue ? fullQueue(props.queue) : undefined}
       engines={props.engines}
       initialCollapsed={false}
       refresh={() => {}}

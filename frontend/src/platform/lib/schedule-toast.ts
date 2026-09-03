@@ -16,32 +16,28 @@ export function eventLabel(e: ScheduleEvent): string {
 
 // What one event becomes, as data — the decision table, kept pure and tested
 // (server-status.ts's split: the rules here, the polling and the DOM below).
-// `needsAttention` is both "paint it as an error" and "persist until acted on",
-// because those are the same question asked twice: a toast that vanishes on a
-// timer is one the user is not required to see.
+// A run that finished without incident produces no toast at all (`null`): the
+// Tasks page is where task results live, and a plain success was never
+// something the user asked to be interrupted about. Both remaining outcomes
+// are surprises nothing else surfaces — tasks are gone from the Activity chip
+// (D655) and excluded from Notifications routing on this branch — so both are
+// errors that persist until acted on; there is no longer a lesser, self-
+// dismissing tone to choose between.
 export interface ScheduleToast {
   msg: string;
-  tone: "error" | "info";
-  needsAttention: boolean;
 }
 
-export function toastForEvent(e: ScheduleEvent): ScheduleToast {
+export function toastForEvent(e: ScheduleEvent): ScheduleToast | null {
+  if (e.kind === "done") return null;
   const label = eventLabel(e);
   // An IMMEDIATE entry is a task the user ran (a New task with the when-row
   // untouched, a new app's scaffolding turn), not one they scheduled — so the
   // noun is "task" and the verb is about finishing, not about a schedule
   // having been honoured. Everything else about the toast is the same.
   const noun = e.immediate ? "Task" : "Scheduled message";
-  if (e.kind === "done") {
-    return {
-      msg: e.immediate ? `Task finished: ${label}` : `Scheduled message ran: ${label}`,
-      tone: "info",
-      needsAttention: false,
-    };
-  }
   // `missed` is not an app failure — nothing went wrong, the app just wasn't
   // running inside the catch-up window — but the user asked for something that
-  // did not happen, so it is not an info either.
+  // did not happen, so it still has to be said.
   const verb = e.kind === "missed" ? "was missed" : "failed";
-  return { msg: `${noun} ${verb}: ${label}`, tone: "error", needsAttention: true };
+  return { msg: `${noun} ${verb}: ${label}` };
 }
