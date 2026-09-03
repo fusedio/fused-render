@@ -107,14 +107,31 @@ describe("the sidebar's tasks pulse", () => {
     expect(attentionLabel(2)).toBe("2 tasks need input");
   });
 
-  it("says it in WORDS, and gives the rail no mark of its own", () => {
-    // A waiting task is counted in `running`, so the corner keeps the plain
-    // yellow dot every running task has. A pulsing one was tried and taken out
-    // (Akshil, 2026-09-03): the rail is the one place on screen a reader cannot
-    // look away from, and nothing there may blink.
+  it("says it in WORDS and in RED, and still nothing that moves", () => {
+    // Akshil, 2026-09-03: "show the red dot on tasks sidebar and change that
+    // color to red as well". A waiting task is counted in `running` too, so
+    // until this it wore the plain yellow and the waiting was said in words
+    // alone — which is invisible at rail width, where there are no words. The
+    // HUE says it at both widths; the pulsing dot tried first stays out, because
+    // the rail is the one place on screen a reader cannot look away from and
+    // nothing there may blink.
     expect(SIDEBAR).toContain("pulse.attention > 0 ? (");
-    expect(SIDEBAR).not.toContain("is-attention");
-    expect(SIDEBAR_CSS).not.toContain("is-attention");
+    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-attention"');
+    // Red OUTRANKS yellow, which outranks green: still ONE dot, and the state
+    // that will not resolve on its own is the one it shows.
+    expect(SIDEBAR.indexOf("pulse.attention > 0 ? (")).toBeLessThan(
+      SIDEBAR.indexOf("pulse.running > 0 ? ("),
+    );
+    // The Blocked ring's own token — `needs_attention` is DRAWN in Blocked
+    // (schedule-lib.laneOf), so it wears Blocked's colour here too rather than a
+    // second red minted for the rail.
+    const attention = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf(".sidebar-rail-dot.is-attention {"),
+    );
+    const rule = attention.slice(0, attention.indexOf("}"));
+    expect(rule).toContain("var(--status-failed)");
+    // Nothing animated, in the markup or the stylesheet.
+    expect(rule).not.toContain("animation");
     expect(SIDEBAR_CSS).not.toContain("sidebar-attention-pulse");
   });
 

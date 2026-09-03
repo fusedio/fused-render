@@ -9,6 +9,7 @@ import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf } from "./schedule-lib
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
+  attentionRows,
   IMMINENT,
   JUST_NOW,
   EMPTY_FILTERS,
@@ -6572,11 +6573,13 @@ function running(key: string, at: number, over: Partial<Task> = {}): Task {
 }
 
 describe("cardsForTasks", () => {
-  it("draws the lanes BOARD_COLUMNS calls running, and nothing else", () => {
-    // Today that is exactly In Progress. Asserted through CARD_LANES rather than
-    // by naming the string, so the day a `needs_attention` lane is added to
-    // BOARD_COLUMNS this test says what changed instead of what broke.
-    expect(CARD_LANES).toEqual(["in_progress", "needs_attention"]);
+  it("draws the two running lanes, waiting first, and nothing else", () => {
+    // CARD_LANES is both the membership test and the rank order (see
+    // LIVE_LANE_NAMES), which is why this asserts the ORDER of the list and not
+    // merely its contents: change it and the wall re-sorts, with nothing else to
+    // keep in step. Every name in it is still a real board column, so a lane
+    // renamed out from under us fails here rather than silently drawing nothing.
+    expect(CARD_LANES).toEqual(["needs_attention", "in_progress"]);
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
     const rows = [
       running("a", 100),
@@ -6586,10 +6589,31 @@ describe("cardsForTasks", () => {
       task({ key: "e", status: "archived" }),
       task({ key: "f", status: "needs_attention", last_active: 50 }),
     ];
-    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["a", "f"]);
+    // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "a"]);
   });
 
-  it("orders by last activity, newest first", () => {
+  it("groups by lane before it sorts by recency — blocked first, then in progress", () => {
+    // Akshil, 2026-09-03: order the cards "based on status, the same way we have
+    // in list … blocked first and then in progress … sort them by recency". A
+    // parked run stops ticking `last_active` the moment it asks, so under the
+    // old flat recency order the longer somebody was kept waiting the further
+    // down their card sank — exactly backwards.
+    const rows = [
+      running("run-new", 500),
+      task({ key: "ask-old", status: "needs_attention", last_active: 100 }),
+      running("run-old", 300),
+      task({ key: "ask-new", status: "needs_attention", last_active: 200 }),
+    ];
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual([
+      "ask-new",
+      "ask-old",
+      "run-new",
+      "run-old",
+    ]);
+  });
+
+  it("orders by last activity, newest first, inside one lane", () => {
     const rows = [running("old", 100), running("new", 300), running("mid", 200)];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
   });
@@ -7502,5 +7526,67 @@ describe("what a waiting row does NOT grow", () => {
     expect(SCHEDULE_CSS).not.toContain("--status-attention");
     expect(TOKENS_CSS).not.toContain("--status-attention");
     expect(VIEWS).toContain('<span className="schedule-ring-bang" aria-hidden="true">!</span>');
+  });
+});
+
+// ---- the notification a waiting run earns ------------------------------------
+
+describe("attentionRows", () => {
+  it("draws one row per waiting task and none for anything else", () => {
+    // Akshil, 2026-09-03: "when the task was blocked I did not see any
+    // notifications in there". The filter is `taskColumn`, not a bare
+    // `status === "needs_attention"`, so a status this bundle does not know
+    // lands in Done and is correctly not news (statusColumn's floor).
+    const rows = attentionRows([
+      task({ key: "a", task_id: "TASK-097", title: "Pull the news",
+             status: "needs_attention" }),
+      task({ key: "b", status: "in_progress" }),
+      task({ key: "c", status: "blocked" }),
+      task({ key: "d", status: "done", unread: 3 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("a");
+    expect(rows[0].taskId).toBe("TASK-097");
+    expect(rows[0].title).toBe("Pull the news");
+  });
+
+  it("keeps the poll's own order — the server already sorted it", () => {
+    // `/api/tasks` sorts by `last_active` descending, and a waiting run's clock
+    // stopped when it asked, so that IS "asked most recently first". Re-sorting
+    // on a key the pulse row does not carry would be inventing a fact.
+    const rows = attentionRows([
+      task({ key: "newest", status: "needs_attention", last_active: 300 }),
+      task({ key: "oldest", status: "needs_attention", last_active: 100 }),
+      task({ key: "middle", status: "needs_attention", last_active: 200 }),
+    ]);
+    expect(rows.map((r) => r.key)).toEqual(["newest", "oldest", "middle"]);
+  });
+
+  it("opens the thread, and falls back to the folder before it gives up", () => {
+    // `taskHref` is null until the run reports a session id, and a run parked on
+    // a question inside that window is exactly the one somebody has to reach —
+    // so the folder with the Claude pane on it is a better answer than an inert
+    // row (the task popover's footer makes the same fallback).
+    const withSession = attentionRows([
+      task({ key: "s", status: "needs_attention", session_id: "sess-9",
+             target: "/Users/me/proj", project: "/Users/me/proj" }),
+    ]);
+    expect(withSession[0].href)
+      .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=sess-9");
+
+    const noSession = attentionRows([
+      task({ key: "n", status: "needs_attention", session_id: "",
+             target: "/Users/me/proj", project: "/Users/me/proj" }),
+    ]);
+    expect(noSession[0].href)
+      .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
+
+    // Nowhere at all: the news is still true, so the row exists and says so by
+    // being unclickable rather than by not being drawn.
+    const nowhere = attentionRows([
+      task({ key: "x", status: "needs_attention", session_id: "", target: "",
+             project: "" }),
+    ]);
+    expect(nowhere[0].href).toBeNull();
   });
 });

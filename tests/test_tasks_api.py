@@ -272,16 +272,26 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     full = _tasks(client)
     pulse = _pulse(client)
 
-    # `project` rides along for the sidebar's Current apps section (D487) —
-    # the one listing fact that reader needs beyond the status summary.
-    pulse_fields = ("key", "status", "unread", "last_active", "project")
+    # `project` rides along for the sidebar's Current apps section (D487), and
+    # `task_id`/`title`/`target`/`session_id` for the Notifications section's
+    # needs-attention rows (2026-09-03), which have to NAME the waiting task and
+    # then open its conversation. Four short strings on a row that is being built
+    # anyway; the alternative was a second /api/tasks poll from the status bar.
+    pulse_fields = (
+        "key", "status", "unread", "last_active", "project",
+        "task_id", "title", "target", "session_id",
+    )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
         for row in full
     ]
     assert set(pulse[0]) == set(pulse_fields)
+    # COMPACT IS ABOUT THE HEAVY FIELDS, not about how many there are: what this
+    # endpoint exists to leave behind is the parsed transcript — the message
+    # previews and the description — never a title of a few dozen characters.
     assert "messages" not in pulse[0]
-    assert "title" not in pulse[0]
+    assert "description" not in pulse[0]
+    assert "a large message body the sidebar must not receive" not in json.dumps(pulse)
     assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 

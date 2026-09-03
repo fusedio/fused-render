@@ -40,6 +40,7 @@ import {
   BOARD_COLUMNS,
   BOARD_LANES,
   explorerUrl,
+  folderHref,
   laneOf,
   isProjected,
   startOfDay,
@@ -1192,8 +1193,16 @@ export function taskFile(task: Task): string {
 }
 
 /** The task's thread, top of the chat. Null when the task has never run —
- * there is no session to open yet. */
-export function taskHref(task: Task): string | null {
+ * there is no session to open yet.
+ *
+ * Takes the three fields it reads rather than a whole `Task` so the pulse's own
+ * compact row (api.TaskPulseTask, which carries exactly these) can open a chat
+ * too — the Notifications section's needs-attention rows do, off the pulse poll
+ * the shell already runs. Widening the parameter is the alternative to a second
+ * copy of this url that would rot separately. */
+export function taskHref(
+  task: Pick<Task, "session_id" | "target" | "project">,
+): string | null {
   if (!task.session_id) return null;
   return explorerUrl(task.target || task.project, task.session_id);
 }
@@ -2835,24 +2844,34 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 // they are the ones worth testing and a grid of iframes is the last place to
 // test anything.
 //
-// WHICH LANES COUNT AS RUNNING is read off BOARD_COLUMNS rather than written out
-// a second time. Today that is exactly one lane — In Progress, which is the
-// server's own word for "a turn is in flight or queued" (api.ts `Task.status`)
-// — but the set is a NAME LIST intersected with the board's columns, so a lane
-// added there under one of these names (a `needs_attention` triage lane has been
-// discussed) joins this view by existing, and a lane renamed out from under us
-// drops out of it instead of silently filtering to nothing. A hardcoded
+// WHICH LANES COUNT AS RUNNING is checked against BOARD_COLUMNS rather than
+// trusted on its own. Today that is two lanes — In Progress, the server's word
+// for "a turn is in flight or queued" (api.ts `Task.status`), and Needs
+// attention, the same turn parked on a question — but this is a NAME LIST
+// intersected with the board's columns, so a lane added there under one of these
+// names joins this view by existing, and a lane renamed out from under us drops
+// out of it instead of silently filtering to nothing. A hardcoded
 // `status === "in_progress"` would have to be found and edited on that day, and
 // the symptom of missing it is an empty page rather than an error.
-const LIVE_LANE_NAMES: ReadonlySet<string> = new Set([
-  "in_progress",
+//
+// AN ORDERED LIST, NOT A SET (Akshil, 2026-09-03: cards sorted "the same way we
+// have in list … blocked first and then in progress"). The list's own order IS
+// the wall's rank order — `cardsForTasks` reads the index of a card's lane in
+// `CARD_LANES` — so which lane comes first is written down exactly once, here,
+// instead of in a second rank table that would have to be kept in step with
+// this one. That is also why the order is no longer BOARD_COLUMNS': the board
+// draws its columns left to right for its own reasons (In Progress before Needs
+// attention, which shares Blocked's lane anyway — schedule-lib.laneOf), and a
+// wall of live chats wants the one that has STOPPED to ask something at the top.
+const LIVE_LANE_NAMES: readonly string[] = [
   "needs_attention",
-]);
+  "in_progress",
+];
 
-/** The lanes a Cards view draws, in BOARD_COLUMNS' own order. */
-export const CARD_LANES: BoardColumn[] = BOARD_COLUMNS
-  .map((c) => c.key)
-  .filter((k) => LIVE_LANE_NAMES.has(k));
+/** The lanes a Cards view draws, top rank first — see LIVE_LANE_NAMES. */
+export const CARD_LANES: BoardColumn[] = LIVE_LANE_NAMES.filter(
+  (name): name is BoardColumn => BOARD_COLUMNS.some((c) => c.key === name),
+);
 
 /**
  * HOW MANY LIVE CHATS AT ONCE. Each card is an iframe running the chat template,
@@ -2876,9 +2895,22 @@ export interface TaskCardSet {
 }
 
 /**
- * The Cards view's rows: the running tasks, newest activity first, capped.
+ * The Cards view's rows: the running tasks, by lane then newest activity, capped.
  *
- * NEWEST ACTIVITY FIRST, and `last_active` is what that means — the session's own
+ * BY LANE FIRST (Akshil, 2026-09-03: order the cards "based on status, the same
+ * way we have in list … blocked first and then in progress … sort them by
+ * recency" inside each group). The wall used to be one flat recency order, and
+ * that buried the only card on it that needs a person: a run parked on a
+ * question stops ticking `last_active` the moment it asks, so the longer it
+ * waits the further down it sinks — exactly backwards. The rank is a card's
+ * lane's index in `CARD_LANES`, which is the one place the order is written
+ * (see LIVE_LANE_NAMES), so this cannot drift out of step with the set of lanes
+ * the view draws. It is the LIST's rule too (`sortByLane`/`LIST_ORDER`), applied
+ * to the two lanes this view has — the same rows in the same order in both
+ * views, which is what makes switching between them a change of shape rather
+ * than of subject.
+ *
+ * NEWEST ACTIVITY FIRST WITHIN A LANE, and `last_active` is what that means — the session's own
  * clock (server routers/tasks.py), which is the field the server already sorts
  * the whole listing by. Deliberately NOT `taskWhen`/`laneTime`: those answer
  * "which run does this row print", a question with three fallbacks in it, and on
@@ -2891,23 +2923,31 @@ export interface TaskCardSet {
  * cards trading places between polls is not a row moving, it is two conversations
  * swapping seats in front of somebody reading one of them.
  *
- * A TASK WITH NO CLOCK AT ALL goes last (rule 2, same reason: 0 is 1970, and a
- * run that has not reported a timestamp yet must not be allowed to claim either
- * end of the order by accident). A just-claimed run is exactly that task, and it
- * is also the one whose card has no session to embed — so it lands at the end,
- * where a "Starting…" placeholder belongs.
+ * A TASK WITH NO CLOCK AT ALL goes last IN ITS OWN LANE (rule 2, same reason: 0
+ * is 1970, and a run that has not reported a timestamp yet must not be allowed
+ * to claim either end of the order by accident). A just-claimed run is exactly
+ * that task, and it is also the one whose card has no session to embed — so it
+ * lands at the end of In Progress, where a "Starting…" placeholder belongs.
  *
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
 export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSet {
-  const lanes = new Set<BoardColumn>(CARD_LANES);
+  // `indexOf` rather than a Set: membership AND rank come off the one list, and
+  // -1 — "this lane is not drawn here" — is the filter.
+  const rank = (task: Task) => CARD_LANES.indexOf(taskColumn(task));
   const rows = tasks
-    .filter((t) => lanes.has(taskColumn(t)))
-    // `|| null` for laneTime's reason: `last_active` is a float that is 0.0 for
-    // "never", and 0 must be "no clock" rather than an instant in 1970.
-    .map((task, index) => ({ task, index, at: task.last_active || null }));
+    .map((task, index) => ({
+      task,
+      index,
+      lane: rank(task),
+      // `|| null` for laneTime's reason: `last_active` is a float that is 0.0 for
+      // "never", and 0 must be "no clock" rather than an instant in 1970.
+      at: task.last_active || null,
+    }))
+    .filter((r) => r.lane >= 0);
   rows.sort((a, b) => {
+    if (a.lane !== b.lane) return a.lane - b.lane;
     if (a.at === null || b.at === null) {
       // Exactly one of them has a clock: the one that does comes first.
       if (a.at !== b.at) return a.at === null ? 1 : -1;
@@ -3378,6 +3418,67 @@ export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse 
 export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
   return a.running === b.running && a.attention === b.attention
     && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
+}
+
+// ---- the notification a waiting run earns ------------------------------------
+// Akshil, 2026-09-03: "in bottom right we have notifications. When the task was
+// blocked I did not see any notifications in there … there should be
+// notifications with blocked tasks as well."
+//
+// A run that has stopped to ask something is the ONE task state that goes
+// nowhere until a person acts, and until now the only surfaces that said so were
+// the Tasks page and the sidebar's own count — neither of which is where this
+// app puts "something is waiting on you". The Notifications section is, so it
+// gets a row, shaped like every other row in it (`.dl-row`, RepoUpdatesDock).
+//
+// A PURE FUNCTION over the pulse rows, not a component's filter: what the row
+// says and where it goes are the only two decisions here, and both are worth a
+// test that does not need a DOM — the same split repo-updates-lib.ts makes for
+// its own rows.
+
+/** One waiting task, as the Notifications section draws it. */
+export interface AttentionRow {
+  /** React key, and the task's identity in the poll: its session/pending key. */
+  key: string;
+  /** The printed id — "TASK-097". */
+  taskId: string;
+  /** The task's own title, for the row's second line. */
+  title: string;
+  /** Where clicking the row lands, or null when there is nowhere to go. */
+  href: string | null;
+}
+
+/**
+ * The Notifications rows for every task waiting on an answer, in the order the
+ * poll listed them.
+ *
+ * THE SERVER'S ORDER IS KEPT, deliberately un-re-sorted. `/api/tasks` sorts the
+ * whole listing by `last_active` descending, and a waiting run's clock stops the
+ * moment it asks — so "most recently active" here means "asked most recently",
+ * which is the right order for a stack of notifications and costs nothing to
+ * arrive at. Re-sorting on a key the pulse row does not carry (the question's own
+ * time) would be inventing a fact.
+ *
+ * THE HREF FALLS BACK the way the task popover's footer does (schedule-lib
+ * `folderHref`): `taskHref` is null until the run reports a session id, and a run
+ * that has parked on a question inside that window is exactly the one somebody
+ * needs to reach. The folder with the Claude pane on it is where the answer can
+ * be given, so it is a better answer than an inert row. Null only when the task
+ * names no folder at all, which the section draws as an unclickable row rather
+ * than dropping the news.
+ */
+export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
+  const rows: AttentionRow[] = [];
+  for (const task of tasks) {
+    if (taskColumn(task) !== "needs_attention") continue;
+    rows.push({
+      key: task.key,
+      taskId: task.task_id,
+      title: task.title,
+      href: taskHref(task) ?? folderHref(task),
+    });
+  }
+  return rows;
 }
 
 /**

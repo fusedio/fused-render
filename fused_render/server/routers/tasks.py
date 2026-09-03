@@ -1925,7 +1925,20 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
 # dot on a row still reads the pulse — which task is under which app is a
 # listing fact, and a second GET /api/tasks poll from the sidebar is the
 # double-poll the pulse store exists to prevent.
-_PULSE_FIELDS = ("key", "status", "unread", "last_active", "project")
+#
+# `task_id`, `title`, `target` and `session_id` ride along for the SAME reason,
+# one surface later (2026-09-03): the Notifications section draws a row per task
+# that is waiting on an answer, and such a row has to print which task
+# ("TASK-097") and what it is about (the title), then open the conversation —
+# which is `tasks-lib.taskHref`'s pair of `session_id` and `target`. Four short
+# strings on a row that is already being built is cheaper by every measure than
+# the second /api/tasks poll the alternative would need, and this endpoint is
+# still the compact one: it carries no entries, no messages and no description,
+# which is where a task listing's weight actually is.
+_PULSE_FIELDS = (
+    "key", "status", "unread", "last_active", "project",
+    "task_id", "title", "target", "session_id",
+)
 
 
 @router.get("/api/tasks/pulse")

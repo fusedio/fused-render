@@ -485,10 +485,20 @@ a.sidebar-rail-btn {
   border-color: var(--bg-alt);
 }
 
-/* The Tasks states, in the status ring's own hues (schedule.css): yellow while
-   anything is in flight, green for work that finished and has not been read.
-   Yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
-   dots in one corner is not a state this can draw. */
+/* The Tasks states, in the status ring's own hues (schedule.css): red for a run
+   that has stopped to ask the reader something, yellow while anything else is in
+   flight, green for work that finished and has not been read. Red outranks
+   yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
+   dots in one corner is not a state this can draw.
+
+   Red is `--status-failed` because that is the Blocked ring's own token and
+   `needs_attention` is DRAWN in Blocked (schedule-lib.laneOf) — the same status
+   wearing the same colour on every surface that names it, rather than a second
+   red minted for the rail. */
+.sidebar-rail-dot.is-attention {
+  background: var(--status-failed);
+}
+
 .sidebar-rail-dot.is-running {
   background: var(--status-progress);
 }
