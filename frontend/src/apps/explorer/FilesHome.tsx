@@ -830,8 +830,14 @@ export function FilesSearch({
   const [buildError, setBuildError] = useState<{ query: string; message: string } | null>(
     null,
   );
-  const buildFailure = buildError !== null && buildError.query === q ? buildError.message : "";
-  const starting = scanStarting(pendingBuild, liveScanning, indexScan?.last_completed_at ?? null, Date.now());
+  const buildFailure =
+    buildError !== null && buildError.query === q ? buildError.message : "";
+  const starting = scanStarting(
+    pendingBuild,
+    liveScanning,
+    indexScan?.last_completed_at ?? null,
+    Date.now(),
+  );
   // POST /api/index/scan with no root — every configured root, and NOT
   // `requestFolderScan`, whose 15-minute debounce is right for a keystroke and
   // wrong for a button: the whole reason the user is looking at this button is
