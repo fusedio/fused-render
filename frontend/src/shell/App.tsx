@@ -1018,6 +1018,12 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
+        {/* Mod+K is App-wide (the listener above runs here too), so the sheet
+            must be renderable here — or the flag flips with nothing shown and
+            the sheet pops open on whatever page the wizard lets go to. */}
+        {shortcutsOpen && (
+          <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+        )}
       </div>
     );
   }
