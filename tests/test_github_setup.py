@@ -15,6 +15,7 @@ facts the parser reads.
 """
 import json
 import os
+import shutil
 import sys
 import threading
 
@@ -672,3 +673,284 @@ def test_a_second_install_via_the_endpoint_comes_back_as_409(monkeypatch):
     resp = client.post("/api/github/install", headers={"X-Fused": "1"})
     release.set()
     assert resp.status_code == 409
+
+
+# -- creating the repo and pushing ---------------------------------------------
+#
+# Ported from the install tests' shape, plus a couple of pytest.ini's tests
+# use REAL repositories (tests/_git_repo.py) rather than a mocked git: the
+# refusals under test — no commits, an existing remote — are exactly the
+# facts git itself is the authority on, so a fake would test our own
+# fiction of them instead. `gh` itself is always faked: nothing here talks
+# to github.com.
+
+from _git_repo import empty_repo, git, git_available, with_remote  # noqa: E402
+
+# Captured at import time, before `_isolated_home` strips PATH down to an
+# empty directory for every test in this file (that stripping is what makes
+# `gh` resolution tests trustworthy — see that fixture's own docstring). The
+# publish tests below need a REAL `git` regardless, so this is put back on
+# PATH just for them; `gh` resolution in these tests is always stubbed
+# directly (`monkeypatch.setattr(github_setup, "resolve", ...)`) rather than
+# left to find anything on PATH, so restoring it here does not weaken what
+# the isolation above is for.
+_REAL_GIT_DIR = os.path.dirname(shutil.which("git") or "")
+
+
+@pytest.fixture(autouse=True)
+def _clean_publish(monkeypatch):
+    github_setup.publish_reset()
+    monkeypatch.setattr(github_setup.jobs, "upsert", lambda *a, **k: {})
+    yield
+    github_setup.publish_reset()
+
+
+def _use_real_git(monkeypatch):
+    """Puts the real `git` back on PATH for a test that needs one of
+    tests/_git_repo.py's real fixtures — undoing, for THIS test alone,
+    `_isolated_home`'s blanket PATH strip. Restoring it file-wide instead
+    (an autouse fixture touching PATH for every test here) would put
+    whatever real `gh` this machine happens to have back within
+    `resolve()`'s reach too, and quietly break the `gh`-resolution tests'
+    own isolation — which is the entire reason `_isolated_home` strips PATH
+    in the first place. `gh` resolution in every test that calls this is
+    always stubbed directly anyway (`monkeypatch.setattr(github_setup,
+    "resolve", ...)`), so nothing here depends on PATH finding `gh`.
+    """
+    if _REAL_GIT_DIR:
+        monkeypatch.setenv("PATH", os.pathsep.join(
+            [_REAL_GIT_DIR, os.environ.get("PATH", "")]))
+
+
+def _repo_with_a_commit(tmp_path, monkeypatch):
+    _use_real_git(monkeypatch)
+    if not git_available():
+        pytest.skip("git is not available")
+    root = tmp_path / "repo"
+    empty_repo(str(root))
+    (root / "a.txt").write_text("hello\n")
+    git(str(root), "add", "a.txt")
+    git(str(root), "commit", "-q", "-m", "first")
+    return str(root)
+
+
+def test_validate_repo_name_refuses_empty_and_dash_leading():
+    assert github_setup._validate_repo_name("my-repo") == "my-repo"
+    with pytest.raises(github_setup.PublishError, match="required"):
+        github_setup._validate_repo_name("")
+    with pytest.raises(github_setup.PublishError, match="dash"):
+        github_setup._validate_repo_name("--upload-pack=/bin/sh")
+
+
+def test_has_commits_and_has_remote_read_a_real_repo(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    assert github_setup._has_commits(root) is True
+    assert github_setup._has_remote(root) is False
+
+    remote = str(tmp_path / "remote.git")
+    with_remote(root, remote, push=False)
+    assert github_setup._has_remote(root) is True
+
+
+def test_an_empty_repository_has_no_commits(tmp_path, monkeypatch):
+    _use_real_git(monkeypatch)
+    if not git_available():
+        pytest.skip("git is not available")
+    root = tmp_path / "empty"
+    empty_repo(str(root))
+    assert github_setup._has_commits(str(root)) is False
+
+
+def test_publish_refuses_before_spawning_when_there_are_no_commits(tmp_path, monkeypatch):
+    _use_real_git(monkeypatch)
+    if not git_available():
+        pytest.skip("git is not available")
+    root = tmp_path / "empty"
+    empty_repo(str(root))
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    with pytest.raises(github_setup.PublishError, match="no commits"):
+        github_setup.publish_start(str(root), "my-repo", "private")
+
+
+def test_publish_refuses_before_spawning_when_a_remote_already_exists(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    git(root, "remote", "add", "origin", "https://example.invalid/x.git")
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    with pytest.raises(github_setup.PublishError, match="already has a remote"):
+        github_setup.publish_start(root, "my-repo", "private")
+
+
+def test_publish_refuses_a_mount_backed_repo(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    monkeypatch.setattr(github_setup.shell_mounts, "is_mount_backed", lambda p: True)
+    with pytest.raises(github_setup.PublishError, match="remote mounts"):
+        github_setup.publish_start(root, "my-repo", "private")
+
+
+def test_publish_refuses_without_gh(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup, "resolve", lambda: (None, None))
+    with pytest.raises(github_setup.PublishError, match="GitHub CLI"):
+        github_setup.publish_start(root, "my-repo", "private")
+
+
+def test_publish_refuses_without_an_explicit_visibility(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    for bad in (None, "", "public-ish"):
+        with pytest.raises(github_setup.PublishError, match="visibility"):
+            github_setup.publish_start(root, "my-repo", bad)
+
+
+def test_visibility_is_always_explicit_in_the_argv(tmp_path, monkeypatch):
+    """The argv never defaults to public or private on its own — whichever
+    the caller named is the only flag that appears."""
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_run(cmd):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": "https://github.com/x/y\n",
+                              "stderr": ""})()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    github_setup.publish_start(root, "my-repo", "private")
+    assert "--private" in captured["cmd"]
+    assert "--public" not in captured["cmd"]
+
+    github_setup.publish_reset()
+    github_setup.publish_start(root, "my-repo", "public")
+    assert "--public" in captured["cmd"]
+    assert "--private" not in captured["cmd"]
+
+
+def test_a_name_from_the_page_cannot_inject_an_argument(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    with pytest.raises(github_setup.PublishError, match="dash"):
+        github_setup.publish_start(root, "--upload-pack=/bin/sh", "private")
+
+
+def test_ghs_stderr_reaches_the_record_verbatim(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+
+    def fake_run(cmd):
+        return type("R", (), {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "GraphQL: Name already exists on this account (createRepository)",
+        })()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    github_setup.publish_start(root, "my-repo", "private")
+    rec = github_setup.publish_status()
+    assert rec["state"] == "error"
+    assert "already exists" in rec["error"]
+
+
+def test_a_successful_publish_records_the_repo_url(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+
+    def fake_run(cmd):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "https://github.com/octocat/my-repo\n",
+                              "stderr": ""})()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    github_setup.publish_start(root, "my-repo", "public")
+    rec = github_setup.publish_status()
+    assert rec["state"] == "done"
+    assert rec["detail"] == "https://github.com/octocat/my-repo"
+
+
+def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: None})())
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    github_setup.publish_start(root, "my-repo", "private")
+    with pytest.raises(github_setup.PublishError, match="already running"):
+        github_setup.publish_start(root, "another-repo", "private")
+
+
+def test_a_publish_worker_that_dies_unexpectedly_frees_the_slot(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    captured = {}
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: captured.setdefault(
+                                "target", kw["target"])})())
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    def _explode(*a, **k):
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(github_setup, "_run_publish", _explode)
+    github_setup.publish_start(root, "my-repo", "private")
+    assert github_setup.publish_running() is True  # claimed
+    captured["target"]()                            # the worker body dies
+    rec = github_setup.publish_status()
+    assert rec["state"] == "error"
+    assert "stopped unexpectedly" in rec["error"]
+    assert github_setup.publish_running() is False
+
+
+# -- the publish endpoints ------------------------------------------------------
+
+
+def test_publish_endpoint_refuses_a_blind_cross_origin_post():
+    resp = _client().post("/api/github/publish",
+                          json={"root": "/tmp/whatever", "name": "x",
+                                "visibility": "private"})
+    assert resp.status_code in (400, 403)
+
+
+def test_publish_status_endpoint_is_a_read_and_needs_no_guard():
+    resp = _client().get("/api/github/publish")
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "idle"
+
+
+def test_publish_endpoint_starts_the_worker(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    monkeypatch.setattr(github_setup, "_run_publish", lambda *a, **k: None)
+    resp = _client().post("/api/github/publish", headers={"X-Fused": "1"},
+                          json={"root": root, "name": "my-repo",
+                                "visibility": "private"})
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "running"
+
+
+def test_publish_endpoint_refuses_a_root_outside_any_repository(tmp_path, monkeypatch):
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    resp = _client().post("/api/github/publish", headers={"X-Fused": "1"},
+                          json={"root": str(tmp_path), "name": "my-repo",
+                                "visibility": "private"})
+    assert resp.status_code == 409
+    assert "not inside a git repository" in resp.json().get("error", "")

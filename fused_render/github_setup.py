@@ -45,6 +45,7 @@ import zipfile
 from typing import Optional
 
 from fused_render import jobs
+from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -709,4 +710,298 @@ def install_reset() -> None:
     """Test seam — the record is module state and suites share a module."""
     with _install_lock:
         _install_state.update({"state": "idle", "detail": "", "error": None,
+                               "started_at": None, "finished_at": None})
+
+
+# --- creating the repo and pushing -------------------------------------------
+#
+# `gh repo create <name> --source <root> --remote origin --push --private|
+# --public` does the whole job — create on github.com, wire the remote,
+# push — in one `gh` invocation, so there is exactly one thing that can fail
+# and exactly one place that reports it. Everything below is either a
+# refusal that fires BEFORE that command is ever built (so a name from the
+# page cannot inject an argument, and a repo this should not touch is never
+# handed to `gh` at all) or the one-record state machine `install_start`
+# above already established the shape for.
+#
+# Deliberately its own record, not a third `install_state` action: an
+# install downloads a binary this app itself will run next, a publish
+# creates and pushes to a repository the USER owns on github.com — different
+# blast radius, different lifetime, and (per Fork 4 in the plan) a publish
+# that is still running when the user closes the modal should not read as
+# "the CLI needs reinstalling" if they reopen it.
+#
+# `root` ARRIVES FROM THE PAGE, exactly like `git_upstream.py`'s POST body
+# does, so it gets the same treatment: resolved to a real work-tree root via
+# `rev-parse --show-toplevel` and realpath'd on both sides, the way
+# `templates/git/ops.py::_locate` and `git_upstream.py::repo_root` both do
+# it (duplicated here rather than imported, for the same reason those two
+# duplicate each other — see `git_upstream.py`'s module docstring — except
+# this module has no template-exec constraint of its own to blame; it is
+# duplicated because the two checks this needs, "does a HEAD exist" and
+# "is there already a remote", are two two-line spawns, and importing
+# `git_upstream` for them would pull in a fetch-throttle module built for an
+# unrelated job).
+
+
+class PublishError(RuntimeError):
+    """A refusal with a sentence the modal can show as-is."""
+
+
+#: The job id in the shared registry — a `sys:` id, same convention as
+#: `JOB_ID` above.
+PUBLISH_JOB_ID = "sys:github-publish"
+
+#: `gh repo create --push` also does the initial push, which — unlike the
+#: local-only checks around it — is a real network call proportional to the
+#: repository's size. Generous for the same reason `_DOWNLOAD_TIMEOUT_S` is:
+#: a stalled push should fail loudly well inside a user's patience, not hang
+#: the single-flight slot for the life of the process.
+_PUBLISH_TIMEOUT_S = 300
+
+#: Visibility has to be named by the caller — see the module docstring's
+#: "no default" — so this is a lookup, not an if/else with a fallback
+#: branch that could quietly stand in for a missing choice.
+_VISIBILITY_FLAGS = {"private": "--private", "public": "--public"}
+
+
+def _git_run(root: str, *args: str, timeout: float = 15.0):
+    """One bounded, local, non-interactive git call against `root`; the
+    completed process, or None when git itself could not be run.
+
+    Same subprocess discipline as every other spawn in this package —
+    absolute argv[0], close_fds=False, no cwd= — and the same
+    `GIT_TERMINAL_PROMPT=0` non-interactive env `git_upstream.py` uses,
+    for the same reason: `remote` and `rev-parse HEAD` never need a
+    credential, but a misconfigured helper asking for one anyway must fail
+    instead of hang.
+    """
+    git_bin = shutil.which("git") or "git"
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "",
+          "SSH_ASKPASS": ""}
+    try:
+        return subprocess.run(
+            [git_bin, "-C", root, *args], capture_output=True, timeout=timeout,
+            env=env, close_fds=False, text=True, encoding="utf-8", errors="replace",
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _resolve_repo_root(root: str) -> str:
+    """The real, containment-checked work-tree root for a `root` string that
+    arrived from the page, or a `PublishError` naming exactly why not.
+
+    Mirrors `templates/git/ops.py::_locate`'s bootstrap call: `rev-parse
+    --show-toplevel` from `root` itself (not some ancestor — the page always
+    names the folder it has open, never a file inside it, so there is no
+    is-it-a-file branch to carry here), realpath'd so a repo reached through
+    a symlink (or macOS's /var -> /private/var) still matches.
+    """
+    if not root or not os.path.isabs(root):
+        raise PublishError("no repository folder was given")
+    if shell_mounts.is_mount_backed(root):
+        raise PublishError(
+            "git is not available on remote mounts — publishing would have "
+            "to push across the mounted tree")
+    if not os.path.isdir(root):
+        raise PublishError(f"{root} does not exist")
+    res = _git_run(root, "rev-parse", "--show-toplevel")
+    top = (res.stdout or "").strip() if res is not None and res.returncode == 0 else ""
+    if not top:
+        raise PublishError(f"{root} is not inside a git repository")
+    return os.path.realpath(top)
+
+
+def _has_commits(root: str) -> bool:
+    """Whether `root` has a HEAD to push — `rev-parse HEAD` is the same
+    "does a commit exist" test `templates/git/log.py::_head` and
+    `git_upstream.py` both use; a fresh `git init` with nothing committed
+    exits 128 with no HEAD to name."""
+    res = _git_run(root, "rev-parse", "--verify", "-q", "HEAD")
+    return res is not None and res.returncode == 0
+
+
+def _has_remote(root: str) -> bool:
+    """Whether `root` already has ANY remote — not "one called origin"; see
+    `templates/git/ops.py::_refuse_existing_remote` for why `remote_add`
+    (and, here, `gh repo create --remote origin`) refuses outright rather
+    than overwriting one."""
+    res = _git_run(root, "remote")
+    return bool(res is not None and res.returncode == 0 and res.stdout.strip())
+
+
+def _validate_repo_name(name: str) -> str:
+    """The name as `gh repo create`'s positional argument, or a refusal.
+
+    A LEADING DASH IS REFUSED IN PYTHON, not left to `gh` to reject: `gh
+    repo create` has no `--` terminator before its name positional (the
+    same reason `templates/git/ops.py::_repo_name` refuses one before a
+    branch name ever reaches `check-ref-format`), so a name starting with
+    `-` would be read as an option rather than an argument. Nothing else
+    about the string is restricted here — github.com's own repo-name rules
+    (alnum, `.`, `-`, `_`) are `gh`'s to enforce and report on, since its
+    error already says exactly what is wrong with a name.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise PublishError("a repository name is required")
+    if name.startswith("-"):
+        raise PublishError("a repository name may not start with a dash")
+    return name
+
+
+_publish_lock = threading.Lock()
+_publish_state: dict = {"state": "idle", "detail": "", "error": None,
+                        "started_at": None, "finished_at": None}
+
+
+def _report_publish(snapshot: dict) -> None:
+    """Mirror one record into the job registry. Never raises — same
+    discipline as `_report_install`, and for the same reason."""
+    try:
+        state = snapshot["state"]
+        jobs.upsert({
+            "id": PUBLISH_JOB_ID,
+            "title": "Publishing to GitHub",
+            "kind": "task",
+            "state": (jobs.RUNNING if state == "running"
+                      else "error" if state == "error" else "done"),
+            "detail": snapshot["detail"],
+            "message": snapshot["error"] or "",
+        }, server=True)
+    except Exception:  # noqa: BLE001 - reporting must never break the publish
+        logger.debug("could not report the gh publish job")
+
+
+def _set_publish(**fields) -> None:
+    """Update the record and mirror it into the job registry. Never raises."""
+    with _publish_lock:
+        _publish_state.update(fields)
+        snapshot = dict(_publish_state)
+    _report_publish(snapshot)
+
+
+def publish_status() -> dict:
+    """The record as the endpoint answers it. `error` is `gh`'s own words —
+    a name collision and an org permission refusal are different, actionable
+    problems, and a generic message would erase the difference."""
+    with _publish_lock:
+        return dict(_publish_state)
+
+
+def publish_running() -> bool:
+    with _publish_lock:
+        return _publish_state["state"] == "running"
+
+
+def _spawn_gh_repo_create(cmd: list):
+    """The one subprocess spawn `_run_publish` makes. Broken out to its own
+    function rather than calling `subprocess.run` inline so a test can fake
+    exactly this spawn (`monkeypatch.setattr(github_setup,
+    "_spawn_gh_repo_create", ...)`) without ALSO faking the `git`
+    pre-flight checks: `_has_commits`/`_has_remote` spawn through
+    `_git_run`, a different function, so the two can never be confused for
+    each other the way patching the shared `subprocess.run` name would
+    confuse them."""
+    return subprocess.run(
+        cmd, capture_output=True, timeout=_PUBLISH_TIMEOUT_S, **SUBPROCESS_KWARGS,
+    )
+
+
+def _run_publish(path: str, root: str, name: str, visibility: str) -> None:
+    """The worker body: one `gh repo create --source --push`, its stderr
+    kept verbatim on failure. Never raises out of the thread — every exit
+    is a `_set_publish` call, same discipline as `_run_install`."""
+    cmd = [path, "repo", "create", name, "--source", root, "--remote", "origin",
+          "--push", _VISIBILITY_FLAGS[visibility]]
+    try:
+        res = _spawn_gh_repo_create(cmd)
+    except subprocess.TimeoutExpired:
+        _set_publish(state="error", finished_at=time.time(),
+                     error="publishing did not finish in time")
+        return
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _set_publish(state="error", finished_at=time.time(),
+                     error=f"could not run gh: {exc}")
+        return
+    if res.returncode != 0:
+        # VERBATIM. "gh repo create failed" would throw away exactly the
+        # part — a name already taken, no permission to create in an org —
+        # that tells the user what to try next.
+        message = (res.stderr or res.stdout or "").strip() or (
+            f"gh repo create exited with status {res.returncode}")
+        _set_publish(state="error", finished_at=time.time(), error=message)
+        return
+    url = ""
+    for line in (res.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            url = line  # the repo URL is the command's last line of output
+    _set_publish(state="done", finished_at=time.time(), detail=url, error=None)
+
+
+def publish_start(root: str, name: str, visibility: str) -> dict:
+    """Kick off `gh repo create --source --push`, and return the opening
+    record — or raise `PublishError` before anything is spawned.
+
+    EVERY REFUSAL BELOW RUNS BEFORE THE SLOT IS CLAIMED: a mount-backed
+    repo, one with no commits, or one that already has a remote is a
+    refusal about the REPOSITORY, not about whether a publish happens to be
+    running right now, so none of them should have to wait behind — or be
+    confused with — the single-flight check.
+
+    Refuses rather than queues, like `install_start`/`github_login.start`:
+    two `gh repo create` calls racing each other (whether for the same
+    repository or two different ones) is not a race worth surviving, and
+    the honest answer to "publish again while a publish is running" is that
+    one already is.
+    """
+    path, _source = resolve()
+    if not path or not executable(path):
+        raise PublishError("there is no GitHub CLI on this machine to publish with")
+
+    real_root = _resolve_repo_root(root)
+    if visibility not in _VISIBILITY_FLAGS:
+        raise PublishError("a repository visibility (private or public) is required")
+    repo_name = _validate_repo_name(name)
+    if not _has_commits(real_root):
+        raise PublishError(
+            "this repository has no commits yet — make the first commit "
+            "before publishing")
+    if _has_remote(real_root):
+        raise PublishError("this repository already has a remote")
+
+    # THE ACTUAL GUARD, in one critical section — same reasoning as
+    # `install_start`: FastAPI runs POSTs on a threadpool, so two concurrent
+    # requests could both pass an early, unlocked check before either claims
+    # the slot.
+    with _publish_lock:
+        if _publish_state["state"] == "running":
+            raise PublishError("a GitHub publish is already running")
+        _publish_state.update(
+            state="running", detail=f"Creating {repo_name}…", error=None,
+            started_at=time.time(), finished_at=None)
+        claimed = dict(_publish_state)
+    _report_publish(claimed)  # mirrored to the job registry outside the lock
+
+    # A CATCH-ALL AROUND THE WHOLE BODY. The slot is claimed now, so any
+    # escape from `_run_publish` that did not publish a terminal state would
+    # leave the record `running` forever and refuse every later publish.
+    def _guarded() -> None:
+        try:
+            _run_publish(path, real_root, repo_name, visibility)
+        except BaseException as exc:  # noqa: BLE001 - a stuck record is worse
+            logger.exception("the gh publish worker died")
+            _set_publish(state="error", finished_at=time.time(),
+                         error=f"the publish stopped unexpectedly: {exc}")
+
+    threading.Thread(target=_guarded, daemon=True, name="gh-publish").start()
+    return claimed
+
+
+def publish_reset() -> None:
+    """Test seam — the record is module state and suites share a module."""
+    with _publish_lock:
+        _publish_state.update({"state": "idle", "detail": "", "error": None,
                                "started_at": None, "finished_at": None})
