@@ -7,7 +7,7 @@
 //
 // `pg-side` is KEPT on the rail as a hook: the AI tour
 // (platform/lib/tours/ai.ts) points its first step at `.pg-side`. It carries no
-// style of its own once ai-playground.css is gone.
+// style of its own.
 import type { ComponentProps } from "react";
 
 import { cn } from "@platform/lib/utils";

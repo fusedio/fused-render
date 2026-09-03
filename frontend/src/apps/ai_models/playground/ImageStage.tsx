@@ -28,7 +28,7 @@
 // the worker drops a preview beside the output path and this stage polls it;
 // the job survives a tab switch on purpose (it shows in Activity), so only the
 // WATCH stops on unmount.
-import { useEffect, useRef, useState, type ComponentProps } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
@@ -94,20 +94,6 @@ import {
 } from "./imageInput";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 import { SERVER_STEPS, middleSteps } from "./speedChips";
-
-// `StageButton`'s props type intersects shadcn `Button`'s own `variant` union
-// ("default" | "outline" | "secondary" | "ghost" | "destructive" | "link")
-// with the composite's own ("primary" | "secondary"), which narrows the
-// intersection to "secondary" only — a typing gap in the shared composite
-// (platform/ui/playground/Composer.tsx), not a file this stage may edit. This
-// thin local wrapper restores the intended two-value type; it changes no
-// behaviour, only what tsc accepts.
-function GenerateButton({
-  variant,
-  ...props
-}: Omit<ComponentProps<typeof StageButton>, "variant"> & { variant: "primary" | "secondary" }) {
-  return <StageButton {...props} variant={variant as never} />;
-}
 
 // What an UNCATALOGUED image model starts at. Not the server's 28, which is a
 // generic diffusion default and wrong for everything this app actually ships:
@@ -753,18 +739,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         <textarea
           ref={boxRef}
           rows={3}
-          // `.pg-composer textarea{padding:6px 4px}` (styles/ai-playground.css)
-          // still applies here — `Composer`'s `pg-composer` class is a KEPT
-          // tour hook (platform/ui/playground/Composer.tsx), and that legacy
-          // compound selector outranks a single-class Tailwind utility, so
-          // `composerStackTextareaClass`'s own `pr-16` loses the cascade and
-          // the corner Clear button's 64px lane collapses to 4px. `main` only
-          // escaped this because its stage carried the now-retired
-          // `.pg-composer-stack textarea{padding-right:64px}` rule, which sat
-          // later in that same file. `!` forces the win without editing either
-          // the shared composite or ai-playground.css (both off-limits here);
-          // it comes off cleanly once ai-playground.css is deleted for good.
-          className={composerStackTextareaClass + " pr-16!"}
+          className={composerStackTextareaClass}
           value={prompt}
           placeholder={base ? "Describe the change…" : "Describe the picture…"}
           onChange={(e) => setPrompt(e.target.value)}
@@ -856,15 +831,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               is something to clear. */}
           <ComposerSide>
             {busy ? (
-              <GenerateButton
+              <StageButton
                 type="button"
                 variant="secondary"
                 onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
               >
                 Stop
-              </GenerateButton>
+              </StageButton>
             ) : (
-              <GenerateButton
+              <StageButton
                 type="button"
                 variant="primary"
                 disabled={!prompt.trim()}
@@ -872,7 +847,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 onClick={() => void generate()}
               >
                 Generate <ComposerKbd>⏎</ComposerKbd>
-              </GenerateButton>
+              </StageButton>
             )}
           </ComposerSide>
         </ComposerFoot>

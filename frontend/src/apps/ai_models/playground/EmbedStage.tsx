@@ -517,6 +517,7 @@ export function EmbedStage({
             )}
             <StageButton
               type="button"
+              variant="primary"
               disabled={
                 busy
                 || !query.trim()

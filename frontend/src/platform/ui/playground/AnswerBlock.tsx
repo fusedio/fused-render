@@ -4,8 +4,7 @@
 // tour (platform/lib/tours/ai.ts) waits on `.pg-answer-block` to know the
 // answer has landed, and both the idle slot and the filled card render it, so
 // dropping the class would strand the tour on its last step. Every visual on
-// this element is a utility; the class name carries no style of its own once
-// ai-playground.css is gone.
+// this element is a utility; the class name carries no style of its own.
 import type { ComponentProps } from "react";
 
 import { cn } from "@platform/lib/utils";

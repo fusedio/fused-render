@@ -9,9 +9,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 /** How many lines a composer grows to before it becomes a scroller. Ten is
  *  about as far as a prompt can push Run (or Build) and the result down before
  *  they leave the fold, and text longer than that is being pasted, not read
- *  back. Mirrored by a `max-height` in each composer's own sheet — the
- *  `.pg-composer textarea` rule in ai-playground.css and the
- *  `.home-composer-input` rule in home.css. Those rules and this cap have to
+ *  back. Mirrored by a `max-height` on each composer's own textarea — the
+ *  Playground's `composerFieldBase` (platform/ui/playground/Composer.tsx) and
+ *  the `.home-composer-input` rule in home.css. Those and this cap have to
  *  name the same number of lines, or the smaller of the two wins and the other
  *  is dead. */
 export const COMPOSER_MAX_LINES = 10;

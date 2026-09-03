@@ -22,8 +22,7 @@
 // no webcam here — a screenshot or a saved photo is the ordinary "what is
 // this" ask, and the picker alone covers it without a second capture UI to
 // keep in step with the image stage's own.
-import { useEffect, useRef, useState, type ComponentProps } from "react";
-import { cn } from "@platform/lib/utils";
+import { useEffect, useRef, useState } from "react";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import {
   cancelGeneration,
@@ -68,6 +67,7 @@ import {
   ComposerFoot,
   ComposerKbd,
   ComposerSide,
+  composerStackTextareaClass,
   composerTextareaClass,
   Cursor,
   Lightbox,
@@ -181,43 +181,6 @@ const STARTERS: Starter[] = [
       "and say what would change your mind.",
   },
 ];
-
-/** `StageButton`'s `variant` prop types as the intersection of its own cva
- *  variants (`"primary" | "secondary"`) and shadcn `Button`'s own `variant`
- *  prop, which does not have `"primary"` — the intersection drops it from the
- *  usable type even though the class the prop drives renders correctly. That
- *  composite lives outside this file's scope (`@platform/ui/playground`), so
- *  this local wrapper restores the two-value surface every call site here
- *  already expects, rather than widening the shared component. */
-function RunActionButton({
-  variant,
-  ...props
-}: Omit<ComponentProps<typeof StageButton>, "variant"> & { variant: "primary" | "secondary" }) {
-  return (
-    <StageButton {...props} variant={variant as ComponentProps<typeof StageButton>["variant"]} />
-  );
-}
-
-/** The stacked composer's prompt keeps a lane clear for the corner Clear.
- *  `Composer`'s stacked variant (`@platform/ui/playground/Composer.tsx`) keeps
- *  `pg-composer` on the wrapper as a tour hook, but drops the OLD
- *  `pg-composer-stack` class — and `styles/ai-playground.css` (still loaded;
- *  its deletion is migration step 9, not this one) carries `.pg-composer
- *  textarea { padding: … }` as plain, UNLAYERED css. Tailwind's own utilities
- *  compile into `@layer utilities`, and an unlayered rule always wins over a
- *  layered one regardless of specificity or source order — so as long as
- *  `pg-composer` remains on the wrapper, that legacy rule's plain 4px right
- *  padding beats any `pr-*` utility named here, and the 64px lane the corner
- *  Clear needs never lands. `composerStackTextareaClass`, the exported
- *  equivalent, has the identical problem for the identical reason — it is
- *  outside this file's scope to fix, so this local one adds Tailwind's `!`
- *  important modifier, the one thing that outranks an unlayered rule by CSS's
- *  own importance-before-layers order. Safe to drop once ai-playground.css is
- *  gone; until then it is the only way this padding can win. */
-const composerStackTextareaClass = cn(
-  composerTextareaClass,
-  "flex-none pr-16!",
-);
 
 function replyStats(usage: ChatUsage | null | undefined, seconds?: number | null): string | null {
   if (!usage?.outputTokens) return null;
@@ -466,11 +429,11 @@ export function TextStage({
   // one thing both put in the same place — the bottom-right corner. Written
   // twice it would be two buttons to keep in step.
   const runButton = streaming ? (
-    <RunActionButton type="button" variant="secondary" onClick={stop}>
+    <StageButton type="button" variant="secondary" onClick={stop}>
       Stop
-    </RunActionButton>
+    </StageButton>
   ) : (
-    <RunActionButton
+    <StageButton
       type="button"
       variant="primary"
       disabled={!prompt.trim()}
@@ -478,7 +441,7 @@ export function TextStage({
       onClick={() => void send()}
     >
       Run <ComposerKbd>⏎</ComposerKbd>
-    </RunActionButton>
+    </StageButton>
   );
 
   return (
