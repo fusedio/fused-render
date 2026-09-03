@@ -74,10 +74,11 @@
   gap: 8px;
 }
 
-/* The gutter frame — the same width story as the playground's .pg-frame
-   (ai-playground.css): one centered column, capped, with gutters either side
-   below the cap. The tab strip, the app frame and the Tasks page all share it,
-   so nothing on the page can drift wider than anything else. */
+/* The gutter frame — the same width story as the playground's `StageFrame`
+   (platform/ui/playground/StageShell.tsx): one centered column, capped, with
+   gutters either side below the cap. The tab strip, the app frame and the
+   Tasks page all share it, so nothing on the page can drift wider than
+   anything else. */
 .app-page-body {
   flex: 1 1 auto;
   min-height: 0;

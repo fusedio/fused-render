@@ -9,8 +9,7 @@
 //
 // `pg-composer` and `pg-send` are KEPT as hooks: the AI tour
 // (platform/lib/tours/ai.ts) drives `.pg-composer`, `.pg-composer textarea` and
-// `.pg-composer .pg-send`. They carry no style of their own once
-// ai-playground.css is gone.
+// `.pg-composer .pg-send`. They carry no style of their own.
 import type { ComponentProps } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 
@@ -184,7 +183,7 @@ export function ClearButton({
  *  2px accent OUTLINE at a 2px offset), its `transition-all` (`.btn` has none)
  *  and its 1px press nudge (`.btn` does not move). */
 export const stageButtonVariants = cva(
-  `${TOUR_SEND} h-8 flex-none gap-[7px] rounded-[6px] border border-solid px-3.5 text-[13px] transition-none ` +
+  `${TOUR_SEND} h-8 flex-none gap-[7px] rounded-[6px] border border-solid px-3.5 py-0 text-[13px] transition-none ` +
     INHERIT_FONT_FAMILY +
     " focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2 " +
     "active:not-aria-[haspopup]:translate-y-0 disabled:opacity-50",

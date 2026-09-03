@@ -20,7 +20,6 @@ import { pickFile, rawUrl, type AiCatalogCapability, type AiCatalogModel } from 
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
-import { Button } from "@platform/shadcn/ui/button";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -59,7 +58,7 @@ import {
   MediaWait,
   ProgressBar,
   SeedButton,
-  stageButtonVariants,
+  StageButton,
   StageError,
   stageWorkCardClass,
   workGridClass,
@@ -439,23 +438,23 @@ export function VideoStage({
             </ClearButton>
           )}
           {busy ? (
-            <Button
+            <StageButton
               type="button"
-              className={stageButtonVariants({ variant: "secondary" })}
+              variant="secondary"
               onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
             >
               Stop
-            </Button>
+            </StageButton>
           ) : (
-            <Button
+            <StageButton
               type="button"
-              className={stageButtonVariants({ variant: "primary" })}
+              variant="primary"
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
               Generate <ComposerKbd>⏎</ComposerKbd>
-            </Button>
+            </StageButton>
           )}
         </ComposerSide>
       </ComposerRow>

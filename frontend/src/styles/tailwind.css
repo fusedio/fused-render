@@ -167,9 +167,9 @@
       all beyond a utility class, so the fold keeps the shape it had in
       ai-playground.css, renamed onto the composites' own hooks.
 
-   Deliberately UNLAYERED, like the `[data-slot]` block above: ai-playground.css
-   is unlayered too, and while the stage files still render `.pg-work` (steps
-   4-8) the fold's rules have to out-rank the ones they are replacing. */
+   Deliberately UNLAYERED, like the `[data-slot]` block above: it out-ranks the
+   base layer utilities it composes with (grid-template-columns transitions,
+   `:has()`), which a `@layer` block would lose to. */
 @custom-variant pg-narrow (@media (max-width: 760px));
 
 @theme {
@@ -255,12 +255,7 @@
      says open: the `:has()` half keeps it in force through the exit, until the
      card actually unmounts, which is what sequences the fold. */
   .stage-work-grid.is-open,
-  .stage-work-grid:has(.stage-config-rail.is-closing),
-  /* TRANSITIONAL, dies with ai-playground.css: the five stage files still
-     render `.pg-work`, so the rail's own exit has to keep THEIR grid open too
-     — the `:has()` in ai-playground.css names `.pg-config-card`, which the
-     rail no longer wears. */
-  .pg-work:has(.stage-config-rail.is-closing) {
+  .stage-work-grid:has(.stage-config-rail.is-closing) {
     grid-template-columns: calc(100% - var(--pg-gap) - var(--pg-card)) var(--pg-card);
     column-gap: var(--pg-gap);
   }
