@@ -228,8 +228,6 @@ def _has_dot_git(path: str) -> bool:
         return False
 
 
-
-
 # Lazily-created empty git dir backing check-ignore for NON-repo directories
 # that still carry a .gitignore (an un-inited project, an Obsidian vault…).
 # With GIT_DIR pointing here and GIT_WORK_TREE at the directory, git applies
@@ -260,17 +258,19 @@ def _empty_git_dir():
 class _IgnoreOracle:
     """One repository's `git check-ignore` as a streaming co-process.
 
-    `git check-ignore --stdin -z -v -n` answers path queries incrementally on
-    one long-lived subprocess (measured ~14µs/query), so the walk can ask
-    about every directory's children as it reaches them — no subprocess per
-    directory, no giant upfront batch. `-v -n` makes git echo all four
-    NUL-terminated fields for EVERY query (matching or not), which is what
-    makes the stream pairable: query order in = verdict order out.
+    Backs `.fused` app export (`appfile.py`'s `_IgnoreRoots`), which excludes
+    a folder's gitignored files (a build `dist/`, a `.venv`) from the exported
+    bundle. `git check-ignore --stdin -z -v -n` answers path queries
+    incrementally on one long-lived subprocess (measured ~14µs/query), so the
+    export walk can ask about every directory's children as it reaches them —
+    no subprocess per directory, no giant upfront batch. `-v -n` makes git
+    echo all four NUL-terminated fields for EVERY query (matching or not),
+    which is what makes the stream pairable: query order in = verdict order
+    out.
 
     Any failure (git missing, repo gone mid-walk, pipe breakage) marks the
-    oracle broken and it answers "nothing ignored" from then on — gitignore
-    pruning is an optimization, never a hard dependency (same posture as
-    _git_ignored's dimming).
+    oracle broken; `appfile.py` treats that as a hard failure for the export
+    (`AppFileError`) rather than silently shipping unfiltered files.
 
     A stalled child (an `index.lock` another process is holding, `gc --auto`,
     a degraded filesystem) is the same shape of failure, just slower to show
@@ -295,18 +295,14 @@ class _IgnoreOracle:
     # co-process.
     #
     # This is a PER-READ deadline that gets pushed forward by every read that
-    # returns bytes, not a budget for the whole call: a big batch is
-    # genuinely slow-but-fine (index_gitignore.py's own docstring puts a
-    # home-sized sweep at ~1.5s, scaling past 4s on a 571k-entry corpus) and
-    # must not be killed just for taking a while while it keeps making
-    # progress — the earlier version of this bound was a flat per-call
-    # timeout, and a big sweep tripping it would have silently turned OFF
-    # gitignore filtering for the whole batch, which is exactly the failure
-    # index_gitignore.py's header calls unacceptable (a gitignored `dist/` of
-    # 100k files flooding search). A STALLED child, by contrast, produces
-    # nothing at all on its very first read and trips this immediately.
-    # Matches the one-shot calls' `timeout=5` elsewhere in this file for the
-    # same git-is-hung shape of failure.
+    # returns bytes, not a budget for the whole call: a big export walk is
+    # genuinely slow-but-fine and must not be killed just for taking a while
+    # while it keeps making progress — a flat per-call timeout would have
+    # silently turned OFF gitignore filtering for the whole batch, shipping a
+    # gitignored `dist/` of 100k files in the exported app. A STALLED child,
+    # by contrast, produces nothing at all on its very first read and trips
+    # this immediately. Matches the one-shot calls' `timeout=5` elsewhere in
+    # this file for the same git-is-hung shape of failure.
     DEADLINE_S = 5.0
 
     def __init__(self, repo_root):
@@ -448,21 +444,15 @@ class _IgnoreOracle:
 
 
 # Memoizes `_repo_toplevel`'s answer, keyed on the exact path a caller passed
-# (the same convention `index_gitignore._cache` uses — callers already hand in
-# a canonical form, so a second canonicalization pass here would just be
-# redundant `os.path` work on every call). Every rank request calls
-# `_repo_toplevel` at least once, and TWICE when a query escalates to the
-# subsequence pass (`index/query.py`'s `pass_over` re-runs the whole gitignore
-# filter per pass) — and unmemoized, each of those is an uncached
-# `git rev-parse` spawn, the one unamortized subprocess cost left on the
-# keystroke path.
+# — callers already hand in a canonical form, so a second canonicalization
+# pass here would just be redundant `os.path` work on every call. Unmemoized,
+# every call would be an uncached `git rev-parse` spawn.
 #
-# Bounded like `index_gitignore._cache`, but larger: that cache is keyed on a
-# handful of configured INDEX roots, while this one is keyed on whatever path
-# a caller happens to ask about (a right-click target, a walk's start
-# directory) — plausibly every folder a user opens in one session. 256 keeps
-# that bounded without evicting the roots actually in active use; an eviction
-# only costs one repeated `rev-parse`, never a wrong answer.
+# 256 entries: this is keyed on whatever path a caller happens to ask about (a
+# right-click target, a file-listing directory) — plausibly every folder a
+# user opens in one session. That keeps it bounded without evicting the
+# folders actually in active use; an eviction only costs one repeated
+# `rev-parse`, never a wrong answer.
 _TOPLEVEL_CACHE_SIZE = 256
 _toplevel_cache: "OrderedDict[str, tuple[float, str | None]]" = OrderedDict()
 _toplevel_lock = threading.Lock()
@@ -472,11 +462,9 @@ _toplevel_lock = threading.Lock()
 # Both shapes of cached answer can go stale in a way nothing here observes: a
 # `None` ("not a repo") goes stale the instant someone runs `git init`; a real
 # toplevel goes stale if the repository is moved or removed out from under it.
-# Time is the only thing that can bound either, which is the same posture
-# `index_gitignore.VERDICT_MAX_AGE_S` takes for an identical shape of problem
-# (an edited `.gitignore` no verdict pool can observe) — and the same value:
-# a few minutes of a stale answer costs far less than paying for a `rev-parse`
-# on every keystroke, and it is bounded rather than cached forever.
+# Time is the only thing that can bound either — a few minutes of a stale
+# answer costs far less than paying for a `rev-parse` on every keystroke, and
+# it is bounded rather than cached forever.
 _TOPLEVEL_MAX_AGE_S = 300.0
 
 
@@ -489,9 +477,9 @@ def _reset_toplevel_cache() -> None:
 def _repo_toplevel(path):
     """The git work-tree root containing `path`, or None. Memoized — see
     `_TOPLEVEL_CACHE_SIZE` / `_TOPLEVEL_MAX_AGE_S` above — because callers
-    (the walk, `_is_repo_root`, the index's gitignore filter) ask about the
-    same handful of paths over and over on a single browsing session or a
-    single rank request escalated across both search passes."""
+    (`_is_repo_root`, the file listing's repo detection, `appfile.py`'s
+    `_IgnoreRoots`) ask about the same handful of paths over and over on a
+    single browsing session or export walk."""
     with _toplevel_lock:
         cached = _toplevel_cache.get(path)
         if cached is not None and \
@@ -502,8 +490,7 @@ def _repo_toplevel(path):
     # The actual spawn happens OUTSIDE the lock — it can take up to the 5s
     # timeout under contention, and holding a module-global lock across that
     # would serialize every caller in the app behind whichever one is
-    # currently blocked on git (the same reason `index_gitignore._pooled_verdicts`
-    # never holds its lock across a git call).
+    # currently blocked on git.
     cacheable, top = _repo_toplevel_uncached(path)
 
     if cacheable:
@@ -549,7 +536,7 @@ def _repo_toplevel_uncached(path) -> "tuple[bool, str | None]":
             # CAPTURED, not discarded: this is the only place git says WHY it
             # refused, and without it a refusal is indistinguishable from "not a
             # repository". `rev-parse` writes one short line, so there is no
-            # pipe-filling risk (unlike the long-lived oracle below).
+            # pipe-filling risk from capturing it.
             stderr=subprocess.PIPE,
             timeout=5,
             **_spawn_kwargs(),

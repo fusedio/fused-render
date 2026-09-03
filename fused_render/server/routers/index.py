@@ -1,5 +1,5 @@
-"""The file index's HTTP surface: scan control, status polling, stats,
-lookup, and the small persisted config — plus the startup scan scheduler.
+"""The file index's HTTP surface: scan control, status polling, stats, and
+the small persisted config — plus the startup scan scheduler.
 
 The engine lives in `fused_render/index/` and knows nothing about HTTP; this
 module is the thin adapter. Every route resolves its `IndexConfig` from disk
@@ -26,11 +26,10 @@ import re
 import threading
 
 from fastapi import APIRouter, Body, Header, Query, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
-from fused_render.index.cancel import CancelToken, Cancelled
+from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
@@ -41,7 +40,6 @@ from fused_render.index.ignore import (
     norm,
 )
 from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
-from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -54,7 +52,6 @@ from fused_render.index.store import (
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
-from fused_render.server.index_gitignore import filter_corpus
 from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
@@ -241,39 +238,15 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
 # NOTHING. A query with hits stops at the cheap substring pass (the ladder in
 # `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
 # the one a mistyped query lands on — cold for the first user who needs it. A
-# no-match query runs both passes, plus the ignore-root discovery behind the
-# gitignore filter, and returns an empty body.
+# no-match query runs both passes and returns an empty body.
 WARM_RANK_QUERY = "zqxjv"
 
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
                token: CancelToken | None = None) -> dict:
-    """`search_ranked` with the server's gitignore filter wired in.
-
-    The index package cannot import the server, so `search_ranked` takes the
-    filter as a callable — this is the only place that knows both. It is
-    called BEFORE the cut to `limit` (search_ranked does that), and keyed on
-    the enclosing INDEX ROOT rather than the requested folder, for the reason
-    `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
-    check-ignore sweep every time browsing evicted one.
-
-    `oracle_rels` comes from the caller, not from the payload: a ranked answer
-    is ~200 rows with no dot-leading rels among them, so the filter's own
-    discovery would find no `.gitignore`, decide nothing, and drop nothing
-    (index_gitignore.filter_corpus says this at length).
-
-    `token`, when given, is forwarded to `search_ranked` unchanged — it
-    already checks it right before calling `drop_ignored` (query.py's
-    `pass_over`), which is "before entering the sweep" from this function's
-    side without anything extra needed here."""
-    def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
-        index_root = enclosing_root(scan_roots(cfg), canonical_root)
-        return filter_corpus({"covered": True, "root": canonical_root,
-                              "entries": hits}, index_root=index_root,
-                             oracle_rels=oracle_rels, token=token)["entries"]
-
-    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
-                      token=token)
+    """`search_ranked`, unchanged, under the name the rest of this module and
+    the startup warm call it by. `token`, when given, is forwarded unchanged."""
+    return index_rank(cfg, root, q=q, limit=limit, token=token)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -393,9 +366,7 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
-    Everything the corpus path caches is PER PROCESS and starts empty: the
-    gitignore verdict pool (server/index_gitignore.py) knows nothing until
-    some request sweeps `git check-ignore` over the whole corpus, and duckdb
+    Everything the corpus path caches is PER PROCESS and starts empty: duckdb
     is not even imported until the first query. Measured on a 164k-entry home:
     ~2.2 s for the first search of a fresh process against ~0.8 s for the next
     one — and all of it was billed to the user's first keystroke.
@@ -444,17 +415,12 @@ def run_startup_warm() -> None:
                 # original single-shot warm already paid.
                 _wait_for_scan(cfg, run_id)
                 out = index_search(cfg, root)
-        # Unconditional, including the uncovered cases: filter_corpus is a
-        # no-op on a response that is not covered, and the point is to run
-        # precisely what the route runs.
-        filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
-                                                     out.get("root") or root))
         # And the path the HOME search now takes, which is a different query
         # over the same index: /api/index/rank, verbatim, with a query that
         # matches something on essentially every machine. Same duckdb
-        # connection cost, same gitignore pool, but its own two-stage SQL —
-        # warming only the corpus would leave the home page's first keystroke
-        # paying for the ranked plan.
+        # connection cost, but its own two-stage SQL — warming only the
+        # corpus would leave the home page's first keystroke paying for the
+        # ranked plan.
         _rank_body(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
@@ -463,8 +429,8 @@ def run_startup_warm() -> None:
 def startup_warm() -> None:
     """The create_app hook. A detached daemon thread, not `to_thread`: the
     startup hook must COMPLETE before the app serves, and this is seconds of
-    duckdb and `git check-ignore` — the very cost the warm exists to move off
-    the request path — and, on a first boot, a bounded wait for the startup
+    duckdb — the very cost the warm exists to move off the request path — and,
+    on a first boot, a bounded wait for the startup
     scan on top of that. Nobody joins it and it cannot raise (above); `daemon`
     is what guarantees a warm still waiting cannot hold the process open."""
     threading.Thread(target=run_startup_warm, name="index-warm",
@@ -885,25 +851,21 @@ def api_index_status(run_id: str = Query(default=""),
             "events": out["events"], "cursor": out["cursor"]}
 
 
-@router.get("/api/index/runs")
-def api_index_runs():
-    return {"ok": True, **runner.list_runs(load_config())}
-
-
 # -------------------------------------------------------------------- reading
 
 @router.get("/api/index/stats")
-def api_index_stats(root: str = Query(default="")):
-    return {"ok": True, **index_stats(load_config(), root=root)}
-
-
-@router.get("/api/index/lookup")
-def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100),
-                     offset: int = Query(default=0),
-                     sort: str = Query(default="mtime")):
-    return {"ok": True,
-            **index_lookup(load_config(), q, limit=limit, offset=offset,
-                           sort=sort)}
+async def api_index_stats(request: Request, root: str = Query(default=""),
+                          breakdown: bool = Query(default=False)):
+    cfg = load_config()
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                index_stats, cfg, root=root, breakdown=breakdown, token=token)
+        except Cancelled:
+            logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
+                        root, breakdown)
+            return Response(status_code=499)
+    return {"ok": True, **out}
 
 
 # The one value of `fmt` that means anything. Anything else — including the
@@ -915,10 +877,11 @@ COLUMNS_FMT = "columns"
 
 
 @router.get("/api/index/search")
-def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
-                     limit: int = Query(default=MAX_CORPUS),
-                     fmt: str = Query(default=""),
-                     accept_encoding: str | None = Header(default=None)):
+async def api_index_search(request: Request, root: str = Query(default=""),
+                           q: str = Query(default=""),
+                           limit: int = Query(default=MAX_CORPUS),
+                           fmt: str = Query(default=""),
+                           accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
     Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
@@ -927,10 +890,6 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     search box during the first-boot scan would be a lie about a system that
     is working exactly as designed.
 
-    Entries pass through the gitignore filter before leaving: the walk this
-    corpus replaces prunes gitignored entries, and the swap must not change
-    what search shows (server/index_gitignore.py).
-
     `fmt=columns` asks for the same corpus as parallel arrays instead of one
     object per entry (§6 of index/specs/server-api.md) — the home page's
     corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
@@ -938,37 +897,16 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if not root.strip():
         return _error("'root' is required")
     cfg = load_config()
-    out = index_search(cfg, root, q=q, limit=limit)
-    # Filtered per INDEX ROOT, not per requested folder: the explorer's
-    # in-folder search asks with whichever folder is open, and a cache keyed on
-    # that re-paid a whole-subtree check-ignore sweep every time browsing
-    # evicted a folder. `out["root"]` (not the raw query string) is the
-    # canonical spelling the corpus rels are relative to.
-    index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
-    out = filter_corpus(out, index_root=index_root)
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                index_search, cfg, root, q=q, limit=limit, token=token)
+        except Cancelled:
+            logger.debug("index search: %r under %s abandoned by the client", q, root)
+            return Response(status_code=499)
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
-
-
-# How often the disconnect watcher polls `request.is_disconnected()` while a
-# rank request is in flight on the worker thread. `is_disconnected()` is the
-# only signal an async route that is ALSO doing real work off the event loop
-# has for "the client gave up" — the same tradeoff `api_fs_walk` already makes
-# (fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a `receive`-driven variant
-# is not worth the added complexity here.
-_RANK_DISCONNECT_POLL_S = 0.1
-
-
-async def _watch_disconnect(request: Request, token: CancelToken) -> None:
-    """Cancel `token` the moment `request` disconnects; otherwise run forever
-    until the caller cancels THIS task (the route's `finally`, once the rank
-    finished on its own — see `api_index_rank`)."""
-    while True:
-        if await request.is_disconnected():
-            token.cancel()
-            return
-        await asyncio.sleep(_RANK_DISCONNECT_POLL_S)
 
 
 @router.get("/api/index/rank")
@@ -1005,12 +943,11 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     ASYNC, and doing real cancellation, not merely handling a request that
     happens to be a coroutine — a fast typist fires and abandons this route
     on every keystroke, and the abandoned ones used to run to completion:
-    both duckdb ladder passes, the Python ranking, and (worst case) up to
-    `SWEEP_WAIT_MAX_S` blocked on another request's git sweep
-    (index_gitignore.py). The actual query runs on a worker thread
-    (`asyncio.to_thread`), watched by `_watch_disconnect` polling
-    `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
-    which is index/cancel.py's job from there. Two honest limitations:
+    both duckdb ladder passes and the Python ranking. The actual query runs
+    on a worker thread (`asyncio.to_thread`), watched by `cancellable`
+    (index/cancel.py) polling `request.is_disconnected()`; on disconnect it
+    calls `token.cancel()`, which is `CancelToken`'s job from there. Two
+    honest limitations:
 
       * `asyncio.to_thread` cannot kill the thread it started — nothing in
         Python can. `token.cancel()` is what makes the QUERY inside that
@@ -1022,7 +959,7 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
         itself skippable.
       * `is_disconnected()` polling is the only disconnect signal available
         to a route that is also doing work; a `receive`-driven variant is not
-        worth the complexity here (see `_watch_disconnect`).
+        worth the complexity here (see `cancel.py`'s `_watch_disconnect`).
 
     `Cancelled` escaping the worker thread is NOT logged as an error — a
     cancelled rank is a client that stopped waiting, which is normal
@@ -1035,24 +972,20 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     import time
     t0 = time.monotonic()
     cfg = load_config()
-    token = CancelToken()
-    work = asyncio.create_task(asyncio.to_thread(_rank_body, cfg, root, q, limit, token))
-    watch = asyncio.create_task(_watch_disconnect(request, token))
-    try:
-        out = await work
-    except Cancelled:
-        logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                    q, root, (time.monotonic() - t0) * 1000)
-        return Response(status_code=499)
-    finally:
-        watch.cancel()
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(_rank_body, cfg, root, q, limit, token)
+        except Cancelled:
+            logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                        q, root, (time.monotonic() - t0) * 1000)
+            return Response(status_code=499)
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines
-    # logged underneath (stage A per pass, _repo_toplevel, the _inflight wait,
-    # the git sweep) — this fires on every keystroke of the home search, so it
-    # stays DEBUG (see query.py's pass_over for the same reasoning at length).
+    # logged underneath (stage A per pass) — this fires on every keystroke of
+    # the home search, so it stays DEBUG (see query.py's pass_over for the
+    # same reasoning at length).
     # Without this, a slow report has nothing server-side to diagnose it with
     # beyond guessing which phase was the ~4s.
     logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
@@ -1153,27 +1086,33 @@ def _accepts_gzip(accept_encoding: str | None) -> bool:
 DEFAULT_QUERY_LIMIT = 200
 
 
-def _guarded(cfg: IndexConfig, sql: str, limit) -> dict | object:
+def _guarded(cfg: IndexConfig, sql: str, limit, token=None) -> dict | object:
     """`run_guarded` with both failure modes mapped to a 400.
 
     duckdb's own exceptions are 400s too, not 500s: "no such column" is the
     caller's mistake, and the panel shows the message verbatim so a typo is
-    self-explanatory. Only the message travels — no traceback."""
+    self-explanatory. Only the message travels — no traceback.
+
+    `Cancelled` is deliberately NOT caught here — it is not a duckdb error to
+    flatten into a 400, it is the caller's own `token` doing its job, and it
+    must keep propagating so the route can answer 499 instead."""
     try:
         n = int(limit) if limit is not None else DEFAULT_QUERY_LIMIT
     except (TypeError, ValueError):
         return _error("'limit' must be a number")
     try:
-        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT))
+        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT), token=token)
     except ValueError as e:
         return _error(str(e))
+    except Cancelled:
+        raise
     except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
         return _error(f"{type(e).__name__}: {e}")
 
 
 @router.post("/api/index/query")
-def api_index_query(body: dict = Body(default={}),
-                    x_fused: str | None = Header(default=None)):
+async def api_index_query(request: Request, body: dict = Body(default={}),
+                          x_fused: str | None = Header(default=None)):
     """Run one read-only statement against `files` / `dirs`.
 
     Guarded like the mutating routes even though it writes nothing: it executes
@@ -1185,7 +1124,13 @@ def api_index_query(body: dict = Body(default={}),
     sql = body.get("sql")
     if not isinstance(sql, str) or not sql.strip():
         return _error("'sql' must be a non-empty string")
-    out = _guarded(load_config(), sql, body.get("limit"))
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                _guarded, load_config(), sql, body.get("limit"), token)
+        except Cancelled:
+            logger.debug("index query: abandoned by the client")
+            return Response(status_code=499)
     if not isinstance(out, dict):
         return out
     return {"ok": True, **out}
@@ -1269,13 +1214,22 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
     sql = _sql_from_answer((answered.get("result") or {}).get("text") or "")
     if not sql:
         return _error("the model answered with no SQL", status=502)
-    # In a threadpool, unlike `query` next door: that one is a plain `def`
-    # handler, so FastAPI already threadpools it, while this handler must be
-    # `async` for the relay `await` above — and a duckdb query bounded only by
-    # guarded_query.TIMEOUT_S (10s) run inline would block the event loop, and
-    # with it every other request the app is making meanwhile.
-    out = await run_in_threadpool(
-        lambda: _guarded(load_config(), sql, body.get("limit")))
+    # On a worker thread, unlike `query` next door for the same reason that
+    # one is: this handler must be `async` for the relay `await` above, and a
+    # duckdb query bounded only by guarded_query.TIMEOUT_S (10s) run inline
+    # would block the event loop, and with it every other request the app is
+    # making meanwhile. `cancellable` wraps only this SQL-execution part, not
+    # the AI relay above — the relay owns its own timeout/cancellation, and a
+    # client that gave up mid-relay is the relay's disconnect to notice, not
+    # this route's; a token bound before the relay's `await` would just sit
+    # idle for however long that hop takes.
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                _guarded, load_config(), sql, body.get("limit"), token)
+        except Cancelled:
+            logger.debug("index ask: abandoned by the client")
+            return Response(status_code=499)
     if not isinstance(out, dict):
         # Same 400, plus the statement that earned it.
         return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},

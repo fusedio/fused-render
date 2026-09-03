@@ -1527,34 +1527,31 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** Machine-noise pruning is **gitignore-driven inside git
-  repositories** (D100): entries the containing repo's own gitignore rules
-  ignore are never emitted **nor descended** — the generic answer to `dist/`,
-  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
-  repo's own file as the authority (negations like `!keep.log` honored).
-  Verdicts come from one streaming `git check-ignore --stdin` co-process per
-  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
-  closed when the walk ends); each directory inherits its repo root through
-  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
-  a walk rooted *below* a repo root resolves it via one `git rev-parse
-  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
-  scope (an un-inited project, an Obsidian vault) prunes the same way: the
-  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
-  check-ignore honors standalone `.gitignore` files too (cascading into
-  subdirs, negations included). Pruning is an optimization, never a
-  dependency: git missing or failing degrades to no gitignore pruning.
-  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
-  upward for nothing (no work-tree boundary to find), so an ancestor's
-  standalone `.gitignore` doesn't apply there.
+- **SR-2** Machine-noise pruning is **name-based**: `WALK_IGNORE_DIRS`
+  segments are never emitted **nor descended**, checked by bare name
+  everywhere in the tree — no per-repo gitignore parsing, no git co-process,
+  no repo-root resolution. This is a deliberately smaller floor than the
+  index's own scan-time exclusions (`DEFAULT_IGNORE_NAMES`,
+  `fused_render/index/ignore.py`), which additionally prune generic
+  build-output names (`dist`, `build`, `target`, …) and are user-editable.
+  The two are allowed to diverge — a live directory listing and a maintained
+  corpus answer different questions — everywhere except `WALK_IGNORE_DIRS`
+  itself, which both sides share (`SHARED_IGNORE_DIRS` in
+  `fused_render/index/ignore.py`) so a folder's presence never flips between
+  the walk and the index-backed search that answers from the same corpus.
 - **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
-  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
-  by bare name everywhere: it covers junk outside any repo (a stray
-  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
-  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
-  apply in hidden mode too — those trees are machine noise, not "hidden
-  data" (a `.py` extension search must not drown in `.git` object files).
-  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
-- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  `.venv`, `site-packages`) is the **universal floor**, checked by bare name
+  everywhere: it covers junk outside any repo (a stray `node_modules` in
+  `~/Downloads`, `Library/Python/*/site-packages`). `.git` is **not** in this
+  set — it is a leaf-name entry instead (`WALK_LEAF_DIR_NAMES`, alongside the
+  macOS package suffixes in SR-3): emitted as one entry but never descended,
+  which keeps it in lockstep with the index's own `.git` dirs row
+  (`/api/git-repos` reads that row instead of stat-ing every directory).
+  Both SR-2 and SR-2a apply in hidden mode too — those trees are machine
+  noise, not "hidden data" (a `.py` extension search must not drown in
+  `.git` object files). `.git` *files* (worktree/submodule pointers) are
+  ordinary files and do show.
+- **SR-2b** Because `WALK_IGNORE_DIRS` pruning excludes junk outright, walk
   entries carry **no `ignored` dimming flag** — dimming remains a
   `/api/fs/list` (plain listing) concern, where ignored entries are still
   shown. Search excludes; the listing dims. (VS Code's split: explorer shows
