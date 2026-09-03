@@ -17,7 +17,7 @@ import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
 import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
-import { navigateUrl } from "@platform/lib/router";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
@@ -36,6 +36,13 @@ const STEPS: { id: StepId; label: string }[] = [
   { id: "app", label: "First app" },
 ];
 
+// The step id rides in the query so a refresh and a link both land on it.
+const STEP_PARAM = "step";
+function stepFromUrl(): StepId | null {
+  const v = new URLSearchParams(location.search).get(STEP_PARAM);
+  return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
+}
+
 // Where the wizard lets go: the front door.
 const EXIT_PATH = "/home";
 
@@ -48,15 +55,31 @@ function isMac(platform: string | null | undefined): boolean {
 }
 
 export function OnboardingWizard({ config }: { config: Config }) {
-  const [index, setIndex] = useState(0);
+  // The step is named in the URL (`/onboarding?step=claude`): a refresh stays
+  // put, a link can point at one step, and the id — not a position — is what
+  // is held, so the FDA step appearing once health answers "darwin" does not
+  // shift the page under the user. Mirrored with replaceState: steps are not
+  // history entries, Back leaves the wizard.
+  const [stepId, setStepId] = useState<StepId>(() => stepFromUrl() ?? "about");
+  useEffect(() => {
+    const url = new URL(location.href);
+    if (url.searchParams.get(STEP_PARAM) === stepId) return;
+    url.searchParams.set(STEP_PARAM, stepId);
+    replaceSearch(url.pathname + url.search);
+  }, [stepId]);
   // ONE setup machine for the whole wizard, not one per step: a sign-in done
   // on step 2 must be what step 4 reads, and two hook instances would each
   // hold their own snapshot. Focus re-checks only while the Claude step is up.
-  const setup = useClaudeSetup(index === 1);
+  const setup = useClaudeSetup(stepId === "claude");
   const { health } = setup;
   const steps = STEPS.filter((s) => s.id !== "fda" || isMac(health?.platform));
-  const step = steps[Math.min(index, steps.length - 1)];
+  // A URL naming a step this machine does not have (`fda` off macOS) lands on
+  // the first one rather than nowhere.
+  const found = steps.findIndex((s) => s.id === stepId);
+  const index = found < 0 ? 0 : found;
+  const step = steps[index];
   const last = index >= steps.length - 1;
+  const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
   // Counted over the steps this machine actually has (no FDA off macOS).
   const eyebrow = `Step ${index + 1} of ${steps.length}`;
 
@@ -99,11 +122,11 @@ export function OnboardingWizard({ config }: { config: Config }) {
     [markComplete],
   );
 
-  const next = useCallback(() => {
+  const next = () => {
     if (last) finish("complete");
-    else setIndex((i) => i + 1);
-  }, [last, finish]);
-  const back = () => setIndex((i) => Math.max(0, i - 1));
+    else setIndex(index + 1);
+  };
+  const back = () => setIndex(index - 1);
 
   // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the last step: the
   // composer owns both there (Escape cancels its name prompt, Enter sends).
@@ -120,7 +143,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [finish, next, last]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
+  }, [finish, last, index, steps.length]);
 
   return (
     <div
@@ -150,7 +174,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
               <li key={s.id} className="flex items-center">
                 <button
                   type="button"
-                  onClick={() => setIndex(i)}
+                  onClick={() => setStepId(s.id)}
                   aria-current={current ? "step" : undefined}
                   className={cn(
                     "flex cursor-pointer appearance-none items-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-xs leading-none [font-family:inherit] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
