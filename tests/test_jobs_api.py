@@ -361,6 +361,26 @@ def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
     assert [r["id"] for r in listing(client)] == ["run"]
 
 
+def test_clear_does_not_take_a_waiting_row(client):
+    """`clear_finished` used to take any row where `state != RUNNING`, which
+    includes `WAITING` — a row sitting in front of an open, answerable
+    question (uv's "Install anyway" compile prompt), not finished work.
+    Notifications' own "Clear" button (`RepoUpdatesDock.tsx`) is gated on and
+    titled around TERMINAL rows only, so a `WAITING` row was reachable by a
+    control that neither shows it nor counts it toward its own gate — and
+    `_forget` blocks the id from being re-created by a later tick, so the
+    open prompt could never come back either. `clear_finished` must survive
+    scoped to `TERMINAL_STATES` so it only ever takes what it claims to."""
+    jobs.upsert({"id": "prompt", "title": "compile foolib", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=1000.0)
+    report(client, id="ok", title="b", state="done")
+    report(client, id="bad", title="c", state="error", message="boom")
+
+    res = client.post("/api/jobs/clear", headers={"X-Fused": "1"})
+    assert res.json() == {"cleared": 2}
+    assert [r["id"] for r in listing(client)] == ["prompt"]
+
+
 def test_clear_does_not_sweep_a_stalled_but_still_running_row():
     """`clear_finished` used to take any record where `state != RUNNING` OR
     `is_stalled(...)` — so a Clear press swept a RUNNING job whose reporter

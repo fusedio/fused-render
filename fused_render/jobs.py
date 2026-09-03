@@ -590,10 +590,22 @@ def clear_finished(*, now: float | None = None) -> int:
     was (see that function's own docstring) — only the BULK sweep, which
     cannot know that about any of the rows it takes, is wrong to extend to
     a row that may still be doing real work.
+
+    **`WAITING` rows are excluded too, for the identical reason `dismiss`
+    (above) already refuses to take one automatically.** `j.state !=
+    RUNNING` used to be this filter, which also swept up every `WAITING`
+    row — a row sitting in front of an open, answerable question (uv's
+    "Install anyway" prompt), not finished work. The Notifications "Clear"
+    button (`RepoUpdatesDock.tsx`) is gated on and titled around TERMINAL
+    rows only, so a `WAITING` row was being taken by a control that neither
+    shows it nor counts it, permanently — `_forget` also blocks the id from
+    being re-created by a later tick, so the prompt could never come back
+    either. Scoped to `TERMINAL_STATES` so a bulk Clear only ever takes what
+    it claims to.
     """
     now = time.time() if now is None else now
     with _lock:
-        gone = [j.id for j in _jobs.values() if j.state != RUNNING]
+        gone = [j.id for j in _jobs.values() if j.state in TERMINAL_STATES]
         for job_id in gone:
             _forget(job_id, now)
         return len(gone)
