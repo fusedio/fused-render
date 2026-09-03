@@ -81,7 +81,7 @@ WORKSPACE = fused_dir()
 SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
 
 GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
-# The clone (every app + its preview.png) is the long call: 25 apps, ~19 MiB
+# The clone (every app + its preview.png) is the long call: 25 apps, ~10 MiB
 # even shallow, and it runs on a first-visit request path.
 CLONE_TIMEOUT = 180
 LOCK_TIMEOUT = CLONE_TIMEOUT + 20
@@ -282,9 +282,14 @@ def _refresh():
         # module clones once and never fetches again (D550), and the two
         # reads it does perform work fine at depth 1 (`rev-parse HEAD` for
         # the catalog's commit, `remote get-url origin` for _cache_ready).
-        # Measured against fused-render-community-apps: 22.03 -> 18.59 MiB
-        # transferred, 931 -> 317 objects. The rest of the weight is the
-        # working tree itself (preview.png files alone are ~9 MiB), which
+        # Measured against fused-render-community-apps: 29.35 -> 9.72 MiB
+        # transferred, 1022 -> 317 objects, 44 -> 25 MB on disk. Depth is
+        # worth MORE than it looks, and increasingly so: the upstream
+        # recompression of its previews and assets added slim blobs without
+        # removing the fat originals from history, so a full clone pays for
+        # both copies (it grew from 22.03 MiB before that cleanup, while
+        # shallow fell from 18.59). The rest of the weight is the working
+        # tree itself (14.20 MB raw at HEAD, previews ~3.5 MB of it), which
         # only the community repo can shrink.
         #
         # It stays an ordinary git work tree, which is what SPEC §33/GT-20
