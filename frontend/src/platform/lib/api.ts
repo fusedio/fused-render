@@ -4036,6 +4036,17 @@ export interface ScheduledMessage {
   // continue the chat it was scheduled from.
   session_learned?: boolean;
   permission_mode: string;
+  // WHICH Claude the run is launched with (`--model`, an alias or a full id)
+  // and how hard it thinks (`--effort`). "" on both means "pass no flag": the
+  // session detects its own defaults, which is what every task did before these
+  // were askable. Optional in the type because an entry stored before the
+  // fields existed simply has neither.
+  //
+  // Read back for one reason: editing a task is cancel + re-create, so the New
+  // task form has to prefill from here and send them again or the choice dies
+  // on the first edit.
+  model?: string;
+  effort?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -4133,6 +4144,17 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
+  // The run's model (`--model`: an alias like "fable", or a pinned full id like
+  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // rather than sent empty, like everything else optional here — the server
+  // stores "" for "pass no flag", so an absent key and a blank one already mean
+  // the same thing and the shorter body is the honest one.
+  //
+  // Neither is validated client-side. The CLI is the authority on what it
+  // accepts, and a list duplicated here would go stale the day it learns a new
+  // model; see the note at the create endpoint.
+  model?: string;
+  effort?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;

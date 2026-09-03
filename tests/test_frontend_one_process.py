@@ -48,8 +48,27 @@ renderers and unmounted none, which failed two tests in
 `exclusiveSection.test.tsx` — one directly, the second because the first
 assertion threw before that file's own in-body `unmount()` could run.
 
-So a teardown that unmounts has to be UNCONDITIONAL (an `afterEach`, not a
-line at the end of a body), and every mount has to reach it.
+Both ENDS of that are pinned, because they are different duties and #968 found
+the same bug from the other one (red on the Linux runner, green on a Mac —
+readdir order):
+
+  * The VICTIM defends itself. `exclusiveSection.test.tsx` calls
+    `resetExclusiveSectionsForTests()` in a `beforeEach`, so it arbitrates over
+    its own sections only, whatever a sibling file left behind, and a failing
+    assertion cannot poison the next case either. This supersedes an
+    unconditional unmount in that file — a reset clears foreign entries AND
+    rewinds the tick, which unmounting one's own renderers cannot.
+  * The LEAKER still has to stop leaking, and this half is HYGIENE, not a live
+    fix — say so plainly, because measuring it says so: with the reset in
+    place and DownloadManager's teardown deleted, the full suite is still
+    3034/0. A reset defends the one file that calls it and nothing else, so
+    the next consumer of that store would meet the leak again, and nine React
+    trees left mounted are a leak whether or not anything currently trips
+    over them. That is precisely why it needs a STATIC guard: no behavioural
+    test can fail for it while main's reset stands. So every mount in that
+    suite goes through one helper feeding an UNCONDITIONAL `afterEach` — not a
+    line at the end of a body, which is exactly what a failing assertion
+    skips.
 """
 import os
 import re
@@ -185,30 +204,38 @@ def test_the_statically_importing_suites_are_the_ones_the_preload_covers(rel):
         "code that reads as protection it cannot give" % rel)
 
 
-# The suites that mount a status-bar section, and so register with the
-# arbiter's module-level Maps. Both were measured to matter, differently:
-# without DownloadManager's teardown the leak fails a test in
-# exclusiveSection's suite; without exclusiveSection's own, one failure there
-# becomes two. Neither is redundant.
-ARBITER_SUITES = (
-    "src/platform/ui/DownloadManager.test.tsx",
-    "src/platform/lib/exclusiveSection.test.tsx",
-)
+ARBITER_SUITE = "src/platform/lib/exclusiveSection.test.tsx"
+ACTIVITY_SUITE = "src/platform/ui/DownloadManager.test.tsx"
 
 
-@pytest.mark.parametrize("rel", ARBITER_SUITES)
-def test_a_suite_that_mounts_a_status_bar_section_unmounts_unconditionally(rel):
-    """An `unmount()` at the end of a body is the line a failure skips."""
-    path = os.path.join(FRONTEND, rel)
-    assert os.path.exists(path), "%s moved; re-check what registers with the arbiter" % rel
-    text = _read(path)
+def test_the_arbiter_suite_starts_each_case_from_an_empty_store():
+    """The victim's half: reset, which no amount of local unmounting replaces."""
+    text = "\n".join(line for _no, line in _code_lines(_read(os.path.join(FRONTEND, ARBITER_SUITE))))
+    assert "resetExclusiveSectionsForTests" in text, (
+        "%s must clear the arbiter's module-level store, or a section a SIBLING "
+        "file mounted and never unmounted arbitrates in its tie-breaks" % ARBITER_SUITE)
+    assert re.search(r"^beforeEach\(", text, re.M), (
+        "%s's reset has to run in a beforeEach: per-case, unconditional, and "
+        "ahead of the mount it is protecting" % ARBITER_SUITE)
+
+
+def test_the_activity_suite_unmounts_what_it_mounts_unconditionally():
+    """The leaker's half: a reset elsewhere is not a licence to leak.
+
+    Deliberately a STATIC check. The arbiter suite's own `beforeEach` reset
+    currently masks this leak — deleting the teardown this asserts on leaves
+    the whole bun run green — so there is no behavioural test to write, and
+    that is the argument for the guard rather than against it.
+    """
+    text = _read(os.path.join(FRONTEND, ACTIVITY_SUITE))
     assert re.search(r"^afterEach\(", text, re.M), (
-        "%s has no top-level afterEach. It mounts a component that registers "
-        "with platform/lib/exclusiveSection.ts's module-level Maps, and only an "
-        "unmount clears them — so the teardown cannot live at the end of a test "
-        "body, where a failing assertion skips it." % rel)
+        "%s has no top-level afterEach. It mounts the Activity chip, which "
+        "registers with platform/lib/exclusiveSection.ts's module-level Maps, "
+        "and only an unmount clears them — so the teardown cannot live at the "
+        "end of a test body, where a failing assertion skips it." % ACTIVITY_SUITE)
     assert "renderer.unmount()" in text, (
-        "%s's afterEach must actually unmount the renderers it collected" % rel)
+        "%s's afterEach must actually unmount the renderers it collected"
+        % ACTIVITY_SUITE)
 
 
 def test_every_mount_in_the_activity_suite_is_collected_for_teardown():

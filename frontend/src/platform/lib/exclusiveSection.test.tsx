@@ -8,9 +8,22 @@
 // own `useAutoExpandOnNew` call never feeds anything into `ids`), so the only
 // tie this arbiter can ever see is still Activity vs Notifications, which is
 // the one case these tests pin.
-import { afterEach, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useExclusiveSection, type SectionKey } from "./exclusiveSection";
+import {
+  resetExclusiveSectionsForTests,
+  useExclusiveSection,
+  type SectionKey,
+} from "./exclusiveSection";
+
+// The arbiter's store is module-level and bun shares one module registry
+// across test files, so a section some OTHER file mounted and never unmounted
+// would still be sitting in it, wanting to be open, and would win or lose
+// ties here that it was never part of. That is exactly what happened on the
+// Linux runner (file order differs from a Mac's): "two sections ... resolve to
+// Activity" and "a LATER request beats ..." went red on every push while the
+// same suite was green locally. Each case starts from an empty store.
+beforeEach(() => resetExclusiveSectionsForTests());
 
 /** A stand-in for one bar section: declares whether it wants to be open and
  *  records every time the arbiter closes it. */
@@ -35,26 +48,8 @@ function mount(element: React.ReactElement): ReactTestRenderer {
   act(() => {
     renderer = create(element);
   });
-  mounted.push(renderer);
   return renderer;
 }
-
-// Unmounting is what removes a section from the arbiter's module-level maps,
-// so a mount left standing here poisons the NEXT test in this very file: the
-// tick is stamped only on the false -> true edge, so a leaked `want: true`
-// entry makes the next test's section keep a stale, older tick and lose on
-// recency. The bodies below each end with their own `unmount()`, and that is
-// exactly the line a failing assertion skips — which is how ONE failure here
-// used to become two. Hence an UNCONDITIONAL teardown; the in-body calls stay
-// harmless, since a second unmount of the same renderer is a no-op.
-const mounted: ReactTestRenderer[] = [];
-
-afterEach(() => {
-  while (mounted.length) {
-    const renderer = mounted.pop()!;
-    act(() => renderer.unmount());
-  }
-});
 
 /** Advance past the current commit so the next request gets a higher tick
  *  rather than tying with what already happened. */

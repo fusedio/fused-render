@@ -10997,7 +10997,35 @@ const growHome = autoGrow(homebox);
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
 // ── model/effort/approvals selectors (home + composer sync via params) ──
-const MODELS = ["fable", "opus", "sonnet", "haiku"];
+// The list is `claude --model`'s vocabulary, and it holds BOTH shapes that flag
+// accepts: a floating alias ("fable" — whatever Fable is today) and a PINNED
+// full id ("claude-fable-5-1" — that exact model, whatever ships next).
+//
+// Both shapes are here on purpose, and the pair is not redundant (Akshil,
+// 2026-09-03). An alias is the right default — it follows the CLI forward and
+// nobody has to come back and edit a list — but it is also the reason a run
+// cannot be pinned: a chat that was going well on 5.1 silently moves the day the
+// alias does. The pinned entry is the answer to that, and it LEADS the list
+// because someone who opens this menu at all is usually opening it to choose a
+// specific model; the alias sits under it as "the current one, whichever it is".
+//
+// A full id is an ordinary value everywhere downstream: `curModel()` validates
+// against this list (so `?model=claude-fable-5-1` survives a reload instead of
+// blanking the pill — see the note there), the spawn hands it to `--model`
+// verbatim, and agent.py's `_short_model` maps a transcript's model id back onto
+// one of these values so detection can preselect it.
+const MODELS = ["claude-fable-5-1", "fable", "opus", "sonnet", "haiku"];
+// How each one is SAID. Only the pinned id strictly needs an entry —
+// "claude-fable-5-1" is the CLI's spelling, not a thing to print at a person —
+// but the whole list is written out so the pill can never show a raw value for
+// want of a line here.
+const MODEL_LABELS = {
+  "claude-fable-5-1": "Fable 5.1",
+  fable: "Fable",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+};
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
@@ -11098,7 +11126,7 @@ function fillSelect(el, values, groupLabel, labels) {
   }
   el.appendChild(group);
 }
-document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "Model"));
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "Model", MODEL_LABELS));
 document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "Effort"));
 document.querySelectorAll(".perm-sel").forEach((el) =>
   fillSelect(el, PERMISSION_MODES, "Approvals", PERMISSION_LABELS));

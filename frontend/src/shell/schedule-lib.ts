@@ -1794,3 +1794,79 @@ export function popoverPos(
   top = Math.max(m, Math.min(top, Math.max(m, vh - h - m)));
   return { left, top };
 }
+
+// ---- What a task can be RUN with ---------------------------------------------------
+// The two lists behind the New task card's More options row: which Claude the
+// unattended run uses (`--model`) and how hard it thinks (`--effort`). Values are
+// the CLI's own vocabulary and travel to `claude` untouched, via
+// POST /api/schedule → schedule.create → claude_spawn.spawn_helper.
+//
+// "" LEADS BOTH LISTS and is the default. It is not a model or a level — it means
+// "pass no flag", which is what every task did before these were askable: the
+// session detects its own defaults from the project. That is the right answer for
+// almost every task, so it has to be a real, re-selectable option rather than a
+// state the user can only get back to by cancelling the card.
+//
+// KEPT IN SYNC BY HAND with the chat picker's MODELS/EFFORTS in
+// fused_render/templates/claude/template.html — deliberately, and the duplication
+// is cheap. That template is vanilla JS served straight off disk to render one
+// file; it cannot import a module out of this bundle, and the alternative (an
+// endpoint that hands both surfaces the same list) buys a network round-trip for
+// a list of five strings that changes about once a year. If you add a model,
+// add it in both places.
+//
+// Model values carry BOTH shapes `--model` accepts: a floating alias ("fable" —
+// whatever Fable is today, which follows the CLI forward on its own) and a pinned
+// full id ("claude-fable-5-1" — that exact model, whatever ships next). A
+// scheduled task is the case that wants pinning most: it runs unattended, on a
+// repeat, for weeks, and "the model moved under it" is not a thing anyone is
+// watching for.
+export const TASK_MODELS: readonly { key: string; label: string }[] = [
+  { key: "", label: "Default" },
+  { key: "claude-fable-5-1", label: "Fable 5.1" },
+  { key: "fable", label: "Fable" },
+  { key: "opus", label: "Opus" },
+  { key: "sonnet", label: "Sonnet" },
+  { key: "haiku", label: "Haiku" },
+];
+
+// `--effort`'s five levels, cheapest first, said the way the card says things
+// rather than in the CLI's spelling: "xhigh" is the flag's word, "Extra high" is
+// the English one, and the key is what goes on the wire.
+export const TASK_EFFORTS: readonly { key: string; label: string }[] = [
+  { key: "", label: "Default" },
+  { key: "low", label: "Low" },
+  { key: "medium", label: "Medium" },
+  { key: "high", label: "High" },
+  { key: "xhigh", label: "Extra high" },
+  { key: "max", label: "Max" },
+];
+
+// How one stored value is SAID — the list's label if it has one, else the value
+// itself. An entry can hold a model this build has never heard of, and showing
+// its raw id is better than hiding it.
+export const taskRunLabel = (
+  list: readonly { key: string; label: string }[],
+  key: string,
+) => list.find((o) => o.key === key)?.label ?? key;
+
+// The list to actually SHOW for a current value: the list above, plus — when
+// that value is not in it — the value itself as its own option.
+//
+// This is the "scheduled by a different build" case, and it is the one that
+// silently loses data if the list is used raw. A task can hold a model this app
+// has never heard of: written by a newer version, typed at the API, or a pinned
+// id we have since retired. With that value absent from the options the dropdown
+// falls back to the leading entry, which is "Default" — so opening the card
+// would SHOW the task as running on the default, and saving it (an edit is
+// cancel + re-create) would then make that true. Carrying the unknown value as
+// its own row keeps an edit lossless, and shows the raw id, which is the honest
+// reading of what the task is actually set to.
+export function taskRunOptions(
+  list: readonly { key: string; label: string }[],
+  current: string,
+): { key: string; label: string }[] {
+  return list.some((o) => o.key === current)
+    ? [...list]
+    : [...list, { key: current, label: current }];
+}

@@ -487,9 +487,41 @@ def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
     override = lib.catalog_override_path()
     os.makedirs(os.path.dirname(override), exist_ok=True)
     with open(override, "w", encoding="utf-8") as f:
-        json.dump([{"key": "model", "label": "Overridden"}], f)
+        json.dump([{"key": "model", "doc": "Overridden doc"}], f)
     assert lib.catalog_read_path() == override
-    assert preferences._catalog()[0]["label"] == "Overridden"
+    served = preferences._catalog()[0]
+    # The override's doc/default/minVersion half wins for a key it names...
+    assert served["doc"] == "Overridden doc"
+    # ...but curated fields (label, options, ...) never come from the
+    # override — only the packaged copy authors those, so an override
+    # snapshot can never shadow a later catalog change to them. This is the
+    # PR #968 bug: a `label`/`options` override key here used to win outright
+    # and freeze the served catalog to whatever shipped the day someone last
+    # pressed "Refresh catalog".
+    packaged = json.loads(open(lib.packaged_catalog_path(), encoding="utf-8").read())
+    assert served["label"] == packaged[0]["label"]
+    assert served["options"] == packaged[0].get("options")
+
+
+def test_a_curated_addition_to_the_packaged_catalog_reaches_a_server_with_a_stale_override(
+        catalog_home):
+    # PR #968, live: a model was added to the packaged catalog's `model`
+    # options, but a server that had refreshed before that change kept
+    # serving the old option list forever, because the override used to be
+    # read wholesale instead of merged per field.
+    override = lib.catalog_override_path()
+    os.makedirs(os.path.dirname(override), exist_ok=True)
+    packaged = json.loads(open(lib.packaged_catalog_path(), encoding="utf-8").read())
+    stale = json.loads(json.dumps(packaged))  # deep copy, pre-dates the new option
+    model_entry = next(d for d in stale if d["key"] == "model")
+    model_entry["options"] = [o for o in model_entry["options"] if o != "claude-fable-5-1"]
+    model_entry.pop("optionLabels", None)
+    with open(override, "w", encoding="utf-8") as f:
+        json.dump(stale, f)
+
+    served = next(d for d in preferences._catalog() if d["key"] == "model")
+    assert "claude-fable-5-1" in served["options"]
+    assert served["optionLabels"]["claude-fable-5-1"] == "Fable 5.1"
 
 
 def test_refresh_writes_the_override_and_leaves_the_package_untouched(
