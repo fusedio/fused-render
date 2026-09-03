@@ -58,18 +58,11 @@ SKIP_DIRS = {
     "/dev",
 }
 
-# Defaults are deliberately limited to names that mean ONLY "generated" — a
-# folder nobody names by accident. Generic words are left out even when they
-# are usually build output (`dist`, `build`, `target`, `vendor`, `env`),
-# because a false positive here is invisible: the file silently isn't in the
-# index and the search just comes back empty. Add them per machine if the
-# trade is worth it there (`target` in particular is large for Rust).
 # The floor BOTH corpus sources share (server/walk.py imports this as
 # WALK_IGNORE_DIRS). Search is answered by the live walk or by the index
 # depending on whether a scan has reached the folder, so a name pruned by one
 # and kept by the other makes results flip between two sources that are meant
-# to be interchangeable — the same inconsistency server/index_gitignore.py
-# exists to prevent for gitignored entries.
+# to be interchangeable.
 #
 # `.git` is deliberately NOT here — it is a LEAF dir (LEAF_DIR_NAMES below), so
 # it gets one row and no contents rather than vanishing. Ignoring it would be
@@ -193,13 +186,26 @@ def is_inside_leaf_dir(path: str) -> bool:
 
 # The index prunes MORE than the floor, and may: a scan is a background crawl
 # of the whole home, where these caches are pure cost. The walk cannot use the
-# same list, because inside a repo it defers to the repo's own .gitignore
-# (which catches these and more) and outside one it must stay conservative.
+# same list — it only ever covers whatever folder is on screen, where a false
+# positive is a visibly missing file, not a silent gap in a background corpus —
+# so it stays conservative and this list is user-editable rather than baked
+# into the walk's own floor.
+#
+# Generic build-output names (`dist`, `build`, `out`, `target`, `coverage`,
+# `vendor`) are included even though a project can legitimately have a
+# same-named folder full of real content: with nothing left to defer to a
+# repo's own `.gitignore` for, these are the only mitigation against a build
+# tree's tens of thousands of generated files flooding search, and the
+# tradeoff favors a smaller index over a home-directory scan that indexes
+# every `node_modules`-sized `dist/` on the machine. Editable per project via
+# the ignore-list config for anyone who keeps real content under one of these
+# names.
 DEFAULT_IGNORE_NAMES = [
     *SHARED_IGNORE_DIRS,
     ".svn", ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".gradle", ".terraform", ".next", ".nuxt", ".parcel-cache", ".turbo",
     ".cache", "Pods", ".Trash", "*.egg-info",
+    "dist", "build", "out", "target", "coverage", "vendor",
     # An app's own state folder (D548). It belongs here for the same reason
     # `.cache` does, only more so: `~/Fused` IS indexed, and `.fused/cache/` is
     # an app-managed dir with no size bound at all — one page caching tiles or

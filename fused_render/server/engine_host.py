@@ -130,6 +130,13 @@ class Child:
     #: Last call routed to this child (monotonic); drives idle-retire for a
     #: child whose `idle_timeout_s` is non-zero.
     last_used: float = field(default_factory=time.monotonic)
+    #: When this child's bring-up began (monotonic) — stamped at construction,
+    #: so it counts from the moment the spawn started rather than from the
+    #: first ping, and it is NOT restamped the way `last_used` is. Read only by
+    #: `running_engines`, for the uptime the status bar's Activity panel shows;
+    #: a heal-restart builds a new `Child`, so the uptime is this PROCESS's,
+    #: which is what "pid 1234, up 3m" has to mean.
+    started_at: float = field(default_factory=time.monotonic)
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
@@ -632,20 +639,61 @@ def running_engines() -> list[dict]:
     background child only, and `module` for a `main =` daemon (a `daemon =`
     app leaves it empty), so the caller can label a row without having to
     guess the manifest's protocol.
+
+    UPTIME AND IDLE_FOR ANSWER "WHY IS THIS STILL HERE, AND FOR HOW LONG"
+    (user call: a daemon row that says only its name leaves the panel
+    unreadable — "if a daemon has a timeout, lets also mention that"). Both
+    are derived from the same `now`, so one row cannot report an uptime and
+    a countdown taken a poll apart:
+
+    * `uptime_s` — seconds since this child's bring-up began.
+    * `idle_timeout_s` — the manifest's own policy, `0` for a resident child
+      (`daemon =`, and every template daemon), which the caller renders as
+      "no idle timeout" rather than as "retires in 0s".
+    * `idle_for_s` — seconds since the last call was routed here. Reported
+      for every child, but only meaningful against a non-zero timeout.
+    * `busy` — idle-retire is currently skipping this child, so a stalled-
+      looking countdown has an explanation rather than reading as a bug.
+
+    `busy` is not simply `_busy`'s own gate: a call that outran the 60s proxy
+    budget gets a 504, whose `finally` calls `mark_idle` (routers/engines.py)
+    — `_busy` drops to 0 and `last_used` is stamped as though the call had
+    ended, but the worker's `main()` keeps running. `reap_idle_children`
+    knows this and consults `_inflight` (a ping to the worker) before
+    reaping; a row that only echoed `_busy` would read "retiring now" for
+    exactly the state this field exists to explain. So a child past its own
+    idle timeout with `_busy` already clear is pinged the same way
+    `reap_idle_children` pings it — rare by construction, since only a
+    reap CANDIDATE is ever pinged — before its `busy` is decided.
+
+    `_busy` is snapshotted under the same `_lock` hold as `_children` so the
+    two cannot disagree about a child, and `_alive()`/`_inflight()` still run
+    outside it.
     """
+    now = time.monotonic()
     with _lock:
         children = list(_children.values())
-    return [
-        {
+        busy = dict(_busy)
+    result = []
+    for c in children:
+        if not _alive(c):
+            continue
+        idle_for_s = max(0.0, now - c.last_used)
+        is_busy = busy.get(c.engine_id, 0) > 0
+        if not is_busy and c.idle_timeout_s > 0 and idle_for_s >= c.idle_timeout_s:
+            is_busy = _inflight(c) > 0
+        result.append({
             "engine_id": c.engine_id,
             "pid": c.pid,
             "version": c.version,
             "folder": c.folder,
             "module": c.module,
-        }
-        for c in children
-        if _alive(c)
-    ]
+            "uptime_s": max(0.0, now - c.started_at),
+            "idle_timeout_s": c.idle_timeout_s,
+            "idle_for_s": idle_for_s,
+            "busy": is_busy,
+        })
+    return result
 
 
 #: Set once the first bring-up starts the (daemon) idle sweeper thread.

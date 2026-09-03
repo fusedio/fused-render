@@ -60,6 +60,10 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # test_shell_routes.py derives this list from the shell's own route table rather
 # than trusting the next page to remember.
 @router.get("/tasks")
+# The first-run setup wizard (frontend shell/onboarding): its own page, so
+# the client lands on it with a plain navigation and leaves it the same way,
+# and Help › Setup wizard is an ordinary link. A refresh mid-wizard stays on it.
+@router.get("/onboarding")
 # Canvases (legacy-workbench local development): the listing page and the
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")

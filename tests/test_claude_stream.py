@@ -608,3 +608,42 @@ def test_a_pinned_model_round_trips_from_a_transcript_to_the_picker(agent):
     assert agent._short_model("haiku") == "haiku"
     assert agent._short_model("") == ""
     assert agent._short_model("gpt-4") == ""
+
+
+# ---------------------------------------- two rules about what the page may do
+#                                          to a run the user is watching stream
+#
+# Both pinned as strings, right here beside the stream the page renders, because
+# both are one edit away from coming back and neither has a symptom a stream test
+# would notice: the first cost the user the whole turn, the second cost them
+# sight of it.
+
+
+def test_no_key_binding_stops_a_run(html):
+    """Escape used to kill a live turn whenever nothing else claimed the key —
+    so a reader who reached for it out of habit lost the run to a keystroke never
+    aimed at it (Akshil, 2026-09-03). Work in progress is not something a bare
+    keypress may throw away. The behavioural half is in
+    tests/test_claude_app_state.py; this is the pin that survives that file being
+    refactored."""
+    assert "stop-run" not in html
+    handler = html[html.index("function onEscape(e) {"):]
+    assert "stopRun" not in handler[:handler.index("\n}\n")]
+    # the stop button itself is untouched — there IS still a way to stop a turn
+    assert "async function stopRun() {" in html
+    assert "if (activeRun) { stopRun(); return; }" in html
+
+
+def test_the_transcript_follows_growth_it_was_not_told_about(html):
+    """A live turn reaches its final height long after the append that scrolled:
+    tool cards expand when their output lands, code blocks grow under the
+    highlighter, pictures and artifact iframes take up room only once they load,
+    the bubble re-renders as markdown at message end. So growth is OBSERVED
+    rather than announced — one ResizeObserver on the scrollport's two children,
+    answering with the same follow flag every write site uses. Behaviour in
+    tests/test_claude_scroll_follow.py."""
+    assert "const followGrowth = new ResizeObserver(followBottom);" in html
+    assert ('for (const el of [log, document.getElementById("queue")]) '
+            "followGrowth.observe(el);") in html
+    # `load` does not bubble, so the picture/iframe backstop must be in capture
+    assert 'logwrap.addEventListener("load", followBottom, true);' in html

@@ -23,7 +23,7 @@ import {
   type AiModelsResult,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
+import { activeJobByModel, fetchJobs, type Job } from "@platform/lib/jobs";
 
 export type CacheLoad =
   | { status: "loading" }
@@ -171,11 +171,7 @@ export function useCacheScan(): CacheScan {
 
   const repos = data?.repos ?? [];
   const loadedById = new Map(runtime.loaded.map((m) => [m.model, m]));
-  // Matched by TITLE, which the supervisor sets to the model id, rather than by
-  // re-deriving the job id here: that derivation sanitises characters, and a
-  // second copy of the rule in TypeScript would drift from the Python one the
-  // moment either changed.
-  const jobByModel = new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]));
+  const jobByModel = activeJobByModel(jobs);
   // What "you already have this one" MEANS is deliberately NOT answered here.
   // It was, once — a map of id → path for every repo with a materialised
   // snapshot, held at this level so the Local and Discover tabs could not
