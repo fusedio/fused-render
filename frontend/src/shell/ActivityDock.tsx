@@ -39,7 +39,7 @@
 // this component is the shell's one place that fetches for it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
-import { jobRows, terminalJobs, type Job } from "@platform/lib/jobs";
+import { terminalNotifications, type Job } from "@platform/lib/jobs";
 import { pushToast } from "@platform/lib/toast";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
@@ -176,19 +176,16 @@ export default function ActivityDock({
   // subset and call up when the id SET actually changes, so a poll that finds
   // nothing new does not re-render the shell.
   //
-  // `jobRows` FIRST, `terminalJobs` SECOND (C6 fix): a scheduled run's own
-  // job draws no row in Activity in any state (D655/`isScheduleJob`), and
-  // that exclusion has to reach this path too, not only the rows this file
-  // never draws. Without it, a task on a schedule pushed a permanent,
-  // silent Notifications row per finished turn on top of the toast
-  // `schedule-toast.ts` already fires for the same event — the user's own
-  // rule was that a task is not something they want in Activity, and a task
-  // must not become a second, silent Notifications row either.
+  // `terminalNotifications` (jobs.ts) is `mergedRows` then `jobRows` then
+  // `terminalJobs` — see its own doc for why that order matters (a scheduled
+  // run's own job draws no row in Activity in any state, D655/`isScheduleJob`,
+  // and a render merged with a shared model load must not surface the
+  // load's completion as a second Notifications entry, SPEC §36).
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");
   const onJobsReported = useCallback((next: Job[]) => {
-    const terminal = terminalJobs(jobRows(next));
+    const terminal = terminalNotifications(next);
     const key = terminal.map((j) => j.id).join(" ");
     if (key === terminalIdsRef.current) return;
     terminalIdsRef.current = key;

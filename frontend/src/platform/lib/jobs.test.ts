@@ -15,6 +15,7 @@ import {
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  terminalNotifications,
   trackSeenIds,
   type Job,
 } from "@platform/lib/jobs";
@@ -316,4 +317,40 @@ test("mergedRows leaves unrelated rows alone", () => {
 test("mergedRows is a no-op when nothing has waiting_for set", () => {
   const jobs = [job({ id: "a" }), job({ id: "b", waiting_for: "" })];
   expect(mergedRows(jobs)).toEqual(jobs);
+});
+
+// --------------------------------------------------------- terminalNotifications
+//
+// `ActivityDock.tsx`'s `onJobsReported` — what actually reaches Notifications
+// from a full snapshot. `mergedRows` has to run FIRST, on the unfiltered
+// snapshot, or a load that has already gone terminal but whose waiter has not
+// yet cleared its own `waiting_for` (the one-tick gap `_wait_ready`'s poll
+// loop leaves between the load finishing and the waiter noticing) reaches
+// Notifications on its own — a second completion entry for what Activity is,
+// at that very moment, still drawing as one row.
+
+test("terminalNotifications withholds a load's completion while its merged waiter is still running", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications surfaces the load once the waiter itself has gone terminal", () => {
+  const jobs = [
+    job({ id: "waiter", state: "done", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs).map((j) => j.id).sort()).toEqual(["load", "waiter"]);
+});
+
+test("terminalNotifications still drops a scheduled run's own job", () => {
+  const jobs = [job({ id: "sys:schedule:e1", state: "done" })];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications leaves an ordinary terminal job alone", () => {
+  const jobs = [job({ id: "dl", state: "done" })];
+  expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
 });

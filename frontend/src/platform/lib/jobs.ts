@@ -212,6 +212,24 @@ export function mergedRows(jobs: Job[]): Job[] {
   return jobs.filter((j) => !hidden.has(j.id));
 }
 
+/** What actually reaches Notifications from a full job snapshot —
+ *  `ActivityDock.tsx`'s `onJobsReported`, pulled out here so the composition
+ *  itself has a test rather than only a rendered component to poke at.
+ *
+ *  `mergedRows` runs FIRST, on the FULL snapshot, exactly like
+ *  `DownloadManagerView`'s own `jobs` computation
+ *  (`inFlightJobs(jobRows(mergedRows(reported)))`) — it needs the
+ *  REFERENCING row (the waiter, `waiting_for`-tagged) still present to
+ *  decide whether the row it names is hidden. Skipping it here let a render
+ *  waiting on a shared model load draw ONE row in Activity while its two
+ *  underlying jobs drew TWO in Notifications: the load goes terminal a tick
+ *  before the waiter notices and clears its own `waiting_for`
+ *  (`_wait_ready`'s poll loop), so a poll landing in that gap saw the load
+ *  as terminal while Activity's own merged view still had it hidden. */
+export function terminalNotifications(jobs: Job[]): Job[] {
+  return terminalJobs(jobRows(mergedRows(jobs)));
+}
+
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet
