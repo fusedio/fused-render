@@ -1,0 +1,176 @@
+/* Tasks → Cards: every running conversation, side by side, streaming.
+   (shell/TaskCards.tsx — the page's fourth view.)
+
+   The other three views draw ROWS about tasks. This one draws the tasks
+   themselves: each card is the real chat, embedded live, so the page is read the
+   way a wall of monitors is read — you look at it, you do not click through it.
+
+   Which is why almost nothing here is decoration. The rules that matter are:
+   a card is a FIXED height so a wall of them is a grid and not a staircase; the
+   scrolling happens INSIDE the embedded document and never on this page
+   sideways; and the head is one line, because a header tall enough to be read
+   properly is a header eating the thing it labels.
+
+   The vocabulary is the Board's — the same surface token, the same 8px radius,
+   the same 1px border, the same status ring — so the fourth view reads as one
+   more lens on this page rather than as a different product (design-principles
+   §1). Only what is new to it lives here. */
+
+/* -- the wall ----------------------------------------------------------------- */
+/* `auto-fill` and not `auto-fit`: at a width that holds three columns with two
+   cards in it, auto-fit collapses the empty track and stretches those two across
+   the whole window, which turns two live chats into two enormous ones. auto-fill
+   keeps the track, so a card is the same size whatever else is running — the one
+   property that makes this readable at a glance.
+
+   360px is the floor because it is roughly the narrowest a chat turn stays a
+   paragraph rather than a column of two-word lines. Below one column's worth the
+   track collapses to the container (`1fr` of a single column), which is what
+   gives the small-window case its 1-up layout with no media query to maintain. */
+.task-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 12px;
+  /* Belt and braces against the one failure this view must not have: a page that
+     scrolls sideways. A grid item's default `min-width: auto` lets a wide child
+     (an iframe with its own layout in it) push its track past `1fr`, and the
+     overflow lands on the PAGE. The iframe below is `width: 100%` and the tracks
+     are `min()`-floored, and this says so once more at the container. */
+  min-width: 0;
+  padding-bottom: 8px;
+}
+
+.task-cards > * {
+  min-width: 0;
+}
+
+/* -- one card ----------------------------------------------------------------- */
+/* FIXED height, not an aspect ratio. An aspect-ratio card is a different height
+   in every column count, so the same wall re-flows into a different shape every
+   time the window moves — and 420px is chosen against the content rather than
+   against the box: it is about a dozen lines of transcript, which is enough to
+   see what a run is DOING and not enough to invite reading it here. Reading
+   happens behind Open. */
+.task-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 420px;
+  box-sizing: border-box;
+  background: var(--tasks-card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* ONE LINE, and it holds its height whether or not the ring is in it — same rule
+   the Board's card head follows (`--tasks-card-head-h`), for the same reason: a
+   wall of cards that jittered by a glyph would be a worse tell than anything the
+   glyph says. */
+.task-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The title takes the row's slack and gives it all back on a long one: ONE line,
+   ellipsed. Deliberately not the Board's free wrap — a card here is a fixed box
+   whose content is the transcript, so a two-line title would steal a line of the
+   thing the card exists to show, on exactly the busiest cards. */
+.task-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The time, in the row's quiet weight — the same relative unit every task row on
+   this page prints (tasks-lib.taskWhen). `flex: none` so it is never the thing
+   that gets squeezed: a truncated "3m ago" says nothing at all. */
+.task-card-when {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Open, as a real link. It is a text button rather than one of the page's filled
+   ones because it repeats on every card, and twelve filled buttons on one screen
+   is twelve things asking to be pressed. */
+.task-card-open {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.task-card-open:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  text-decoration: none;
+}
+
+/* -- the live pane ------------------------------------------------------------ */
+/* The card's whole remaining height, and the ONLY scrolling surface in it. */
+.task-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  background: var(--bg);
+}
+
+.task-card-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* A run that has been claimed but has not reported a session yet (schedule-lib,
+   above `folderHref`: the window between "sent" and "we know which chat that
+   is"). There is nothing to embed, so the pane says so in the page's own quiet
+   voice instead of showing an iframe that would load the wrong thing. */
+.task-card-starting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* -- the trailing card -------------------------------------------------------- */
+/* Past the cap (tasks-lib.CARD_CAP) the wall stops embedding and starts
+   counting. It is a card and not a footnote under the grid on purpose: it sits
+   in the flow of the thing it is talking about, so the wall reads as "these
+   twelve, and N more" rather than as a page with a caveat at the bottom. */
+.task-card--more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  background: none;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.task-card--more:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  text-decoration: none;
+}

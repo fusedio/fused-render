@@ -68,6 +68,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
   ICON_VIEW_BOARD,
   ICON_VIEW_CALENDAR,
+  ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
@@ -82,8 +83,9 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
+import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
+import { TaskCards } from "./TaskCards";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -154,7 +156,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     let saved: TaskView = "list";
     try {
       const stored = localStorage.getItem(VIEW_KEY);
-      if (stored === "board" || stored === "calendar") saved = stored;
+      // Against TASK_VIEWS rather than a hand-written list of the non-default
+      // ones: this store is untrusted input (an older build wrote it, a person
+      // edited it), and the one place that decides what a view NAME is has to be
+      // the same place `?view=` reads (tasks-lib.TASK_VIEWS).
+      if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
     } catch {
       // A blocked store just means no remembered view; the URL may still say.
     }
@@ -537,6 +543,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 {ICON_VIEW_CALENDAR}
                 Calendar
               </button>
+              {/* LAST in the row, and that is a claim about how often it is
+                  wanted rather than about how new it is: the first three answer
+                  "what is there", which is the page's standing question, and
+                  this one answers "what is happening right now", which is a
+                  thing you go and look at (serial-position — the ends of a row
+                  are the seats that get read, and the near end is spoken for). */}
+              <button type="button"
+                      data-view="cards"
+                      className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
+                      aria-pressed={view === "cards"}
+                      onClick={() => pickView("cards")}>
+                {ICON_VIEW_CARDS}
+                Cards
+              </button>
             </div>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
@@ -594,6 +614,24 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             />
           ) : view === "board" ? (
             <TaskBoard tasks={shown} home={home} onReload={reload} />
+          ) : view === "cards" ? (
+            <TaskCards
+              // The FILTERED set, like every other view: Cards narrows it again
+              // to what is running (tasks-lib.cardsForTasks), and a Project or
+              // a Search the reader set on another view is a lens they meant to
+              // keep — the same argument that put the toolbar on the calendar.
+              tasks={shown}
+              home={home}
+              // Past the cap, the trailing card hands the overflow to the List
+              // with the Status facet set to what this view was showing. Both
+              // halves in one gesture — a switch to a List still showing
+              // everything would be an answer to a different question than the
+              // one the card was asked.
+              onShowRunning={() => {
+                setFilters((f) => ({ ...f, statuses: ["in_progress"] }));
+                pickView("list");
+              }}
+            />
           ) : (
             <TaskList
               tasks={shown}
