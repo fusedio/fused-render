@@ -1617,8 +1617,8 @@
                   <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-term"/></svg>Homebrew</span>
                   <span class="sub">macOS &middot; copy command</span>
                 </button>
-                <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Windows &amp; Linux are early builds.</b> Native on macOS;
-                expect missing features and rough edges elsewhere.</span></p>
+                <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
+                there may be missing features and rough edges.</span></p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1807,8 +1807,8 @@
       if (visitorOS === "mac") { note.hidden = true; }
       else {
         document.getElementById("dl-note-text").innerHTML =
-          "<b>Early build for " + osLabel + ".</b> macOS is the native app; expect missing " +
-          "features and rough edges here. <a href=\"#troubleshooting\">Troubleshooting</a>";
+          "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
+          "features and rough edges. <a href=\"#troubleshooting\">Troubleshooting</a>";
         note.hidden = false;
       }
     }
