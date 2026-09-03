@@ -444,7 +444,7 @@ function ClaudeConfigView() {
   const available = useClaudeConfigAvailable();
   return (
     <div id="content">
-      <div className="cc-page">
+      <div className="flex min-h-0 flex-1 flex-col">
         {available ? (
           <Suspense fallback={<RouteFallback />}>
             <ClaudeConfig />
@@ -884,7 +884,7 @@ export default function App({ config }: { config: Config }) {
     // so React replaces the subtree regardless.
     main = (
       <div id="content">
-        <div className="cc-page">
+        <div className="flex min-h-0 flex-1 flex-col">
           <Suspense fallback={<RouteFallback />}>
             <AiModels />
           </Suspense>
