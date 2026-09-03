@@ -482,7 +482,7 @@ export function StarterCards<S extends Starter>({
     return samples[(offset + at) % samples.length];
   });
   return (
-    <div className="flex items-start gap-2 p-0.5">
+    <div className="flex items-start p-0.5">
       {/* `flex-1`, not `shrink`: the measure below compares this box's
           scrollWidth to its clientWidth, so the box's WIDTH must not depend on
           how many pills are in it. With a content-sized basis, dropping a pill
@@ -490,8 +490,16 @@ export function StarterCards<S extends Starter>({
           the full page again — the two fought, and a pill sat half-drawn at the
           clip edge whenever the column was too narrow for four (opening the
           settings panel did it). Filling the leftover space pins the width to
-          the container, so the trim converges. */}
-      <div className="flex min-w-0 flex-1 flex-nowrap gap-2 overflow-hidden" ref={rowRef}>
+          the container, so the trim converges.
+          Rotate lives INSIDE this box, as its last child: pinned outside a
+          full-width row it drifted to the far right edge, a lone circle three
+          hundred pixels from the pills it rotates. In here it follows the last
+          pill, and the measure counts it — so it is never the thing that gets
+          clipped. */}
+      <div
+        className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-hidden"
+        ref={rowRef}
+      >
         {shown.map((sample) => (
           <Button
             key={sample.name}
@@ -510,20 +518,20 @@ export function StarterCards<S extends Starter>({
             {sample.name}
           </Button>
         ))}
+        {samples.length > page && (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            className="flex-none rounded-full text-muted-foreground hover:text-foreground"
+            title="Show other examples"
+            aria-label="Show other examples"
+            onClick={() => setOffset((at) => (at + page) % samples.length)}
+          >
+            <RefreshCw />
+          </Button>
+        )}
       </div>
-      {samples.length > page && (
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          className="rounded-full text-muted-foreground hover:text-foreground"
-          title="Show other examples"
-          aria-label="Show other examples"
-          onClick={() => setOffset((at) => (at + page) % samples.length)}
-        >
-          <RefreshCw />
-        </Button>
-      )}
     </div>
   );
 }

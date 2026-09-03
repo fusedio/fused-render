@@ -227,8 +227,17 @@ function SkeletonRow({
 
 // The terminal empty state for a strip: one muted line, deliberately NOT a
 // card-height well — this state is permanent, not a loading flicker.
+// `data-empty` is a bare HOOK, not a style: the Home tour gates itself on a
+// section having settled — either a real card or this line — and would
+// otherwise retry forever for someone with no apps yet
+// (platform/lib/tours/home.ts). It replaces the `.fh-empty` class the old
+// files-home stylesheet supplied.
 function EmptyLine({ children }: { children: React.ReactNode }) {
-  return <Muted className="py-5 text-center">{children}</Muted>;
+  return (
+    <Muted data-empty="" className="py-5 text-center">
+      {children}
+    </Muted>
+  );
 }
 
 // The AI Playground strip's glyph vocabulary — plain strokes on the current

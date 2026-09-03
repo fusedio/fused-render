@@ -1,5 +1,4 @@
-// The two dropdowns the explorer's bars are built from, and the anchoring they
-// share.
+// The two dropdowns the explorer's bars are built from.
 //
 // ModeMenu is the ONE mode control: a bordered trigger showing the active
 // mode's icon, the mode's name, and a caret; the dropdown lists every mode
@@ -8,118 +7,72 @@
 // preview pane's compact icon strip, and the pane bar's icon-only menu — so
 // the same control now appears in all of them, identically.
 //
-// The icon is drawn in currentColor at the same 16px as every other .bar-ctl
-// glyph. An earlier pass put it in a filled accent chip to mark "this is the
-// active mode"; on screen that read as a coloured badge shouting for
-// attention in a row of quiet chrome. The accent survives where it costs
-// nothing — the wash on the dropdown's active row (.bar-menu-item.active).
+// The icon is drawn in currentColor at the same 16px as every other bar glyph.
+// An earlier pass put it in a filled accent chip to mark "this is the active
+// mode"; on screen that read as a coloured badge shouting for attention in a
+// row of quiet chrome. The active row's own wash in the dropdown carries it
+// instead.
 //
-// OverflowMenu is the `···` companion: low-frequency one-shot actions (reveal
+// OverflowMenu is the `⋮` companion: low-frequency one-shot actions (reveal
 // in the file manager, copy path, open in a new tab) that used to be welded
 // into the crumb strip as bare glyphs.
 //
-// Both popups are position:fixed off the trigger's rect rather than absolutely
-// positioned: .panel-pane and the tab bar clip their overflow, and a menu that
-// works in three of four bars is a menu that will be reported as broken in the
-// fourth.
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+// BOTH POPUPS ARE PORTALED, and that is a requirement rather than a default:
+// `.panel-pane` and the tab bar clip their overflow, so a menu positioned
+// inside the bar works in three of four bars and is invisible in the fourth.
+// The hand-rolled `position: fixed` anchoring this module used to carry
+// (useMenuAnchor — trigger rect, viewport clamping, outside-pointerdown,
+// Escape, window blur) is all the shadcn DropdownMenu's job now; base-ui does
+// the same three closes, and the window-blur one matters here for the same
+// reason it always did (a click landing inside any iframe never reaches this
+// document, but it does blur the shell window, and these bars sit above a grid
+// of iframes).
+//
+// `.bar-menu-popup` SURVIVES AS A HOOK on the popup. Breadcrumb's click-away
+// listener and its BAR_EDIT_EXCLUDE selector both name it: a press inside a
+// bar menu must not be read as "dismiss the path field" or as "open the path
+// field". `closest()` walks the portal's own subtree, so the class still
+// answers from `<body>`.
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import { modeTitle } from "@platform/lib/mode-name";
+import { cn } from "@platform/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
+import { BarButton } from "@apps/explorer/bar/BarButton";
+import { ModeGlyph } from "@apps/explorer/bar/ModeGlyph";
 
-// Exactly one of left/right is set: a left-anchored popup grows rightwards from
-// the trigger's left edge; a right-anchored one hangs from its right edge so
-// the two right edges line up — what a right-zone control wants. The mode
-// dropdown sits mid-bar and is fine growing rightwards.
-interface MenuPos {
-  top: number;
-  left?: number;
-  right?: number;
-  // The trigger's own width, so the popup can floor itself to it (a menu
-  // noticeably wider than its trigger reads as belonging to something else).
-  width: number;
-}
-
-// Open/close plumbing shared by both menus. Closes on outside pointerdown, on
-// Escape, and on window blur — a click landing inside any iframe never reaches
-// this document, but it does blur the shell window (the pane bars live above a
-// grid of iframes, so this is the common case, not the exotic one).
-function useMenuAnchor(align: "left" | "right" = "left") {
-  const [pos, setPos] = useState<MenuPos | null>(null); // non-null = open
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
+// A click landing inside any iframe never reaches this document, but it does
+// blur the shell window — and these bars live above a grid of iframes, so this
+// is the common close path, not the exotic one. base-ui closes on outside
+// pointerdown and Escape by itself; window blur is the one it cannot see.
+function useCloseOnWindowBlur(open: boolean, close: () => void) {
   useEffect(() => {
-    if (!pos) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPos(null);
-    };
-    const onBlur = () => setPos(null);
-    document.addEventListener("pointerdown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [pos]);
-
-  const toggle = (e: MouseEvent) => {
-    // The pane bar's trigger sits inside click-handling chrome (a tab button,
-    // a bar that also owns click-to-edit), so the open click is ours alone.
-    e.stopPropagation();
-    if (pos) {
-      setPos(null);
-      return;
-    }
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // A right-anchored popup is content-width (see .bar-overflow in
-    // explorer.css), so there is no width to subtract from a left coordinate —
-    // pin the right edges together and let the box grow leftwards, clamped to
-    // the viewport.
-    setPos(
-      align === "right"
-        ? { top: r.bottom + 4, right: Math.max(4, window.innerWidth - r.right), width: r.width }
-        : {
-            top: r.bottom + 4,
-            left: Math.max(4, Math.min(r.left, window.innerWidth - r.width - 4)),
-            width: r.width,
-          }
-    );
-  };
-
-  return { pos, rootRef, toggle, close: () => setPos(null) };
+    if (!open) return;
+    window.addEventListener("blur", close);
+    return () => window.removeEventListener("blur", close);
+  }, [open, close]);
 }
 
-function CaretIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      className="bar-caret"
-      viewBox="0 0 24 24"
-      width="12"
-      height="12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points={open ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
-    </svg>
-  );
-}
+// The rows of a bar dropdown: 16px glyph slot, then the label. Plain glyph, no
+// box — the row's own hover/active wash carries the state, and a bordered well
+// around every icon made the list read as a grid of buttons rather than a set
+// of choices.
+const MENU_ITEM = "gap-2.5 px-2 py-1.5 text-xs text-foreground [&_svg]:size-4";
 
 // VERTICAL `⋮`, not the horizontal `···` it was — in every bar that carries this
 // menu, because there is one glyph for one meaning. It earns the rotation in the
 // place it is most used: the crumb strip, immediately after the path's last
 // segment (the panel pane bars, and the shell bar's own path menu before it
 // became a right-click), where a horizontal triplet reads as a continuation of
-// the path — three more
-// dots in a row of `/`-joined segments, i.e. "the path goes on". Turned upright
-// it reads as a control, and it is the same "more, about this thing" affordance
-// every file manager puts beside a row.
+// the path — three more dots in a row of `/`-joined segments, i.e. "the path
+// goes on". Turned upright it reads as a control, and it is the same "more,
+// about this thing" affordance every file manager puts beside a row.
 // Exported so the folder listing's header `⋮` (Listing.tsx) is the SAME glyph
 // as the bars' — it opens a menu of the same actions, and a second hand-rolled
 // triplet would drift.
@@ -161,10 +114,13 @@ interface ModeMenuProps {
   // dead control.
   busy?: string | null;
   onSelect: (mode: string) => void;
+  // Pane scale (the split panel's bars): 24px control, 14px glyph.
+  dense?: boolean;
 }
 
-export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor();
+export function ModeMenu({ entries, active, busy, onSelect, dense = false }: ModeMenuProps) {
+  const [open, setOpen] = useState(false);
+  useCloseOnWindowBlur(open, () => setOpen(false));
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
   // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
@@ -190,84 +146,89 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
       : "Choose view";
 
   return (
-    <div className="mode-menu" ref={rootRef}>
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-bordered mode-menu-btn"
-        aria-haspopup="menu"
-        aria-expanded={pos !== null}
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      {/* `mode-menu` stays on the trigger: platform/lib/tours/explorer.ts
+          anchors a tour step at `.pane-header .mode-menu`. It carries no
+          styling of its own any more. */}
+      <DropdownMenuTrigger
+        render={<BarButton tone="bordered" dense={dense} className="mode-menu" />}
         aria-label={activeEntry || switching ? "View mode: " + label : label}
         title={switching ? label + " — switching…" : "Change view mode"}
-        onClick={toggle}
       >
         {/* The spinner takes the icon's place for the length of the switch. */}
-        <span className="mode-menu-icon">
+        <ModeGlyph dense={dense}>
           {switching ? <span className="mode-icon-spinner" /> : activeEntry?.icon}
-        </span>
+        </ModeGlyph>
         {/* The label slot is sized by EVERY mode name at once (hidden ghost
             rows stacked on one grid cell), so the trigger holds the widest
             name's width: switching modes doesn't resize the button, and the
             popup — floored to the trigger — stays the same width too. */}
-        <span className="mode-menu-label">
+        <span className="inline-grid text-left font-medium">
           {entries.map((e) => (
-            <span key={e.mode} className="mode-menu-label-ghost" aria-hidden="true">
+            <span key={e.mode} className="col-start-1 row-start-1 invisible whitespace-nowrap" aria-hidden="true">
               {modeTitle(e.mode)}
             </span>
           ))}
-          <span>{label}</span>
+          <span className="col-start-1 row-start-1 whitespace-nowrap">{label}</span>
         </span>
-        <CaretIcon open={pos !== null} />
-      </button>
-      {pos && (
-        <div
-          className="bar-menu-popup"
-          role="menu"
-          aria-label="View mode"
-          style={{ top: pos.top, left: pos.left, right: pos.right, minWidth: pos.width }}
-        >
-          {entries.map((e) => (
-            <button
+        <ChevronDownIcon
+          className={cn(
+            "shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
+            dense ? "size-3" : "size-3.5",
+            open && "rotate-180",
+          )}
+        />
+      </DropdownMenuTrigger>
+      {/* Floored to the trigger's width, not fixed to it: a menu noticeably
+          wider than its trigger reads as belonging to something else, and one
+          narrower than it reads as a mis-anchored box. */}
+      <DropdownMenuContent
+        className="bar-menu-popup w-auto min-w-(--anchor-width) rounded-lg p-1"
+        role="menu"
+        aria-label="View mode"
+      >
+        {entries.map((e) => {
+          const isActive = e.mode === activeEntry?.mode;
+          return (
+            <DropdownMenuItem
               key={e.mode}
-              type="button"
               role="menuitemradio"
-              aria-checked={e.mode === activeEntry?.mode}
-              className={
-                "bar-menu-item" +
-                (e.mode === activeEntry?.mode ? " active" : "") +
-                (e.pending ? " pending" : "")
-              }
-              /* Two ways to be unselectable, one mechanism: the native disabled
-                 button and its native tooltip (`.bar-menu-item:disabled` in
-                 explorer.css dims both alike). The spinner is the PENDING one's
-                 alone — an unavailable row keeps its own icon, because it is not
+              aria-checked={isActive}
+              className={cn(
+                MENU_ITEM,
+                // The active row is the mode you are looking at — semibold, a
+                // brighter glyph, and a wash over the whole row (it replaced a
+                // trailing checkmark: the row itself carries the state). Kept
+                // stronger than the hover so the two never blur.
+                isActive && "bg-accent/40 font-semibold focus:bg-accent/60",
+              )}
+              /* Two ways to be unselectable, one mechanism: the disabled row
+                 and its native tooltip. The spinner is the PENDING one's alone
+                 — an unavailable row keeps its own icon, because it is not
                  waiting for anything and a spinner over a settled answer reads
                  as a menu that never finishes loading. */
               disabled={e.pending || !!e.disabledReason}
               title={e.pending ? "Checking if this view applies…" : e.disabledReason}
-              onClick={() => {
-                close();
-                onSelect(e.mode);
-              }}
+              onClick={() => onSelect(e.mode)}
             >
-              <span className="bar-menu-item-icon">
+              <ModeGlyph className={isActive ? "text-foreground" : "text-muted-foreground"}>
                 {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
-              </span>
-              <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+              </ModeGlyph>
+              <span className="flex-1">{modeTitle(e.mode)}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
 export interface OverflowItem {
   label: string;
   onClick: () => void;
-  // Optional leading glyph, in the same 16px slot the mode rows use
-  // (.bar-menu-item-icon). A menu is all-or-nothing about icons in practice —
-  // one iconless row among icon'd ones reads as a broken row — so a caller
-  // either gives every item one or none.
+  // Optional leading glyph, in the same 16px slot the mode rows use. A menu is
+  // all-or-nothing about icons in practice — one iconless row among icon'd ones
+  // reads as a broken row — so a caller either gives every item one or none.
   icon?: ReactNode;
 }
 
@@ -292,56 +253,57 @@ export type OverflowEntry = OverflowItem | "separator";
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
-export function OverflowMenu({ items, title = "More actions" }: { items: OverflowEntry[]; title?: string }) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor("right");
+export function OverflowMenu({
+  items,
+  title = "More actions",
+  dense = false,
+}: {
+  items: OverflowEntry[];
+  title?: string;
+  dense?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  useCloseOnWindowBlur(open, () => setOpen(false));
   if (items.length === 0) return null;
   return (
-    <div className="bar-overflow" ref={rootRef}>
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon"
-        aria-haspopup="menu"
-        aria-expanded={pos !== null}
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      {/* `bar-overflow` stays as a HOOK: Breadcrumb's BAR_EDIT_EXCLUDE and its
+          click-away listener both name it, so a press on this trigger neither
+          opens nor dismisses the path field. */}
+      <DropdownMenuTrigger
+        render={<BarButton icon dense={dense} className="bar-overflow" />}
         aria-label={title}
         title={title}
         // Don't take focus on mouse-down. In the crumb bar this menu sits
         // beside a path field that closes on blur: stealing focus would close
         // it, reflow the strip under the pointer, and the mouse-up would land
-        // somewhere else — the button would be unclickable for as long as the
-        // field is open. Keyboard focus is unaffected.
+        // somewhere else. Keyboard focus is unaffected.
         onMouseDown={(e) => e.preventDefault()}
-        onClick={toggle}
       >
         <EllipsisIcon />
-      </button>
-      {pos && (
-        <div
-          className="bar-menu-popup"
-          role="menu"
-          aria-label={title}
-          style={{ top: pos.top, left: pos.left, right: pos.right }}
-        >
-          {items.map((item, i) =>
-            item === "separator" ? (
-              <div key={"sep" + i} className="bar-menu-sep" role="separator" />
-            ) : (
-              <button
-                key={item.label}
-                type="button"
-                role="menuitem"
-                className="bar-menu-item"
-                onClick={() => {
-                  close();
-                  item.onClick();
-                }}
-              >
-                {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}
-                <span className="bar-menu-item-label">{item.label}</span>
-              </button>
-            )
-          )}
-        </div>
-      )}
-    </div>
+      </DropdownMenuTrigger>
+      {/* Right-anchored: a right-zone control wants the two right edges lined
+          up. Content width with a small floor, so a one-item menu is still a
+          comfortable click target. */}
+      <DropdownMenuContent
+        className="bar-menu-popup w-auto min-w-30 rounded-lg p-1"
+        align="end"
+        role="menu"
+        aria-label={title}
+      >
+        {items.map((item, i) =>
+          item === "separator" ? (
+            // Inset to the rows' own padding so it reads as a break in the list
+            // rather than a line drawn across the box.
+            <DropdownMenuSeparator key={"sep" + i} className="mx-2 my-1" />
+          ) : (
+            <DropdownMenuItem key={item.label} className={MENU_ITEM} onClick={item.onClick}>
+              {item.icon && <ModeGlyph className="text-muted-foreground">{item.icon}</ModeGlyph>}
+              <span className="flex-1">{item.label}</span>
+            </DropdownMenuItem>
+          ),
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

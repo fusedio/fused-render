@@ -42,4 +42,3 @@
 /* After home.css: the canvases listing is another page-family surface that
    layers its card grid over the .btn / .field-control vocabulary above. */
 @import "./styles/reduced-motion.css";
-@import "./styles/apps.css";

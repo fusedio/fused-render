@@ -32,7 +32,20 @@ import {
 import type { Config } from "@platform/lib/api";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { ShareIcon } from "@platform/ui/ShareIcon";
+import { cn } from "@platform/lib/utils";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
+
+// One tab button. Monospace 12px like the path bars — a tab labels a location,
+// so it speaks the path's dialect, not the UI's. The active one is marked by
+// the underline plus a lifted plate; hover only brightens the ink, because a
+// hover background this close to the active plate reads as "already selected".
+const TAB_CLASS =
+  "inline-flex max-w-[200px] shrink-0 items-center gap-1.5 border-b-2 border-transparent bg-transparent px-2 py-[5px] font-mono text-xs text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none";
+const TAB_ACTIVE_CLASS = "border-b-primary bg-muted text-foreground";
+// The two trailing glyphs inside a tab (open-in-new-tab, close): 15px boxes so
+// they fit the 30px strip without stretching it.
+const TAB_GLYPH_CLASS =
+  "inline-flex size-[15px] shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors motion-reduce:transition-none";
 
 // Tab mode lives under the page's own prefix, like panel mode.
 const TAB_PATH = (IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX) + "_tab";
@@ -299,12 +312,15 @@ export default function Tabs({ config }: { config: Config }) {
   };
 
   return (
-    <div className="tabs-root">
-      <div className="tabs-bar">
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* The tab strip: one bar-height row, scrollable sideways with no
+          scrollbar chrome (a bar that grows a scrollbar changes height, and
+          this one sits on a hairline). */}
+      <div className="flex min-h-[30px] items-stretch gap-0.5 overflow-x-auto border-b border-border bg-background px-1.5 pt-[3px] whitespace-nowrap select-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {tabs.map((t) => (
           <button
             key={t.id}
-            className={"tab" + (t.id === activeId ? " active" : "")}
+            className={cn(TAB_CLASS, t.id === activeId && TAB_ACTIVE_CLASS)}
             onClick={() => {
               // Re-clicking the active tab is a no-op — no history entry.
               if (t.id === activeId) return;
@@ -312,7 +328,7 @@ export default function Tabs({ config }: { config: Config }) {
               pushHistory(t.id);
             }}
           >
-            <span className="tab-label">{tabLabel(t)}</span>
+            <span className="truncate">{tabLabel(t)}</span>
             {/* Template-mode menu, active tab only (its iframe is always
                 mounted). Mode switch writes the tab iframe's src imperatively;
                 the load re-syncs the leaf + `_layout` (onLocSync). */}
@@ -331,7 +347,7 @@ export default function Tabs({ config }: { config: Config }) {
               />
             )}
             <span
-              className="tab-open-plain"
+              className={cn(TAB_GLYPH_CLASS, "hover:bg-muted hover:text-foreground")}
               title="Open in a new tab"
               onClick={(e) => {
                 // Open this tab's live location as a plain (non-layout) view
@@ -343,7 +359,7 @@ export default function Tabs({ config }: { config: Config }) {
               <ShareIcon size={12} />
             </span>
             <span
-              className="tab-close"
+              className={cn(TAB_GLYPH_CLASS, "text-sm leading-none hover:bg-muted hover:text-destructive")}
               title="Close tab"
               onClick={(e) => {
                 e.stopPropagation();
@@ -354,10 +370,14 @@ export default function Tabs({ config }: { config: Config }) {
             </span>
           </button>
         ))}
+        {/* `tab-add` keeps its class: the rule lives in styles/notifications.css,
+            which this surface does not own. */}
         <button className="tab-add" title="New tab" onClick={addTab}>
           +
         </button>
       </div>
+      {/* `tabs-body` likewise — styles/notifications.css owns it, together with
+          the `.tabs-body iframe.tab-frame.is-loaded` fade TabFrame arms. */}
       <div className="tabs-body">
         {/* Flat keyed list in tabs order; the list only appends/removes, never
             reorders, so React never moves (= reloads) a live iframe. */}
