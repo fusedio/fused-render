@@ -100,7 +100,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
               <Check className="size-3.5" strokeWidth={3} />
             </span>
             <div>
-              <div className="text-sm font-medium text-muted-foreground line-through decoration-emerald-500/60">
+              <div className="text-sm font-medium text-muted-foreground line-through">
                 Grant Full Disk Access
               </div>
               <div className="text-xs text-muted-foreground">Already granted — nothing to do here.</div>

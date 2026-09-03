@@ -143,16 +143,12 @@ export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: st
               <div className="flex items-start gap-3">
                 <StateIcon state={row.state} optional={row.optional && row.state !== "done"} />
                 <div className="min-w-0 flex-1">
-                  <div
-                    className={
-                      row.state === "done"
-                        ? "text-sm font-medium text-muted-foreground line-through decoration-emerald-500/60"
-                        : "text-sm font-medium"
-                    }
-                  >
-                    {row.label}
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <span className={row.state === "done" ? "text-muted-foreground line-through" : undefined}>
+                      {row.label}
+                    </span>
                     {row.optional && (
-                      <span className="ml-2 rounded-full border border-border px-1.5 py-px text-[11px] font-normal text-muted-foreground no-underline">
+                      <span className="rounded-full border border-border px-1.5 py-px text-[11px] font-normal text-muted-foreground">
                         optional
                       </span>
                     )}
