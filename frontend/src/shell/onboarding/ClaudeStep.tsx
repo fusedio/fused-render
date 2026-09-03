@@ -128,7 +128,7 @@ export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: st
         </Button>
       </div>
 
-      <ol className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card">
+      <ol className="m-0 flex list-none flex-col divide-y divide-border rounded-xl border border-border bg-card p-0">
         {!rows &&
           [0, 1, 2, 3].map((i) => (
             <li key={i} className="flex items-center gap-3 px-4 py-3">

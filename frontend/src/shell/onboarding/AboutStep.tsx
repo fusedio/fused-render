@@ -59,7 +59,7 @@ export function AboutStep({ eyebrow }: { eyebrow: string }) {
         </div>
       )}
 
-      <ul className="grid gap-3 sm:grid-cols-2">
+      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-4">
         {FEATURES.map((f) => (
           <li key={f.title} className="flex gap-3 rounded-xl border border-border bg-card p-4">
             <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted">{f.icon}</span>

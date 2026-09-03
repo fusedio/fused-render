@@ -15,7 +15,7 @@
 // While open, App.tsx holds the auto-tours (shell/onboarding/state); they fire
 // on the route the user lands on once this closes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Rocket, ShieldCheck, Sparkles, TerminalSquare, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
 import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
@@ -30,11 +30,11 @@ import { closeOnboarding, openOnboarding, shouldAutoShow, useOnboardingOpen } fr
 
 type StepId = "about" | "claude" | "fda" | "app";
 
-const STEPS: { id: StepId; label: string; icon: React.ReactNode }[] = [
-  { id: "about", label: "About", icon: <Sparkles className="size-3.5" /> },
-  { id: "claude", label: "Claude Code", icon: <TerminalSquare className="size-3.5" /> },
-  { id: "fda", label: "Disk Access", icon: <ShieldCheck className="size-3.5" /> },
-  { id: "app", label: "First app", icon: <Rocket className="size-3.5" /> },
+const STEPS: { id: StepId; label: string }[] = [
+  { id: "about", label: "About" },
+  { id: "claude", label: "Claude Code" },
+  { id: "fda", label: "Disk Access" },
+  { id: "app", label: "First app" },
 ];
 
 // Full Disk Access is a macOS concept. The server says which platform it is
@@ -153,7 +153,10 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
         {/* Every step is a link, in both directions: nothing before step 4
             gates anything after it, so a user who knows what they want can go
             straight there. */}
-        <ol className="mx-auto hidden items-center gap-1 sm:flex" aria-label="Setup steps">
+        <ol
+          className="mx-auto my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
+          aria-label="Setup steps"
+        >
           {steps.map((s, i) => {
             const done = i < index;
             const current = i === index;
@@ -164,16 +167,25 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
                   onClick={() => setIndex(i)}
                   aria-current={current ? "step" : undefined}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors",
-                    current && "bg-foreground text-background",
-                    done && "text-foreground hover:bg-muted",
-                    !current && !done && "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    "flex cursor-pointer appearance-none items-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-xs leading-none [font-family:inherit] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    current
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {s.icon}
+                  <span
+                    className={cn(
+                      "grid size-4 place-items-center rounded-full text-[10px] font-semibold tabular-nums",
+                      current && "bg-foreground text-background",
+                      done && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+                      !current && !done && "bg-muted-foreground/15 text-muted-foreground",
+                    )}
+                    aria-hidden
+                  >
+                    {done ? <Check className="size-2.5" strokeWidth={3} /> : i + 1}
+                  </span>
                   {s.label}
                 </button>
-                {i < steps.length - 1 && <span className="mx-1 h-px w-4 bg-border" aria-hidden />}
               </li>
             );
           })}
@@ -191,7 +203,7 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className={cn("mx-auto w-full px-6 py-10", step.id === "app" ? "max-w-4xl" : "max-w-2xl")}>
+        <div className="mx-auto w-full max-w-4xl px-6 py-10">
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
           {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} />}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} />}

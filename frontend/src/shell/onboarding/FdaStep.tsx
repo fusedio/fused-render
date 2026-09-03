@@ -65,7 +65,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
         lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them and survives upgrades."
       />
 
-      <ul className="grid gap-3 sm:grid-cols-3">
+      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-3">
         {[
           {
             icon: <Lock className="size-4" />,
@@ -108,18 +108,18 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
           </div>
         ) : (
           <>
-            <ol className="flex flex-col gap-1.5 text-sm">
+            <ol className="m-0 flex list-none flex-col gap-1.5 p-0 text-sm">
               <li className="flex gap-2">
                 <span className="w-4 shrink-0 text-muted-foreground">1.</span>
-                Open System Settings on the Full Disk Access pane.
+                <span>Open System Settings on the Full Disk Access pane.</span>
               </li>
               <li className="flex gap-2">
                 <span className="w-4 shrink-0 text-muted-foreground">2.</span>
-                Turn on <strong className="font-medium">FusedRender</strong> in the list.
+                <span>Turn on <strong className="font-medium">FusedRender</strong> in the list.</span>
               </li>
               <li className="flex gap-2">
                 <span className="w-4 shrink-0 text-muted-foreground">3.</span>
-                Relaunch the app when macOS asks — the grant applies to the next launch.
+                <span>Relaunch the app when macOS asks — the grant applies to the next launch.</span>
               </li>
             </ol>
             <div className="flex flex-wrap items-center gap-3">
