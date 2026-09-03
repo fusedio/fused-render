@@ -617,7 +617,13 @@
   color: var(--error);
 }
 
-.dl-clear {
+/* `.dl-jobs-clear` (Part A item 2, D657) is the terminal-jobs sibling of
+   `.dl-clear` — a separate class, not a shared one, because the two buttons
+   can render side by side in the same `.dl-head` band (a repo row and a
+   terminal job can both be present at once) and each needs its own click
+   target even though they read identically. */
+.dl-clear,
+.dl-jobs-clear {
   flex: 0 0 auto;
   padding: 2px 8px;
   font-size: 11px;
@@ -628,7 +634,8 @@
   cursor: pointer;
 }
 
-.dl-clear:hover {
+.dl-clear:hover,
+.dl-jobs-clear:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
 }
@@ -1243,6 +1250,7 @@
    make the job rows below them look unreachable. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
+.dl-jobs-clear:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible,

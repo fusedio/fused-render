@@ -104,6 +104,18 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   ...over,
 });
 
+// A DONE job — the routing D656 broadened past `error` alone. Every terminal
+// state reaches this section now (jobs.ts `isTerminal`/`terminalJobs`), not
+// only a failure.
+const doneJob = (over: Partial<Job> = {}): Job => ({
+  ...failedJob(over),
+  id: "sys:ai-image:done",
+  state: "done",
+  message: "",
+  detail: "Saved to Downloads/pyramid.png",
+  ...over,
+});
+
 const status = (over: Partial<RepoStatus> = {}): RepoStatus => ({
   root: "/Users/me/Work/widget",
   branch: "main",
@@ -140,6 +152,7 @@ function renderInstance(
       onDismiss={props.onDismiss ?? (() => {})}
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
+      onTerminalPatch={props.onTerminalPatch}
     />,
   );
 }
@@ -320,6 +333,70 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
         json: async () => ({ ok: true, op: "switch", root: rows[0].repo.root }),
       } as unknown as Response);
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ------------------------------------- Part A item 2: a jobs Clear (D657)
+//
+// D657 keeps every terminal job until dismissed, and Activity's own `Clear`
+// button was deleted in the same PR (D655) — so once a job's own ✕ has been
+// missed, `POST /api/jobs/clear` was reachable by no UI at all. "Until
+// dismissed" is only a defensible lifetime if dismissing is possible, so
+// this section gets its own bulk clear, scoped to the terminal jobs it
+// draws — mirroring the repo Clear's own plurality rule (D604): at exactly
+// one row, that row's own ✕ already does the identical thing.
+test("a jobs Clear is absent at one terminal job and present at two, separate from the repo Clear", () => {
+  const one = renderView({ rows: [], terminal: [doneJob({ id: "a" })] });
+  expect(findAll(one, "dl-jobs-clear")).toHaveLength(0);
+
+  const two = renderView({ rows: [], terminal: [doneJob({ id: "a" }), doneJob({ id: "b" })] });
+  expect(findAll(two, "dl-jobs-clear")).toHaveLength(1);
+  // Distinct from the repo Clear — clearing jobs must never also promise to
+  // clear repo rows, or vice versa (the same reasoning the repo-only Clear
+  // test above states for the other direction).
+  expect(findAll(two, "dl-clear")).toHaveLength(0);
+});
+
+test("pressing the jobs Clear calls POST /api/jobs/clear and patches the terminal list to empty", async () => {
+  const originalFetch = globalThis.fetch;
+  const pendingFetches: Array<(v: Response) => void> = [];
+  globalThis.fetch = (() =>
+    new Promise<Response>((resolve) => pendingFetches.push(resolve))) as unknown as typeof fetch;
+
+  try {
+    let patched: ((jobs: Job[]) => Job[]) | null = null;
+    const terminal = [doneJob({ id: "a" }), doneJob({ id: "b" })];
+    const renderer = renderInstance({
+      rows: [],
+      terminal,
+      onTerminalPatch: (fn) => {
+        patched = fn;
+      },
+    });
+
+    const before = renderer.toJSON() as ReactTestRendererJSON;
+    const clear = findAll(before, "dl-jobs-clear")[0];
+    act(() => {
+      (clear.props as { onClick: () => void }).onClick();
+    });
+
+    await act(async () => {
+      pendingFetches.pop()?.({
+        ok: true,
+        status: 200,
+        json: async () => ({ cleared: 2 }),
+      } as unknown as Response);
+    });
+
+    const fn = patched as unknown as ((jobs: Job[]) => Job[]) | null;
+    expect(fn).not.toBeNull();
+    // `jobsAfterClear` (jobs.ts) — every row Clear would NOT take, i.e. every
+    // still-running job. Every job here is terminal, so the patch empties
+    // the list, the same server-confirmed-without-waiting-for-a-poll pattern
+    // `JobRow`'s own dismiss uses.
+    expect((fn as (jobs: Job[]) => Job[])(terminal)).toEqual([]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -573,6 +650,19 @@ test("a failure colours the chip — the tint moved here from Jobs (D586)", () =
   expect((findAll(repoOnly, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
     "is-failure",
   );
+});
+
+test("a done job draws a visible, dismissable row here too (C1)", () => {
+  // D656 routes every terminal state, not only `error`, to this section.
+  // `JobRow` used to return null for `state: "done"` — a leftover from when
+  // only failures ever reached this component — which left a done job
+  // filling this chip's circle and its panel's total while drawing nothing:
+  // no row, no ✕, unclearable once D657 stopped sweeping it.
+  const tree = renderView({ rows: [], terminal: [doneJob()] });
+  expect(circleFilled(tree)).toBe(true);
+  expect(findAll(tree, "dl-row").length).toBeGreaterThan(0);
+  expect(findAll(tree, "dl-x")).toHaveLength(1);
+  expect(text(tree)).toContain("Saved to Downloads/pyramid.png");
 });
 
 test("Clear is offered for repo rows only — a failure is dismissed by its own row", () => {

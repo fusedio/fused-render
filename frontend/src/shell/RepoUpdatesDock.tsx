@@ -55,7 +55,7 @@ import StatusDot from "@platform/ui/StatusDot";
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
-import { isFailure } from "@platform/lib/jobs";
+import { clearFinishedJobs, isFailure, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
@@ -524,13 +524,14 @@ export function RepoUpdatesCardView({
                   both and left a header with nothing to head. Under the list,
                   the same button reads as acting on what is above it, which is
                   what it does. */}
-              {/* Clear takes only the REPO rows — the ones this card's own
-                  client-side dismissal model covers. A terminal job's dismissal
-                  is server-side and permanent (`dismissJob`), so sweeping both
-                  under one button would hide two different promises behind it;
-                  a terminal job is dismissed by its own row's ✕ (D586). Omitted
-                  entirely when there is no repo row to clear, rather than
-                  offering a button that would do nothing. */}
+              {/* TWO SEPARATE CLEAR BUTTONS, never one: a repo row's dismissal
+                  is client-side and expires when the repo moves
+                  (`repoDismissSignature`), while a terminal job's is
+                  server-side and permanent (`dismissJob`/`clearFinishedJobs`)
+                  — sweeping both under one button would hide two different
+                  promises behind it. Each is omitted entirely when its own
+                  row kind has nothing to clear, rather than offering a
+                  button that would do nothing. */}
               {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
                   one-row panel: "the notification card size is still not
                   done"). Clear is dismiss-ALL, so at exactly one row it is
@@ -543,16 +544,46 @@ export function RepoUpdatesCardView({
                   withdrawable rows for exactly this reason ("for a single one
                   the row's own ✕ — right there on screen — is the same action
                   with a better name on it"); this brings the sibling controls
-                  into line with a rule the codebase had already settled. */}
-              {visible.length > 1 && (
+                  into line with a rule the codebase had already settled. The
+                  jobs Clear (Part A item 2, D657) follows the identical rule
+                  for the identical reason. */}
+              {(visible.length > 1 || terminal.length > 1) && (
                 <div className="dl-head">
-                  <button
-                    className="dl-clear"
-                    onClick={() => onDismissAll(visible)}
-                    title="Dismiss every visible update"
-                  >
-                    Clear
-                  </button>
+                  {visible.length > 1 && (
+                    <button
+                      className="dl-clear"
+                      onClick={() => onDismissAll(visible)}
+                      title="Dismiss every visible update"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  {/* D657 keeps every terminal job until it is dismissed, and
+                      Activity's own bulk Clear was deleted in the same PR
+                      (D655) — so `POST /api/jobs/clear` had no reachable UI
+                      left at all. "Until dismissed" only earns its keep if
+                      dismissing is possible, so this reuses that endpoint via
+                      `clearFinishedJobs`, patching the shell's own terminal
+                      list through `jobsAfterClear` the instant the server
+                      confirms, the same optimistic-patch pattern `JobRow`'s
+                      own dismiss already uses. Best-effort: a rejected
+                      request leaves the list as it was for the next poll to
+                      reconcile, mirroring every other best-effort mutation in
+                      this card (`PairingRowView`'s dismiss, `useRepoUpdates`'s
+                      poll). */}
+                  {terminal.length > 1 && (
+                    <button
+                      className="dl-jobs-clear"
+                      onClick={() => {
+                        clearFinishedJobs()
+                          .then(() => onTerminalPatch?.(jobsAfterClear))
+                          .catch(() => {});
+                      }}
+                      title="Dismiss every finished job"
+                    >
+                      Clear
+                    </button>
+                  )}
                 </div>
               )}
             </>
