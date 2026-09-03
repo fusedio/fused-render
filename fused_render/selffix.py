@@ -935,6 +935,30 @@ def settle(*, before: str, run_id: str = "", session_id: str = "",
     # baseline file is written by `begin_session` before any session starts.
     baseline = (_read_json(baseline_path()) or {})
     pristine = baseline.get("digest") if baseline.get("version") == __version__ else ""
+    if pristine and current == pristine:
+        # **A TREE THAT IS BYTE-IDENTICAL TO WHAT THIS VERSION SHIPPED IS NOT A
+        # MODIFIED INSTALLATION**, whatever a session did on the way there. The
+        # badge says "this copy is not the one we released, here is the report" —
+        # a claim that is simply false about these bytes, so it is not ours to
+        # make, and `reconcile` would rightly delete the marker on the next start
+        # anyway (SF-8).
+        #
+        # Two ways in, and both are real. A SESSION THAT PUT THE TREE BACK: its
+        # `before` was a patched tree (any session after the first), it undid the
+        # patch, and current != before — so without this the watcher would mark
+        # an install as modified for the act of RESTORING it. And A REINSTALL
+        # UNDER A LEFTOVER POINTER (SF-7d): `resume` settles against a `before`
+        # recorded before a same-version reinstall, which pip's uninstall does
+        # not clear because its RECORD never listed our state dir, so current
+        # (the restored release) != before (the patched tree) and a clean copy
+        # would light up. `reconcile` cannot rescue that one: it is a sibling
+        # startup thread, and when the marker changes mid-walk it stands down by
+        # design rather than clearing a mark it did not see taken.
+        #
+        # True, not False: the tree really did move away from `before`, which is
+        # what this function answers. It just did not move to somewhere worth
+        # marking — the same shape as the dismissal above.
+        return True
     mark_modified(run_id=run_id, session_id=session_id, report=report,
                   incident=incident, title=title, digest=current,
                   baseline_digest=str(pristine or ""), now=now)

@@ -11631,7 +11631,19 @@ the installation, and the mark that says so.
   about the bytes, which SF-7a refuses to make. A stamp still requires a session
   we recorded starting. A pointer with no `before` — one written by an older
   version, or by a diagnostic session, which has nothing to stamp — resumes
-  nothing at all.
+  nothing at all. **And no stamp is ever recorded for a tree byte-identical to
+  what this version shipped**, which is the hazard this recovery itself creates
+  and must not leave standing: the pointer lives in the state dir, a
+  same-version reinstall does not remove it (the very reason SF-8's reconcile
+  exists), so a `before` describing a PATCHED tree can outlive that tree and the
+  resume would light a badge on a restored, clean copy. `reconcile` cannot
+  rescue that one — it is a sibling startup thread and stands down when the
+  marker moves under its walk. The veto sits in `settle` rather than in the
+  resume because the live watcher has the same hole: a session whose `before`
+  was a patched tree and which UNDID the patch would otherwise be marked for the
+  act of restoring the installation. This is not the integrity claim SF-7a
+  refuses — nothing here stamps a badge from baseline drift; it only declines to
+  make a provenance claim that these particular bytes falsify.
 - **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
   that up because "the tree was replaced" is not something the app may merely
   assume:

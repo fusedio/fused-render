@@ -281,6 +281,13 @@ def resume() -> None:
         except Exception:  # noqa: BLE001 — bookkeeping, never fatal
             logger.debug("self-fix resume stamp failed", exc_info=True)
         if not _run_is_live(run_id):
+            # Its stamp has now been made and its process is gone, so retire the
+            # digest — the pointer keeps naming the run for the guard, but stops
+            # carrying something to measure against. Without this every later
+            # start would re-walk the whole package to reach the same answer,
+            # for the life of the installation, and this module is careful that
+            # an ordinary start pays a `stat` and not a hash (`reconcile`).
+            selffix.note_session(run_id)
             return
         threading.Thread(target=_watch_fix,
                          args=(run_id, incident, report, title, before),

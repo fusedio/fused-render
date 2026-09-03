@@ -2009,3 +2009,100 @@ def test_a_diagnostic_session_records_no_before_so_nothing_resumes_it(
     assert selffix.active_run() == "r-diag"
     assert selffix.session_record().get("before") == "", (
         "a diagnostic session must not leave a digest for resume to act on")
+
+
+def test_a_session_that_puts_the_tree_BACK_is_not_a_modification(install):
+    """The badge claims "this copy is not the one we released". A tree that is
+    byte-identical to what this version shipped makes that claim false, however
+    it got there — so a session that UNDOES an earlier patch must not be marked
+    for the act of restoring the installation."""
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    assert patched != release
+
+    # A second session opens on the PATCHED tree and puts it back: the file is
+    # restored on disk BEFORE the stamp, or `current == before` short-circuits
+    # and this proves nothing.
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    assert selffix.tree_digest() == release
+    assert selffix.settle(before=patched, run_id="r-restore") is True, (
+        "the tree really did move away from `before` — that is what it answers")
+    assert selffix.status() is None, "restoring the release is not a modification"
+
+    # ...and a tree that is genuinely somewhere else still marks.
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched again\n")
+    assert selffix.settle(before=patched, run_id="r-restore") is True
+    assert selffix.status() is not None, "a real patch still marks"
+
+
+def test_a_same_version_reinstall_under_a_leftover_pointer_stays_clean(
+        install, monkeypatch):
+    """SF-7d's own hazard, and the reason the veto lives in `settle` rather than
+    in `resume`. The session pointer sits in the state dir, which a same-version
+    reinstall does NOT remove — pip's RECORD never listed it, which is the whole
+    reason `reconcile` exists. So a pointer can outlive the tree it described,
+    with a `before` describing a PATCHED tree, and the reinstall restores the
+    release underneath it. Settling against that `before` would light an amber
+    badge on a copy byte-identical to what we shipped, and `reconcile` could not
+    rescue it: it is a sibling startup thread that stands down when the marker
+    moves under its walk."""
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    # A later session opened on the patched tree and recorded it.
+    selffix.note_session("r-before-the-reinstall", before=patched)
+
+    # The user reinstalls the same version: the tree is the release again, the
+    # state dir (marker, baseline, pointer) survives.
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    assert selffix.tree_digest() == release
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    selffix_routes.resume()
+
+    assert selffix.status() is None, (
+        "a clean reinstall was stamped as modified — the badge would point at a "
+        "report describing changes that are no longer on disk")
+
+
+def test_a_finished_session_stops_costing_a_tree_walk_on_every_start(
+        install, monkeypatch):
+    """`resume` is a startup handler, and hashing the whole package on every
+    boot for the rest of the installation's life is not a price this module
+    pays (`reconcile` takes one `stat` on an ordinary start). Once the run is
+    gone and its stamp is made, the pointer keeps naming the run for the guard
+    but stops carrying a digest to measure against."""
+    before = _pristine()
+    selffix.note_session("r-finished", before=before)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    selffix_routes.resume()
+
+    assert selffix.session_record().get("before") == ""
+    assert selffix.active_run() == "r-finished", (
+        "the guard still needs the run named; only the digest is retired")
+
+    walks = []
+    real_digest = selffix.tree_digest
+    monkeypatch.setattr(selffix, "tree_digest",
+                        lambda *a, **k: walks.append(1) or real_digest(*a, **k))
+    selffix_routes.resume()
+    assert walks == [], "a later start re-walked the tree for a finished session"
+
+
+def test_a_live_session_keeps_its_digest_across_the_resume(install, monkeypatch):
+    """The retirement above is for FINISHED runs only. A session still editing
+    needs its `before` on the next restart too — servers can bounce twice."""
+    before = _pristine()
+    selffix.note_session("r-still-going", before=before)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive={"r-still-going"}))
+    monkeypatch.setattr(selffix_routes, "_watch_fix", lambda *a, **k: None)
+
+    selffix_routes.resume()
+    _join_watchers()
+
+    assert selffix.session_record().get("before") == before
