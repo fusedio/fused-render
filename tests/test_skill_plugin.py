@@ -413,20 +413,45 @@ def agent(request):
     return _agent(request.param)
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
 def _spawn_argv(agent, tmp_path, monkeypatch):
-    """`_start` against a fake Popen, returning the argv it built."""
+    """`_start` against a fake Popen, returning the argv `_claude_argv`
+    builds from the request it hands the session host."""
     target = tmp_path / "page.html"
     target.write_text("<p>hi</p>", encoding="utf-8")
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
-    monkeypatch.setattr(
-        agent.subprocess, "Popen",
-        lambda cmd, **kw: (seen.__setitem__("cmd", cmd),
-                           type("P", (), {"pid": 4242})())[1])
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
     out = agent._start(str(target), "hi", "", "", "")
     assert "error" not in out, out
-    return seen["cmd"]
+    req = seen["req"]
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
 
 
 def test_a_spawned_session_is_handed_the_plugin(agent, tmp_path, monkeypatch):
