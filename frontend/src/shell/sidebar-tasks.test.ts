@@ -441,6 +441,25 @@ describe("one nav dot, worn by two rows", () => {
     expect(SIDEBAR).toContain('className="sidebar-running is-attention"');
   });
 
+  it("keeps the waiting label red under prefers-reduced-motion too", () => {
+    // bugbot, PR #984. The reduced-motion block drops the shimmer and paints the
+    // label with `-webkit-text-fill-color`, which OUTRANKS `color` on the text it
+    // fills — so the yellow fill stated for `.sidebar-running` overruled the red
+    // `color` on `.sidebar-running.is-attention`, and the one label that says
+    // somebody is being waited on came out looking like "3 running". Both
+    // variants have to name their hue in the property that actually paints.
+    const media = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf("@media (prefers-reduced-motion: reduce) {"),
+      SIDEBAR_CSS.indexOf("/* -- The nav dot"),
+    );
+    expect(media).toMatch(
+      /\.sidebar-running \{[^}]*-webkit-text-fill-color: var\(--status-progress\)/,
+    );
+    expect(media).toMatch(
+      /\.sidebar-running\.is-attention \{[^}]*-webkit-text-fill-color: var\(--status-failed\)/,
+    );
+  });
+
   it("wears the bookmark folder's count chip rather than a lookalike", () => {
     // The folder row's nested count is where this shape was settled. The skin is
     // stated ONCE and all three counts wear it; a second hand-tuned 10.5px pill is

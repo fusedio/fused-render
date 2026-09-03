@@ -23,6 +23,7 @@ import {
   canCancel,
   CARD_CAP,
   CARD_LANES,
+  cardKey,
   cardsForTasks,
   TASK_VIEWS,
   canRunNow,
@@ -6566,10 +6567,32 @@ describe("sortByLane", () => {
 const CARDS = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
 const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
 
-/** A task in a lane, with a clock. `key` distinguishes them, since that is what
- *  the view keys a card's iframe on. */
+/** A task in a lane, with a START clock — `started`, which is what the wall
+ *  orders by (see `cardsForTasks`), not `last_active`, which is what it used to
+ *  order by and what this argument used to set.
+ *
+ *  `last_active` is deliberately pinned to something ELSE and identical across
+ *  these rows: every test below would still pass if the sort quietly went back
+ *  to reading it, and pinning it to a constant is what makes them notice.
+ *
+ *  `task_id` is derived from the key rather than left at the fixture's default,
+ *  because the wall's identity is `cardKey` — project plus number — and three
+ *  rows all called TASK-002 in one project are, correctly, one card. */
 function running(key: string, at: number, over: Partial<Task> = {}): Task {
-  return task({ key, session_id: key, status: "in_progress", last_active: at, ...over });
+  return task({
+    key,
+    session_id: key,
+    task_id: `TASK-${key}`,
+    status: "in_progress",
+    started: at,
+    last_active: 9_999,
+    ...over,
+  });
+}
+
+/** The same, in the other lane the wall draws. */
+function asking(key: string, at: number, over: Partial<Task> = {}): Task {
+  return running(key, at, { status: "needs_attention", ...over });
 }
 
 describe("cardsForTasks", () => {
@@ -6583,27 +6606,26 @@ describe("cardsForTasks", () => {
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
     const rows = [
       running("a", 100),
-      task({ key: "b", status: "done" }),
-      task({ key: "c", status: "upcoming" }),
-      task({ key: "d", status: "blocked" }),
-      task({ key: "e", status: "archived" }),
-      task({ key: "f", status: "needs_attention", last_active: 50 }),
+      task({ key: "b", task_id: "TASK-b", status: "done" }),
+      task({ key: "c", task_id: "TASK-c", status: "upcoming" }),
+      task({ key: "d", task_id: "TASK-d", status: "blocked" }),
+      task({ key: "e", task_id: "TASK-e", status: "archived" }),
+      asking("f", 50),
     ];
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "a"]);
   });
 
-  it("groups by lane before it sorts by recency — blocked first, then in progress", () => {
+  it("groups by lane before it sorts, blocked first, then in progress", () => {
     // Akshil, 2026-09-03: order the cards "based on status, the same way we have
     // in list … blocked first and then in progress … sort them by recency". A
-    // parked run stops ticking `last_active` the moment it asks, so under the
-    // old flat recency order the longer somebody was kept waiting the further
-    // down their card sank — exactly backwards.
+    // parked run is the one card on the wall that needs a person, and a flat
+    // order buried it.
     const rows = [
       running("run-new", 500),
-      task({ key: "ask-old", status: "needs_attention", last_active: 100 }),
+      asking("ask-old", 100),
       running("run-old", 300),
-      task({ key: "ask-new", status: "needs_attention", last_active: 200 }),
+      asking("ask-new", 200),
     ];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual([
       "ask-new",
@@ -6613,9 +6635,51 @@ describe("cardsForTasks", () => {
     ]);
   });
 
-  it("orders by last activity, newest first, inside one lane", () => {
+  it("orders by when the task STARTED, newest first, inside one lane", () => {
     const rows = [running("old", 100), running("new", 300), running("mid", 200)];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
+  });
+
+  it("does not re-sort when a run merely writes — the whole point of `started`", () => {
+    // THE BUG (Akshil, 2026-09-03: "when i create a new task the layout shifts
+    // multiple times"). The wall sorted by `last_active`, which climbs on every
+    // write and reaches this page within a second (the /api/tasks/changes fast
+    // lane), so cards traded places for as long as anything was talking. Measured
+    // on this branch before the fix: a new card dropped a slot nine seconds after
+    // it appeared because an unrelated run had written in the meantime.
+    const before = [running("older", 100), running("newer", 200)];
+    const order = cardsForTasks(before).cards.map((t) => t.key);
+    expect(order).toEqual(["newer", "older"]);
+
+    // The older task says something — a lot, enough to be the most recently
+    // active row in the list by a mile. Its card does not move.
+    const after = [
+      running("older", 100, { last_active: 9_000_000 }),
+      running("newer", 200, { last_active: 1 }),
+    ];
+    expect(cardsForTasks(after).cards.map((t) => t.key)).toEqual(order);
+  });
+
+  it("is one card per identity, across the pending → session handover", () => {
+    // A scheduled run is listed under `pending:<entry>` until its session
+    // reports, then under the session id — one task, two keys, and keying a card
+    // on `task.key` tore the whole card down two seconds after it appeared.
+    // `cardKey` is what carries across that (see its own note for the one case
+    // where even the number moves, and why that case cannot reach a card that is
+    // already streaming), and the set is deduplicated on it so a server that
+    // ever did list both at once would draw one card rather than two fighting
+    // over a slot.
+    const pending = running("pending:e1", 100, { task_id: "TASK-097", session_id: "" });
+    const settled = running("sess-9", 100, { task_id: "TASK-097" });
+    expect(cardKey(pending)).toBe(cardKey(settled));
+    expect(cardsForTasks([pending, settled]).cards.map((t) => t.key))
+      .toEqual(["pending:e1"]);
+    // Two projects may each hold a TASK-097 — the number is allocated per
+    // project — so the pair, not the number, is the identity.
+    expect(cardKey({ key: "k", task_id: "TASK-097", project: "/a" }))
+      .not.toBe(cardKey({ key: "k", task_id: "TASK-097", project: "/b" }));
+    // No number at all (a read-only state dir): the row's own key stands in.
+    expect(cardKey({ key: "sess-3", task_id: "", project: "/a" })).toBe("sess-3");
   });
 
   it("keeps the server's order on a tie — a card must not move on a poll", () => {
@@ -6631,11 +6695,19 @@ describe("cardsForTasks", () => {
   });
 
   it("sends a task with no clock to the end, never to 1970", () => {
-    // `last_active` is 0.0 for "never" — a run claimed a second ago is exactly
-    // that task, and it is also the one with no session to embed. It belongs at
-    // the end, by decision rather than by what 0 coerces to.
+    // `started` is 0.0 when the server could not name a start, and an older
+    // server sends no field at all. Either way the card belongs at the end, by
+    // decision rather than by what 0 coerces to.
     const rows = [running("none", 0), running("has", 100)];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["has", "none"]);
+
+    const older = [
+      { ...running("a", 0), started: undefined },
+      { ...running("b", 0), started: undefined },
+    ];
+    // Every card in the null bucket: the wall keeps the server's listing order
+    // rather than inventing one.
+    expect(cardsForTasks(older).cards.map((t) => t.key)).toEqual(["a", "b"]);
   });
 
   it("caps the wall and counts what it left out", () => {
@@ -6680,10 +6752,14 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain("delete window._fusedParamBoundary;");
   });
 
-  it("keys a card on the task, so a poll is a re-render and not a reload", () => {
+  it("keys a card on the task's IDENTITY, so a poll is a re-render and not a reload", () => {
     // The one line that decides whether this view streams at all: any other key
-    // — the index, the src — remounts a live iframe every 20 seconds.
-    expect(CARDS).toContain("key={task.key}");
+    // — the index, the src — remounts a live iframe every 20 seconds. And
+    // `task.key` is one of the other keys, which is what this used to be: it
+    // changes under one task at the pending → session handover, so a card two
+    // seconds old was torn down and rebuilt (see `cardKey`).
+    expect(CARDS).toContain("key={cardKey(task)}");
+    expect(CARDS).not.toContain("key={task.key}");
   });
 
   it("says the empty state in the Board's own words and styling", () => {

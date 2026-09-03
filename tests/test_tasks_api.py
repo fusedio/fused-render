@@ -259,6 +259,34 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
     assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
 
 
+def test_started_is_the_clock_that_does_not_move_while_last_active_does(
+        client, projects_dir, state_dir):
+    """`started` names when the conversation BEGAN, `last_active` when it last
+    said something. The Cards wall orders by the first one precisely because the
+    second one climbs on every write, and a wall of live chats that re-sorts
+    itself while its runs are talking is one the reader cannot watch (Akshil,
+    2026-09-03: "when i create a new task the layout shifts multiple times")."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("start it", T9),
+        _assistant("working", T10),
+    ])
+    first = _tasks(client)[0]
+    assert first["started"] == tasks_mod.tasks_store.epoch(T9)
+    assert first["last_active"] > first["started"]
+
+    # The run says something an hour later: the row's activity moves, its start
+    # does not. This is the whole contract the wall's order rests on.
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("start it", T9),
+        _assistant("working", T10),
+        _assistant("still working", T11),
+    ])
+    later = _tasks(client)[0]
+    assert later["started"] == first["started"]
+    assert later["last_active"] > first["last_active"]
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""

@@ -2895,7 +2895,53 @@ export interface TaskCardSet {
 }
 
 /**
- * The Cards view's rows: the running tasks, by lane then newest activity, capped.
+ * WHAT A CARD IS, ACROSS THE ONE MOMENT ITS ROW CHANGES IDENTITY.
+ *
+ * A scheduled run is claimed and sent before anything knows which Claude session
+ * it opened, so for that whole window the task is listed under `pending:<entry>`
+ * — and the moment the session reports, the SAME task is relisted under the
+ * session id and the pending key is declared gone (§5, routers/tasks.py). Keyed
+ * on `task.key`, React sees that as one card leaving and another arriving: the
+ * whole card is torn down and rebuilt. Measured on this branch, about two
+ * seconds after every new task appeared — one of the "multiple" shifts the user
+ * reported (Akshil, 2026-09-03).
+ *
+ * THE NUMBER IS WHAT USUALLY SURVIVES IT. `task_id` is allocated once and then
+ * MOVED onto the session key by that same transition (tasks_store.ensure_ids'
+ * `rekeys` pass, which exists for exactly this), so "TASK-097" names one task
+ * across the handover while `key` does not.
+ *
+ * NOT ALWAYS, AND IT DOES NOT NEED TO BE — this is the part worth knowing. The
+ * rekey is refused when the session key ALREADY holds a number, which happens
+ * when the transcript is listed before the scheduled entry has been joined to
+ * it: the session is numbered on its own, and the pending row's number is
+ * SPENT (`ensure_ids` says so, and a live task_ids.json shows both outcomes —
+ * three tasks whose number moved onto the session id, and one left stranded
+ * under `pending:…` while its session took the next number). So the identity can
+ * still change once.
+ *
+ * WHAT MAKES THAT HARMLESS is WHEN it can happen: only while the task has no
+ * session id, which is exactly while its card has nothing to frame and is
+ * showing "Starting…" (TaskCards). Once a card is streaming, its key is a
+ * session key with a number already on it, and `ensure_ids` never renumbers what
+ * it has numbered — so no conversation on this wall can be torn down. The worst
+ * case is a placeholder replaced by a placeholder, in the same grid slot.
+ *
+ * THE PAIR, not the number alone: numbers are allocated per PROJECT, so two
+ * projects may each hold a TASK-097 and the wall can show both. `\u0000` as the
+ * joiner because it is the one character neither a path nor a task number can
+ * contain, so no pair can be spelled two ways.
+ *
+ * FALLS BACK TO `key` when there is no number: `ensure_ids` answers `{}` on a
+ * read-only state dir (the numbers stay blank until it is writable again), and a
+ * card with no identity at all is worse than one that remounts.
+ */
+export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string {
+  return task.task_id ? `${task.project}\u0000${task.task_id}` : task.key;
+}
+
+/**
+ * The Cards view's rows: the running tasks, by lane then newest first, capped.
  *
  * BY LANE FIRST (Akshil, 2026-09-03: order the cards "based on status, the same
  * way we have in list … blocked first and then in progress … sort them by
@@ -2910,12 +2956,31 @@ export interface TaskCardSet {
  * views, which is what makes switching between them a change of shape rather
  * than of subject.
  *
- * NEWEST ACTIVITY FIRST WITHIN A LANE, and `last_active` is what that means — the session's own
- * clock (server routers/tasks.py), which is the field the server already sorts
- * the whole listing by. Deliberately NOT `taskWhen`/`laneTime`: those answer
- * "which run does this row print", a question with three fallbacks in it, and on
- * a view whose whole claim is "this is happening now" the honest key is the one
- * that ticks while the turn runs.
+ * NEWEST TASK FIRST WITHIN A LANE, and `started` is what that means — when the
+ * conversation BEGAN (server `_place`'s `order`: the transcript's first record,
+ * else the first entry's `created`), not when it last said something.
+ *
+ * IT WAS `last_active`, AND THAT IS THE BUG THIS FIXES (Akshil, 2026-09-03: "in
+ * cards view, when i create a new task the layout shifts multiple times, fix
+ * that it should shift only one time"). `last_active` climbs every time a run
+ * writes, and the page's fast lane (/api/tasks/changes, Scheduled.tsx) lands
+ * those writes within a second of each one — so on a wall of live chats the sort
+ * key of every card was changing continuously and the cards traded places for as
+ * long as anything was talking. Measured on this branch: a new card appeared,
+ * then dropped a slot nine seconds later because an unrelated run had written in
+ * the meantime, then came back when that run finished. A wall whose whole claim
+ * is "watch these" may not move while it is being watched.
+ *
+ * `started` never moves for the life of a task, so a card's place is decided once
+ * — when it arrives — and then only by cards ARRIVING and LEAVING. Those two are
+ * real events with something to say; "a run wrote a line" is not. Newest first
+ * puts a task somebody has just created at the top, which is where they are
+ * already looking.
+ *
+ * Deliberately NOT `taskWhen`/`laneTime` either: those answer "which run does
+ * this row print", a question with three fallbacks in it, and the card head
+ * prints that time — but printing a time is not the same as being ordered by it,
+ * and this view would rather hold still.
  *
  * TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly rather
  * than trusting the sort to be stable — sortLane's rule 1, and it matters more
@@ -2924,10 +2989,17 @@ export interface TaskCardSet {
  * swapping seats in front of somebody reading one of them.
  *
  * A TASK WITH NO CLOCK AT ALL goes last IN ITS OWN LANE (rule 2, same reason: 0
- * is 1970, and a run that has not reported a timestamp yet must not be allowed
- * to claim either end of the order by accident). A just-claimed run is exactly
- * that task, and it is also the one whose card has no session to embed — so it
- * lands at the end of In Progress, where a "Starting…" placeholder belongs.
+ * is 1970, and a task whose start the server could not name must not be allowed
+ * to claim either end of the order by accident). It also covers an older server
+ * that sends no `started` at all: every card lands in the `null` bucket and the
+ * wall falls back to the server's own listing order, which is stable enough.
+ *
+ * ONE CARD PER IDENTITY. Deduplicated on `cardKey`, which is what the view keys
+ * its iframes on — two rows resolving to one card would be a React duplicate key
+ * and two iframes fighting over one slot. The server does not emit such a pair
+ * (a pending row is gone the moment its entry has a session — routers/tasks.py
+ * on `/api/tasks/changes`), so this is a guard rather than a fix, and it keeps
+ * the FIRST of the two, which is the one the sort already placed.
  *
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
@@ -2941,9 +3013,11 @@ export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSe
       task,
       index,
       lane: rank(task),
-      // `|| null` for laneTime's reason: `last_active` is a float that is 0.0 for
-      // "never", and 0 must be "no clock" rather than an instant in 1970.
-      at: task.last_active || null,
+      // `|| null` for laneTime's reason: `started` is a float that is 0.0 for
+      // "the server could not name a start", and 0 must be "no clock" rather
+      // than an instant in 1970. `?? 0` first, because an older server sends no
+      // field at all and `undefined || null` is not the same expression.
+      at: (task.started ?? 0) || null,
     }))
     .filter((r) => r.lane >= 0);
   rows.sort((a, b) => {
@@ -2956,7 +3030,14 @@ export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSe
     }
     return a.index - b.index;
   });
-  const all = rows.map((r) => r.task);
+  const seen = new Set<string>();
+  const all: Task[] = [];
+  for (const row of rows) {
+    const id = cardKey(row.task);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    all.push(row.task);
+  }
   // A cap of 0 or less is "no cap" rather than an empty page: the argument
   // exists so a test can shrink the budget, and the failure mode of a bad number
   // reaching it should not be a view that shows nothing.

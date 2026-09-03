@@ -456,6 +456,17 @@ a.sidebar-rail-btn {
     background-image: none;
     -webkit-text-fill-color: var(--status-progress);
   }
+
+  /* AND THE WAITING LABEL KEEPS ITS OWN HUE HERE TOO (bugbot, PR #984). The rule
+     above names `-webkit-text-fill-color`, which OUTRANKS `color` on the text it
+     paints — so `.sidebar-running.is-attention`'s red `color` was overruled by a
+     yellow fill and the one label that says somebody is being waited on came out
+     the same colour as "3 running". A reader who has asked for less motion is
+     not asking for less meaning; both variants have to state their hue in the
+     property that actually paints. */
+  .sidebar-running.is-attention {
+    -webkit-text-fill-color: var(--status-failed);
+  }
 }
 
 /* -- The nav dot ---------------------------------------------------------------

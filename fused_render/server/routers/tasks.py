@@ -1707,6 +1707,17 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
                       if waiting is not None else None),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
+        # WHEN THIS TASK BEGAN — `_place`'s `order`, which is the transcript's
+        # first record's timestamp, else the first entry's `created`. It is the
+        # one clock on this row that NEVER MOVES: `last_active` climbs on every
+        # write, and a view that orders by it re-sorts itself while its runs are
+        # merely talking. The Cards wall needs an order that holds still while it
+        # watches (shell/tasks-lib.cardsForTasks), and it already existed here —
+        # `_numbers` sorts new allocations by exactly this value, so a task's
+        # number and this stamp agree about which task is older by construction.
+        # 0.0 for a row that has neither a transcript nor an entry to date, the
+        # way every other absent time on this row reads.
+        "started": task.get("order") or 0.0,
         "last_active": surfaced,
         "message_count": total,
         # The next run, and the entry it belongs to — `min(at)` over every
