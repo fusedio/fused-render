@@ -33,6 +33,15 @@ import {
   useModuleData,
 } from "../bits";
 import type { SectionProps } from "../bits";
+// optionLabel / storedOptionLabel: how a catalog OPTION is said, and how a
+// value read back off disk is said (the CLI's `[1m]` context qualifier
+// included). Pure functions, kept in their own module — unlike this file
+// (../bits pulls in the shell's router, which touches `location` at module
+// init) — so pref-option-label.test.ts can exercise them directly rather than
+// importing this whole section. Re-exported here so nothing outside this
+// section has to know they live elsewhere.
+import { optionLabel, storedOptionLabel } from "../pref-option-label";
+export { optionLabel, storedOptionLabel };
 
 // What to show where a value would be, when there is none. The catalog's own
 // `unsetLabel` wins; otherwise the documented default, else the honest "we
@@ -287,13 +296,17 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                             back to the placeholder — i.e. a key that IS set
                             (model: "fable") would render as "Claude default".
                             Showing it as its own option is the difference
-                            between reporting the file and contradicting it. */}
+                            between reporting the file and contradicting it.
+
+                            What it is CALLED is storedOptionLabel's job: an id
+                            wearing a context qualifier is that model, said as
+                            that model, not an unknown one. */}
                         {isSet && !(d.options || []).includes(String(val)) && (
-                          <option value={String(val)}>{String(val)} (not in catalog)</option>
+                          <option value={String(val)}>{storedOptionLabel(d, String(val))}</option>
                         )}
                         {(d.options || []).map((o) => (
                           <option key={o} value={o}>
-                            {o}
+                            {optionLabel(d, o)}
                           </option>
                         ))}
                       </select>
