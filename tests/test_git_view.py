@@ -186,6 +186,30 @@ def test_the_publish_button_only_replaces_the_dead_remote_slot():
             "not supposed to change")
 
 
+def test_the_escape_hatches_never_touch_the_github_api():
+    """The two escape hatches (§ publish modal's `ghHatchesNode`) exist for a
+    repository this modal's gh-driven flow was never going to reach — one
+    already created by hand on github.com, one pointing somewhere that is
+    not GitHub at all. Both must run only `remote_add` then `push`, the same
+    two ops the toolbar's own "Publish branch" button already calls, and
+    must never call `ghFetch` or any `/api/github/*` endpoint — that is what
+    lets them work even when the status poll reports `gh` missing.
+    """
+    source = _source()
+    for signature in ("async function ghHatchExistingClick(url)",
+                      "async function ghHatchRemoteClick(url)"):
+        body = _function_body(source, signature)
+        assert '"remote_add"' in body, (
+            f"{signature} never calls the remote_add op:\n{body}")
+        assert '"push"' in body, (
+            f"{signature} never calls the push op:\n{body}")
+        assert "ghFetch" not in body, (
+            f"{signature} calls ghFetch — an escape hatch must not touch "
+            f"the GitHub API at all:\n{body}")
+        assert "/api/github" not in body, (
+            f"{signature} references a /api/github endpoint directly:\n{body}")
+
+
 def test_chan_derives_the_key_from_the_module_and_the_op():
     """`chan` must not collapse to a constant.
 

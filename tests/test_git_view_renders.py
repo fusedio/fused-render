@@ -241,6 +241,40 @@ def test_publish_modal_paints_for_every_prerequisite_state(reader, tmp_path):
     assert "Publish" in out["viewText"], out["viewText"]
 
 
+def test_both_escape_hatches_paint_even_with_gh_missing(reader, tmp_path):
+    """The two escape hatches (Task 7) sit above `ghState`'s own content, so
+    they must render — visible and clickable, not hidden or disabled — on
+    the very state that proves they need no `gh` at all: the CLI missing
+    entirely. Neither hatch is gated behind any prerequisite this modal's
+    gh-driven flow would otherwise demand."""
+    missing_status = {"found": False, "path": None, "source": None,
+                      "version": None, "signed_in": False, "account": None,
+                      "checked_at": None}
+    out = render(reader, clean_repo(str(tmp_path / "hatches-gh-missing")), tmp_path,
+                params={"panel": "publish"},
+                github={"/api/github/status": missing_status})
+    _assert_painted(out, "escape hatches: gh missing")
+    # `viewHTML` rather than the 400-char-capped `viewText` (see the probe's
+    # own `.slice(0, 400)`) — the hatches sit at the END of the panel, after
+    # a repo with real pending changes and the whole "gh missing" state's own
+    # copy, comfortably past that cap.
+    html = out["viewHTML"]
+    assert "I already made the repo on GitHub" in html, html
+    assert "Connect a different remote" in html, html
+    for label in ("I already made the repo on GitHub", "Connect a different remote"):
+        # Anchored to the button whose ENTIRE content is this label (`action`
+        # wraps a plain string label in its own `<span>`), not merely the
+        # first `<button>` anywhere earlier in the document that happens to
+        # be followed eventually by this text — a lazy `.*?` across the whole
+        # page would cross other buttons' closing tags and match a
+        # completely unrelated (and possibly disabled) one instead.
+        match = re.search(r"<button([^>]*)><span>" + re.escape(label) + r"</span></button>", html)
+        assert match, f"{label!r} is not rendered as its own button:\n{html}"
+        assert "disabled" not in match.group(1), (
+            f"{label!r} renders disabled even though gh was never found: "
+            + match.group(0))
+
+
 def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
     """The harness's own regression test.
 

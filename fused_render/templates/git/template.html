@@ -1324,6 +1324,13 @@ let ghName = "";
  * chosen on purpose. */
 let ghVisibility = "";
 const GH_POLL_MS = 1500;
+/* Which escape hatch's inline form is open, or `null` for neither — see
+ * `ghHatchesNode`. The URL typed into it is kept here rather than in a local
+ * variable for the same reason `ghName` is module-level: the modal repaints
+ * on every poll tick, and a value living only in the DOM node the last
+ * render created would vanish under that repaint mid-keystroke. */
+let ghHatch = null;
+let ghHatchUrl = "";
 
 /* WHAT THE RIGHT-HAND PANE IS SHOWING: `null`, or ONE of
  *   { kind: "rev", value: <full sha> }        a commit
@@ -2193,6 +2200,97 @@ async function ghPublishClick(repo) {
   void draw(true);
 }
 
+/* The two escape hatches (see `ghHatchesNode`): a repository someone already
+ * made by hand on github.com, and a remote pointing anywhere that is not
+ * GitHub at all — GitLab, a bare repo on a server, self-hosted Gitea. Both
+ * run the exact two ops the toolbar's own "Publish branch" button already
+ * runs, `remote_add` then `push`, chained through `run` the same way
+ * `gh-first-commit` above chains `stage_all` into `commit`. Neither of these
+ * two touches `ghFetch` or any `/api/github/*` endpoint, which is the whole
+ * point: they are the only path offered once this repository is meant for a
+ * host that isn't GitHub, and they work whether `gh` is signed in, missing,
+ * or was never looked for at all.
+ */
+async function ghHatchExistingClick(url) {
+  if (busy !== null || !url.trim()) return;
+  run("remote_add", { op: "remote_add", url: url.trim() }, () => {
+    run("push", { op: "push" }, () => {
+      ghHatch = null;
+      ghHatchUrl = "";
+      setParams({ panel: null }, { history: "replace" });
+      return true;
+    }, "Connected, but the push failed");
+    return true;
+  }, "Could not connect that repository");
+}
+
+async function ghHatchRemoteClick(url) {
+  if (busy !== null || !url.trim()) return;
+  run("remote_add", { op: "remote_add", url: url.trim() }, () => {
+    run("push", { op: "push" }, () => {
+      ghHatch = null;
+      ghHatchUrl = "";
+      setParams({ panel: null }, { history: "replace" });
+      return true;
+    }, "Connected, but the push failed");
+    return true;
+  }, "Could not connect that remote");
+}
+
+/* The two hatches' own corner of the modal: two plain links when neither is
+ * open, or one inline URL field — same shape as `stashModal`'s message
+ * input, a plain text box with a keydown-Enter shortcut — when one is. This
+ * renders ABOVE `ghState`'s per-step content and does not read it, so it
+ * shows the same regardless of which prerequisite step (or none at all,
+ * with `gh` never found) is on screen below it.
+ */
+function ghHatchesNode() {
+  if (!ghHatch) {
+    return el("div", { className: "panel-form" },
+      action("gh-hatch-existing-open", "I already made the repo on GitHub", {
+        onClick: () => { ghHatch = "existing"; void draw(true); },
+      }),
+      action("gh-hatch-remote-open", "Connect a different remote", {
+        onClick: () => { ghHatch = "remote"; void draw(true); },
+      }));
+  }
+
+  const existing = ghHatch === "existing";
+  const prompt = existing
+    ? "The GitHub repository's own URL, from its Code button."
+    : "Any git remote URL — GitLab, a bare repo, anywhere else.";
+  const input = el("input", { type: "text", value: ghHatchUrl,
+                              placeholder: "https://github.com/you/repo.git",
+                              disabled: busy !== null });
+  input.setAttribute("aria-label", prompt);
+  input.addEventListener("input", () => { ghHatchUrl = input.value; });
+  const connect = () => {
+    if (existing) void ghHatchExistingClick(ghHatchUrl);
+    else void ghHatchRemoteClick(ghHatchUrl);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); connect(); }
+  });
+  const cancel = () => { ghHatch = null; ghHatchUrl = ""; void draw(true); };
+  focusSoon(input);
+  return el("div", null,
+    el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent: prompt })),
+    el("div", { className: "panel-form" }, input),
+    el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      existing
+        ? action("gh-hatch-existing", "Connect and push", {
+            disabled: !ghHatchUrl.trim(), title: "git remote add, then git push",
+            onClick: connect,
+          })
+        : action("gh-hatch-remote", "Connect and push", {
+            disabled: !ghHatchUrl.trim(), title: "git remote add, then git push",
+            onClick: connect,
+          }),
+      action("gh-hatch-cancel", "Back", { onClick: cancel })));
+}
+
 /* The poll that drives the whole modal. Every tick rereads all four
  * `/api/github/*` records — cheap, since three of the four are bare reads of
  * in-memory module state and the fourth (`/api/github/status`) is a
@@ -2256,7 +2354,10 @@ function ghStopPolling() {
  * when there is no remote yet (see `toolbar` above). One panel, one state
  * machine (`ghState`), each state offering the single action that clears it
  * — gh missing -> signed out -> no git identity -> no commits -> ready ->
- * publishing -> done, which closes the modal itself (see `ghTick`).
+ * publishing -> done, which closes the modal itself (see `ghTick`). Above all
+ * of that sit the two escape hatches (`ghHatchesNode`), which bypass the
+ * state machine entirely for a repository this modal's own gh-driven flow
+ * was never going to reach.
  */
 function publishModal(data) {
   const repo = data.repo;
@@ -2402,6 +2503,11 @@ function publishModal(data) {
       action("gh-cancel", "Cancel", { onClick: close })));
     focusSoon(nameInput);
   }
+
+  /* The two escape hatches close out the panel, reachable no matter which
+     step above is showing — including "gh missing" — because neither one
+     reads `ghState` or needs `gh` at all. */
+  panel.append(ghHatchesNode());
 
   const wrap = el("div", null, scrim, el("div", { className: "modal" }, panel));
   return wrap;
