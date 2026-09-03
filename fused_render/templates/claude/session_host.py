@@ -115,6 +115,28 @@ def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
         os.replace(src, os.path.join(done, name))
 
 
+def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
+    """`agent._turn_state(run_dir)`, but only actually re-parses `out.jsonl`
+    when the file has grown since the last call — the reap loop below calls
+    this every `_DRAIN_INTERVAL_SECONDS` (0.2s) for the entire life of a
+    session, and `_turn_state` re-reads and re-`json.loads`s the WHOLE file
+    every time. A multi-hour session with a transcript in the tens of
+    megabytes burned a core continuously on a file that had not changed a
+    single byte since the previous tick. The turn/task state cannot have
+    changed if no new bytes landed, so a cheap `os.path.getsize` stands in
+    for the real read on every tick that would have been wasted work; `cache`
+    (a plain dict the caller owns, `{"size": ..., "state": ...}`) is mutated
+    in place so this needs no state of its own between calls."""
+    try:
+        size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        size = 0
+    if size != cache.get("size") or "state" not in cache:
+        cache["size"] = size
+        cache["state"] = agent._turn_state(run_dir)
+    return cache["state"]
+
+
 def main() -> None:
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     agent = _load_agent(req["agent"])
@@ -163,10 +185,12 @@ def main() -> None:
         }, f)
 
     idle_since = None
+    turn_state_cache = {}
     try:
         while cli.poll() is None:
             _drain_inbox(agent, run_dir, cli.stdin)
-            turn_open, tasks_pending = agent._turn_state(run_dir)
+            turn_open, tasks_pending = _turn_state_if_grown(
+                agent, run_dir, turn_state_cache)
             if turn_open or tasks_pending:
                 idle_since = None
             else:

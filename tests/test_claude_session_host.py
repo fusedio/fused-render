@@ -43,6 +43,14 @@ def agent(tmp_path, monkeypatch):
     return mod
 
 
+def _load_host():
+    path = os.path.join(TEMPLATE_DIR, "session_host.py")
+    spec = importlib.util.spec_from_file_location("claude_session_host", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 _STUB = '''#!{python}
 import json
 import sys
@@ -190,3 +198,42 @@ def test_pending_tasks_hold_the_reap_off(agent, monkeypatch, stub_cli, target):
 
     assert _wait_for(reaped, timeout=10.0), \
         "emptying the tasks array should let the idle window run out again"
+
+
+# ------------------------------------------------- B5: the reap decision is cheap
+
+def test_turn_state_is_not_reread_while_out_jsonl_is_unchanged(tmp_path):
+    """B5 regression: the reap loop calls this every _DRAIN_INTERVAL_SECONDS
+    (0.2s) for the whole life of a session. `agent._turn_state` re-parses the
+    ENTIRE out.jsonl on every call — fine once, ruinous 5 times a second
+    against a multi-hour session's tens-of-MB transcript. Nothing new can
+    have happened if the file has not grown, so a tick that sees the same
+    size must not re-derive the answer at all."""
+    host = _load_host()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")
+
+    calls = []
+
+    class _FakeAgent:
+        @staticmethod
+        def _turn_state(rd):
+            calls.append(rd)
+            return (True, False)
+
+    cache = {}
+    first = host._turn_state_if_grown(_FakeAgent, str(run_dir), cache)
+    second = host._turn_state_if_grown(_FakeAgent, str(run_dir), cache)
+    third = host._turn_state_if_grown(_FakeAgent, str(run_dir), cache)
+    assert first == second == third == (True, False)
+    assert len(calls) == 1, \
+        "three ticks with no growth in out.jsonl must derive the state once"
+
+    # The file actually grows: the next tick must re-derive, and only that one.
+    (run_dir / "out.jsonl").write_text('{"type": "result"}\n')
+    fourth = host._turn_state_if_grown(_FakeAgent, str(run_dir), cache)
+    fifth = host._turn_state_if_grown(_FakeAgent, str(run_dir), cache)
+    assert fourth == fifth == (True, False)
+    assert len(calls) == 2, \
+        "growth must trigger exactly one re-derive, not one per tick after it"
