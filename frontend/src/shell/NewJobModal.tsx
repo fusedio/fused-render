@@ -4014,38 +4014,45 @@ export default function NewJobModal({
               asks, the list stays quiet) — the only other place they surface is
               this same card reopened on an edit, prefilled.
 
-              Two ordinary `field schedule-form-sub` blocks, stacked, exactly
-              like Permissions above them — not a custom two-up row. Three
-              controls that are all "how this task runs" should look like three
-              of the same object, and the one already there sets the shape. */}
-          <div className="field schedule-form-sub">
-            <span className="field-label">Model</span>
-            <Dropdown
-              ariaLabel="Model"
-              value={taskRunLabel(TASK_MODELS, model)}
-              // Same contract as Permissions above: the KEY is submitted, the
-              // label is only how it is said. `taskRunOptions` is what keeps an
-              // unrecognised stored value selectable instead of silently
-              // resetting the task to the default on the next edit.
-              options={taskRunOptions(TASK_MODELS, model)}
-              onPick={setModel}
-            />
-            <span className="field-hint">
-              Default lets the run use whatever this project already uses.
-            </span>
-          </div>
-          <div className="field schedule-form-sub">
-            {/* "Thinking", not "Effort" (the CLI's word for the flag): the flag
-                is `--effort`, but what the user is choosing is how long Claude
-                gets to think before it acts, and the chat's own pill says the
-                same thing. The wire is untouched — this is the label. */}
-            <span className="field-label">Thinking</span>
-            <Dropdown
-              ariaLabel="Thinking"
-              value={taskRunLabel(TASK_EFFORTS, effort)}
-              options={taskRunOptions(TASK_EFFORTS, effort)}
-              onPick={setEffort}
-            />
+              ONE ROW, two equal columns (Akshil, 2026-09-03). They are one
+              decision read together — "Fable 5.1, thinking high" is the
+              sentence — and stacking them spent two full rows of the card's
+              least-used section saying half of it each. Permissions stays on
+              its own line above: it is a policy with a consequence to explain,
+              and these two are a pair of names.
+
+              Neither carries a hint any more. Model's ("Default lets the run
+              use whatever this project already uses") restated what the word
+              Default already says, and one hint under one of a pair of side-by-
+              side fields lands as a note about the pair. */}
+          <div className="schedule-form-sub new-task-run-pair">
+            <div className="field">
+              <span className="field-label">Model</span>
+              <Dropdown
+                ariaLabel="Model"
+                value={taskRunLabel(TASK_MODELS, model)}
+                // Same contract as Permissions above: the KEY is submitted, the
+                // label is only how it is said. `taskRunOptions` is what keeps
+                // an unrecognised stored value selectable instead of silently
+                // resetting the task to the default on the next edit.
+                options={taskRunOptions(TASK_MODELS, model)}
+                onPick={setModel}
+              />
+            </div>
+            <div className="field">
+              {/* "Thinking", not "Effort" (the CLI's word for the flag): the
+                  flag is `--effort`, but what the user is choosing is how long
+                  Claude gets to think before it acts, and the chat's own pill
+                  says the same thing. The wire is untouched — this is the
+                  label. */}
+              <span className="field-label">Thinking</span>
+              <Dropdown
+                ariaLabel="Thinking"
+                value={taskRunLabel(TASK_EFFORTS, effort)}
+                options={taskRunOptions(TASK_EFFORTS, effort)}
+                onPick={setEffort}
+              />
+            </div>
           </div>
         </details>
 

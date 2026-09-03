@@ -87,6 +87,17 @@ export interface PrefEntry {
   group: string;
   control: PrefControl;
   options?: string[];
+  // How an option is SAID, where its own spelling will not do. Most options are
+  // already the word ("fable", "high", "acceptEdits"); a PINNED model id is not
+  // — "claude-fable-5-1" is what `--model` takes, "Fable 5.1" is what a person
+  // reads. Sparse by design: only the options that need words appear here, and
+  // an unmapped one shows itself, so the map never has to be kept exhaustive
+  // against a list the docs refresh may grow.
+  //
+  // Part of the CURATED overlay, like `options` and `unsetLabel`:
+  // refresh_catalog rewrites `doc`/`default`/`minVersion` and leaves the rest of
+  // each entry untouched.
+  optionLabels?: Record<string, string>;
   doc?: string | null;
   // The DOCUMENTED default, shown when the key is unset. Any JSON scalar, and
   // null both for "no documented default" and for a documented `null`.
