@@ -2976,8 +2976,16 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         # straight past that to ending the whole process tree.
         _cancel(run_id, interrupt_first=False)
         return {"respawn": True}
+    # `host.json`'s "model"/"mode" are compared against on every `_send`
+    # call for the life of the session — left stale after a change actually
+    # lands, EVERY later turn would see the same mismatch and re-queue the
+    # same `set_model`/`set_permission_mode` control request the CLI already
+    # applied, forever. Recorded here so only a REAL change ever queues one.
+    host_changed = False
     if model and model != host.get("model", ""):
         _write_control_request(run_dir, "set_model", model=model)
+        host["model"] = model
+        host_changed = True
     if permission_mode:
         # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`,
         # e.g. "acceptEdits"), the same shape `--permission-mode` takes and
@@ -2991,6 +2999,15 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         if cli_mode != host.get("mode", ""):
             _write_control_request(run_dir, "set_permission_mode",
                                    mode=cli_mode)
+            host["mode"] = cli_mode
+            host_changed = True
+    if host_changed:
+        # Not racing the host itself: it writes host.json once, at spawn,
+        # and only ever removes it (in its own `finally`) after that — it
+        # never rewrites it mid-session, so this is the only writer for the
+        # life of the file.
+        with _private_open(os.path.join(run_dir, "host.json")) as f:
+            json.dump(host, f)
     _write_inbox_entry(run_dir, message)
     return {"sent": True}
 

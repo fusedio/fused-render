@@ -184,6 +184,40 @@ def test_model_change_writes_a_set_model_control_request(agent, monkeypatch,
         for r in _out_rows(run_dir)))
 
 
+def test_a_model_change_is_not_repeated_on_the_next_send(agent, monkeypatch,
+                                                          stub_cli, target):
+    """B9 regression: `_send` compares the incoming `model` against
+    `host.json`'s recorded value, but never updated that record after a
+    change actually landed — so a SECOND follow-up with the same (already
+    applied) model compared against the stale spawn-time value again, and
+    queued the exact same `set_model` control request a second time, and a
+    third, for every turn of the session."""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target,
+                             model="claude-opus-5")
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    agent._send(run_id, "first follow-up", model="claude-haiku-4-5")
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "first follow-up"
+        for r in _out_rows(run_dir)))
+
+    result = agent._send(run_id, "second follow-up", model="claude-haiku-4-5")
+    assert result == {"sent": True}
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "second follow-up"
+        for r in _out_rows(run_dir)))
+
+    responses = [r for r in _out_rows(run_dir) if r.get("type") == "control_response"]
+    assert len(responses) == 1, \
+        "the model did not change between the two sends — only the FIRST " \
+        "should have queued a set_model control request"
+
+    with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as f:
+        host = json.load(f)
+    assert host["model"] == "claude-haiku-4-5", \
+        "host.json must reflect the model the session was actually moved to"
+
+
 def test_unchanged_model_writes_no_control_request(agent, monkeypatch,
                                                      stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target,
