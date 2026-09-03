@@ -5806,7 +5806,7 @@ stop it short of quitting the app.
   it out as an event.
 
 - **BG-19** **No card may render a single line of text — title alone, with
-  nothing beneath it (D659).** `jobs.ts` gains `jobDetail(job)`, a
+  nothing beneath it (D659).** `jobs.ts` gains `jobDetail(job, nowS)`, a
   last-resort fallback built only from facts every job always carries (kind,
   `started_at`, `stalled`) — `"Download · started 2m ago"`, or with
   `· not reporting` folded in once stalled. `engineDuration` (previously
@@ -5821,7 +5821,39 @@ stop it short of quitting the app.
   (`repoStatusText`, the pairing row) already always render a fixed non-empty
   line, so the sweep for this gap found nothing left to fix there; the only
   place it existed was the shared `JobRow` `RepoUpdatesDock.tsx` reuses from
-  `DownloadManager.tsx`, fixed once at the source.
+  `DownloadManager.tsx`, fixed once at the source. `nowS` is `JobsSnapshot.now`
+  (the server's clock), threaded down from `useJobs` through
+  `DownloadManagerView` and `JobRow` — never the browser's `Date.now()`, which
+  drifts from `job.started_at`'s server timestamp after a tab throttle or a
+  sleep (D660).
+
+- **BG-20** **A follow-up review of BG-17/BG-18 closes three gaps D657's
+  keep-until-dismissed policy opened, and confirms one thing it left
+  implicit (D661).** A card that reads a job's mere PRESENCE in the registry
+  as "still busy" — `useCacheScan.ts`/`PlaygroundTab.tsx`'s `jobByModel` maps,
+  `RepoCard.tsx`'s button gates — now stays stuck on a model whose pull or
+  load finished minutes ago, since the row no longer disappears on its own;
+  `jobs.ts`'s `activeJobByModel(jobs)` (mirroring `inFlightJobs`'s own
+  `!isTerminal` filter) is now the one place these maps get built, plus a
+  belt-and-braces `!isTerminal(job)` check on `RepoCard.tsx`'s own gates.
+  `POST /api/jobs/clear` and `clearableCount`/`jobsAfterClear`/
+  `clearFinishedJobs` (jobs.ts), unreachable once BG-17 deleted Activity's
+  own Clear button, get a real caller again: `RepoUpdatesDock.tsx` draws a
+  second "Clear" — for finished jobs, separate from its existing repo-rows
+  one — at 2+ finished jobs (D604's plurality-not-presence rule), since a
+  repo row's dismissal is local and ephemeral while a job's is server-side
+  and permanent, and one button cannot honestly speak for both. `MAX_JOBS`
+  (64) is confirmed the sole bound on registry growth now that no terminal
+  row ages out on its own, via the eviction ordering BG-6 already
+  describes (finished before running, least-recently-updated first, live
+  `SERVER` work never evicted at all). `isFailure`'s doc, `GRACE_MS`, and
+  `failedJobs` were swept for the same class of staleness this policy
+  change could have left behind: `isFailure`'s comment is rewritten to
+  state what it decides now (the `.is-failure` tint, not routing);
+  `GRACE_MS` is confirmed still doing real work (catching the RUNNING→
+  terminal transition fast) independent of the sweep-timing reasoning its
+  comment used to cite; `failedJobs`, with no remaining callers once
+  `RepoUpdatesDock.tsx` started calling `isFailure` directly, is deleted.
 
 ---
 
