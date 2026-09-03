@@ -5912,6 +5912,26 @@ stop it short of quitting the app.
   scheduled-message queue row's JSX; `.q-all` keeps its rule, drawn now by
   `RepoRowView`'s own buttons.
 
+- **BG-24** **A task/scheduled message that finishes successfully speaks no
+  toast at all (D665, user: "why does task completion still show toast
+  messages?" / "remove that too").** `schedule-toast.ts`'s `toastForEvent`
+  returns `ScheduleToast | null`, `null` for `kind === "done"` — a plain
+  success is not news, and the Tasks page is where its result lives.
+  `scheduleEvents.ts`'s poll loop skips a `null` instead of rendering an
+  empty strip. `failed` and `missed` are UNCHANGED: with tasks gone from
+  Activity (BG-17) and excluded from Notifications routing, nothing else
+  would surface either one, and a silent failure or silent miss would be
+  strictly worse than the toast the user was objecting to — the complaint
+  was about *completion*, not about being warned. Both surviving outcomes
+  are now identical in shape (a persistent error with an "Open" action onto
+  `/tasks`), so `ScheduleToast`'s now-constant `tone`/`needsAttention`
+  fields, and the `push` branch in `scheduleEvents.ts` that used to render a
+  lesser, self-dismissing toast for `done`, are deleted rather than left
+  stranded. `schedule.py`'s `_emit()` is untouched — its `done` event still
+  has a client consumer, since `scheduleEvents.ts` still reads it to drive
+  `onOutcome`'s Tasks-page pulse and to ack it off the server's queue, just
+  never to raise a toast.
+
 ---
 
 ## 37. AI Models — What the Hugging Face Cache Holds (D249)
