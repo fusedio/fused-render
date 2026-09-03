@@ -12,7 +12,6 @@ when it happens, so these two surfaces are the feature, not decoration:
 The turn watcher is driven through its `_turn_tick` seam with fabricated `_poll`
 results: no test here runs a real claude, and none waits on a thread.
 """
-import os
 import time
 
 import pytest
@@ -83,22 +82,13 @@ def _no_watcher_thread(monkeypatch):
 
 
 class FakeAgent:
-    """Stands in for the claude backend: records what was cancelled, and says
-    the one short thing about a tool call the real one says (`_tool_detail` —
-    the chat's own status line, which a parked-card event borrows so the
-    notification and the transcript describe one call in one vocabulary)."""
+    """Stands in for the claude backend: records what was cancelled."""
 
     def __init__(self):
         self.cancelled = []
 
     def _cancel(self, run_id):
         self.cancelled.append(run_id)
-
-    def _tool_detail(self, name, inp):
-        inp = inp or {}
-        if name == "Bash":
-            return str(inp.get("description") or inp.get("command") or "")
-        return os.path.basename(str(inp.get("file_path") or ""))
 
 
 # ------------------------------------------------------------------ the send
@@ -184,57 +174,6 @@ def test_an_ANSWERED_card_is_not_a_parked_turn(target, sent):
                                           "decision": "allow"}]})
 
     assert jobs.list_jobs()[0]["detail"] == "thinking · 40 tokens"
-    assert "attention" not in _kinds()
-
-
-def test_a_parked_card_is_announced_once_and_says_what_it_wants(target, sent):
-    """The notification half. Nobody is looking when a scheduled message fires —
-    that is the premise of the whole module — so a turn that has stopped and is
-    asking has to come and find the user."""
-    entry = _overdue(target, "clean the build tree")
-    schedule.tick()
-    entry["claude_session_id"] = "sess-7"
-    parked = {"done": False, "phase": "thinking",
-              "permissions": [{"id": "p1", "tool": "Bash",
-                               "input": {"description": "remove build/"}}]}
-
-    schedule._turn_tick(entry, "r-1", FakeAgent(), parked)
-    assert _kinds() == ["attention"]
-
-    event = schedule.event_log()[0]
-    assert event["message"] == "clean the build tree"   # names it without a hunt
-    assert event["target"] == str(target)
-    assert event["session_id"] == "sess-7"              # so a toast opens the CHAT
-    assert event["detail"] == "Bash · remove build/"
-
-    # ONCE PER CARD, not once per tick: the watcher ticks every couple of seconds
-    # and a card can sit there for hours.
-    for _ in range(3):
-        schedule._turn_tick(entry, "r-1", FakeAgent(), parked)
-    assert _kinds() == ["attention"]
-
-    # ...and once per card rather than once per parking. A second request raised
-    # while the first is still open is a second thing being asked for, and on a
-    # long unattended turn that is the common shape rather than the exotic one.
-    parked["permissions"].append({"id": "p2", "tool": "Write",
-                                  "input": {"file_path": "/p/notes.md"}})
-    schedule._turn_tick(entry, "r-1", FakeAgent(), parked)
-    assert _kinds() == ["attention", "attention"]
-    assert schedule.event_log()[1]["detail"] == "Write · notes.md"
-
-
-def test_a_parked_turn_that_finishes_still_reports_its_outcome(target, sent):
-    """The attention event is news about a run in flight, never a verdict: the
-    turn's own `done` still lands, and the log holds both in order."""
-    entry = _overdue(target)
-    schedule.tick()
-
-    schedule._turn_tick(entry, "r-1", FakeAgent(),
-                        {"done": False, "permissions": [{"id": "p1",
-                                                         "tool": "Bash"}]})
-    schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True})
-
-    assert _kinds() == ["attention", "done"]
 
 
 def test_the_session_the_turn_ran_in_is_captured(target, sent):

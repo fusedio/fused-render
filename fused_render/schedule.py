@@ -222,24 +222,18 @@ _JOB_PREFIX = "sys:schedule:"
 _EVENTS_MAX = 100
 
 # What the shell narrates. `done` is an info toast (your message ran), the other
-# three need a person — which is the gap this log exists to close.
+# two are errors that need a person — which is the gap this log exists to close.
+#
+# THERE IS NO EVENT FOR A RUN PARKED ON A CARD (Akshil, 2026-09-03). One was
+# added on this branch and taken straight back out: a toast for it interrupted
+# the reader for something the Tasks page already says on its own — the row
+# wears the Needs attention ring and sorts to the top of the list, which is
+# where somebody goes to act on it anyway. This log is for what happened while
+# nobody was looking, and a run that is still going has not happened yet.
 EVENT_DONE = "done"
 EVENT_FAILED = "failed"
 EVENT_MISSED = "missed"
-# The fourth, and the only one about a run that is STILL GOING: the turn has
-# raised a permission or question card and nobody is there to answer it. It
-# needs a person as much as the two failures do — more, in fact, since the run
-# is holding a session open while it waits, and it will wait until the app is
-# closed (Akshil, 2026-09-03: "also in notifications so when we click we go to
-# the page and unblock the task").
-#
-# ONLY SCHEDULED AND RUN TASKS RAISE IT, which is not a policy but the shape of
-# the app: this log is written by the turn watcher, and the watcher exists
-# precisely because nobody is looking when a scheduled message fires. A chat
-# somebody typed has a person in front of it, and the card is already on their
-# screen.
-EVENT_ATTENTION = "attention"
-EVENT_KINDS = (EVENT_DONE, EVENT_FAILED, EVENT_MISSED, EVENT_ATTENTION)
+EVENT_KINDS = (EVENT_DONE, EVENT_FAILED, EVENT_MISSED)
 
 _events: list[dict] = []
 _event_seq = 0
@@ -602,16 +596,6 @@ def _emit(kind: str, entry: dict, detail: str = "") -> None:
             # asked for are what identifies it to them.
             "message": str(entry.get("message") or "")[:200],
             "detail": detail,
-            # WHICH CONVERSATION, so a toast can open the chat rather than the
-            # page that lists it. It matters for `attention` above all: the
-            # action on that toast is "go and unblock this", and /tasks is one
-            # more click away from the card than the thread it is sitting in.
-            # The ANSWER, never the input (`claude_session_id` — see
-            # `_turn_tick`), falling back to the id the send named for an event
-            # raised before the first tick reported one. "" is ordinary: the
-            # shell falls back to /tasks for it.
-            "session_id": str(entry.get("claude_session_id")
-                              or entry.get("session_id") or ""),
             # Whether this was a task somebody RAN (New task with the when-row
             # untouched, a new app's scaffolding task) rather than one they
             # scheduled. The shell's toast reads it: "Scheduled message ran"
@@ -1802,7 +1786,6 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     # would call a run that was carded once and allowed twenty minutes ago
     # blocked for the rest of its life.
     parked = [p for p in (data.get("permissions") or []) if not p.get("decision")]
-    _announce_parked(entry, agent, parked)
     detail = "waiting for permission" if parked else str(data.get("phase") or "working")
     tokens = data.get("tokens") or 0
     if tokens and not parked:
@@ -1818,60 +1801,6 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
         _report(entry_id, state="cancelled")
         return False
     return True
-
-
-# Where a watch remembers which cards it has already announced. On the ENTRY
-# dict the watcher thread is holding rather than in the store: it describes this
-# watch, not the message, and `_update` writes named fields only, so nothing
-# here can reach disk. A leading underscore says the same thing to anybody
-# reading a store entry printed in a test.
-_SAID_KEY = "_attention_announced"
-
-
-def _announce_parked(entry: dict, agent, parked: list) -> None:
-    """Tell the shell about a card nobody has answered — ONCE per card.
-
-    Once per REQUEST ID, not once per transition into being parked, and the
-    difference is the whole of the dedupe. The watcher ticks every couple of
-    seconds and a card can sit there for hours, so "emit while parked" is a toast
-    every two seconds; "emit on the empty→non-empty edge" misses the second card
-    of a run whose first was answered while the third was raised, which on a long
-    unattended turn is the common shape rather than the exotic one. The set of
-    ids the watch has already spoken about answers both, and it costs one string
-    per card for the life of one turn.
-
-    Best-effort like every other narration here: a summary that cannot be made
-    is an event with a bare tool name in it, never a lost event.
-    """
-    said = entry.setdefault(_SAID_KEY, set())
-    for perm in parked:
-        request_id = str(perm.get("id") or "")
-        if not request_id or request_id in said:
-            continue
-        said.add(request_id)
-        _emit(EVENT_ATTENTION, entry, _parked_detail(agent, perm))
-
-
-def _parked_detail(agent, perm: dict) -> str:
-    """One line for the toast: which tool, and what it wants to do.
-
-    The same sentence the chat's own status line prints for a tool call
-    (`agent._tool_detail`), so the notification and the transcript describe one
-    call in one vocabulary. The tool NAME alone when there is nothing finer to
-    say — for a question card that is "AskUserQuestion", which is the machinery's
-    name for it; the ROW on the Tasks page carries the question itself
-    (routers/tasks.py `_attention_of`), and a toast is not where a paragraph of
-    someone else's prose belongs.
-    """
-    tool = str(perm.get("tool") or "")
-    inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
-    try:
-        detail = agent._tool_detail(tool, inp)
-    except Exception:  # noqa: BLE001 — a summary we cannot make is not an error
-        detail = ""
-    if not tool:
-        return detail
-    return f"{tool} · {detail}" if detail else tool
 
 
 def _chain_session(template_id: str, ran: str) -> None:

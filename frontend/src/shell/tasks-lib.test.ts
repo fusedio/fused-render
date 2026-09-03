@@ -35,7 +35,6 @@ import {
   isDraggable,
   isExpandable,
   isFailedTask,
-  attentionSummary,
   needsAttention,
   isMessageRunning,
   isRunningNow,
@@ -1016,34 +1015,6 @@ describe("needsAttention", () => {
     // a run that broke, Open for one that is asking.
     expect(isFailedTask(task({ status: "needs_attention" }))).toBe(false);
     expect(laneOf(taskColumn(task({ status: "needs_attention" })))).toBe("blocked");
-  });
-});
-
-describe("attentionSummary", () => {
-  it("says which tool, and what it wants to do", () => {
-    expect(attentionSummary(task({
-      status: "needs_attention",
-      attention: { tool: "Bash", summary: "rm -rf build" },
-    }))).toBe("Bash · rm -rf build");
-  });
-
-  it("says nothing at all rather than half a sentence", () => {
-    // A caption reading "Bash · " puts a gap where the row promised to say what
-    // is being asked for, which is worse than no caption.
-    expect(attentionSummary(task({
-      status: "needs_attention",
-      attention: { tool: "Bash", summary: "" },
-    }))).toBe("Bash");
-    expect(attentionSummary(task({
-      status: "needs_attention",
-      attention: { tool: "", summary: "" },
-    }))).toBe(null);
-    expect(attentionSummary(task({ status: "needs_attention" }))).toBe(null);
-    // And never on a row that is not waiting, whatever a stale field says.
-    expect(attentionSummary(task({
-      status: "done",
-      attention: { tool: "Bash", summary: "rm -rf build" },
-    }))).toBe(null);
   });
 });
 
@@ -3191,7 +3162,7 @@ describe("the one-message row's missing chevron", () => {
     // through the shared performer, so it still clears the thread on the way out.
     // (It is behind SHOW_ROW_ACTIONS as of 2026-08-17, which is about whether it is
     // DRAWN — see "the hidden row actions" — not about what it is.)
-    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
+    expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
     expect(ROW).toContain("openChat(chat)");
     expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
     expect(VIEWS).toMatch(/const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/);
@@ -3732,15 +3703,11 @@ describe("the archive action", () => {
     expect(CARD).toMatch(/\{file && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
     // group's, and their order survives whichever of them are rendered.
-    for (const guarded of ["seen", "run"]) {
+    for (const guarded of ["seen", "run", "chat"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
-    // Open is the one whose guard has a second arm — a WAITING row draws it
-    // whatever the flag says, because the run has stopped until somebody answers
-    // the card and getting to that card is the critical action on the page.
-    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
     expect(ROW.indexOf("{SHOW_ROW_ACTIONS && run && (")).toBeLessThan(
-      ROW.indexOf("{(SHOW_ROW_ACTIONS || waiting) && chat && ("),
+      ROW.indexOf("{SHOW_ROW_ACTIONS && chat && ("),
     );
     // And Archive is no longer IN that strip at all (2026-08-18): it is at the
     // row's LEADING edge, in the mark slot, ahead of every one of them — see "the
@@ -3895,12 +3862,8 @@ describe("the archive action", () => {
     expect(reveal).toContain("pointer-events: auto");
     // The keyboard arm is in the SAME rule, so a tabbed-to button is graspable
     // too rather than visible-but-inert.
-    // `.tasks-act:focus-visible` no longer ENDS that selector list — the
-    // always-drawn Open on a waiting row was added after it — so the arm is
-    // asserted as a member of the list rather than as its last line.
-    expect(TASKS_CSS).toContain(".tasks-act:focus-visible,");
     expect(TASKS_CSS).toMatch(
-      /\.tasks-act\.is-shown \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
+      /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
     );
   });
 
@@ -4169,19 +4132,14 @@ describe("the hidden row actions", () => {
     // too — one flag, so the two views cannot diverge when it flips. Per-button
     // rather than per-group since 2026-08-18, which is what let Archive out
     // without moving it in the order (see "the archive action").
-    for (const guarded of ["seen", "run"]) {
+    for (const guarded of ["seen", "run", "chat"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
-    // Open's guard carries the one exception, and it is a status and not a
-    // second flag: a row waiting on an answer draws it either way.
-    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
     expect(CARD).toContain("{SHOW_ROW_ACTIONS && run && (");
-    // FIVE guards and no more: the task row's three (one of which now reads
-    // `(SHOW_ROW_ACTIONS || waiting) &&`, counted below), the board card's Run
-    // now, and the message row's Edit/Cancel pair — every hover-revealed action
-    // in the List except Archive. (The name also appears in prose, not a gate.)
-    expect((VIEWS.match(/SHOW_ROW_ACTIONS &&/g) ?? []).length).toBe(5);
-    expect((VIEWS.match(/SHOW_ROW_ACTIONS \|\| waiting\) &&/g) ?? []).length).toBe(1);
+    // FIVE guards and no more: the task row's three, the board card's Run now,
+    // and the message row's Edit/Cancel pair — every hover-revealed action in the
+    // List except Archive. (The name also appears in prose, which is not a gate.)
+    expect((VIEWS.match(/SHOW_ROW_ACTIONS &&/g) ?? []).length).toBe(6);
     const msgFrom = VIEWS.indexOf('className={"tasks-msg"');
     const msgRow = VIEWS.slice(msgFrom, VIEWS.indexOf("{why && <p", msgFrom));
     expect(msgRow).toContain("{SHOW_ROW_ACTIONS && (");
@@ -4737,7 +4695,7 @@ describe("opening a thread, from either view", () => {
     // Both sides gate their gesture on the intent being non-null, so neither can
     // navigate to nowhere and neither marks a thread it never showed.
     expect(CARD).toContain("if (open) onOpen(open);");
-    expect(ROW).toContain("{(SHOW_ROW_ACTIONS || waiting) && chat && (");
+    expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
   });
 
   it("draws the MERGED count on both sides, so the mark goes on the press", () => {
@@ -7314,33 +7272,39 @@ describe("mergeTaskChanges", () => {
   });
 });
 
-describe("the waiting row's own affordances", () => {
+describe("what a waiting row does NOT grow", () => {
   const ROW_SRC = (() => {
     const from = VIEWS.indexOf('className={"tasks-row"');
     return VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
   })();
 
-  it("prints what is being asked, beside the title", () => {
-    expect(VIEWS).toContain("const asking = attentionSummary(task);");
-    expect(ROW_SRC).toContain('className="tasks-asking"');
-    // It ellipsises BEFORE the title does — the ask must never cost the task its
-    // own name — which is a CSS fact and so is read out of the sheet.
-    const rule = block(TASKS_CSS, ".tasks-asking");
-    // A RATIO, not a flag: an ordinary `1` shrinks the caption and the title by
-    // the same proportion, which at ~500px is two ellipses and no fact.
-    expect(rule).toContain("flex: 0 999 auto");
-    expect(rule).toContain("text-overflow: ellipsis");
-    expect(rule).toContain("var(--status-attention)");
+  it("looks like every other row apart from its ring and its place", () => {
+    // The row was briefly given a caption saying what the card wanted ("Bash ·
+    // rm -rf build") and an Open button drawn at rest. Both are gone (Akshil,
+    // 2026-09-03): a list is read by sweeping one column, and a row that grows
+    // an extra phrase and an extra control is a row that stops matching the
+    // shape of the ones above and below it. What marks it is the RED "!" ring
+    // and the fact that it is at the top — nothing else.
+    expect(ROW_SRC).not.toContain("tasks-asking");
+    expect(VIEWS).not.toContain("attentionSummary");
+    expect(TASKS_CSS).not.toContain(".tasks-asking");
+    // Open is behind the shared flag again, with no second arm and no class
+    // that would draw it without a hover.
+    expect(ROW_SRC).toContain("{SHOW_ROW_ACTIONS && chat && (");
+    expect(ROW_SRC).not.toContain("is-shown");
+    expect(TASKS_CSS).not.toContain(".tasks-act.is-shown");
   });
 
-  it("offers Open and nothing that could answer the card from a list", () => {
-    // No Approve/Deny here (design.md): answering means reading what is being
-    // asked, and a two-button row that can say yes to `rm -rf` from a list
-    // nobody has scrolled is exactly the gesture not to build.
-    // The words appear in the comment that says why they are absent, so this
-    // looks for a CONTROL rather than for the strings.
-    expect(ROW_SRC).not.toMatch(/aria-label=\{?"?(Approve|Deny)/);
-    expect(ROW_SRC).not.toContain("answerPermission");
-    expect(ROW_SRC).toContain('aria-label={waiting ? "Open" : "Open chat"}');
+  it("wears the Blocked lane's own red, and the \"!\" is the difference", () => {
+    // Not a hue of its own (and not In Progress's yellow, which it was for a
+    // few hours): the card DRAWS in Blocked, so a ring in any other colour
+    // would be the one place on the page where the mark and its column
+    // disagree. `--status-attention` is gone with the yellow it named.
+    expect(SCHEDULE_CSS).toContain(
+      ".schedule-ring--needs_attention { color: var(--status-failed); }",
+    );
+    expect(SCHEDULE_CSS).not.toContain("--status-attention");
+    expect(TOKENS_CSS).not.toContain("--status-attention");
+    expect(VIEWS).toContain('<span className="schedule-ring-bang" aria-hidden="true">!</span>');
   });
 });

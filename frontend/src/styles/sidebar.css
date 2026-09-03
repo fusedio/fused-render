@@ -497,29 +497,6 @@ a.sidebar-rail-btn {
   background: var(--status-done);
 }
 
-/* A run that has STOPPED and is asking. The same yellow as `is-running`, which
-   it is drawn on top of rather than instead of — a waiting run is a running run
-   (tasks-lib.tasksPulse counts it in both) and a second hue would have claimed
-   otherwise. What separates them is that this one MOVES: a slow pulse, which is
-   the rail's version of the "!" the status ring wears where a 7px dot has no
-   room for a glyph. Pinned under prefers-reduced-motion like every other moving
-   thing on this rail — the tooltip and the expanded row's words carry the fact
-   without it. */
-.sidebar-rail-dot.is-attention {
-  animation: sidebar-attention-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes sidebar-attention-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sidebar-rail-dot.is-attention {
-    animation: none;
-  }
-}
-
 /* AND THE AI MODELS ROW'S, which is another row's fact in the same vocabulary
    (2026-08-24): a model is resident, and holds memory while nobody is looking.
    It wore `.account-signedin-dot` until then — 7px like this one, and that was

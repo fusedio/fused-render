@@ -4192,22 +4192,17 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // orders by tracking a high-water mark. Bounded server-side: it is a narration,
 // not history — the schedule store holds every outcome durably.
 //
-// `attention` is the only kind about a run that has NOT ended: it is raised the
-// first time a turn parks on a permission or question card nobody has answered,
-// once per card. Only scheduled and run tasks can raise it — the log is written
-// by the turn watcher, which exists because nobody is looking when a scheduled
-// message fires; a chat somebody typed already has the card on their screen.
-export type ScheduleEventKind = "done" | "failed" | "missed" | "attention";
+// NOTHING IS NARRATED FOR A RUN PARKED ON A CARD, deliberately (Akshil,
+// 2026-09-03): the Tasks page says it on its own — the row wears the Needs
+// attention ring and sorts to the top — and a toast for it would interrupt the
+// reader for a run that has not finished doing anything yet.
+export type ScheduleEventKind = "done" | "failed" | "missed";
 
 export interface ScheduleEvent {
   id: number;
   kind: ScheduleEventKind;
   entry_id: string;
   target: string;
-  // The conversation the turn is running in, so a toast can open the CHAT
-  // rather than the page that lists it. "" (or absent, on an older server) when
-  // the watcher has not been told one yet; the shell falls back to /tasks.
-  session_id?: string;
   // The prompt, not a summary: a toast saying "a scheduled message failed" sends
   // the user hunting, and the first words of what they asked for identify it.
   message: string;

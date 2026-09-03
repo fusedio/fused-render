@@ -223,13 +223,6 @@
   --pg-card-bg-hover: #1d2025;
   --status-done: #4ade80;
   --status-failed: #f87171;
-  /* Needs attention: In Progress's yellow under its own name. A waiting run IS
-     in progress — the ring's "!" is what says it has stopped and is asking (see
-     `.schedule-ring--needs_attention`), and a sixth hue would have had to be
-     told apart from both this yellow and the Blocked red on a 16px circle. The
-     token exists so a caller names the intent rather than borrowing the
-     coincidence, and so the day it does diverge, one line moves. */
-  --status-attention: var(--status-progress);
   --status-archived: #cd93b6;
 
   /* The blue Upcoming used to own, which outlived it: it was never really the
@@ -409,7 +402,6 @@
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;
   --status-failed: #dc2626;
-  --status-attention: var(--status-progress);
   /* The rose deepened for white (see the dark block). Still warm, still low
      enough in chroma to stay quiet, and its blue channel still stands well above
      its green so it cannot be mistaken for the red above it. */

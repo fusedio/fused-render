@@ -54,7 +54,6 @@ import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
-import { explorerUrl } from "@shell/schedule-lib";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
@@ -484,10 +483,7 @@ export default function App({ config }: { config: Config }) {
   // open Tasks page, through its feeder) re-reads now instead of on its next
   // tick — handed in from here because that store is shell's and platform may
   // not import up.
-  // `explorerUrl` rides along for the same boundary reason: an `attention` toast
-  // opens the CONVERSATION that is waiting on an answer, and the one function
-  // that turns a folder and a session into that URL lives in shell.
-  useScheduleEvents(pokeTasks, explorerUrl);
+  useScheduleEvents(pokeTasks);
 
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above

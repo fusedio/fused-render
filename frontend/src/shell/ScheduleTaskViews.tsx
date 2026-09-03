@@ -67,7 +67,6 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
-  attentionSummary,
   needsAttention,
   laneRolledUp,
   laneUnread,
@@ -288,10 +287,11 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  * column: a failed or missed run IS settled, but folding away the only failure
  * signal would let a dead turn read as a clean one.
  *
- * `needs_attention` is In Progress's own yellow with a "!" struck through the
- * middle (schedule.css) rather than a hue of its own — a waiting run IS in
- * progress, and what is different about it is that it has stopped and is
- * asking, which is a thing a glyph can say and a shade cannot.
+ * `needs_attention` wears BLOCKED'S RED with a "!" in the middle (schedule.css)
+ * rather than a hue of its own: the card draws in the Blocked lane, so a hue
+ * that argued with that lane would be the one place on the page where the
+ * colour and the column disagree. The glyph is the whole difference between the
+ * lane's two members.
  *
  * SHAPE is the read-state (2026-08-18). The centre dot used to mean "settled" and
  * was drawn on every Done and Failed ring; it now means "not looked at yet", and a
@@ -1650,13 +1650,6 @@ function TaskNode({
   // offered and nothing is marked. Asked with the count this row is DRAWING, so
   // a second press on an already-cleared task posts nothing.
   const chat = openThreadIntent(task, unread);
-  // Is this row waiting on the READER — a permission or question card its live
-  // run raised and nobody has answered (server: tasks.py `_parked_runs`) — and
-  // what is being asked for. The status decides the first (tasks-lib
-  // .needsAttention); the second is null whenever there is nothing worth
-  // printing, including on an older server that sends no summary at all.
-  const waiting = needsAttention(task);
-  const asking = attentionSummary(task);
   const label = firstLine(task.title) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
@@ -2225,24 +2218,6 @@ function TaskNode({
         >
           {label}
         </span>
-        {/* WHAT IT IS ASKING FOR — "Bash · rm -rf build" — on the one row that is
-            waiting on somebody. The row's ring says a person is needed and the
-            title says which task; neither says what the answer would be about,
-            and a reader who has to open the chat to find out is a reader who has
-            to open every waiting chat.
-
-            AFTER the title rather than under it, which is the one departure from
-            design.md's "sub-line": this row is a single flex line by
-            construction (one auto margin, the title as the only element that
-            shrinks — see `.tasks-grow` below), and stacking a second line under
-            the title would change the height of every row on the page to serve
-            the rare one. It ellipsises before the title does, so the fact never
-            costs the task's own name. */}
-        {asking && (
-          <span className="tasks-asking" title={asking}>
-            {asking}
-          </span>
-        )}
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file
             mark, on the tasks whose target is a FILE rather than the folder.
             The row already says which project the work happened in; what it
@@ -2382,26 +2357,12 @@ function TaskNode({
             row's OWN click is still not this (see `activate`): on an accordion it
             toggles and opens nothing, and on a leaf it opens that leaf's single
             message through the message path, marking that one message. */}
-        {/* A WAITING ROW DRAWS IT WHATEVER SHOW_ROW_ACTIONS SAYS, and draws it
-            at rest rather than on hover (Akshil, 2026-09-03: "when we click we
-            go to the page and unblock the task"). The strip is hidden because a
-            list at rest must grow no chrome (§2 — only CRITICAL actions get a
-            visible button), and this is the one row where the rule points the
-            other way: the run has stopped and will not start again until
-            somebody answers the card, so the way to the card is the critical
-            action on the page.
-
-            The WORD is "Open" and not "Open chat" — the thing being opened is
-            the ask, and the row's own sub-line above has just said what it is.
-            No Approve or Deny here (design.md): answering means reading what is
-            being asked, and a two-button row that can say yes to `rm -rf` from a
-            list nobody has scrolled is exactly the gesture not to build. */}
-        {(SHOW_ROW_ACTIONS || waiting) && chat && (
+        {SHOW_ROW_ACTIONS && chat && (
           <button
             type="button"
-            className={"tasks-act" + (waiting ? " is-shown" : "")}
-            title={waiting ? "Open the chat and answer what it is asking" : "Open chat"}
-            aria-label={waiting ? "Open" : "Open chat"}
+            className="tasks-act"
+            title="Open chat"
+            aria-label="Open chat"
             onClick={(e) => {
               e.stopPropagation();
               openChat(chat);

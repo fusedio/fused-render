@@ -1598,24 +1598,6 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
 }
 
 /**
- * The sub-line under a waiting row's title: "Bash · rm -rf build".
- *
- * Null whenever there is nothing to say — no card, or a card the server could
- * not summarise (an older server sends no `attention` at all). A caption reading
- * "Bash · " is worse than no caption: it puts a gap where the row promised to
- * say what is being asked for.
- */
-export function attentionSummary(task: Task): string | null {
-  if (!needsAttention(task)) return null;
-  const at = task.attention;
-  if (!at) return null;
-  const tool = (at.tool || "").trim();
-  const summary = (at.summary || "").trim();
-  if (!tool) return summary || null;
-  return summary ? `${tool} · ${summary}` : tool;
-}
-
-/**
  * The same move the drag makes, reachable without dragging (Akshil,
  * 2026-08-17: "for failed tasks do we want a rerun button... same for the
  * upcoming tasks. Do you think we should add a trigger now button... And if
@@ -3322,11 +3304,12 @@ export function runningLabel(n: number): string {
 
 /** The collapsed dot's tooltip, and the expanded chip's — the sidebar's ONE
  *  sentence about the page, so the two modes cannot describe it differently. */
-/** "1 waiting for you" — the attention half of the same readout. A separate
+/** "2 tasks need input" — the attention half of the same readout. A separate
  *  sentence from `runningLabel` because it asks for something: "running" is a
- *  report, this is a request. */
+ *  report, this is a request. Singular at one ("1 task needs input"), because
+ *  one is the common case here and a rail that says "1 tasks" reads as broken. */
 export function attentionLabel(n: number): string {
-  return `${n} waiting for you`;
+  return n === 1 ? "1 task needs input" : `${n} tasks need input`;
 }
 
 export function pulseTitle(pulse: TasksPulse): string {

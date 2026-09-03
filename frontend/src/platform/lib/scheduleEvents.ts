@@ -15,12 +15,6 @@
 //              simply wasn't running inside the catch-up window — but the user
 //              asked for something that did not happen, so it is not an info.
 //  - done    → info, auto-dismissing. Your message ran; no decision to make.
-//  - attention → info, persistent, with an "Open" action onto the CHAT ITSELF.
-//              The turn has raised a permission or question card and nobody is
-//              there to answer it — for an unattended run, the single most
-//              likely way to be stuck. Info because nothing has gone wrong;
-//              persistent because the ask does not expire; onto the thread
-//              because that is where the card the person has to answer is.
 import { useEffect, useRef } from "react";
 import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
@@ -37,18 +31,9 @@ const POLL_MS = 15_000;
  *   passes tasksPulse.pokeTasks here (App); it is a parameter rather than an
  *   import because that store lives in shell and platform may not reach up
  *   (frontend/scripts/check-boundaries.mjs). `missed` deliberately does not
- *   fire it: nothing ran, so no row is mid-flip anywhere. `attention` DOES: no
- *   run ended, but a row just changed status, and it changed into the one status
- *   the page exists to show first.
- * @param chatHref Builds the URL of one conversation — shell's
- *   `schedule-lib.explorerUrl`, handed in for the same boundary reason as
- *   `onOutcome`. Only an `attention` toast has anywhere finer than /tasks to go,
- *   and without this (or without a session id yet) that is where it goes.
+ *   fire it: nothing ran, so no row is mid-flip anywhere.
  */
-export function useScheduleEvents(
-  onOutcome?: () => void,
-  chatHref?: (target: string, sessionId: string) => string,
-): void {
+export function useScheduleEvents(onOutcome?: () => void): void {
   // The highest event id already turned into a toast IN THIS PAGE. A ref (not
   // state) so it survives re-renders without re-arming the interval, and so two
   // overlapping polls can't narrate the same event twice while the ack for the
@@ -65,10 +50,6 @@ export function useScheduleEvents(
   // caller's CURRENT function rather than the one from the mounting render.
   const outcome = useRef(onOutcome);
   outcome.current = onOutcome;
-  // Same reason, same shape: the loop is armed once and must call the CURRENT
-  // builder rather than the one from the mounting render.
-  const href = useRef(chatHref);
-  href.current = chatHref;
 
   useEffect(() => {
     // Only the top-level shell narrates: every embed iframe would otherwise poll
@@ -94,8 +75,7 @@ export function useScheduleEvents(
       // The events just narrated are also the earliest word this poll has that
       // a run ENDED — see the onOutcome contract above. Once per batch, not per
       // event: the outcome callback refetches, and one refetch reads them all.
-      if (fresh.some((e) => e.kind === "done" || e.kind === "failed"
-                            || e.kind === "attention")) {
+      if (fresh.some((e) => e.kind === "done" || e.kind === "failed")) {
         outcome.current?.();
       }
       // Confirm only AFTER narrating: a page that dies in between sees these
@@ -117,16 +97,6 @@ export function useScheduleEvents(
         pushToast({ msg: t.msg, tone: t.tone });
         return;
       }
-      // The thread when the event named one and the shell handed a builder in
-      // (an `attention` toast, whose whole point is landing ON the card), /tasks
-      // otherwise — the page that can explain anything else, and the honest
-      // fallback for a run whose session id the watcher has not learnt yet.
-      // The TARGET has to be there, not just the session: the chat is opened by
-      // opening the folder it happened in, and a URL built on an empty path is a
-      // link to nowhere rather than a link to the thread.
-      const to = t.open && t.open.target && href.current
-        ? href.current(t.open.target, t.open.sessionId)
-        : "/tasks";
       const id = pushToast({
         msg: t.msg,
         tone: t.tone,
@@ -135,7 +105,7 @@ export function useScheduleEvents(
           label: "Open",
           onClick: () => {
             dismissToast(id);
-            navigateUrl(to);
+            navigateUrl("/tasks");
           },
         },
       });

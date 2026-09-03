@@ -44,39 +44,6 @@ describe("toastForEvent", () => {
     expect(t.needsAttention).toBe(true);
   });
 
-  it("asks for an answer on a run that has parked on a card", () => {
-    // The one kind here about a run that has NOT ended. Info, because nothing
-    // has gone wrong — the run is doing exactly what it should, which is
-    // refusing to act without an answer — and persistent all the same, because
-    // the ask does not expire and only a person can end it. That pairing is why
-    // `needsAttention` is a field of its own and not `tone === "error"`.
-    const t = toastForEvent(ev({
-      kind: "attention",
-      message: "clean the build tree",
-      session_id: "sess-7",
-      detail: "Bash · rm -rf build",
-    }));
-    expect(t.tone).toBe("info");
-    expect(t.needsAttention).toBe(true);
-    expect(t.msg).toBe("Task needs your input: clean the build tree");
-    // ...and it points at the CHAT, not at the page that lists it: the card is
-    // in the thread, and /tasks is one more click away from answering it.
-    expect(t.open).toEqual({ target: "/Users/x/proj", sessionId: "sess-7" });
-  });
-
-  it("names no conversation for the kinds whose news is a row", () => {
-    // A failed or missed run is OVER — the row on /tasks carries the reason, the
-    // target and the run id, which is more than the thread would say — so these
-    // keep the page as their action and `open` stays null.
-    for (const kind of ["done", "failed", "missed"] as const) {
-      expect(toastForEvent(ev({ kind })).open).toBe(null);
-    }
-    // An older server sends no session id: the toast still opens, and the caller
-    // falls back to /tasks (scheduleEvents).
-    expect(toastForEvent(ev({ kind: "attention" })).open)
-      .toEqual({ target: "/Users/x/proj", sessionId: "" });
-  });
-
   it("identifies the message by what the user typed", () => {
     // A toast saying only "a scheduled message failed" sends the user hunting.
     expect(toastForEvent(ev({ kind: "failed", message: "deploy the docs" })).msg)

@@ -2591,18 +2591,16 @@ input.schedule-when-field {
 .schedule-ring--failed,
 .schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
 
-/* NEEDS ATTENTION IS IN PROGRESS'S OWN YELLOW, deliberately, and the mark that
-   separates the two is the "!" the ring wears rather than a seventh hue
-   (`--status-attention`, which is that same yellow under its own name so a
-   caller reads the intent and not the coincidence).
+/* NEEDS ATTENTION WEARS BLOCKED'S RED, and the "!" is the whole of the
+   difference (Akshil, 2026-09-03). It is the lane's own hue, not a hue of its
+   own: the card DRAWS in Blocked, the header over it says Blocked, and a ring
+   that argued with its own column would be the one place on this page where the
+   colour and the lane disagree.
 
-   A hue of its own was the first cut and it was wrong twice over. The page
-   already spends five colours on five lanes, and the sixth would have had to be
-   distinguishable from BOTH the In Progress yellow beside it in meaning and the
-   Blocked red beside it on the board — which on a 16px ring, in two themes, is a
-   colour that does not exist. And it would have said the wrong thing: a waiting
-   run IS in progress. What is different about it is that it has stopped and is
-   asking, and a glyph says that where a shade cannot.
+   It was In Progress's yellow for a few hours, on the reasoning that a waiting
+   run is a running run. True, and beside the point: what a reader needs from
+   the hue is "this is not going anywhere by itself", which is the same thing
+   Blocked says, and the "!" is what separates the two members of that lane.
 
    The glyph is drawn from `currentColor` at the ring's own centre, so the mark
    inherits the hue and needs no second token.
@@ -2636,7 +2634,7 @@ input.schedule-when-field {
    under it, never match the row behind it (which is tinted on hover, and would
    be an impossible thing to match anyway). Read the pair as one mark: the disc
    says nobody has read this, and the hole punched in it says it is asking. */
-.schedule-ring--needs_attention { color: var(--status-attention); }
+.schedule-ring--needs_attention { color: var(--status-failed); }
 
 .schedule-ring-bang {
   position: absolute;

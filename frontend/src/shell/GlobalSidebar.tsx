@@ -526,16 +526,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // own (--status-progress / --status-done, schedule.css) — one status, one
   // colour, on every surface that names it (design-principles §1).
   //
-  // WAITING OUTRANKS BOTH (2026-09-03). A task parked on a permission card is
-  // counted in `running` — its turn genuinely is in flight — so without this it
-  // wore the plain yellow and the sidebar said nothing about the one state that
-  // is asking for the reader. Same yellow, `is-attention` on top of it: the dot
-  // pulses rather than sitting still, which is the rail's version of the "!" the
-  // status ring wears, and nothing else in the corner moves.
+  // A WAITING TASK GETS NO DOT OF ITS OWN (Akshil, 2026-09-03). It is counted in
+  // `running` — its turn genuinely is in flight — so it wears the plain yellow
+  // like every other running task, and the fact that it is waiting is said in
+  // WORDS (below, and in the tooltip) rather than by a mark that moves. A
+  // pulsing dot was tried and taken out: the rail's corner is the one place on
+  // screen a reader cannot look away from, and nothing there may blink.
   const tasksDot =
-    pulse.attention > 0 ? (
-      <span className="sidebar-rail-dot is-running is-attention" title={tasksTip} />
-    ) : pulse.running > 0 ? (
+    pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
     ) : unseen > 0 ? (
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
@@ -556,7 +554,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
         {pulse.attention > 0 ? (
-          <span className="sidebar-running is-attention" title={tasksTip}>
+          <span className="sidebar-running" title={tasksTip}>
             {attentionLabel(pulse.attention)}
           </span>
         ) : pulse.running > 0 && (

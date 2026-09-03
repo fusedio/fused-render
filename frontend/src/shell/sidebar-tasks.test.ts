@@ -17,6 +17,7 @@ import {
   isDoneUnread,
   isUnseenCompletion,
   parseTasksSeen,
+  attentionLabel,
   pulseTitle,
   runningLabel,
   sameSeen,
@@ -99,21 +100,22 @@ describe("the sidebar's tasks pulse", () => {
     expect(tasksPulse(parked, {}))
       .toEqual({ running: 2, attention: 1, doneUnread: 0, unseen: 0 });
     // And it is what the tooltip leads with: the one line in it that asks the
-    // reader for something goes first.
+    // reader for something goes first. Singular at one, because one is the
+    // common case and "1 tasks" reads as a broken string.
     expect(pulseTitle(tasksPulse(parked, {})))
-      .toBe("1 waiting for you · 2 running");
+      .toBe("1 task needs input · 2 running");
+    expect(attentionLabel(2)).toBe("2 tasks need input");
   });
 
-  it("gives the waiting dot the rail, over plain running and over unread", () => {
-    // Three states can be true at once and the corner draws ONE dot. Waiting
-    // outranks both, because it is the only one that cannot resolve itself.
+  it("says it in WORDS, and gives the rail no mark of its own", () => {
+    // A waiting task is counted in `running`, so the corner keeps the plain
+    // yellow dot every running task has. A pulsing one was tried and taken out
+    // (Akshil, 2026-09-03): the rail is the one place on screen a reader cannot
+    // look away from, and nothing there may blink.
     expect(SIDEBAR).toContain("pulse.attention > 0 ? (");
-    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-running is-attention"');
-    // The same yellow, moving: a second hue would have claimed a waiting run is
-    // not running, which is exactly what it is.
-    expect(SIDEBAR_CSS).toContain(".sidebar-rail-dot.is-attention {");
-    expect(SIDEBAR_CSS).toContain("sidebar-attention-pulse");
-    expect(SIDEBAR_CSS).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(SIDEBAR).not.toContain("is-attention");
+    expect(SIDEBAR_CSS).not.toContain("is-attention");
+    expect(SIDEBAR_CSS).not.toContain("sidebar-attention-pulse");
   });
 
   it("keeps the COUNT through a visit and drops only the dot", () => {
@@ -570,26 +572,13 @@ describe("pokeTasks", () => {
     // platform may not import shell (check-boundaries), so scheduleEvents takes
     // the callback and App supplies the store's pokeTasks.
     expect(EVENTS).toMatch(
-      /e\.kind === "done" \|\| e\.kind === "failed"/,
+      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
     );
-    // ...and an `attention` event too: no run ended, but a row just changed into
-    // the one status the page puts at the top.
-    expect(EVENTS).toContain('e.kind === "attention"');
+    // NOTHING IS NARRATED FOR A PARKED RUN (Akshil, 2026-09-03): the Tasks page
+    // says it on its own, with the ring and the row's place at the top.
+    expect(EVENTS).not.toContain('"attention"');
     expect(EVENTS).not.toContain("@shell/");
-    expect(APP).toContain("useScheduleEvents(pokeTasks, explorerUrl)");
-  });
-
-  it("sends an attention toast to the CHAT, and everything else to /tasks", () => {
-    // The action on a toast about a parked run has to land on the card the run
-    // is waiting on (Akshil, 2026-09-03: "when we click we go to the page and
-    // unblock the task"). platform cannot build that URL — `explorerUrl` is
-    // shell's — so the builder is handed in the same way `pokeTasks` is, and the
-    // fallback is the page, which is also what an event with no target gets.
-    expect(EVENTS).toContain("chatHref?: (target: string, sessionId: string) => string");
-    expect(EVENTS).toContain("t.open && t.open.target && href.current");
-    expect(EVENTS).toContain('navigateUrl(to);');
-    expect(EVENTS).toContain(': "/tasks";');
-    expect(EVENTS).not.toContain("@shell/");
+    expect(APP).toContain("useScheduleEvents(pokeTasks)");
   });
 
   it("an interactive chat turn pokes too — through the storage stamp", () => {
