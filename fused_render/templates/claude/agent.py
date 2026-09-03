@@ -2741,6 +2741,119 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
     return live
 
 
+def _host_alive(run_dir: str) -> bool:
+    """Whether `run_dir` has a LIVE session host, read off `host.json` alone.
+
+    Not `_alive`: that reads `run_dir/pid`, which is the CLI's own pid once
+    the host has overwritten it (see session_host.py), and the CLI can be
+    freshly dead — a crash, the tail end of an idle-reap — with `host.json`
+    still on disk for the instant before the host notices and removes it.
+    `host.json` is written once, right after the host spawns the CLI, and
+    removed in the host's own `finally` the moment it reaps (or dies) — so
+    its PRESENCE plus an alive PID inside it is the host's own two-part
+    answer to "is there still a queue to write a follow-up into"."""
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(host, dict):
+        return False
+    return _pid_alive(str(host.get("pid") or ""))
+
+
+def _live_host(file: str, session_id: str = "",
+               limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
+    """The id of a run for `file` whose session HOST is still up, or "".
+
+    `_live_run` above answers "is a TURN open right now" — the question a page
+    re-attaching to a stream needs. This answers a different one: "is there a
+    session I can hand a follow-up to", which is true for the whole life of a
+    chat, turn or no turn — a host sits idle between turns on purpose (that is
+    the entire point of it), so gating this on `_turn_state`'s `turn_open`
+    would make `action=send` miss every follow-up typed after a reply lands
+    and before the idle-reap timer ends the session, which is most of them.
+
+    Matching follows `_live_run`'s own rules exactly (same `meta.json` file
+    match, same `resumed_from`/`session`-file/`_session_from_out` session
+    match) — only the liveness check at the end differs.
+    """
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {"run_id": ""}
+    if limit is not None:
+        names = names[:limit]
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        if session_id:
+            own = ""
+            try:
+                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                    own = fh.read().strip()
+            except OSError:
+                pass
+            if not own:
+                own = _session_from_out(run_dir)
+            if session_id not in (meta.get("resumed_from", ""), own):
+                continue
+        if _host_alive(run_dir):
+            return {"run_id": name}
+    return {"run_id": ""}
+
+
+def _send(run_id: str, message: str, read_dirs: str = "") -> dict:
+    """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
+    process for it.
+
+    This is what makes two messages typed while a turn runs land as ONE
+    continuous reply instead of the page's own queue faking that with a
+    second CLI process (that queue is retired — see the plan's Task 6): the
+    message is written into `run_dir/inbox/` (`_write_inbox_entry`, the same
+    function `_start` uses for a turn's opening message) and the session
+    host already polling that directory picks it up on its next drain tick,
+    whether the CLI is mid-turn (absorbed into the running turn) or idle
+    (starts a fresh one on the same held-open stdin pipe).
+
+    `read_dirs` is the SAME per-message attachment-directory string `_start`
+    takes, but `--allowed-tools` is fixed at spawn time — a live session
+    cannot be handed a new `Read` rule mid-session. So a message naming a
+    directory the host was not already granted cannot be honored by sending:
+    silently dropping the directory would card the very file the user just
+    attached, so instead the whole session is ended (the same tree-kill
+    `action=cancel` uses) and `{"respawn": True}` tells the caller to call
+    `_start` fresh instead, which grants the new directory on the new spawn
+    line. A caller that gets `{"respawn": True}` must resend `message` itself
+    through `_start` — this function never does that on its own, since only
+    the caller knows the rest of `_start`'s arguments (model, effort, ...).
+    """
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    wanted = set(_attach_dirs(read_dirs))
+    granted = set(host.get("read_dirs") or [])
+    if not wanted <= granted:
+        _cancel(run_id)
+        return {"respawn": True}
+    _write_inbox_entry(run_dir, message)
+    return {"sent": True}
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -4502,4 +4615,18 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _terminal_command(file, session_id)
     if action == "cancel":
         return _cancel(run_id)
+    if action == "live_host":
+        # "Is there a session I can hand a follow-up to?" — asked BEFORE
+        # every send (see template.html's sendMessage): a host answering
+        # here is what turns a follow-up into an inbox write instead of a
+        # fresh `_start`. Unlike `live_run`, this says yes for a session
+        # sitting idle between turns too — see `_live_host`'s own comment.
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _live_host(file, session_id)
+    if action == "send":
+        # `read_dirs` is the SAME per-message attachment string `action=start`
+        # takes (see `_attach_dirs`), just re-checked against what the host
+        # was already granted at spawn time — see `_send`.
+        return _send(run_id, message, read_dirs)
     return {"error": f"unknown action: {action}"}
