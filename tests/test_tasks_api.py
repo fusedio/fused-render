@@ -287,6 +287,56 @@ def test_started_is_the_clock_that_does_not_move_while_last_active_does(
     assert later["last_active"] > first["last_active"]
 
 
+def test_started_does_not_move_when_the_transcript_shows_up(
+        client, projects_dir, state_dir):
+    """A scheduled run is listed before it has said anything, and again after.
+    `started` is the same number both times.
+
+    bugbot, PR #984. It used to be `_place`'s `order`, which SWITCHES SOURCE at
+    exactly that moment — the entry's `created` while there is no transcript, the
+    transcript's first record once there is one. Harmless for `order`'s own job
+    (allocating a task number once), and not harmless at all for the Cards wall,
+    which orders by this to stop a card moving after it appears: the switch is a
+    card jumping the moment its run speaks. Taking the EARLIEST of the two pins
+    it, because `created` always precedes anything the run says."""
+    _already_using(state_dir)
+    # Scheduled a day before it fires, and it fires an hour before it speaks —
+    # the gap that made the two clocks disagree.
+    _seed_schedule([_entry("e1", "run the report", T10, created=T9,
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+
+    before = _tasks(client)[0]
+    assert before["started"] == tasks_mod.tasks_store.epoch(T9)
+
+    # The run opens its session and says its first thing an hour later.
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("run the report", T11),
+        _assistant("done", T11),
+    ])
+    after = _tasks(client)[0]
+    assert after["started"] == before["started"], (
+        "the transcript's arrival must not restamp a task that already began"
+    )
+    # ...while `order` itself is untouched: it still switches, because task-number
+    # allocation is a different question and this fix must not answer it.
+    assert after["last_active"] > after["started"]
+
+
+def test_started_is_the_transcript_head_for_a_task_with_no_entry(
+        client, projects_dir, state_dir):
+    """A chat typed into a terminal has no scheduled entry and therefore no
+    `created`. Its transcript's FIRST line is the one line in it that never
+    changes, so that is the stamp — equally fixed, by a different route."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-b", "/home/me/proj", [
+        _user("hello", T9),
+        _assistant("hi", T10),
+    ])
+    task = _tasks(client)[0]
+    assert task["started"] == tasks_mod.tasks_store.epoch(T9)
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""

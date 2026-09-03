@@ -2654,12 +2654,14 @@ export interface Task {
   attention?: { tool: string; summary: string } | null;
   live: boolean;
   unread: number;
-  // WHEN THIS TASK BEGAN, epoch seconds — the transcript's first record, else
-  // the first scheduled entry's `created` (server `_place`'s `order`). The one
-  // clock on this row that never moves, which is why the Cards wall orders by it
-  // (tasks-lib.cardsForTasks) instead of by `last_active`, a number that climbs
-  // every time a run says anything. 0 when the task has neither a transcript nor
-  // an entry yet; absent on an older server, which reads the same way.
+  // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
+  // it: the scheduled entry's `created`, else the transcript's first record
+  // (routers/tasks.py `_place`, which says why it is the earliest and not
+  // whichever one exists). The one time on this row that never moves, which is
+  // why the Cards wall orders by it (tasks-lib.cardsForTasks) instead of by
+  // `last_active`, a number that climbs every time a run says anything. 0 when
+  // the task has neither a transcript nor an entry yet; absent on an older
+  // server, which reads the same way.
   started?: number;
   last_active: number;
   message_count: number;

@@ -1435,6 +1435,38 @@ def _place(task: dict) -> None:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
     task["order"] = first_ts
+    # WHEN THE TASK BEGAN — the row's `started`, and deliberately NOT `order`
+    # above, which this must not disturb: `order` decides the sequence new task
+    # NUMBERS are handed out in (`_numbers` → tasks_store.ensure_ids), a
+    # once-per-key decision that has already been made for every task that has a
+    # number, so changing what it means would renumber nothing and confuse
+    # everything.
+    #
+    # WHY THE TWO CANNOT BE THE SAME VALUE (bugbot, PR #984). `order` SWITCHES
+    # SOURCE the moment a transcript exists: before that it is the entry's
+    # `created`, and after it is the transcript's first record. For allocation
+    # that is harmless — a number is allocated once and then kept — but the Cards
+    # wall orders itself by `started` precisely so a card cannot move after it
+    # appears (shell/tasks-lib.cardsForTasks), and a value that changes under a
+    # listed row is exactly the thing that would move one. Two tasks created
+    # seconds apart could swap places when the second's transcript landed; a run
+    # scheduled days before it fires would jump the moment it spoke.
+    #
+    # So: THE EARLIEST CLOCK WE HAVE. `created` is written when the message is
+    # scheduled and always precedes the first thing the run says, so once a task
+    # has one the minimum is fixed for good and the transcript's arrival cannot
+    # move it. A hand-typed session — no entry, no `created` — takes its
+    # transcript's first record, which is equally fixed: a transcript's FIRST
+    # line is the one line in it that never changes.
+    #
+    # `first_ts` is read after the fallback above, so an entry with no `created`
+    # stamp at all contributes its due time here rather than nothing. That is the
+    # one shape whose `started` can still move (due time, then the transcript's
+    # first record if it is earlier) — and the scheduler writes `created` on
+    # every entry it makes, so it is a shape this server does not produce.
+    created = (tasks_store.epoch(entries[0].get("created")) or 0.0) if entries else 0.0
+    began = [stamp for stamp in (created, first_ts) if stamp]
+    task["started"] = min(began) if began else 0.0
 
 
 def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
@@ -1707,17 +1739,16 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
                       if waiting is not None else None),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
-        # WHEN THIS TASK BEGAN — `_place`'s `order`, which is the transcript's
-        # first record's timestamp, else the first entry's `created`. It is the
-        # one clock on this row that NEVER MOVES: `last_active` climbs on every
-        # write, and a view that orders by it re-sorts itself while its runs are
-        # merely talking. The Cards wall needs an order that holds still while it
-        # watches (shell/tasks-lib.cardsForTasks), and it already existed here —
-        # `_numbers` sorts new allocations by exactly this value, so a task's
-        # number and this stamp agree about which task is older by construction.
+        # WHEN THIS TASK BEGAN — the EARLIEST clock it has (`_place`, which
+        # explains the choice at length): the scheduled entry's `created`, else
+        # the transcript's first record. It is the one time on this row that
+        # never moves — `last_active` climbs on every write, and `order` beside
+        # it switches source when a transcript appears — which is why the Cards
+        # wall orders by it: a view that re-sorts itself while its runs are
+        # merely talking is one nobody can watch (shell/tasks-lib.cardsForTasks).
         # 0.0 for a row that has neither a transcript nor an entry to date, the
         # way every other absent time on this row reads.
-        "started": task.get("order") or 0.0,
+        "started": task.get("started") or 0.0,
         "last_active": surfaced,
         "message_count": total,
         # The next run, and the entry it belongs to — `min(at)` over every

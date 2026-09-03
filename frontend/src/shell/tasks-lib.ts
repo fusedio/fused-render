@@ -2957,8 +2957,8 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  * than of subject.
  *
  * NEWEST TASK FIRST WITHIN A LANE, and `started` is what that means — when the
- * conversation BEGAN (server `_place`'s `order`: the transcript's first record,
- * else the first entry's `created`), not when it last said something.
+ * conversation BEGAN (server `_place`: the earliest of the scheduled entry's
+ * `created` and the transcript's first record), not when it last said something.
  *
  * IT WAS `last_active`, AND THAT IS THE BUG THIS FIXES (Akshil, 2026-09-03: "in
  * cards view, when i create a new task the layout shifts multiple times, fix
