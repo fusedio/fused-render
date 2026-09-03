@@ -134,7 +134,7 @@ function renderInstance(
     <RepoUpdatesCardView
       rows={rows}
       dismissed={props.dismissed ?? {}}
-      failed={props.failed ?? []}
+      terminal={props.terminal ?? []}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
@@ -350,13 +350,13 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 function renderDockInstance(
   rows: RepoRow[],
   dismissed: Record<string, string> = {},
-  failed: Job[] = [],
+  terminal: Job[] = [],
 ): ReactTestRenderer {
   return create(
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
-      failed={failed}
+      terminal={terminal}
       initialCollapsed={false}
       onDismiss={() => {}}
       onDismissAll={() => {}}
@@ -383,14 +383,14 @@ function updateDockInstance(
   renderer: ReactTestRenderer,
   rows: RepoRow[],
   dismissed: Record<string, string> = {},
-  failed: Job[] = [],
+  terminal: Job[] = [],
 ) {
   act(() => {
     renderer.update(
       <RepoUpdatesDockView
         rows={rows}
         dismissed={dismissed}
-        failed={failed}
+        terminal={terminal}
         initialCollapsed={false}
         onDismiss={() => {}}
         onDismissAll={() => {}}
@@ -525,8 +525,8 @@ test("a re-check that moved NOTHING leaves a dismissed row dismissed and the pan
 // `error` rows until they are explicitly dismissed, so this is a client-side
 // re-route of rows that already exist.
 
-test("a failed job draws as a row here, with its failure message", () => {
-  const tree = renderView({ rows: [], failed: [failedJob()] });
+test("a terminal job draws as a row here, with its failure message", () => {
+  const tree = renderView({ rows: [], terminal: [failedJob()] });
   expect(tree).not.toBeNull();
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(1);
@@ -538,18 +538,18 @@ test("a failed job draws as a row here, with its failure message", () => {
 // what the combined count used to assert (D586). Each source alone must fill
 // it, or one of them would be invisible from the bar.
 test("either source fills the circle, and neither alone leaves it empty", () => {
-  const repoOnly = renderView({ rows: repoRows([status()]), failed: [] });
+  const repoOnly = renderView({ rows: repoRows([status()]), terminal: [] });
   expect(circleFilled(repoOnly)).toBe(true);
 
-  const failureOnly = renderView({ rows: [], failed: [failedJob()] });
+  const failureOnly = renderView({ rows: [], terminal: [failedJob()] });
   expect(circleFilled(failureOnly)).toBe(true);
 
-  const both = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
+  const both = renderView({ rows: repoRows([status()]), terminal: [failedJob()] });
   expect(circleFilled(both)).toBe(true);
 });
 
 test("failures alone still make the section non-idle", () => {
-  const tree = renderView({ rows: [], failed: [failedJob()] });
+  const tree = renderView({ rows: [], terminal: [failedJob()] });
   expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
   expect(circleFilled(tree)).toBe(true);
   expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
@@ -558,18 +558,18 @@ test("failures alone still make the section non-idle", () => {
 });
 
 test("both sources empty is what draws the one empty sentence", () => {
-  const tree = renderView({ rows: [], failed: [] });
+  const tree = renderView({ rows: [], terminal: [] });
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
   expect(circleFilled(tree)).toBe(false);
 });
 
 test("a failure colours the chip — the tint moved here from Jobs (D586)", () => {
-  const withFailure = renderView({ rows: [], failed: [failedJob()] });
+  const withFailure = renderView({ rows: [], terminal: [failedJob()] });
   expect(
     (findAll(withFailure, "dl-toggle")[0].props.className as string).split(" "),
   ).toContain("is-failure");
 
-  const repoOnly = renderView({ rows: repoRows([status()]), failed: [] });
+  const repoOnly = renderView({ rows: repoRows([status()]), terminal: [] });
   expect((findAll(repoOnly, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
     "is-failure",
   );
@@ -580,7 +580,7 @@ test("Clear is offered for repo rows only — a failure is dismissed by its own 
   // client-side and expires when the repo moves (D585 finding 3), while a
   // failure's dismissal is server-side and permanent. One Clear cannot honestly
   // promise both.
-  const failuresOnly = renderView({ rows: [], failed: [failedJob()] });
+  const failuresOnly = renderView({ rows: [], terminal: [failedJob()] });
   expect(findAll(failuresOnly, "dl-clear")).toHaveLength(0);
   // The row still carries its own dismiss control.
   expect(findAll(failuresOnly, "dl-x")).toHaveLength(1);
@@ -589,13 +589,13 @@ test("Clear is offered for repo rows only — a failure is dismissed by its own 
   // the point here is that failures do not count toward it either way.
   const withRepos = renderView({
     rows: repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]),
-    failed: [failedJob()],
+    terminal: [failedJob()],
   });
   expect(findAll(withRepos, "dl-clear")).toHaveLength(1);
 
   // ...and a plurality made up of one repo row plus one failure does NOT earn
   // it: Clear only ever acts on repo rows, so only those may be counted.
-  const oneEach = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
+  const oneEach = renderView({ rows: repoRows([status()]), terminal: [failedJob()] });
   expect(findAll(oneEach, "dl-clear")).toHaveLength(0);
 });
 
@@ -621,8 +621,8 @@ test("repo rows come before failures — the actionable rows first", () => {
   // ordering is asserted by what each kind carries rather than by class name:
   // a repo row's own action button is `.q-all` (kept — see this row's own
   // header comment for why it did not migrate to `.dl-row-cancel`), which a
-  // failed-job row (`JobRow`) never renders.
-  const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), failed: [failedJob()] });
+  // terminal-job row (`JobRow`) never renders.
+  const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), terminal: [failedJob()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(2);
   expect(findAll(rows[0], "q-all")).toHaveLength(1);
@@ -642,7 +642,7 @@ test("a failure arriving does NOT auto-open the panel — it only fills the circ
       <RepoUpdatesDockView
         rows={[]}
         dismissed={{}}
-        failed={[failedJob()]}
+        terminal={[failedJob()]}
         onDismiss={() => {}}
         onDismissAll={() => {}}
         onDone={() => {}}

@@ -7,6 +7,7 @@ import {
   clearableCount,
   GRACE_MS,
   jobAmount,
+  jobDetail,
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
@@ -132,6 +133,32 @@ test("a stalled row blames the right reporter", () => {
   const server = jobStatusLine(job({ stalled: true, owner: "server" }));
   expect(server).toContain("the process running it stopped reporting");
   expect(server).not.toContain("page");
+});
+
+test("a running job with no detail and no message reads as empty — the fallback is the call site's job (jobDetail)", () => {
+  // `jobStatusLine` no longer folds `jobDetail` in itself (Change 3): a
+  // running download can carry a real progress AMOUNT with no phase text at
+  // all, a fact this function never sees, so falling back here would win
+  // over that amount at the render site. Callers apply `jobDetail` only once
+  // BOTH the status line and the amount are known to be empty.
+  expect(jobStatusLine(job({ state: "running", detail: undefined }))).toBe("");
+});
+
+test("jobDetail names the kind and how long it has been running, from facts every job always carries", () => {
+  const started_at = Date.now() / 1000 - 125; // 2m 5s ago
+  expect(jobDetail(job({ kind: "download", started_at, stalled: false }))).toBe(
+    "Download · started 2m ago"
+  );
+  expect(jobDetail(job({ kind: "task", started_at, stalled: false }))).toBe(
+    "Task · started 2m ago"
+  );
+});
+
+test("jobDetail folds in stalled, since a job with nothing else to say and no reporter left needs it most", () => {
+  const started_at = Date.now() / 1000 - 5;
+  expect(jobDetail(job({ kind: "download", started_at, stalled: true }))).toBe(
+    "Download · started 5s ago · not reporting"
+  );
 });
 
 test("stalled outranks a pending cancel, and says both", () => {

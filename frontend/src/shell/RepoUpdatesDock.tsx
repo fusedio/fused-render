@@ -50,11 +50,12 @@ import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import StatusDot from "@platform/ui/StatusDot";
-// `JobRow` reused verbatim for a failed job (D586) — shell may import
+// `JobRow` reused verbatim for a terminal job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
+import { isFailure } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
@@ -76,7 +77,7 @@ import {
 // than that would only ever re-read the same cached answer.
 const NOOP = () => {};
 /** `JobRow`'s optimistic-patch seam, defaulted for callers that hand in a
- *  fixed `failed` list (the tests). A real one comes from the shell, which
+ *  fixed `terminal` list (the tests). A real one comes from the shell, which
  *  owns the state these rows are drawn from (D586). */
 const NOOP_PATCH = () => {};
 const POLL_MS = 6000;
@@ -372,23 +373,23 @@ export function RepoUpdatesCardView({
   onDismiss,
   onDismissAll,
   onDone,
-  failed = [],
+  terminal = [],
   pairings = [],
   onPairingGone,
   onJobsChanged,
-  onFailedPatch,
+  onTerminalPatch,
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Failed jobs re-routed here from the Jobs section (D586). */
-  failed?: Job[];
+  /** Terminal jobs re-routed here from the Jobs section (D586). */
+  terminal?: Job[];
   /** Devices that paired over the LAN — the third row kind. */
   pairings?: LanPairingEvent[];
   onPairingGone?: (id: string) => void;
-  /** A failed row was acted on — ask the jobs poll to re-read. */
+  /** A terminal row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
-  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
+  onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
   onToggle: () => void;
   /** Background the panel — an outside pointer-down or Escape (D574).
@@ -404,14 +405,15 @@ export function RepoUpdatesCardView({
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change.
-  const total = visible.length + failed.length + pairings.length;
+  const total = visible.length + terminal.length + pairings.length;
   const idle = total === 0;
-  // The failure tint MOVED HERE from the Jobs chip (D586): this is the section
-  // that holds failures now, so it is the one worth colouring. Unconditional on
-  // there being a failure at all, rather than Jobs' old "everything terminal
-  // and something failed" — an `error` row in here is always terminal, so the
-  // extra clause had nothing left to say.
-  const hasFailure = failed.length > 0;
+  // The failure tint MOVED HERE from the Jobs chip (D586), and D635 broadened
+  // `terminal` to hold every finished job — done and cancelled as well as
+  // error — none of which need the tint. So this stays scoped to `isFailure`
+  // (jobs.ts), a real `error`, rather than to "this section holds anything
+  // terminal": a `done` row landing here must not turn the chip red just for
+  // existing.
+  const hasFailure = terminal.some(isFailure);
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -451,10 +453,11 @@ export function RepoUpdatesCardView({
             `Notifications` is the extensible CATEGORY, so an alert that is
             not a repo update gets a home here without a fourth section. */}
         {/* The label and the shared indicator (D590). Filled when this section
-            holds anything — a repo update, a failed job, or both. It is also
-            the QUIET SIGNAL for an error-sourced notification (D586): a
-            background failure fills it and opens no panel, since failures are
-            absent from the ids the auto-open hook is given. */}
+            holds anything — a repo update, a terminal job, or both. It is also
+            the QUIET SIGNAL for a background-finished notification (D586,
+            broadened by D635 to every terminal state): a terminal job fills
+            it and opens no panel, since terminal jobs are absent from the ids
+            the auto-open hook is given. */}
         <span className="dl-summary">Notifications</span>
         <StatusDot
           on={total > 0}
@@ -496,19 +499,19 @@ export function RepoUpdatesCardView({
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
-                {failed.map((job) => (
+                {terminal.map((job) => (
                   <JobRow
                     key={job.id}
                     job={job}
                     onChanged={onJobsChanged ?? NOOP}
                     // A REAL patcher (D586): `JobRow`'s dismiss calls
                     // `onPatch(js => js.filter(...))` on success, and the
-                    // shell's own `failed` state is exactly that list — so the
+                    // shell's own `terminal` state is exactly that list — so the
                     // row goes the instant the server confirms, instead of
                     // lingering until the next poll. D572's rejected-request
                     // sentence still shows on failure, because the patch only
                     // runs when the request landed.
-                    onPatch={onFailedPatch ?? NOOP_PATCH}
+                    onPatch={onTerminalPatch ?? NOOP_PATCH}
                   />
                 ))}
               </div>
@@ -522,10 +525,10 @@ export function RepoUpdatesCardView({
                   the same button reads as acting on what is above it, which is
                   what it does. */}
               {/* Clear takes only the REPO rows — the ones this card's own
-                  client-side dismissal model covers. A failed job's dismissal
+                  client-side dismissal model covers. A terminal job's dismissal
                   is server-side and permanent (`dismissJob`), so sweeping both
                   under one button would hide two different promises behind it;
-                  a failure is dismissed by its own row's ✕ (D586). Omitted
+                  a terminal job is dismissed by its own row's ✕ (D586). Omitted
                   entirely when there is no repo row to clear, rather than
                   offering a button that would do nothing. */}
               {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
@@ -582,25 +585,26 @@ export function RepoUpdatesCardView({
  * 3), never a refreshed `checked_at` — a throttled re-check that moved
  * nothing used to resurrect the row every five minutes.
  *
- * FAILED JOBS CANNOT OPEN THIS PANEL (D586/D588): they reach this section as a
- * prop and fill the circle, but they go to the hook as `alsoDrawn`, never as
- * announceable ids — which is what makes "a background failure never throws a
- * panel over the page" structural rather than a flag. They DO count for
- * occupancy, so an emptying repo list no longer closes the panel out from under
- * them (code review 2026-08-28, finding 1).
+ * TERMINAL JOBS CANNOT OPEN THIS PANEL (D586/D588, broadened by D635): they
+ * reach this section as a prop and fill the circle, but they go to the hook
+ * as `alsoDrawn`, never as announceable ids — which is what makes "a
+ * background job finishing never throws a panel over the page" structural
+ * rather than a flag. They DO count for occupancy, so an emptying repo list
+ * no longer closes the panel out from under them (code review 2026-08-28,
+ * finding 1).
  */
 export function RepoUpdatesDockView({
   rows,
   dismissed,
   ready,
-  failed = [],
+  terminal = [],
   pairings = [],
   onPairingGone,
   onDismiss,
   onDismissAll,
   onDone,
   onJobsChanged,
-  onFailedPatch,
+  onTerminalPatch,
   initialCollapsed,
 }: {
   rows: RepoRow[];
@@ -608,10 +612,11 @@ export function RepoUpdatesDockView({
   /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
    *  so a caller that mounts this with a fixed list keeps the old behaviour. */
   ready?: boolean;
-  /** FAILED JOBS (D586) — `state: "error"` rows re-routed out of the Jobs
-   *  section, drawn beside the repo rows. Optional and defaulted so every
-   *  existing caller and test keeps working unchanged. */
-  failed?: Job[];
+  /** TERMINAL JOBS (D586, broadened by D635 to done/error/cancelled — not only
+   *  `state: "error"`) re-routed out of the Jobs section, drawn beside the
+   *  repo rows. Optional and defaulted so every existing caller and test
+   *  keeps working unchanged. */
+  terminal?: Job[];
   /** LAN pairings — announceable rows: a pairing while the chip is collapsed
    *  auto-opens the panel, which is the whole point of announcing one. */
   pairings?: LanPairingEvent[];
@@ -619,11 +624,11 @@ export function RepoUpdatesDockView({
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
-  /** A failed row was cancelled/dismissed — ask the jobs poll to re-read.
+  /** A terminal row was cancelled/dismissed — ask the jobs poll to re-read.
    *  Optional: a caller with no jobs of its own has nothing to refresh. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
-  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
+  onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
    *  gets `true`: sections ALWAYS start collapsed now (D603), unconditionally,
    *  with no stored preference to consult. KEPT rather than deleted with the
@@ -644,15 +649,15 @@ export function RepoUpdatesDockView({
   // D567's real defect.
   //
   // TWO ROW SOURCES, ONE OF THEM SILENT (code review 2026-08-28, finding 1).
-  // The repo rows announce; the failures only ever hold the panel open. Passing
-  // the repo roots alone meant the drain gate could not see the failures at
-  // all, so pressing Update on the LAST repo row force-closed this panel over
-  // failure rows the user was reading. `alsoDrawn` is the fix, and it keeps
-  // D586's promise structural rather than configured: a failure is not in
-  // `ids`, so there is no path from a failure to `setOverride("open")` — the
-  // same guarantee the deleted second hook's `neverOpen`/`neverClose` pair used
-  // to buy with two flags, now bought by feeding the hook what the panel
-  // actually draws.
+  // The repo rows announce; the terminal jobs only ever hold the panel open.
+  // Passing the repo roots alone meant the drain gate could not see the
+  // terminal jobs at all, so pressing Update on the LAST repo row
+  // force-closed this panel over terminal rows the user was reading.
+  // `alsoDrawn` is the fix, and it keeps D586/D635's promise structural
+  // rather than configured: a terminal job is not in `ids`, so there is no
+  // path from one to `setOverride("open")` — the same guarantee the deleted
+  // second hook's `neverOpen`/`neverClose` pair used to buy with two flags,
+  // now bought by feeding the hook what the panel actually draws.
   //
   // PREFIXED PER SOURCE so a repo root and a job id can never collide inside
   // the hook's one seen set (a collision would put an unseen row in `prev` and
@@ -667,7 +672,7 @@ export function RepoUpdatesDockView({
     ],
     collapsed,
     ready,
-    { alsoDrawn: failed.map((job) => `job:${job.id}`) },
+    { alsoDrawn: terminal.map((job) => `job:${job.id}`) },
   );
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are
@@ -711,14 +716,14 @@ export function RepoUpdatesDockView({
     <RepoUpdatesCardView
       rows={rows}
       dismissed={dismissed}
-      failed={failed}
+      terminal={terminal}
       pairings={pairings}
       onPairingGone={onPairingGone}
       collapsed={!open}
       onToggle={toggle}
       onClose={close}
       onJobsChanged={onJobsChanged}
-      onFailedPatch={onFailedPatch}
+      onTerminalPatch={onTerminalPatch}
       onDismiss={onDismiss}
       onDismissAll={onDismissAll}
       onDone={onDone}
@@ -727,11 +732,11 @@ export function RepoUpdatesDockView({
 }
 
 export default function RepoUpdatesDock({
-  failed = [],
-  onFailedPatch,
+  terminal = [],
+  onTerminalPatch,
 }: {
-  failed?: Job[];
-  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
+  terminal?: Job[];
+  onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
   const { repos, pairings, setPairings, settled, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
@@ -746,10 +751,10 @@ export default function RepoUpdatesDock({
       rows={rows}
       dismissed={dismissed}
       ready={settled}
-      failed={failed}
+      terminal={terminal}
       pairings={pairings}
       onPairingGone={pairingGone}
-      onFailedPatch={onFailedPatch}
+      onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
       onDone={() => refresh()}
