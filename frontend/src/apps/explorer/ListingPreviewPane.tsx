@@ -30,6 +30,7 @@ import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { BarButton, BarTail } from "@apps/explorer/bar/BarButton";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { paneChatOnly } from "@apps/explorer/listing/pane-modes";
 import {
@@ -125,19 +126,18 @@ export default function ListingPreviewPane({
   const strip = () => (
     <div className="pane-header">
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
-      <div className="side-header-tail">
+      <BarTail className="side-header-tail">
         {appEntry && (
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-strong"
+          <BarButton
+            tone="strong"
             title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
             onClick={onOpenApp}
           >
             Open app
-          </button>
+          </BarButton>
         )}
         {sideMenu}
-      </div>
+      </BarTail>
     </div>
   );
 

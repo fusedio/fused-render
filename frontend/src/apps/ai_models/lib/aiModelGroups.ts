@@ -451,8 +451,8 @@ export function diskCards(repos: AiModelRepo[]): Map<string, DiskCard> {
 }
 
 /** Which REPO IDS the curation names — the seal beside a card's name marking
- *  membership of the curated shortlist (`CuratedMark`, RepoCard.tsx), on a disk
- *  card and on a Hub search result alike.
+ *  membership of the curated shortlist (`CuratedMark`, local/ModelRow.tsx), on a
+ *  disk row and on a Hub search result alike.
  *
  *  **Keyed by `m.repo ?? m.id`, the repo id that ADDRESSES a curated entry's
  *  bytes, because both callers hold a repo id and neither can hold anything
@@ -792,7 +792,7 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
   // tag's own hover, which carries what deleting this component actually costs.
   if (repo.component) return `Part of ${repo.component.owner}`;
   if (repo.kind !== "model") return `A ${repo.kind}, not a model`;
-  // A partial repo never draws this line (RepoCard gates it), but the function
+  // A partial repo never draws this line (RepoRow gates it), but the function
   // stays total — a short form that lied on one input would be worse than none.
   if (repo.partial) return "This download did not finish";
   if (!repo.engine) {

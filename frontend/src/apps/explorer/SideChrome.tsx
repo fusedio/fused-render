@@ -26,6 +26,8 @@
 // any moment, and each sits where its own action makes sense.
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
+import { BarButton } from "@apps/explorer/bar/BarButton";
+import { ModeGlyph } from "@apps/explorer/bar/ModeGlyph";
 import { reopenWidth } from "@platform/lib/panel-drag";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { CONTENT_MIN_W, MIN_W } from "@apps/explorer/lib/side-width";
@@ -41,20 +43,14 @@ import {
 export function SideCloseButton({ what, onClick }: { what: string; onClick: () => void }) {
   const label = "Hide the " + what + " panel";
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-icon side-close"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-    >
+    <BarButton icon className="side-close" title={label} aria-label={label} onClick={onClick}>
       {/* A frame with its RIGHT half filled — this column, on this side. The
           same glyph mirrored is what the global sidebar's toggle wears
           (platform/ui/PanelIcon), which is what makes the two edges of the
           window read as one idea rather than as two chevrons pointing
           opposite ways for unrelated reasons. */}
       <PanelIcon side="right" />
-    </button>
+    </BarButton>
   );
 }
 
@@ -74,16 +70,16 @@ export function SideToggleButton({
 }) {
   const label = "Show the " + what + " panel";
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-icon side-toggle"
+    <BarButton
+      icon
+      className="side-toggle"
       title={label}
       aria-label={label}
       aria-expanded={false}
       onClick={onClick}
     >
-      <span className="mode-menu-icon">{icon}</span>
-    </button>
+      <ModeGlyph>{icon}</ModeGlyph>
+    </BarButton>
   );
 }
 

@@ -1,0 +1,80 @@
+/* ---- driver.js popover skin ----------------------------------------------
+   The one stylesheet in this app that CANNOT be proved live by grepping the
+   source: driver.js writes these class names onto elements it creates at
+   runtime (platform/lib/tours/*), so a "no references, delete it" sweep will
+   report every rule here as dead and be wrong. It has its own file for that
+   reason — it outlived preferences.css, where it used to sit as a lodger, and
+   the next sweep should find it named rather than buried.
+
+   The library ships a light-styled popover; these rules repaint it in the
+   app's own palette, which is why every colour is a token and not a literal.
+   ------------------------------------------------------------------------- */
+
+.driver-popover {
+  background: var(--bg-popover);
+  color: var(--tour-fg);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow-lg);
+}
+
+.driver-popover-title {
+  color: var(--tour-fg);
+}
+
+.driver-popover-description {
+  color: var(--tour-desc);
+}
+
+.driver-popover-progress-text {
+  color: var(--tour-dim);
+}
+
+/* Arrow triangle: driver.js colors it via one border side. Tint every side to
+   the popover bg so whichever side is shown matches the theme. */
+.driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--bg-popover);
+}
+
+.driver-popover .driver-popover-close-btn {
+  color: var(--tour-dim);
+}
+
+.driver-popover .driver-popover-close-btn:hover {
+  color: var(--tour-fg);
+}
+
+.driver-popover .driver-popover-navigation-btns button {
+  background: transparent;
+  color: var(--tour-desc);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 6px;
+  text-shadow: none;
+}
+
+.driver-popover .driver-popover-navigation-btns button:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--tour-fg);
+}
+
+/* Primary next / done button on the accent token. */
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn:hover {
+  background: var(--tour-next-hover);
+  color: var(--on-accent);
+}

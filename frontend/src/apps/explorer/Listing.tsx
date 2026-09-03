@@ -88,6 +88,7 @@ import {
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { BarButton } from "@apps/explorer/bar/BarButton";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
@@ -1742,9 +1743,9 @@ export default function Listing({
                   Clicking pins the box open and focuses it; blurring it still
                   empty hands the strip back to the path. */}
               {tightBar && !searching && !pinnedOpen && (
-                <button
-                  type="button"
-                  className="bar-ctl listing-search-open"
+                <BarButton
+                  icon
+                  className="listing-search-open"
                   aria-label="Search this folder"
                   title="Search"
                   onClick={() => setPinnedOpen(true)}
@@ -1753,7 +1754,7 @@ export default function Listing({
                     <circle cx="11" cy="11" r="7" />
                     <line x1="16.5" y1="16.5" x2="21" y2="21" />
                   </svg>
-                </button>
+                </BarButton>
               )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
@@ -1886,14 +1887,13 @@ export default function Listing({
                   open-on-click (onRowPointerUp), reused rather than reinvented: no
                   new view and no `_mode`, just the file. */}
               {!paneOpen && appEntryPath && (
-                <button
-                  type="button"
-                  className="bar-ctl bar-ctl-strong"
+                <BarButton
+                  tone="strong"
                   title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
                   onClick={openAppEntry}
                 >
                   Open app
-                </button>
+                </BarButton>
               )}
               {pane.on && !sideState.open && (
                 <SideToggleButton

@@ -28,9 +28,9 @@ export function hubUrl(repo: AiModelRepo): string {
  *
  *  Always the model prefix (the empty one): the curation recommends models, and
  *  a dataset or a Space is not something its Download button can pull. Here
- *  rather than as a second literal in `RecommendedCard` so the origin is written
- *  once — the two cards sit side by side in one row, and one of them linking to
- *  a stale mirror would be invisible.
+ *  rather than as a second literal in `RecommendedRow` so the origin is written
+ *  once — the recommended rows and the Hub results share this prefix, and one of
+ *  them linking to a stale mirror would be invisible.
  */
 export function hubModelUrl(id: string): string {
   return `${HUB_ORIGIN}/${id.split("/").map(encodeURIComponent).join("/")}`;

@@ -340,8 +340,13 @@ function FolderSearchSlot() {
 // the pair read as one control rather than two adjacent buttons.
 function CrumbNav() {
   const reach = useNavReach();
+  // `crumb-nav` is a HOOK: over a folder, a search box pinned open or holding a
+  // query takes the whole bar, and explorer.css hides this pair (and the ★)
+  // through `#breadcrumb:has(.listing-search.expanded)`. Hidden, not
+  // unmounted — the ★ has to stay mounted so a keystroke can't disarm a
+  // bookmark.
   return (
-    <BarZone>
+    <BarZone className="crumb-nav">
       <BarButton icon title="Back" aria-label="Back" disabled={!reach.back} onClick={goBack}>
         <Chevron dir="left" />
       </BarButton>
@@ -410,6 +415,10 @@ export function BookmarkStar({
       // Deliberately neutral rather than chromatic: bookmarking is state, not
       // a status, and status colour is single-sourced.
       className={cn(
+        // `bookmark-star-btn` is a HOOK, not styling: explorer.css hides this
+        // button (with the ‹ › pair) while the folder's search box holds the
+        // bar, through `#breadcrumb:has(.listing-search.expanded)`.
+        "bookmark-star-btn",
         // Optical, not geometric: the star box centres on the crumb row's
         // centre line, but a five-pointed star carries its visual mass below
         // its own box centre, so it reads as sitting low beside the crumb
@@ -472,13 +481,18 @@ function TopbarActionsSlot() {
     if (el) publishTopbarSlot(el);
     return () => retractTopbarSlot(el);
   }, []);
-  // `preview-actions` stays: shell/App.tsx renders the same class on its own
-  // loading scaffold, and preview.css gives a portaled control that brings no
-  // chrome of its own a fallback box through it.
+  // TWO CLASSES, both HOOKS rather than styling. `crumb-actions` is named in
+  // BAR_EDIT_EXCLUDE, so a click on this cluster (its gaps included) is not
+  // read as "open the path field". `preview-actions` is shared with
+  // shell/App.tsx's loading scaffold, and preview.css gives a portaled control
+  // that brings no chrome of its own a fallback box through it.
   return (
-    <div ref={ref} id="topbar-mode-slot" className="preview-actions flex shrink-0 items-center gap-2" />
+    <div
+      ref={ref}
+      id="topbar-mode-slot"
+      className="crumb-actions preview-actions flex shrink-0 items-center gap-2"
+    />
   );
-}
 }
 
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
@@ -614,6 +628,10 @@ export function Breadcrumb({
 }) {
   const crumbsRef = useRef<HTMLDivElement | null>(null);
   const [editing, setEditing] = useState(false);
+  // Whether a FOLDER has claimed this bar (its search row portals into the
+  // right end). Read here as well as in FolderSearchSlot because it decides
+  // which element claims the bar's free width — see the ★ below.
+  const searchClaimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   // Read by the always-on click-away listener, which must not rebind on every toggle.
   const editingRef = useRef(false);
   editingRef.current = editing;
@@ -884,8 +902,13 @@ export function Breadcrumb({
     <>
       <CrumbNav />
       {editing ? (
-        <input
-          className="crumb-edit"
+        // Same monospace as the crumbs, fills the strip, and takes a lifted
+        // plate so it reads as the bar turning editable rather than a popped-in
+        // widget. `crumb-edit` stays as a HOOK — the click-away listener above
+        // tests for it by class to tell "a press inside the field" from "a
+        // press that should dismiss it".
+        <Input
+          className="crumb-edit h-7 min-w-0 flex-auto rounded-md bg-muted px-1.5 font-mono text-xs"
           defaultValue={displayPath}
           spellCheck={false}
           autoFocus
@@ -921,7 +944,22 @@ export function Breadcrumb({
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
           for the path alone, and a star inside it would scroll away with the
           crumbs on a long path, which is the one place it is most wanted. */}
-      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+      {/* THE STAR TAKES THE BAR'S SLACK, and it has to be whatever is
+          genuinely last in the PATH zone — which is now the star, since it
+          moved to the path's tail. Without one claimant the free width is
+          spread between every item in the row and the ★, the path and the
+          right-hand cluster drift apart by a window-width-dependent amount.
+          It stands down over a FOLDER: the search row's own auto margin is the
+          claimant there, and two in one row split the slack between them,
+          which is the layout this pair exists to prevent. Edit mode has no
+          claimant either — the field's own `flex-auto` eats the width.
+          `-ml-1.5` tightens the last-crumb/★ pair out of the bar's zone gap
+          and into the path's own rhythm. */}
+      <BookmarkStar
+        id="bookmark-btn"
+        name={renderedTitle || basename(fsPath)}
+        className={cn("-ml-1.5", !searchClaimed && !editing && "mr-auto")}
+      />
       {/* THE PATH `⋮` IS GONE, both of them. Over a FOLDER the listing took its
           actions into the right end of its own column header (Listing.tsx), where
           they sit with the folder's other operations instead of being split
@@ -951,7 +989,12 @@ export function StaticBreadcrumb({ label }: { label: string }) {
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>
-      <BookmarkStar id="bookmark-btn" name={label} />
+      {/* The label bar has the same three-part opening and the same slack
+          problem: without a claimant the `space-between`-era layout opened up
+          INSIDE the trio, floating the label mid-bar and flinging the star to
+          the far right. These routes never carry a folder search row, so the
+          star claims it unconditionally. */}
+      <BookmarkStar id="bookmark-btn" name={label} className="mr-auto -ml-1.5" />
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
     </>

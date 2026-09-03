@@ -1,8 +1,16 @@
-/* shell.css is now an ordered barrel: each section lives in styles/ and
- * import order here IS the cascade order — it must match the historical
- * top-to-bottom order of the monolithic file. Add new sections at the
- * position their rules would have appeared, not at the end by habit.
- * Palette tokens live in styles/tokens.css (tests/test_theme.py). */
+/* shell.css is an ordered barrel: each section lives in styles/ and import
+ * order here IS the cascade order.
+ *
+ * Every sheet below is legacy — a surface that has not finished moving onto
+ * the Flow design language (.claude/skills/flow-design-language). A converted
+ * surface carries its own utilities, so its sheet is deleted and its line
+ * here goes with it; the barrel shrinks to `tailwind` + `tokens` + `tour`
+ * when the last one lands. Do not add a new sheet here: new UI is Tailwind +
+ * shadcn on the tokens, and shared patterns go in platform/ui/flow/.
+ *
+ * Order still matters among the survivors, because the remaining sheets are
+ * unlayered and several borrow each other's vocabulary. Notes are on the
+ * lines that depend on it. */
 @import "./styles/tailwind.css";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
@@ -12,29 +20,15 @@
 @import "./styles/notifications.css";
 @import "./styles/fields.css";
 @import "./styles/buttons-modal.css";
-@import "./styles/preferences.css";
-/* Next to preferences.css: the Claude config app (/claude-config)
-   is a settings surface of the same family, and its rules layer over the
-   .btn / .field-control vocabulary imported above. */
+/* The driver.js popover skin. NOT a legacy surface sheet and not deletable by
+   a reference sweep: the library writes those class names at runtime, so no
+   grep of src can see them (see the file's own header). */
+@import "./styles/tour.css";
 @import "./styles/claude-config.css";
-/* After claude-config.css because the AI Models page borrows its page chrome
-   (.cc-main / .cc-heading / .cc-pill) and only adds its own row layout. */
-/* After mounts.css for the same reason mounts.css sits after preferences.css:
-   the scheduled-messages page is another settings-family surface that only adds
-   its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */
-@import "./styles/schedule.css";
-/* Immediately after schedule.css, and the order is load-bearing: the Tasks
-   page's List/Board reuse that file's vocabulary (the status ring, the live
+/* Immediately before tasks.css, and the order is load-bearing: the Tasks
+   page's List/Board reuse this file's vocabulary (the status ring, the live
    ping, the folder chip, the board's lanes and rails) and tasks.css adds only
-   what is new — so the two must be adjacent, and the additions must come
-   second. */
+   what is new — so the two must be adjacent, and the additions come second. */
+@import "./styles/schedule.css";
 @import "./styles/tasks.css";
-/* Third of the same family and last of it: the New task form layers over both
-   the .field-* vocabulary far above and schedule.css's own modal chrome, and
-   adds only the rows new to it — the two checkboxes, title and description,
-   the past-time note. */
-/* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
-   Tasks page inside its Tasks tab and adds only the header and frame around it. */
-/* After home.css: the canvases listing is another page-family surface that
-   layers its card grid over the .btn / .field-control vocabulary above. */
 @import "./styles/reduced-motion.css";

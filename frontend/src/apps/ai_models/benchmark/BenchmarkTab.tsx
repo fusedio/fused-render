@@ -1390,7 +1390,10 @@ function BenchmarkRow({
         ROW_GRID,
         "border-b border-border text-sm last:border-b-0",
         expandable && "cursor-pointer hover:bg-accent/50",
-        open && "bg-accent/30 hover:bg-accent/30",
+        // An open row and its expansion are ONE card that grew: the row drops
+        // its own bottom border so no hairline sits across the seam, and the
+        // expansion below carries the group's border instead.
+        open && "bg-accent/30 hover:bg-accent/30 border-b-0",
       )}
       onClick={expandable ? onToggle : undefined}
     >

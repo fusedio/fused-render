@@ -470,8 +470,24 @@ export function ListRow({
 }
 
 // Meta text inside a ListRow's `meta` slot: tiny, muted, optionally mono.
-export function Meta({ children, mono, className }: { children: ReactNode; mono?: boolean; className?: string }) {
-  return <span className={cn("text-xs text-muted-foreground", mono && "font-mono", className)}>{children}</span>;
+// `title` is for the callers that clip it to a fixed column — the hover text is
+// what keeps the full value reachable once the inline one ellipsizes.
+export function Meta({
+  children,
+  mono,
+  className,
+  title,
+}: {
+  children: ReactNode;
+  mono?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <span className={cn("text-xs text-muted-foreground", mono && "font-mono", className)} title={title}>
+      {children}
+    </span>
+  );
 }
 
 // The rows a list skeleton stands in for. One number for every tab: the lists

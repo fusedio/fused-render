@@ -83,6 +83,7 @@ import {
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
+import { BarButton } from "@apps/explorer/bar/BarButton";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
@@ -208,9 +209,8 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
     // Success navigates away and unmounts this button; no busy reset needed.
   };
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
+    <BarButton
+      tone="bordered"
       title={
         target.cloned
           ? "Open your editable copy at " + target.path
@@ -221,7 +221,7 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
-    </button>
+    </BarButton>
   );
 }
 
@@ -286,9 +286,8 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
   };
   if (info.live) {
     return (
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-bordered"
+      <BarButton
+        tone="bordered"
         title={"A migration task for " + name + " is still running — listed under the app's Tasks tab"}
         // The app page's Tasks tab (`/apps/<folder>?_tab=tasks`, the address
         // current-apps-lib.appPageUrl builds; spelled here because an app may
@@ -298,13 +297,12 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
         }
       >
         Migration in progress
-      </button>
+      </BarButton>
     );
   }
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
+    <BarButton
+      tone="bordered"
       title={
         name + " declares fused API version " + info.from + "; the runtime is on " + info.to +
         ". Creates a task that updates the code and the tag."
@@ -314,7 +312,7 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Creating task…" : "Migrate to new version"}
-    </button>
+    </BarButton>
   );
 }
 
@@ -381,16 +379,15 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     }
   };
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
+    <BarButton
+      tone="bordered"
       title={"Export " + name + " as a single .fused app file"}
       onClick={doExport}
       disabled={busy}
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Exporting…" : "Export App"}
-    </button>
+    </BarButton>
   );
 }
 

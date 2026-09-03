@@ -34,7 +34,6 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: var(--topbar-pad-y) 16px;
   border-bottom: 1px solid var(--border);
@@ -45,80 +44,14 @@
   box-sizing: border-box;
 }
 
-/* ‹ › history arrows, first in the bar — the slot browsers and file managers
-   reserve for them, which the ★ used to occupy (Breadcrumb.tsx says why they
-   traded places). Nothing of their own beyond the grouping: both buttons ride
-   the shared `.bar-ctl-icon` recipe further down, and the 2px gap is the same
-   one `.bar-zone` uses to make a run of glyph buttons read as one control. */
-.crumb-nav {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-/* ★ bookmark button, at the tail of the path. Subtle: bare glyph, no box —
-   muted until hovered; a FILLED FOREGROUND star when the view is bookmarked
-   or an armed bookmark is live. Deliberately not accent-yellow any more: the
-   accent means exactly one thing in this chrome, the active view mode.
-   Bookmarking is state, not "the thing you are looking at". */
-.bookmark-star-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* 5px around a 14px glyph = the same 24px box (and hover pill) the 16px
-     glyph used to make, so shrinking the star cost no hit area. */
-  padding: 5px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out);
-}
-
-/* Optical, not geometric: the star box centres on the crumb row's centre
-   line, but a five-pointed star carries its visual mass below its own box
-   centre, so it read as sitting low beside the crumb text. Half a pixel up
-   lands its perceived centre on the text's. Applies at both scales the star
-   renders at (this bar and the 24px panel pane bars). */
-.bookmark-star-btn svg {
-  position: relative;
-  top: -0.5px;
-}
-
-/* The star belongs TO the path, so it should sit in the path's own rhythm, not
-   at the bar's zone spacing. Between the two the bar contributes its 10px flex
-   gap plus the star's 5px padding plus the crumb's 4px — 19px of air, more than
-   twice the 8px the crumbs keep between themselves, which made the star read as
-   an island. A negative margin is the only way to retune ONE pair inside a `gap`
-   container; the bar-wide 10px between the other zones stands.
-
-   `margin-left` now, where it was `margin-right`: the star moved from the head
-   of the path to its tail (Breadcrumb.tsx), so the pair being tightened is
-   last-crumb/★ rather than ★/first-crumb.
-
-   -6px, not the head position's -11px: at the tail the star follows the
-   filename — the strip's one emphasized segment — and the full crumb rhythm
-   read as the star touching it (Akshil: "a little more padding"). 13px of
-   air: looser than the 8px crumb gap, still inside the path's zone. */
-#breadcrumb .bookmark-star-btn {
-  margin-left: -6px;
-}
-
-.bookmark-star-btn:hover {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.08);
-}
-
-.bookmark-star-btn.active,
-.bookmark-star-btn.active:hover {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.08);
-}
+/* THE ‹ › ARROWS, THE ★ AND THE PATH FIELD have left this file. The arrows are
+   a BarZone of glyph BarButtons, the star is a BarButton whose own `mr-auto`
+   claims the bar's free width (it used to be three `:has()` rules reaching
+   across the strip at it), and the path field is a shadcn Input — all in
+   Breadcrumb.tsx / bar/BarButton.tsx. What is still here is what the crumbs
+   themselves need: the strip's scroll geometry and the per-crumb hitbox,
+   hover, spring-load and drop states, which are painted imperatively by
+   listing/row-drag.ts and animated by @keyframes. */
 
 /* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
    same monospace, tight slash-separated segment styling, muted with the last
@@ -168,65 +101,16 @@
   overflow-y: hidden;
 }
 
-/* The free-width-eating auto margin the path `⋮` used to carry (it sat right
-   after this strip; its items are the bar's right-click menu now — see
-   Breadcrumb.tsx). The bar is `justify-content: space-between`, so unless ONE
-   item takes the slack in one place it is spread evenly between every item in the
-   row: ★, path and the right-hand zones drifting apart by a
-   window-width-dependent amount, which is what a bar with no claimant looked
-   like the moment the `⋮` came out.
-
-   `:has(.path-crumb)` covers the PATH strip and `:has(.current)` the layout
-   modes' static label bar (StaticBreadcrumb) — same shape, same claimant: the
-   static bar renders arrows, label and star as the same opening trio, and
-   without its own claim the `space-between` slack opened up INSIDE that trio
-   (label floating mid-bar, star flung to the far right). What both exclude is
-   edit mode, whose field is neither a crumb nor a label and eats the width
-   itself. Over a FOLDER the search row's `margin-left: auto` is the claimant
-   instead (.crumb-search-slot below) and this one stands down: two auto
-   margins in one row split the slack between them, which is the layout that
-   pair exists to prevent.
-
-   IT RIDES ON THE ★, NOT ON THE STRIP, since the star moved to the path's tail
-   (Breadcrumb.tsx). Left where it was, the slack would open up BETWEEN the path
-   and its own star and fling the star to the far end of the bar — the auto
-   margin has to sit on whatever is genuinely last in the path zone, and that is
-   now the star. The sibling combinator rather than `:last-child` because the
-   zone's tail is only the star when the path is a real crumb strip; in edit mode
-   the field's own `flex: 1 1 auto` eats the width and no claimant is wanted. */
-#breadcrumb .crumbs:has(.path-crumb) ~ .bookmark-star-btn,
-#breadcrumb .crumbs:has(.current) ~ .bookmark-star-btn {
-  margin-right: auto;
-}
-
-#breadcrumb:has(.crumb-search-slot) .bookmark-star-btn {
-  margin-right: 0;
-}
+/* THE BAR'S FREE WIDTH IS CLAIMED IN REACT NOW. Three rules used to reach
+   across the strip with `:has()` to put `margin-right: auto` on the ★ (and to
+   take it away again over a folder, where the search row claims it instead);
+   BookmarkStar carries that as a conditional `mr-auto` off the same two facts
+   the selectors were sniffing — is this a real crumb strip, and has a folder
+   claimed the bar. See Breadcrumb.tsx, where the argument for the star being
+   the claimant is written down. */
 
 #breadcrumb .crumbs::-webkit-scrollbar {
   display: none;
-}
-
-/* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
-   monospace as the crumbs, fills the strip, and takes the bar's own
-   background so it reads as the bar turning editable rather than a popped-in
-   widget; the border brightens to --fg-muted on focus (not the accent — that
-   is reserved for the active view mode). */
-#breadcrumb .crumb-edit {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-alt);
-  color: var(--fg);
-}
-
-#breadcrumb .crumb-edit:focus {
-  outline: none;
-  border-color: var(--fg-muted);
 }
 
 /* Ancestor crumbs sit one step BRIGHTER than plain muted: at --fg-muted the
@@ -397,13 +281,6 @@
   text-decoration: underline;
 }
 
-.crumb-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 /* The portal target collapses entirely when no view has filled it (loading,
    fallback card, static pages) — no stray gap at the bar's right edge. */
 #topbar-mode-slot:empty {
@@ -446,386 +323,30 @@
 }
 
 
-/* ---- One control recipe for the explorer's bars --------------------------
-   The title bar, the listing search row, the preview-pane header and the
-   panel pane bars used to be four dialects of the same idea: three button
-   shapes, radii of 3/4/5/6/8/999px, and 14-18px icons mixed inside a single
-   row. Everything in those bars is now built from these classes instead —
-   28px tall, 6px radius, 16px icons, ghost by default, bordered only for the
-   mode control. `.panel-bar` re-scales the
-   whole set to 24px/14px in preview.css; nothing else overrides it.
+/* ---- THE BARS' CONTROLS HAVE LEFT THIS FILE -----------------------------
+   The title bar, the listing search row, the preview-pane header and the panel
+   pane bars used to be four dialects of the same idea: three button shapes,
+   radii of 3/4/5/6/8/999px, and 14-18px icons mixed inside a single row. One
+   class family (`.bar-ctl` and friends) fixed that, and it is now the
+   `BarButton` / `BarZone` / `BarRule` / `BarTail` set in
+   apps/explorer/bar/BarButton.tsx, on the shadcn Button primitive — same four
+   tones, same 28px/24px scales, same reservation of the filled look for a row's
+   single primary action.
 
-   Ghost is deliberately a background wash rather than a border-on-hover: a
-   border appearing under the cursor moves the glyph, and these rows are dense
-   enough that the shift is visible. */
-.bar-ctl {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
+   The two bar DROPDOWNS went with them: `ModeMenu` and `OverflowMenu`
+   (apps/explorer/BarMenu.tsx) are shadcn DropdownMenus, so the popup is
+   portaled instead of `position: fixed` off a measured trigger rect — which is
+   what the old `.bar-menu-popup` needed to escape `.panel-pane`'s and the tab
+   bar's overflow clipping. The popup still carries `.bar-menu-popup` as a
+   HOOK: Breadcrumb's click-away listener and its BAR_EDIT_EXCLUDE selector
+   name it, so a press inside a bar menu neither opens nor dismisses the path
+   field.
 
-.bar-ctl svg {
-  display: block;
-}
-
-/* THE STRONGEST CONTROL IN A BAR — the "Open app" button in the pane's strip.
-   Filled with --fg on --bg, which is the same idiom `.btn-primary`
-   (buttons-modal.css) and the home composer's send button use, so it inherits
-   maximal contrast in BOTH themes by construction rather than by a chosen colour:
-   the pair IS the theme's text-on-surface, whichever way round the theme puts them.
-   --on-fg on hover is the token that file defines for exactly this ("one step
-   further from --bg than --fg").
-
-   DELIBERATELY NOT ACCENT, and this is a reservation rather than a preference.
-   `.btn-menu-item.active` in this same strip uses `color-mix(--accent 16%)` to say
-   WHICH MODE THE PANE IS ON, and the crumb bar next to it uses --accent for drop
-   targets and the spring-armed highlight. Accent here would put a second accent
-   element inches from the one that means "this is the mode you are looking at", and
-   `.btn-primary` states the house rule twice over: "reads strongest through
-   contrast, not accent — accent stays for focus/selection". A filled --fg button is
-   already the loudest thing in a strip of ghost controls. */
-.bar-ctl.bar-ctl-strong {
-  background: var(--fg);
-  color: var(--bg);
-  font-weight: 600;
-}
-
-.bar-ctl.bar-ctl-strong:hover:not(:disabled) {
-  /* NOT var(--on-fg) — that moved --fg one step FURTHER toward the same
-     extreme (near-black to pure black in light, near-white to pure white in
-     dark), which is a luminance delta of ~0.01–0.02 and reads as no hover at
-     all. This instead steps --fg back TOWARD --bg — the same "mix off --fg"
-     idiom `.apps-tag-chip.is-active` / `.apps-filter-mode-btn.is-active` use
-     (apps.css) to get a background that shifts visibly in BOTH themes while
-     keeping a --bg label legible on it, because the mix moves each theme's
-     fill away from that theme's own extreme rather than further into it.
-     82% keeps it reading as the same filled/strong button (still mostly
-     --fg, not washed toward a ghost tint) while giving a clearly visible
-     step: ~0.28 luminance delta in dark, ~0.05 in light — both an order of
-     magnitude bigger than --on-fg's. */
-  background: color-mix(in srgb, var(--fg) 82%, var(--bg));
-  /* The generic .bar-ctl:hover rule right below sets color: var(--fg), which
-     was already illegible against the old --on-fg hover and would be no
-     better against this one. Restate --bg explicitly so the label stays
-     high-contrast through the hover (>9:1 in both themes against the mix
-     above). */
-  color: var(--bg);
-}
-
-.bar-ctl:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
-.bar-ctl:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* Square, glyph-only variant — same height, no label. */
-.bar-ctl-icon {
-  width: 28px;
-  padding: 0;
-}
-
-/* The one thing in these bars that gets chrome: the mode control. There used
-   to be a second recipe beside it, .bar-ctl-primary, for "the row's single
-   primary action" — a bordered, semibold label. Its last consumer was the
-   preview pane's "Open", now a muted glyph like everything else it sits
-   beside, and a bar with no primary in it turns out to be the point: these
-   rows are chrome, and the subject is what the view is showing. */
-.bar-ctl-bordered {
-  border: 1px solid var(--border);
-  /* The app's hairline for the ring, and a THEME-CHOSEN fill (tokens.css):
-     `--bg` under a `--bg-alt` bar is a white plate in light mode, which is the
-     look, and a darker well in dark mode — which, ringed by a lighter border,
-     turned the quietest control in the app into a chip. Dark resolves this to
-     transparent, so the hairline alone says "this one is a menu". */
-  background: var(--ctl-plate-bg);
-  color: var(--fg);
-}
-
-.bar-ctl-bordered:hover:not(:disabled) {
-  background: var(--ctl-plate-bg);
-  /* Not `--fg-muted` directly: that is the light INK in dark mode, so hovering
-     lit the ring to near-white. The token is --fg-muted in light and a step up
-     from the resting border in dark. */
-  border-color: var(--ctl-quiet-border-hover);
-  color: var(--fg);
-}
-
-/* Hairline between the mode control and the layout group. A zone divider, not
-   decoration: it is what makes "mode" and "layout" read as two things. */
-.bar-rule {
-  flex: 0 0 auto;
-  width: 1px;
-  height: 18px;
-  margin: 0 10px;
-  background: var(--border);
-}
-
-.bar-zone {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-/* ---- a side column's HEADER STRIP, and there are two of them --------------
-   The file preview's sidebar (.preview-side-header, preview.css) and the folder
-   listing's preview pane (.pane-header, below) are the SAME bar: the way OUT of
-   the column at its left end, the mode pill at its right, over a full-height
-   frame. The two components already share their buttons (SideChrome.tsx); this is
-   the layout half of that sharing.
-
-   NO RULE FOR THE BUTTONS THEMSELVES (.side-close, .side-toggle): both ride the
-   plain .bar-ctl-icon recipe above, and their glyphs are the 16px right-hand
-   panel icon (platform/ui/PanelIcon) / the companion's own mode icon, in
-   currentColor like everything else in these rows.
-   A `.side-toggle.active` pressed look lived here for one round, while the opener
-   stayed on screen with the panel open and the column carried a close button of
-   its own. Exactly one of the two buttons is ever rendered now (SideChrome
-   documents the split), so there is no "on" state left for either to wear.
-
-   The far end is packed by an auto margin on a TAIL WRAPPER rather than on the
-   leading items, which is load-bearing and not a style preference: the left end
-   holds a VARIABLE number of things (the pane's also carries the open folder's
-   primary action, portaled in and usually absent), and an auto margin on whichever
-   of those renders last distributes the free space differently every time — with
-   two present, the middle one drifts to the centre. One auto margin, always on the
-   same element, packs the right end and leaves the left alone whatever is in it. */
-.side-header-tail {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
-/* Nothing to pack — and an empty wrapper would still spend one of the strip's
-   8px gaps. (Reached by the pane's non-Preview states, whose strip has no
-   expand button to put here.) */
-.side-header-tail:empty {
-  display: none;
-}
-
-/* ---- The mode control ---------------------------------------------------
-   One self-describing button in every bar: the active mode's icon, its name,
-   a caret. The icon is plain currentColor at the bars' standard 16px — it
-   spent one iteration inside a filled accent chip, which turned the quietest
-   row in the app into a badge competing for attention. The accent's only
-   remaining job here is the wash on the dropdown's active row. */
-.mode-menu {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-flex;
-}
-
-/* No metrics of its own: the mode trigger sits on the plain .bar-ctl recipe
-   (28px tall, 0 8px padding, 6px gap, 6px radius) like every other control in
-   these bars. It used to override with `padding: 0 10px; gap: 7px`, which —
-   with the 1px border only this control carries — put 11px of inset either
-   side and read as the one over-padded thing in the bar. */
-
-.mode-menu-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-}
-
-.mode-menu-icon svg,
-.mode-menu-icon .mode-icon-mask,
-.mode-menu-icon .mode-icon-placeholder {
-  width: 16px;
-  height: 16px;
-}
-
-.mode-menu-icon .mode-icon-spinner {
-  width: 12px;
-  height: 12px;
-  border-width: 1.5px;
-}
-
-/* One grid cell, every mode name stacked in it: the hidden ghosts set the
-   slot's width to the WIDEST name, so the trigger (and the popup floored to
-   it) keeps one width no matter which mode is active. */
-.mode-menu-label {
-  font-weight: 500;
-  display: inline-grid;
-  text-align: left;
-}
-
-.mode-menu-label > span {
-  grid-area: 1 / 1;
-  white-space: nowrap;
-}
-
-.mode-menu-label-ghost {
-  visibility: hidden;
-}
-
-.bar-caret {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-}
-
-.bar-overflow {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-flex;
-}
-
-/* ---- Bar dropdowns ------------------------------------------------------
-   position:fixed off the trigger's rect (inline top/left): .panel-pane and
-   the tab bar clip their overflow, so an absolutely positioned popup would
-   work in the title bar and be invisible in the pane bars. */
-.bar-menu-popup {
-  position: fixed;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  width: max-content;
-  padding: 4px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px var(--shadow-md);
-}
-
-/* No fixed floor: the popup hugs its content, and the mode menu floors itself
-   to its trigger's width (inline min-width from useMenuAnchor) so the menu
-   never reads wider than the control that opened it. The overflow menu keeps
-   a small floor so a one-item menu stays a comfortable click target. */
-.bar-overflow .bar-menu-popup {
-  min-width: 120px;
-}
-
-.bar-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.bar-menu-item:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.08);
-}
-
-.bar-menu-item:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* Plain glyph, no box: the row's own hover/active wash carries the state,
-   and a bordered well around every icon made the list read as a grid of
-   buttons rather than a set of choices. */
-.bar-menu-item-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  color: var(--fg-muted);
-}
-
-.bar-menu-item-icon svg,
-.bar-menu-item-icon .mode-icon-mask,
-.bar-menu-item-icon .mode-icon-placeholder {
-  width: 16px;
-  height: 16px;
-}
-
-.bar-menu-item-icon .mode-icon-spinner {
-  width: 12px;
-  height: 12px;
-}
-
-.bar-menu-item-label {
-  flex: 1 1 auto;
-}
-
-/* The active row is the mode you are looking at — semibold, brighter glyph,
-   and an accent wash over the whole row (it replaced a trailing checkmark:
-   the row itself now carries the state). That wash is the last accent left
-   in this chrome, and it still means exactly one thing: the active view
-   mode. Kept stronger than the 8% hover tint so the two never blur. */
-.bar-menu-item.active {
-  font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.bar-menu-item.active:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.bar-menu-item.active .bar-menu-item-icon {
-  color: var(--fg);
-}
-
-/* Group divider inside an overflow popup (the path `⋮` separates what it does
-   to the FILE — reveal, copy path — from what it does to the WINDOW: the two
-   splits). Inset to the rows' own padding so it reads as a break in the list
-   rather than a line drawn across the box. */
-.bar-menu-sep {
-  flex: 0 0 auto;
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--border);
-}
-
-.star-btn {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 12.5px;
-  white-space: nowrap;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.star-btn:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-/* Neutral, like the ★ itself: bookmark state is not the active view mode, so
-   it carries no accent. */
-.star-btn.starred {
-  color: var(--fg);
-  border-color: var(--border);
-  background: rgba(var(--tint), 0.08);
-}
+   `.bar-rule` and `.bar-overflow` survive as bare SELECTORS, styled in React:
+   `.panel-mode-slot:empty + .bar-rule` above, and the search row's
+   `> .bar-overflow:last-child` margin nudges below. The two `:has()` rules
+   further down that hide `.crumb-nav` / `.bookmark-star-btn` under an expanded
+   search box are the same arrangement. */
 
 /* The PAGE-LEVEL split (shell/App.tsx StatView): this view's own column, and
    then the preview sidebar's when a file preview opens one

@@ -658,7 +658,17 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                             <Copy />
                           </Button>
                         </span>
-                        <Meta mono className="w-16 text-right">
+                        {/* A fixed column, so it must clip rather than push:
+                            a plugin pinned to a commit reports the SHA as its
+                            version ("v25d22f864ad6"), which is twice as wide
+                            as a semver and was running out over the actions
+                            beside it. Ellipsized, with the whole string on
+                            hover. */}
+                        <Meta
+                          mono
+                          className="w-16 text-right truncate"
+                          title={p.version ? `v${p.version}` : undefined}
+                        >
                           {p.version ? `v${p.version}` : ""}
                         </Meta>
                       </>
