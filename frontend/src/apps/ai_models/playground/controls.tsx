@@ -439,8 +439,8 @@ const STARTER_MIN = 2;
  *  How many is on screen is MEASURED, never truncated: the pills hug their
  *  names, so a narrower column shows one pill fewer rather than four cut-off
  *  labels. The measure needs three things on the row: `overflow-hidden`,
- *  `min-w-0 shrink` (so it can report an overflow) and `whitespace-nowrap`
- *  pills. */
+ *  `min-w-0 flex-1` (so the box's width does not depend on what is in it) and
+ *  `whitespace-nowrap` pills. */
 export function StarterCards<S extends Starter>({
   samples,
   onPick,
@@ -450,6 +450,13 @@ export function StarterCards<S extends Starter>({
 }) {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(STARTER_PAGE);
+  // Bumped on every resize, and the measure below depends on it. Resetting
+  // `page` is NOT enough to re-open the question: when the row is already
+  // showing the full page, `setPage(STARTER_PAGE)` writes the value that is
+  // already there, React bails out, no render happens and the measure never
+  // re-runs. The settings panel opening did exactly that — the column lost
+  // 320px and a fourth pill stayed half-drawn at the clip edge.
+  const [probe, setProbe] = useState(0);
   const rowRef = useRef<HTMLDivElement>(null);
   // Ask for the full page, and while the row overflows, ask for one fewer. It
   // settles in at most two extra renders and cannot oscillate.
@@ -457,14 +464,17 @@ export function StarterCards<S extends Starter>({
     const row = rowRef.current;
     if (!row) return;
     if (page > STARTER_MIN && row.scrollWidth > row.clientWidth + 1) setPage(page - 1);
-  }, [page, offset, samples]);
+  }, [page, offset, samples, probe]);
   // A resize re-opens the question upwards: dropping a pill is a one-way
   // ratchet within a layout, so a column that grows back has to re-ask for the
   // full page and let the measure trim again.
   useEffect(() => {
     const row = rowRef.current;
     if (!row || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => setPage(STARTER_PAGE));
+    const observer = new ResizeObserver(() => {
+      setPage(STARTER_PAGE);
+      setProbe((at) => at + 1);
+    });
     observer.observe(row);
     return () => observer.disconnect();
   }, []);
