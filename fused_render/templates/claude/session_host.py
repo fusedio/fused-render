@@ -115,6 +115,51 @@ def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
         os.replace(src, os.path.join(done, name))
 
 
+def _cli_popen_command(argv: list):
+    """The command to hand `subprocess.Popen` for the CLI spawn — `argv`
+    unchanged everywhere except when `argv[0]` (`agent._claude_bin()`'s
+    resolution) is a Windows `.bat`/`.cmd`.
+
+    CreateProcess's own documented handling of a `.bat`/`.cmd` target reroutes
+    the ENTIRE call through `%ComSpec% /c <original command line>` — cmd.exe,
+    not the batch file, is what actually receives argv, as one command-line
+    string. cmd.exe's `/c` parser then scans that WHOLE string for its own
+    operators (`< > & | ^`) wherever they fall, quotes or no — double quotes
+    protect a token from being split on whitespace, but do NOT stop cmd.exe
+    from reading a `<`/`>` inside one as real redirection. `_claude_argv`'s
+    `--append-system-prompt` text is not test-only content that could be
+    written around this — it is the product's own boilerplate (the
+    `<live-app-state>` tag mentioned in every prompt, D239) — so any `.bat`/
+    `.cmd`-resolved `claude` (an npm install on Windows installs exactly one
+    of these two, `_WINDOWS_CANDIDATES` still lists `.cmd` after `.exe`) hits
+    a cmd.exe parse of `<live-app-state>` as "redirect stdin from a file
+    named live-app-state", which does not exist — cmd.exe errors out and
+    never reaches the batch file's own body, so the CLI never launches at
+    all, on every single turn.
+
+    The fix is `cmd.exe /c`'s own documented escape hatch (`cmd /?`, the
+    fallback rule below its "no special characters between the quotes"
+    case): when the argument to `/c` begins and ends with a double quote,
+    cmd strips exactly that one outer pair and runs the interior literally,
+    without re-scanning it for redirection. Building the whole line with
+    `subprocess.list2cmdline` (correct Win32 argv quoting, the same
+    encoding `subprocess.Popen(list, ...)` would have produced) and wrapping
+    the result in one more pair of quotes lands exactly in that fallback —
+    the interior text reaches `claude.bat`/`claude.cmd`'s own CreateProcess
+    call untouched, `<live-app-state>` included. `subprocess.Popen` accepts
+    a plain string as `args` and uses it as the literal Win32 command line
+    (no further quoting), which is what makes the wrapped string usable
+    here at all.
+
+    Left as `argv` (the list form) whenever `argv[0]` is NOT a `.bat`/`.cmd`
+    — including every POSIX launch, and a native `.exe` `claude` on Windows
+    — since CreateProcess talks directly to a real executable there and
+    never involves cmd.exe or its redirection scan."""
+    if os.name == "nt" and os.path.splitext(argv[0])[1].lower() in (".bat", ".cmd"):
+        return '"' + subprocess.list2cmdline(argv) + '"'
+    return argv
+
+
 def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
     """`agent._turn_state(run_dir)`, but only actually re-parses `out.jsonl`
     when the file has grown since the last call — the reap loop below calls
@@ -155,8 +200,9 @@ def main() -> None:
         # `_start`'s caller. Nested detachment is fine — each process is its
         # own leader, and `_cancel`'s killpg only ever needs the CLI's.
         cli = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=out_fh, stderr=err_fh,
-            cwd=req["cwd"], env=agent._spawn_env(), **agent._DETACH)
+            _cli_popen_command(argv), stdin=subprocess.PIPE, stdout=out_fh,
+            stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(),
+            **agent._DETACH)
     except Exception as exc:
         # No CLI process ever existed — write the failure where `_poll`'s
         # abnormal-exit fallback already knows to look (the tail of
