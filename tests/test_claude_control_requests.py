@@ -240,3 +240,34 @@ def test_effort_change_returns_the_respawn_marker(agent, monkeypatch, stub_cli,
         "an effort change ends the session the same way a read_dirs " \
         "mismatch does — via _cancel"
     assert _wait_for(lambda: not agent._alive(run_dir))
+
+
+def test_await_control_response_seeks_from_the_given_offset(agent, tmp_path):
+    """`_await_control_response` used to re-read and re-`json.loads` ALL of
+    `out.jsonl` from byte 0 on every 50ms pass — up to 100 full passes over a
+    file that, on a long-running session, can be tens of megabytes, sitting
+    in the Stop button's synchronous path. It now seeks from an offset the
+    caller captured before the request was queued, so a session that has
+    already streamed a lot of history is not re-parsed on every tick a stop
+    press waits through. Proven here by planting a STALE row carrying the
+    same request_id BEFORE the offset — a scan starting from byte 0 would
+    find it and return the wrong (stale) answer; a real seek never even
+    looks at those bytes."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    out_path = run_dir / "out.jsonl"
+    out_path.write_text(json.dumps({
+        "type": "control_response", "response": {
+            "request_id": "req-1", "subtype": "success",
+            "response": {"stale": True}}}) + "\n", encoding="utf-8")
+    offset = out_path.stat().st_size
+
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "control_response", "response": {
+                "request_id": "req-1", "subtype": "success",
+                "response": {"fresh": True}}}) + "\n")
+
+    result = agent._await_control_response(
+        str(run_dir), "req-1", timeout=1.0, start_offset=offset)
+    assert result == {"fresh": True}

@@ -2279,7 +2279,8 @@ def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
 
 
 def _await_control_response(run_dir: str, request_id: str,
-                            timeout: float = 5.0) -> dict | None:
+                            timeout: float = 5.0,
+                            start_offset: int = 0) -> dict | None:
     """Poll `out.jsonl` for the `control_response` row answering
     `request_id`, or None if it never arrives (the host never got to drain
     the request, the CLI died first, ...) or answered with anything other
@@ -2292,19 +2293,25 @@ def _await_control_response(run_dir: str, request_id: str,
     drain tick plus however long the CLI takes to notice its own stdin), so
     a short sleep between checks costs nothing a caller would feel.
 
-    Reads from byte 0 every pass rather than tracking an offset: `out.jsonl`
-    for a live session can be large (Task 5 addresses that for `_poll`'s own
-    hot path), but a control response lands within the first second or two
-    essentially always, so this trades a few redundant full reads against a
-    SECOND cursor-tracking scheme this function would otherwise need only
-    for itself."""
+    Seeks to `start_offset` on every pass rather than reading from byte 0:
+    this sits in the Stop button's synchronous path (`_cancel`'s
+    `interrupt_first` branch), and a control response lands within the
+    first second or two essentially always — up to 100 passes (5s / 50ms) of
+    re-reading and re-`json.loads`ing the WHOLE transcript from scratch used
+    to be gigabytes of I/O on the multi-hour, tens-of-MB sessions this
+    feature exists to enable, all of it while the user waits on Stop. The
+    caller captures `start_offset` (the file's size) BEFORE queuing the
+    request — every row that can possibly answer it is written after that
+    point, since the CLI cannot respond to a request it has not received
+    yet — so nothing before it is ever worth reading, on any pass."""
     out_path = os.path.join(run_dir, "out.jsonl")
     deadline = time.time() + timeout
     while True:
         try:
-            with open(out_path, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
+            with open(out_path, "rb") as fh:
+                fh.seek(start_offset)
+                for raw_line in fh:
+                    line = raw_line.decode("utf-8", "replace").strip()
                     if not line:
                         continue
                     try:
@@ -4859,8 +4866,15 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
         # started earlier in the SAME session outlives a stop pressed on a
         # later turn, and the next message continues this session instead of
         # resuming a dead one.
+        # Captured BEFORE the request is queued — see `_await_control_response`
+        # for why that ordering is what makes the seek safe.
+        try:
+            out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            out_offset = 0
         request_id = _write_control_request(run_dir, "interrupt")
-        response = _await_control_response(run_dir, request_id)
+        response = _await_control_response(
+            run_dir, request_id, start_offset=out_offset)
         if response is not None:
             # The interrupt LANDED — the whole point of trying it first is
             # that the session survives, so the marker written above (which
