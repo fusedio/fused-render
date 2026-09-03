@@ -3532,12 +3532,20 @@ def _starts_new_turn(row: dict) -> bool:
     string; a real echoed turn's `content` is always the list
     `_write_inbox_entry` builds. The live `system/task_notification` shape
     fails the `type == "user"` check outright. Both wake shapes correctly
-    read as "not a new turn" here."""
+    read as "not a new turn" here.
+
+    A `tool_result` row is `type: "user"` with a list `content` too — one
+    lands after every tool call, far more often than a genuine new turn — so
+    the list's own block types have to be checked: `_write_inbox_entry`
+    always writes `text` blocks, never `tool_result` ones."""
     if row.get("type") != "user":
         return False
     message = row.get("message")
     content = message.get("content") if isinstance(message, dict) else None
-    return isinstance(content, list)
+    if not isinstance(content, list) or not content:
+        return False
+    return all(isinstance(item, dict) and item.get("type") == "text"
+               for item in content)
 
 
 def _read_current_turn(run_dir: str) -> tuple:

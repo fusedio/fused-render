@@ -92,6 +92,17 @@ def _user_row(text):
             "content": [{"type": "text", "text": text}]}}
 
 
+def _tool_result_row(id="toolu_1"):
+    """A tool's result landing mid-turn — `type: "user"` with a LIST content,
+    same as `_user_row`'s echoed-turn shape, but the list holds a
+    `tool_result` block rather than the `_write_inbox_entry` text block a
+    real echoed turn always carries. Every tool-using turn produces one or
+    more of these; `_starts_new_turn` must not mistake it for a fresh turn."""
+    return {"type": "user", "parent_tool_use_id": None, "message": {
+        "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": "ok"}]}}
+
+
 def _poll(agent, run_dir, alive=True):
     agent.RUNS = str(run_dir.parent)
     agent._alive = lambda _run_dir: alive
@@ -221,3 +232,18 @@ def test_a_wake_is_not_skipped_even_once_the_cursor_has_moved(agent, run_dir):
     _append(run_dir, [_result_row(), _text_row("woken up")])
     second = _poll(agent, run_dir)
     assert second["text"] == "second turnwoken up"
+
+
+# ------------------------------------------------------- (d) tool_result is not a turn
+
+def test_a_tool_result_row_does_not_advance_the_cursor(agent, run_dir):
+    """A tool_result row is `type: "user"` with a list `content`, the same
+    top-level shape `_user_row`'s genuine echoed turn has — but it is not one,
+    and treating it as one would silently drop everything before it (the
+    tool-using message's own tokens/text included) from every later poll."""
+    _write(run_dir, [_text_row("call a tool"), _tool_result_row(),
+                      _text_row(" and reply")])
+    result = _poll(agent, run_dir)
+    assert result["text"] == "call a tool and reply"
+    assert _cursor(run_dir) in (None, 0), \
+        "a tool_result is not a fresh, user-authored turn"

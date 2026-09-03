@@ -1088,11 +1088,15 @@ def test_every_run_write_is_a_replace_write():
     shell's address bar by a past chat this frame never had a hand in, so
     clearing it here is exactly the "New chat" cleanup (the `back` button's own
     write, above) done automatically instead of by a click, and never a step the
-    reader took either.
+    reader took either. The ninth is `sendFollowUp`'s respawn fallback: a live
+    session that cannot honor a follow-up as-is (a new attachment directory, a
+    changed effort) ends itself and hands back `{respawn: true}`, and the fresh
+    run started in its place is exactly the same in-flight bookkeeping every
+    other run start writes here.
     """
     code = _pane_code()
     writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
-    assert len(writes) == 8, writes
+    assert len(writes) == 9, writes
     for w in writes:
         assert 'history: "replace"' in w, w
 
