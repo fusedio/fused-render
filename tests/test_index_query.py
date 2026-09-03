@@ -1,5 +1,5 @@
-"""Reading the index: the lookup pattern grammar, partition pruning, and
-stats. See fused_render/index/specs/query.md.
+"""Reading the index: partition pruning and stats. See
+fused_render/index/specs/query.md.
 
 The raw `sql` action OpenIndex exposed is deliberately absent from THIS module —
 arbitrary duckdb from a client is an arbitrary read/write surface. The confined
@@ -10,12 +10,10 @@ import os
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 from fused_render.index import query as index_query
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import norm
-from fused_render.index.query import lookup, pattern_for, prune, stats
+from fused_render.index.query import prune, stats
 from fused_render.index.store import Sink, compact
 
 
@@ -41,37 +39,6 @@ def _index(tmp_path, root, paths, sizes=None, mtimes=None):
     sink.close()
     compact(cfg, root, shards, pa, pq)
     return cfg
-
-
-# -- the pattern grammar -------------------------------------------------------
-
-@pytest.mark.parametrize("q,expected_like,expected_prefix", [
-    ("app", "%app%", ""),                       # substring anywhere
-    # `*` is the wildcard; unanchored queries also get the leading `%`
-    ("*.parquet", "%%.parquet%", ""),
-    ("/Users/me/code", "/Users/me/code%", "/Users/me/code"),   # anchored
-    ("/Users/me/*.py", "/Users/me/%.py%", "/Users/me/"),       # prune to the literal lead-in
-])
-def test_pattern_translation(q, expected_like, expected_prefix):
-    like, prefix = pattern_for(q)
-    assert (like, prefix) == (expected_like, expected_prefix)
-
-
-def test_pattern_escapes_like_metacharacters():
-    like, _ = pattern_for("a_b%c")
-    assert like == "%a\\_b\\%c%"
-
-
-def test_pattern_expands_and_anchors_a_tilde():
-    # `pattern_for` re-normalizes after expanding `~` (platform.md §1), so on
-    # Windows the prefix comes back forward-slashed even though
-    # `os.path.expanduser` itself hands back `C:\Users\...`. The expected
-    # value has to go through the same `norm` to stay honest on every
-    # platform instead of assuming POSIX's `expanduser` is already canonical.
-    like, prefix = pattern_for("~/Doc")
-    expected = norm(os.path.expanduser("~/Doc"))
-    assert prefix == expected
-    assert like.startswith(expected)
 
 
 # -- partition pruning ---------------------------------------------------------
@@ -112,76 +79,24 @@ def test_prune_falls_back_to_the_byte_test_without_folded_bounds():
     assert prune(parts, "/zzz") == []
 
 
-# -- lookup --------------------------------------------------------------------
-
-def test_lookup_matches_a_substring_anywhere_in_the_path(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/sub/beta.md"])
-    out = lookup(cfg, "beta")
-    assert [r["path"] for r in out["rows"]] == ["/r/sub/beta.md"]
-    assert out["total"] == 1
-
-
-def test_lookup_with_no_query_returns_everything(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt"])
-    assert lookup(cfg, "")["total"] == 2
-
-
-def test_lookup_honours_limit_and_offset(tmp_path):
-    cfg = _index(tmp_path, "/r", [f"/r/f{i}.txt" for i in range(5)])
-    out = lookup(cfg, "", limit=2, offset=1, sort="path")
-    assert [r["name"] for r in out["rows"]] == ["f1.txt", "f2.txt"]
-    assert out["total"] == 5
-
-
-def test_lookup_sort_is_an_allowlist(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/b.txt", "/r/a.txt"])
-    assert [r["name"] for r in lookup(cfg, "", sort="path")["rows"]] == ["a.txt", "b.txt"]
-    # anything unknown falls back to mtime rather than reaching the SQL
-    assert lookup(cfg, "", sort="; DROP TABLE files")["rows"]
-
-
-def test_lookup_reports_pruning_telemetry(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
-    out = lookup(cfg, "/r/a")
-    assert out["scanned_partitions"] == 1
-    assert out["of_partitions"] == 1
-
-
-def test_lookup_prunes_partitions_an_anchored_query_cannot_hit(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
-    out = lookup(cfg, "/zzz")
-    assert out["rows"] == [] and out["scanned_partitions"] == 0
-
-
-def test_lookup_finds_a_mixed_case_tree_from_a_lowercase_anchored_query(tmp_path):
-    """End to end: typing the path in the wrong case found nothing at all,
-    because pruning removed the only partition before ILIKE ever ran."""
-    cfg = _index(tmp_path, "/Users", ["/Users/Me/Alpha.txt"])
-    assert [r["path"] for r in lookup(cfg, "/users/me")["rows"]] == [
-        "/Users/Me/Alpha.txt"]
-    assert lookup(cfg, "/users/me")["scanned_partitions"] == 1
-
-
-def test_lookup_escapes_quotes_in_the_query(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/it's.txt"])
-    assert lookup(cfg, "it's")["total"] == 1
-
-
-def test_lookup_on_an_empty_index_is_not_an_error(tmp_path):
-    out = lookup(_cfg(tmp_path), "anything")
-    assert out["empty"] is True
-    assert out["rows"] == []
-
-
 # -- stats ---------------------------------------------------------------------
 
-def test_stats_totals_and_extension_breakdown(tmp_path):
+def test_stats_totals_without_breakdown_by_default(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt", "/r/c.bin"],
                  sizes={"/r/a.txt": 1, "/r/b.txt": 2, "/r/c.bin": 100})
     out = stats(cfg)
     assert out["rows"] == 3
     assert out["total_size"] == 103
     assert out["last_root"] == "/r"
+    assert out["types"] == []
+
+
+def test_stats_extension_breakdown_when_asked(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt", "/r/c.bin"],
+                 sizes={"/r/a.txt": 1, "/r/b.txt": 2, "/r/c.bin": 100})
+    out = stats(cfg, breakdown=True)
+    assert out["rows"] == 3
+    assert out["total_size"] == 103
     assert out["types"][0] == {"ext": "bin", "n": 1, "size": 100}
 
 

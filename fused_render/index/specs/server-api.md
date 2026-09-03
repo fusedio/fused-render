@@ -17,9 +17,7 @@ unguarded like every other read endpoint and none of them can write.
 | `POST /api/index/scan-folder` `{path}` | X-Fused | cover ONE folder because a search box asked; `{started, why, run_id, root}`, never an error (§7.2) |
 | `POST /api/index/cancel` `{run_id}` | X-Fused | touch the run's cancel flag |
 | `GET /api/index/status?run_id=&since=` | — | scan state (§2) |
-| `GET /api/index/runs` | — | the 20 most recent runs with their folded state |
-| `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
-| `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
+| `GET /api/index/stats?root=&breakdown=` | — | totals + manifest; per-extension breakdown when `breakdown` is truthy (`query.md §2`) |
 | `GET /api/index/search?root=&q=&limit=&fmt=` | — | the whole-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6). No longer used by the app — it is the `fused.fileIndex.search` bridge contract user pages are written against |
 | `GET /api/index/rank?root=&q=&limit=` | — | BOTH search boxes: filtered AND ranked server-side, top `limit` hits, with a `reason` when it cannot answer (§7) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |

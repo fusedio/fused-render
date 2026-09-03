@@ -4,8 +4,7 @@ Ported from OpenIndex's `query.py` MINUS its `sql` action, which was an
 arbitrary read/write surface with no allowlist and no read-only flag. User SQL
 lives in `guarded_query.py` instead, where the confinement is the whole point of
 the module (specs/query.md §5); nothing here takes a caller's statement.
-`stats` and `lookup` build SQL only from escaped literals, an int-cast
-limit/offset and a fixed sort allowlist.
+`stats` builds SQL only from escaped literals, same as every other reader here.
 
 duckdb is imported inside each function, not at module top: this module is
 imported by the server's router, and a call against a missing index should not
@@ -32,8 +31,6 @@ from fused_render.index.store import (
 
 logger = logging.getLogger(__name__)
 
-_DRIVE = re.compile(r"^[A-Za-z]:/")
-
 # A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
 # ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
 # reduced to "". Every root normalization below restores the trailing "/" for
@@ -50,14 +47,6 @@ def _root_or_bare(stripped: str) -> str:
     root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
     unchanged."""
     return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
-
-SORTS = {
-    "path": "path ASC", "size": "size DESC", "mtime": "mtime DESC",
-    "name": "name ASC",
-}
-
-# Rows a single lookup may return, whatever the caller asks for.
-MAX_LIMIT = 5_000
 
 # Entries an in-folder corpus may return — the same cap /api/fs/walk uses, so
 # swapping the corpus source cannot change how much the client holds.
@@ -125,27 +114,6 @@ def prune(parts, prefix):
     return out
 
 
-def pattern_for(q: str):
-    """Turn a user query into (like_pattern, prune_prefix).
-
-    `*` is a wildcard; everything else is a literal substring match anywhere
-    in the path. A query starting with `/`, a drive letter or `~` is anchored
-    at the start, and its literal lead-in (up to the first `*`) prunes
-    partitions."""
-    q = norm(q)
-    anchored = q.startswith("/") or q.startswith("~") or bool(_DRIVE.match(q))
-    if q.startswith("~"):
-        q = norm(os.path.expanduser(q))
-    lit = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    pat = lit.replace("*", "%")
-    if not anchored:
-        pat = "%" + pat
-    if not pat.endswith("%"):
-        pat += "%"
-    prune_prefix = q.split("*", 1)[0] if anchored else ""
-    return pat, prune_prefix
-
-
 def files_src(cfg: IndexConfig, parts) -> str:
     """A duckdb source over exactly the partitions the MANIFEST names.
 
@@ -172,48 +140,15 @@ def _depth_col(con, src: str, path_col: str) -> str:
     return "depth" if "depth" in cols else depth_expr(path_col)
 
 
-def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
-           sort: str = "mtime") -> dict:
-    """Files whose path matches `query`, with partition-pruning telemetry.
-    An index that was never built answers `{empty: True}` rather than raising —
-    "no index yet" is a state the UI renders, not an error."""
-    m = read_manifest(cfg)
-    if m is None:
-        return {"empty": True, "location": cfg.dir, "rows": [], "total": 0,
-                "partitions": [], "scanned_partitions": 0, "of_partitions": 0}
-    import duckdb
+def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False) -> dict:
+    """Totals for ONE subtree — the explicit `root`, else the manifest's
+    `last_root`. An index may hold several roots, so a whole-index total
+    would be a number nobody asked for.
 
-    q = (query or "").strip().rstrip("/")
-    pat, prune_prefix = pattern_for(q) if q else ("%", "")
-    hit = prune(m["partitions"], prune_prefix)
-    base = {"empty": False, "location": cfg.dir,
-            "partitions": [p["file"] for p in hit],
-            "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"])}
-    if not hit:
-        return {**base, "rows": [], "total": 0}
-    where = (f"WHERE path ILIKE '{_q(pat)}' ESCAPE '\\'" if q else "WHERE 1=1")
-    order = SORTS.get(sort, SORTS["mtime"])
-    limit = max(0, min(int(limit), MAX_LIMIT))
-    offset = max(0, int(offset))
-    src = files_src(cfg, hit)
-    con = duckdb.connect()
-    total = con.execute(f"SELECT count(*) FROM {src} {where}").fetchone()[0]
-    rows = con.execute(
-        f"SELECT path, dir, name, ext, size, mtime FROM {src} {where} "
-        f"ORDER BY {order} LIMIT {limit} OFFSET {offset}").fetchall()
-    cols = ["path", "dir", "name", "ext", "size", "mtime"]
-    return {**base, "rows": [dict(zip(cols, r)) for r in rows],
-            "total": int(total)}
-
-
-def stats(cfg: IndexConfig, root: str = "") -> dict:
-    """Totals + per-extension breakdown for ONE subtree — the explicit `root`,
-    else the manifest's `last_root`. An index may hold several roots, so a
-    whole-index total would be a number nobody asked for.
-
-    Known cost (inherited): this reads every partition to group by extension;
-    there is no cached rollup."""
+    The default is a `count(*)`/`sum(size)` over partitions PRUNED to the
+    root's range (`prune`, query.md §4) — no per-extension grouping. Pass
+    `breakdown=True` for `types`: the same partitions, but a `GROUP BY ext`
+    pass over them, which most callers never read and shouldn't pay for."""
     m = read_manifest(cfg)
     if m is None:
         return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
@@ -227,20 +162,22 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
     # drive root "C:/" via _root_or_bare above) — appending another "/"
     # unconditionally, as a plain `root != "/"` check used to, would double
     # it on the drive-root case and match nothing.
-    pfx = like_literal(root if root.endswith("/") else root + "/")
+    prefix = root if root.endswith("/") else root + "/"
+    pfx = like_literal(prefix)
     inside = (f"(dir = '{_q(root)}' "
               f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+    hit = prune(m["partitions"], prefix)
     n_rows, total_size, n_dirs = 0, 0, 0
     types = []
     if os.path.exists(cfg.dirs_parquet):
         n_dirs = con.execute(
             f"SELECT count(*) FROM {dirs_src(cfg)} "
             f"WHERE {inside}").fetchone()[0]
-    if m.get("partitions"):
+    if hit and breakdown:
         by_ext = con.execute(
             f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
             f"coalesce(sum(size), 0) s "
-            f"FROM {files_src(cfg, m['partitions'])} "
+            f"FROM {files_src(cfg, hit)} "
             f"WHERE {inside} "
             f"GROUP BY 1 ORDER BY s DESC").fetchall()
         n_rows = sum(r[1] for r in by_ext)
@@ -250,6 +187,10 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
         if rest:
             types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
                           "size": int(sum(r[2] for r in rest))})
+    elif hit:
+        n_rows, total_size = con.execute(
+            f"SELECT count(*), coalesce(sum(size), 0) "
+            f"FROM {files_src(cfg, hit)} WHERE {inside}").fetchone()
     return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
             "dirs": int(n_dirs), "total_size": int(total_size),
             "updated": m.get("updated"), "last_root": root,

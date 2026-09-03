@@ -1,5 +1,5 @@
-"""The file index's HTTP surface: scan control, status polling, stats,
-lookup, and the small persisted config — plus the startup scan scheduler.
+"""The file index's HTTP surface: scan control, status polling, stats, and
+the small persisted config — plus the startup scan scheduler.
 
 The engine lives in `fused_render/index/` and knows nothing about HTTP; this
 module is the thin adapter. Every route resolves its `IndexConfig` from disk
@@ -41,7 +41,6 @@ from fused_render.index.ignore import (
     norm,
 )
 from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
-from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -853,25 +852,12 @@ def api_index_status(run_id: str = Query(default=""),
             "events": out["events"], "cursor": out["cursor"]}
 
 
-@router.get("/api/index/runs")
-def api_index_runs():
-    return {"ok": True, **runner.list_runs(load_config())}
-
-
 # -------------------------------------------------------------------- reading
 
 @router.get("/api/index/stats")
-def api_index_stats(root: str = Query(default="")):
-    return {"ok": True, **index_stats(load_config(), root=root)}
-
-
-@router.get("/api/index/lookup")
-def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100),
-                     offset: int = Query(default=0),
-                     sort: str = Query(default="mtime")):
-    return {"ok": True,
-            **index_lookup(load_config(), q, limit=limit, offset=offset,
-                           sort=sort)}
+def api_index_stats(root: str = Query(default=""),
+                    breakdown: bool = Query(default=False)):
+    return {"ok": True, **index_stats(load_config(), root=root, breakdown=breakdown)}
 
 
 # The one value of `fmt` that means anything. Anything else — including the

@@ -100,7 +100,7 @@ def test_cancel_of_an_unknown_run_is_a_400(home, tmp_path):
 
 def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
     """One end-to-end pass: POST a scan, poll status until the detached worker
-    finishes, then read the index back through stats and lookup."""
+    finishes, then read the index back through stats."""
     src = _tree(tmp_path)
     client = _client(tmp_path)
     started = client.post("/api/index/scan", json={"root": str(src)},
@@ -125,9 +125,6 @@ def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
     stats = client.get("/api/index/stats", params={"root": str(src)}).json()
     assert stats["rows"] == 2
     assert stats["empty"] is False
-
-    found = client.get("/api/index/lookup", params={"q": "beta"}).json()
-    assert [r["name"] for r in found["rows"]] == ["beta.md"]
 
 
 def test_status_without_a_run_id_reports_the_latest_run(home, tmp_path):
@@ -215,24 +212,12 @@ def test_cancel_writes_the_flag(home, tmp_path):
     assert os.path.exists(os.path.join(d, "cancel"))
 
 
-# -- stats / lookup on an empty index -----------------------------------------
+# -- stats on an empty index ---------------------------------------------------
 
 def test_stats_on_a_never_built_index(home, tmp_path):
     body = _client(tmp_path).get("/api/index/stats").json()
     assert body["empty"] is True
     assert body["rows"] == 0
-
-
-def test_lookup_on_a_never_built_index(home, tmp_path):
-    body = _client(tmp_path).get("/api/index/lookup", params={"q": "x"}).json()
-    assert body["empty"] is True
-    assert body["rows"] == []
-
-
-def test_lookup_limit_is_clamped(home, tmp_path):
-    body = _client(tmp_path).get("/api/index/lookup",
-                                 params={"q": "x", "limit": 10 ** 9}).json()
-    assert body["ok"] is True  # coerced, not rejected
 
 
 # -- config --------------------------------------------------------------------

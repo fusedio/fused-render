@@ -40,9 +40,7 @@ import threading
 from fused_render.index.config import IndexConfig
 from fused_render.index.store import parquet_src, partition_files
 
-# Rows a single query may return, whatever the caller asks for — the same cap
-# `query.lookup` uses, so the two read surfaces cannot disagree about how much
-# a client is handed.
+# Rows a single query may return, whatever the caller asks for.
 MAX_LIMIT = 5_000
 
 # Wall clock a statement gets before `con.interrupt()` stops it. A cross join
