@@ -5,7 +5,6 @@
 import { expect, test } from "bun:test";
 import {
   activeJobByModel,
-  clearableCount,
   GRACE_MS,
   jobAmount,
   jobDetail,
@@ -249,16 +248,6 @@ test("the poll idles once the grace window has elapsed", () => {
 // the work does not actually stop when its record does, so that silently
 // orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still
 // takes a stalled row on purpose; only the bulk sweep changed.
-
-test("clearableCount counts terminal rows but not a stalled running one", () => {
-  const jobs = [
-    job({ id: "run", state: "running", stalled: false }),
-    job({ id: "stalled", state: "running", stalled: true }),
-    job({ id: "done", state: "done" }),
-    job({ id: "err", state: "error" }),
-  ];
-  expect(clearableCount(jobs)).toBe(2);
-});
 
 // ------------------------------------------------------------- activeJobByModel
 

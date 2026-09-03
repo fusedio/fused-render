@@ -176,27 +176,6 @@ export function activeJobByModel(jobs: Job[]): Map<string, Job> {
   );
 }
 
-/**
- * What the card's bulk "Clear" button would actually take, and what it
- * leaves — mirroring the server's own rule (`fused_render/jobs.py`
- * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
- * row is deliberately NOT clearable in bulk any more: `is_stalled` only
- * means "no report in `STALE_AFTER_S`", and the work behind it does not
- * stop just because its row does — a Clear press used to silently orphan
- * a still-running AI job, telling the user it had been cancelled when
- * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
- * takes a stalled row one at a time, unchanged: that is a user closing a
- * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
- * what any of its rows are.
- *
- * (This block sat two functions further up until code review finding 4 —
- * `DownloadManager.tsx` cites "`clearableCount`'s own doc has the full
- * argument" twice, and the doc was over `isFailure`.)
- */
-export function clearableCount(jobs: Job[]): number {
-  return jobs.filter((j) => !isRunning(j)).length;
-}
-
 /** The jobs list after a Clear — every row Clear would NOT take, i.e. every
  *  `running` row, stalled included. Used to optimistically patch the local
  *  list the instant the server confirms a clear, without waiting for the
