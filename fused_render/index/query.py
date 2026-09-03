@@ -424,77 +424,10 @@ def _subseq_regex(q: str) -> str:
                      for c in q)
 
 
-# root -> (index generation, ignore-root rels). The `.gitignore` rows under a
-# root change only when the index does, and the query behind them is a scan of
-# the path column — a few tens of ms that a keystroke must not pay. Keyed on the
-# manifest's `updated`, so a completed scan re-discovers exactly once.
-#
-# CAPPED, and the cap is not decoration. This used to be "bounded by the number
-# of roots ever searched in one process", which was true when the home page was
-# the only caller: one root, one entry. The in-folder search makes every folder
-# anybody browses into a root, so the bound became "every folder visited this
-# session" — a dict that only grows, holding a list of rels per entry.
-ORACLE_CACHE_MAX = 32
-_ORACLE_RELS: dict = {}
-
-
-def _remember_oracle_rels(key, value) -> None:
-    """Insert or refresh, evicting the least recently USED."""
-    _ORACLE_RELS.pop(key, None)
-    _ORACLE_RELS[key] = value
-    while len(_ORACLE_RELS) > ORACLE_CACHE_MAX:
-        _ORACLE_RELS.pop(next(iter(_ORACLE_RELS)))
-
-
-def _recall_oracle_rels(key):
-    """Read, and count the read as use.
-
-    Recency has to move on the READ or the policy is first-in-first-out with
-    an LRU's name on it: the folder somebody searches all day would be evicted
-    by thirty-two others they opened once, and re-pay the path-column scan
-    that this cache exists to skip."""
-    cached = _ORACLE_RELS.pop(key, None)
-    if cached is not None:
-        _ORACLE_RELS[key] = cached
-    return cached
-
-
-def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
-                  updated) -> list:
-    """Dirs under `root` that hold a `.gitignore`, as rels ('' = the root).
-
-    The server's gitignore filter needs these, and it cannot get them from a
-    ranked payload: stage A drops every dot-leading rel unless the query asks
-    for hidden entries, so `.gitignore` is essentially never a candidate, and a
-    filter that discovers its oracles from the rows it is given then decides
-    nothing at all (server/index_gitignore.filter_corpus). The index knows
-    where they are, so it says.
-
-    Not the same question as "which oracle decides this row" — that stays in
-    the filter. This is only the discovery half, moved to the one place that
-    can see the whole tree cheaply."""
-    key = (cfg.dir, root)
-    cached = _recall_oracle_rels(key)
-    if cached is not None and cached[0] == updated:
-        return cached[1]
-    rels = []
-    if parts:
-        rel_from = len(prefix) + 1
-        rows = con.execute(
-            f"SELECT DISTINCT substr(path, {rel_from}) AS rel "
-            f"FROM {files_src(cfg, parts)} "
-            f"WHERE path LIKE '{like_literal(root)}/%' ESCAPE '\\' "
-            f"AND path LIKE '%/.gitignore' ESCAPE '\\'").fetchall()
-        for (rel,) in rows:
-            rels.append(rel[: -len("/.gitignore")] if "/" in rel else "")
-    _remember_oracle_rels(key, (updated, rels))
-    return rels
-
-
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
                   cap: int = RANK_CANDIDATE_CAP,
-                  gitignore_filter=None, token=None) -> dict:
+                  token=None) -> dict:
     """Search `root` for `q` — filtered AND ranked here, top `limit` returned.
 
     The home page used to fetch the whole corpus and rank it in the browser:
@@ -529,12 +462,9 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
       rows below the cut that nobody will ever see. `escalated` reports which
       happened.
 
-      The check is made AFTER ranking and gitignore-filtering pass 1, not on
-      the raw SQL row count, so no safety margin is needed or used: the number
-      compared against `limit` is the number of rows the user would actually
-      get. A margin over the raw count would be the guess this avoids —
-      gitignore can drop any fraction of a pass, and guessing high spends the
-      143 ms it was trying to save.
+      The check is made AFTER ranking pass 1, not on the raw SQL row count, so
+      no safety margin is needed or used: the number compared against `limit`
+      is the number of rows the user would actually get.
 
       Deliberately NOT taken: a depth cap on pass 1. `depth` is already a
       tie-break in the ORDER BY, so shallow-first is delivered without a
@@ -542,9 +472,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
       round trip precisely when the first answer was wrong.
     - **B, in Python.** `rank_entries` (index/rank.py) over those ≤`cap` rows —
       the real fuzzy scoring, in parity with the browser's ranker — then the
-      gitignore filter, THEN the cut to `limit`. That order is not incidental:
-      filtering after the cut is what makes today's corpus report `truncated`
-      while holding fewer rows than it claims.
+      cut to `limit`.
 
     KNOWN, and logged rather than hidden: stage A's cap can in principle drop a
     row stage B would have ranked first. It is unlikely because the two agree
@@ -554,13 +482,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `truncated: true` in the response. Silent truncation is what this removes,
     not what it reintroduces.
 
-    `gitignore_filter(root, entries, oracle_rels) -> entries` is how the server
-    layer hands in `index_gitignore.filter_corpus`; the index package does not
-    import the server. `oracle_rels` is this function's half of that job — the
-    dirs holding a `.gitignore`, read out of the INDEX (`_ignore_roots`),
-    because a filter that discovers them from a 200-row ranked payload finds
-    none and therefore filters nothing. Omitted, nothing is filtered.
-
     Coverage semantics are `search_under`'s exactly: an uncovered root, a
     missing index or a package directory answers `covered: false` with no hits
     — never an error, because "no index yet", "not covered" and "a scan is
@@ -569,11 +490,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked at every phase boundary in
     `pass_over` — before each `execute`, after the `fetchall`, before
-    `rank_entries`, before the gitignore filter. Binding is to the whole
-    CONNECTION, though, not just `pass_over`'s statement, so a
-    `duckdb.InterruptException` can land in any query run on it —
-    `_coverage_reason`'s and `_ignore_roots`' included, both of which execute
-    on this same connection before `pass_over` ever does. One try/except
+    `rank_entries`. Binding is to the whole CONNECTION, though, not just
+    `pass_over`'s statement, so a `duckdb.InterruptException` can land in any
+    query run on it — `_coverage_reason`'s included, which executes on this
+    same connection before `pass_over` ever does. One try/except
     around the whole bound region (not one per query site) re-raises as
     `Cancelled` an interrupt this token caused; one it did NOT cause (a real
     duckdb error, or another caller's timeout on a connection this function
@@ -695,9 +615,9 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             if token is not None:
                 token.check()
             # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
-            # and the gitignore filter below — this fires on every keystroke, so
-            # it stays DEBUG rather than something louder (same reasoning as the
-            # cap-bit line right after it).
+            # below — this fires on every keystroke, so it stays DEBUG rather
+            # than something louder (same reasoning as the cap-bit line right
+            # after it).
             logger.debug("index rank: stage A (%s) for %r under %s: %d row(s) "
                         "in %.1fms", name, qs, root,
                         len(rows), (time.monotonic() - t0) * 1000)
@@ -719,12 +639,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             if token is not None:
                 token.check()
             ranked = rank_entries(qs, entries)
-            if gitignore_filter is not None:
-                if token is not None:
-                    token.check()
-                ranked = gitignore_filter(
-                    root, ranked,
-                    _ignore_roots(con, cfg, hit, root, prefix, updated))
             return ranked, len(rows) > cap
 
         # The LADDER (see the docstring): the cheap substring pass first, and the
@@ -744,10 +658,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     except duckdb.InterruptException:
         # `token.bind(con)` above binds the WHOLE connection, not just
         # pass_over's own SELECT — con.interrupt() can land in any statement
-        # run on it, including `_coverage_reason`'s and `_ignore_roots`'
-        # queries above, both of which run on this same bound connection
-        # before pass_over ever does. Handled once here for the entire bound
-        # region rather than wrapping each query site separately.
+        # run on it, including `_coverage_reason`'s query above, which runs on
+        # this same bound connection before pass_over ever does. Handled once
+        # here for the entire bound region rather than wrapping each query
+        # site separately.
         #
         # An interrupt with NO token, or one this token did not cause, is a
         # real error (someone else's timeout, a genuine duckdb abort) and

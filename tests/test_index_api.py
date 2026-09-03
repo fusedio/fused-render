@@ -314,32 +314,6 @@ def test_saving_the_config_answers_in_the_same_shape_as_reading_it(home, tmp_pat
     assert saved["configured_roots"] == read["configured_roots"] == []
 
 
-def test_a_search_is_filtered_against_its_enclosing_index_root(home, tmp_path,
-                                                              monkeypatch):
-    """The gitignore filter pools its verdicts per INDEX ROOT, so the route has
-    to tell it which one this folder lives under. Keyed on the REQUESTED folder
-    instead (the old behaviour), browsing five folders evicted the first and
-    re-paid a full check-ignore sweep of its whole recursive subtree."""
-    seen = []
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: seen.append(index_root) or out)
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    client = _client(tmp_path)
-    client.post("/api/index/config", json={"roots": [str(tmp_path)]},
-                headers={"X-Fused": "1"})
-    client.get(f"/api/index/search?root={tmp_path}")
-    client.get(f"/api/index/search?root={sub}")
-    # Both requests pool under the configured root, whichever folder was asked
-    # for. A folder outside every root has no pool to share and gets None.
-    client.get(f"/api/index/search?root={tmp_path.parent}")
-    # The route hands `filter_corpus` the matched entry from `scan_roots`,
-    # which is already in `runner.canonical_root` form — not the caller's
-    # raw spelling (platform.md §1) — so the expectation has to be too.
-    canon = runner.canonical_root(str(tmp_path))
-    assert seen == [canon, canon, None]
-
-
 def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):
     """The panel documents `#` comments and round-trips the textarea through
     this response, so cleaning on save silently deleted the user's
@@ -745,8 +719,6 @@ def _corpus(n=3):
 def _stub_corpus(monkeypatch, out):
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: dict(out))
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: out)
 
 
 def test_search_answers_in_columns_when_asked(home, tmp_path, monkeypatch):
@@ -864,19 +836,12 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: seen.append(("search", root))
                         or {"covered": True, "root": root, "entries": []})
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None:
-                        seen.append(("filter", index_root)) or out)
     cfg = load_config()
     cfg.roots = [str(tmp_path)]
     index_router.save_config(cfg)
     index_router.run_startup_warm()
-    # Same pair of calls the route makes, and pooled under the same index root:
-    # a warm that filtered under a different key would fill a second pool.
-    # `filter_corpus`'s `index_root` comes from `enclosing_root(scan_roots(...))`
-    # — canonical_root form, not the caller's raw spelling.
-    assert seen == [("search", index_router.runner.canonical_root("~")),
-                    ("filter", index_router.runner.canonical_root(str(tmp_path)))]
+    # Same call the route makes: /api/index/search's corpus, aimed at home.
+    assert seen == [("search", index_router.runner.canonical_root("~"))]
 
 
 def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
@@ -902,40 +867,6 @@ def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
     assert called == []
 
 
-def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypatch):
-    """The point of the warm, end to end: after a real scan the first search
-    pays a full check-ignore sweep of the whole corpus (~1.5 s on a home dir).
-    Once the warm has run, that sweep is already in the pool."""
-    from fused_render.server import index_gitignore
-
-    src = _tree(tmp_path)
-    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (src / "noise.log").write_text("x", encoding="utf-8")
-    client = _client(tmp_path)
-    started = client.post("/api/index/scan", json={"root": str(src)},
-                          headers={"X-Fused": "1"})
-    run_id = started.json()["run_id"]
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        if not client.get("/api/index/status",
-                          params={"run_id": run_id}).json()["running"]:
-            break
-        time.sleep(0.2)
-    cfg = load_config()
-    cfg.roots = [str(src)]
-    index_router.save_config(cfg)
-    index_gitignore._cache.clear()
-    # HOME is what the warm aims at; point it at the scanned tree so the warm
-    # answers `covered` and actually sweeps.
-    _point_home_at(monkeypatch, src)
-    index_router.run_startup_warm()
-    # the pool is keyed by canonical_root(src), not the raw literal.
-    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
-    assert pool is not None
-    assert "noise.log" in pool.ignored
-    assert "alpha.txt" in pool.decider
-
-
 def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
     """The warm waits on the run THIS process started, so the scheduler has to
     hand it over — `run_startup_scan` used to drop `runner.start`'s run id on
@@ -958,16 +889,12 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     and there is nothing to sweep; the scan this process just spawned finishes
     seconds later. Sampling once left the user's first keystroke paying the
     whole cold cost anyway (2.3 s, observed). Waiting for that one run and
-    warming after it is what fills the pool."""
-    from fused_render.server import index_gitignore
-
+    searching again after it is what fills the corpus before the user's first
+    keystroke."""
     src = _tree(tmp_path)
-    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (src / "noise.log").write_text("x", encoding="utf-8")
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
-    index_gitignore._cache.clear()
     # HOME is what the warm aims at, and what the scheduler scans.
     _point_home_at(monkeypatch, src)
     index_router.run_startup_scan(start_dir=str(tmp_path))
@@ -989,11 +916,6 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.run_startup_warm()
 
     assert len(calls) == 2, "the warm did not search again after the scan"
-    # the pool is keyed by canonical_root(src), not the raw literal.
-    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
-    assert pool is not None
-    assert "noise.log" in pool.ignored
-    assert "alpha.txt" in pool.decider
 
 
 def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
@@ -1059,7 +981,7 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
     monkeypatch.setenv("HOME", str(tmp_path))
     run_dir = tmp_path / "pruned-run"
     run_dir.mkdir()
-    calls, filtered = [], []
+    calls, ranked = [], []
 
     def search(cfg, root, **kw):
         calls.append(root)
@@ -1069,8 +991,8 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
         return {"covered": True, "root": root, "entries": []}
 
     monkeypatch.setattr(index_router, "index_search", search)
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router, "_rank_body",
+                        lambda cfg, root, q, **kw: ranked.append(root) or {})
     monkeypatch.setattr(index_router.runner, "_run_dir",
                         lambda cfg, run_id: str(run_dir))
     monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
@@ -1078,7 +1000,8 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
                         "run-that-was-pruned")
     index_router.run_startup_warm()
     assert len(calls) == 2
-    assert [out.get("covered") for out in filtered] == [True]
+    # The unconditional rank warm still runs, over the SECOND (covered) search.
+    assert len(ranked) == 1
 
 
 def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
@@ -1086,19 +1009,19 @@ def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
     """The overwhelmingly common boot: an index is already there, so the warm
     is the same two calls it always was, with no wait in the way."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    waited, filtered = [], []
+    waited, ranked = [], []
     monkeypatch.setattr(index_router, "_wait_for_scan",
                         lambda cfg, run_id: waited.append(run_id) or True)
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: {"covered": True, "root": root,
                                                  "entries": []})
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router, "_rank_body",
+                        lambda cfg, root, q, **kw: ranked.append(root) or {})
     monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
                         "run-1")
     index_router.run_startup_warm()
     assert waited == []
-    assert len(filtered) == 1
+    assert len(ranked) == 1
 
 
 def test_startup_warm_does_not_wait_when_the_scan_was_debounced(home, tmp_path,

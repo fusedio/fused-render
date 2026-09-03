@@ -149,7 +149,7 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 ### 4.1 The startup warm
 
 The same hook then calls `startup_warm()`, which spawns one detached daemon thread
-running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`,
+running `run_startup_warm()`: `search_under` over `expanduser("~")`,
 and then `search_ranked` with a query that matches NOTHING over the same root — exactly
 the two requests the explorer makes (the in-folder corpus and the home page's ranked
 search), under exactly the same pool key. Warming only the corpus would leave the
@@ -159,9 +159,8 @@ it has enough, so a query WITH hits never touches the subsequence-regex plan —
 expensive half, and the one a mistyped query lands on. The client's idle warm
 (`FilesHome.tsx`) sends the same shape of query for the same reason.
 
-Everything that path caches is **per process** and starts empty: the gitignore verdict
-pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
-and `duckdb` is not imported until the first query. Measured on a 164k-entry home,
+Everything that path caches is **per process** and starts empty: `duckdb` is not
+imported until the first query. Measured on a 164k-entry home,
 that made the first search of a fresh process ~2.2 s against ~0.8 s for the next one,
 all of it billed to a keystroke. The warm moves it to idle.
 
@@ -186,13 +185,7 @@ all of it billed to a keystroke. The warm moves it to idle.
   scan ended does not tell you whether the index covers the root, and an uncovered one
   costs one cheap `covered: false`. Giving up is logged once.
   A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
-  run is coming and its index is already on disk. The persisted verdict pool
-  (`server/index_gitignore.py`) is what covers restarts.
-- The warm and the **first keystroke overlap by design** — the warm runs for ~2.2 s and
-  the user is typing inside it — so `server/index_gitignore.py` coordinates them: the
-  second caller to want verdicts for the same base waits on the sweep already in flight
-  (`_inflight`, `SWEEP_WAIT_MAX_S`) and reads the pool it produced, instead of shelling
-  out to `git check-ignore` over the same 200k entries a second time.
+  run is coming and its index is already on disk.
 - It **never raises**: nobody joins the thread.
 
 Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
@@ -248,10 +241,10 @@ as for the corpus.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
-571,429 files. `MAX_CORPUS` (200,000, depth-ordered) plus the gitignore filter is what
-cut it down, so ~71% of that home was unfindable from the home search while the
-response reported `truncated: true` and the client ranked what it got. This route
-filters and ranks over the WHOLE index and returns the part anybody reads.
+571,429 files. `MAX_CORPUS` (200,000, depth-ordered) is what cut it down, so ~71% of
+that home was unfindable from the home search while the response reported
+`truncated: true` and the client ranked what it got. This route filters and ranks over
+the WHOLE index and returns the part anybody reads.
 
 **Two stages** (`query.md`, `search_ranked`), because neither is affordable alone: SQL
 narrows and coarse-orders over every row under the root; Python's ranker
@@ -265,16 +258,12 @@ Stage A is itself a **ladder**, cheapest pass first:
 | 1 | `lower(rel) LIKE '%q%'` | 30,319 rows / 51 ms | 3,056 / 41 ms |
 | 2 | `regexp_matches(lower(rel), 'a.*b.*c')` | 176,505 / 143 ms | 11,766 / 45 ms |
 
-Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking and
-gitignore filtering, and `escalated` says which happened. That is **lossless, not an
-approximation**: `fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum
-the subsequence branch can never reach, and `rankCompare` orders on `longestRun` first,
-so every substring hit outranks every subsequence-only hit and a filled cut leaves pass
-2 nothing to contribute above it. The check runs on the FILTERED count, so it needs no
-safety margin.
-
-**The gitignore filter runs before the cut to `limit`**, never after — filtering after
-the cut is precisely what let the corpus report more rows than it held.
+Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking, and
+`escalated` says which happened. That is **lossless, not an approximation**:
+`fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum the subsequence
+branch can never reach, and `rankCompare` orders on `longestRun` first, so every
+substring hit outranks every subsequence-only hit and a filled cut leaves pass 2 nothing
+to contribute above it.
 
 **`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
 got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of

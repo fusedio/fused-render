@@ -356,37 +356,6 @@ def test_rank_route_is_unaffected_by_cancellation_machinery_when_nothing_disconn
     assert body["hits"][0]["rel"] == "readme.md"
 
 
-def test_rank_route_filters_a_gitignored_dir_under_a_NON_repo_root(home, tmp_path):
-    """The hole a narrowed payload opens, closed.
-
-    Oracles used to be discovered from the entry list handed to the filter, and
-    the ranked route hands it ~200 candidates from which stage A has already
-    dropped every dot-leading rel — so `.gitignore` could essentially never be
-    in the set, every entry came back undecided, and NOTHING was filtered. The
-    corpus route did not have the bug only because it carries the whole tree,
-    dotfiles included.
-
-    Home is not a repo here, which is the case that matters: inside a repo one
-    oracle at the toplevel decides everything and the payload's contents are
-    irrelevant."""
-    root = str(tmp_path / "userhome")
-    proj = tmp_path / "userhome" / "proj"
-    (proj / "dist").mkdir(parents=True)
-    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")
-    client = _ranked_client(
-        tmp_path, root,
-        [root + "/proj/.gitignore", root + "/proj/dist/zzbundle.js",
-         root + "/proj/zzkeep.js"],
-        dirs=[root + "/proj", root + "/proj/dist"])
-    body = client.get("/api/index/rank", params={"root": root, "q": "zz"}).json()
-    assert body["covered"] is True
-    assert [h["rel"] for h in body["hits"]] == ["proj/zzkeep.js"]
-    # And the two routes agree, which is the actual requirement: the same file
-    # must not appear in one search and vanish from the other.
-    corpus = client.get("/api/index/search", params={"root": root}).json()
-    assert "proj/dist/zzbundle.js" not in [e["rel"] for e in corpus["entries"]]
-
-
 def test_rank_route_honours_the_limit(home, tmp_path):
     root = str(tmp_path / "proj")
     client = _ranked_client(tmp_path, root,
@@ -724,42 +693,6 @@ def test_a_coverage_check_interrupt_attributed_to_the_token_becomes_cancelled(
         search_ranked(cfg, "/r", "readme.md", token=token)
 
 
-def test_an_ignore_roots_interrupt_attributed_to_the_token_becomes_cancelled(
-    tmp_path, monkeypatch
-):
-    """`_ignore_roots` runs on the same bound connection too, and only when a
-    `gitignore_filter` is supplied (search_ranked's caller, server/routers/
-    index.py, always supplies one) — so a client abort landing in the
-    gitignore-root discovery query must also come out as `Cancelled`, not an
-    unhandled `duckdb.InterruptException`."""
-    import duckdb as duckdb_module
-
-    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
-    token = CancelToken()
-
-    class _SpyConnection:
-        def __init__(self, real):
-            self._real = real
-
-        def execute(self, sql, *a, **kw):
-            if "/.gitignore" in sql:
-                token.cancel()
-                raise duckdb_module.InterruptException(
-                    "simulated cross-thread interrupt during ignore-roots discovery"
-                )
-            return self._real.execute(sql, *a, **kw)
-
-        def __getattr__(self, name):
-            return getattr(self._real, name)
-
-    real_connect = duckdb_module.connect
-    monkeypatch.setattr(duckdb_module, "connect",
-                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
-    with pytest.raises(Cancelled):
-        search_ranked(cfg, "/r", "readme.md", token=token,
-                      gitignore_filter=lambda root, es, oracles: es)
-
-
 def test_a_cancel_after_search_ranked_returns_does_not_touch_the_closed_connection(
     tmp_path,
 ):
@@ -779,20 +712,6 @@ def test_a_cancel_after_search_ranked_returns_does_not_touch_the_closed_connecti
     # Must not raise.
     token.cancel()
     assert token.cancelled is True
-
-
-def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
-    """Filtering after the cut is what makes today's corpus report `truncated`
-    while holding fewer rows than it says: the cap was spent on entries that
-    were then dropped. So `limit` counts entries the user can actually see."""
-    cfg = _index(tmp_path, "/r", [f"/r/alpha{i}.txt" for i in range(10)])
-    dropped = {"alpha0.txt", "alpha1.txt", "alpha2.txt"}
-    out = search_ranked(cfg, "/r", "alpha", limit=5,
-                        gitignore_filter=lambda root, es, oracles:
-                            [e for e in es if e["rel"] not in dropped])
-    assert len(out["hits"]) == 5
-    assert not dropped & {h["rel"] for h in out["hits"]}
-    assert out["truncated"] is True
 
 
 def test_search_ranked_flags_nothing_when_every_hit_fits(tmp_path):

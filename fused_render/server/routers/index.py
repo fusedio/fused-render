@@ -54,7 +54,6 @@ from fused_render.index.store import (
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
-from fused_render.server.index_gitignore import filter_corpus
 from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
@@ -241,39 +240,15 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
 # NOTHING. A query with hits stops at the cheap substring pass (the ladder in
 # `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
 # the one a mistyped query lands on — cold for the first user who needs it. A
-# no-match query runs both passes, plus the ignore-root discovery behind the
-# gitignore filter, and returns an empty body.
+# no-match query runs both passes and returns an empty body.
 WARM_RANK_QUERY = "zqxjv"
 
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
                token: CancelToken | None = None) -> dict:
-    """`search_ranked` with the server's gitignore filter wired in.
-
-    The index package cannot import the server, so `search_ranked` takes the
-    filter as a callable — this is the only place that knows both. It is
-    called BEFORE the cut to `limit` (search_ranked does that), and keyed on
-    the enclosing INDEX ROOT rather than the requested folder, for the reason
-    `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
-    check-ignore sweep every time browsing evicted one.
-
-    `oracle_rels` comes from the caller, not from the payload: a ranked answer
-    is ~200 rows with no dot-leading rels among them, so the filter's own
-    discovery would find no `.gitignore`, decide nothing, and drop nothing
-    (index_gitignore.filter_corpus says this at length).
-
-    `token`, when given, is forwarded to `search_ranked` unchanged — it
-    already checks it right before calling `drop_ignored` (query.py's
-    `pass_over`), which is "before entering the sweep" from this function's
-    side without anything extra needed here."""
-    def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
-        index_root = enclosing_root(scan_roots(cfg), canonical_root)
-        return filter_corpus({"covered": True, "root": canonical_root,
-                              "entries": hits}, index_root=index_root,
-                             oracle_rels=oracle_rels, token=token)["entries"]
-
-    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
-                      token=token)
+    """`search_ranked`, unchanged, under the name the rest of this module and
+    the startup warm call it by. `token`, when given, is forwarded unchanged."""
+    return index_rank(cfg, root, q=q, limit=limit, token=token)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -393,9 +368,7 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
-    Everything the corpus path caches is PER PROCESS and starts empty: the
-    gitignore verdict pool (server/index_gitignore.py) knows nothing until
-    some request sweeps `git check-ignore` over the whole corpus, and duckdb
+    Everything the corpus path caches is PER PROCESS and starts empty: duckdb
     is not even imported until the first query. Measured on a 164k-entry home:
     ~2.2 s for the first search of a fresh process against ~0.8 s for the next
     one — and all of it was billed to the user's first keystroke.
@@ -444,17 +417,12 @@ def run_startup_warm() -> None:
                 # original single-shot warm already paid.
                 _wait_for_scan(cfg, run_id)
                 out = index_search(cfg, root)
-        # Unconditional, including the uncovered cases: filter_corpus is a
-        # no-op on a response that is not covered, and the point is to run
-        # precisely what the route runs.
-        filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
-                                                     out.get("root") or root))
         # And the path the HOME search now takes, which is a different query
         # over the same index: /api/index/rank, verbatim, with a query that
         # matches something on essentially every machine. Same duckdb
-        # connection cost, same gitignore pool, but its own two-stage SQL —
-        # warming only the corpus would leave the home page's first keystroke
-        # paying for the ranked plan.
+        # connection cost, but its own two-stage SQL — warming only the
+        # corpus would leave the home page's first keystroke paying for the
+        # ranked plan.
         _rank_body(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
@@ -463,8 +431,8 @@ def run_startup_warm() -> None:
 def startup_warm() -> None:
     """The create_app hook. A detached daemon thread, not `to_thread`: the
     startup hook must COMPLETE before the app serves, and this is seconds of
-    duckdb and `git check-ignore` — the very cost the warm exists to move off
-    the request path — and, on a first boot, a bounded wait for the startup
+    duckdb — the very cost the warm exists to move off the request path — and,
+    on a first boot, a bounded wait for the startup
     scan on top of that. Nobody joins it and it cannot raise (above); `daemon`
     is what guarantees a warm still waiting cannot hold the process open."""
     threading.Thread(target=run_startup_warm, name="index-warm",
@@ -927,10 +895,6 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     search box during the first-boot scan would be a lie about a system that
     is working exactly as designed.
 
-    Entries pass through the gitignore filter before leaving: the walk this
-    corpus replaces prunes gitignored entries, and the swap must not change
-    what search shows (server/index_gitignore.py).
-
     `fmt=columns` asks for the same corpus as parallel arrays instead of one
     object per entry (§6 of index/specs/server-api.md) — the home page's
     corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
@@ -939,13 +903,6 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
         return _error("'root' is required")
     cfg = load_config()
     out = index_search(cfg, root, q=q, limit=limit)
-    # Filtered per INDEX ROOT, not per requested folder: the explorer's
-    # in-folder search asks with whichever folder is open, and a cache keyed on
-    # that re-paid a whole-subtree check-ignore sweep every time browsing
-    # evicted a folder. `out["root"]` (not the raw query string) is the
-    # canonical spelling the corpus rels are relative to.
-    index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
-    out = filter_corpus(out, index_root=index_root)
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
@@ -1005,10 +962,8 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     ASYNC, and doing real cancellation, not merely handling a request that
     happens to be a coroutine — a fast typist fires and abandons this route
     on every keystroke, and the abandoned ones used to run to completion:
-    both duckdb ladder passes, the Python ranking, and (worst case) up to
-    `SWEEP_WAIT_MAX_S` blocked on another request's git sweep
-    (index_gitignore.py). The actual query runs on a worker thread
-    (`asyncio.to_thread`), watched by `_watch_disconnect` polling
+    both duckdb ladder passes and the Python ranking. The actual query runs
+    on a worker thread (`asyncio.to_thread`), watched by `_watch_disconnect` polling
     `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
     which is index/cancel.py's job from there. Two honest limitations:
 
@@ -1050,9 +1005,9 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines
-    # logged underneath (stage A per pass, _repo_toplevel, the _inflight wait,
-    # the git sweep) — this fires on every keystroke of the home search, so it
-    # stays DEBUG (see query.py's pass_over for the same reasoning at length).
+    # logged underneath (stage A per pass) — this fires on every keystroke of
+    # the home search, so it stays DEBUG (see query.py's pass_over for the
+    # same reasoning at length).
     # Without this, a slow report has nothing server-side to diagnose it with
     # beyond guessing which phase was the ~4s.
     logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
