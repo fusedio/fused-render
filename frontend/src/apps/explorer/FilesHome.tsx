@@ -763,7 +763,12 @@ export function FilesSearch({
   // render late, which is exactly the kind of one-beat lag that reads as
   // flicker.
   const displayAnswer = noteAnswer(answer, settled, heldAnswerRef.current);
-  if (settled) heldAnswerRef.current = answer;
+  // A settled `answer` of null (a later query's request failed while an
+  // earlier, unrelated held answer got cleared by the stale-clear effect —
+  // see `noteAnswer`, home-search.ts) is never something to hold: writing it
+  // would clobber a real held value for every render after this one, not
+  // just this one — the guard above only protects THIS frame's note.
+  if (settled && answer !== null) heldAnswerRef.current = answer;
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as

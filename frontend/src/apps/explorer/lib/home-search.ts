@@ -302,7 +302,13 @@ export function noteAnswer(
   settled: boolean,
   held: HomeAnswer | null,
 ): HomeAnswer | null {
-  return settled ? answer : held;
+  // `settled` is true on a failed request even when `answer` is null (a
+  // later query's request failed while an earlier, unrelated query's held
+  // answer got cleared by the stale-clear effect — see FilesHome.tsx). A
+  // null `answer` here is never itself something to show; falling back to
+  // `held` is what keeps that render reporting the last real result instead
+  // of flashing "Searching…" over one it already showed.
+  return settled && answer !== null ? answer : held;
 }
 
 // -- typing anywhere is typing here ------------------------------------------

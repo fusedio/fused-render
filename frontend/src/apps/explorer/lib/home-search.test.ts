@@ -289,6 +289,14 @@ describe("noteAnswer", () => {
   it("is null when nothing has ever settled", () => {
     expect(noteAnswer(settledAnswer, false, null)).toBeNull();
   });
+
+  it("holds the last settled answer when a settled render's live answer is null", () => {
+    // Reachable via a failed request for a LATER query than the held answer,
+    // combined with the stale-clear effect nulling `answer` out from under a
+    // query that has since moved on (see FilesHome.tsx). The note must not
+    // flash "Searching…" over a result it already showed.
+    expect(noteAnswer(null, true, heldAnswer)).toBe(heldAnswer);
+  });
 });
 
 
