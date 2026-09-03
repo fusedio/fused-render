@@ -105,59 +105,75 @@ export function isRunning(job: Job): boolean {
 }
 
 /**
- * A FAILURE belongs to Notifications, not Jobs (D586, user: "maybe we can have
- * a flow like running activities are shown in jobs and after done, a completed
- * message goes to notifications?").
+ * Whether a terminal job is specifically a FAILURE, as opposed to a `done` or
+ * `cancelled` one — the one thing `isTerminal` does not distinguish. All
+ * three terminal states route to Notifications and leave Jobs the same tick
+ * (D663, broadened from D586's original `error`-only route: "running
+ * activities are shown in jobs and after done, a completed message goes to
+ * notifications" never meant only failures). What this narrower question is
+ * still used for is `.is-failure`'s red tint in Notifications — a `done` or
+ * `cancelled` row belongs there too, but neither is a failure and must not
+ * turn the chip red.
  *
- * `Jobs` claims to be work IN PROGRESS, and an `error` row is not in progress —
- * it sat there indefinitely while being the one thing that actually wanted
- * attention. Only `error` moves: a `cancelled` row is user-initiated (they
- * already know) and ages out on its own, and a `done` row has its artefact on
- * disk, so neither becomes a notification.
- *
- * This needs no notification store, and that is why the cheap version works:
- * `fused_render/jobs.py`'s `_sweep` already keeps `error` rows until they are
- * explicitly dismissed (where `done`/`cancelled` age out via `first_read_at` +
- * `FINISHED_TTL_S`), so the server-side lifetime, the dismissal endpoint and
- * its `X-Fused` guard all already exist. This is a client-side re-route of
- * rows that are already there.
+ * (C7: this doc used to describe D586's original error-only routing —
+ * "only `error` moves", `done`/`cancelled` "aging out" via `FINISHED_TTL_S`
+ * — none of which has been true since D663 stopped sweeping any terminal
+ * row until dismissed and started routing all three states the same way.)
  */
 export function isFailure(job: Job): boolean {
   return job.state === "error";
 }
 
-/** What the Jobs section draws: everything EXCEPT failures. Deliberately not
- *  "only running" — `done` and `cancelled` rows keep behaving exactly as they
- *  did (vanish-on-success, then the server's TTL), because D586 moves failures
- *  and nothing else. */
-export function inFlightJobs(jobs: Job[]): Job[] {
-  return jobs.filter((j) => !isFailure(j));
-}
-
-/** What the Notifications section draws alongside its repo rows. */
-export function failedJobs(jobs: Job[]): Job[] {
-  return jobs.filter(isFailure);
-}
-
 /**
- * What the card's bulk "Clear" button would actually take, and what it
- * leaves — mirroring the server's own rule (`fused_render/jobs.py`
- * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
- * row is deliberately NOT clearable in bulk any more: `is_stalled` only
- * means "no report in `STALE_AFTER_S`", and the work behind it does not
- * stop just because its row does — a Clear press used to silently orphan
- * a still-running AI job, telling the user it had been cancelled when
- * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
- * takes a stalled row one at a time, unchanged: that is a user closing a
- * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
- * what any of its rows are.
- *
- * (This block sat two functions further up until code review finding 4 —
- * `DownloadManager.tsx` cites "`clearableCount`'s own doc has the full
- * argument" twice, and the doc was over `isFailure`.)
+ * A job that has stopped and is not coming back — the three states that used
+ * to be handled one at a time (`isFailure` for D586's failures-only route) are
+ * now one question, because Notifications draws all three the same way and
+ * Activity must lose all three the same tick they land there (user: "running
+ * activities are shown in jobs and after done, a completed message goes to
+ * notifications" — the "after done" half never distinguished which terminal
+ * state, only D586's `error` half ever got built).
  */
-export function clearableCount(jobs: Job[]): number {
-  return jobs.filter((j) => !isRunning(j)).length;
+export function isTerminal(job: Job): boolean {
+  return job.state === "done" || job.state === "error" || job.state === "cancelled";
+}
+
+/** Every job that has finished, one way or another — what Notifications draws
+ *  alongside its repo rows. */
+export function terminalJobs(jobs: Job[]): Job[] {
+  return jobs.filter(isTerminal);
+}
+
+/** What the Jobs section draws: work still in progress, i.e. not terminal.
+ *  `waiting` stays in (a row parked on a question the user has not answered
+ *  yet is not finished — losing it here would make it vanish everywhere,
+ *  since it is not terminal either and so `terminalJobs` would not pick it
+ *  up); every terminal state leaves in the same tick it reaches
+ *  Notifications. */
+export function inFlightJobs(jobs: Job[]): Job[] {
+  return jobs.filter((j) => !isTerminal(j));
+}
+
+/** Server-owned jobs (a pull, a load) keyed by the model id the caller's own
+ *  card matches on (`title`, which the supervisor sets to the model id, so a
+ *  card never re-derives it) — for a card to ask "is there a job for me" and
+ *  get back an ANSWER, not just a fact about history.
+ *
+ *  D663 keeps a finished job's row until it is dismissed rather than
+ *  sweeping it a few seconds after its first read, so a map built from every
+ *  `server` row regardless of state stayed non-null for a model for the rest
+ *  of the session once its pull or load finished — every consumer that
+ *  gated on PRESENCE (`RepoCard.tsx`'s `!!job` disables and
+ *  "Downloading…"/"Loading…" labels, `PlaygroundTab.tsx`'s `jobForSelected`)
+ *  read that as "still busy" forever, active again the moment anything else
+ *  on the page was, which is exactly when this page polls (`isBusy`,
+ *  `aiRuntime.ts`). Filtering here — the one place this map is built —
+ *  means presence in it means what it always should have: an active job,
+ *  matching this file's own `inFlightJobs` for the identical reason (Part A
+ *  item 1 / C3 fix). */
+export function activeJobByModel(jobs: Job[]): Map<string, Job> {
+  return new Map(
+    jobs.filter((j) => j.owner === "server" && !isTerminal(j)).map((j) => [j.title, j]),
+  );
 }
 
 /** The jobs list after a Clear — every row Clear would NOT take, i.e. every
@@ -171,95 +187,47 @@ export function jobsAfterClear(jobs: Job[]): Job[] {
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
-/** The entry id inside a scheduled run's job id, or "" for every other job — the
- *  one place the `sys:schedule:<entry id>` spelling is taken apart. */
-function scheduleEntryId(jobId: string): string {
-  return jobId.startsWith(SCHEDULE_JOB_PREFIX) ? jobId.slice(SCHEDULE_JOB_PREFIX.length) : "";
+/** A scheduled message's own run, never drawn as an Activity row (user: "a
+ *  task is not something I even want in the activity. that was added
+ *  unintentionally"). The "Task finished:"/"Task failed:"/"Scheduled message
+ *  ran:" toast (platform/lib/schedule-toast.ts) is the one surface for these
+ *  now; the job-registry write behind it stays untouched server-side, because
+ *  `schedule.py`'s poll loop reads its own report back to notice a live
+ *  cancel request. */
+export function isScheduleJob(job: Job): boolean {
+  return job.id.startsWith(SCHEDULE_JOB_PREFIX);
 }
 
-/**
- * Which jobs get a row of their own, which is not every job the card knows.
- *
- * ONE ROW PER UNIT OF WORK, and since the queue and the jobs now share a single
- * card (Akshil, 2026-08-17 — "this queue and notification thing should be same
- * no?") that rule is enforced inside one list rather than between two cards. A
- * scheduled message whose turn is live gets a row at the top of this card from the
- * queue half: it carries the link to the session it is running in and a cancel that
- * knows what it is cancelling, and it prints THIS job's status line under its title
- * (queue-dock-lib `roleText`). A job row beside it would be the same run twice,
- * each half saying half of the same thing.
- *
- * `drawn` IS WHICH RUNS THAT HALF ACTUALLY HAS A ROW FOR, by entry id, and it is
- * passed in rather than assumed. It used to be assumed: every running
- * `sys:schedule:*` job was dropped on the theory that something above was drawing
- * it, and the theory is false two ways. `GET /api/schedule/queue` can fail or time
- * out — after a failed FIRST read the queue half has no rows at all — and this card
- * can be mounted bare, with nothing filling the `queue` slot by construction. In
- * both cases a turn that was genuinely executing had no row in EITHER half: no
- * title, no status line, and no reachable `cancelJob("sys:schedule:<id>")` in any
- * fold state. That is the invisible-and-unreachable run this whole surface was asked
- * for, made worse — the earlier bug at least left a row saying "waiting for
- * permission".
- *
- * So being told nothing means "draw it yourself", never "somebody else has it": no
- * ids ⇒ one row, in the job half, without the Explorer link but with its stop. Told
- * an id ⇒ the queue half owns that run and this half keeps quiet, which is exact
- * (the ids come off the very array the rows are rendered from, queue-dock-lib
- * `drawnIds`) rather than a guess about a category of job.
- *
- * `drawn` WINS WHATEVER THE JOB'S STATE, and the terminal rows are the ones that
- * taught us why. They used to be exempt — "once the turn has ended the entry leaves
- * the server's queue, so a terminal row cannot be a duplicate" — and the premise is
- * true of the SERVER and false of the two clocks reading it. This half polls
- * /api/jobs about once a second and the queue half polls /api/schedule/queue every
- * six, so for as long as several seconds this half can know the turn ended while the
- * other is still painting the same run as live: a terminal job row and a live queue
- * row, two rows for one run, which is the single lifecycle this card was built to
- * be. One row per run AT EVERY INSTANT is the invariant, and a rule that holds only
- * when two independent timers agree is not one.
- *
- * The cost is that the outcome row waits for the queue half to let go of the run,
- * and that cost is paid where it can be made small rather than here: the queue half
- * retires a live row the moment the job registry says the run ended (queue-dock-lib
- * `openRows`), reading the SAME fast snapshot this half polls (DownloadManager hands
- * it up through the slot), so the handover is a render apart rather than a poll
- * apart. Nothing about this function depends on that being quick — it is what keeps
- * a duplicate impossible; `openRows` is what keeps the outcome prompt.
- */
-export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
-  const ids = drawn instanceof Set ? drawn : new Set(drawn ?? []);
-  return jobs.filter((j) => {
-    const entry = scheduleEntryId(j.id);
-    return entry === "" || !ids.has(entry);
-  });
+/** Which jobs get a row of their own in Activity: every job the registry
+ *  knows about, except a scheduled run's — those never draw a row here,
+ *  regardless of state (see `isScheduleJob`). */
+export function jobRows(jobs: Job[]): Job[] {
+  return jobs.filter((j) => !isScheduleJob(j));
 }
 
-/**
- * `jobRows`'s sibling for the other place two rows can describe ONE unit of
- * work (SPEC §36): an image/video render blocked on a shared model load used
- * to open a SECOND row — "Waiting for FLUX.2-klein-4B — Loading weights…" —
- * right beside the load's own "Loading weights…" row, both true, both saying
- * the same thing. `_wait_ready` (`fused_render/ai/supervisor.py`) now merges
- * the load's live progress onto the caller's row instead and marks it
- * `waiting_for` the load's job id; this is the client half that acts on it —
- * drop whichever row is NAMED by another row's `waiting_for`, for as long as
- * that reference is live.
- *
- * "Live" is `isRunning`, deliberately, not "present": a reference from a row
- * that has gone TERMINAL — most tellingly, an `error` — must not hide
- * anything, because that is exactly the case the merge exists to still get
- * right (D266) — a wait that ends in a real load failure has to show up as
- * two rows again, one for each side's own failure, not stay collapsed into
- * whichever tick last pointed at the other.
- *
- * `waiting_for` is server-only (`fused_render/jobs.py` `Job.waiting_for`), so
- * a page cannot use this filter to hide a row it does not own.
- */
 export function mergedRows(jobs: Job[]): Job[] {
   const hidden = new Set(
     jobs.filter((j) => j.waiting_for && isRunning(j)).map((j) => j.waiting_for),
   );
   return jobs.filter((j) => !hidden.has(j.id));
+}
+
+/** What actually reaches Notifications from a full job snapshot —
+ *  `ActivityDock.tsx`'s `onJobsReported`, pulled out here so the composition
+ *  itself has a test rather than only a rendered component to poke at.
+ *
+ *  `mergedRows` runs FIRST, on the FULL snapshot, exactly like
+ *  `DownloadManagerView`'s own `jobs` computation
+ *  (`inFlightJobs(jobRows(mergedRows(reported)))`) — it needs the
+ *  REFERENCING row (the waiter, `waiting_for`-tagged) still present to
+ *  decide whether the row it names is hidden. Skipping it here let a render
+ *  waiting on a shared model load draw ONE row in Activity while its two
+ *  underlying jobs drew TWO in Notifications: the load goes terminal a tick
+ *  before the waiter notices and clears its own `waiting_for`
+ *  (`_wait_ready`'s poll loop), so a poll landing in that gap saw the load
+ *  as terminal while Activity's own merged view still had it hidden. */
+export function terminalNotifications(jobs: Job[]): Job[] {
+  return terminalJobs(jobRows(mergedRows(jobs)));
 }
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
@@ -379,32 +347,61 @@ export function jobStatusLine(job: Job): string {
       : `No longer reporting — ${why}`;
   }
   if (job.cancel_requested) return "Cancelling…";
-  return job.detail;
+  // NOT `job.detail || jobDetail(job)` here: a running job can carry a real
+  // progress AMOUNT (jobAmount, a sibling fact this function does not see)
+  // with no phase text at all — a bare download row is exactly that case.
+  // Falling back to `jobDetail` from inside this function would win over
+  // that amount and stamp "Task · started 3m ago" onto a row that already
+  // had something true to say. The last-resort fallback belongs at the call
+  // site instead, once status AND amount are both known to be empty
+  // (DownloadManager.tsx's `statusLine`, `repoStatusText`'s job branch).
+  return job.detail || "";
 }
 
-/** The queue's contribution to the one header count: how many scheduled entries
- *  the card is showing above the job rows, split by whether their turn has
- *  actually begun. `waiting` is past-due-and-unclaimed plus claimed-and-spawning;
- *  `running` is a turn in flight. Zero of both = a card with no queue half (a
- *  platform-only mount, or simply nothing scheduled). */
-export interface QueueCount {
-  waiting: number;
-  running: number;
+/** A COARSE duration, in the largest unit that still says something true:
+ *  seconds under a minute, whole minutes under an hour, then `2h 5m`. Shared
+ *  by the engine rows (whose poll is every 10s, so counting seconds would be
+ *  wrong between ticks more often than right) and `jobDetail` below (whose
+ *  input is a job's own `started_at`, at the same coarseness). */
+export function engineDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
 }
 
-// `jobsSummary` AND `NO_QUEUE` ARE DELETED (code review 2026-08-28, finding 8),
-// along with `overallFraction`, `rowsShown`, `RowsShown`, `foldedJobRows` and
-// `repoUpdatesSummary` before them. `jobsSummary` printed the card's one header
-// line — "2 running · 1 queued", with a genuinely careful set of rules behind it
-// (name both halves rather than summing them, since one live turn beside two
-// unclaimed messages is not "3 running"; keep "downloading" only for a card
-// whose active work really is all downloads; fall back to what FINISHED only
-// when nothing is happening). D579 moved the idle sentence into the panel and
-// D588/D590 reduced the chip to a label plus one circle, which left nothing in
-// the bar for a sentence to render into. It survived that as a "pure, fully
-// tested function" with no non-test caller, which is the shape a future reader
-// mistakes for something load-bearing. `QueueCount` above STAYS — the card still
-// computes it, and the queue rows still need it.
+const JOB_KIND_TEXT: Record<JobKind, string> = { download: "Download", task: "Task" };
+
+/**
+ * `jobStatusLine`'s last resort (D665) — no card may render a single line of
+ * text (title alone, no status line beneath it). Engine rows already
+ * guarantee a `.dl-status` line (`engineDetail`); a `running` job with no
+ * server detail, no byte/step amount and no local action failure fell
+ * through to a bare title, which is the gap this closes.
+ *
+ * Built only from facts every job always carries, so it can never itself be
+ * empty: what kind of work this is, and how long it has been going. `stalled`
+ * is folded in because a job with nothing else to say and no reporter left is
+ * exactly the case most likely to need this fallback at all.
+ *
+ * `nowS` (C4 fix) is the SERVER's clock (`JobsSnapshot.now`), the same rule
+ * `JobsSnapshot.now`'s own doc states and every other age in this file
+ * follows — never the browser's `Date.now()`. `job.started_at` is a server
+ * timestamp; measuring it against the browser's clock instead reads wrong
+ * by however far the two have drifted, which after a tab throttle or a
+ * laptop sleep is not a rounding error — it is the same "finished in 3
+ * seconds' time" symptom `JobsSnapshot.now` exists to prevent, just for a
+ * duration instead of an age.
+ */
+export function jobDetail(job: Job, nowS: number): string {
+  const kind = JOB_KIND_TEXT[job.kind] ?? "Job";
+  const started = `started ${engineDuration(nowS - job.started_at)} ago`;
+  return job.stalled ? `${kind} · ${started} · not reporting` : `${kind} · ${started}`;
+}
+
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
 // discover is a job started with no ping behind it: one reported from another

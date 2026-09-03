@@ -8,13 +8,16 @@
 // toasts are what make "it ran" and "it didn't" arrive on their own.
 //
 // Rules (per event kind):
-//  - failed  → error, persistent, with an "Open" action onto /tasks. Covers
-//              both halves of failing: the send never happened, or the turn it
+//  - failed  → persistent, with an "Open" action onto /tasks. Covers both
+//              halves of failing: the send never happened, or the turn it
 //              started died. Either way a person has to decide something.
-//  - missed  → error, persistent, same action. Nothing went wrong — the app
-//              simply wasn't running inside the catch-up window — but the user
-//              asked for something that did not happen, so it is not an info.
-//  - done    → info, auto-dismissing. Your message ran; no decision to make.
+//  - missed  → persistent, same action. Nothing went wrong — the app simply
+//              wasn't running inside the catch-up window — but the user asked
+//              for something that did not happen, so it still has to be said.
+//  - done    → no toast at all. A run that just worked is not news; the Tasks
+//              page is where its result lives. `toastForEvent` returns `null`
+//              for it, and this loop skips a `null` rather than rendering an
+//              empty strip.
 import { useEffect, useRef } from "react";
 import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
@@ -71,7 +74,10 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       const highest = Math.max(...fresh.map((e) => e.id));
       lastEventId.current = Math.max(lastEventId.current, highest);
 
-      for (const e of fresh) push(toastForEvent(e));
+      for (const e of fresh) {
+        const t = toastForEvent(e);
+        if (t) push(t);
+      }
       // The events just narrated are also the earliest word this poll has that
       // a run ENDED — see the onOutcome contract above. Once per batch, not per
       // event: the outcome callback refetches, and one refetch reads them all.
@@ -89,17 +95,15 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       }
     };
 
-    // The rules live in `toastForEvent`; this only turns one into a real toast.
-    // The action on an attention-needing one opens the page that can explain it —
-    // the row there carries the reason, the target, and the transcript's run id.
+    // The rules live in `toastForEvent`; this only turns a non-null one into a
+    // real toast. `done` never reaches here (filtered above), so every toast
+    // this function renders is the failed/missed case — an error that
+    // persists until acted on, with an "Open" action onto the page whose row
+    // carries the reason, the target, and the transcript's run id.
     const push = (t: ScheduleToast) => {
-      if (!t.needsAttention) {
-        pushToast({ msg: t.msg, tone: t.tone });
-        return;
-      }
       const id = pushToast({
         msg: t.msg,
-        tone: t.tone,
+        tone: "error",
         ttlMs: 0, // persist until acted on / dismissed
         action: {
           label: "Open",
