@@ -17,8 +17,8 @@
    §1). Only what is new to it lives here. */
 
 /* -- the wall ----------------------------------------------------------------- */
-/* THREE ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-03: "six cards in view and
-   we can scroll if we have other"). The wall is the page's scroll container —
+/* TWO ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-03: four cards in view,
+   scroll for the rest). The wall is the page's scroll container —
    the same `flex: 1; min-height: 0; overflow-y: auto` shape the List uses — and
    the rows are sized from the container, not from the content, so exactly two
    rows fill whatever height the toolbar leaves and the third row is the first
@@ -26,11 +26,11 @@
    and four-and-a-half on another.
 
    Fixed column COUNT rather than auto-fill: the number of monitors on the wall
-   is the thing the reader gets used to, and a wall that re-flows from three to
-   four columns when the window grows by 60px is a wall whose cards have all
-   moved. Narrow windows step down to two and one, at breakpoints chosen where a
-   card would otherwise fall under ~300px — the width below which a chat turn
-   stops being a paragraph. Below one row's worth of height (a short window) the
+   is the thing the reader gets used to, and a wall that re-flows from two to
+   three columns when the window grows by 60px is a wall whose cards have all
+   moved. A narrow window steps down to one, at the breakpoint where a card
+   would otherwise fall under ~300px — the width below which a chat turn stops
+   being a paragraph. Below one row's worth of height (a short window) the
    row floor keeps a card readable and the wall simply scrolls sooner. */
 /* The page itself is content-sized (`flex: 0 1 auto`, so a short List is a short
    page), which for every other view is right: their content is rows, and rows
@@ -50,7 +50,7 @@
 
 .task-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: max(260px, calc((100% - 12px) / 2));
   gap: 12px;
   /* Belt and braces against the one failure this view must not have: a page that
@@ -63,12 +63,6 @@
 
 .task-cards > * {
   min-width: 0;
-}
-
-@media (max-width: 1000px) {
-  .task-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 680px) {
