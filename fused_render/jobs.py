@@ -164,6 +164,19 @@ MAX_JOBS = 64
 # token so it stays safe as a dict key, a URL path segment, and a React key.
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
+# `schedule.py`'s own row id prefix (mirrors `SCHEDULE_JOB_PREFIX` in
+# frontend/src/platform/lib/jobs.ts — keep the two spellings in step). A row
+# under this prefix is deliberately excluded from every frontend surface
+# (`isScheduleJob`/`jobRows` drops it from Activity, and `terminalJobs` is
+# applied AFTER `jobRows` in `ActivityDock.tsx`, so it never reaches
+# Notifications either) — a scheduled run already gets its own toast
+# (`schedule-toast.ts`) and its own row on the Scheduled page. `_sweep`'s
+# keep-until-dismissed exemption (below) exists so a row a human still needs
+# to SEE is not swept out from under them; a row no surface shows or lets
+# them dismiss has no claim on that exemption; see `_sweep` for what it gets
+# instead.
+SCHEDULE_JOB_PREFIX = "sys:schedule:"
+
 # Ids under this prefix belong to the SERVER (SPEC §40): a model download, a
 # generation — work this process runs and can therefore really stop. A page may
 # READ and CANCEL them like any other row, but it may not WRITE one: the ids are
@@ -577,10 +590,22 @@ def clear_finished(*, now: float | None = None) -> int:
     was (see that function's own docstring) — only the BULK sweep, which
     cannot know that about any of the rows it takes, is wrong to extend to
     a row that may still be doing real work.
+
+    **`WAITING` rows are excluded too, for the identical reason `dismiss`
+    (above) already refuses to take one automatically.** `j.state !=
+    RUNNING` used to be this filter, which also swept up every `WAITING`
+    row — a row sitting in front of an open, answerable question (uv's
+    "Install anyway" prompt), not finished work. The Notifications "Clear"
+    button (`RepoUpdatesDock.tsx`) is gated on and titled around TERMINAL
+    rows only, so a `WAITING` row was being taken by a control that neither
+    shows it nor counts it, permanently — `_forget` also blocks the id from
+    being re-created by a later tick, so the prompt could never come back
+    either. Scoped to `TERMINAL_STATES` so a bulk Clear only ever takes what
+    it claims to.
     """
     now = time.time() if now is None else now
     with _lock:
-        gone = [j.id for j in _jobs.values() if j.state != RUNNING]
+        gone = [j.id for j in _jobs.values() if j.state in TERMINAL_STATES]
         for job_id in gone:
             _forget(job_id, now)
         return len(gone)
@@ -691,33 +716,80 @@ def _sweep(now: float) -> None:
     protection is unchanged by the read-gating below: `_forget` is still what
     every age-out path funnels through.
 
-    **A terminal non-`error` row ages out `FINISHED_TTL_S` after it was first
-    READ (`job.first_read_at`), not `FINISHED_TTL_S` after it finished.** See
-    `FINISHED_TTL_S`'s own comment for why. Until it has been read at all, it
-    is bounded instead by `FINISHED_UNREAD_DROP_S` — a much longer ceiling,
-    because an unread row might simply have nobody watching yet, where a read
-    one has been SEEN and is allowed to clear itself.
+    **Every terminal state a surface can actually show and let the user
+    dismiss is kept until dismissed, same as `WAITING` (D663, scoped by the
+    schedule carve-out below).** This used to read `job.state in ("error",
+    WAITING)` — a `done` or `cancelled` row instead aged out `FINISHED_TTL_S`
+    after its first READ (`job.first_read_at`), on the theory that the
+    download manager only needed to answer "is my work done right now", not
+    hold a log. THE FINDING: once EVERY finished job (D586, broadened by
+    D662) routes to the shell's Notifications list instead of just failures,
+    that list *is* meant to hold a log — a `done` row expiring 3s after its
+    first read was deleting the very entry Notifications exists to keep, out
+    from under a user who had not yet looked. THE FIX: `done` and
+    `cancelled` get the same unconditional exemption `error`/`WAITING`
+    already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
+
+    **A `sys:schedule:*` row does NOT get this exemption, even though it is
+    terminal.** The exemption's whole premise is "a human still needs to SEE
+    this row, so do not sweep it out from under them" — but `jobRows`
+    (frontend) drops every `sys:schedule:*` id from what Activity draws, and
+    `ActivityDock.tsx` applies `jobRows` before `terminalJobs`, so a schedule
+    row never reaches Notifications either. No surface shows it and none can
+    dismiss it, so it has no claim on a "kept until dismissed" rule — kept
+    that way regardless, it is one permanent row per turn on a schedule (a
+    5-minute schedule saturates `MAX_JOBS` within hours, with only eviction
+    pressure to shed it). A schedule run already gets `schedule-toast.ts`'s
+    own toast and its own row on the Scheduled page, so nothing is lost by
+    letting the registry row age out on the ORIGINAL read-gated
+    `FINISHED_TTL_S` clock every terminal row had before D663 — the readers
+    that clock exists for (`fused.watchJob`, the Scheduled page's own poll)
+    are exactly the ones still reading this row.
+
+    `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
+    place rather than deleted for this reason — `list_jobs`'s `mark_read`
+    still has other callers (`routers/jobs.py`, `supervisor.py`,
+    `capture/__init__.py`) whose own read-vs-poll distinction does not
+    depend on this branch, and the schedule carve-out above is exactly the
+    one reachable state that still exercises this read-gated clock.
+
+    **`WAITING` is exempt from the cap below (`evictable`), not only from
+    ageing out here.** Its reporter has already exited (the sole producer,
+    `envinstall._mirror_into_jobs`'s "Install anyway" prompt, has nothing
+    left polling), so `updated_at` never advances — under the cap's own sort
+    key, `(state == RUNNING, updated_at)`, a long-open `WAITING` row becomes
+    the single least-recently-updated evictable row and would be the FIRST
+    thing dropped once the registry fills, exactly the outcome this
+    exemption exists to prevent. See the cap's own comment for the rest of
+    the reasoning it shares with live `SERVER` rows.
     """
     for job_id, job in list(_jobs.items()):
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:
                 _forget(job_id, now)
-        elif job.state in ("error", WAITING):
-            # Both kept until dismissed, for the same reason `error` already
-            # was — see FINISHED_TTL_S. A `WAITING` row's reporter has
-            # already returned (the worker that wrote it has exited; nothing
-            # is polling any more), so there is no heartbeat left to keep it
-            # "fresh" the way a `RUNNING` row's own ticks do — aging it out
-            # on any clock would make the question it is sitting in front of
-            # (uv's "Install anyway" prompt, still open on the page) vanish
-            # from the dock while it is still exactly as open as when it
-            # appeared.
+        elif job.state == WAITING:
+            # No heartbeat left to keep it "fresh" the way a `RUNNING` row's
+            # own ticks do — aging it out on any clock would make the
+            # question it is sitting in front of (uv's "Install anyway"
+            # prompt, still open on the page) vanish from the dock while it
+            # is still exactly as open as when it appeared.
             continue
-        elif job.first_read_at is not None:
-            if (now - job.first_read_at) > FINISHED_TTL_S:
-                _forget(job_id, now)
-        elif (now - (job.finished_at or job.updated_at)) > FINISHED_UNREAD_DROP_S:
-            _forget(job_id, now)
+        elif job.state in TERMINAL_STATES:
+            if job_id.startswith(SCHEDULE_JOB_PREFIX):
+                # No surface shows this row or lets it be dismissed — see
+                # this function's own docstring — so it ages out on the
+                # ORIGINAL read-gated clock every terminal row had before
+                # D663, instead of the keep-until-dismissed rule below.
+                if job.first_read_at is not None:
+                    if (now - job.first_read_at) > FINISHED_TTL_S:
+                        _forget(job_id, now)
+                elif (now - (job.finished_at or job.updated_at)) > FINISHED_UNREAD_DROP_S:
+                    _forget(job_id, now)
+            else:
+                # A row some surface can show and let the user dismiss —
+                # kept until they do (see this function's own docstring for
+                # why that is now every non-schedule terminal state).
+                continue
 
     # **The cap counts only what it could actually shed.** Measuring it against
     # every row while refusing to evict most of them does not bound anything —
@@ -733,9 +805,21 @@ def _sweep(now: float) -> None:
     # It also put the cap in contradiction with BG-6: a finished record is
     # supposed to stay `FINISHED_TTL_S` so someone not watching the corner can
     # notice it, and this was silently shortening that to zero under pressure.
+    #
+    # `WAITING` is exempt from this list, not only from the age-out above.
+    # Its reporter has already exited, so `updated_at` never moves again —
+    # under the sort key below, `(state == RUNNING, updated_at)`, that makes
+    # a long-open `WAITING` row the single OLDEST-updated evictable row,
+    # first in line the moment the registry fills. A queue of downloads (SPEC
+    # AI-10a) plus a schedule ageing out per-turn (above) is enough to reach
+    # `MAX_JOBS`, and the very first thing evicted would then be the one row
+    # this whole exemption exists to protect: an open "Install anyway"
+    # prompt, dropped while the question it is sitting in front of is still
+    # exactly as open as when it appeared.
     evictable = [
         job for job in _jobs.values()
         if not (job.state == RUNNING and job.owner == OWNER_SERVER)
+        and job.state != WAITING
     ]
     if len(evictable) <= MAX_JOBS:
         return

@@ -185,9 +185,10 @@
 
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
-   (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling
-   section shares below.
+   (.dl-row). A scheduled message's own run draws no row here at all (D661) —
+   the queue card that used to sit beside these rows, and its `.q-row` family,
+   is gone; `.q-all` (further down) is the one class from that card still
+   drawn, repurposed by RepoUpdatesDock.tsx's repo rows.
 
    TWO POSSIBLE SECTIONS IN THIS CARD — Running, Background tasks — each its
    own `.dl-section` (below) inside one `.dl-panel`, replacing the two
@@ -617,7 +618,13 @@
   color: var(--error);
 }
 
-.dl-clear {
+/* `.dl-jobs-clear` (Part A item 2, D663) is the terminal-jobs sibling of
+   `.dl-clear` — a separate class, not a shared one, because the two buttons
+   can render side by side in the same `.dl-head` band (a repo row and a
+   terminal job can both be present at once) and each needs its own click
+   target even though they read identically. */
+.dl-clear,
+.dl-jobs-clear {
   flex: 0 0 auto;
   padding: 2px 8px;
   font-size: 11px;
@@ -628,7 +635,8 @@
   cursor: pointer;
 }
 
-.dl-clear:hover {
+.dl-clear:hover,
+.dl-jobs-clear:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
 }
@@ -694,10 +702,10 @@
      panel's top edge, doubled against `.dl-panel`'s own border. */
 }
 
-/* One rule for every row in the list, whatever kind it is — a queue row above a
-   job row gets the same hairline as two job rows do. Stated on the container
-   rather than as `.dl-row + .dl-row` / `.q-row + .q-row` pairs, which is exactly
-   the sort of thing that silently loses the boundary BETWEEN the two kinds. */
+/* One rule for every row in the list, whatever kind it is. Stated on the
+   container rather than as a `.dl-row + .dl-row` pair, which is exactly the
+   sort of thing that silently loses the boundary once a second row kind
+   shares the same list. */
 .dl-rows > * + * {
   border-top: 1px solid var(--border);
 }
@@ -988,24 +996,12 @@
   cursor: default;
 }
 
-/* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
-   the whole list instead of stepping 4px sideways where the row kind changes.
-
-   PINNED TO THE ROW'S RIGHT EDGE (D609, user with a screenshot of the narrowed
+/* PINNED TO THE ROW'S RIGHT EDGE (D609, user with a screenshot of the narrowed
    card: "the x icon should always be at the very right of the card"). The
-   `margin-left: auto` is on the ✕ — and on `.q-x`/`.q-spin` further down, the
-   other two things that can end a row head — rather than on the head itself,
-   because only the LAST item may absorb the slack: `justify-content` on the
-   head would move every control at once, and pushing the whole group right is
+   `margin-left: auto` is on the ✕ itself rather than on the head, because
+   only the LAST item may absorb the slack: `justify-content` on the head
+   would move every control at once, and pushing the whole group right is
    what D573 already rejected when the void was on the other side.
-
-   It has to be every trailing control, not just this one. The Jobs panel draws
-   ONE list holding both row kinds (a queue `.q-row` above a job `.dl-row`), so
-   pinning this class alone would leave two ✕ columns disagreeing inside a
-   single card — the exact stepping this rule's first paragraph exists to
-   prevent. `.q-spin` comes along for the same reason it exists at all: it
-   stands in the ✕'s slot on a claimed row, and a pin that skipped it would make
-   the controls jump sideways as a row moves queued -> sending.
 
    Costs an EMPTY panel nothing: an `auto` margin does not contribute to a
    box's max-content contribution, so `.dl-panel`'s intrinsic width (`width:
@@ -1018,10 +1014,9 @@
    A NON-EMPTY PANEL NOW HAS REAL SLACK MOST OF THE TIME, and this is exactly
    where the pin does its real work: `.dl-panel:has(.dl-rows)` fixes every
    such panel at 340px (this file's own comment above), which is very
-   commonly wider than a short row's own content — a queue row above a job
-   row, or a lone short-named engine row — and without `margin-left: auto`
-   pinning every trailing control, a narrower row's ✕/Cancel/Stop would float
-   mid-row while its widest neighbour's sat at the true right edge. Keeping
+   commonly wider than a short row's own content — a lone short-named engine
+   row, say — and without `margin-left: auto` the ✕ would float mid-row while
+   a wider neighbour's sat at the true right edge. Keeping
    the rule stated is what makes "always at the very right" a property of the
    trailing control rather than a coincidence of whichever row happens to be
    widest — true before this width change and, if anything, more load-bearing
@@ -1120,17 +1115,15 @@
 }
 
 /* ---- Queue rows in that card (shell/ActivityDock.tsx) ----------------------- */
-/* Work that is about to run or running now: past-due scheduled messages waiting
-   to be claimed, and the turns already in flight. These are ROWS, not a card —
-   they sit in .dl-rows above the job rows, which is where the same run lands once
-   its turn has ended, so one scheduled message moves down one list instead of
-   hopping between two boxes. There is no .q-host any more, and no .q-head: the
-   plate, the header, the count and the collapse are the card's. */
-
-/* Cancel all, in the card's header beside Clear. The same quiet outline .dl-clear
-   wears — a secondary action, not the card's subject — and a different promise
-   from it: this withdraws messages that have not gone, Clear dismisses rows for
-   work that has ended. */
+/* A quiet outline button, the same weight `.dl-clear` wears for a secondary
+   action. Its one caller left is `RepoRowView` (shell/RepoUpdatesDock.tsx) —
+   the repo row's primary Update/Switch button and its "Fix with Claude"
+   button — since the scheduled-message queue card this class was named for
+   (a "Cancel all" beside the header, and the `.q-row`/`.q-row-head`/
+   `.q-title`/`.q-open`/`.q-x`/`.q-spin`/`.q-status`/`.q-note` row family
+   below it) is gone: D661 removed the queue poll and its rows from
+   ActivityDock entirely, and `.dl-row-cancel` is reserved for a different
+   verb family (Unload/Stop/Cancel), so it was not a fit for Update/Switch. */
 .q-all {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -1152,209 +1145,17 @@
   cursor: default;
 }
 
-/* Matches .dl-row exactly — the two kinds share one list and must not read as two
-   pasted-together tables. The separator is .dl-rows > * + *, above. */
-.q-row {
-  padding: 8px 10px;
-}
-
-.q-row-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-/* `flex: 0 1 auto`, NOT `1 1 auto` (D573, user: the trailing ✕ "sits after a
-   wide gap of dead space"): a grow factor stretched the title across the whole
-   panel width, shoving the row's action and its dismiss ✕ hard against the
-   right edge with an empty void between them and the name they belong to. With
-   no grow, the controls FOLLOW the text — the row reads as one group, and
-   spare width falls after the ✕ instead of inside the row. Shrink stays `1`
-   (with `min-width: 0` below) so a long repo name still ellipsizes rather than
-   pushing those controls off the panel edge. */
-.q-title {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-/* The reason this card exists: a run parked on a permission prompt was
-   unreachable. The icon is the row's way THERE, so it sits beside the ✕ that is
-   the row's way out.
-
-   One 16px box for every slot occupant (.q-spin below, and .dl-x on a job row
-   above), because the ✕ is a text glyph and the others are 12px icons: without the
-   min-width, a row swapping its ✕ for the claimed-state spinner drags Open ~4px
-   sideways as the entry moves queued → sending — measured, and fixed twice. */
-.q-open,
-.q-x {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  padding: 0 2px;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease-out);
-}
-
-.q-open:hover:not(:disabled),
-.q-x:hover:not(:disabled) {
-  color: var(--fg);
-}
-
-.q-x:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* The queue row's half of D609's edge pin — see `.dl-x`'s comment for the rule
-   and the reasoning. Stated apart from the `.q-open, .q-x` block above because
-   `.q-open` MUST NOT get it: the Open icon is not last in the head, and an auto
-   margin there would eat the slack before the ✕ ever saw it and strand the ✕
-   back beside it. `.q-spin` shares the pin because it stands in the ✕'s slot on
-   a claimed row, and the whole point of that stand-in is that the trailing
-   control does not move as the entry goes queued -> sending.
-
-   This does put spare width BETWEEN the row's actions and its ✕, which is a
-   void D573 removed from the other side of the same row (it had been between
-   the title and the action group, caused by a `flex: 1 1 auto` title). That fix
-   is untouched and still correct — the title still does not grow, the actions
-   still follow the text. What moved is only where the leftover goes: to the ✕'s
-   left, on purpose, because a per-row dismiss belongs at the row's boundary. */
-.q-x,
-.q-spin {
-  margin-left: auto;
-}
-
 /* The one ring the app uses (buttons-modal.css's .btn), stated here because these
    controls carry no .btn class and a 12px glyph button is exactly the kind a
-   keyboard user loses. Every control in the card, both row kinds and the header:
-   one list means one tab order, and a ring that stopped at the queue rows would
-   make the job rows below them look unreachable. */
+   keyboard user loses. Every control in the card, one list means one tab order. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
+.dl-jobs-clear:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
-.q-all:focus-visible,
-.q-open:focus-visible,
-.q-x:focus-visible {
+.q-all:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-/* Where the ✕ would be on a CLAIMED row, which gets no cancel at all: the server
-   refuses `sending` on purpose, so the card offers nothing rather than a button
-   whose only outcome is a refusal. Same 16px slot as .q-x (above) so the Open
-   icon beside it does not slide as the row moves queued → sending → live, and it
-   turns, because the job of standing here is to say "brief, moving" and not
-   "stuck, control missing". Not focusable and no hover — there is nothing to
-   press; the sentence in .q-status is what explains it (roleText). Full turns, so
-   the blanket prefers-reduced-motion rule (styles/reduced-motion.css) leaves it
-   parked at 0deg rather than mid-tilt. */
-.q-spin {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  padding: 0 2px;
-  line-height: 1;
-  color: var(--fg-muted);
-  animation: q-spin 0.8s linear infinite;
-}
-
-@keyframes q-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.q-status {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--fg-muted);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  word-break: break-word;
-}
-
-/* -- A live row's sentence, while the run is actually going ----------------------
-   The one row in this card describing work IN FLIGHT wore the same muted grey as
-   a row that was merely waiting. It now wears the app's one "running" treatment:
-   the ink itself in the In Progress yellow (--status-progress) with a brighter
-   band travelling through the letters — the exact recipe of the sidebar's "N
-   running" (sidebar.css `.sidebar-running`), whose documented constraints all
-   carry over and are why every value below is what it is:
-
-   * the words NEVER FADE — every gradient stop is the full status hue or the
-     hue mixed toward `--fg`, so the band only ever ADDS contrast, in both
-     themes, and the floor of the animation is the flat readable label the
-     reduced-motion arm below states outright;
-   * no reachable frame leaves a letter unpainted — the 300%-wide image travels
-     100% → 0% (every position in that range still covers the box) and repeats,
-     because with `background-clip: text` an unpainted spot is not a dim letter
-     but a MISSING one.
-
-   The keyframes are this sheet's own rather than sidebar.css's only because the
-   two files must not depend on each other's load order; the timing and travel
-   are identical, so every "running" in the app moves as one. */
-.q-status.is-running {
-  color: var(--status-progress);
-  background-image: linear-gradient(
-    100deg,
-    var(--status-progress) 30%,
-    color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
-    var(--status-progress) 70%
-  );
-  background-size: 300% 100%;
-  background-repeat: repeat;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: q-running-shimmer 2.2s linear infinite;
-}
-
-@keyframes q-running-shimmer {
-  from { background-position: 100% 0; }
-  to { background-position: 0% 0; }
-}
-
-/* The blanket reduced-motion rule (reduced-motion.css) collapses the duration
-   and runs the sweep ONCE, which would park the gradient wherever 0.01ms leaves
-   it. So the gradient is dropped instead and the sentence is the flat status
-   hue: still visibly "this one is going", stated without motion — the same arm
-   `.sidebar-running` takes. */
-@media (prefers-reduced-motion: reduce) {
-  .q-status.is-running {
-    animation: none;
-    background-image: none;
-    -webkit-text-fill-color: var(--status-progress);
-  }
-}
-
-/* What a cancel actually did — including the half that was refused because it
-   was already away. Not a toast: it answers a button in this card, and it sits at
-   the card's foot below the rows (outside the collapse, since Cancel all is in the
-   header and pressable while the list is folded). */
-.q-note {
-  padding: 6px 10px 8px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--fg-muted);
-  border-top: 1px solid var(--border);
 }
 
 /* ---- Server-status card (foot of the notification stack) ----------------- */
