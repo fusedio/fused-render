@@ -14824,9 +14824,59 @@ window.__fusedFlushEdits = async () => {
 // exact moment — `sending` is already true, but there is no run_id yet to
 // send into. Waits rather than dropping the message: the CLI is the only
 // place text can wait now that the page no longer holds an array of its own.
+//
+// Pending annotations and attached pictures fold in the same way sendMessage
+// folds them into a fresh turn (composeOutgoing, the same wire shape) —
+// this used to hardcode `read_dirs: "[]"` and send `text` alone, silently
+// dropping whatever was pinned to the composer the moment a follow-up went
+// to a LIVE run instead of starting a new one. Simpler than sendMessage's
+// own composition: no app-state snapshot (there is nothing new about the
+// pane mid-turn that a follow-up needs to describe) and no overview
+// screenshot capture — a follow-up is a nudge into a turn already running,
+// not a fresh message the model is seeing cold.
 async function sendFollowUp(text) {
-  addUser(text);
+  const gen = logGen;
+  const pending = annPending();
+  const pics = shotAttached;
+  if (pics.length) { shotAttached = []; renderAnn(); }
+  if (text) {
+    addUser(text);
+  } else if (pending.length || pics.length) {
+    // annotation- or screenshot-only follow-up: no words, but still a turn.
+    const bare = document.createElement("div");
+    bare.className = "turn user";
+    log.appendChild(bare);
+  }
   scrollBottom();
+  pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
+  const wireViews = pics.map((s) => {
+    const wire = { kind: s.kind || "pane", view: s.view || null };
+    if (s.viewNote) wire.viewNote = s.viewNote;
+    if (s.why) wire.why = s.why;
+    if (s.name && (s.kind === "image" || s.kind === "file")) wire.name = s.name;
+    if ((s.kind === "file" || s.kind === "image")
+        && typeof s.size === "number") wire.size = s.size;
+    return wire;
+  });
+  const outgoing = composeOutgoing(text, pending, null, wireViews);
+  if (pending.length) {
+    for (const c of pending) c.sent = 1;
+    annSave();
+  }
+  if (pending.length || pics.length) {
+    const turns = log.querySelectorAll(".turn.user");
+    const turn = turns[turns.length - 1];
+    const sum = document.createElement("div");
+    sum.className = "annsum";
+    for (const pic of pics) shotReceipt(sum, pic);
+    for (const c of pending) sum.appendChild(annReceiptRow(c));
+    if (pending.length) {
+      sentPopWire(sum, { outgoing, overview: null, pics,
+                         notes: pending.map((c) => ({ ...c })) });
+    }
+    turn.appendChild(sum);
+    scrollBottom();
+  }
   let run_id = activeRun;
   for (let tries = 0; !run_id && tries < 15; tries++) {
     await sleep(200);
@@ -14840,12 +14890,38 @@ async function sendFollowUp(text) {
     const res = await fused.runPython(AGENT, {
       action: "send",
       run_id,
-      message: text,
-      read_dirs: "[]",
+      message: outgoing,
+      read_dirs: JSON.stringify(shotReadDirs(pics)),
       model: curModel(),
       effort: curEffort(),
       permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
     }, { key: null });
+    if (res && res.respawn) {
+      // The live session cannot honor this message as-is (a new attachment
+      // directory, a changed effort — see agent.py `_send`'s docstring) and
+      // has already ended itself. `sendMessage`'s own live-host branch falls
+      // through to `action: "start"` for exactly this response; this does
+      // the same, rather than reporting a misleading generic send failure
+      // for a message that was never actually rejected.
+      const session_id = fused.params.get("session_id") || "";
+      const started = await fused.runPython(AGENT, {
+        action: "start",
+        file: FILE,
+        message: outgoing,
+        session_id,
+        model: curModel(),
+        effort: curEffort(),
+        permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
+        has_pane: noPane ? "0" : "1",
+        read_dirs: JSON.stringify(shotReadDirs(pics)),
+      }, { key: null });
+      if (started.error) throw new Error(started.error);
+      if (logGen === gen) {
+        fused.params.set("run", started.run_id, { history: "replace" });
+        pollLoop(started.run_id, gen);
+      }
+      return;
+    }
     if (!res || !res.sent) {
       addError("Could not send: the session ended before this reached it.");
     }
@@ -16500,7 +16576,10 @@ function submitChat() {
   // old session must not be sent with no run to attach it to.
   if (activeRun) {
     const message = box.value.trim();
-    if (!message) return;  // annotation-only sends have no text to attach
+    // notes and pictures fold into a follow-up exactly as they fold into a
+    // fresh turn (sendFollowUp), so the same "any of the three" guard
+    // sendMessage uses below applies here too.
+    if (!message && !annPending().length && !shotAttached.length) return;
     box.value = "";
     growBox();
     sendFollowUp(message);

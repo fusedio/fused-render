@@ -124,3 +124,44 @@ def test_the_flush_hook_is_a_no_op_now():
     hook = hook[:hook.index("};")]
     assert "persistQueue" not in hook
     assert "ok: true" in hook
+
+
+# --------------------------------------------- B6/B7: a follow-up is a real send
+
+def test_a_follow_up_folds_in_pending_annotations_and_pictures():
+    """B6 regression: a follow-up sent during a live turn used to hardcode
+    `read_dirs: "[]"` and send the raw typed text alone, silently dropping
+    whatever notes or pictures were pinned to the composer — the exact data
+    loss `sendMessage`'s own `action: "start"` path never has, because it
+    always folds them in through `composeOutgoing`."""
+    body = _fn(_html(), "async function sendFollowUp(")
+    assert "composeOutgoing(" in body, \
+        "a follow-up's outgoing text must be composed, not sent raw"
+    assert 'read_dirs: "[]"' not in body, \
+        "read_dirs must reflect what this follow-up actually attached"
+    assert "shotReadDirs(pics)" in body
+
+
+def test_submit_chat_lets_an_annotation_or_picture_only_follow_up_through():
+    """The activeRun branch used to bail on an empty typed message, even
+    though `sendFollowUp` (once B6 is fixed) has real work to do with notes
+    or pictures alone — the same three-way guard `sendMessage` already uses
+    below it."""
+    body = _fn(_html(), "function submitChat()")
+    branch = body[body.index("if (activeRun)"):]
+    guard = branch[:branch.index("sendFollowUp(message)")]
+    assert "annPending().length" in guard
+    assert "shotAttached.length" in guard
+
+
+def test_a_follow_up_that_cannot_be_honored_falls_through_to_a_fresh_start():
+    """B7 regression: `_send` answers `{"respawn": true}` when the live
+    session can no longer take this message as-is (a new attachment
+    directory, a changed effort), after already ending itself — `sendMessage`
+    handles the equivalent case by falling through to `action: "start"`;
+    `sendFollowUp` used to just report a misleading generic send failure."""
+    body = _fn(_html(), "async function sendFollowUp(")
+    assert "res.respawn" in body
+    respawn_branch = body[body.index("res.respawn"):]
+    assert 'action: "start"' in respawn_branch
+    assert "pollLoop(" in respawn_branch
