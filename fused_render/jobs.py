@@ -691,33 +691,42 @@ def _sweep(now: float) -> None:
     protection is unchanged by the read-gating below: `_forget` is still what
     every age-out path funnels through.
 
-    **A terminal non-`error` row ages out `FINISHED_TTL_S` after it was first
-    READ (`job.first_read_at`), not `FINISHED_TTL_S` after it finished.** See
-    `FINISHED_TTL_S`'s own comment for why. Until it has been read at all, it
-    is bounded instead by `FINISHED_UNREAD_DROP_S` — a much longer ceiling,
-    because an unread row might simply have nobody watching yet, where a read
-    one has been SEEN and is allowed to clear itself.
+    **Every terminal state is now kept until dismissed, same as `WAITING`
+    and the same as `error` already was.** This used to read `job.state in
+    ("error", WAITING)` — a `done` or `cancelled` row instead aged out
+    `FINISHED_TTL_S` after its first READ (`job.first_read_at`), on the
+    theory that the download manager only needed to answer "is my work done
+    right now", not hold a log. THE FINDING: once EVERY finished job (D586,
+    broadened by D635) routes to the shell's Notifications list instead of
+    just failures, that list *is* meant to hold a log — a `done` row expiring
+    3s after its first read was deleting the very entry Notifications exists
+    to keep, out from under a user who had not yet looked. THE FIX: `done`
+    and `cancelled` get the same unconditional exemption `error`/`WAITING`
+    already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
+    `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
+    place rather than deleted — `list_jobs`'s `mark_read` still has other
+    callers (`routers/jobs.py`, `supervisor.py`, `capture/__init__.py`) whose
+    own read-vs-poll distinction does not depend on this branch — but no
+    reachable state exercises this read-gated clock any more, since `STATES`
+    is a closed set of `RUNNING`, `WAITING`, and `TERMINAL_STATES`, and the
+    first two branches below now claim all of the latter two.
     """
     for job_id, job in list(_jobs.items()):
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:
                 _forget(job_id, now)
-        elif job.state in ("error", WAITING):
-            # Both kept until dismissed, for the same reason `error` already
-            # was — see FINISHED_TTL_S. A `WAITING` row's reporter has
-            # already returned (the worker that wrote it has exited; nothing
-            # is polling any more), so there is no heartbeat left to keep it
-            # "fresh" the way a `RUNNING` row's own ticks do — aging it out
-            # on any clock would make the question it is sitting in front of
-            # (uv's "Install anyway" prompt, still open on the page) vanish
-            # from the dock while it is still exactly as open as when it
-            # appeared.
+        elif job.state in TERMINAL_STATES or job.state == WAITING:
+            # A `WAITING` row's reporter has already returned (the worker
+            # that wrote it has exited; nothing is polling any more), so
+            # there is no heartbeat left to keep it "fresh" the way a
+            # `RUNNING` row's own ticks do — aging it out on any clock would
+            # make the question it is sitting in front of (uv's "Install
+            # anyway" prompt, still open on the page) vanish from the dock
+            # while it is still exactly as open as when it appeared. A
+            # terminal row has no heartbeat either, and now has nowhere else
+            # it is durably recorded once it leaves this registry — see this
+            # function's own docstring for why that changed.
             continue
-        elif job.first_read_at is not None:
-            if (now - job.first_read_at) > FINISHED_TTL_S:
-                _forget(job_id, now)
-        elif (now - (job.finished_at or job.updated_at)) > FINISHED_UNREAD_DROP_S:
-            _forget(job_id, now)
 
     # **The cap counts only what it could actually shed.** Measuring it against
     # every row while refusing to evict most of them does not bound anything —
