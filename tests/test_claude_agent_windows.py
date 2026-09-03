@@ -13,10 +13,12 @@ Each test simulates win32 from any host (`os.name` and the module's own
 candidate tuple are patched), so the Linux matrix exercises the Windows
 branches; the windows-desktop CI job runs this same file for real.
 """
+import contextlib
 import importlib.util
 import os
 import signal
 import subprocess
+import unittest.mock
 
 import pytest
 
@@ -40,6 +42,27 @@ def _as_windows(monkeypatch):
     monkeypatch.setattr(subprocess, "DETACHED_PROCESS", 0x8, raising=False)
     monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+
+@contextlib.contextmanager
+def _as_windows_scoped():
+    """Same win32 fakery as `_as_windows`, but gone the instant the `with`
+    block exits, not just at test teardown. A test that keeps `os.name ==
+    "nt"` patched for its WHOLE body (via `monkeypatch`, undone only during
+    fixture teardown) is still holding that patch while pytest formats a
+    failed assertion's traceback — and pytest's own traceback filtering walks
+    `pathlib.Path` parents, so a `Path()` built while `os.name` reads "nt"
+    comes back a `WindowsPath`, which cannot be instantiated on a
+    non-Windows interpreter. That crashes the whole worker (INTERNALERROR)
+    instead of just failing the one test. Assertions belong OUTSIDE this
+    context, so a real failure here is an ordinary one."""
+    with unittest.mock.patch.object(os, "name", "nt"), \
+         unittest.mock.patch.object(subprocess, "DETACHED_PROCESS", 0x8, create=True), \
+         unittest.mock.patch.object(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
+                                    create=True), \
+         unittest.mock.patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                                    create=True):
+        yield
 
 
 # ------------------------------------------------------------ finding `claude`
@@ -118,28 +141,41 @@ def test_detach_kwargs_are_setsid_on_posix(monkeypatch):
     assert agent._DETACH == {"start_new_session": True}
 
 
-def test_start_detaches_with_the_platform_kwargs(tmp_path, monkeypatch):
+def test_start_detaches_with_the_platform_kwargs(tmp_path):
     """start_new_session is silently ignored on Windows, so the run must be
-    detached with creationflags there instead."""
-    _as_windows(monkeypatch)
-    agent = _load_agent()
-    target = tmp_path / "sample.html"
-    target.write_text("<html></html>")
-    monkeypatch.setattr(agent, "_claude_bin", lambda: r"C:\claude.exe")
-    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    detached with creationflags there instead. `_start` Popens session_host.py
+    now, not the CLI directly — the CLI is spawned (with this SAME `_DETACH`)
+    one process further in, by the host itself — so this is the process whose
+    kwargs the platform's detach discipline actually has to be asserted on."""
     captured = {}
+
+    class FakeStdin:
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
 
     class FakeProc:
         pid = 4242
+        stdin = FakeStdin()
 
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
-    assert "run_id" in agent._start(str(target), "hello", "", "", "")
-    assert captured["cmd"][0] == r"C:\claude.exe"
+    with _as_windows_scoped():
+        agent = _load_agent()
+        target = tmp_path / "sample.html"
+        target.write_text("<html></html>")
+        agent.RUNS = str(tmp_path / "runs")
+        agent.subprocess.Popen = fake_popen
+        result = agent._start(str(target), "hello", "", "", "")
+    # Every patch above is undone by here — a failure in the assertions below
+    # is an ordinary pytest failure, not a crashed worker.
+    assert "run_id" in result
+    assert captured["cmd"] == [agent.sys.executable, agent._SESSION_HOST]
     assert "start_new_session" not in captured["kwargs"]
     assert captured["kwargs"]["creationflags"] == 0x8 | 0x200
 
