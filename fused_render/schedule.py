@@ -2410,6 +2410,12 @@ def _materialize(now: datetime) -> None:
                                    else _flag(entry.get("session_learned")),
                 "permission_mode": entry.get("permission_mode")
                                    or _SCHEDULED_PERMISSION_MODE,
+                # The model and effort the user picked travel with every run
+                # too: `_send` reads them off the occurrence it fires, so a
+                # template that kept them to itself would run every repeat on
+                # the default (bugbot, PR #968).
+                "model": str(entry.get("model") or ""),
+                "effort": str(entry.get("effort") or ""),
                 # The user's words travel with every run, like the message and
                 # the target: an occurrence is that template's run, so a list
                 # showing occurrences must be able to name it without going back
