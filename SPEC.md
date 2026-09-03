@@ -11643,7 +11643,23 @@ the installation, and the mark that says so.
   was a patched tree and which UNDID the patch would otherwise be marked for the
   act of restoring the installation. This is not the integrity claim SF-7a
   refuses — nothing here stamps a badge from baseline drift; it only declines to
-  make a provenance claim that these particular bytes falsify.
+  make a provenance claim that these particular bytes falsify. **And it
+  RETRACTS a marker that is now lying**: skipping the mark is not enough on its
+  own, because a session that undoes an earlier, already-stamped patch would
+  leave the badge amber and pointing at a report whose changes are no longer on
+  disk until the next process start — `reconcile` runs once per boot, and the
+  user who just watched the fix restore their install is the one left reading
+  the stale warning. `_discard`, deliberately not `clear()`, for both of
+  reconcile's reasons: that takes the same non-reentrant lock, and it records a
+  DISMISSAL, which this is not. The retraction re-reads under the lock and fires
+  only while the marker still describes a tree that is NOT this one — a marker
+  whose digest IS `current` was written against these bytes while the walk ran,
+  which makes the walk the stale reading of the two. Finally, the veto reads the
+  pristine digest the way `ensure_baseline` already does, falling back to the
+  marker's own `baseline_digest` when the baseline FILE is gone: a fix session
+  is an agent editing this installation and can delete the state dir, so
+  otherwise the one state in which the baseline is missing would be the one in
+  which the veto silently stops working.
 - **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
   that up because "the tree was replaced" is not something the app may merely
   assume:

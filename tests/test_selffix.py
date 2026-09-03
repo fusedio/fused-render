@@ -2111,3 +2111,72 @@ def test_a_live_session_keeps_its_digest_across_the_resume(install, monkeypatch)
     _join_watchers()
 
     assert selffix.session_record().get("before") == before
+
+
+def test_restoring_the_tree_RETRACTS_the_badge_it_had_raised(install):
+    """Skipping the mark is not enough on its own. A session that undoes an
+    earlier, already-stamped patch would otherwise leave the badge amber,
+    pointing at a report whose changes are no longer on disk, until the next
+    process start — `reconcile` runs once per boot, and the user who just
+    watched the fix restore their install is the one reading the stale
+    warning."""
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    assert selffix.settle(before=release, run_id="r-patch") is True
+    assert selffix.status() is not None, "the patch raised a badge"
+
+    # A later session puts the tree back.
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    assert selffix.tree_digest() == release
+    selffix.settle(before=patched, run_id="r-restore")
+
+    assert selffix.status() is None, (
+        "the badge outlived the modification it was warning about")
+    assert not os.path.exists(selffix.marker_path())
+
+
+def test_the_veto_still_holds_when_the_baseline_FILE_is_gone(install):
+    """A fix session is an agent editing this installation and can delete the
+    state dir; the first baseline write can also have failed. `ensure_baseline`
+    already recovers the pristine digest from the marker's `baseline_digest`, so
+    the veto reads it the same way — otherwise the one state in which the
+    baseline is missing is also the one in which the veto stops working, which
+    is the hazard it exists to close."""
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    selffix.settle(before=release, run_id="r-patch")
+    marker = json.loads(open(selffix.marker_path()).read())
+    assert marker["baseline_digest"] == release, "the marker carries the pristine hash"
+
+    # The baseline file is lost, the marker survives.
+    os.unlink(selffix.baseline_path())
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    selffix.settle(before=patched, run_id="r-restore")
+
+    assert selffix.status() is None, (
+        "with no baseline file the veto fell back to the marker's own pristine "
+        "digest, or a restored install would still read as modified")
+
+
+def test_a_marker_written_against_THESE_bytes_mid_walk_is_not_retracted(
+        install, monkeypatch):
+    """The retraction re-reads under the lock and only fires while the marker
+    still describes a tree that is NOT this one. A marker whose digest IS
+    `current` was written against these bytes while the walk ran, which makes
+    the walk the stale reading of the two — fail in reconcile's direction and
+    keep the fresher record."""
+    release = _pristine()
+    # A marker for this version whose digest matches the tree in front of us.
+    selffix.mark_modified(run_id="r-concurrent", digest=release,
+                          baseline_digest=release)
+    assert selffix.status() is not None
+
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    selffix.settle(before=patched, run_id="r-restore")
+
+    assert selffix.status() is not None, (
+        "a marker describing exactly these bytes was dropped on a stale walk")
