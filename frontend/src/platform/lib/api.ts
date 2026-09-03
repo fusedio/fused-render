@@ -35,6 +35,11 @@ export interface Config {
   // session hits a PermissionError on an fs route — the moment the warning
   // is worth showing; dismissing clears it server-side until the next one.
   fda?: { granted: boolean; denied: boolean };
+  // First-run wizard flag (fused_render/shell/onboarding.py). The shell
+  // auto-shows the wizard while BOTH timestamps are null; `complete` and
+  // `dismiss` are distinct writes (reached the end vs "skip for now").
+  // Server-side, not localStorage: a port drift is a new origin.
+  onboarding?: OnboardingState;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -176,6 +181,25 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
 }
 
+// -- First-run wizard flag (fused_render/shell/onboarding.py) ----------------
+export interface OnboardingState {
+  completed_at: number | null;
+  dismissed_at: number | null;
+  version: number;
+}
+
+export function getOnboarding(): Promise<OnboardingState> {
+  return getJson<OnboardingState>("/api/onboarding");
+}
+
+export function completeOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/complete", {});
+}
+
+export function dismissOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
 //
 // The proactive counterpart to the TroubleCard's reactive classification: these
@@ -205,6 +229,16 @@ export interface ClaudeHealth {
       asked (no runnable CLI, or one predating the subcommand), NOT that it said
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
+  /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
+      "apiKey", …) plus the claude.ai account's email / org / plan when it has
+      one. An env token with no CLI answer reports as an API key. null when
+      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+  account: {
+    method: string | null;
+    email: string | null;
+    org: string | null;
+    plan: string | null;
+  } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show —
       it used to, and it guessed wrong on Windows. */

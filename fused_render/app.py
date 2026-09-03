@@ -313,6 +313,11 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     # after the migration — the ordering cli._run_serve records.
     # First-run onboarding (D81): create ~/Fused.
     start_dir = ensure_fused_dir()
+    # Upgrade edge for the first-run wizard: a workspace that already holds
+    # apps is not a first run (shell/onboarding.py docstring).
+    from fused_render.shell import onboarding as shell_onboarding
+
+    shell_onboarding.seed_for_existing_users(start_dir)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community

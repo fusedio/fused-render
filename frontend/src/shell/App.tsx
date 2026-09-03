@@ -49,6 +49,8 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
+import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -74,6 +76,11 @@ import {
   DEFAULT_TAB,
   isAiModelsPath,
 } from "@apps/ai_models/routes";
+
+// The boot-time "send a fresh install to the wizard" decision is made once
+// per page load (App's render below), not on every re-render — a user who
+// left the wizard would otherwise be pushed back in on the next state change.
+let autoShowDecided = false;
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
@@ -610,6 +617,21 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", "/home");
   }
+  // A fresh install's first load lands on the setup wizard instead (its own
+  // route, shell/onboarding). Once per page load and only from the front
+  // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
+  // leaving the wizard must not bounce back in. Same render-time rewrite as
+  // "/" above; the flag the rule reads is the server's, so a completed or
+  // dismissed wizard stays gone across ports and browsers.
+  if (
+    !IS_EMBED &&
+    !autoShowDecided &&
+    location.pathname === "/home" &&
+    shouldAutoShow(config)
+  ) {
+    history.replaceState(null, "", ONBOARDING_PATH);
+  }
+  autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config
   // panel in round 2, so the old page URL folds into the panel's default tab
   // (same render-time rewrite as "/" above) rather than 404ing on someone's
@@ -751,9 +773,13 @@ export default function App({ config }: { config: Config }) {
   // version of the old single `tourPending` — it stops the retries for a tour
   // that has run, so a browser refusing the "seen" write can't restart it on
   // every navigation, while leaving the other tours still armed.
+  //
+  // Not on the setup wizard's route (shell/onboarding): two first-run moments
+  // must not fire on top of each other. Keyed on pathname already, so the
+  // tour for wherever the wizard lets go fires on that navigation.
   const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED) return;
+    if (IS_EMBED || pathname === ONBOARDING_PATH) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
     // Retries IN PLACE, not only on the next route change: a tour can be held
@@ -983,6 +1009,25 @@ export default function App({ config }: { config: Config }) {
   // longer picks — GlobalSidebar carries nav, recents, bookmarks and the
   // bottom Preferences menu itself.
   const sidebar = <GlobalSidebar config={config} />;
+
+  // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
+  // status bar, no docks — a pre-app surface, which is why it is not one more
+  // `main` branch above. Keyed on the epoch like every route, so reopening it
+  // from Help starts at step 1.
+  if (pathname === ONBOARDING_PATH && !IS_EMBED) {
+    return (
+      <div id="app">
+        <OnboardingWizard key={epoch} config={config} />
+        <NotificationHost />
+        {/* Mod+K is App-wide (the listener above runs here too), so the sheet
+            must be renderable here — or the flag flips with nothing shown and
+            the sheet pops open on whatever page the wizard lets go to. */}
+        {shortcutsOpen && (
+          <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div id="app">
