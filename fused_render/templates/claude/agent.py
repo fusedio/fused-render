@@ -3531,6 +3531,34 @@ def _write_poll_cursor(run_dir: str, value: int) -> None:
         pass  # costs the next poll a full re-parse; never worth raising over
 
 
+def _read_bg_tasks(run_dir: str) -> dict:
+    """The `task_id -> description` map `_poll` last computed, persisted
+    across cursor advances — see `_write_bg_tasks`."""
+    try:
+        with open(os.path.join(run_dir, "bg_tasks.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_bg_tasks(run_dir: str, bg_tasks: dict) -> None:
+    """`background_tasks_changed` is the CLI's own AUTHORITATIVE full list,
+    sent only when it changes — a page reading `activity.tasks`/
+    `tasks_pending` needs the last one it saw for as long as it stays true,
+    not just for the one poll whose narrow, cursor-bounded window (see
+    `_read_current_turn`) happened to contain the row. Once a genuine new
+    turn advances the cursor past that row, a poll scanning only what
+    changed since the last one has no way to see it again — so `_poll`
+    persists its own answer here every call and seeds the next call's scan
+    from it, the same way `cursor` itself survives between calls."""
+    try:
+        with _private_open(os.path.join(run_dir, "bg_tasks.json")) as fh:
+            json.dump(bg_tasks, fh)
+    except OSError:
+        pass  # costs the next poll a stale (not wrong-forever) answer
+
+
 def _starts_new_turn(row: dict) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
@@ -3781,7 +3809,11 @@ def _poll(run_id: str, file: str = "") -> dict:
     tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
-    bg_tasks = {}          # task_id -> description, started and not yet finished
+    # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
+    # {} — `background_tasks_changed` is only sent on CHANGE, and once the
+    # cursor advances past the row that announced a still-running task, this
+    # poll's own window may say nothing about it at all.
+    bg_tasks = _read_bg_tasks(run_dir)
     agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
     after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
@@ -3939,6 +3971,8 @@ def _poll(run_id: str, file: str = "") -> dict:
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
+
+    _write_bg_tasks(run_dir, bg_tasks)
 
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
