@@ -1,4 +1,4 @@
-// Where the modified-install panel is placed (SPEC §48, D655).
+// Where the modified-install panel is placed (SPEC §48, D661).
 //
 // `panelAnchor` is pure so this needs no DOM: the component only reads the
 // chip's rect and hands the result to `style`. Same split as `_shell_path` in

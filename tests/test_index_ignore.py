@@ -96,9 +96,8 @@ def test_the_walk_and_the_index_share_one_ignore_floor():
     """The two corpus sources must not disagree about what exists. Search is
     answered by the live walk or by the index depending on whether a scan has
     reached the folder, so a name pruned by one and kept by the other flips
-    results between two sources meant to be interchangeable — the same
-    inconsistency server/index_gitignore.py exists to prevent for gitignored
-    entries. One definition, imported by both."""
+    results between two sources meant to be interchangeable. One definition,
+    imported by both."""
     from fused_render.index.ignore import DEFAULT_IGNORE_NAMES, SHARED_IGNORE_DIRS
     from fused_render.server.walk import WALK_IGNORE_DIRS
 
