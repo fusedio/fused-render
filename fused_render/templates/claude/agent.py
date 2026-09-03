@@ -2210,28 +2210,106 @@ def _inbox_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "inbox")
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> None:
-    """Queue one user-turn line for the session host to drain into the CLI's
-    stdin, in `run_dir/inbox/`. Filenames sort in write order (a zero-padded
-    nanosecond timestamp plus a few random hex digits — entropy against two
-    entries landing in the same nanosecond, not a real id), which is the only
-    order that matters: the host drains oldest-first and this is the one
-    place both `_start` (the turn's first message) and `_send` (every
-    follow-up) write from."""
+def _write_inbox_row(run_dir: str, row: dict) -> None:
+    """Queue one raw stream-json row into `run_dir/inbox/` for the session
+    host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
+    copies bytes, never parses them, so any row shape the CLI's
+    `--input-format stream-json` accepts can go through here). Filenames
+    sort in write order (a zero-padded nanosecond timestamp plus a few
+    random hex digits — entropy against two entries landing in the same
+    nanosecond, not a real id), which is the only order that matters: the
+    host drains oldest-first, and this is the one place every inbox writer
+    (`_write_inbox_entry`'s user turns, `_write_control_request`'s control
+    requests) writes from."""
     inbox = _inbox_dir(run_dir)
     if not os.path.isdir(inbox):
         # `_private_dir`'s leaf create is exclusive (a run-id collision must
         # not silently adopt someone else's directory), which is right for
         # the FIRST write (inside `_start`) and wrong for every later one
-        # (`_send`) — the inbox is written to repeatedly for the life of the
-        # session, not created once and never touched again.
+        # (`_send`, `_cancel`) — the inbox is written to repeatedly for the
+        # life of the session, not created once and never touched again.
         _private_dir(inbox)
     name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
-    with _private_open(os.path.join(_inbox_dir(run_dir), name)) as f:
-        json.dump({"type": "user", "message": {
-            "role": "user",
-            "content": [{"type": "text", "text": message}]}}, f)
+    with _private_open(os.path.join(inbox, name)) as f:
+        json.dump(row, f)
         f.write("\n")
+
+
+def _write_inbox_entry(run_dir: str, message: str) -> None:
+    """Queue one user-turn line for the session host to drain into the CLI's
+    stdin — the one place both `_start` (the turn's first message) and
+    `_send` (every follow-up) write from."""
+    _write_inbox_row(run_dir, {"type": "user", "message": {
+        "role": "user",
+        "content": [{"type": "text", "text": message}]}})
+
+
+def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
+    """Queue a CLI control request — `interrupt`, `set_model`,
+    `set_permission_mode` — verified live against 2.1.251 to ride the same
+    stdin pipe a user turn does, just a different row shape: `{"type":
+    "control_request", "request_id": ..., "request": {"subtype": ...}}`.
+    Answered on stdout as a `control_response` row carrying the same
+    `request_id` back (see `_await_control_response`), so this returns the id
+    a caller that needs the answer has to watch for. Fire-and-forget callers
+    (a model or permission-mode change — see `_send`) can ignore it; nothing
+    here waits, because only `_cancel`'s `interrupt` has a caller that needs
+    the reply before it can answer ITS OWN caller (the `still_queued` list)."""
+    request_id = "%020d-%s" % (time.time_ns(), os.urandom(4).hex())
+    request = dict(fields)
+    request["subtype"] = subtype
+    _write_inbox_row(run_dir, {"type": "control_request",
+                               "request_id": request_id, "request": request})
+    return request_id
+
+
+def _await_control_response(run_dir: str, request_id: str,
+                            timeout: float = 5.0) -> dict | None:
+    """Poll `out.jsonl` for the `control_response` row answering
+    `request_id`, or None if it never arrives (the host never got to drain
+    the request, the CLI died first, ...) or answered with anything other
+    than `subtype: "success"`.
+
+    A poll, not a blocking read, for the same reason `_poll` itself is one:
+    `out.jsonl` is being written by a SEPARATE process (the CLI, through the
+    session host), so there is no pipe here to block on directly — only a
+    file to keep re-checking. The response is ordinarily seconds away (a
+    drain tick plus however long the CLI takes to notice its own stdin), so
+    a short sleep between checks costs nothing a caller would feel.
+
+    Reads from byte 0 every pass rather than tracking an offset: `out.jsonl`
+    for a live session can be large (Task 5 addresses that for `_poll`'s own
+    hot path), but a control response lands within the first second or two
+    essentially always, so this trades a few redundant full reads against a
+    SECOND cursor-tracking scheme this function would otherwise need only
+    for itself."""
+    out_path = os.path.join(run_dir, "out.jsonl")
+    deadline = time.time() + timeout
+    while True:
+        try:
+            with open(out_path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("type") != "control_response":
+                        continue
+                    resp = row.get("response") or {}
+                    if resp.get("request_id") != request_id:
+                        continue
+                    if resp.get("subtype") != "success":
+                        return None
+                    inner = resp.get("response")
+                    return inner if isinstance(inner, dict) else {}
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.05)
 
 
 _SESSION_HOST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -2810,7 +2888,8 @@ def _live_host(file: str, session_id: str = "",
     return {"run_id": ""}
 
 
-def _send(run_id: str, message: str, read_dirs: str = "") -> dict:
+def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
+         effort: str = "", permission_mode: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -2831,9 +2910,22 @@ def _send(run_id: str, message: str, read_dirs: str = "") -> dict:
     attached, so instead the whole session is ended (the same tree-kill
     `action=cancel` uses) and `{"respawn": True}` tells the caller to call
     `_start` fresh instead, which grants the new directory on the new spawn
-    line. A caller that gets `{"respawn": True}` must resend `message` itself
-    through `_start` — this function never does that on its own, since only
-    the caller knows the rest of `_start`'s arguments (model, effort, ...).
+    line. `effort` (also fixed at spawn — there is no CLI control request for
+    it, unlike `model`) forces the exact same respawn when it differs from
+    what the host was started with. Either way, a caller that gets
+    `{"respawn": True}` must resend `message` itself through `_start` — this
+    function never does that on its own, since only the caller knows the
+    rest of `_start`'s arguments.
+
+    `model` and `permission_mode`, by contrast, the CLI accepts CHANGED
+    mid-session (`set_model`/`set_permission_mode` control requests, both
+    verified live against 2.1.251) — a value that differs from what
+    `host.json` recorded at spawn gets queued ahead of `message`, in the
+    same inbox, so the CLI applies it before the turn `message` opens sees
+    it. Neither is waited on the way `_cancel`'s `interrupt` is: nothing here
+    needs the CLI's answer to answer ITS OWN caller, only the eventual
+    `system/init`-style row the CLI writes on its own, which the page already
+    reads for other reasons.
     """
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -2847,9 +2939,28 @@ def _send(run_id: str, message: str, read_dirs: str = "") -> dict:
         return {"error": "no live session"}
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
-    if not wanted <= granted:
-        _cancel(run_id)
+    if not wanted <= granted or (effort and effort != host.get("effort", "")):
+        # interrupt_first=False: unlike the stop button, this call means the
+        # session can no longer serve this caller as it stands — leaving the
+        # host up (an `interrupt` would) is not an option here, so it skips
+        # straight past that to ending the whole process tree.
+        _cancel(run_id, interrupt_first=False)
         return {"respawn": True}
+    if model and model != host.get("model", ""):
+        _write_control_request(run_dir, "set_model", model=model)
+    if permission_mode:
+        # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`,
+        # e.g. "acceptEdits"), the same shape `--permission-mode` takes and
+        # `set_permission_mode` answers with — map the incoming page value
+        # through the exact table `_start` uses so the comparison (and the
+        # control request itself, if one is needed) speaks the CLI's spelling
+        # and not the page's.
+        wire_mode = permission_mode if permission_mode in PERMISSION_MODES \
+            else DEFAULT_PERMISSION_MODE
+        cli_mode = PERMISSION_MODES[wire_mode]
+        if cli_mode != host.get("mode", ""):
+            _write_control_request(run_dir, "set_permission_mode",
+                                   mode=cli_mode)
     _write_inbox_entry(run_dir, message)
     return {"sent": True}
 
@@ -4463,7 +4574,20 @@ def _history(file: str, session_id: str) -> dict:
     return {"turns": turns, "transcript": stat}
 
 
-def _cancel(run_id: str) -> dict:
+def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
+    """End a run — the STOP button's own action, and also `_send`'s way of
+    ending a session it cannot hand a mid-session change to (a `read_dirs`
+    that outgrew what was granted at spawn, or a changed `effort`).
+
+    `interrupt_first` is what tells those two callers apart. The stop button
+    wants the gentler `interrupt` control request tried first, keeping a live
+    host (and any background task it is holding open) alive — see the block
+    below. `_send`'s respawn path wants the opposite: it is calling BECAUSE
+    the session can no longer serve this caller as it stands, so it passes
+    `interrupt_first=False` to skip straight to ending the whole process
+    tree — trying `interrupt` there would just leave the very host `_send`
+    needs gone.
+    """
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
     # so reject anything that could resolve outside the runs dir.
@@ -4493,6 +4617,26 @@ def _cancel(run_id: str) -> dict:
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
+    if interrupt_first and _host_alive(run_dir):
+        # Interrupt the TURN, not the whole session. A live host survives an
+        # `interrupt` control request (verified live against 2.1.251) exactly
+        # the way it survives a trailing `result` — the CLI stays up on the
+        # same held-open stdin, ready for the next follow-up, and the pid
+        # file (the CLI's own) never changes. This is the whole reason a stop
+        # button no longer has to mean "end the session": a background task
+        # started earlier in the SAME session outlives a stop pressed on a
+        # later turn, and the next message continues this session instead of
+        # resuming a dead one.
+        request_id = _write_control_request(run_dir, "interrupt")
+        response = _await_control_response(run_dir, request_id)
+        if response is not None:
+            return {"cancelled": run_id,
+                    "still_queued": list(response.get("still_queued") or [])}
+        # No answer inside the timeout — the host may be stuck, or died
+        # between the liveness check above and now. Falls through to the
+        # tree-kill below exactly as if no host had ever been found: ending
+        # the whole session is the right fallback for "asked and got
+        # nothing back", not a hang.
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
@@ -4627,6 +4771,11 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "send":
         # `read_dirs` is the SAME per-message attachment string `action=start`
         # takes (see `_attach_dirs`), just re-checked against what the host
-        # was already granted at spawn time — see `_send`.
-        return _send(run_id, message, read_dirs)
+        # was already granted at spawn time. `model`/`effort`/
+        # `permission_mode` are the picker's current values, sent on every
+        # turn exactly as `action=start` already receives them — `_send`
+        # itself decides which of the three (if any) actually changed, and
+        # whether that means a control request or a forced respawn.
+        return _send(run_id, message, read_dirs, model, effort,
+                    permission_mode)
     return {"error": f"unknown action: {action}"}
