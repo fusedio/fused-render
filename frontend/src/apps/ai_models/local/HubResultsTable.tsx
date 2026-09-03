@@ -9,7 +9,7 @@
 // two or three facts before it sprawls, which is why the grid it replaces
 // showed popularity and size and nothing about THIS machine. Many columns
 // only become legible in a row, and a row is only worth reading once it is
-// SCORED — see `hubTableView.ts` for the cell rules and D639/D640/D641 in
+// SCORED — see `hubTableView.ts` for the cell rules and D663/D664/D665 in
 // DECISIONS.md for the fuller argument.
 //
 // **Match, Model and the action are the only unconditional columns.** Every
@@ -34,8 +34,8 @@
 // are part of the same group as the row that opened it, and a `<tbody>` per
 // family is what says so in the markup — which is also what lets the CSS
 // draw a border around an OPEN group and nothing at all around the closed
-// ones, instead of the fixed every-fifth-row rule it used to count out here.
-// Lines a reader cannot explain are worse than no lines.
+// ones, instead of a fixed every-fifth-row rule counted out with no relation
+// to group boundaries. Lines a reader cannot explain are worse than no lines.
 //
 // **The lazy total-size lookup stays viewport-gated**, moved here verbatim
 // from `HubResultCard` (RecommendedCard.tsx) rather than rewritten: a dense
@@ -122,13 +122,13 @@ interface HubColumns {
 /** One variant's disclosure row — id, size, disk state, and its own action —
  *  rendered under a family's own row once "N variants" is opened.
  *
- *  **Why this exists at all (E, the review's "one root cause"):** the family
- *  row names and links the base model but downloads and sizes only the
- *  PRIMARY variant. Before this, a sibling on disk (say `Qwen3-8B-4bit` when
- *  the `8bit` build wins the primary pick on a fit tie) had no "✓ have"
- *  anywhere, and a download in flight on a non-primary variant drew no
- *  progress anywhere either — "N variants" was a count with nothing behind
- *  it. Each sibling gets its OWN identity, size and disk state here, with no
+ *  **Why this exists at all:** the family row names and links the base
+ *  model but downloads and sizes only the PRIMARY variant. Without this row,
+ *  a sibling on disk (say `Qwen3-8B-4bit` when the `8bit` build wins the
+ *  primary pick on a fit tie) would have no "✓ have" anywhere, and a
+ *  download in flight on a non-primary variant would draw no progress
+ *  anywhere either — "N variants" would be a count with nothing behind it.
+ *  Each sibling gets its OWN identity, size and disk state here, with no
  *  lazy total-size lookup (unlike the family row) — that lookup exists for
  *  the row always on screen; a closed disclosure paying for a dozen Hub
  *  round trips nobody asked to see yet would be the same over-eagerness the
@@ -405,9 +405,9 @@ function HubResultRow({
         }
         style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
       >
-        {/* The merged Match cell (D639/D640): bar length + number are the
+        {/* The merged Match cell (D663/D664): bar length + number are the
             composite `matchScore`, bar colour AND glyph shape are the memory
-            verdict, and a non-GPU run mode (D641) prints as a visible muted
+            verdict, and a non-GPU run mode (D665) prints as a visible muted
             suffix rather than a second colour. */}
         <TableCell
           className="am-hubtable-match"
@@ -485,7 +485,7 @@ function HubResultRow({
             )}
           </span>
         </TableCell>
-        {/* Task/Capability, merged (D641): the value is `model.capability` —
+        {/* Task/Capability, merged (D665): the value is `model.capability` —
             what the download path and runner resolution actually key on —
             with the Hub's own `task` label folded into the hint ONLY where
             it genuinely disagrees. The COLUMN itself only exists at all
@@ -627,11 +627,11 @@ export function HubResultsTable({
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
 }) {
-  // Hoisting (D640/D641, amended by code review finding 4): presence and the
-  // summary line must be computed off ONE value set, not two that can
-  // disagree — `familyHoist` (`hubTableView.ts`) owns that computation now
-  // (and this file's test suite drives it directly); see its own doc for
-  // the contradiction two separate computations used to produce.
+  // Hoisting (D664/D665): presence and the summary line must be computed
+  // off ONE value set, not two that can disagree — `familyHoist`
+  // (`hubTableView.ts`) owns that computation (and this file's test suite
+  // drives it directly); see its own doc for why two separate computations
+  // would disagree.
   const { capabilityMajority, quantMajority, summary, showTask, showQuant } = familyHoist(families);
 
   // Occupancy is checked across every row this render will actually draw —
@@ -666,7 +666,7 @@ export function HubResultsTable({
             <TableHead scope="col">Match</TableHead>
             <TableHead scope="col">Model</TableHead>
             {/* Labelled "Capability", not "Task" — the cells beneath it
-                render `model.capability` (D641), and a header must not
+                render `model.capability` (D665), and a header must not
                 name a different field than its own cells do. */}
             {columns.task && <TableHead scope="col" className="am-col-task">Capability</TableHead>}
             {columns.params && <TableHead scope="col" className="num am-col-params">Params</TableHead>}

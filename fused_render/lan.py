@@ -217,8 +217,6 @@ def _args_in_scope(args: dict) -> bool:
 _EXACT: dict[str, frozenset[str]] = {
     "/render": frozenset({"GET"}),
     "/api/run": frozenset({"POST"}),
-    "/api/engine": frozenset({"POST"}),
-    "/api/engine/forget": frozenset({"POST"}),
     "/api/env/install": frozenset({"GET", "POST"}),
     "/api/env/progress": frozenset({"GET"}),
     "/api/env/cancel": frozenset({"POST"}),

@@ -21,18 +21,18 @@ import type { HubFamily } from "./hubFamilies";
 const DASH = "—";
 
 // ---------------------------------------------------------------------------
-// D639/D640/D641 — the merged Match (Fit+Score) cell.
+// D663/D664/D665 — the merged Match (Fit+Score) cell.
 //
-// Before D639, "Fit" and "Score" were two renderings of the SAME memory-only
+// Before D663, "Fit" and "Score" were two renderings of the SAME memory-only
 // number, which is why a capable machine's table showed an identical bar and
-// "100" on every row. D639 makes SCORE a composite (`HubModel.matchScore`,
+// "100" on every row. D663 makes SCORE a composite (`HubModel.matchScore`,
 // server-computed) that blends memory fit with capability, speed, recency
-// and popularity; D640 folds the two columns into one now that they carry
+// and popularity; D664 folds the two columns into one now that they carry
 // different facts: bar LENGTH and the printed number are the composite, bar
 // COLOUR (and the glyph's SHAPE — see below) stay the memory verdict.
 
 /** What one row's merged Match cell renders — the bar/number pair, the
- *  verdict's colour+shape, and (D641) a visible "offload" suffix for a row
+ *  verdict's colour+shape, and (D665) a visible "offload" suffix for a row
  *  that would not run on the GPU/unified memory. `dot` is `"unknown"` for a
  *  row with no fit verdict to judge at all — a fourth, neutral state
  *  distinct from "no" (which means "judged, and it does not fit"). */
@@ -44,7 +44,7 @@ export interface MatchCell {
   /** The printed number, or the dash when `matchScore` is absent. */
   scoreText: string;
   dot: AiFitVerdict["verdict"] | "unknown";
-  /** D641: MODE was cut as its own column — on Apple Silicon it is a
+  /** D665: MODE was cut as its own column — on Apple Silicon it is a
    *  structural constant (`fit.py`'s own doc: unified memory always reads
    *  "gpu"), and where it DOES vary it is derived from the same footprint
    *  arithmetic the fit verdict already is, so a separate column was a
@@ -62,19 +62,18 @@ export interface MatchCell {
  *  `AiFitVerdict.basis` already carries (`measured`/`declared`/`download`,
  *  see `fitNote.ts`'s own copy table for the established wording), or
  *  `null` when there is no fit at all. Read straight off the wire rather
- *  than re-derived: this module used to infer a fourth state, "estimated",
- *  for a GGUF row's server-side params x bytes-per-param guess — that guess
- *  was deleted entirely (the derived-fit feed under-reported real memory
- *  footprints for quant tokens `fit._quant_key` cannot classify; see the
- *  DECISIONS.md entry recorded alongside this change), so there is no guess
- *  left to distinguish from a measurement. Every fit a row can show now
- *  comes from `fit.verdict` itself — either computed at search time (never
- *  for a GGUF row any more) or by the lazy per-file `hub/size` lookup — and
- *  `fit.verdict` already states which rung of its own ladder it used. */
+ *  than re-derived: there is no fourth state, "estimated", for a GGUF row's
+ *  server-side params x bytes-per-param guess — that guess would
+ *  under-report real memory footprints for quant tokens `fit._quant_key`
+ *  cannot classify (see the DECISIONS.md entry), so there is no guess to
+ *  distinguish from a measurement. Every fit a row can show comes from
+ *  `fit.verdict` itself — either computed at search time (never for a GGUF
+ *  row) or by the lazy per-file `hub/size` lookup — and `fit.verdict`
+ *  already states which rung of its own ladder it used. */
 export type MatchFitBasis = AiFitVerdict["basis"] | null;
 
-/** The fit actually shown for a row — pulled out of `HubResultsTable.tsx`
- *  (code review finding 2) so the precedence rule is a pure function this
+/** The fit actually shown for a row — lives here, apart from
+ *  `HubResultsTable.tsx`, so the precedence rule is a pure function this
  *  file's own test suite can drive, matching every other rule in this
  *  module.
  *
@@ -121,11 +120,11 @@ export function matchFitBasis(fit: AiFitVerdict | null): MatchFitBasis {
   return fit?.basis ?? null;
 }
 
-/** Whether `matchScore` was computed against a fit this row is no longer
- *  showing — `matchCell`/`matchTitle`'s `stale` parameter, pulled out as its
- *  own pure function (code review finding 3) for the same reason
- *  `resolveFit` was: a rule worth a test belongs in a module that can be
- *  driven, not inline in a component with no DOM harness to exercise it.
+/** Whether `matchScore` was computed against a fit this row is not
+ *  currently showing — `matchCell`/`matchTitle`'s `stale` parameter, its own
+ *  pure function for the same reason `resolveFit` is one: a rule worth a
+ *  test belongs in a module that can be driven, not inline in a component
+ *  with no DOM harness to exercise it.
  *
  *  **True when the lazy lookup handed back a verdict that actually differs
  *  from the one `matchScore` was computed against** — not merely "the
@@ -167,8 +166,8 @@ const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
 };
 
 /** The merged cell's hover text — has to explain BOTH encodings the cell
- *  carries (D640): what the composite number is made of, and what the bar's
- *  colour+shape mean, PLUS the run mode D641 folded in here once Mode
+ *  carries (D664): what the composite number is made of, and what the bar's
+ *  colour+shape mean, PLUS the run mode D665 folded in here once Mode
  *  stopped being its own column. */
 export function matchTitle(
   fit: AiFitVerdict | null,
@@ -193,13 +192,13 @@ export function matchTitle(
         : fit?.runMode === "gpu"
           ? " Runs on the GPU (Apple's unified memory counts as this too)."
           : "";
-  // Code review finding (2): a row's fit can rest on different rungs of
-  // `fit.verdict`'s own ladder (`AiFitVerdict.basis` — see `fitNote.ts`'s
-  // copy table for the established wording this mirrors) — a real runtime
-  // measurement, or a real-but-unmeasured figure judged from the repo's own
-  // reported size. There is no "guess in flight" state any more (the
-  // derived-fit estimate this used to describe was deleted), so the hover
-  // only ever distinguishes "this actually ran here" from "judged, not run".
+  // A row's fit can rest on different rungs of `fit.verdict`'s own ladder
+  // (`AiFitVerdict.basis` — see `fitNote.ts`'s copy table for the
+  // established wording this mirrors) — a real runtime measurement, or a
+  // real-but-unmeasured figure judged from the repo's own reported size.
+  // There is no "guess in flight" state — every fit comes straight off the
+  // wire — so the hover only ever distinguishes "this actually ran here"
+  // from "judged, not run".
   const basisText =
     fitBasis === "measured"
       ? " This fit is measured from real memory usage recorded when this model ran on this machine."
@@ -210,7 +209,7 @@ export function matchTitle(
 }
 
 // ---------------------------------------------------------------------------
-// D641 — Task and Capability were the same fact twice (`text generation` /
+// D665 — Task and Capability were the same fact twice (`text generation` /
 // `text-generation`) on every row this table has ever shown for a single
 // capability. The visible column is now keyed on `capability` — the value
 // the download path and runner resolution actually act on — with the Hub's
@@ -229,11 +228,11 @@ export function capabilityHint(model: Pick<HubModel, "capability" | "task">): st
 }
 
 // ---------------------------------------------------------------------------
-// D640 — hoisting a value that is identical across the whole result set out
+// D664 — hoisting a value that is identical across the whole result set out
 // of every row's cell and into one summary line above the table. A value
 // repeated on 21 of 21 rows is noise in a cell and information in a header.
 //
-// D661 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
+// D682 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
 // the other's direction: round 1 computed presence over primaries only (the
 // summary said "all BF16" while an expanded disclosure showed `Q4_K_M`);
 // round 2 shared one primaries+variants set for BOTH presence and the hoist,
@@ -244,9 +243,9 @@ export function capabilityHint(model: Pick<HubModel, "capability" | "task">): st
 // see. There is no majority hoist any more: `hoistValue` only ever returns a
 // value when the ENTIRE set (primaries and variants) agrees, so the summary
 // can never state a fact contradicted by a row that's actually on screen.
-// The muted-common-value styling a majority used to buy is now a SEPARATE,
-// column-local concept (`majorityValue`) that only ever affects which cell
-// is de-emphasized, never whether the column exists or what the header says.
+// The muted-common-value styling for a majority is a SEPARATE, column-local
+// concept (`majorityValue`) that only ever affects which cell is
+// de-emphasized, never whether the column exists or what the header says.
 
 /** One column's hoisted fact: the single value EVERY row in the set shares.
  *  Returned only when the whole set is unanimous (`hoistValue`) — the
@@ -270,9 +269,8 @@ export const HOIST_MAJORITY = 0.8;
  *  in the set breaks unanimity outright, same as a differing value would:
  *  "we don't know for one row" is exactly the case the column exists to
  *  show, never something to explain away by treating the known majority as
- *  the whole truth. There is no partial/majority result here any more —
- *  see `majorityValue` for the separate, purely cosmetic concept that used
- *  to live in this function. */
+ *  the whole truth. This function returns no partial/majority result —
+ *  see `majorityValue` for the separate, purely cosmetic concept. */
 export function hoistValue(values: readonly (string | null)[]): Hoist | null {
   if (values.length === 0) return null;
   const first = values[0];
@@ -314,9 +312,10 @@ export function majorityValue(values: readonly (string | null)[]): Hoist | null 
 }
 
 /** Whether a column should exist in the table AT ALL — presence, not just
- *  cell content (fix for a half-applied hoist: a fully-hoisted column used
- *  to leave every cell blank while the `<th>` and every `<td>` still
- *  rendered, which is a labelled column stating nothing 21 times over).
+ *  cell content. A half-applied hoist, where a fully-hoisted column leaves
+ *  every cell blank while the `<th>` and every `<td>` still render, is a
+ *  labelled column stating nothing 21 times over; this function is what
+ *  keeps that from happening.
  *
  *  HIDDEN in two cases: every row agrees (`hoist` non-null — by
  *  construction that means unanimous, already stated once in the summary
@@ -335,7 +334,7 @@ export function majorityValue(values: readonly (string | null)[]): Hoist | null 
  *  "unremarkable, matches the summary" from "nobody knows".
  *
  *  **`values` must cover every row the table can DISPLAY, primaries and
- *  variants alike** (code review finding), and so must `hoist` itself —
+ *  variants alike**, and so must `hoist` itself —
  *  both are built from the same set in `familyHoist`, so this function's
  *  own re-check of `values` can never disagree with what `hoist` was
  *  computed from. */
@@ -352,19 +351,19 @@ export function columnVisible(hoist: Hoist | null, values: readonly (string | nu
  *  function's answer. Callers pass `majorityValue`'s result here, never
  *  `hoistValue`'s — a unanimous column is not rendered at all
  *  (`columnVisible`), so there is no cell left to style, and `hoistValue`
- *  no longer has a non-unanimous "majority" shape to hand this function. */
+ *  never has a non-unanimous "majority" shape to hand this function. */
 export function isMajorityValue(value: string | null, majority: Hoist | null): boolean {
   return !!majority && value !== null && value === majority.value;
 }
 
 /** The one line above the table naming whatever the result set UNANIMOUSLY
- *  agrees on (D640, narrowed by D661) — task/capability and quant are the
- *  two candidates left after D641 folded Mode into the Match cell's own
+ *  agrees on (D664, narrowed by D682) — task/capability and quant are the
+ *  two candidates left after D665 folded Mode into the Match cell's own
  *  hint. Size, Params, tok/s, Pop. and New are never hoisted: they are the
  *  columns a reader compares row-to-row on a RANKED list, so even a
  *  coincidental cluster must stay visible per row.
  *
- *  There is no "mostly X" clause any more (D661): a hoist that is anything
+ *  There is no "mostly X" clause (D682): a hoist that is anything
  *  short of unanimous is `null` by construction (`hoistValue`), so this
  *  function only ever states a value it can back with full agreement across
  *  every row it was computed from — never a claim decided by rows a reader
@@ -379,23 +378,22 @@ export function hoistSummary(count: number, capabilityHoist: Hoist | null, quant
 }
 
 /** Everything `HubResultsTable` needs to draw the Task/Capability and Quant
- *  columns' shared state — pulled out of the component (code review finding
- *  4) so the "one value set feeds both presence and the summary" rule is a
- *  pure function this file's own test suite can drive, the way every other
- *  rule in this module already is.
+ *  columns' shared state — lives here, apart from the component, so the
+ *  "one value set feeds both presence and the summary" rule is a pure
+ *  function this file's own test suite can drive, the way every other rule
+ *  in this module already is.
  *
- *  **The whole fix, in one sentence: `capabilityHoist`/`quantHoist`, their
- *  majority counterparts, and the `values` `columnVisible` re-checks against
- *  are all built from the SAME rows** — `allRows`, every family's primary
- *  AND every one of its variants, whether or not a disclosure is currently
- *  open. `count` (fed to `hoistSummary`) is `allRows.length` too, not
- *  `families.length` (D661's fix to a denominator mismatch a code review
- *  caught: the OLD call passed `families.length` — the number of top-level
- *  rows — as the count a hoist claim was stated "about", while the hoist
- *  itself was already being decided over the larger primaries+variants set;
- *  a claim and the count attached to it must describe the same rows, or a
- *  reader has no way to know how many models the stated fact actually
- *  covers). */
+ *  **In one sentence: `capabilityHoist`/`quantHoist`, their majority
+ *  counterparts, and the `values` `columnVisible` re-checks against are all
+ *  built from the SAME rows** — `allRows`, every family's primary AND every
+ *  one of its variants, whether or not a disclosure is currently open.
+ *  `count` (fed to `hoistSummary`) is `allRows.length` too, not
+ *  `families.length` (D682): passing `families.length` — the number of
+ *  top-level rows — as the count a hoist claim is stated "about" would
+ *  disagree with the hoist itself, which is decided over the larger
+ *  primaries+variants set; a claim and the count attached to it must
+ *  describe the same rows, or a reader has no way to know how many models
+ *  the stated fact actually covers. */
 export function familyHoist(families: readonly HubFamily[]): {
   capabilityHoist: Hoist | null;
   quantHoist: Hoist | null;

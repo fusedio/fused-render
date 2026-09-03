@@ -1,3 +1,2 @@
 [tool.fused-render.app]
-kind = "background"
 daemon = "src/daemon.py"

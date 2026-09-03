@@ -242,9 +242,14 @@ describe("the wiring the pure tests cannot see", () => {
     expect(MODAL).not.toContain("readAsDataURL");
   });
 
-  it("the server's kind overrides the client's guess", () => {
+  it("the server's kind is trusted only where the stored path can be drawn", () => {
     // A .tif goes up as bytes no browser draws and comes back a PNG.
-    expect(MODAL).toContain("{ ...i, path: up.path, kind: up.kind }");
+    // a failed transcode hands back `kind: "image"` on a `.tif` nobody can draw
+    // — that chip wears the glyph and the file viewer, not an empty <img>
+    expect(MODAL).toContain(
+      'const kind = up.kind === "image" && attachmentKindOf(up.path) === "image"');
+    expect(MODAL).toContain('? "image" : (i.thumb ? "image" : "file");');
+    expect(MODAL).toContain("return { ...i, path: up.path, kind };");
   });
 
   it("a picture's thumbnail is a blob URL, revoked when the chip goes", () => {
@@ -315,7 +320,7 @@ describe("the wiring the pure tests cannot see", () => {
   it("Close, Escape and the scrim all take the frame down", () => {
     // The conditional render IS the unmount: one `viewer` clears them all.
     expect(MODAL).toContain('className="nt-shotview-scrim" onClick={closeViewer}');
-    expect(MODAL).toContain("const closeViewer = useCallback(() => setViewer(null), []);");
+    expect(MODAL).toContain("const closeViewer = useCallback(() => setViewerKey(null), []);");
     expect(MODAL).toContain('document.addEventListener("keydown", onKey, { capture: true })');
     expect(MODAL).toContain("e.stopPropagation();");
   });
@@ -326,7 +331,20 @@ describe("the wiring the pure tests cannot see", () => {
   });
 
   it("removing a chip also closes a viewer that was showing it", () => {
-    expect(MODAL).toContain("setViewer((v) => (v?.key === img.key ? null : v))");
+    expect(MODAL).toContain("setViewerKey((k) => (k === img.key ? null : k))");
+  });
+
+  it("the viewer follows the live entry, so an upload landing after the click reaches it", () => {
+    // a key, re-read from `images` each render — never a snapshot of the chip
+    expect(MODAL).toContain("const [viewerKey, setViewerKey] = useState<number | null>(null);");
+    expect(MODAL).toContain("images.find((i) => i.key === viewerKey) ?? null");
+    expect(MODAL).not.toContain("useState<TaskImage | null>");
+    // and the stat re-runs on the fields it depends on, not on object identity
+    expect(MODAL).toContain("}, [viewer?.key, viewer?.kind, viewer?.path]);");
+  });
+
+  it("every blob thumbnail is revoked when the form unmounts", () => {
+    expect(MODAL).toContain("useEffect(() => () => {\n    for (const i of imagesRef.current) if (i.thumb) URL.revokeObjectURL(i.thumb);\n  }, []);");
   });
 
   it("a failed upload takes its chip with it", () => {

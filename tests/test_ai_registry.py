@@ -123,7 +123,7 @@ def test_windows_resolves_to_onnx_embed_directml(monkeypatch):
     assert resolved is not None and resolved.code == "onnx-embed-directml"
 
 
-# -- D638: `available_runners`, the whole-set counterpart to `for_capability` -
+# -- D662: `available_runners`, the whole-set counterpart to `for_capability` -
 
 
 def test_available_runners_on_apple_silicon_lists_both_text_engines(monkeypatch):

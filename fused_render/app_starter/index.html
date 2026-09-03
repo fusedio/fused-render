@@ -5,6 +5,10 @@
 <!-- Declares this page a fused app's entry — keep it near the top of <head>
      (detection reads only the first 4 KiB). -->
 <meta name="fused-app" />
+<!-- The fused page API version this app was authored against (see
+     fused_render/fused_api_version.py). The app page offers a "Migrate"
+     task when the runtime has moved past it. -->
+<meta name="fused-api-version" content="1" />
 <title>New app</title>
 <style>
   :root       { color-scheme: dark;  --bg: #101318; --text: #dce2ea; --muted: #9aa0a6; --line: #2a303a; }

@@ -3452,7 +3452,7 @@ button.am-bench-model:focus-visible {
   outline-offset: -2px;
 }
 
-/* ---- The dense Hub results table (task 4, redesigned D639-D641) ---------
+/* ---- The dense Hub results table (task 4, redesigned D663-D665) ---------
    Replaces the card grid the search face used to draw (`.am-grid`, above).
    Follows `.am-bench-table` above it — same app, same stylesheet, the same
    sticky-head-free plain table with tabular numbers on the right. Container
@@ -3487,7 +3487,7 @@ button.am-bench-model:focus-visible {
   overflow-x: auto;
 }
 
-/* The hoisted-constants summary line (D640/D641) — "21 text-generation
+/* The hoisted-constants summary line (D664/D665) — "21 text-generation
    models · all BF16" in place of repeating either fact on every row below.
    Sits directly above the table, its own single line: not stacked beside
    the "Searching huggingface.co…" note above the filter bar, which is a
@@ -3543,12 +3543,12 @@ button.am-bench-model:focus-visible {
   border-bottom: 1px solid var(--border);
 }
 
-/* The Match column (D639/D640/D641) — the table's signature element and the
+/* The Match column (D663/D664/D665) — the table's signature element and the
    one place this design spends emphasis. Bar LENGTH and the printed number
    are the composite `matchScore`; bar FILL COLOUR and the glyph's SHAPE are
    the memory verdict (`fit.verdict`) — two different facts sharing one
-   cell because, after D639, they finally say two different things. A
-   non-GPU run mode (D641 folded Mode's own column in here) prints as a
+   cell because, after D663, they finally say two different things. A
+   non-GPU run mode (D665 folded Mode's own column in here) prints as a
    visible muted suffix rather than a second colour, since colour in this
    cell already carries the verdict and must not carry two meanings.
 
@@ -3647,7 +3647,7 @@ button.am-bench-model:focus-visible {
   text-align: right;
 }
 
-/* D641: the visible, non-colour cost of not running on the GPU/unified
+/* D665: the visible, non-colour cost of not running on the GPU/unified
    memory — a small muted suffix beside the score, never a colour change
    (colour in this cell already carries the memory verdict). */
 .am-hubtable-offload {
@@ -3655,7 +3655,7 @@ button.am-bench-model:focus-visible {
   color: var(--fg-muted);
 }
 
-/* D641 fix: a value matching the hoisted majority (Task/Capability, Quant)
+/* D665 fix: a value matching the hoisted majority (Task/Capability, Quant)
    is muted rather than blanked — the column still prints every row's real
    value; a blank cell and a genuine dash (unknown) must never look the
    same, so this is the ONLY difference a majority row gets.
@@ -3817,13 +3817,13 @@ button.am-bench-model:focus-visible {
   text-align: right;
 }
 
-/* Column-hiding, widest-drops-first (D641 rewrite): Task, tok/s, Params,
+/* Column-hiding, widest-drops-first (D665 rewrite): Task, tok/s, Params,
    Quant, Pop. and New drop in that order as the pane narrows — Match,
    Model, Size and the action never do (the redesign's own line in the
    sand: the fitness spine, identity, the one other row-to-row comparison,
    and the escape hatch). Capability, Mode and Score are GONE as their own
    columns (merged into Task, folded into Match, merged into Match — see
-   D640/D641), so this ladder is six rungs where it used to be eight.
+   D664/D665), so this ladder is six rungs where it used to be eight.
    Thresholds are the TABLE's own inline size (`container-type:
    inline-size` above), not the viewport, so a split pane narrows the same
    columns a full-width window would — unverified in a running browser, per
@@ -3831,7 +3831,7 @@ button.am-bench-model:focus-visible {
 
    Task drops first (820px): once Mode and Capability are gone, it is the
    one remaining column most likely to already be stated once in the
-   hoisted summary line above the table (D640) rather than carrying new
+   hoisted summary line above the table (D664) rather than carrying new
    information on any given row. Quant drops just after Params rather than
    with it, since a quant token is often the more decisive fact of the two
    at that width. */

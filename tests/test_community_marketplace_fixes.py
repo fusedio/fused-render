@@ -1,9 +1,10 @@
 """Regression tests for the community marketplace backend
 (fused_render/community.py):
 
-- `refresh` performs a FULL clone of the community repo into the workspace's
-  showcase folder and serves the catalog from it, and never fetches or
-  merges again once that clone exists.
+- `refresh` clones the community repo into the workspace's showcase folder
+  and serves the catalog from it, and never fetches or merges again once that
+  clone exists. The clone is shallow but fully checked out — every app's
+  files on disk, no materialize step.
 - a pre-existing showcase folder that is not our clone is never deleted —
   refresh refuses with a friendly error instead.
 - `_cache_lock` is a real cross-process lock: a call that can't acquire it
@@ -71,7 +72,8 @@ def test_refresh_full_clones_into_workspace_showcase(tmp_path, community_mod, mo
     assert res["status"] == "ok"
     assert res["cache_root"] == mod.SHOWCASE_DIR
     assert [a["slug"] for a in res["apps"]] == ["widget"]
-    # Full clone: the app's files are on disk immediately, no materialize step.
+    # Fully checked out (shallow history, full tree): the app's files are on
+    # disk immediately, no materialize step.
     assert os.path.isfile(os.path.join(mod.SHOWCASE_DIR, "widget", "index.html"))
     # No staging droppings left in the workspace.
     assert not [n for n in os.listdir(mod.WORKSPACE) if n.startswith(".showcase-clone-")]

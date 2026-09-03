@@ -1501,7 +1501,7 @@ def _fake_relay(answer, seen=None):
     """Stands in for server.ai._ai_relay: one non-streaming completion."""
     from fastapi.responses import JSONResponse
 
-    async def relay(body):
+    async def relay(body, session=None):
         if seen is not None:
             seen.append(body)
         return JSONResponse({"ok": True, "result": {"text": answer,
@@ -1546,7 +1546,7 @@ def test_ask_does_not_execute_a_mutation_the_model_wrote(home, tmp_path,
 def test_ask_passes_an_ai_failure_through_unchanged(home, tmp_path, monkeypatch):
     from fastapi.responses import JSONResponse
 
-    async def broken(_body):
+    async def broken(_body, session=None):
         return JSONResponse({"ok": False, "error": {"type": "ai_unavailable",
                                                     "message": "no claude"}},
                             status_code=502)

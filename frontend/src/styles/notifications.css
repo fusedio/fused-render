@@ -782,11 +782,10 @@
    name" read of that row was wrong — `engineLabel` falls back to
    `engine.module || engine.engine_id` whenever `folder` is empty, and a
    module path or engine id is exactly the same unbreakable dot/hyphen token
-   this class exists for). That row pairs the title with a one-word
-   `.dl-amount` kind rather than a byte pair, so one line plus ellipsis
-   already fits and nothing else about it moves — only the title class is
-   shared, additively alongside `dl-title` on both rows' spans, never a
-   replacement for it.
+   this class exists for). That row has no second field beside the title —
+   just the Stop button — so one line plus ellipsis already fits and nothing
+   else about it moves; only the title class is shared, additively alongside
+   `dl-title` on both rows' spans, never a replacement for it.
    ONE LINE, ELLIPSISED, never wrapped: `display: block` plus `white-space:
    nowrap` opts back out of the `-webkit-box`/`line-clamp` machinery entirely
    (line-clamp only exists inside that box model), and `overflow-wrap: normal`

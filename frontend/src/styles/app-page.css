@@ -65,6 +65,15 @@
   flex: 0 0 auto;
 }
 
+/* The head's right-hand group: the fused-API "Migrate" button (only when the
+   app is behind the runtime) beside "Open app". */
+.app-page-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* The gutter frame — the same width story as the playground's .pg-frame
    (ai-playground.css): one centered column, capped, with gutters either side
    below the cap. The tab strip, the app frame and the Tasks page all share it,

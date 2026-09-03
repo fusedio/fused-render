@@ -2180,14 +2180,13 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
  *  `GET /api/engines/running` reports it (D591). */
 export interface RunningEngine {
   engine_id: string;
-  /** "template" | "app" | "background" — which bring-up path owns it. Carried
-   *  so three similarly-named rows stay distinguishable in the panel. */
-  kind: string;
   pid: number;
   version: string;
-  /** The declaring folder — `kind: "background"` only, "" otherwise. */
+  /** The declaring folder for a background app's daemon, "" for a template
+   *  engine (which has no folder of its own). */
   folder: string;
-  /** The module a warm app worker serves — "" for the other kinds. */
+  /** The module a `main =` daemon serves — "" for a `daemon =` app or a
+   *  template daemon. */
   module: string;
 }
 
@@ -2231,10 +2230,42 @@ export async function setAppPreview(
   return { path: body.path ?? dir + "/preview.png", replaced: !!body.replaced };
 }
 
-export function getAppEntry(path: string): Promise<{ entry: string | null }> {
-  return getJson<{ entry: string | null }>(
+export interface AppEntryInfo {
+  entry: string | null;
+  // The fused page API version the entry declares via
+  // `<meta name="fused-api-version">` — 0 when undeclared (every app authored
+  // before the tag existed), null when there is no entry. Beside the version
+  // the runtime speaks now; the app page offers "Migrate" when it is behind.
+  // Both optional so an older server (entry only) still types.
+  api_version?: number | null;
+  current_api_version?: number;
+  // A migration task on this entry that has not finished (pending, sending,
+  // or running with no verdict yet) — the button reads "in progress" instead
+  // of offering a second one. Null / absent when none.
+  migration_task?: { id: string; state: string; run_id: string | null } | null;
+}
+
+export function getAppEntry(path: string): Promise<AppEntryInfo> {
+  return getJson<AppEntryInfo>(
     `/api/apps/entry?path=${encodeURIComponent(path)}`,
   );
+}
+
+// Create the fused-API MIGRATION task on an app's entry page: the same task
+// shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
+// skill for the jump from the declared version to the current one. 409 when the
+// app is already current, 404 when the folder has no entry.
+export interface MigrateAppResult extends NewAppResult {
+  from_version: number;
+  to_version: number;
+}
+
+export function migrateApp(
+  path: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<MigrateAppResult> {
+  return postJson<MigrateAppResult>("/api/apps/migrate", { path, model, effort });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
@@ -3096,11 +3127,11 @@ export interface HubModel {
    *  GGUF file's own published quant token — never a guess from the repo's
    *  name. Null when nothing measured it. */
   quant: string | null;
-  /** 0-100, D639 — the composite the DEFAULT sort ranks by and the merged
-   *  Fit+Score cell (D640) both bars and prints. Blends memory fit,
+  /** 0-100, D663 — the composite the DEFAULT sort ranks by and the merged
+   *  Fit+Score cell (D664) both bars and prints. Blends memory fit,
    *  params-as-capability, speed, recency and popularity, plus a small
    *  on-disk bonus — see `hub_models.py::_composite_score`'s own docstring
-   *  and DECISIONS.md's D639 for the weights and why. Always present:
+   *  and DECISIONS.md's D663 for the weights and why. Always present:
    *  every axis has an honest default for missing evidence, so this is
    *  never null the way `fit`/`speedEstimate` can be. */
   matchScore: number;
@@ -3135,7 +3166,7 @@ export interface HubSearchResult {
  *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
  *  "trending" IS a Hub field (`trendingScore`), sent straight through.
  *
- *  "best" (D639) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
+ *  "best" (D663) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
  *  is the identical shape as "fit": not a Hub field, same downloads
  *  candidate set, reordered by the composite score after the join. */
 export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit" | "best";

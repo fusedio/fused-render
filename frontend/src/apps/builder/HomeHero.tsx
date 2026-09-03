@@ -10,12 +10,8 @@ import {
   type DefaultModel,
   type SessionEffort,
 } from "@platform/lib/api";
-import {
-  navigate,
-  navigateUrl,
-  replaceSearch,
-  urlForFsPath,
-} from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch } from "@platform/lib/router";
+import { appLandingUrl } from "@platform/lib/appLanding";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { useAutoGrow } from "@platform/lib/autoGrow";
@@ -26,25 +22,8 @@ import { Select, TextArea, TextInput } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
-// The new app's page with the Claude pane open on the scaffolding turn: the
-// file's ordinary explorer URL, `_side=claude` for the pane (the same hop a
-// task row makes, schedule-lib.explorerUrl), and `run` so the pane's boot
-// re-attaches to the live run instead of showing its landing page — with no
-// session id yet there is nothing else it could adopt. `model`/`effort` ride
-// along when the composer's pickers were used, so the pane's own pills open
-// showing what the turn actually ran with and the NEXT turn keeps it; omitted
-// when empty, since an empty param would beat the template's own detection.
-export function appLandingUrl(
-  entryHtml: string,
-  runId: string,
-  model: DefaultModel = "",
-  effort: SessionEffort = "",
-): string {
-  const params = new URLSearchParams({ _side: "claude", run: runId });
-  if (model) params.set("model", model);
-  if (effort) params.set("effort", effort);
-  return urlForFsPath(entryHtml, "?" + params.toString());
-}
+// The new app's page with the Claude pane open on the scaffolding turn is
+// `appLandingUrl` (platform/lib/appLanding) — shared with the Migrate buttons.
 
 // -- Prompt-first creation (the hero composer) --------------------------------
 

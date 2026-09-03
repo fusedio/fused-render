@@ -173,7 +173,7 @@ describe("groupIntoFamilies", () => {
     expect(families[1].primary.id).toBe("org/base-4bit");
   });
 
-  it("picks the primary by the ACTIVE sort, not always by fit (code review finding)", () => {
+  it("picks the primary by the ACTIVE sort, not always by fit", () => {
     // A: the better FIT, but the worse MATCH. B: the better MATCH, but the
     // worse fit. Under `sort=best` (the default), the composite matchScore
     // is what the page is actually sorted by, so B — the better match —
@@ -211,7 +211,7 @@ describe("groupIntoFamilies", () => {
   });
 
   it("a GGUF republish gets its own family rather than joining the safetensors one", () => {
-    // D655. Both declare the same base, so keying on `baseModel` alone would
+    // D676. Both declare the same base, so keying on `baseModel` alone would
     // put them in one bucket — where the GGUF row can never win the primary
     // slot, because a GGUF row carries no fit, no size and no speed (see
     // `hub_models.py::_model_row`) and so blends its `matchScore` from
@@ -298,7 +298,7 @@ describe("groupIntoFamilies", () => {
   });
 
   it("reports the bare base id in baseModel on both sides of a format-keyed split", () => {
-    // D655 splits the safetensors and GGUF republishes of one base into two
+    // D676 splits the safetensors and GGUF republishes of one base into two
     // families with different `key`s ("...FLUX.2-klein-4B" vs "...FLUX.2-
     // klein-4B gguf") — `baseModel` is the raw tag underneath that suffix,
     // so both families have to report the SAME bare id despite the split.

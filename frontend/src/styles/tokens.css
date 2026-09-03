@@ -21,7 +21,7 @@
   --fg-muted: #9aa0a6;
   /* A third, dimmer text level BELOW `--fg-muted` — for a value that must
    * stay legible but visibly de-emphasized (the Hub results table's
-   * hoisted-majority cells, D640/D642) — as its own real colour, not
+   * hoisted-majority cells, D664/D666) — as its own real colour, not
    * `--fg-muted` under an `opacity` that COMPOUNDS with whatever ink level
    * already applies to its container (code review finding: the table sets
    * `color: var(--fg-muted)` itself, so a further `opacity: 0.55` on top of

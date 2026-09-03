@@ -85,7 +85,7 @@ describe("matchCell", () => {
   });
 
   it("bars and prints the COMPOSITE score, not the memory-only fit score", () => {
-    // D639/D640: the merged cell's number is `matchScore`, and the verdict
+    // D663/D664: the merged cell's number is `matchScore`, and the verdict
     // object's own `score` (memory-only) never leaks into either field —
     // that would silently un-merge the two facts this cell exists to keep
     // together but distinct.
@@ -124,7 +124,7 @@ describe("matchCell", () => {
     expect(matchCell(verdict("easy"), 50).offloadLabel).toBeNull();
   });
 
-  it("blanks the bar/number when `stale` — a corrected fit must never sit beside a score computed before it (code review finding)", () => {
+  it("blanks the bar/number when `stale` — a corrected fit must never sit beside a score computed before it", () => {
     // A GGUF row whose lazy per-file lookup just resolved a real "easy" fit,
     // beside a `matchScore` the server computed against `_FIT_DEFAULT`
     // because `model.fit` was null at scoring time. The dot still shows the
@@ -232,7 +232,7 @@ describe("isMatchScoreStale", () => {
     expect(isMatchScoreStale(null, verdict("easy"))).toBe(true);
   });
 
-  it("is false when the lookup resolves to null — nothing was corrected (code review finding 3)", () => {
+  it("is false when the lookup resolves to null — nothing was corrected", () => {
     // `knownFit`'s own pinned contract (`hubSize.test.ts`): a lookup that
     // resolved with nothing to judge answers `null`, not `undefined`. That
     // is not a correction of the server's `_FIT_DEFAULT`-scored matchScore
@@ -275,7 +275,7 @@ describe("matchTitle", () => {
     expect(matchTitle(null, null)).toContain("unavailable");
   });
 
-  it("folds the run mode in — D641's replacement for the deleted Mode column", () => {
+  it("folds the run mode in — D665's replacement for the deleted Mode column", () => {
     expect(
       matchTitle({ verdict: "tight", basis: "declared", footprintBytes: 1, runMode: "cpu-offload" }, 40),
     ).toContain("CPU offload");
@@ -288,11 +288,10 @@ describe("matchTitle", () => {
     expect(title.toLowerCase()).toContain("not");
   });
 
-  // The `fitBasis` branch (code review finding 2) had no test before this
-  // round — added alongside the fix that made `matchFitBasis` read the basis
-  // straight off `AiFitVerdict.basis` instead of re-deriving a fourth
-  // "estimated" state that no longer exists once derived GGUF fit was
-  // deleted.
+  // The `fitBasis` branch is worth its own test: `matchFitBasis` reads the
+  // basis straight off `AiFitVerdict.basis` rather than re-deriving a
+  // fourth "estimated" state, since no such state exists once derived GGUF
+  // fit is out of the picture.
   it("says the fit was measured from a real run, for a 'measured' basis", () => {
     const title = matchTitle({ verdict: "easy", basis: "measured", footprintBytes: 1, score: 100 }, 72, false, "measured");
     expect(title).toContain("measured from real memory usage");
@@ -462,7 +461,7 @@ describe("familyDisplay", () => {
 
 describe("capabilityHint", () => {
   it("is undefined when the Hub's task label and the capability slug agree", () => {
-    // The common case this column collapse (D641) exists for: both strings
+    // The common case this column collapse (D665) exists for: both strings
     // read "text-generation" (or "text generation"/"text-generation" before
     // the merge) — the same fact stated twice with nothing to disclose.
     expect(capabilityHint({ task: "text-generation", capability: "text-generation" })).toBeUndefined();
@@ -484,9 +483,10 @@ describe("hoistValue", () => {
   });
 
   it("is null for anything short of unanimous, even a strong majority", () => {
-    // 4 of 5 = 80%, the old (now-retired) majority floor — no longer enough.
+    // 4 of 5 = 80%, `majorityValue`'s floor — not enough here, since
+    // `hoistValue` requires full unanimity, not a majority share.
     expect(hoistValue(["a", "a", "a", "a", "b"])).toBeNull();
-    // 3 of 4 = 75%, below even that old floor.
+    // 3 of 4 = 75%, below that floor too.
     expect(hoistValue(["a", "a", "a", "b"])).toBeNull();
   });
 
@@ -501,7 +501,7 @@ describe("hoistValue", () => {
 });
 
 describe("majorityValue", () => {
-  it("is the modal value at or above the 80% floor — the styling-only concept `hoistValue` used to double as", () => {
+  it("is the modal value at or above the 80% floor — a styling-only concept, separate from `hoistValue`'s full-unanimity rule", () => {
     expect(majorityValue(["a", "a", "a", "a", "b"])).toEqual({ value: "a" });
   });
 
@@ -583,7 +583,7 @@ describe("hoistSummary", () => {
 
 describe("familyHoist", () => {
   // Code review finding 4 (presence/summary must share one value set), and
-  // D661 (unanimity-only hoisting): four states pinned directly, the
+  // D682 (unanimity-only hoisting): four states pinned directly, the
   // variant-dominated shape (few primaries, many hidden variants) explicitly
   // among them since it is the shape that regressed twice.
   function family(id: string, quant: string | null, variantQuants: (string | null)[] = []): HubFamily {
@@ -659,7 +659,7 @@ describe("familyHoist", () => {
     // No quant clause at all when nothing is known — every fixture here
     // shares `model()`'s default `capability: "text-generation"`, so the
     // capability hoist is unanimous and the summary states only that. The
-    // count is `allRows.length` (D661's denominator fix), not
+    // count is `allRows.length` (D682's denominator fix), not
     // `families.length` — here 2 families with 1 hidden null variant makes
     // 3 total rows, all still `text-generation`.
     const totalRows = families.flatMap((f) => [f.primary, ...f.variants]).length;

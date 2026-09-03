@@ -109,9 +109,9 @@ export function hubSizeTitle(model: HubModel, total: number | null): string | un
   if (total !== null && model.file) {
     // A GGUF row: `total` here is the ONE file `formats.pick_gguf_file`
     // resolved, not the repo-wide total — see `hub_models.py`'s own
-    // `_fetch_file_size`. Saying so, and naming the file, is the fix for the
-    // bug this replaced: a repo-total tooltip over a number that used to BE
-    // the repo total (every quantization the author published) claimed a
+    // `_fetch_file_size`. Saying so, and naming the file, matters because a
+    // tooltip that names a size without naming the file would read as the
+    // repo total (every quantization the author published) and claim a
     // much bigger download than this row would actually make.
     return (
       `≈${formatSize(total)} — the size of \`${model.file}\`, the specific quantization this row ` +
@@ -121,15 +121,15 @@ export function hubSizeTitle(model: HubModel, total: number | null): string | un
   }
   // `total` resolved but names no file: it is the Hub's repo-WIDE total —
   // every quantization the author shipped, summed — not a size this row
-  // itself would download. Saying so as a size, even hedged with "≈", is the
-  // bug this branch used to be: a 9.1B model reading ~17 bytes/param because
-  // the number on screen was several sibling files' worth of weights. There
+  // itself would download. Saying so as a size, even hedged with "≈", would
+  // read as this row's own size: a 9.1B model reading ~17 bytes/param because
+  // the number on screen is several sibling files' worth of weights. There
   // is no honest number for this row, so there is no number.
   return "This repo publishes no safetensors metadata on the Hub, so there is no size to show yet.";
 }
 
-/** The cache key for one repo's size lookup. **Must include `file`** (fix for
- *  code review F1): the server's answer depends on it — a `null` `file` gets
+/** The cache key for one repo's size lookup. **Must include `file`**: the
+ *  server's answer depends on it — a `null` `file` gets
  *  the repo-WIDE `usedStorage` total with no fit/speed at all, while a named
  *  `file` gets that ONE file's own bytes plus a fit verdict judged off it
  *  (see `lookupTotalSize`'s own docstring). Two callers ask about the same
