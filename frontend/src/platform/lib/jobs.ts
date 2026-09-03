@@ -105,22 +105,20 @@ export function isRunning(job: Job): boolean {
 }
 
 /**
- * A FAILURE belongs to Notifications, not Jobs (D586, user: "maybe we can have
- * a flow like running activities are shown in jobs and after done, a completed
- * message goes to notifications?").
+ * Whether a terminal job is specifically a FAILURE, as opposed to a `done` or
+ * `cancelled` one — the one thing `isTerminal` does not distinguish. All
+ * three terminal states route to Notifications and leave Jobs the same tick
+ * (D657, broadened from D586's original `error`-only route: "running
+ * activities are shown in jobs and after done, a completed message goes to
+ * notifications" never meant only failures). What this narrower question is
+ * still used for is `.is-failure`'s red tint in Notifications — a `done` or
+ * `cancelled` row belongs there too, but neither is a failure and must not
+ * turn the chip red.
  *
- * `Jobs` claims to be work IN PROGRESS, and an `error` row is not in progress —
- * it sat there indefinitely while being the one thing that actually wanted
- * attention. Only `error` moves: a `cancelled` row is user-initiated (they
- * already know) and ages out on its own, and a `done` row has its artefact on
- * disk, so neither becomes a notification.
- *
- * This needs no notification store, and that is why the cheap version works:
- * `fused_render/jobs.py`'s `_sweep` already keeps `error` rows until they are
- * explicitly dismissed (where `done`/`cancelled` age out via `first_read_at` +
- * `FINISHED_TTL_S`), so the server-side lifetime, the dismissal endpoint and
- * its `X-Fused` guard all already exist. This is a client-side re-route of
- * rows that are already there.
+ * (C7: this doc used to describe D586's original error-only routing —
+ * "only `error` moves", `done`/`cancelled` "aging out" via `FINISHED_TTL_S`
+ * — none of which has been true since D657 stopped sweeping any terminal
+ * row until dismissed and started routing all three states the same way.)
  */
 export function isFailure(job: Job): boolean {
   return job.state === "error";
@@ -176,14 +174,6 @@ export function activeJobByModel(jobs: Job[]): Map<string, Job> {
   return new Map(
     jobs.filter((j) => j.owner === "server" && !isTerminal(j)).map((j) => [j.title, j]),
   );
-}
-
-/** What the Notifications chip's `.is-failure` tint is scoped to — a real
- *  `error`, not "any terminal state". A `done`/`cancelled` row belongs in
- *  Notifications now too, but neither is a failure and must not turn the
- *  chip red. */
-export function failedJobs(jobs: Job[]): Job[] {
-  return jobs.filter(isFailure);
 }
 
 /**
