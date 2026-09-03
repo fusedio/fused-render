@@ -87,15 +87,20 @@ WALK_FLUSH_INTERVAL_S = 0.15
 # Directory names never emitted or descended into by the walk, checked against
 # the bare name so it also applies under hidden=1 (a node_modules is machine
 # noise, not "hidden data"). This is the ONLY pruning the walk does beyond
-# dot-segments — there is no gitignore lookup here, so junk dirs an ecosystem's
-# tooling produces (dist/, build/, target/, …) only get pruned when their name
-# is on this list (see index/ignore.py's DEFAULT_IGNORE_NAMES, the
-# user-editable seeded list the index config ships pre-populated with the
-# common ones).
-# Defined once in index/ignore.py, because the index's default list has to
-# contain it: search is answered by this walk or by the index depending on
-# whether a scan has reached the folder, and a name pruned by one but kept by
-# the other flips results between two interchangeable sources.
+# dot-segments — there is no gitignore lookup here, so a junk dir an
+# ecosystem's tooling produces (dist/, build/, target/, …) is walked and
+# searched like anything else UNLESS its name happens to be one of these few.
+#
+# Deliberately just SHARED_IGNORE_DIRS, not the index's larger
+# DEFAULT_IGNORE_NAMES (index/ignore.py) — the seeded list carries generic
+# build-output names (dist, build, target, …) this walk does not prune, so the
+# same folder can answer differently depending on whether a scan has reached
+# it: the live walk shows it, the index (once it has scanned) does not. That
+# is a real, accepted divergence between the two corpus sources, not a bug —
+# see DEFAULT_IGNORE_NAMES's own comment for why the larger list is index-only.
+# SHARED_IGNORE_DIRS itself stays index-defined for the names that DO have to
+# agree (node_modules, .venv, …): a name pruned by one but kept by the other
+# there would flip results for folders any scan reaches almost immediately.
 #
 # `.git` is NOT in here — it is a LEAF name (WALK_LEAF_DIR_NAMES below), emitted
 # as one entry and never descended. It has to be, in lockstep with the index:
