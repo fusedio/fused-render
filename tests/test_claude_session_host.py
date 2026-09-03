@@ -238,6 +238,90 @@ def test_turn_state_is_not_reread_while_out_jsonl_is_unchanged(tmp_path):
 
 # ---------------------------------------------- B8: the pid-file write race
 
+# --------------------------------------------- D686: the drain-before-reap race
+
+def test_a_message_that_arrives_during_the_reap_decision_is_still_drained(
+        tmp_path, monkeypatch):
+    """A `_send` writes straight into `run_dir/inbox` and returns
+    `{"sent": True}` without knowing anything about the reap loop's own
+    timing. If that write lands in the gap between the reap loop's own last
+    regular `_drain_inbox` call (top of the iteration that goes on to decide
+    to `break`) and the loop actually tearing the session down, the message
+    used to be silently orphaned — never handed to the CLI, and never
+    findable again once `host.json` is gone. This drives the real
+    `_reap_loop` with a fake CLI (never dies on its own — only the idle
+    timer ends it) and a `_turn_state` stub that writes a fresh inbox entry
+    on its second call, exactly where a `_send` landing mid-decision would:
+    after this iteration's own `_drain_inbox` already ran, but before the
+    loop notices anything changed and exits."""
+    host = _load_host()
+    agent = _load_agent()
+    monkeypatch.setattr(host, "_IDLE_REAP_SECONDS", 0.001)
+    monkeypatch.setattr(host, "_DRAIN_INTERVAL_SECONDS", 0.02)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")
+    host_json = run_dir / "host.json"
+    host_json.write_text("{}")
+
+    calls = []
+
+    # `_turn_state_if_grown` (not `agent._turn_state` itself — see B5's own
+    # test above) only re-derives when `out.jsonl` has grown, so it, not
+    # `_turn_state`, is the thing to fake here: this stub bypasses that
+    # cache entirely and always looks like a fresh read.
+    def fake_turn_state_if_grown(agent, rd, cache):
+        calls.append(rd)
+        if len(calls) == 2:
+            # The race: a follow-up lands right after this iteration's own
+            # `_drain_inbox` call already found the inbox empty.
+            agent._write_inbox_entry(str(run_dir), "raced in")
+        return (False, False)
+
+    monkeypatch.setattr(host, "_turn_state_if_grown", fake_turn_state_if_grown)
+
+    class _FakeStdin:
+        def __init__(self):
+            self.written = []
+            self.closed = False
+
+        def write(self, data):
+            self.written.append(data)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class _FakeCli:
+        def __init__(self):
+            self.stdin = _FakeStdin()
+
+        def poll(self):
+            return None  # never dies on its own — only the idle timer ends this
+
+        def wait(self, timeout=None):
+            pass
+
+    fake_cli = _FakeCli()
+    host._reap_loop(agent, str(run_dir), fake_cli, str(host_json))
+
+    assert len(calls) >= 2, "the race must actually have had a chance to occur"
+    inbox_left = list((run_dir / "inbox").glob("*.json"))
+    done_dir = run_dir / "inbox" / "done"
+    drained = list(done_dir.glob("*.json")) if done_dir.is_dir() else []
+    assert inbox_left == [], (
+        "a follow-up that landed during the reap decision was left behind "
+        "in the inbox, never handed to the CLI"
+    )
+    assert len(drained) == 1, \
+        "the raced-in message must have reached the CLI via the final drain"
+    assert not host_json.exists(), \
+        "host.json must still be removed once teardown is done"
+
+
 def test_start_never_clobbers_a_pid_the_host_already_wrote(agent, monkeypatch,
                                                             target):
     """`_start` used to write the host's OWN pid to run_dir/pid

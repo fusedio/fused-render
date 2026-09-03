@@ -230,6 +230,29 @@ def main() -> None:
             "read_dirs": req["extra_read_dirs"],
         }, f)
 
+    _reap_loop(agent, run_dir, cli, host_json)
+
+
+def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
+    """Drain `run_dir/inbox` into `cli`'s stdin and watch
+    `agent._turn_state` until idle-with-nothing-pending has held for
+    `_IDLE_REAP_SECONDS`, then tear the session down. Extracted out of
+    `main()` so a test can drive it directly against a fake `cli` — the
+    race this function's `finally` block closes cannot be reproduced
+    deterministically through a real subprocess and wall-clock sleeps.
+
+    A `_send` writes straight into `run_dir/inbox` with no coordination
+    with this loop at all, and can land in the gap between this loop's own
+    last regular `_drain_inbox` call (top of the iteration that goes on to
+    `break`) and the loop actually exiting — silently orphaning that
+    message even though `_send` already told its caller `{"sent": True}`.
+    One more `_drain_inbox` pass runs in `finally`, after every way this
+    loop can end (the idle break, an out.jsonl read failure, or the CLI
+    already dead), before `cli.stdin` is closed — and `host_json` is
+    removed right after that, as early as this function can safely do it,
+    so a `_send` racing past this point starts failing cleanly (no live
+    `host.json` to find) instead of queuing into an inbox nothing will
+    ever drain again."""
     idle_since = None
     turn_state_cache = {}
     try:
@@ -259,6 +282,10 @@ def main() -> None:
         except OSError:
             pass
     finally:
+        try:
+            _drain_inbox(agent, run_dir, cli.stdin)
+        except Exception:
+            pass  # the CLI may already be gone; nothing left to hand it
         try:
             cli.stdin.close()
         except Exception:
