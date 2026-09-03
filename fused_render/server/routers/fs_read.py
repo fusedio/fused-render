@@ -273,6 +273,11 @@ def api_fs_list(path: str, cursor: str | None = None):
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
+        # 403, matching stat (mount.py) and read below, so the explorer can
+        # tell "refused" from "not a directory" by status and show the
+        # Full Disk Access card instead of the raw errno text.
+        if isinstance(e, PermissionError):
+            return _error(f"cannot read {path}: {e}", status=403)
         return _error(f"cannot read directory {path}: {e}", status=400)
     truncated = len(dents) > _server_walk.LIST_MAX_ENTRIES
     if truncated:

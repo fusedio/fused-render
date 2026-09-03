@@ -911,3 +911,25 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   color: var(--fg);
 }
 
+
+/* Refused read (explorer/AccessDenied.tsx): one plain sentence over the Full
+   Disk Access strip. Lives in the muted .status-message cell, never the red
+   .error plate — a permission gap is a setup step, not an outage. The strip's
+   own bottom margin is for sitting above a grid; here it is the last thing. */
+.access-denied {
+  max-width: 640px;
+}
+.access-denied-text {
+  margin: 0 0 12px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.access-denied-text code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.access-denied .claude-health {
+  margin-bottom: 0;
+}
