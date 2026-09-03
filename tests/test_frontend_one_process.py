@@ -1,4 +1,12 @@
-"""The shared DOM shim's two process-wide rules (frontend/src/platform/lib/testDomShim.ts).
+"""`bun test` runs 130 frontend files in ONE process, and state outlives a file.
+
+Two kinds of state do, and each one produced a real failure that no single-file
+run and no `tsc` could see: a GLOBAL a suite installs or removes
+(`window`/`location`/`history`), and a MODULE-LEVEL store a mounted component
+registers with and an unmount is what clears. Both fail by file ORDER, which
+means both pass locally until a merge that merely ADDS test files shifts it.
+
+--- the globals (frontend/src/platform/lib/testDomShim.ts) ------------------
 
 `bun test` runs every file in ONE process and does not reset globals between
 them, and several frontend modules read `window`/`location`/`history` at MODULE
@@ -27,9 +35,21 @@ visible in any single test file:
    `Clock`) or its own `history` (a nav-capturing `pushState`) saves the value
    it displaces and puts it back, via `restoreGlobal`.
 
-Both rules are invisible to `tsc` and to any single-file run, and rule 1 only
-FAILS once the file order shifts — which a merge that merely ADDS test files is
-enough to do. Hence a test.
+--- the module-level stores --------------------------------------------------
+
+`platform/lib/exclusiveSection.ts` keeps the status bar's open-panel arbiter in
+two module-level Maps, and `useExclusiveSection`'s cleanup is what removes a
+section from them. A renderer left mounted therefore holds `want: true` there
+for the rest of the process — and because the arbiter stamps its recency tick
+only on the false -> true EDGE, the next file to mount its own "activity"
+section finds `prev.want` already true, keeps the LEAKED older tick, and loses
+a race it should have won. Measured: `DownloadManager.test.tsx` mounted nine
+renderers and unmounted none, which failed two tests in
+`exclusiveSection.test.tsx` — one directly, the second because the first
+assertion threw before that file's own in-body `unmount()` could run.
+
+So a teardown that unmounts has to be UNCONDITIONAL (an `afterEach`, not a
+line at the end of a body), and every mount has to reach it.
 """
 import os
 import re
@@ -163,3 +183,48 @@ def test_the_statically_importing_suites_are_the_ones_the_preload_covers(rel):
         "%s now calls installDomShim() — if it also switched to `await "
         "import()`, drop it from this list; if it did not, the call is dead "
         "code that reads as protection it cannot give" % rel)
+
+
+# The suites that mount a status-bar section, and so register with the
+# arbiter's module-level Maps. Both were measured to matter, differently:
+# without DownloadManager's teardown the leak fails a test in
+# exclusiveSection's suite; without exclusiveSection's own, one failure there
+# becomes two. Neither is redundant.
+ARBITER_SUITES = (
+    "src/platform/ui/DownloadManager.test.tsx",
+    "src/platform/lib/exclusiveSection.test.tsx",
+)
+
+
+@pytest.mark.parametrize("rel", ARBITER_SUITES)
+def test_a_suite_that_mounts_a_status_bar_section_unmounts_unconditionally(rel):
+    """An `unmount()` at the end of a body is the line a failure skips."""
+    path = os.path.join(FRONTEND, rel)
+    assert os.path.exists(path), "%s moved; re-check what registers with the arbiter" % rel
+    text = _read(path)
+    assert re.search(r"^afterEach\(", text, re.M), (
+        "%s has no top-level afterEach. It mounts a component that registers "
+        "with platform/lib/exclusiveSection.ts's module-level Maps, and only an "
+        "unmount clears them — so the teardown cannot live at the end of a test "
+        "body, where a failing assertion skips it." % rel)
+    assert "renderer.unmount()" in text, (
+        "%s's afterEach must actually unmount the renderers it collected" % rel)
+
+
+def test_every_mount_in_the_activity_suite_is_collected_for_teardown():
+    """A teardown only helps the renderers that reach it.
+
+    `DownloadManager.test.tsx` mounts from nine places. Rather than nine
+    hand-written unmounts, they all go through one `mountTracked` helper that
+    pushes onto the array the `afterEach` drains — so the only bare `create(`
+    left in the file is the one inside that helper.
+    """
+    text = _read(os.path.join(FRONTEND, "src/platform/ui/DownloadManager.test.tsx"))
+    bare = [
+        "%d: %s" % (line_no, line.strip())
+        for line_no, line in _code_lines(text)
+        if re.search(r"(?<![.\w])create\(", line) and "const renderer = create(element)" not in line
+    ]
+    assert not bare, (
+        "these mounts bypass `mountTracked`, so the afterEach never unmounts "
+        "them and they leak into the arbiter's Maps:\n  " + "\n  ".join(bare))

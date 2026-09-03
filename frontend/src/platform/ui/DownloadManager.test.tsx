@@ -18,7 +18,7 @@
 // unrelated suite (`apps/ai_models/playground/client.test.ts`) the first
 // time this file tried it. `DownloadManagerView` needs no such thing: no
 // polling, no network, no `window`/`document`.
-import { describe, expect, it, test } from "bun:test";
+import { afterEach, describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 import {
@@ -90,13 +90,47 @@ function progressFillWidth(tree: ReactTestRendererJSON | null): string | undefin
   return fills.length ? (fills[0].props.style as { width?: string } | undefined)?.width : undefined;
 }
 
+// EVERY renderer below goes through `create` HERE, so `afterEach` can unmount
+// it UNCONDITIONALLY — including when a test's own assertions throw partway
+// through, which is precisely when a hand-written `unmount()` at the end of a
+// body is the line that does not run.
+//
+// Not hygiene. The Activity chip calls `useStatusChip("activity", ...)`, which
+// registers with the MODULE-LEVEL arbiter in platform/lib/exclusiveSection.ts,
+// and a chip mounted with `initialCollapsed={false}` registers `want: true`.
+// Left mounted, it stays in that map for the rest of the bun process — and the
+// arbiter stamps a tick only on the false -> true EDGE, so the next file to
+// mount its own "activity" section finds `prev.want` already true, keeps the
+// LEAKED (older, lower) tick, and loses on recency to a sibling it should have
+// tied with and beaten on SECTION_ORDER. That is exactly what
+// exclusiveSection.test.tsx shows when it runs after this file: "resolve to
+// Activity, deterministically" resolves to Notifications. Its first assertion
+// throwing then skips ITS unmount as well, so ONE leak here fails two tests
+// over there — which is also why that file's teardown is now unconditional.
+// Same lesson FilesHome.render.test.tsx's own harness records for
+// index-freshness's shared Sets.
+const mounted: ReactTestRenderer[] = [];
+
+function mountTracked(element: Parameters<typeof create>[0]): ReactTestRenderer {
+  const renderer = create(element);
+  mounted.push(renderer);
+  return renderer;
+}
+
+afterEach(() => {
+  while (mounted.length) {
+    const renderer = mounted.pop()!;
+    act(() => renderer.unmount());
+  }
+});
+
 // EVERY HARNESS BELOW PASSES `initialCollapsed={false}`: the default is
 // COLLAPSED (D595, made unconditional in D603), and these tests are about what
 // the PANEL contains and how the fold behaves — not about that default. Saying
 // so explicitly is what keeps them from silently inverting the next time the
 // default is revisited; the default itself has its own test.
 function renderCard(reported: Job[]): ReactTestRendererJSON | null {
-  return create(
+  return mountTracked(
     <DownloadManagerView
       reported={reported}
       initialCollapsed={false}
@@ -114,7 +148,7 @@ function renderCard(reported: Job[]): ReactTestRendererJSON | null {
 // default staying put.
 test("a section always starts collapsed, with nothing persisted to say otherwise", () => {
   const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
-  const tree = create(
+  const tree = mountTracked(
     <DownloadManagerView reported={[running]} refresh={() => {}} patch={() => {}} />,
   ).toJSON() as ReactTestRendererJSON | null;
   expect(findAll(tree, "dl-toggle")).toHaveLength(1); // the chip is still there
@@ -124,7 +158,7 @@ test("a section always starts collapsed, with nothing persisted to say otherwise
 // For tests that need to actually PRESS the toggle (collapsing is real
 // component state, not a prop) rather than just inspect one static render.
 function renderInstance(reported: Job[]): ReactTestRenderer {
-  return create(
+  return mountTracked(
     <DownloadManagerView
       reported={reported}
       initialCollapsed={false}
@@ -735,7 +769,7 @@ function renderActivity(props: {
   reported?: Job[];
   engines?: EnginesSlot;
 }): ReactTestRendererJSON | null {
-  return create(
+  return mountTracked(
     <DownloadManagerView
       reported={props.reported ?? []}
       engines={props.engines}
@@ -846,7 +880,7 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
   });
 
   test("a failed Stop replaces the detail line rather than stacking under it", async () => {
-    const tree = create(
+    const tree = mountTracked(
       <DownloadManagerView
         reported={[]}
         engines={{
@@ -877,7 +911,7 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     // the signal that it has.
     let renderer: ReactTestRenderer;
     await act(async () => {
-      renderer = create(
+      renderer = mountTracked(
         <DownloadManagerView
           reported={[]}
           engines={{
@@ -943,7 +977,7 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
 
   test("pressing Stop calls onStop with the engine id", async () => {
     const seen: string[] = [];
-    const tree = create(
+    const tree = mountTracked(
       <DownloadManagerView
         reported={[]}
         engines={{ engines: [runningEngine({ engine_id: "e3" })], onStop: async (id) => { seen.push(id); } }}
@@ -990,7 +1024,7 @@ describe("two sections sharing one Activity panel", () => {
   });
 
   test("an engine arriving opens nothing — same as a job arrival (D673, no auto-open for anything)", () => {
-    const renderer = create(
+    const renderer = mountTracked(
       <DownloadManagerView
         reported={[]}
         engines={{ engines: [], onStop: async () => {} }}

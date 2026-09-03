@@ -117,7 +117,7 @@ EXPECTED_STARTUP = [
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     "_startup_schedule",
-    # SPEC §48 / D673: the self-fix reconcile, registered between `schedule`
+    # SPEC §48 / D674: the self-fix reconcile, registered between `schedule`
     # and `tasks_watch` because that is where its `@on_startup` sits in
     # `create_app` — this list is a record of registration order, not a
     # preference about it.
