@@ -59,7 +59,7 @@ def test_the_fold_is_never_persisted_at_all():
         assert "saveCollapsed" not in stripped, f"{label} must not write the fold"
         assert "loadCollapsed" not in stripped, f"{label} must not read a stored fold"
 
-    for module in ("autoExpand.ts", "exclusiveSection.ts"):
+    for module in ("statusChip.ts", "exclusiveSection.ts"):  # autoExpand.ts deleted (D673)
         stripped = code_only(_read(os.path.join(_FRONT, "platform", "lib", module)))
         assert "localStorage" not in stripped, f"{module} must not persist anything"
 
@@ -76,7 +76,11 @@ def test_the_fold_is_never_persisted_at_all():
 
     # The one remaining setter is the chip's own click. `close` is `forceClose`
     # (transient only), which is what D585 finding 2 fixed and D603 does not undo.
-    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
+    # No fold state lives in the card at all any more (D673): the chip hook owns
+    # `pinned`/`hovered` in memory, and the card only reads `chip.open`.
+    assert "setCollapsed(" not in card, "the card keeps no fold state of its own"
+    chip_hook = code_only(_read(os.path.join(_FRONT, "platform", "lib", "statusChip.ts")))
+    assert "useState(initialPinned)" in chip_hook, "pinned starts from the seam, never from storage"
 
 
 def test_the_column_owns_where_it_sits():

@@ -683,6 +683,11 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import fda as shell_fda
 
     app.include_router(shell_fda.router)
+    # First-run wizard flag (shell/onboarding.py): complete / dismiss. The
+    # state itself rides /api/config's `onboarding` field.
+    from fused_render.shell import onboarding as shell_onboarding
+
+    app.include_router(shell_onboarding.router)
     shell_mounts.startup()
     # Background mount-health monitor (shell/mounts.py): polls every mount on a
     # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect

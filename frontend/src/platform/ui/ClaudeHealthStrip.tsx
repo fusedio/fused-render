@@ -16,23 +16,14 @@
 //
 // The TroubleCard stays exactly as it is. Preflight is an addition, not a
 // replacement — a CLI can break between this check and the call.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import {
-  cancelClaudeLogin,
-  getClaudeHealth,
-  getClaudeInstall,
-  getClaudeLogin,
-  linkClaudePath,
-  refreshClaudeHealth,
-  runClaudeDoctor,
-  startClaudeInstall,
-  startClaudeLogin,
-  type ClaudeDoctor,
-  type ClaudeHealth,
-  type ClaudeInstallStatus,
-  type ClaudeLoginStatus,
+import type {
+  ClaudeDoctor,
+  ClaudeInstallStatus,
+  ClaudeLoginStatus,
 } from "@platform/lib/api";
+import { useClaudeSetup } from "@platform/lib/claude-setup";
 import {
   claudeIssues,
   dismiss as rememberDismissal,
@@ -41,24 +32,7 @@ import {
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
 
-// The last snapshot seen, so walking between Home and /apps — which both render
-// this — starts from what we already know instead of flashing an empty frame.
-//
-// A SEED, NOT A SHORT-CIRCUIT. It used to also skip the fetch, which is what
-// made the strip unable to notice its own problem being fixed: the only thing
-// that ever refreshed it was the button, so a user who signed in and came back
-// still faced a card telling them to sign in. The server holds the real cache
-// (on disk, and age-bounded), so re-asking on every mount is a small GET —
-// there was never anything to save here.
-let cached: ClaudeHealth | null = null;
-
-//: How long after a check a window-focus event is taken as "they may have gone
-//: and fixed it". Focus/blur flap in bursts (a click through the window, a
-//: notification, an OS overlay), and each forced re-check is real subprocess
-//: work, so near-simultaneous ones collapse into the first.
-const FOCUS_RECHECK_MS = 3000;
-
-function CopyCommand({ command }: { command: string }) {
+export function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="update-badge-command">
@@ -83,17 +57,6 @@ function CopyCommand({ command }: { command: string }) {
     </div>
   );
 }
-
-/** How often to ask the server how the install is getting on. The record is an
-    in-memory read on the server side, so this is cheap; the interval is set by
-    what reads as live rather than by cost. */
-const INSTALL_POLL_MS = 1200;
-
-/** How often to ask whether the browser sign-in has finished. Slower than the
-    install poll on purpose: nothing changes here until a person has finished
-    with a browser window, so a faster tick would only spend requests watching
-    someone read a consent screen. */
-const LOGIN_POLL_MS = 2000;
 
 /** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
  *  scroll box rather than summarised: the whole reason to surface either is
@@ -135,7 +98,7 @@ function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
   );
 }
 
-function IssueRow({
+export function IssueRow({
   issue,
   install,
   login,
@@ -263,276 +226,24 @@ function IssueRow({
 }
 
 export function ClaudeHealthStrip() {
-  const [health, setHealth] = useState<ClaudeHealth | null>(cached);
-  // A snapshot we have not fetched yet is NOT the same as one that says
-  // everything is fine, and rendering the strip before it arrives would flash a
-  // "can't find Claude Code" on every load of a perfectly healthy machine.
-  const [loaded, setLoaded] = useState(cached !== null);
-  const [busy, setBusy] = useState(false);
   // Re-render after a dismissal. The dismissal ITSELF lives in lib/claude-health,
   // keyed on which problems were dismissed; a local `closed` flag used to shadow
   // it and was wrong in one direction that matters — dismissing "not signed in"
   // suppressed a LATER, different problem for the rest of the page's life, when
   // the signature check exists precisely so a new problem still gets through.
   const [, redraw] = useState(0);
-  const lastCheck = useRef(0);
-  // The install/update record, polled only while one is running. Null means
-  // nothing has been started from this page.
-  const [install, setInstall] = useState<ClaudeInstallStatus | null>(null);
-  // `claude doctor`'s report, once it has been asked for. Seeded from the
-  // snapshot, because the server already ran one whenever it found something
-  // worth explaining — making the user press a button for a report we are
-  // already holding would be the same do-our-work-for-us failure the shell
-  // adoption exists to avoid.
-  const [doctor, setDoctor] = useState<ClaudeDoctor | null>(null);
-  // The browser sign-in record, polled only while one is open. Its own state
-  // rather than a branch of `install`, because it is its own endpoint for its
-  // own reason: this one waits on a person and can be called off.
-  const [login, setLogin] = useState<ClaudeLoginStatus | null>(null);
-  // A REFUSAL, shown verbatim. The one that matters is the 409 from an update
-  // that would no-op: its text names the command that would actually work, and
-  // rewording it would throw that away.
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [acting, setActing] = useState(false);
-  // The PATH line landed. Held HERE rather than refreshing the snapshot away,
-  // because the row's last job is a sentence the user still needs: only NEW
-  // terminal windows read the rc file, and closing the strip the instant the
-  // button worked would leave an already-open terminal saying "command not
-  // found" with no explanation on screen. The server's cache is refreshed, so
-  // the next natural re-check (focus, navigation) retires the row.
-  const [linkedNote, setLinkedNote] = useState<string | null>(null);
-
-  const load = useCallback((force: boolean) => {
-    lastCheck.current = Date.now();
-    if (force) setBusy(true);
-    (force ? refreshClaudeHealth() : getClaudeHealth()).then(
-      (h) => {
-        cached = h;
-        setHealth(h);
-        setLoaded(true);
-        setBusy(false);
-      },
-      () => {
-        // A FAILED PROBE IS NOT A FINDING. If /api/claude/health itself cannot
-        // be reached then the server is what is wrong, and the app has louder
-        // ways of saying so (main.tsx's boot card, the status banner). Claiming
-        // Claude Code is missing on the strength of our own failed request would
-        // be the app blaming the user's machine for its own fault. Keep whatever
-        // we last knew rather than inventing a worse answer.
-        setLoaded(true);
-        setBusy(false);
-      },
-    );
-  }, []);
-
-  useEffect(() => {
-    load(false);
-  }, [load]);
-
-  // Seed the doctor report from the snapshot the server already took.
-  useEffect(() => {
-    if (health?.doctor) setDoctor(health.doctor);
-  }, [health]);
-
-  // RECOVER AN INSTALL THAT IS ALREADY RUNNING. The record lives on the server
-  // and outlives this component — Home and /apps both render the strip, and the
-  // shell tears one down on every navigation. Without this the remounted strip
-  // starts from `null`, never polls, shows no progress, and a second press of
-  // the button gets a 409 for an install the user cannot see.
-  //
-  // ONLY A RUNNING RECORD IS ADOPTED. A finished one from earlier in the
-  // session belongs to a problem that is already gone, and picking it up would
-  // render "Done" on a button whose issue is still on screen.
-  useEffect(() => {
-    getClaudeInstall().then(
-      (rec) => {
-        if (rec.state === "running") setInstall(rec);
-      },
-      () => {
-        /* Nothing to recover, or the server did not answer. Either way the
-           button still works — this is a recovery, not a prerequisite. */
-      },
-    );
-  }, []);
-
-  // The same recovery for a sign-in, and it matters more: the browser window is
-  // in front of the user RIGHT NOW, so a remounted strip that showed "Sign in"
-  // again would invite a second press that can only earn a 409 for a window
-  // already open. Only an in-flight record is adopted; a finished one belongs to
-  // an attempt whose outcome the health snapshot already reflects.
-  useEffect(() => {
-    getClaudeLogin().then(
-      (rec) => {
-        if (rec.in_flight) setLogin(rec);
-      },
-      () => {
-        /* A recovery, not a prerequisite. */
-      },
-    );
-  }, []);
-
-  // POLL ONLY WHILE SOMETHING IS RUNNING. An install outlives this component —
-  // the user can navigate away and the download manager keeps showing it — so
-  // the poll is tied to the record's state, not to the component's lifetime.
-  useEffect(() => {
-    if (install?.state !== "running") return;
-    let alive = true;
-    const timer = window.setInterval(() => {
-      getClaudeInstall().then(
-        (next) => {
-          if (!alive) return;
-          setInstall(next);
-          // A finished install changed the machine. Re-probe so the strip can
-          // close itself rather than sitting on a claim the user just fixed.
-          if (next.state === "done") load(true);
-        },
-        () => {
-          /* A failed poll is not a failed install — keep what we last knew. */
-        },
-      );
-    }, INSTALL_POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [install?.state, load]);
-
-  // POLL ONLY WHILE A SIGN-IN IS OPEN. The end of one is not a message the
-  // server can push, and it is not the child's exit code either: the CLI writes
-  // a credential this app never sees, so the only authority on whether it worked
-  // is `claude auth status`. When the record stops being in flight, re-probe —
-  // and let the strip close itself on the answer rather than on a guess.
-  useEffect(() => {
-    if (!login?.in_flight) return;
-    let alive = true;
-    const timer = window.setInterval(() => {
-      getClaudeLogin().then(
-        (next) => {
-          if (!alive) return;
-          setLogin(next);
-          if (!next.in_flight) load(true);
-        },
-        () => {
-          /* A failed poll is not a failed sign-in — keep what we last knew. */
-        },
-      );
-    }, LOGIN_POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [login?.in_flight, load]);
-
-  const act = useCallback(
-    (issue: ClaudeIssue) => {
-      if (!issue.action) return;
-      setActionError(null);
-      setActing(true);
-      const done = () => setActing(false);
-      if (issue.action.kind === "doctor") {
-        runClaudeDoctor().then((res) => {
-          done();
-          if (res.doctor) setDoctor(res.doctor);
-          // `ok: false` with no report is itself the finding — two probes have
-          // now failed to get a word out of this binary — so its sentence is
-          // shown rather than swallowed.
-          else setActionError(res.error || "The diagnostics did not answer.");
-        }, (e) => {
-          done();
-          setActionError(String(e?.message || e));
-        });
-        return;
-      }
-      if (issue.action.kind === "link-path") {
-        linkClaudePath().then(
-          (res) => {
-            done();
-            setLinkedNote(
-              `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
-                "opened from now on will find `claude` — one that is already " +
-                "open needs a new tab or window.",
-            );
-          },
-          (e) => {
-            done();
-            // The server's own refusal — "this shell's profile isn't one the
-            // app can safely edit", or the write error verbatim.
-            setActionError(String(e?.message || e));
-          },
-        );
-        return;
-      }
-      if (issue.action.kind === "login") {
-        startClaudeLogin().then(
-          (rec) => {
-            done();
-            setLogin(rec);
-          },
-          (e) => {
-            done();
-            // The server's own words. A 409 here means a browser window is
-            // already open and waiting — which is the thing the user needs to
-            // know, and a reworded "please wait" would hide it.
-            setActionError(String(e?.message || e));
-          },
-        );
-        return;
-      }
-      startClaudeInstall(issue.action.kind).then(
-        (rec) => {
-          done();
-          setInstall(rec);
-        },
-        (e) => {
-          done();
-          // The server's own words. A 409 here is the "that update would do
-          // nothing, run this instead" refusal.
-          setActionError(String(e?.message || e));
-        },
-      );
-    },
-    [],
-  );
-
-  // Calling off a sign-in. The server settles the record before answering, so
-  // what comes back is already not in flight and the poll stops on its own.
-  const cancelLogin = useCallback(() => {
-    setActionError(null);
-    cancelClaudeLogin().then(
-      (rec) => setLogin(rec),
-      () => setLogin(null),
-    );
-  }, []);
+  // The machine — snapshot, actions, polls, focus re-check — is lib/claude-setup,
+  // shared with the first-run wizard's Claude step. `watching` tells it a claim
+  // is on screen worth re-checking when the window comes back.
+  const [watching, setWatching] = useState(false);
+  const {
+    health, loaded, busy, install, login, doctor, actionError, acting,
+    linkedNote, load, act, cancelLogin,
+  } = useClaudeSetup(watching);
 
   const issues = claudeIssues(health);
   const showing = loaded && issues.length > 0 && !isDismissed(issues);
-
-  // COMING BACK TO THE WINDOW IS THE SIGNAL. Every fix this card asks for
-  // happens somewhere else — a terminal, an installer — so the moment the user
-  // returns is exactly when "is it still true?" should be re-asked, and the card
-  // should be able to answer by disappearing. Making them press a button to
-  // dismiss a warning they have already acted on is the app failing to notice
-  // its own advice was taken.
-  //
-  // Only while something IS showing: with nothing on screen there is no claim to
-  // re-check, and a healthy machine must not spawn probes for tabbing around.
-  // Forced rather than a plain read, because the server's cache is age-bounded
-  // and a sign-in usually lands well inside that window — the cheap read is
-  // exactly the one that would still say "signed out".
-  useEffect(() => {
-    if (!showing) return;
-    const onFocus = () => {
-      if (document.visibilityState === "hidden") return;
-      if (Date.now() - lastCheck.current < FOCUS_RECHECK_MS) return;
-      load(true);
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
-  }, [showing, load]);
+  useEffect(() => setWatching(showing), [showing]);
 
   if (!showing) return null;
 
