@@ -39,13 +39,55 @@
 // this component is the shell's one place that fetches for it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
-import { terminalJobs, type Job } from "@platform/lib/jobs";
+import { jobRows, terminalJobs, type Job } from "@platform/lib/jobs";
 import { pushToast } from "@platform/lib/toast";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 // Matches the (former) Engines chip's own cadence: a "what is running" readout,
 // not progress, so it does not need to tick every second.
 const ENGINES_POLL_MS = 10_000;
+
+// How long a `markStopping` marker suppresses the retire toast for (C5 fix).
+// Comfortably more than one `ENGINES_POLL_MS` round trip, so the very next
+// poll after a Stop click — the case this exists for — still finds its
+// marker. NOT forever: a marker used to be consumed only by the first later
+// snapshot that dropped the id, so a rejected `stopEngine()` call, or an
+// engine a `main =` app's `restart()` revives, left the marker standing with
+// nothing to consume it — and the id's eventual GENUINE idle retirement,
+// possibly minutes later, silently ate the D658 toast that retirement earned.
+// Expiring the marker bounds the suppression to the window the user's own
+// click could plausibly still be resolving in, so a later real retirement is
+// never mistaken for an echo of that one click.
+const STOPPING_GRACE_MS = 30_000;
+
+/**
+ * Which engines from `prev` disappeared in `next` and were NOT a user-
+ * initiated stop — the set D658's toast fires for. Pure and exported so C9's
+ * gap (D658 shipped with no test at all) can be closed without mounting the
+ * whole poll effect: `stopping` is mutated in place exactly as the poll loop
+ * mutates its own ref, consuming a marker the moment its window is checked
+ * (whether or not it still suppressed anything) so a stale one never lingers
+ * to swallow a later retirement.
+ */
+export function retiredEngines(
+  prev: RunningEngine[],
+  next: RunningEngine[],
+  stopping: Map<string, number>,
+  now: number,
+): RunningEngine[] {
+  const nextIds = new Set(next.map((e) => e.engine_id));
+  const retired: RunningEngine[] = [];
+  for (const p of prev) {
+    if (nextIds.has(p.engine_id)) continue;
+    const stoppedAt = stopping.get(p.engine_id);
+    if (stoppedAt !== undefined) {
+      stopping.delete(p.engine_id);
+      if (now - stoppedAt < STOPPING_GRACE_MS) continue; // user-initiated, within grace
+    }
+    retired.push(p);
+  }
+  return retired;
+}
 
 function useRunningEngines(): {
   engines: RunningEngine[];
@@ -62,7 +104,7 @@ function useRunningEngines(): {
   // NEXT snapshot that drops them, then discarded. A `Set` mutated in place
   // rather than state: it is consulted only inside the poll effect below and
   // must never itself trigger a render.
-  const stoppingRef = useRef<Set<string>>(new Set());
+  const stoppingRef = useRef<Map<string, number>>(new Map());
   // The PREVIOUS snapshot itself, so a snapshot that drops an engine can tell
   // an idle retirement (ENGINE-STOP TOAST, below) from ordinary churn. A ref,
   // not the `engines` state variable: the poll effect below runs once (empty
@@ -86,7 +128,6 @@ function useRunningEngines(): {
         const data = await getRunningEngines();
         if (!disposed && mine === generation) {
           const next = data.engines || [];
-          const nextIds = new Set(next.map((e) => e.engine_id));
           // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D658): the only way to
           // learn a background daemon/worker went away idle is to notice it
           // missing from consecutive snapshots — nothing calls this out as an
@@ -95,9 +136,7 @@ function useRunningEngines(): {
           // read as having just retired) and skipped for any id this hook was
           // told a user just stopped themselves.
           if (sawFirst.current) {
-            for (const prev of prevEnginesRef.current) {
-              if (nextIds.has(prev.engine_id)) continue;
-              if (stoppingRef.current.delete(prev.engine_id)) continue; // user-initiated
+            for (const prev of retiredEngines(prevEnginesRef.current, next, stoppingRef.current, Date.now())) {
               pushToast({ msg: `${engineLabel(prev)} retired (idle)`, tone: "info" });
             }
           }
@@ -120,7 +159,7 @@ function useRunningEngines(): {
 
   const refresh = useCallback(() => pollRef.current(), []);
   const markStopping = useCallback((engineId: string) => {
-    stoppingRef.current.add(engineId);
+    stoppingRef.current.set(engineId, Date.now());
   }, []);
   return { engines, refresh, markStopping };
 }
@@ -136,11 +175,20 @@ export default function ActivityDock({
   // every poll (`onJobsReported`); this only needs to re-derive the terminal
   // subset and call up when the id SET actually changes, so a poll that finds
   // nothing new does not re-render the shell.
+  //
+  // `jobRows` FIRST, `terminalJobs` SECOND (C6 fix): a scheduled run's own
+  // job draws no row in Activity in any state (D655/`isScheduleJob`), and
+  // that exclusion has to reach this path too, not only the rows this file
+  // never draws. Without it, a task on a schedule pushed a permanent,
+  // silent Notifications row per finished turn on top of the toast
+  // `schedule-toast.ts` already fires for the same event — the user's own
+  // rule was that a task is not something they want in Activity, and a task
+  // must not become a second, silent Notifications row either.
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");
   const onJobsReported = useCallback((next: Job[]) => {
-    const terminal = terminalJobs(next);
+    const terminal = terminalJobs(jobRows(next));
     const key = terminal.map((j) => j.id).join(" ");
     if (key === terminalIdsRef.current) return;
     terminalIdsRef.current = key;
