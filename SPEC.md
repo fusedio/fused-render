@@ -5870,6 +5870,48 @@ stop it short of quitting the app.
   a Stop within and past its grace window, a revived engine, and the
   late-retirement-after-rejected-Stop case above.
 
+- **BG-22** **D657's keep-until-dismissed exemption is scoped to a row some
+  surface can show and let the user dismiss, not to every terminal state
+  unconditionally (D663).** A `sys:schedule:*` row is never drawn by any
+  frontend surface — `jobRows` drops it from Activity, and `terminalJobs`
+  runs after `jobRows` in `ActivityDock.tsx`, so it never reaches
+  Notifications either — so the exemption bought it nothing but unbounded
+  accumulation, one invisible row per scheduled turn. `_sweep` now ages a
+  schedule row out on the original read-gated `FINISHED_TTL_S`/
+  `FINISHED_UNREAD_DROP_S` clock (BG-6); every other terminal row keeps
+  D657's keep-until-dismissed behavior. Separately, `MAX_JOBS`'s eviction
+  order (BG-6/BG-20) excluded `WAITING` from `evictable` entirely: a
+  `WAITING` row's reporter has already exited, so its `updated_at` never
+  advances, and ordering evictable rows oldest-`updated_at`-first made a
+  long-open `WAITING` row (uv's "Install anyway" prompt) the first thing
+  the cap evicted — the exact row `_sweep`'s own age-out exemption exists
+  to protect, lost to the other mechanism instead. And `clear_finished`
+  (the bulk Clear button's backend, `fused_render/jobs.py`) is rescoped
+  from `state != RUNNING` to `state in TERMINAL_STATES`: the button never
+  showed or counted a `WAITING` row, but its old filter took one anyway.
+
+- **BG-23** **`ActivityDock.tsx`'s `onJobsReported` applies `mergedRows`
+  before `jobRows`/`terminalJobs` (D664), and the two "Clear" buttons
+  (BG-15/BG-20) get distinct visible labels.** `jobs.ts` gains
+  `terminalNotifications(jobs)` — `mergedRows` then `jobRows` then
+  `terminalJobs`, the same order `DownloadManagerView` already uses for
+  its own Running list — closing a gap where a render sharing a model
+  load with another render could reach Notifications as two completions:
+  `_wait_ready` (D628) clears a waiter's `waiting_for` in a `try`/`finally`
+  around its poll loop, so a poll landing between the load going terminal
+  and the waiter noticing saw the load as its own, independent
+  completion. The repo-updates and finished-job Clear buttons now read
+  "Clear updates" and "Clear finished" rather than sharing the word
+  "Clear" with only a `title` (invisible before a click) distinguishing
+  the reversible, client-side one from the permanent, server-side one.
+  `clearableCount` (jobs.ts) is deleted — BG-20's claim that it "gets a
+  real caller again" from the second Clear button does not hold up, that
+  button gates and counts on `terminal.length` directly — along with the
+  `.q-row`/`.q-row-head`/`.q-title`/`.q-open`/`.q-x`/`.q-spin`/`.q-status`/
+  `.q-note` CSS rules in `notifications.css`, dead since BG-17 deleted the
+  scheduled-message queue row's JSX; `.q-all` keeps its rule, drawn now by
+  `RepoRowView`'s own buttons.
+
 ---
 
 ## 37. AI Models — What the Hugging Face Cache Holds (D249)
