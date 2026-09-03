@@ -1057,6 +1057,15 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     );
   });
 
+  test("a background child with a module is a worker even with no folder recorded", () => {
+    // `ensure_background(..., folder="")` defaults `folder`, so a `main =`
+    // child can carry a `module` with an empty `folder` — exactly the case
+    // `engineLabel` above already falls back to the module for. A template
+    // child can never carry a `module` (`ensure()` never sets one), so
+    // checking `module` first can never mislabel a template as a worker.
+    expect(engineKind(runningEngine({ folder: "", module: "widget.main" }))).toBe("worker");
+  });
+
   test("durations step up a unit rather than counting seconds the poll cannot see", () => {
     expect(engineDuration(0)).toBe("0s");
     expect(engineDuration(59.9)).toBe("59s");

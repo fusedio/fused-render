@@ -374,15 +374,20 @@ export function engineDuration(seconds: number): string {
 }
 
 /** WHICH OF THE THREE KINDS of child this row is, from the two fields the
- *  server already sends (`running_engines`): a folder with no module is an
- *  app's own written daemon, a folder WITH one is the shipped worker running
- *  that module's `main(**params)`, and no folder at all is a built-in
- *  template's daemon. Derived here rather than added to the wire because the
- *  two fields already determine it — a `kind` field would be a second answer
- *  to one question, free to disagree. */
+ *  server already sends (`running_engines`): a `module` set means the shipped
+ *  worker is running that module's `main(**params)` — a WORKER whether or not
+ *  a folder came with it (`ensure_background(..., folder="")` defaults
+ *  `folder`, so a `main =` app can report one either way); otherwise a folder
+ *  is an app's own written daemon, and no folder at all is a built-in
+ *  template's daemon. `module` is checked first because a template child can
+ *  never carry one (`ensure()` never sets it) — checking `folder` first, as
+ *  this used to, mislabelled a folder-less worker as a template, disagreeing
+ *  with `engineLabel` above about the very same row. Derived here rather than
+ *  added to the wire because the two fields already determine it — a `kind`
+ *  field would be a second answer to one question, free to disagree. */
 export function engineKind(engine: RunningEngine): "app" | "worker" | "template" {
-  if (!engine.folder) return "template";
-  return engine.module ? "worker" : "app";
+  if (engine.module) return "worker";
+  return engine.folder ? "app" : "template";
 }
 
 const KIND_TEXT = {
