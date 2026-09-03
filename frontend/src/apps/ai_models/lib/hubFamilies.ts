@@ -21,15 +21,45 @@
 import type { HubModel } from "@platform/lib/api";
 import type { ResultSort } from "./hubSearchView";
 
+// **A GGUF republish is its own family, not a variant of the safetensors
+// one** (D655). Keying on `baseModel` alone puts
+// `leejet/FLUX.2-klein-4B-GGUF` and
+// `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` in one bucket, where the GGUF
+// row cannot win the primary contest: a GGUF row's `matchScore` is blended
+// from three missing-evidence constants (no `fit`, no `estimatedSize`, no
+// `speedEstimate`; see `hub_models.py::_model_row`), so it cannot outrank a
+// sibling carrying real numbers no matter how good it is. That parks it
+// permanently behind the variants expander, which for the one format a
+// llama.cpp/stable-diffusion.cpp user is specifically searching for is the
+// same as not being in the results.
+//
+// The deeper reason is that the two are not the same download. Every other
+// relation this module joins — a finetune, a merge, a 4-bit safetensors
+// quant — produces a repo the SAME runner opens the same way, so showing one
+// and offering the rest behind a disclosure is honest. A format switch is
+// not that: it decides which runner can open the repo at all. So `format`
+// (the server's own field, read off the Hub) joins `baseModel` in the key.
 export interface HubFamily {
-  /** `baseModel` when known, else the lone member's own id — stable across
-   *  re-renders of the SAME result set, which is what a React `key` needs. */
+  /** `baseModel` + `format` when a base model is known, else the lone
+   *  member's own id — stable across re-renders of the SAME result set,
+   *  which is what a React `key` needs.
+   *
+   *  Opaque: a composite whose parts are joined by a separator no Hub repo
+   *  id contains. Nothing reads it back apart as an id, and nothing should. */
   key: string;
   /** The member that ranks first under the ACTIVE sort (see `groupIntoFamilies`'s
    *  `sort` parameter) — the row a family's single line draws. */
   primary: HubModel;
   /** Every other member, same ordering rule, for the "N variants" affordance. */
   variants: HubModel[];
+  /** The base model this family is keyed on — the repo every member declares
+   *  as its origin — or null for a family that is just one untagged row
+   *  standing alone under its own id. NOT necessarily a repo present in
+   *  `models`: see the module header. */
+  baseModel: string | null;
+  /** The member that IS the base model (`member.id === baseModel`), when the
+   *  base repo itself is among the results, else null. */
+  base: HubModel | null;
 }
 
 /** Descending: higher fit score first (a model with no fit — nothing to
@@ -64,26 +94,26 @@ function byMatchThenDownloads(a: HubModel, b: HubModel): number {
   return dlB - dlA;
 }
 
-/** Which comparator decides a family's primary, for a given active sort
- *  (code review finding: the primary used to be picked by `fit` alone, no
- *  matter what the page was actually sorted by — under `sort=best` this drew
- *  the family's best-FITTING member while every visible row's Match number
- *  came from the family's best-MATCHING one, so the Match column stopped
- *  descending down the table the moment the two disagreed). `"fit"` keeps
- *  the memory-only comparator, matching what that sort itself ranks by;
- *  every other sort (including the "best" default, and page-level sorts
- *  like "size" that have nothing of their own to say about which variant is
- *  the "right" one) uses the composite `matchScore`, since it is the one
- *  ranking figure every row carries no matter how the page is sorted. */
+/** Which comparator ranks a family's members, for a given active sort. It has
+ *  to follow the sort the page is actually under: a comparator that ranked by
+ *  `fit` while the page ranked by the composite would hand the disclosure a
+ *  different "best" than the Match number printed beside it, and the Match
+ *  column would stop descending down the table wherever the two disagreed.
+ *  `"fit"` therefore keeps the memory-only comparator, matching what that
+ *  sort itself ranks by; every other sort (including the "best" default, and
+ *  page-level sorts like "size" that have nothing of their own to say about
+ *  which variant is the "right" one) uses the composite `matchScore`, since
+ *  it is the one ranking figure every row carries no matter how the page is
+ *  sorted. */
 function primaryComparator(sort: ResultSort): (a: HubModel, b: HubModel) => number {
   return sort === "fit" ? byFitThenDownloads : byMatchThenDownloads;
 }
 
-/** Every result, collapsed to one family per model — primary chosen by
- *  `primaryComparator(sort)`, variants ordered the same way, an untagged row
- *  standing alone. `sort` defaults to `"fit"` for a caller with no sort
- *  context of its own (every existing test predates `sort=best` and assumes
- *  this).
+/** Every result, collapsed to one family per model — headed by its base
+ *  model when that repo is among the results, else by the member
+ *  `primaryComparator(sort)` ranks first, with the rest ordered by that same
+ *  comparator and an untagged row standing alone. `sort` defaults to `"fit"`
+ *  for a caller with no sort context of its own.
  *
  *  **Families are positioned at their PRIMARY's index in `models`, not at
  *  whichever member first appeared.** A family draws its primary's row —
@@ -91,29 +121,26 @@ function primaryComparator(sort: ResultSort): (a: HubModel, b: HubModel) => numb
  *  member — so that is also the member whose position in an already-sorted
  *  `models` (`bySizeAscending`, the Hub's own `downloads`/`trending` order,
  *  a `sort=fit`/`sort=best` reorder) has to decide where the family lands.
- *  Positioning by first-appearance instead let a family sit at a NON-primary
- *  variant's index while showing the primary's value there — a sort-visible
- *  column (Size, Match) visibly not ascending/descending, because the row
- *  drawn at that position could be showing a different member's value.
+ *  Positioning by first-appearance instead would let a family sit at a
+ *  NON-primary variant's index while showing the primary's value there — a
+ *  sort-visible column (Size, Match) visibly not ascending/descending,
+ *  because the row drawn at that position could be showing a different
+ *  member's value.
  *
- *  **What positioning by the primary's own index actually guarantees, and
- *  why** (code review finding: the paragraph this replaces overstated the
- *  reason). The guarantee is NOT "the same key decided both `models`'s
- *  order and the primary" — that is only true for `sort="fit"`/`"best"`,
- *  where `models` is sorted by the composite/fit score AND
- *  `primaryComparator(sort)` picks the primary by that same score. For
- *  `"size"`, `"downloads"`, `"trending"` and `"new"`, `models` is sorted by
- *  THAT key while `primaryComparator` still returns `byMatchThenDownloads`
- *  (see its own doc) — a genuinely different key from the one that ordered
- *  `models`. What actually holds, unconditionally, regardless of whether
- *  those two keys agree: a family is placed at the exact array index its
- *  own primary already held in `models`, so the resulting family order is
- *  just `models`'s own order with every non-primary member deleted —
- *  reusing a real position `models` already decided, not deriving a new
- *  one. Deleting elements from an array can never change the relative
- *  order of the ones left behind, so whatever monotone property `models`'s
- *  own sort key had among the surviving (primary) rows is preserved
- *  automatically, with no dependency on how that primary was chosen.
+ *  **What positioning by the primary's own index guarantees, and why.** The
+ *  guarantee is NOT "the same key decided both `models`'s order and the
+ *  primary" — the two keys routinely differ. Under `"size"`,
+ *  `"downloads"`, `"trending"` and `"new"`, `models` is sorted by THAT key
+ *  while the primary is the family's base model or (failing that) its
+ *  best-ranked member. What holds unconditionally, whether or not those keys
+ *  agree: a family is placed at the exact array index its own primary
+ *  already held in `models`, so the resulting family order is just
+ *  `models`'s own order with every non-primary member deleted — reusing a
+ *  real position `models` already decided, not deriving a new one. Deleting
+ *  elements from an array can never change the relative order of the ones
+ *  left behind, so whatever monotone property `models`'s own sort key had
+ *  among the surviving (primary) rows is preserved automatically, with no
+ *  dependency on how that primary was chosen.
  */
 export function groupIntoFamilies(
   models: readonly HubModel[],
@@ -124,7 +151,14 @@ export function groupIntoFamilies(
 
   models.forEach((model, i) => {
     indexOf.set(model, i);
-    const key = model.baseModel ?? model.id;
+    // Joined on a SPACE, which a Hub repo id cannot contain — so no two
+    // distinct (base, format) pairs flatten to the same string, a property a
+    // `-` or `/` join would not have. A row with no format contributes
+    // nothing rather than an empty suffix, so the common case's key stays
+    // the bare base id it always was.
+    const key = model.baseModel
+      ? (model.format ? `${model.baseModel} ${model.format}` : model.baseModel)
+      : model.id;
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -136,7 +170,25 @@ export function groupIntoFamilies(
   const compare = primaryComparator(sort);
   const families = Array.from(buckets.entries(), ([key, group]) => {
     const sorted = group.slice().sort(compare);
-    return { key, primary: sorted[0], variants: sorted.slice(1) };
+    // Every member's own `baseModel` tag (when it has one) names the SAME
+    // repo — that's what put them in this bucket together — so the base
+    // model itself, sitting in the bucket untagged, doesn't get a vote here;
+    // whichever tagged member is found first hands back the answer. No
+    // tagged member at all means this bucket is the untagged-row fallback
+    // (`key` is the row's own id, not a base tag), so there's no base
+    // identity to report.
+    const baseModel = group.find((m) => m.baseModel)?.baseModel ?? null;
+    const base = baseModel ? (group.find((m) => m.id === baseModel) ?? null) : null;
+    // **The base model heads its own family whenever it is in the results,
+    // regardless of score.** A family's first row is its IDENTITY, and a
+    // score is the wrong thing to decide identity with: a 4-bit republish
+    // that happens to fit this machine better than the model it was made
+    // from is still a republish OF it, and drawing it as the family's own
+    // name says the opposite. `compare` still orders everything else, so
+    // `variants` is ranked exactly as before and the best-ranked member is
+    // simply the first one behind the disclosure when it is not the base.
+    const primary = base ?? sorted[0];
+    return { key, primary, variants: sorted.filter((m) => m !== primary), baseModel, base };
   });
   families.sort((a, b) => indexOf.get(a.primary)! - indexOf.get(b.primary)!);
   return families;

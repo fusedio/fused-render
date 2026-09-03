@@ -508,27 +508,30 @@ export function variantLabel(variantCount: number): string {
 }
 
 /** The Model column's two lines: the repo a Download button on this row would
- *  actually act on, and — only where a base model is known — what it was
- *  grouped under.
+ *  actually act on, and — only where the row is standing in for a base model
+ *  that is not itself among the results — which base that is.
  *
- *  **The row's NAME is always the primary's own id, never the base model.**
- *  An earlier version of this function named the row by `baseModel` when one
- *  was known, with the primary's id as a muted second line — readable, but
- *  wrong on three counts a table full of Download buttons cannot afford: the
- *  base model may not be a repo this app can even run (it is not necessarily
- *  among the rows `_model_row` let through, which is exactly why a variant
- *  can still be grouped under a base that "never appeared" —
- *  `hubFamilies.ts`'s own case for it), truncating two DIFFERENT base models
- *  that happen to share a repo name (`Qwen/Qwen3-8B` vs `unsloth/Qwen3-8B`)
- *  renders an identical name for two unrelated families, and — the sharpest
- *  version of the same mistake — identity, the href, and the download action
- *  must all name the same repo or a click acts on something other than what
- *  was read. So `name` is `family.primary.id`, matching the href and the
- *  download action exactly; `baseModel` is the family's grouping fact, shown
- *  as secondary context ("grouped under …") only when one is known.
+ *  **The row's NAME is always the primary's own id, never a repo that isn't
+ *  in the results.** `groupIntoFamilies` already heads a family with its
+ *  base model whenever that repo is present, so for the common case the two
+ *  are the same string and the second line is empty. Where they differ, the
+ *  base repo is one the results do not contain — dropped by `_model_row`, or
+ *  simply outside the query's match — and naming the row after it would be
+ *  wrong on three counts a table full of Download buttons cannot afford: it
+ *  is not necessarily a repo this app can run at all, two DIFFERENT base
+ *  models that share a repo name (`Qwen/Qwen3-8B` vs `unsloth/Qwen3-8B`)
+ *  would truncate to one identical name for two unrelated families, and —
+ *  the sharpest version of the same mistake — identity, the href and the
+ *  download action must all name the same repo or a click acts on something
+ *  other than what was read. So `name` is `family.primary.id`, matching the
+ *  href and the download action exactly; `baseModel` is the grouping fact,
+ *  shown as secondary context only for a family whose base is absent.
  */
 export function familyDisplay(family: HubFamily): { name: string; baseModel: string | null } {
-  return { name: family.primary.id, baseModel: family.primary.baseModel };
+  return {
+    name: family.primary.id,
+    baseModel: family.base ? null : family.baseModel,
+  };
 }
 
 /** `params` formatted the same compact way the rest of the page counts
@@ -536,4 +539,66 @@ export function familyDisplay(family: HubFamily): { name: string; baseModel: str
 export function paramsLabel(params: number | null): string {
   if (params === null || params === undefined) return DASH;
   return formatParams(params) || DASH;
+}
+
+// ---------------------------------------------------------------------------
+// Occupied columns — a real image-model search (`text-to-image`) makes some
+// optional columns go dead across the WHOLE result set: TOK/S is a
+// text-generation-only figure (`speedLabel`'s own anchor rule), so on an
+// image search every row's cell is the dash, and QUANT is often unmeasured
+// for every row but one. A column of nothing-but-dashes eats horizontal
+// space and reads as broken rather than as "checked, nothing here" — this
+// function decides which optional columns are worth `HubResultsTable`
+// drawing a `<th>`/`<td>` pair for at all.
+
+/** The optional data columns this table can hide when a result set has
+ *  nothing to put in them. MATCH and MODEL are structural, not
+ *  data-dependent, so they never appear here — this table always has a row
+ *  to name and a score to bar, even when it has neither params nor a
+ *  measured quant. `vars` (the family "N other repos" column) is
+ *  deliberately absent from this type: see `occupiedColumns`'s own doc for
+ *  why. */
+export type HubColumnKey = "params" | "quant" | "size" | "tokens" | "pop" | "new";
+
+/** Which optional columns carry at least one real value across `models` —
+ *  `HubResultsTable` checks this before drawing a column's `<th>`/`<td>`
+ *  pair, the same way `columnVisible` already gates Task/Quant for a
+ *  unanimous result set (a DIFFERENT rule: that one hides a column because
+ *  every row agrees and says so once in the summary; this one hides a
+ *  column because no row has anything to say at all).
+ *
+ *  "Real value" is checked by running each row through the SAME label
+ *  function the cell itself would call (`paramsLabel`, `quantLabel`,
+ *  `speedLabel`, `popLabel`, `ageLabel`) and asking whether it printed
+ *  anything other than the dash — so this function can never call a column
+ *  "occupied" that every one of its own cells would then render as a dash,
+ *  or the reverse. A column is occupied the moment ONE row clears that bar;
+ *  it does not take a majority.
+ *
+ *  `size` is the one field this cannot check the same way: `hubSize.ts` owns
+ *  the size string's own formatting (a lazily-fetched, sometimes-approximate
+ *  figure), and this module does not import it. "Real" for `size` is
+ *  decided straight off the two fields a size cell needs to have anything
+ *  to show at all — `estimatedSize` and `params` both non-null — with the
+ *  cell's own renderer staying the sole authority on the actual printed
+ *  string.
+ *
+ *  `vars` (how many other repos a family folds in) is not decided here at
+ *  all: it is a FAMILY fact (`HubFamily.variants.length`), and `models` is
+ *  the flat per-row list this function is handed, which carries no such
+ *  count for any individual `HubModel` — answering it would mean guessing
+ *  at grouping this function was never given, so it is left out of
+ *  `HubColumnKey` entirely rather than answered with a guess.
+ *
+ *  An empty `models` returns an empty set: `.some()` over no rows is
+ *  `false` for every column, never a fallback to "show everything". */
+export function occupiedColumns(models: readonly HubModel[]): Set<HubColumnKey> {
+  const occupied = new Set<HubColumnKey>();
+  if (models.some((m) => paramsLabel(m.params) !== DASH)) occupied.add("params");
+  if (models.some((m) => quantLabel(m.quant) !== DASH)) occupied.add("quant");
+  if (models.some((m) => m.estimatedSize !== null && m.params !== null)) occupied.add("size");
+  if (models.some((m) => speedLabel(m.speedEstimate, m.params) !== DASH)) occupied.add("tokens");
+  if (models.some((m) => popLabel(m.downloads) !== DASH)) occupied.add("pop");
+  if (models.some((m) => ageLabel(m.created) !== DASH)) occupied.add("new");
+  return occupied;
 }

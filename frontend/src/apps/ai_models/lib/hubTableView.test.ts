@@ -13,6 +13,7 @@ import {
   matchCell,
   matchFitBasis,
   matchTitle,
+  occupiedColumns,
   popLabel,
   quantLabel,
   resolveFit,
@@ -49,6 +50,7 @@ function model(id: string, extra: Partial<HubModel> = {}): HubModel {
     created: null,
     baseModel: null,
     relation: null,
+    format: null,
     quant: null,
     file: null,
     local: { state: "none" },
@@ -408,8 +410,17 @@ describe("variantLabel", () => {
 });
 
 describe("familyDisplay", () => {
+  /** A family whose base repo is NOT among its members — `base` null, which
+   *  is the shape `groupIntoFamilies` produces whenever the base model was
+   *  dropped upstream or fell outside the query's match. */
   function family(primary: HubModel, variants: HubModel[] = []): HubFamily {
-    return { key: primary.baseModel ?? primary.id, primary, variants };
+    return {
+      key: primary.baseModel ?? primary.id,
+      primary,
+      variants,
+      baseModel: primary.baseModel,
+      base: null,
+    };
   }
 
   it("names the row by the primary's OWN id — the repo href and Download both act on", () => {
@@ -427,6 +438,24 @@ describe("familyDisplay", () => {
     const primary = model("tencent/Hy4-preview");
     const display = familyDisplay(family(primary));
     expect(display.name).toBe("tencent/Hy4-preview");
+    expect(display.baseModel).toBeNull();
+  });
+
+  it("says nothing about the base when the row IS the base", () => {
+    // The family is headed by the base repo itself, so "from <base>" would
+    // repeat the bold name back at the reader one line down.
+    const base = model("black-forest-labs/FLUX.2-klein-4B");
+    const quant = model("leejet/FLUX.2-klein-4B-GGUF", {
+      baseModel: "black-forest-labs/FLUX.2-klein-4B",
+    });
+    const display = familyDisplay({
+      key: base.id,
+      primary: base,
+      variants: [quant],
+      baseModel: base.id,
+      base,
+    });
+    expect(display.name).toBe("black-forest-labs/FLUX.2-klein-4B");
     expect(display.baseModel).toBeNull();
   });
 });
@@ -560,7 +589,11 @@ describe("familyHoist", () => {
   function family(id: string, quant: string | null, variantQuants: (string | null)[] = []): HubFamily {
     const primary = model(id, { quant });
     const variants = variantQuants.map((q, i) => model(`${id}-variant-${i}`, { quant: q }));
-    return { key: id, primary, variants };
+    // Neither `familyHoist` nor the assertions here read `baseModel`/`base`
+    // — this fixture is only ever about the quant hoist across primaries and
+    // variants — so null/null is the honest choice for a family `model()`
+    // never gave a `baseModel` tag.
+    return { key: id, primary, variants, baseModel: null, base: null };
   }
 
   it("unanimous across primaries AND variants: hides the column, summary says 'all'", () => {
@@ -634,5 +667,55 @@ describe("familyHoist", () => {
     // A column of nothing but dashes is dropped, per `columnVisible`'s own
     // "NOTHING is known at all" case.
     expect(showQuant).toBe(false);
+  });
+});
+
+describe("occupiedColumns", () => {
+  it("omits TOK/S on an all-image-models result set", () => {
+    // A real `text-to-image` search: every row carries `speedEstimate: null`
+    // (per `HubModel.speedEstimate`'s own contract, "text-generation rows
+    // only" — an image row is never even asked for one), so `speedLabel`
+    // prints the dash on every cell in the column. Some rows still have
+    // params and a downloads count, so those columns stay.
+    const models = [
+      model("a", { capability: "text-to-image", params: 2_000_000_000, downloads: 1200 }),
+      model("b", { capability: "text-to-image", params: 900_000_000, downloads: 300 }),
+      model("c", { capability: "text-to-image" }),
+    ];
+    const occupied = occupiedColumns(models);
+    expect(occupied.has("tokens")).toBe(false);
+    expect(occupied.has("params")).toBe(true);
+    expect(occupied.has("pop")).toBe(true);
+  });
+
+  it("keeps QUANT for a lone row when every other row is unmeasured", () => {
+    // One row out of many carrying a real quant is still one row with
+    // something to say — this function hides a column only when NOTHING in
+    // the set has a value, never when most of it does not.
+    const models = [model("a", { quant: null }), model("b", { quant: "Q4_K_M" }), model("c", { quant: null })];
+    expect(occupiedColumns(models).has("quant")).toBe(true);
+  });
+
+  it("returns an empty set for an empty result set, not every column", () => {
+    // `.some()` over zero rows is `false` for every check this function
+    // runs — there is no fallback path that reads "no rows yet" as "show
+    // everything", which would be exactly backwards for a page still
+    // loading its first page of results.
+    expect(occupiedColumns([]).size).toBe(0);
+  });
+
+  it("occupies every optional column on a normal text-generation set", () => {
+    const models = [
+      model("a", {
+        params: 7_000_000_000,
+        estimatedSize: 14_000_000_000,
+        quant: "BF16",
+        downloads: 54_321,
+        created: "2026-08-01T00:00:00Z",
+        speedEstimate: { tokensPerSecond: 42 } as AiSpeedEstimate,
+      }),
+    ];
+    const occupied = occupiedColumns(models);
+    expect(occupied).toEqual(new Set(["params", "quant", "size", "tokens", "pop", "new"]));
   });
 });

@@ -612,6 +612,102 @@ def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
     assert row["speedEstimate"] is None
 
 
+# -- D655: a GGUF row outside text generation is rankable and findable ------
+#
+# Every test above resolves a `file`, because `_gguf_runner` stands in for
+# llama.cpp and text generation is the one capability whose runners declare
+# the `gguf` format tag. The three below are the OTHER capabilities, where
+# no runner declares it: nothing asks `pick_gguf_file` for anything, so
+# `file` stays None. `params` must NOT follow it into None: without a real
+# parameter count, three of the five ranking axes fall back to
+# missing-evidence constants, identical for every such repo, and the whole
+# format ends up in one flat band the truncation to `count` then cuts off.
+
+
+def test_a_fileless_gguf_row_still_reports_the_hubs_own_params(
+        client, hub_cache, monkeypatch):
+    """A `text-to-image` GGUF republish — `leejet/FLUX.2-klein-4B-GGUF`'s
+    shape. No runner for that capability speaks GGUF, so the picker never
+    runs and `file` is None; `gguf.total` is a fact about the REPO, not
+    about this machine's runners, so it is read anyway."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "leejet/FLUX.2-klein-4B-GGUF", pipeline_tag="text-to-image",
+        siblings=[{"rfilename": "flux-2-klein-4b-Q4_0.gguf"}],
+        gguf={"total": 3_875_544_576},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
+    assert row["params"] == 3_875_544_576
+    assert row["format"] == "gguf"
+    # The deleted-derivation rule follows the PARAMS, not the `file`: a
+    # `gguf.total` count with no real bytes beside it must not become a
+    # `params x DEFAULT_BYTES_PER_PARAM` verdict any more than a
+    # file-resolved one may.
+    assert row["fit"] is None
+    assert row["speedEstimate"] is None
+
+
+def test_a_fileless_gguf_row_outranks_an_identical_one_with_no_metadata(
+        client, hub_cache, monkeypatch):
+    """The ranking half of D655. Two `text-to-image` GGUF repos, identical
+    in downloads and age, one with `gguf.total` and one without: the blend
+    must be able to tell them apart. Before this fix neither had `params`,
+    so both scored off `_FIT_DEFAULT` + `_capability_score(None)` +
+    `_speed_score(None, None)` and tied — and with recency and popularity
+    the only live axes, every GGUF repo of every quality landed in one flat
+    band at the truncation boundary."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    # 9B, chosen the same way the file-resolved test above chooses 7B: well
+    # above `_CAPABILITY_DEFAULT` on a 32GB machine's own curve, so the
+    # comparison measures real params beating "unknown" rather than the
+    # accident of a tiny model scoring under the default.
+    same = dict(pipeline_tag="text-to-image", downloads=1000,
+                createdAt="2026-08-01T00:00:00.000Z",
+                siblings=[{"rfilename": "m-Q4_0.gguf"}])
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/gguf-with-meta", gguf={"total": 9_078_581_248}, **same),
+        _hit("org/gguf-no-meta", **same),
+    ]))
+    by_id = {m["id"]: m for m in _search(client).json()["models"]}
+    assert by_id["org/gguf-with-meta"]["params"] == 9_078_581_248
+    assert by_id["org/gguf-no-meta"]["params"] is None
+    assert by_id["org/gguf-with-meta"]["matchScore"] > by_id["org/gguf-no-meta"]["matchScore"]
+
+
+def test_a_repo_publishing_both_formats_is_not_labelled_gguf(
+        client, hub_cache, monkeypatch):
+    """`format` names what the Download button would FETCH, and for a repo
+    shipping both uploads that is the safetensors one — which is also what
+    `params`, `estimatedSize`, `quant` and `fit` on this row already
+    describe. Calling it `"gguf"` would split it away from its own base
+    model's family (`hubFamilies.ts`) on the strength of a secondary upload
+    nothing else here reads."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/both-formats", pipeline_tag="text-to-image",
+        siblings=[{"rfilename": "m-Q4_0.gguf"}],
+        safetensors={"parameters": {"BF16": 4_000_000_000}, "total": 4_000_000_000},
+        gguf={"total": 4_000_000_000},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["format"] is None
+    # Read off the safetensors map, which is also why the row is judgeable.
+    assert row["estimatedSize"] == 8_000_000_000
+    assert row["fit"] is not None
+
+
+def test_a_safetensors_only_repo_carries_no_format(client, hub_cache, monkeypatch):
+    """`format` is only ever set from something the Hub actually said. A
+    repo with no `gguf` metadata gets None — never a guess from its name."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/plain", safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
+    )]))
+    assert _search(client).json()["models"][0]["format"] is None
+
+
 # -- the request ------------------------------------------------------------
 
 

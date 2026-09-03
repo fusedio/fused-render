@@ -1044,7 +1044,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         return None
     if raw.get("private"):
         return None
-    reading = ai_tasks.classify(raw.get("pipeline_tag"))
+    # `classify_repo`, not `classify`: the repo's `tags` list gets a say when
+    # its `pipeline_tag` slot names a task nothing here runs. That slot holds
+    # ONE of the tasks a repo may claim, and a search that reads only the slot
+    # dropped every `black-forest-labs/FLUX.2-klein-*` repo — `image-to-image`
+    # in the slot, `text-to-image` in the tags — while happily listing fifteen
+    # community quants OF those repos, which put the runnable task in the slot.
+    # See that function for why the widening cannot manufacture a capability.
+    reading = ai_tasks.classify_repo(raw.get("pipeline_tag"), raw.get("tags"))
     capability = reading.capability
     if capability is None:
         # HS-0: everything on this tab is runnable HERE. A ruled-out task and an
@@ -1108,18 +1115,36 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     params = _params(safetensors, config)
     estimated_size = _estimated_bytes(safetensors)
     quant = _quant(safetensors, file, config)
-    # `params` for a `file`-resolved (GGUF) row: the Hub's own `gguf`
-    # metadata expand (`_EXPAND`, no extra request) reports the checkpoint's
-    # REAL parameter count straight off the GGUF header — quantization-
-    # invariant, unlike `estimatedSize` — and it costs nothing extra to keep.
-    # `_capability_score` reads `params` directly with no bytes-per-param
-    # conversion, so this figure alone cannot leak a memory verdict; it is
-    # only ever a capability-axis input and a Params-column fact.
-    if file is not None and params is None:
-        gguf_meta = raw.get("gguf")
-        gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
-        if isinstance(gguf_total, int) and gguf_total > 0:
-            params = gguf_total
+    # `params` from the Hub's own `gguf` metadata expand (`_EXPAND`, no extra
+    # request), which reports the checkpoint's REAL parameter count straight
+    # off the GGUF header — quantization-invariant, unlike `estimatedSize` —
+    # and costs nothing extra to keep. `_capability_score` reads `params`
+    # directly with no bytes-per-param conversion, so this figure alone
+    # cannot leak a memory verdict; it is only ever a capability-axis input
+    # and a Params-column fact.
+    #
+    # **Read for EVERY GGUF repo, not only a `file`-resolved one** (D655).
+    # Gating this on `file` tied it to `pick_gguf_file` having run, which
+    # only happens when some runner for the capability declares the `gguf`
+    # format tag — true for text generation and false for the other three.
+    # So a `text-to-image` GGUF republish (`leejet/FLUX.2-klein-4B-GGUF`)
+    # arrived with `params`, `estimatedSize`, `quant` and `fit` ALL null,
+    # and `_composite_raw_score` then read three of its five axes off pure
+    # missing-evidence defaults (`_FIT_DEFAULT` 40, `_capability_score(None)`
+    # 30, `_speed_score(None, None)` 63) — the same three constants for every
+    # such repo, leaving only recency and popularity (0.25 of the blend) able
+    # to tell any two of them apart. Every GGUF diffusion repo therefore
+    # clustered in one flat band near the truncation boundary regardless of
+    # how good or how popular it was, which is not a ranking, it is a coin
+    # flip. `gguf.total` is the one real fact available to break that tie,
+    # and reading it does not depend on any runner: it is the Hub's answer
+    # about the repo, not this machine's answer about the format.
+    gguf_meta = raw.get("gguf")
+    gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
+    params_from_gguf = False
+    if params is None and isinstance(gguf_total, int) and gguf_total > 0:
+        params = gguf_total
+        params_from_gguf = True
     # Fit/speed derivation for a GGUF row was DELETED (three code review
     # rounds each caught the same under-report class re-emerging — see the
     # DECISIONS.md entry recorded alongside this change). It is not a bug
@@ -1138,16 +1163,40 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # per-file `hub/size` lookup, which fires anyway for every row without a
     # server-supplied `estimatedSize`, is the ONLY thing that ever produces
     # a memory verdict or a tok/s figure for such a row.
+    #
+    # `params_from_gguf` joins `file` as a reason to refuse (D655), and it has
+    # to: the paragraph above argues from the PARAMS being a GGUF
+    # checkpoint's, not from `pick_gguf_file` having run. Feeding a
+    # `gguf.total` params count into `fit.verdict` with no `size_gb` beside it
+    # is precisely the `params x DEFAULT_BYTES_PER_PARAM` guess three review
+    # rounds deleted — widening where that count comes from must not quietly
+    # re-open the door it came out of.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
+    judgeable = file is None and not params_from_gguf
     fit_verdict = (
         fit.verdict(capability, model_id, size_gb, params=params,
                     footprint_store=footprint_store, hardware=hardware)
-        if file is None else None)
+        if judgeable else None)
     speed_estimate = (
         speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
-        if file is None and capability == TEXT_GENERATION else None)
+        if judgeable and capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
+    # (D655) The repo's weight FORMAT, when the Hub said something that
+    # amounts to one — `"gguf"` for a repo that ships `.gguf` and carries no
+    # safetensors metadata of its own, `None` for everything else, including
+    # a mixed repo that publishes both (its safetensors upload is the one
+    # every other field on this row already describes).
+    #
+    # Its only consumer is `hubFamilies.ts`'s grouping key, and that is the
+    # whole reason it exists: a GGUF republish and a 4-bit safetensors
+    # republish of one base model are not two views of the same download,
+    # and collapsing them into one family made the GGUF one unreachable —
+    # its `matchScore` can never win the primary contest (see the
+    # `params_from_gguf` note above for why three of its axes are constants),
+    # so it was always the variant behind the expander. Read off the Hub, not
+    # guessed from the repo's name, exactly like `_quant` and `library`.
+    weight_format = "gguf" if gguf_meta and not isinstance(raw.get("safetensors"), dict) else None
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -1161,6 +1210,9 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # (`hubFamilies.ts`) — this is the raw fact, not the judgement.
         "baseModel": base_model,
         "relation": relation,
+        # "gguf" or None — the other half of that grouping key. See
+        # `weight_format` above.
+        "format": weight_format,
         # {verdict, basis, footprintBytes, score, runMode} or None — the same
         # judgement `ai_runtime.describe_catalog` computes for a downloaded
         # model, over the SAME `fit.verdict` this app already trusts, so a

@@ -1,8 +1,9 @@
-// The dense results table search replaces the card grid with (task 4). One
-// row per model FAMILY (`hubFamilies.groupIntoFamilies`), following
-// `BenchmarkTab.tsx`'s own `<table>` — `scope="col"` headers, the same
-// `am-bench-*` conventions this file's `am-hubtable-*` classes sit beside in
-// `ai-models.css`.
+// The dense results table search shows instead of a card grid. One row per
+// model FAMILY (`hubFamilies.groupIntoFamilies`), drawn on the shared shadcn
+// `Table` primitives (`@platform/shadcn/ui/table`) so this table's chrome —
+// header weight, hover tint, cell rhythm — is the same chrome every other
+// table in the app gets, with `am-hubtable-*` classes in `ai-models.css`
+// carrying only what is genuinely specific to Hub results.
 //
 // **Why a table replaces the grid rather than joining it.** A card can carry
 // two or three facts before it sprawls, which is why the grid it replaces
@@ -11,24 +12,30 @@
 // SCORED — see `hubTableView.ts` for the cell rules and D639/D640/D641 in
 // DECISIONS.md for the fuller argument.
 //
-// **Eleven columns, after three collapses this file has been through.**
-// Task and Capability used to be two columns stating the same fact twice
-// (`text generation` / `text-generation` on every row); Fit and Score used
-// to be two renderings of the SAME memory-only number (D639/D640); Mode
-// used to be its own column even though on Apple Silicon it is a structural
-// constant and everywhere else it is a coarser restatement of the Fit
-// verdict already on screen (D641, folded into the Match cell's own hint
-// and a visible offload suffix instead). Match, Model, Size and the action
-// are the columns `ai-models.css`'s drop ladder never hides — Task is the
-// FIRST to drop now that it is often already stated in the summary line.
+// **Match, Model and the action are the only unconditional columns.** Every
+// data column between them earns its place twice over, on two independent
+// tests owned by `hubTableView.ts`:
 //
-// **Constants UNANIMOUS across the result set are HOISTED into one summary
-// line** (`hoistValue`/`hoistSummary`, `hubTableView.ts`) rather than
-// repeated on every row — task/capability and quant are the two candidates
-// left after D641 folded Mode away. A merely common (not unanimous) value
-// stays a per-row cell, just muted (`majorityValue`/`isMajorityValue`) —
-// see that module's own doc (D661) for why a majority never drives the
-// summary line or a column's presence any more.
+//   * UNANIMITY (`familyHoist`) — every row agrees, so the fact is stated
+//     once in the summary line above the table and the column is dropped
+//     rather than repeating one value down the page. A merely common (not
+//     unanimous) value keeps its column and is only muted
+//     (`majorityValue`/`isMajorityValue`).
+//   * OCCUPANCY (`occupiedColumns`) — no row has anything to put in it, so
+//     the column would be nothing but dashes. An image search does this to
+//     TOK/S, which is a text-generation figure by construction.
+//
+// Size is deliberately exempt from the occupancy test: its cell is filled by
+// the lazy lookup below, which happens after this decision is made, so a
+// column dropped for emptiness would have nowhere to put the answer it is
+// about to receive.
+//
+// **A family is one `<tbody>`, not one `<tr>`.** The rows a disclosure opens
+// are part of the same group as the row that opened it, and a `<tbody>` per
+// family is what says so in the markup — which is also what lets the CSS
+// draw a border around an OPEN group and nothing at all around the closed
+// ones, instead of the fixed every-fifth-row rule it used to count out here.
+// Lines a reader cannot explain are worse than no lines.
 //
 // **The lazy total-size lookup stays viewport-gated**, moved here verbatim
 // from `HubResultCard` (RecommendedCard.tsx) rather than rewritten: a dense
@@ -60,6 +67,7 @@ import {
   matchCell,
   matchFitBasis,
   matchTitle,
+  occupiedColumns,
   paramsLabel,
   popLabel,
   quantLabel,
@@ -69,6 +77,14 @@ import {
   speedTitle,
   variantLabel,
 } from "@apps/ai_models/lib/hubTableView";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@platform/shadcn/ui/table";
 import {
   hubSizeLabel,
   hubSizeTitle,
@@ -82,27 +98,26 @@ import { DownloadGlyph } from "@apps/ai_models/shared/ModelProgress";
 import { getHubModelSize, type HubModel } from "@platform/lib/api";
 import { type Job } from "@platform/lib/jobs";
 
-/** Row banding (D640): a stronger rule every FIFTH row, replacing the old
- *  per-row hairline that made a whole page of rows read as one grey field.
- *  A plain `:nth-child` cannot do this once variant disclosure rows are
- *  interleaved between family rows, so the family index is computed here
- *  and carried down as a data attribute instead — and it counts only
- *  PRIMARY/family rows, never a disclosed variant's own sub-rows, so
- *  opening one never shifts where the next band line falls relative to the
- *  family rows around it.
+/** Which data columns this render draws at all — decided ONCE in
+ *  `HubResultsTable` and handed down, so the header, every family row and
+ *  every disclosed variant row agree on the column COUNT and not merely on
+ *  what each cell contains. A row that decided for itself would emit a
+ *  different number of `<td>`s than the `<th>`s above it the moment two
+ *  rows disagreed, which is the one mistake a table cannot render its way
+ *  out of.
  *
- *  **The marked row is the one that STARTS a new band, drawn with a
- *  `border-top` (code review finding), not the one that ENDS the previous
- *  one drawn with `border-bottom`.** The banded row's own variant rows are
- *  sibling `<tr>`s that render immediately AFTER it, before the next
- *  family's row — so a `border-bottom` on the 5th family drew the
- *  separator between that family and its own children the moment its
- *  disclosure was open, reading as if the variants belonged to the NEXT
- *  family. A `border-top` on the family that begins the next band instead
- *  always lands between the previous family's last rendered row (primary
- *  or its own last variant, whichever there is) and this one — correct
- *  either way, since it never has to guess where a variant block ends. */
-const BAND_EVERY = 5;
+ *  See this file's header for the two independent tests a column has to
+ *  pass to be here, and why `size` is not one of them. */
+interface HubColumns {
+  /** Capability — dropped when the whole result set agrees, since the
+   *  summary line above the table then says it once. */
+  task: boolean;
+  params: boolean;
+  quant: boolean;
+  tokens: boolean;
+  pop: boolean;
+  fresh: boolean;
+}
 
 /** One variant's disclosure row — id, size, disk state, and its own action —
  *  rendered under a family's own row once "N variants" is opened.
@@ -125,8 +140,7 @@ function HubVariantRow({
   runner,
   busy,
   job,
-  showTask,
-  showQuant,
+  columns,
   onDownload,
   onCancel,
 }: {
@@ -135,13 +149,7 @@ function HubVariantRow({
   runner: SectionRunner | null;
   busy: boolean;
   job: Job | undefined;
-  /** Whether the Task/Capability and Quant columns exist AT ALL this render
-   *  — the same decision (`columnVisible`, computed once in
-   *  `HubResultsTable`) the header and the family row above this one
-   *  render from, so all three stay in lockstep on column COUNT, not just
-   *  cell content. */
-  showTask: boolean;
-  showQuant: boolean;
+  columns: HubColumns;
   onDownload: () => void;
   onCancel: (job: Job) => void;
 }) {
@@ -149,7 +157,7 @@ function HubVariantRow({
   const arriving = jobFraction(job);
   const size = hubSizeLabel(model, null);
   return (
-    <tr
+    <TableRow
       className={
         "am-hubtable-variant-row" +
         (arriving !== null
@@ -164,9 +172,15 @@ function HubVariantRow({
     >
       {/* The merged Match cell's own slot — blank for a sibling row, same as
           every other placeholder cell below. */}
-      <td className="am-hubtable-match" />
-      <td className="am-hubtable-name am-hubtable-variant-name">
+      <TableCell className="am-hubtable-match" />
+      <TableCell className="am-hubtable-name am-hubtable-variant-name">
         <span className="am-hubtable-name-inner">
+          {/* The tick that says this row belongs to the group above it — the
+              markup already says so (one `<tbody>` per family), and this is
+              the same fact where a reader is actually looking. */}
+          <span className="am-hubtable-branch" aria-hidden="true">
+            ↳
+          </span>
           <a
             href={hubModelUrl(model.id)}
             target="_blank"
@@ -181,26 +195,25 @@ function HubVariantRow({
             </span>
           )}
         </span>
-      </td>
-      {/* Task/Capability's merged slot (D641) — presence follows the SAME
-          decision the header and family row render from (`showTask`), so
-          the column count matches exactly. A variant row does not
-          re-derive its own majority styling (that is a fact about the
-          RESULT SET, not this one sibling) — it just states its own value
-          plainly, same as an unhoisted column always would. */}
-      {showTask && <td className="am-col-task">{model.capability}</td>}
-      <td className="num am-col-params">{paramsLabel(model.params)}</td>
-      {showQuant && <td className="num am-col-quant">{quantLabel(model.quant)}</td>}
-      <td className="num am-col-size" data-hint={hubSizeTitle(model, null)}>
+      </TableCell>
+      {/* A variant row does not re-derive its own majority styling (that is
+          a fact about the RESULT SET, not this one sibling) — it just states
+          its own value plainly, same as an unhoisted column always would. */}
+      {columns.task && <TableCell className="am-col-task">{model.capability}</TableCell>}
+      {columns.params && <TableCell className="num am-col-params">{paramsLabel(model.params)}</TableCell>}
+      {columns.quant && <TableCell className="num am-col-quant">{quantLabel(model.quant)}</TableCell>}
+      <TableCell className="num am-col-size" data-hint={hubSizeTitle(model, null)}>
         {size ?? "—"}
-      </td>
-      <td className="num am-col-tok" data-hint={speedTitle(model.params)}>
-        {speedLabel(model.speedEstimate, model.params)}
-      </td>
-      <td className="num am-col-pop">{popLabel(model.downloads)}</td>
-      <td className="num am-col-new">{ageLabel(model.created)}</td>
-      <td />
-      <td className="am-hubtable-action">
+      </TableCell>
+      {columns.tokens && (
+        <TableCell className="num am-col-tok" data-hint={speedTitle(model.params)}>
+          {speedLabel(model.speedEstimate, model.params)}
+        </TableCell>
+      )}
+      {columns.pop && <TableCell className="num am-col-pop">{popLabel(model.downloads)}</TableCell>}
+      {columns.fresh && <TableCell className="num am-col-new">{ageLabel(model.created)}</TableCell>}
+      <TableCell />
+      <TableCell className="am-hubtable-action">
         {busy ? (
           <CancelButton id={model.id} job={job} onCancel={onCancel} />
         ) : disk.state === "downloaded" ? (
@@ -227,8 +240,8 @@ function HubVariantRow({
             </button>
           )
         )}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -245,11 +258,9 @@ function HubVariantRow({
  */
 function HubResultRow({
   family,
-  banded,
   capabilityMajority,
   quantMajority,
-  showTask,
-  showQuant,
+  columns,
   cards,
   runners,
   curated,
@@ -260,24 +271,16 @@ function HubResultRow({
   onCancel,
 }: {
   family: HubFamily;
-  /** True on the family that STARTS every fifth band (see `BAND_EVERY`'s
-   *  own doc for why this is a `border-top` on the STARTING row rather than
-   *  a `border-bottom` on the ending one) — a data attribute rather than a
-   *  class the CSS keys directly, so a reader inspecting the DOM can see
-   *  the count is deliberate rather than a `:nth-child` guess that cannot
-   *  see the variant rows it has to skip. */
-  banded: boolean;
   /** Used only for the MAJORITY-value styling hint (`isMajorityValue`) on a
-   *  column that IS rendered — column presence itself is `showTask`/
-   *  `showQuant`, computed once in `HubResultsTable` from `familyHoist`'s
+   *  column that IS rendered — column presence itself is `columns.task`/
+   *  `columns.quant`, computed once in `HubResultsTable` from `familyHoist`'s
    *  UNANIMOUS hoist (a separate, stricter fact — see `hubTableView.ts`),
    *  so the header, this row and `HubVariantRow` cannot disagree about how
    *  many columns there are, while this styling hint stays purely cosmetic
    *  and never implies the column's absence. */
   capabilityMajority: ReturnType<typeof majorityValue>;
   quantMajority: ReturnType<typeof majorityValue>;
-  showTask: boolean;
-  showQuant: boolean;
+  columns: HubColumns;
   cards: ReadonlyMap<string, DiskCard> | null;
   runners: ReadonlyMap<string, SectionRunner>;
   curated: ReadonlySet<string>;
@@ -377,10 +380,12 @@ function HubResultRow({
   const quantIsMajority = isMajorityValue(model.quant, quantMajority);
 
   return (
-    <>
-      <tr
+    <TableBody
+      data-expanded={expanded && family.variants.length > 0 ? "" : undefined}
+      className="am-hubtable-group"
+    >
+      <TableRow
         ref={row}
-        data-band={banded ? "" : undefined}
         // The same three washes every other card on this page wears for the
         // same three states (D436) — a row IS a claim about this disk exactly
         // like a card is, and two colour grammars for one fact would be two
@@ -404,7 +409,7 @@ function HubResultRow({
             composite `matchScore`, bar colour AND glyph shape are the memory
             verdict, and a non-GPU run mode (D641) prints as a visible muted
             suffix rather than a second colour. */}
-        <td
+        <TableCell
           className="am-hubtable-match"
           data-hint={matchTitle(effectiveFit, model.matchScore, matchScoreStale, fitBasis)}
         >
@@ -427,8 +432,8 @@ function HubResultRow({
             <span className="am-hubtable-score-num">{match.scoreText}</span>
             {match.offloadLabel && <span className="am-hubtable-offload">{match.offloadLabel}</span>}
           </span>
-        </td>
-        <td className="am-hubtable-name">
+        </TableCell>
+        <TableCell className="am-hubtable-name">
           <span className="am-hubtable-name-inner">
             {/* The row's identity is the PRIMARY's own id — the same repo the
                 href, the download and every other column already act on
@@ -479,38 +484,40 @@ function HubResultRow({
               </span>
             )}
           </span>
-        </td>
+        </TableCell>
         {/* Task/Capability, merged (D641): the value is `model.capability` —
             what the download path and runner resolution actually key on —
             with the Hub's own `task` label folded into the hint ONLY where
             it genuinely disagrees. The COLUMN itself only exists at all
-            when `showTask` says the result set is not unanimous on it
+            when `columns.task` says the result set is not unanimous on it
             (`columnVisible`) — a fully-hoisted column is dropped, header
             and all, rather than left present with every cell blank. When
             it IS shown, every row prints its own real value; a row
             matching the stated majority is only muted (`am-hubtable-
             majority`), never blanked — a blank cell and a real dash
             (unknown) must not look the same. */}
-        {showTask && (
-          <td className={"am-col-task" + (taskIsMajority ? " am-hubtable-majority" : "")} data-hint={taskHint}>
+        {columns.task && (
+          <TableCell className={"am-col-task" + (taskIsMajority ? " am-hubtable-majority" : "")} data-hint={taskHint}>
             {model.capability}
-          </td>
+          </TableCell>
         )}
-        <td className="num am-col-params">{paramsLabel(model.params)}</td>
-        {showQuant && (
-          <td className={"num am-col-quant" + (quantIsMajority ? " am-hubtable-majority" : "")}>
+        {columns.params && <TableCell className="num am-col-params">{paramsLabel(model.params)}</TableCell>}
+        {columns.quant && (
+          <TableCell className={"num am-col-quant" + (quantIsMajority ? " am-hubtable-majority" : "")}>
             {quantLabel(model.quant)}
-          </td>
+          </TableCell>
         )}
-        <td className="num am-col-size" data-hint={hubSizeTitle(model, total)}>
+        <TableCell className="num am-col-size" data-hint={hubSizeTitle(model, total)}>
           {size ?? "—"}
-        </td>
-        <td className="num am-col-tok" data-hint={speedTitle(model.params)}>
-          {speedLabel(effectiveSpeed, model.params)}
-        </td>
-        <td className="num am-col-pop">{popLabel(model.downloads)}</td>
-        <td className="num am-col-new">{ageLabel(model.created)}</td>
-        <td className="num">
+        </TableCell>
+        {columns.tokens && (
+          <TableCell className="num am-col-tok" data-hint={speedTitle(model.params)}>
+            {speedLabel(effectiveSpeed, model.params)}
+          </TableCell>
+        )}
+        {columns.pop && <TableCell className="num am-col-pop">{popLabel(model.downloads)}</TableCell>}
+        {columns.fresh && <TableCell className="num am-col-new">{ageLabel(model.created)}</TableCell>}
+        <TableCell className="num">
           {/* A real affordance, not a static count: opening it discloses each
               sibling's own id, size and disk state below — the thing "N
               variants" only ever promised (E). No button at all for a family
@@ -532,8 +539,8 @@ function HubResultRow({
           ) : (
             <span className="am-hubtable-varcount">{variantLabel(0)}</span>
           )}
-        </td>
-        <td className="am-hubtable-action">
+        </TableCell>
+        <TableCell className="am-hubtable-action">
           {busy ? (
             <CancelButton id={model.id} job={job} onCancel={onCancel} />
           ) : disk.state === "downloaded" ? (
@@ -579,8 +586,8 @@ function HubResultRow({
                 )}
             </>
           )}
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
       {expanded &&
         family.variants.map((variant) => (
           <HubVariantRow
@@ -590,13 +597,12 @@ function HubResultRow({
             runner={runners.get(variant.capability) ?? null}
             busy={pulling(variant.id)}
             job={jobByModel.get(variant.id)}
-            showTask={showTask}
-            showQuant={showQuant}
+            columns={columns}
             onDownload={() => onDownload(variant.id, variant.capability)}
             onCancel={onCancel}
           />
         ))}
-    </>
+    </TableBody>
   );
 }
 
@@ -628,50 +634,69 @@ export function HubResultsTable({
   // the contradiction two separate computations used to produce.
   const { capabilityMajority, quantMajority, summary, showTask, showQuant } = familyHoist(families);
 
+  // Occupancy is checked across every row this render will actually draw —
+  // a family's primary AND every one of its variants — since a disclosure
+  // can surface a value the primaries alone don't carry.
+  const models = families.flatMap((f) => [f.primary, ...f.variants]);
+  const occupied = occupiedColumns(models);
+  // `quant` is the one column both tests can hide: unanimity (`showQuant`)
+  // drops it because the result set already agrees and the summary line
+  // says so once, while occupancy drops it because nothing in the result
+  // set measured a quantization at all — either reason alone is enough to
+  // hide the column, so the two tests AND together rather than each owning
+  // a disjoint slice of the decision. `size` never enters this object: its
+  // cell is filled by the lazy viewport lookup further down, which runs
+  // AFTER this decision, so a column dropped here for looking empty would
+  // have nowhere to put the answer it is about to receive.
+  const columns: HubColumns = {
+    task: showTask,
+    params: occupied.has("params"),
+    quant: showQuant && occupied.has("quant"),
+    tokens: occupied.has("tokens"),
+    pop: occupied.has("pop"),
+    fresh: occupied.has("new"),
+  };
+
   return (
     <div className="am-hubtable-wrap">
       {summary && <p className="cc-caption am-hubtable-summary">{summary}</p>}
-      <table className="am-hubtable">
-        <thead>
-          <tr>
-            <th scope="col">Match</th>
-            <th scope="col">Model</th>
+      <Table className="am-hubtable">
+        <TableHeader>
+          <TableRow>
+            <TableHead scope="col">Match</TableHead>
+            <TableHead scope="col">Model</TableHead>
             {/* Labelled "Capability", not "Task" — the cells beneath it
                 render `model.capability` (D641), and a header must not
                 name a different field than its own cells do. */}
-            {showTask && <th scope="col" className="am-col-task">Capability</th>}
-            <th scope="col" className="num am-col-params">Params</th>
-            {showQuant && <th scope="col" className="num am-col-quant">Quant</th>}
-            <th scope="col" className="num am-col-size">Size</th>
-            <th scope="col" className="num am-col-tok">tok/s</th>
-            <th scope="col" className="num am-col-pop">Pop.</th>
-            <th scope="col" className="num am-col-new">New</th>
-            <th scope="col" className="num">Var.</th>
-            <th scope="col" />
-          </tr>
-        </thead>
-        <tbody>
-          {families.map((family, i) => (
-            <HubResultRow
-              key={family.key}
-              family={family}
-              banded={i > 0 && i % BAND_EVERY === 0}
-              capabilityMajority={capabilityMajority}
-              quantMajority={quantMajority}
-              showTask={showTask}
-              showQuant={showQuant}
-              cards={cards}
-              runners={runners}
-              curated={curated}
-              jobByModel={jobByModel}
-              pulling={pulling}
-              authenticated={authenticated}
-              onDownload={onDownload}
-              onCancel={onCancel}
-            />
-          ))}
-        </tbody>
-      </table>
+            {columns.task && <TableHead scope="col" className="am-col-task">Capability</TableHead>}
+            {columns.params && <TableHead scope="col" className="num am-col-params">Params</TableHead>}
+            {columns.quant && <TableHead scope="col" className="num am-col-quant">Quant</TableHead>}
+            <TableHead scope="col" className="num am-col-size">Size</TableHead>
+            {columns.tokens && <TableHead scope="col" className="num am-col-tok">tok/s</TableHead>}
+            {columns.pop && <TableHead scope="col" className="num am-col-pop">Pop.</TableHead>}
+            {columns.fresh && <TableHead scope="col" className="num am-col-new">New</TableHead>}
+            <TableHead scope="col" className="num">Var.</TableHead>
+            <TableHead scope="col" />
+          </TableRow>
+        </TableHeader>
+        {families.map((family) => (
+          <HubResultRow
+            key={family.key}
+            family={family}
+            capabilityMajority={capabilityMajority}
+            quantMajority={quantMajority}
+            columns={columns}
+            cards={cards}
+            runners={runners}
+            curated={curated}
+            jobByModel={jobByModel}
+            pulling={pulling}
+            authenticated={authenticated}
+            onDownload={onDownload}
+            onCancel={onCancel}
+          />
+        ))}
+      </Table>
     </div>
   );
 }

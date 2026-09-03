@@ -3075,6 +3075,17 @@ export interface HubModel {
    *  Hub's side, so this is not a closed union. Null exactly when `baseModel`
    *  is. */
   relation: string | null;
+  /** The repo's weight format when the Hub said something amounting to one —
+   *  `"gguf"` for a repo shipping `.gguf` with no safetensors metadata, null
+   *  otherwise (a mixed repo that publishes both counts as null: its
+   *  safetensors upload is what every other field here describes). Not a
+   *  closed union on purpose, the same way `relation` is not.
+   *
+   *  Part of `hubFamilies.ts`'s grouping key, which is the only thing that
+   *  reads it — a GGUF republish is a different download from a 4-bit
+   *  safetensors republish of the same base, so the two get their own
+   *  family rows instead of one swallowing the other. */
+  format: string | null;
   /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
    *  for every other row (D412's own field). Threaded back into
    *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask

@@ -3511,22 +3511,22 @@ button.am-bench-model:focus-visible {
   white-space: nowrap;
 }
 
-/* The per-row hairline is GONE (design review): 21 identical borders read as
-   one grey field with no primary column. What survives is a stronger rule
-   every FIFTH row (`[data-band]`, set in `HubResultsTable.tsx` — see that
-   file's own doc for why it counts only primary/family rows, never an
-   opened variant's own sub-rows) and the existing hover tint, which is now
-   load-bearing for tracking a row sideways with no border to anchor on.
+/* The per-row hairline is GONE: 21 identical borders read as one grey field
+   with no primary column. Each family is its own `<tbody>` now, so the CSS
+   can draw a border around a group instead of counting rows — see
+   `.am-hubtable tbody[data-expanded]` below. The hover tint carries row
+   tracking with no border to anchor on. */
+.am-hubtable tbody tr {
+  border-bottom: 0;
+}
 
-   `border-top` on the row that STARTS a band, not `border-bottom` on the
-   one that ends it (code review finding): a `border-bottom` on the 5th
-   family drew the separator directly below that family's OWN row, which
-   sits ABOVE its own variant disclosure rows when one is open — reading as
-   if the variants belonged to the family AFTER it. A `border-top` on the
-   family that begins the next band always lands between the previous
-   family's last rendered row and this one, open disclosure or not. */
-.am-hubtable tbody tr[data-band] td {
+/* A border around a family's `<tbody>` ONLY while its disclosure is open
+   (`data-expanded`, set in `HubResultsTable.tsx`) — an open group is
+   visibly one group, its variant rows bracketed with the family row that
+   opened them. A closed family (the common case) gets no border at all. */
+.am-hubtable tbody[data-expanded] {
   border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 .am-hubtable th.num,
@@ -3784,6 +3784,13 @@ button.am-bench-model:focus-visible {
 
 .am-hubtable-variant-row .am-hubtable-name-inner > a {
   color: var(--fg-muted);
+}
+
+/* The `↳` marker ahead of a variant's own link — it does not replace the
+   indent above, just names what the indent is FOR. */
+.am-hubtable-branch {
+  color: var(--fg-muted);
+  margin-right: 4px;
 }
 
 /* The family row's own base class (code review F7) — emitted in JSX
