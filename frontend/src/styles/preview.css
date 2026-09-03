@@ -917,7 +917,10 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
    .error plate — a permission gap is a setup step, not an outage. The strip's
    own bottom margin is for sitting above a grid; here it is the last thing. */
 .access-denied {
-  max-width: 640px;
+  /* Full width of the listing like the strip is on Home (a band, not a
+     floating plate), with the same ~28px gutters Home's column has: the cell's
+     own 24px of padding plus a little margin here. */
+  margin: 4px 4px 12px;
   /* The listing's td is `white-space: nowrap` (one entry per line); this cell
      holds prose and a card, both of which must wrap inside the 640px. */
   white-space: normal;
