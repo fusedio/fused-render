@@ -354,7 +354,14 @@ export function StatusIcon({
   /** What that fill stands for, on a container. Omitted on a leaf. */
   count?: number;
 }) {
-  const text = label ?? (failed ? "Blocked" : (STATUS_LABELS[status] ?? status));
+  // NOT over `needs_attention` (mirrors `taskStatus` in schedule-lib.ts): the
+  // flag says the newest run BROKE, and a row parked on a card right now is
+  // still going — collapsing it into "Blocked" here would announce and tool
+  // a waiting ring as broken.
+  const text = label
+    ?? (failed && status !== "needs_attention"
+      ? "Blocked"
+      : (STATUS_LABELS[status] ?? status));
   const many = taskUnreadLabel(count ?? 0);
   // What the FILL is worth in words. The count when there is one, the bare word
   // when there is not — and nothing at all on a hollow ring, which is the point:

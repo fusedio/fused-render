@@ -2154,6 +2154,22 @@ describe("the unread mark", () => {
     expect(CALENDAR).not.toContain("count={");
   });
 
+  it("never lets the failed flag relabel a waiting ring 'Blocked'", () => {
+    // bugbot, PR #969. `failed` is set on a row whose earlier run broke, and it
+    // stays set even after that same session parks on a fresh card — so a
+    // needs_attention row can carry `failed` too. StatusIcon used to prefer the
+    // flag unconditionally, announcing and tooltipping a waiting ring as
+    // "Blocked" — mirror taskStatus's own refusal (schedule-lib.ts) so a row
+    // still going never reads as one that broke.
+    const icon = VIEWS.slice(
+      VIEWS.indexOf("export function StatusIcon("),
+      VIEWS.indexOf("function IdentityChip("),
+    );
+    expect(icon).toContain(
+      "(failed && status !== \"needs_attention\"\n      ? \"Blocked\"",
+    );
+  });
+
   it("draws that tooltip itself, on a delay, because the app has no component", () => {
     // There is no tooltip primitive in src/platform/ui — checked — and one built
     // for three call sites would be a portal, a positioner and a state machine to
@@ -6686,6 +6702,15 @@ describe("the Cards view's frame", () => {
     // The same filtered set every other view is handed.
     expect(SCHEDULED).toContain("<TaskCards");
   });
+
+  // bugbot, PR #969: CARD_LANES already includes needs_attention, but the
+  // overflow's "+N more running" handoff to the List filtered to a hardcoded
+  // ["in_progress"] — a waiting card that was on the grid vanished from the
+  // List it was handed off to. It has to hand off the SAME set the grid drew.
+  it("hands the overflow to the List filtered to every lane Cards drew, not just in_progress", () => {
+    expect(SCHEDULED).toContain("statuses: CARD_LANES");
+    expect(SCHEDULED).not.toContain('statuses: ["in_progress"]');
+  });
 });
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
@@ -6881,6 +6906,17 @@ describe("isRunningNow", () => {
     const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
     const t = task({ status: "done", live: false, messages: [idle] });
     expect(isRunningNow(t, idle)).toBe(false);
+  });
+
+  // bugbot, PR #969: `taskColumn(task) !== "in_progress"` only borrowed the
+  // server's verdict for one of the two in-flight columns. needs_attention is
+  // a run parked on a card — every bit as live — and a waiting task's
+  // sent-but-idle message must read as running too, or the calendar drops the
+  // shimmer and offers Archive on a run still going.
+  it("agrees with the server on needs_attention too, not just in_progress", () => {
+    const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
+    const t = task({ status: "needs_attention", live: false, messages: [idle] });
+    expect(isRunningNow(t, idle)).toBe(true);
   });
 
   // BUGBOT, 2026-08-18: "the newest row" was doing the work of "the active

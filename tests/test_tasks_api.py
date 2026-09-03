@@ -2700,11 +2700,33 @@ def test_the_run_is_found_by_either_spelling_of_its_session(
     assert _by_key(client)["sess-a"]["status"] == "needs_attention"
 
 
-def test_a_task_that_is_not_running_is_never_waiting(client, projects_dir,
-                                                     parked):
-    """`parked` only ever describes a live process, and the status still asks
-    whether anything is running before it reads it: a settled task cannot be
-    waiting on an answer."""
+def test_a_hand_typed_chat_parked_on_a_card_is_not_done(
+        client, projects_dir, parked):
+    """No schedule entry, no busy registry entry, and a transcript that has
+    gone quiet — every signal rule 1 checks says this run stopped. Only
+    `_parked_runs` knows a live process is still sitting on an unanswered
+    card, and that has to be enough on its own or the row files as `done` and
+    sinks under recency instead of hoisting to the top as waiting."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-1", "sess-a")
+    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                     "input": {"command": "rm -rf build"}}]}, alive={"r-1"})
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "needs_attention"
+    assert task["blocked_reason"] == "permission"
+
+
+def test_a_stale_ok_entry_does_not_outrank_a_still_parked_run(client,
+                                                              projects_dir,
+                                                              parked):
+    """`parked` only ever describes a LIVE process (see `_parked_runs`), so it
+    is authoritative on its own: a schedule entry that already recorded
+    `turn="ok"` is a stale fact once a new card has parked the same run, and
+    the row cannot read `done` while an actual process is still sitting there
+    waiting for an answer."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
                            turn="ok", claude_session_id="sess-a")])
@@ -2712,7 +2734,7 @@ def test_a_task_that_is_not_running_is_never_waiting(client, projects_dir,
     parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
            alive={"r-1"})
 
-    assert _by_key(client)["sess-a"]["status"] == "done"
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
 
 
 def test_a_broken_run_says_blocked_and_why(client, projects_dir):

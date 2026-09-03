@@ -1075,6 +1075,13 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        needs-attention row nobody can answer any more would be a lane that only
        fills up.
 
+       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 1: a
+       hand-typed chat parked on a card fails both of rule 1's tests (the live
+       registry reports `waiting`, not running, and the transcript has gone
+       quiet), so gating on `_running_now`/`_message_running` first would file
+       it `done` before parked ever got a look. `_parked_runs` already proves
+       the process is alive — that is enough on its own.
+
     1. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
        newest message is next Tuesday's occurrence, with a run still going in
        it, is a task that is working. Three things say a run is happening and a
@@ -1117,9 +1124,11 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     a new message has overtaken is dropped from disk rather than argued with on
     every poll. This function reads no triage of its own.
     """
+    if parked:
+        return "needs_attention"
     if messages and (_running_now(session_id, live, busy)
                      or any(_message_running(m) for m in messages)):
-        return "needs_attention" if parked else "in_progress"
+        return "in_progress"
     if filed:
         return "archived"
     if messages and all(_message_archived(m, filed) for m in messages):

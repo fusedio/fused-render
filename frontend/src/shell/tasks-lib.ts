@@ -396,6 +396,21 @@ export function statusColumn(status: string): BoardColumn {
   return known ? known.key : "done";
 }
 
+/**
+ * Is this column a run that is genuinely happening — the one question every
+ * "is it running" reading on this page actually means. TWO lanes answer yes:
+ * `in_progress`, the ordinary case, and `needs_attention`, a run parked on a
+ * permission or question card that is every bit as live (the server's own
+ * `_status` promotes it for exactly that reason — see
+ * fused_render/server/routers/tasks.py). A caller that only checks
+ * `=== "in_progress"` is reading half the definition of running and will read
+ * a waiting task as settled — the shimmer drops, Archive appears where it
+ * should be refused, a project reads idle while its rail says otherwise.
+ */
+export function inFlight(column: BoardColumn): boolean {
+  return column === "in_progress" || column === "needs_attention";
+}
+
 // ---- unread ------------------------------------------------------------------
 // Unread is per MESSAGE (§7) and clicking through is what clears it. The click
 // also posts to the server, but the dot has to go NOW — the list polls on a
@@ -3073,7 +3088,7 @@ export function activeMessage(task: Task): TaskMessage | null {
  */
 export function isRunningNow(task: Task, m: TaskMessage): boolean {
   if (isMessageRunning(m)) return true;
-  if (taskColumn(task) !== "in_progress") return false;
+  if (!inFlight(taskColumn(task))) return false;
   // A message with no run behind it cannot be borrowing the task's verdict,
   // whatever else is true — the belt to activeMessage's braces, and what makes
   // the rule safe to ask of a projected occurrence.
@@ -3348,7 +3363,7 @@ export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse 
     // still true of it — but it is the only kind of running that will not finish
     // on its own, so it is also counted apart. Two facts about one row, never
     // two rows.
-    if (column === "in_progress" || column === "needs_attention") {
+    if (inFlight(column)) {
       running++;
       if (column === "needs_attention") attention++;
       continue;
