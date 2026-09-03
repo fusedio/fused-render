@@ -2598,6 +2598,8 @@ def _turn_state(run_dir: str) -> tuple:
             row = json.loads(line)
         except ValueError:
             continue  # half-written last line; next read gets it
+        if row.get("parent_tool_use_id"):
+            continue  # a subagent's own row, not the main turn's (see _poll)
         t = row.get("type")
         idle = t == "result"
         if t == "system" and row.get("subtype") == "background_tasks_changed":

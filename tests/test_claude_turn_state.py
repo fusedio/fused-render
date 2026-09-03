@@ -80,6 +80,20 @@ def test_nonempty_tasks_is_pending_even_when_idle(agent, tmp_path):
     assert agent._turn_state(run_dir) == (False, True)
 
 
+def test_a_subagents_result_row_does_not_close_the_turn(agent, tmp_path):
+    """`_poll` `continue`s on any row carrying `parent_tool_use_id` before
+    its own `idle` check — a subagent's `result` row must not read as the
+    whole turn closing. The docstring here claims to lift that rule
+    "exactly", so `_turn_state` must not diverge from it."""
+    run_dir = str(tmp_path / "run5")
+    _write_rows(run_dir, [
+        _system_init(),
+        {"type": "result", "parent_tool_use_id": "toolu_1",
+         "session_id": "sess-A", "result": "sub done"},
+    ])
+    assert agent._turn_state(run_dir) == (True, False)
+
+
 def test_emptied_tasks_array_clears_pending(agent, tmp_path):
     run_dir = str(tmp_path / "run5")
     _write_rows(run_dir, [_bg_tasks("t1"), _bg_tasks(), _result()])
