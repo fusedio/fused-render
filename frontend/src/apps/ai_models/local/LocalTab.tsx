@@ -596,7 +596,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
           publisher={publisher}
           cards={onCard}
           runners={runners}
-          curated={curated}
           jobByModel={jobByModel}
           pulling={pulling}
           onDownload={runDownload}

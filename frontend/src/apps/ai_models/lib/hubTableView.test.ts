@@ -85,35 +85,33 @@ describe("matchCell", () => {
     runMode,
   });
 
-  it("bars and prints the COMPOSITE score, not the memory-only fit score", () => {
+  it("prints the COMPOSITE score, not the memory-only fit score", () => {
     // D663/D664: the merged cell's number is `matchScore`, and the verdict
     // object's own `score` (memory-only) never leaks into either field —
     // that would silently un-merge the two facts this cell exists to keep
     // together but distinct.
     expect(matchCell(verdict("easy"), 87.6)).toEqual({
-      percent: 87.6,
       scoreText: "88",
-      dot: "easy",
+      verdict: "easy",
       offloadLabel: null,
     });
   });
 
-  it("colours (and shapes) the dot by the MEMORY verdict regardless of the score", () => {
-    expect(matchCell(verdict("tight"), 91).dot).toBe("tight");
-    expect(matchCell(verdict("no"), 91).dot).toBe("no");
+  it("colours the number by the MEMORY verdict regardless of the score", () => {
+    expect(matchCell(verdict("tight"), 91).verdict).toBe("tight");
+    expect(matchCell(verdict("no"), 91).verdict).toBe("no");
   });
 
-  it("is the neutral 'unknown' dot — not 'no' — for a row with no fit verdict at all", () => {
+  it("is the neutral 'unknown' verdict — not 'no' — for a row with no fit verdict at all", () => {
     // "no" means JUDGED and does not fit; a row nothing could be judged for
     // is a different, honest fourth state.
-    expect(matchCell(null, 40).dot).toBe("unknown");
+    expect(matchCell(null, 40).verdict).toBe("unknown");
   });
 
-  it("bars at 0 with a dash, never a bare 0, when there is no matchScore to show", () => {
+  it("is a dash, never a bare 0, when there is no matchScore to show", () => {
     expect(matchCell(verdict("easy"), null)).toEqual({
-      percent: 0,
       scoreText: "—",
-      dot: "easy",
+      verdict: "easy",
       offloadLabel: null,
     });
   });
@@ -125,15 +123,14 @@ describe("matchCell", () => {
     expect(matchCell(verdict("easy"), 50).offloadLabel).toBeNull();
   });
 
-  it("blanks the bar/number when `stale` — a corrected fit must never sit beside a score computed before it", () => {
+  it("blanks the number when `stale` — a corrected fit must never sit beside a score computed before it", () => {
     // A GGUF row whose lazy per-file lookup just resolved a real "easy" fit,
     // beside a `matchScore` the server computed against `_FIT_DEFAULT`
-    // because `model.fit` was null at scoring time. The dot still shows the
-    // real verdict; the bar/number must NOT claim a number for it.
+    // because `model.fit` was null at scoring time. The verdict still colours
+    // the number; the number itself must NOT claim a score for it.
     expect(matchCell(verdict("easy"), 40, true)).toEqual({
-      percent: 0,
       scoreText: "—",
-      dot: "easy",
+      verdict: "easy",
       offloadLabel: null,
     });
   });

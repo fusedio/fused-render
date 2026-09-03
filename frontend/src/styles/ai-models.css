@@ -3544,13 +3544,14 @@ button.am-bench-model:focus-visible {
 }
 
 /* The Match column (D663/D664/D665) — the table's signature element and the
-   one place this design spends emphasis. Bar LENGTH and the printed number
-   are the composite `matchScore`; bar FILL COLOUR and the glyph's SHAPE are
-   the memory verdict (`fit.verdict`) — two different facts sharing one
-   cell because, after D663, they finally say two different things. A
+   one place this design spends emphasis. The printed number IS the
+   composite `matchScore`; its COLOUR is the memory verdict (`fit.verdict`)
+   — two different facts carried by one mark, because after D663 they
+   finally say two different things, and disagreement between them (a red,
+   high number) is itself informative rather than something to reconcile. A
    non-GPU run mode (D665 folded Mode's own column in here) prints as a
-   visible muted suffix rather than a second colour, since colour in this
-   cell already carries the verdict and must not carry two meanings.
+   visible muted suffix rather than a second colour, since colour here
+   already carries the verdict and must not carry two meanings.
 
    The flex layout lives on an INNER wrapper, never on the `<td>` itself
    (`am-hubtable-match-inner`, below) — `display: flex` on a table cell
@@ -3568,83 +3569,31 @@ button.am-bench-model:focus-visible {
   gap: 6px;
 }
 
-/* The verdict glyph — colour AND shape both carry the verdict (a
-   red/green-blind reader loses nothing either the shape or the cell's own
-   `aria-label`/hover does not already say): a filled circle for "easy", a
-   triangle for "tight", a square for "no", a bare "?" for a row nothing
-   could be judged for at all (a fourth, neutral state — NOT the same as
-   "no", which means judged and does not fit). */
-.am-hubtable-dot {
-  display: inline-block;
-  font-size: 9px;
-  line-height: 1;
-  flex: none;
+/* The printed match score — heavier than the rest of the table (design
+   review's three-tier rule: name + size at full `--fg`, the score heavier
+   still, everything else muted) and coloured by the memory verdict
+   (`am-hubtable-score-<verdict>`, below) — the one mark left in this cell,
+   so it carries both the composite's magnitude and the verdict's colour. */
+.am-hubtable-score-num {
+  font-weight: 700;
+  min-width: 1.6em;
+  text-align: right;
 }
 
-.am-hubtable-dot-easy {
+.am-hubtable-score-easy {
   color: var(--success);
 }
 
-.am-hubtable-dot-tight {
+.am-hubtable-score-tight {
   color: var(--warning);
 }
 
-.am-hubtable-dot-no {
+.am-hubtable-score-no {
   color: var(--error);
 }
 
-.am-hubtable-dot-unknown {
+.am-hubtable-score-unknown {
   color: var(--fg-muted);
-}
-
-/* Widened substantially from the pre-redesign 46px (design review) — this is
-   now the column the eye returns to, not an accent beside a separate Score
-   column. Sized to still survive the narrowest ladder step: Match never
-   drops (see the ladder below), so this width is a floor the table's own
-   `overflow-x` safety net exists to cover if a pane narrower than this was
-   ever asked to render it with nothing else given up. */
-.am-hubtable-bar {
-  display: inline-block;
-  position: relative;
-  width: 100px;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--border);
-  flex: none;
-}
-
-.am-hubtable-bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 3px;
-  /* `width` is set inline, per row — the one thing about a score a stylesheet
-     cannot know (see `HubResultsTable.tsx`). */
-}
-
-.am-hubtable-bar i.am-hubtable-dot-easy {
-  background: var(--success);
-}
-
-.am-hubtable-bar i.am-hubtable-dot-tight {
-  background: var(--warning);
-}
-
-.am-hubtable-bar i.am-hubtable-dot-no {
-  background: var(--error);
-}
-
-.am-hubtable-bar i.am-hubtable-dot-unknown {
-  background: var(--fg-muted);
-}
-
-/* The printed match score — heavier and at full `--fg`, the one number in
-   this table's second ink level (design review's three-tier rule: name +
-   size at full `--fg`, the score heavier still, everything else muted). */
-.am-hubtable-score-num {
-  font-weight: 700;
-  color: var(--fg);
-  min-width: 1.6em;
-  text-align: right;
 }
 
 /* D665: the visible, non-colour cost of not running on the GPU/unified

@@ -27,23 +27,24 @@ const DASH = "—";
 // number, which is why a capable machine's table showed an identical bar and
 // "100" on every row. D663 makes SCORE a composite (`HubModel.matchScore`,
 // server-computed) that blends memory fit with capability, speed, recency
-// and popularity; D664 folds the two columns into one now that they carry
-// different facts: bar LENGTH and the printed number are the composite, bar
-// COLOUR (and the glyph's SHAPE — see below) stay the memory verdict.
+// and popularity. The cell prints that composite as a single number, coloured
+// by the memory verdict — the two facts stay distinct (a number's magnitude
+// and its colour can disagree, and that disagreement is itself informative:
+// a red 76 ranks well on everything except this machine's memory) without
+// needing two separate marks to carry them.
 
-/** What one row's merged Match cell renders — the bar/number pair, the
- *  verdict's colour+shape, and (D665) a visible "offload" suffix for a row
- *  that would not run on the GPU/unified memory. `dot` is `"unknown"` for a
- *  row with no fit verdict to judge at all — a fourth, neutral state
- *  distinct from "no" (which means "judged, and it does not fit"). */
+/** What one row's merged Match cell renders — the printed number, the
+ *  verdict its colour is drawn from, and (D665) a visible "offload" suffix
+ *  for a row that would not run on the GPU/unified memory. `verdict` is
+ *  `"unknown"` for a row with no fit verdict to judge at all — a fourth,
+ *  neutral state distinct from "no" (which means "judged, and it does not
+ *  fit"). */
 export interface MatchCell {
-  /** Bar fill width, 0-100 — the composite score, or 0 when there is none to
-   *  show (never a bare fallback to the memory score alone: a row with no
-   *  `matchScore` at all is a row this table has nothing to rank it by). */
-  percent: number;
   /** The printed number, or the dash when `matchScore` is absent. */
   scoreText: string;
-  dot: AiFitVerdict["verdict"] | "unknown";
+  /** The memory verdict the printed number is coloured by — independent of
+   *  the number's own magnitude (see this section's own doc). */
+  verdict: AiFitVerdict["verdict"] | "unknown";
   /** D665: MODE was cut as its own column — on Apple Silicon it is a
    *  structural constant (`fit.py`'s own doc: unified memory always reads
    *  "gpu"), and where it DOES vary it is derived from the same footprint
@@ -134,12 +135,12 @@ export function matchFitBasis(fit: AiFitVerdict | null): MatchFitBasis {
  *  correction that changed the verdict outright, if one were ever possible.
  *  `fitOverride` resolving to `null` (`knownFit`'s own pinned contract for
  *  "asked, and there was nothing to judge") is not a correction of
- *  anything, so it never marks stale. When genuinely stale, the bar/number
- *  fall back to the dash/empty state (never a second, possibly-also-wrong
- *  number invented to fill the gap) so the colour/shape the corrected fit
- *  earns has nothing beside it to contradict it — this is what let an
- *  EARLIER bug show a GGUF row's green "easy" dot beside a ~40%-long bar and
- *  a low number, while the hover claimed the number "blends memory fit". */
+ *  anything, so it never marks stale. When genuinely stale, the number falls
+ *  back to the dash (never a second, possibly-also-wrong number invented to
+ *  fill the gap) so the colour the corrected fit earns has nothing beside it
+ *  to contradict it — this is what let an EARLIER bug show a GGUF row's
+ *  green "easy" colour beside a low, unrelated number, while the hover
+ *  claimed the number "blends memory fit". */
 export function isMatchScoreStale(
   modelFit: AiFitVerdict | null,
   fitOverride: AiFitVerdict | null | undefined,
@@ -152,11 +153,10 @@ export function matchCell(
   matchScore: number | null | undefined,
   stale = false,
 ): MatchCell {
-  const percent = !stale && typeof matchScore === "number" ? matchScore : 0;
   const scoreText = !stale && typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
-  const dot = fit?.verdict ?? "unknown";
+  const verdict = fit?.verdict ?? "unknown";
   const offloadLabel = fit?.runMode === "cpu-offload" ? "offload" : fit?.runMode === "cpu-only" ? "CPU only" : null;
-  return { percent, scoreText, dot, offloadLabel };
+  return { scoreText, verdict, offloadLabel };
 }
 
 const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
@@ -165,10 +165,11 @@ const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
   no: "will not fit this machine's memory",
 };
 
-/** The merged cell's hover text — has to explain BOTH encodings the cell
- *  carries (D664): what the composite number is made of, and what the bar's
- *  colour+shape mean, PLUS the run mode D665 folded in here once Mode
- *  stopped being its own column. */
+/** The merged cell's hover text — has to explain BOTH facts the cell's one
+ *  number carries (D664): what the composite is made of, and what its
+ *  colour means, PLUS the run mode D665 folded in here once Mode stopped
+ *  being its own column. The cell itself is terse by design — a bare number
+ *  in a verdict colour — so this hover is where all of that detail lives. */
 export function matchTitle(
   fit: AiFitVerdict | null,
   matchScore: number | null | undefined,
@@ -205,7 +206,7 @@ export function matchTitle(
       : fitBasis != null
         ? " This fit is judged from this repo's own reported size — not yet measured by an actual run here."
         : "";
-  return `${scoreText} Bar colour and glyph: ${verdictText}.${modeText}${basisText}`;
+  return `${scoreText} Number colour: ${verdictText}.${modeText}${basisText}`;
 }
 
 // ---------------------------------------------------------------------------

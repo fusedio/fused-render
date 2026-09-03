@@ -44,7 +44,6 @@
 // prevent — more rows on screen makes the gate MORE load-bearing, not less.
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { hubModelUrl } from "./hub";
-import { CuratedMark } from "./RepoCard";
 import { SwitchEngines } from "./RecommendedCard";
 import {
   PARTIAL_TAG,
@@ -253,7 +252,7 @@ function HubVariantRow({
  *  DOM node — is scoped to the one row it is about, the same boundary
  *  `HubResultCard` drew it at.
  *
- *  Resolves disk/runner/job/curated state itself, off `family.primary` for
+ *  Resolves disk/runner/job state itself, off `family.primary` for
  *  its own row and off each sibling for its own disclosure row (below) —
  *  rather than the parent precomputing one flat set of props for the primary
  *  alone, which is what left every sibling with no path to its own state at
@@ -266,7 +265,6 @@ function HubResultRow({
   columns,
   cards,
   runners,
-  curated,
   jobByModel,
   pulling,
   authenticated,
@@ -286,7 +284,6 @@ function HubResultRow({
   columns: HubColumns;
   cards: ReadonlyMap<string, DiskCard> | null;
   runners: ReadonlyMap<string, SectionRunner>;
-  curated: ReadonlySet<string>;
   jobByModel: Map<string, Job>;
   pulling: (id: string) => boolean;
   authenticated: boolean;
@@ -378,7 +375,6 @@ function HubResultRow({
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
   const loadable = !runner || runner.available;
   const arriving = jobFraction(job);
-  const curatedFlag = curated.has(model.id);
   const taskHint = capabilityHint(model);
   const taskIsMajority = isMajorityValue(model.capability, capabilityMajority);
   const quantIsMajority = isMajorityValue(model.quant, quantMajority);
@@ -409,31 +405,24 @@ function HubResultRow({
         }
         style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
       >
-        {/* The merged Match cell (D663/D664): bar length + number are the
-            composite `matchScore`, bar colour AND glyph shape are the memory
-            verdict, and a non-GPU run mode (D665) prints as a visible muted
-            suffix rather than a second colour. */}
+        {/* The merged Match cell (D663/D664): the printed number IS the
+            composite `matchScore`, coloured by the memory verdict, and a
+            non-GPU run mode (D665) prints as a visible muted suffix rather
+            than a second colour. */}
         <TableCell
           className="am-hubtable-match"
           data-hint={matchTitle(effectiveFit, model.matchScore, matchScoreStale, fitBasis)}
         >
           <span className="am-hubtable-match-inner">
             <span
-              className={`am-hubtable-dot am-hubtable-dot-${match.dot}`}
-              aria-hidden="true"
-            >
-              {match.dot === "easy" ? "●" : match.dot === "tight" ? "▲" : match.dot === "no" ? "■" : "?"}
-            </span>
-            <span
-              className="am-hubtable-bar"
+              className={`am-hubtable-score-num am-hubtable-score-${match.verdict}`}
               role="img"
-              aria-label={`Match ${match.scoreText}, memory fit: ${match.dot}${
+              aria-label={`Match ${match.scoreText}, memory fit: ${match.verdict}${
                 match.offloadLabel ? `, ${match.offloadLabel}` : ""
               }`}
             >
-              <i className={`am-hubtable-dot-${match.dot}`} style={{ width: `${match.percent}%` }} />
+              {match.scoreText}
             </span>
-            <span className="am-hubtable-score-num">{match.scoreText}</span>
             {match.offloadLabel && <span className="am-hubtable-offload">{match.offloadLabel}</span>}
           </span>
         </TableCell>
@@ -452,7 +441,6 @@ function HubResultRow({
               {splitOwner.owner && <span className="am-hubtable-owner">{splitOwner.owner}/</span>}
               {splitOwner.name}
             </a>
-            {curatedFlag && <CuratedMark />}
             {/* The gate, named, with the whole of what to do about it on hover —
                 disclosed regardless of `authenticated`. `gate?.action` (below, in
                 the action column) is null for a signed-in user because the
@@ -615,7 +603,6 @@ export function HubResultsTable({
   families,
   cards,
   runners,
-  curated,
   jobByModel,
   pulling,
   authenticated,
@@ -625,7 +612,6 @@ export function HubResultsTable({
   families: HubFamily[];
   cards: ReadonlyMap<string, DiskCard> | null;
   runners: ReadonlyMap<string, SectionRunner>;
-  curated: ReadonlySet<string>;
   jobByModel: Map<string, Job>;
   pulling: (id: string) => boolean;
   authenticated: boolean;
@@ -693,7 +679,6 @@ export function HubResultsTable({
             columns={columns}
             cards={cards}
             runners={runners}
-            curated={curated}
             jobByModel={jobByModel}
             pulling={pulling}
             authenticated={authenticated}
