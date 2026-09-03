@@ -2230,9 +2230,24 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         # life of the session, not created once and never touched again.
         _private_dir(inbox)
     name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
-    with _private_open(os.path.join(inbox, name)) as f:
+    final_path = os.path.join(inbox, name)
+    # `session_host._drain_inbox` runs every `_DRAIN_INTERVAL_SECONDS` against
+    # THIS SAME directory, listing whatever `*.json` names are present and
+    # shipping their bytes straight to the CLI's stdin. `_private_open` at
+    # `final_path` directly would let a drain tick land between the create
+    # (truncated, 0 bytes) and the `json.dump` finishing — the entry the
+    # drain sees is then empty or half-written, and it is gone (moved to
+    # `done/`) before this function ever gets to finish writing it: the
+    # user's message is lost, permanently, with nothing left to retry. A
+    # `.tmp` name the drain's `endswith(".json")` filter never matches is
+    # invisible to it until the whole write is done, so the final
+    # `os.replace` (atomic on both platforms) is the only moment the entry
+    # can be observed at all — always whole.
+    tmp_path = os.path.join(inbox, name + ".tmp")
+    with _private_open(tmp_path) as f:
         json.dump(row, f)
         f.write("\n")
+    os.replace(tmp_path, final_path)
 
 
 def _write_inbox_entry(run_dir: str, message: str) -> None:
