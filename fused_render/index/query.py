@@ -218,8 +218,12 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
             raise Cancelled() from None
         raise
     finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
         if token is not None:
             token.unbind()
+        con.close()
 
 
 def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
@@ -371,8 +375,12 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             raise Cancelled() from None
         raise
     finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
         if token is not None:
             token.unbind()
+        con.close()
 
 
 # Rows stage A hands to the Python ranker. Measured basis (571k rows under

@@ -69,6 +69,16 @@ describe("unionWithDefaults", () => {
   });
 
   it("builds the full default list when starting from empty text", () => {
-    expect(unionWithDefaults("", ["node_modules", "dist"])).toBe("\nnode_modules\ndist");
+    expect(unionWithDefaults("", ["node_modules", "dist"])).toBe("node_modules\ndist");
+  });
+
+  it("drops a trailing blank line from a newline-terminated list before appending", () => {
+    const text = "a\n";
+    expect(unionWithDefaults(text, ["node_modules"])).toBe("a\nnode_modules");
+  });
+
+  it("keeps an interior blank line the user typed", () => {
+    const text = "a\n\nb";
+    expect(unionWithDefaults(text, ["node_modules"])).toBe("a\n\nb\nnode_modules");
   });
 });

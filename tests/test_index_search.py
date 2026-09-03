@@ -597,12 +597,11 @@ def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkey
             self._real = real
 
         def execute(self, sql, *a, **kw):
-            # Only pass_over's own SELECT. search_ranked runs several OTHER
-            # execute() calls first (_coverage_reason, _ignore_roots) — those
-            # are covered by their own tests below
-            # (test_a_coverage_check_interrupt_*, test_an_ignore_roots_*); this
+            # Only pass_over's own SELECT. search_ranked runs an earlier
+            # execute() call first (_coverage_reason) — that one is covered by
+            # its own tests below (test_a_coverage_check_interrupt_*); this
             # one is scoped to pass_over's SELECT specifically so a change to
-            # either of the earlier queries cannot accidentally satisfy it.
+            # the earlier query cannot accidentally satisfy it.
             if "SELECT rel, size, mtime, is_dir FROM" in sql:
                 # The real cross-thread sequence: `cancel()` flips the flag
                 # AND calls interrupt(), which is what makes THIS raise.

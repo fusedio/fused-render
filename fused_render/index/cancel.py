@@ -8,8 +8,8 @@ neither alone is enough:
 
   * `check()` — a flag the query thread polls at cheap, frequent points
     between phases (query.py's `pass_over`: before the `execute`, after the
-    `fetchall`, before `rank_entries`, before the gitignore filter). This is
-    what makes the thread actually RETURN.
+    `fetchall`, before `rank_entries`). This is what makes the thread
+    actually RETURN.
   * `cancel()` also calls `con.interrupt()` on the bound duckdb connection —
     the same mechanism `guarded_query.py` already arms from a
     `threading.Timer` for the SQL panel's timeout. This is what unblocks a

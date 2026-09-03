@@ -43,5 +43,12 @@ export function unionWithDefaults(text: string, defaults: string[]): string {
   const have = new Set(lines.filter(isPatternLine).map((l) => l.trim()));
   const missing = defaults.filter((d) => !have.has(d.trim()));
   if (missing.length === 0) return text;
-  return [...lines, ...missing].join("\n");
+  // A single trailing "" is the split artifact of an empty textarea or a
+  // trailing newline, not a blank line the user meant to keep — appending
+  // straight after it would land the first default on its own blank line
+  // (`textToPatterns("") === [""]`, `textToPatterns("a\n") === ["a", ""]`).
+  // Drop only ONE: a genuine blank line the user typed still survives.
+  const base =
+    lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+  return [...base, ...missing].join("\n");
 }
