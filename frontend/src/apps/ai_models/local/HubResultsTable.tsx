@@ -30,7 +30,7 @@
 // column dropped for emptiness would have nowhere to put the answer it is
 // about to receive.
 //
-// **A family is one `<tbody>`, not one `<tr>`.** The rows a disclosure opens
+// **A family is one `<tbody>`, not one `<tr>` (D686).** The rows a disclosure opens
 // are part of the same group as the row that opened it, and a `<tbody>` per
 // family is what says so in the markup — which is also what lets the CSS
 // draw a border around an OPEN group and nothing at all around the closed

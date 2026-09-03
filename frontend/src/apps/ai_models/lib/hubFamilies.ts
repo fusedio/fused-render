@@ -180,6 +180,7 @@ export function groupIntoFamilies(
     const baseModel = group.find((m) => m.baseModel)?.baseModel ?? null;
     const base = baseModel ? (group.find((m) => m.id === baseModel) ?? null) : null;
     // **The base model heads its own family whenever it is in the results,
+    // regardless of score (D685).**
     // regardless of score.** A family's first row is its IDENTITY, and a
     // score is the wrong thing to decide identity with: a 4-bit republish
     // that happens to fit this machine better than the model it was made

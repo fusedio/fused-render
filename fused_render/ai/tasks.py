@@ -444,7 +444,7 @@ _TAG_ALIASES = {
 
 
 def classify_repo(pipeline_tag: str | None, tags=None) -> Classification:
-    """Classify a Hub REPO — its `pipeline_tag` first, then its own `tags`.
+    """Classify a Hub REPO — its `pipeline_tag` first, then its own `tags` (D684).
 
     `classify` answers about a tag. This answers about a repo, and the
     difference matters because `pipeline_tag` is a single slot holding one of
