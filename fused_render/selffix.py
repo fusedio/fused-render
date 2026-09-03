@@ -891,6 +891,25 @@ def begin_session(*, now: float | None = None) -> tuple[str, str]:
     return str(baseline.get("digest") or ""), before
 
 
+def _pristine_digest() -> str:
+    """The digest this VERSION shipped, or "".
+
+    `baseline.json` first, and the marker's own `baseline_digest` when that file
+    has none for this version — the baseline can be GONE and the pristine hash
+    still known, because a fix session is an agent editing this installation and
+    can delete the state dir, and the first write can have failed. This is the
+    same recovery `ensure_baseline` performs, in a form the read paths can share
+    rather than each remembering half of it.
+    """
+    baseline = _read_json(baseline_path()) or {}
+    if baseline.get("version") == __version__ and baseline.get("digest"):
+        return str(baseline["digest"])
+    marker = _read_json(marker_path()) or {}
+    if marker.get("version") == __version__:
+        return str(marker.get("baseline_digest") or "")
+    return ""
+
+
 def settle(*, before: str, run_id: str = "", session_id: str = "",
            report: str = "", incident: str = "", title: str = "",
            now: float | None = None) -> bool:
@@ -916,6 +935,72 @@ def settle(*, before: str, run_id: str = "", session_id: str = "",
     Returns whether this session changed anything.
     """
     current = tree_digest()
+    pristine = _pristine_digest()
+
+    # **THE PRISTINE CASE IS DECIDED FIRST, BEFORE "NOTHING MOVED".** A tree
+    # byte-identical to what this version shipped is not a modified
+    # installation, whatever a session did on the way there — and the badge's
+    # claim is simply false about those bytes, so it is not ours to make.
+    #
+    # Ahead of the `current == before` early-out on purpose, and this is the
+    # whole point rather than a tidy-up: the watcher always settles against the
+    # session's ORIGINAL `before`, so a session that patches (raising a badge on
+    # a mid-session tick) and then puts the tree BACK arrives here with
+    # `current == before` — the most likely revert there is, and the one the
+    # user is watching happen. Decided after that early-out, the retraction
+    # below never ran for it and the badge stayed amber over a report whose
+    # changes were gone.
+    if pristine and current == pristine:
+        with _lock:
+            marker = _read_json(marker_path()) or {}
+            if (marker.get("version") == __version__
+                    and marker.get("digest") != current):
+                # Re-read under the lock, and only while the marker still
+                # describes a tree that is NOT this one. A marker whose digest
+                # IS `current` was written against these bytes by someone else
+                # while this walk ran, which makes the walk the stale reading of
+                # the two — the same direction `reconcile` fails in.
+                #
+                # **KEEP THE PRISTINE DIGEST ALIVE FIRST.** When the baseline
+                # file was missing, the hash we just vetoed with came OUT of
+                # this marker, and discarding it would delete the only remaining
+                # copy — a later stamp on the same watcher would then find no
+                # pristine, the veto would stop firing, and a second restore
+                # would mark a tree that matches the release. `ensure_baseline`
+                # writes its recovery back for exactly this reason; so does
+                # this. Written directly rather than by calling it, because that
+                # takes this same non-reentrant lock.
+                stored = _read_json(baseline_path()) or {}
+                if not (stored.get("version") == __version__
+                        and stored.get("digest")):
+                    try:
+                        _write_json(baseline_path(),
+                                    {"schema": SCHEMA, "version": __version__,
+                                     "digest": pristine, "at": time.time()})
+                    except OSError:
+                        logger.debug("could not persist the recovered baseline",
+                                     exc_info=True)
+                logger.info("self-fix: the installation matches the released "
+                            "tree again — clearing the modified marker")
+                # `_discard`, deliberately not `clear()` — for both of
+                # reconcile's reasons: `clear` takes this same non-reentrant
+                # lock, and it records a DISMISSAL, which this is not. Nobody
+                # waved the modification away; it is gone.
+                #
+                # The dismissal is dropped alongside, mirroring reconcile's own
+                # defensive line rather than a case reachable from here:
+                # `mark_modified` already discards a superseded dismissal when
+                # it raises a badge, so a marker and a dismissal do not coexist
+                # on the normal path. A LONE dismissal, with no marker to
+                # retract, is left alone on purpose — it says "I have seen these
+                # bytes and want no badge for them", which stays true if the
+                # tree ever comes back to them.
+                _discard(marker_path())
+                _discard(dismissed_path())
+        # Whether THIS session moved the tree is still the question asked, and
+        # the answer does not depend on where it landed.
+        return current != before
+
     if current == before:
         return False
     if current == dismissed_digest():
@@ -930,79 +1015,6 @@ def settle(*, before: str, run_id: str = "", session_id: str = "",
         # An EARLY OUT, not the guarantee: a dismiss landing after this read
         # would slip past it. `mark_modified` re-checks under the lock, which is
         # where the promise actually holds.
-        return True
-    # The pristine digest for the record — read back rather than re-walked; the
-    # baseline file is written by `begin_session` before any session starts.
-    baseline = (_read_json(baseline_path()) or {})
-    pristine = baseline.get("digest") if baseline.get("version") == __version__ else ""
-    if not pristine:
-        # The baseline file can be GONE and the pristine digest still known: a
-        # fix session is an agent editing this installation and can delete the
-        # state dir, and the first write can have failed. `ensure_baseline`
-        # already treats the marker's `baseline_digest` as the recovered
-        # pristine hash for exactly that case, so the veto below reads it the
-        # same way — otherwise the one state in which the baseline is missing is
-        # also the one in which the veto silently stops working, which is the
-        # leftover-pointer hazard it exists to close.
-        recovered = _read_json(marker_path()) or {}
-        if recovered.get("version") == __version__:
-            pristine = str(recovered.get("baseline_digest") or "")
-    if pristine and current == pristine:
-        # **A TREE THAT IS BYTE-IDENTICAL TO WHAT THIS VERSION SHIPPED IS NOT A
-        # MODIFIED INSTALLATION**, whatever a session did on the way there. The
-        # badge says "this copy is not the one we released, here is the report" —
-        # a claim that is simply false about these bytes, so it is not ours to
-        # make, and `reconcile` would rightly delete the marker on the next start
-        # anyway (SF-8).
-        #
-        # Two ways in, and both are real. A SESSION THAT PUT THE TREE BACK: its
-        # `before` was a patched tree (any session after the first), it undid the
-        # patch, and current != before — so without this the watcher would mark
-        # an install as modified for the act of RESTORING it. And A REINSTALL
-        # UNDER A LEFTOVER POINTER (SF-7d): `resume` settles against a `before`
-        # recorded before a same-version reinstall, which pip's uninstall does
-        # not clear because its RECORD never listed our state dir, so current
-        # (the restored release) != before (the patched tree) and a clean copy
-        # would light up. `reconcile` cannot rescue that one: it is a sibling
-        # startup thread, and when the marker changes mid-walk it stands down by
-        # design rather than clearing a mark it did not see taken.
-        #
-        # AND RETRACT A MARKER THAT IS NOW LYING. Skipping the mark is not
-        # enough on its own: a session that undoes an earlier, already-stamped
-        # patch would leave the badge amber, pointing at a report whose changes
-        # are no longer on disk, until the NEXT process start — `reconcile` runs
-        # once per boot, and the user who just watched the fix restore their
-        # install is the one left reading a stale warning about it.
-        #
-        # `_discard`, deliberately not `clear()` — for both of reconcile's
-        # reasons: `clear` takes this same non-reentrant lock, and it records a
-        # DISMISSAL, which this is not. Nobody waved the modification away; it
-        # is gone.
-        #
-        # The dismissal is dropped alongside, mirroring reconcile's own
-        # defensive line rather than a case reachable from here: `mark_modified`
-        # already discards a superseded dismissal when it raises a badge ("a
-        # badge is being raised, so whatever the user dismissed is behind us"),
-        # so a marker and a dismissal do not coexist on the normal path. A LONE
-        # dismissal, with no marker to retract, is left alone on purpose — it
-        # says "I have seen these bytes and want no badge for them", which stays
-        # true if the tree ever comes back to them.
-        with _lock:
-            marker = _read_json(marker_path()) or {}
-            if (marker.get("version") == __version__
-                    and marker.get("digest") != current):
-                # Re-read under the lock, and only when the marker still
-                # describes a tree that is NOT this one. A marker whose digest
-                # IS `current` was written against these bytes by someone else
-                # while this walk ran, which makes the walk the stale reading of
-                # the two — the same direction reconcile fails in.
-                logger.info("self-fix: the installation matches the released "
-                            "tree again — clearing the modified marker")
-                _discard(marker_path())
-                _discard(dismissed_path())  # inert now, and confusing to leave
-        # True, not False: the tree really did move away from `before`, which is
-        # what this function answers. It just did not move to somewhere worth
-        # marking — the same shape as the dismissal above.
         return True
     mark_modified(run_id=run_id, session_id=session_id, report=report,
                   incident=incident, title=title, digest=current,

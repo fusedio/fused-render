@@ -2180,3 +2180,60 @@ def test_a_marker_written_against_THESE_bytes_mid_walk_is_not_retracted(
 
     assert selffix.status() is not None, (
         "a marker describing exactly these bytes was dropped on a stale walk")
+
+
+def test_a_session_that_patches_and_then_REVERTS_retracts_its_own_badge(install):
+    """The watcher always settles against the session's ORIGINAL `before`, so a
+    session that patches — raising a badge on a mid-session tick, which is when
+    the user sees it — and then puts the tree back arrives with
+    `current == before`. That is the most likely revert there is and the one the
+    user is watching, and while the pristine case was decided AFTER the
+    "nothing moved" early-out the retraction never ran for it: the badge stayed
+    amber over a report whose changes were gone."""
+    release = _pristine()
+
+    # Mid-session: the patch raises the badge.
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    assert selffix.settle(before=release, run_id="r-1") is True
+    assert selffix.status() is not None
+
+    # Same session, same `before`, and it puts the tree back.
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    assert selffix.tree_digest() == release
+    assert selffix.settle(before=release, run_id="r-1") is False, (
+        "this session ended where it started — it changed nothing NET")
+    assert selffix.status() is None, (
+        "the badge outlived the modification, on the revert path the comment "
+        "itself describes")
+
+
+def test_the_retraction_keeps_the_pristine_digest_it_vetoed_with(install):
+    """When the baseline FILE is missing, the hash the veto fired on came out of
+    the marker — so discarding that marker would delete the only remaining copy.
+    A later stamp on the same watcher would then find no pristine, the veto
+    would stop firing, and a second restore would mark a tree that matches the
+    release. `ensure_baseline` writes its recovery back; so must this."""
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    selffix.settle(before=release, run_id="r-1")
+    os.unlink(selffix.baseline_path())          # the state dir lost it
+
+    # First restore: the veto fires off the marker's own baseline_digest...
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    selffix.settle(before=patched, run_id="r-1")
+    assert selffix.status() is None
+    # ...and the recovered hash was written back rather than discarded with it.
+    assert (_read := json.loads(open(selffix.baseline_path()).read()))["digest"] == release
+    assert _read["version"] == __version__
+
+    # So a SECOND patch-and-restore is still vetoed.
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched twice\n")
+    twice = selffix.tree_digest()
+    selffix.settle(before=release, run_id="r-2")
+    assert selffix.status() is not None
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    selffix.settle(before=twice, run_id="r-2")
+    assert selffix.status() is None, (
+        "the second restore marked a tree identical to the release — the "
+        "pristine digest did not survive the first retraction")

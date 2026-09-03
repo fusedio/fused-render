@@ -11659,7 +11659,17 @@ the installation, and the mark that says so.
   marker's own `baseline_digest` when the baseline FILE is gone: a fix session
   is an agent editing this installation and can delete the state dir, so
   otherwise the one state in which the baseline is missing would be the one in
-  which the veto silently stops working.
+  which the veto silently stops working — and it PERSISTS that recovery before
+  discarding the marker it came out of, exactly as `ensure_baseline` does, or the
+  retraction would delete the last copy of the release hash and the next restore
+  would mark a clean tree again. **The pristine case is decided before the
+  "nothing moved" early-out**, which is the whole of it rather than an ordering
+  detail: the watcher always settles against the session's ORIGINAL `before`, so
+  a session that patches (raising the badge on a mid-session tick, which is when
+  the user sees it) and then puts the tree back arrives with
+  `current == before` — the likeliest revert there is, and the one the user is
+  watching happen. Decided after that early-out, the retraction never ran for
+  it.
 - **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
   that up because "the tree was replaced" is not something the app may merely
   assume:
