@@ -3,6 +3,10 @@
 // Either path is the wizard's "complete": this is the only step whose action
 // writes anything, so an abandoned wizard leaves no junk.
 //
+// `onComplete` writes the flag ONLY — it does not close the overlay. The
+// wizard closes on the route change the action causes, so a composer
+// `task_error` (folder made, Claude didn't start) stays readable in place.
+//
 // The showcase clone is fire-and-forget at startup and may not have landed
 // yet — the same catalog→refresh dance Apps.tsx does forces it, with a
 // skeleton row meanwhile.
@@ -100,8 +104,8 @@ export function FirstAppStep({
             The showcase is still downloading — it appears under Apps once it lands.
           </p>
         ) : (
-          // Opening a card is the wizard's completion too: capture the click
-          // before the card navigates so the overlay is gone when the app lands.
+          // Opening a card is the wizard's completion too — flag only; the
+          // navigation the card performs is what closes the overlay.
           <div className="grid gap-4 sm:grid-cols-2" onClickCapture={onComplete}>
             {showcase.slice(0, 4).map((app) => (
               <AppPreviewCard key={app.path} app={app} />

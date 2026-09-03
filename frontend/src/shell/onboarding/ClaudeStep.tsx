@@ -12,7 +12,7 @@ import { Check, Circle, Minus, RefreshCw } from "lucide-react";
 
 import type { ClaudeHealth } from "@platform/lib/api";
 import { claudeIssues, type ClaudeIssue } from "@platform/lib/claude-health";
-import { useClaudeSetup } from "@platform/lib/claude-setup";
+import type { ClaudeSetup } from "@platform/lib/claude-setup";
 import { Button } from "@platform/shadcn/ui/button";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
@@ -86,12 +86,14 @@ function StateIcon({ state, optional }: { state: RowState; optional?: boolean })
   );
 }
 
-export function ClaudeStep() {
-  const setup = useClaudeSetup(true);
+// `setup` is the wizard's single machine (OnboardingWizard owns it, so what
+// gets fixed here is what step 4 reads).
+export function ClaudeStep({ setup }: { setup: ClaudeSetup }) {
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;
   const allDone = rows?.every((r) => r.state === "done" || (r.optional && r.state !== "open"));
+  const anyActionable = rows?.some((r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)));
 
   return (
     <div className="flex flex-col gap-6">
@@ -115,7 +117,9 @@ export function ClaudeStep() {
             ? "Checking this machine…"
             : allDone
               ? "Everything is in place."
-              : "A few things still need doing — each has a button."}
+              : anyActionable
+                ? "A few things still need doing — the open rows have buttons."
+                : "Nothing here will block you — carry on."}
         </p>
         <Button variant="ghost" size="sm" onClick={() => load(true)} disabled={busy}>
           <RefreshCw data-icon="inline-start" className={busy ? "animate-spin" : undefined} />

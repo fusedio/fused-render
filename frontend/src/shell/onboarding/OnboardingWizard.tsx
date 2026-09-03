@@ -14,7 +14,7 @@
 //
 // While open, App.tsx holds the auto-tours (shell/onboarding/state); they fire
 // on the route the user lands on once this closes.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Rocket, ShieldCheck, Sparkles, TerminalSquare, X } from "lucide-react";
 
 import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
@@ -45,7 +45,7 @@ function isMac(platform: string | null | undefined): boolean {
   return /Mac/i.test(navigator.platform || navigator.userAgent);
 }
 
-export function OnboardingWizard({ config }: { config: Config }) {
+export function OnboardingWizard({ config, pathname }: { config: Config; pathname: string }) {
   const open = useOnboardingOpen();
 
   // Auto-show once, from the flag the server handed over at boot.
@@ -55,22 +55,43 @@ export function OnboardingWizard({ config }: { config: Config }) {
   }, []);
 
   if (!open) return null;
-  return <Wizard config={config} />;
+  return <Wizard config={config} pathname={pathname} />;
 }
 
-function Wizard({ config }: { config: Config }) {
-  const { health } = useClaudeSetup(false);
-  const steps = STEPS.filter((s) => s.id !== "fda" || isMac(health?.platform));
+function Wizard({ config, pathname }: { config: Config; pathname: string }) {
   const [index, setIndex] = useState(0);
+  // ONE setup machine for the whole wizard, not one per step: a sign-in done
+  // on step 2 must be what step 4 reads, and two hook instances would each
+  // hold their own snapshot. Focus re-checks only while the Claude step is up.
+  const setup = useClaudeSetup(index === 1);
+  const { health } = setup;
+  const steps = STEPS.filter((s) => s.id !== "fda" || isMac(health?.platform));
   const step = steps[Math.min(index, steps.length - 1)];
   const last = index >= steps.length - 1;
 
-  const finish = useCallback((how: "complete" | "dismiss") => {
-    // Fire-and-forget: the flag is a courtesy to the NEXT launch, and a failed
-    // write must not hold the overlay over the app the user is trying to reach.
-    (how === "complete" ? completeOnboarding() : dismissOnboarding()).catch(() => undefined);
-    closeOnboarding();
+  // Fire-and-forget: the flag is a courtesy to the NEXT launch, and a failed
+  // write must not hold the overlay over the app the user is trying to reach.
+  const markComplete = useCallback(() => {
+    completeOnboarding().catch(() => undefined);
   }, []);
+  const finish = useCallback(
+    (how: "complete" | "dismiss") => {
+      if (how === "complete") markComplete();
+      else dismissOnboarding().catch(() => undefined);
+      closeOnboarding();
+    },
+    [markComplete],
+  );
+
+  // Step 4's actions (the composer's create, a showcase card) NAVIGATE — the
+  // overlay closes when the route changes, not when the action starts. The
+  // composer's own `task_error` ("folder created, Claude didn't start") lands
+  // in a composer that is still on screen, where the user can read it, instead
+  // of dying with an overlay that closed on `onCreated`.
+  const firstPath = useRef(pathname);
+  useEffect(() => {
+    if (pathname !== firstPath.current) closeOnboarding();
+  }, [pathname]);
 
   const next = useCallback(() => {
     if (last) finish("complete");
@@ -78,14 +99,15 @@ function Wizard({ config }: { config: Config }) {
   }, [last, finish]);
   const back = () => setIndex((i) => Math.max(0, i - 1));
 
-  // Escape dismisses; ⌘/Ctrl+Enter advances — except on the last step, where
-  // the composer owns Enter and "complete" is the create itself.
+  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the last step: the
+  // composer owns both there (Escape cancels its name prompt, Enter sends).
   useEffect(() => {
+    if (last) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         finish("dismiss");
-      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !last) {
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         next();
       }
@@ -119,6 +141,9 @@ function Wizard({ config }: { config: Config }) {
           <span className="truncate">Set up FusedRender</span>
         </div>
 
+        {/* Every step is a link, in both directions: nothing before step 4
+            gates anything after it, so a user who knows what they want can go
+            straight there. */}
         <ol className="mx-auto hidden items-center gap-1 sm:flex" aria-label="Setup steps">
           {steps.map((s, i) => {
             const done = i < index;
@@ -127,14 +152,13 @@ function Wizard({ config }: { config: Config }) {
               <li key={s.id} className="flex items-center">
                 <button
                   type="button"
-                  onClick={() => i <= index && setIndex(i)}
-                  disabled={i > index}
+                  onClick={() => setIndex(i)}
                   aria-current={current ? "step" : undefined}
                   className={cn(
                     "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors",
                     current && "bg-foreground text-background",
                     done && "text-foreground hover:bg-muted",
-                    !current && !done && "text-muted-foreground/60 cursor-default",
+                    !current && !done && "text-muted-foreground hover:bg-muted hover:text-foreground",
                   )}
                 >
                   {s.icon}
@@ -160,9 +184,9 @@ function Wizard({ config }: { config: Config }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={cn("mx-auto w-full px-6 py-10", step.id === "app" ? "max-w-4xl" : "max-w-2xl")}>
           {step.id === "about" && <AboutStep />}
-          {step.id === "claude" && <ClaudeStep />}
+          {step.id === "claude" && <ClaudeStep setup={setup} />}
           {step.id === "fda" && <FdaStep config={config} />}
-          {step.id === "app" && <FirstAppStep health={health} onComplete={() => finish("complete")} />}
+          {step.id === "app" && <FirstAppStep health={health} onComplete={markComplete} />}
         </div>
       </div>
 

@@ -1030,7 +1030,7 @@ export default function App({ config }: { config: Config }) {
       <NotificationHost />
       {/* First-run wizard (shell/onboarding): above every route, never in a
           pane. Renders nothing once completed or dismissed. */}
-      {!IS_EMBED && <OnboardingWizard config={config} />}
+      {!IS_EMBED && <OnboardingWizard config={config} pathname={pathname} />}
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}
