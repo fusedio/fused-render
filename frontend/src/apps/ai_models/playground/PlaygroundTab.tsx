@@ -636,7 +636,7 @@ export default function PlaygroundTab() {
                         <div className="group flex min-w-0 items-center gap-1.5">
                           {selected.model.id.includes("/") ? (
                             <a
-                              className="truncate font-mono text-xs text-muted-foreground no-underline transition-colors hover:text-foreground hover:underline"
+                              className="truncate font-mono text-xs text-muted-foreground no-underline motion-safe:transition-colors hover:text-foreground hover:underline"
                               href={hubModelUrl(selected.model.id)}
                               target="_blank"
                               rel="noopener noreferrer"
@@ -663,7 +663,7 @@ export default function PlaygroundTab() {
                             {copiedRepo ? (
                               <Check className={cn("size-3.5", bucketText.green)} />
                             ) : (
-                              <Copy className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+                              <Copy className="size-3.5 opacity-0 motion-safe:transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
                             )}
                             <span className="sr-only">Copy model ID</span>
                           </Button>
