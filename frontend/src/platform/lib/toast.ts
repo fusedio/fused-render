@@ -21,8 +21,8 @@ export interface ToastItem {
   tone: ToastTone;
   action?: ToastAction;
   // Dismissed, but still rendered while its exit animation plays (see
-  // TOAST_EXIT_MS). The host paints these with `.toast-leaving`; nothing else
-  // should treat them as live.
+  // TOAST_EXIT_MS). Toast.tsx fades and slides the card on this flag and
+  // NotificationHost collapses its row; nothing else should treat them as live.
   leaving: boolean;
 }
 
@@ -30,7 +30,8 @@ const DEFAULT_TTL_MS = 6000;
 
 // How long a dismissed toast stays in the queue so it can fade + collapse
 // (which is also what makes the toasts below it glide up instead of snapping).
-// Must match the .toast/.toast-slot exit transition in shell.css (--dur-med).
+// Must match the exit durations in Toast.tsx (the card) and NotificationHost.tsx
+// (the row that collapses under it) — both 150ms.
 export const TOAST_EXIT_MS = 150;
 
 let toasts: ToastItem[] = [];

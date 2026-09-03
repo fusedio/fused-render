@@ -1216,7 +1216,11 @@ export default function FilesHome({ config }: { config: Config }) {
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-auto-hide bg-background text-foreground">
+    // `files-home` is a HOOK, not a style: preview-start.ts finds the scroll
+    // root for the bookmark-card intersection observers by `.files-home`
+    // (alongside `.apps-page` / `.home-page`). Dropping it silently reverts
+    // every card's lookahead to the viewport.
+    <div className="files-home h-full overflow-y-auto scrollbar-auto-hide bg-background text-foreground">
       <div className="mx-auto max-w-[1120px] px-7 pb-18 pt-9">
         {/* No brand row or headline: the search prompt is the whole hero —
             the page title lives in the sidebar's Explorer entry, and a

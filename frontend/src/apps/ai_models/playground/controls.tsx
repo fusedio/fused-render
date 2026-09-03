@@ -380,7 +380,13 @@ export function RailChips<T extends string>({
       variant="outline"
       size="sm"
       spacing={1}
-      className="w-max max-w-full flex-nowrap overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      // WRAPS, never scrolls sideways. In the panel's 320px these rows are
+      // wider than the column (six aspect ratios, four step presets), and a
+      // horizontal scroller with no visible scrollbar hides its last chip
+      // behind a gesture nothing announces — the "Custom" aspect was
+      // unreachable-looking at the panel's right edge. A second line costs
+      // 24px and shows every choice at once.
+      className="max-w-full flex-wrap"
       aria-label={label}
     >
       {options.map((option) => (
@@ -467,7 +473,15 @@ export function StarterCards<S extends Starter>({
   });
   return (
     <div className="flex items-start gap-2 p-0.5">
-      <div className="flex min-w-0 shrink flex-nowrap gap-2 overflow-hidden" ref={rowRef}>
+      {/* `flex-1`, not `shrink`: the measure below compares this box's
+          scrollWidth to its clientWidth, so the box's WIDTH must not depend on
+          how many pills are in it. With a content-sized basis, dropping a pill
+          narrowed the row, which re-fired the ResizeObserver, which asked for
+          the full page again — the two fought, and a pill sat half-drawn at the
+          clip edge whenever the column was too narrow for four (opening the
+          settings panel did it). Filling the leftover space pins the width to
+          the container, so the trim converges. */}
+      <div className="flex min-w-0 flex-1 flex-nowrap gap-2 overflow-hidden" ref={rowRef}>
         {shown.map((sample) => (
           <Button
             key={sample.name}

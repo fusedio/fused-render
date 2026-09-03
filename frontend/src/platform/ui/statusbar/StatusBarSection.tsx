@@ -60,7 +60,13 @@ export function StatusBarSection({
             variant="ghost"
             size="xs"
             className={cn(
-              "h-full rounded-none px-1.5 text-xs font-normal gap-1.5 min-w-0",
+              // Quiet text on the bar, not a control sitting on it: no box of
+              // its own, the bar's own xs/muted type, and a square footprint
+              // that fills the strip's height. `appearance-none border-0
+              // bg-transparent` is load-bearing — the token sheet ships without
+              // Tailwind's preflight, so a button with no background of its own
+              // paints the platform widget (grey fill, outset border).
+              "h-full min-w-0 appearance-none gap-1.5 rounded-none border-0 bg-transparent px-1.5 text-xs font-normal hover:text-foreground",
               idle && "text-muted-foreground",
               failure && "text-destructive",
             )}

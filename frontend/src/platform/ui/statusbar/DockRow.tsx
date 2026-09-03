@@ -61,7 +61,15 @@ export function DockAction({ className, ...props }: ComponentProps<typeof Button
 /** The trailing dismiss ✕, pinned to the row's right edge. */
 export function DockDismiss({ className, ...props }: ComponentProps<typeof Button>) {
   return (
-    <Button variant="ghost" size="icon-xs" className={cn("ml-auto shrink-0 text-muted-foreground hover:text-foreground", className)} {...props}>
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      className={cn(
+        "ml-auto shrink-0 appearance-none bg-transparent text-muted-foreground hover:text-foreground",
+        className,
+      )}
+      {...props}
+    >
       <X />
     </Button>
   );

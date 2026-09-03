@@ -72,16 +72,6 @@
   font-size: 12px;
 }
 
-/* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
-   Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
-   metrics; heading click toggles the fold. */
-.sidebar-recents {
-  flex: 0 0 auto;
-  /* The bookmarks section above already ends in its own 8px padding — start
-     at 0 so the two sections sit one section-gap apart, not two. */
-  padding-top: 0;
-}
-
 /* A foldable section heading (Projects, Bookmarks). Since 2026-08-26 it is set
    in title case rather than the small-caps of the other headings, and the
    label is followed by a chevron that says "this folds": pointing down when
@@ -135,18 +125,6 @@
    name the element. The three counts in this sidebar — a folder's children, a
    collapsed section's leaves, the Tasks entry's unread — are one shape stated
    once. */
-
-.recent-row {
-  text-decoration: none;
-}
-
-.recent-row .recent-glyph {
-  /* The glyph slot is inert here (bookmarks use it as the icon-picker
-     button); keep the width so names align with bookmark rows. */
-  cursor: inherit;
-  display: inline-flex;
-  justify-content: center;
-}
 
 .bookmark-row {
   position: relative;
@@ -445,104 +423,4 @@ a.bookmark-name::after {
   border-radius: 4px;
   padding: 2px 6px;
 }
-
-/* Icon picker popover (Notion-style): search + Remove header, categorized
-   emoji grid. Fixed-position; the component keeps it on-screen. */
-.icon-picker {
-  position: fixed;
-  z-index: 1001;
-  width: 264px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px var(--shadow-lg);
-  padding: 8px;
-}
-
-.icon-picker-head {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.icon-picker-search {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-
-.icon-picker-search:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.icon-picker-remove {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11.5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 8px;
-}
-
-.icon-picker-remove:hover {
-  color: var(--fg);
-  background: var(--bg);
-}
-
-.icon-picker-body {
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.icon-picker-cat {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-  padding: 6px 4px 3px;
-}
-
-.icon-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-}
-
-.icon-picker-cell {
-  font: inherit;
-  font-size: 15px;
-  line-height: 1;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  padding: 5px 0;
-  text-align: center;
-}
-
-.icon-picker-cell:hover,
-.icon-picker-cell.active {
-  background: rgba(var(--tint), 0.09);
-}
-
-.icon-picker-cell.active {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.icon-picker-empty {
-  color: var(--fg-muted);
-  font-size: 12px;
-  padding: 10px 4px;
-}
-
 

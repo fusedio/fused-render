@@ -63,6 +63,7 @@ import type {
   PluginContents,
 } from "../api";
 import {
+  BARE_BUTTON,
   Empty,
   ErrorNote,
   List,
@@ -263,6 +264,9 @@ function RailRow({
       <button
         type="button"
         className={cn(
+          // Bare <button>, so it carries the control reset itself — see
+          // BARE_BUTTON. Its own px-2/py-1 still wins over the reset's p-0.
+          BARE_BUTTON,
           "flex-1 min-w-0 flex items-center justify-between gap-2 rounded-md px-2 py-1 text-sm text-left outline-none hover:bg-accent/50 focus-visible:ring-3 focus-visible:ring-ring/50",
           active && "bg-accent/30 font-medium",
         )}

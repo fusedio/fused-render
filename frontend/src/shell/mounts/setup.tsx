@@ -860,7 +860,11 @@ export function ProviderPicker({ onPick }: { onPick: (key: SetupKey) => void }) 
       <Muted className="text-xs">
         No link? Connect a provider first — tokens and keys go straight into rclone’s own config, never here.
       </Muted>
-      <EntityList className="grid sm:grid-cols-2 [&>*:nth-last-child(2)]:sm:border-b-0 sm:[&>*:nth-child(odd)]:border-r sm:[&>*:nth-child(odd)]:border-border">
+      {/* One column, not a 2-up grid: at this page's width two columns clipped
+          the provider NAME ("Google Dri…", "S3-comp…"), which is the one part
+          of the row the reader is scanning for. Six dense rows cost ~90px more
+          height and every name and cost fits. */}
+      <EntityList>
         {STORAGE_OPTIONS.map((o) => (
           <EntityRow
             key={o.key}

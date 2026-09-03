@@ -115,6 +115,18 @@ export function useModuleData<T>(load: () => Promise<T>): Loaded<T> {
 
 // -- layout vocabulary --------------------------------------------------------
 
+// The control reset for a bare `<button>` — one this app styles itself rather
+// than taking from the shadcn Button. Tailwind ships with no preflight here, so
+// tailwind.css does that reset in `@layer base`, but scoped to
+// `button[data-slot]`: a `<button>` without that attribute is left with the
+// browser's native widget painting (a grey fill and an outset border) UNDER
+// whatever utilities it wears, and `border-transparent` cannot stop it because
+// the native appearance is painted, not bordered. It goes FIRST in a `cn()`, so
+// a caller's own padding still wins over the `p-0` here (twMerge keeps the last
+// of two conflicting utilities).
+export const BARE_BUTTON =
+  "appearance-none border-0 bg-transparent p-0 [font:inherit] text-inherit";
+
 // A failure, in the same voice everywhere: shadcn's destructive Alert.
 export function ErrorNote({ children }: { children: ReactNode }) {
   if (children == null || children === false) return null;
@@ -408,7 +420,15 @@ export function ListRow({
         {details ? (
           <button
             type="button"
-            className={cn(bodyCls, "cursor-pointer rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50")}
+            // A bare <button>, so it carries the control reset itself: the
+            // base layer's is scoped to `button[data-slot]` (the shadcn
+            // primitives) and this element is not one, which without the reset
+            // leaves Chrome painting its native grey widget under the row.
+            className={cn(
+              BARE_BUTTON,
+              bodyCls,
+              "cursor-pointer rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            )}
             aria-expanded={open}
             aria-controls={panelId}
             onClick={toggle}

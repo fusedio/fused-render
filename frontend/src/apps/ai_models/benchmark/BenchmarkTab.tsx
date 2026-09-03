@@ -32,7 +32,7 @@
 // twice (once properly, with an axis, once as an unlabelled sliver in each
 // row) was the duplicated ink. `ModelTrendChart` keeps its own spot,
 // correctly secondary, for the model a reader picks by clicking a leaderboard
-// row — see the D481 comment above `.am-bench-rows`' render loop for why that
+// row — see the D481 comment above the ledger's render loop for why that
 // spot moved from a block below the whole list to right under the clicked
 // row itself.
 //
@@ -67,7 +67,7 @@
 //
 // **This tab's OWN busy row is a second, complementary view of the same run —
 // phase plus a REAL elapsed clock, never an invented percentage** (see
-// `busyRowText` in lib/benchmark.ts, and the ai-models.css comment near line
+// `busyRowText` in lib/benchmark.ts, and the comment near
 // 1282 for the house rule against invented bars). It reuses `lib/aiRuntime.ts`'s
 // already-polled table rather than adding a second poll: while that table
 // still reports the model loading, the row says so; once it does not, the row
@@ -531,7 +531,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // too, or `aria-expanded="true"` on an open row would be a control with no
   // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
   // accordion header now, not a small chevron target inside it — see the
-  // big comment above `.am-bench-rows`' render loop): already-open closes
+  // big comment above the ledger's render loop): already-open closes
   // it (writes THIS capability's own `closedSentinel`, never a bare `""` —
   // a bare flag would still read as "closed" after switching to a different
   // capability, since `modelParam` is one piece of state shared across all
@@ -889,7 +889,7 @@ function CapabilitySection({
               sentence the visible line used to say, workload name and
               revision included, unchanged.
 
-              Placed beside the HEADING, not inside `.am-bench-headtools`
+              Placed beside the HEADING, not in the head's control group
               with the Metric select and Share: it explains the SECTION as
               a whole (what a Run press on ANY row here measures), not
               those two controls, and that group is already this row's
@@ -1005,7 +1005,7 @@ function CapabilitySection({
               history. Sits between the two chart instruments and the ledger
               rows it drives, since it acts on exactly that list — and now
               (D479) sits FLUSH against those rows in the markup's own order
-              (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
+              (the Run All group carries the bottom margin, not the rows): the
               button is that list's control, not a third, orphaned instrument
               floating in the gap the chart and the rows each already own a
               margin into.
@@ -1020,7 +1020,7 @@ function CapabilitySection({
               already `gone`.
 
               **Idle branch is `--fg`-outlined, glyph-led, plain text (D479)**
-              — not the accent outline `.am-card-try` wears on the Models tab,
+              — not a filled plate and not an accent outline,
               and not a filled plate. Accent on THIS tab is already spoken
               for as DATA ink: the comparison chart's bars, the metric values
               in each row, and the selected row's ring all draw in it, so an
@@ -1037,7 +1037,7 @@ function CapabilitySection({
               disk, the single most expensive thing a press can start here.
               It should be findable, which the border and full-opacity text
               do; it should not be the loudest thing on the page competing
-              with the chart above it. The glyph is `MenuIcons.play`, the
+              with the chart above it. The glyph is the play triangle, the
               exact triangle every row below already wears on its own Run
               button — "run all" is that same act N times over, so it borrows
               the row's own vocabulary instead of inventing a second one; a
@@ -1115,14 +1115,12 @@ function CapabilitySection({
               TOGGLES it: an already-open row closes, any other opens (and
               closes whichever row was open before it — exactly one at a
               time). Open is the one full-width expansion rendered as that
-              row's sibling in `.am-bench-rows`, holding BOTH the per-run
+              row's sibling in the ledger group, holding BOTH the per-run
               detail/failure text and INSTRUMENT THREE, the trend, for
               `selectedModel` — and visually FUSED to its row into one card
-              that grew (ai-models.css: the open row's own bottom corners
-              square off and its bottom border drops, the expansion picks
-              up the matching side/bottom border and radius and the same
-              accent wash, so there is no seam between "the header" and
-              "the part that opened").
+              that grew (the open row and its expansion share the group's
+              border and the same accent wash, so there is no seam between
+              "the header" and "the part that opened").
 
               **One row, one open state, one hit target — three passes to
               get here.** Pass one put the trend behind a SEPARATE
@@ -1201,7 +1199,7 @@ function CapabilitySection({
                     }}
                   />
                   {/* The row's single expansion (D481): full row width for
-                      free, since this is a SIBLING of `.am-bench-row`'s grid
+                      free, since this is a SIBLING of the row's own grid
                       rather than a cell inside it — the trend chart needs
                       the whole width, which is exactly what a `<details>`
                       living in the row's own grid cell could never give it.
@@ -1302,7 +1300,7 @@ function BenchmarkRow({
    *  below): the expansion can still hold a trend worth opening even when
    *  there is no extra detail line to go with it. */
   detail: string | null;
-  /** DOM id of this row's own expansion sibling in `.am-bench-rows`
+  /** DOM id of this row's own expansion sibling in the ledger group
    *  (`benchExpandId`) — the model-name button's `aria-controls` target.
    *  Only actually points at something real while `open` is true (that is
    *  the only time the sibling exists at all), which is exactly when the
@@ -1352,7 +1350,7 @@ function BenchmarkRow({
   // (`row === null`, "Never benchmarked") must not LOOK openable — no
   // chevron glyph (the column itself still reserves its width, so the
   // model name stays aligned with every other row's — see
-  // `.am-bench-rowdetail-chevron` in ai-models.css), no hand cursor, no
+  // ROW_GRID's fixed leading track), no hand cursor, no
   // `aria-expanded` implying a state that does not exist, and a click
   // that does nothing rather than writing a pointless selection.
   const expandable = row !== null;
@@ -1363,8 +1361,8 @@ function BenchmarkRow({
   const open = selected && expandable;
   const nameCell = (
     <>
-      {/* Budget (28) is a hair under the column's own 30ch so the CSS
-          `overflow: hidden` safety net (ai-models.css) never has to fire
+      {/* Budget (28) is a hair under the column's own 30ch so the cell's
+          `overflow-hidden` safety net never has to fire
           for a monospace glyph at this size — see `middleEllipsis`'s own
           comment for why the ellipsis goes in the MIDDLE rather than the
           tail. */}
@@ -1396,14 +1394,14 @@ function BenchmarkRow({
       )}
       onClick={expandable ? onToggle : undefined}
     >
-      {/* The row's LEADING column, reserved on every row (ai-models.css'
-          `.am-bench-row` grid-template gives it a fixed width, not `auto`)
+      {/* The row's LEADING column, reserved on every row (ROW_GRID's
+          template gives it a fixed 16px width, not `auto`)
           so an accordion indicator sits at one consistent x down the whole
           list rather than drifting with the length of the headline/delta
           text that used to precede it. Empty, not omitted, for a
-          non-expandable row — see `.am-bench-rowdetail-chevron`'s own
-          comment for why the column still has to exist even with nothing
-          drawn inside it. */}
+          non-expandable row: the column still has to exist even with
+          nothing drawn inside it, so the model name stays aligned with
+          every other row's. */}
       <span className="flex items-center justify-center text-muted-foreground" aria-hidden="true">
         {expandable && (
           <ChevronRightIcon
@@ -1426,7 +1424,7 @@ function BenchmarkRow({
         // handler either.
         <button
           type="button"
-          className="block w-full min-w-0 cursor-inherit overflow-hidden whitespace-nowrap text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="block w-full min-w-0 [cursor:inherit] overflow-hidden whitespace-nowrap text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           title={model}
           aria-expanded={open}
           aria-controls={open ? expansionId : undefined}
@@ -1512,9 +1510,9 @@ function BenchmarkRow({
           {/* `button.busy`'s spinner is still disabled (`button.blocked` is
               true whenever `busy` is — `runButtonState`, lib/benchmark.ts) —
               this is a status glyph on a dead button, not a second way to
-              start or stop the run. `.am-icon-spin` (ai-models.css) is the
-              only thing that turns the static ring into motion; the glyph
-              itself does not encode spinning. */}
+              start or stop the run. The spin is `motion-safe:animate-spin`,
+              so a reader who asked for reduced motion gets a still glyph
+              rather than none at all. */}
           {button.busy ? <Loader2Icon className="motion-safe:animate-spin" /> : <PlayIcon />}
         </Button>
       )}

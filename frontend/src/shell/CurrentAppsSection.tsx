@@ -295,7 +295,7 @@ function CurrentAppRow({
       <Button
         variant="ghost"
         size="icon-xs"
-        className="relative z-10 -my-1 -mr-1.5 size-5 shrink-0 text-muted-foreground opacity-0 invisible group-hover/row:visible group-hover/row:opacity-100 focus-visible:visible focus-visible:opacity-100 hover:text-foreground motion-safe:transition-opacity"
+        className="relative z-10 -my-1 -mr-1.5 size-5 shrink-0 appearance-none bg-transparent text-muted-foreground opacity-0 invisible group-hover/row:visible group-hover/row:opacity-100 focus-visible:visible focus-visible:opacity-100 hover:text-foreground motion-safe:transition-opacity"
         title="Hide from projects (archives its tasks)"
         aria-label={`Hide ${app.name} from projects and archive its tasks`}
         disabled={busy}

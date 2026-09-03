@@ -960,7 +960,7 @@ function benchClock(seconds: number): string {
 }
 
 /** The busy row's own text: phase, then elapsed time — never an invented
- *  percentage (`styles/ai-models.css`'s own rule, and the busy row's previous
+ *  percentage (the meter bar's own rule, and the busy row's previous
  *  static "this takes minutes" is exactly the silence that rule exists to
  *  replace).
  *

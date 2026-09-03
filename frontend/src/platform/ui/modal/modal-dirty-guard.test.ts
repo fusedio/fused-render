@@ -44,7 +44,6 @@ describe("the armed ✕", () => {
     // Two channels on purpose: the button says WHERE, the hint says WHAT. The
     // hint is also `role="status"`, which is what announces the change at the
     // moment it happens.
-    expect(modal).toContain("modal-dirty-hint");
     expect(modal).toContain("Unsaved changes — close again to discard");
     expect(modal).toContain('role="status"');
   });
@@ -147,8 +146,10 @@ describe("the close button while busy", () => {
   test("is not rendered at all, rather than rendered dead", () => {
     expect(modal).toContain("{!busy && (");
     // The old spelling, gone: the ✕ never carries a disabled attribute now.
-    const close = modal.slice(modal.indexOf('className={"modal-close'));
-    expect(close.slice(0, close.indexOf("</button>"))).not.toContain("disabled={busy}");
+    // The control is the shadcn DialogClose stamped `data-modal-close` (the
+    // attribute dirty-guard.ts's CLOSE_CONTROL_SELECTOR looks for).
+    const close = modal.slice(modal.indexOf("data-modal-close"));
+    expect(close.slice(0, close.indexOf("</DialogClose>"))).not.toContain("disabled={busy}");
   });
 
   test("still refuses Esc and the backdrop, which is the actual guard", () => {

@@ -165,6 +165,19 @@
     font: inherit;
     letter-spacing: inherit;
     color: inherit;
+    /* The rest of the control reset the missing preflight was providing. A
+       `ghost` or `link` Button sets no resting background, so without this the
+       browser paints its native widget — a grey fill with an outset border —
+       and `border border-transparent` cannot stop it, because the native
+       appearance is painted rather than bordered. Utilities out-rank
+       `@layer base`, so the variants that DO set a background, border or
+       padding (default/outline/secondary/destructive, Input, Textarea) keep
+       every one of them. Bare `<button>`s carrying no `data-slot` are outside
+       this rule and stay a per-surface `border-0 bg-transparent`. */
+    appearance: none;
+    background-color: transparent;
+    border-width: 0;
+    padding: 0;
   }
   h1,
   h2,

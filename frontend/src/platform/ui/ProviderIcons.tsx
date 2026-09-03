@@ -4,9 +4,9 @@
 //
 // Deliberately MONOCHROME rather than brand-coloured. Three reasons: it matches
 // the rest of the shell's iconography, it survives light/dark without a second
-// asset, and it keeps us clear of reproducing trademarked logo artwork. Tint
-// comes from CSS (.mount-provider-icon--<key> in shell.css) exactly the way
-// .file-icon--<variant> works, so the SVG itself is colourless.
+// asset, and it keeps us clear of reproducing trademarked logo artwork. The
+// glyph is `currentColor`, so tint is whatever the calling row's text colour is
+// — no per-provider colour anywhere.
 //
 // The glyphs are shape-suggestive, not logo-accurate: Drive's divided triangle,
 // Dropbox's stacked diamonds, a package for Box, a bucket for S3 (which is what
@@ -14,10 +14,9 @@
 // and a globe for open public data.
 import type { ReactNode } from "react";
 
-// Deliberately UNSIZED: this is the picker card's own mark, drawn as a
-// full-height column beside the name, so the card's height is what sets the
-// glyph's size (.mount-provider-icon in shell.css). A width/height here would
-// just be overridden by that CSS and mislead the next reader.
+// Deliberately UNSIZED: this is the picker row's own mark, and the CALLER sizes
+// it (`size-4 [&_svg]:size-full` on the wrapper span). A width/height here
+// would fight that and mislead the next reader.
 //
 // Stroke is 1.15, well under the 2 the 16px file-type icons use. The glyphs are
 // drawn in a 24-unit box and rendered around 40px, so every line is scaled up
@@ -102,8 +101,6 @@ export function ProviderIcon({ provider }: { provider: ProviderIconKey }) {
   // No missing-glyph fallback: GLYPHS is total over ProviderIconKey, so there
   // is no key that reaches here without one.
   return (
-    <svg {...svgProps} className={`mount-provider-icon mount-provider-icon--${provider}`}>
-      {GLYPHS[provider]}
-    </svg>
+    <svg {...svgProps}>{GLYPHS[provider]}</svg>
   );
 }
