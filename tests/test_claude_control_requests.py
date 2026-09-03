@@ -131,7 +131,10 @@ def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
         "an interrupt must not kill the CLI — only end the turn"
     assert os.path.exists(os.path.join(run_dir, "host.json")), \
         "the host itself must still be up, ready for a follow-up"
-    assert os.path.exists(os.path.join(run_dir, "cancelled"))
+    # B2: the interrupt LANDED, so the session goes on — the `cancelled`
+    # marker must not survive it, or every later turn of this same run_id
+    # would read as pre-emptively stopped for the rest of the chat.
+    assert not os.path.exists(os.path.join(run_dir, "cancelled"))
 
 
 def test_cancel_with_no_host_still_tree_kills(agent, tmp_path):

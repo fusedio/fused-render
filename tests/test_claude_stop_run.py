@@ -132,6 +132,31 @@ def test_a_cancel_leaves_the_run_saying_its_end_was_asked_for(agent, tmp_path,
     assert agent._poll("run")["cancelled"] is True
 
 
+def test_a_successful_interrupt_clears_the_marker_it_wrote(agent, tmp_path,
+                                                            monkeypatch):
+    """B2 regression: `cancelled` used to be written unconditionally and never
+    cleared, so an INTERRUPTED turn — the whole point of which is that the
+    session survives — left every later poll of that session reporting
+    `cancelled: true` forever. Turn 3's normal end then read as "The turn
+    finished before the stop landed.", and a genuine turn-3 error was
+    swallowed into a silent "Stopped." instead of being shown."""
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir)
+    (run_dir / "out.jsonl").write_text("")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path))
+    monkeypatch.setattr(agent, "_write_control_request",
+                        lambda *a, **k: "req-1")
+    monkeypatch.setattr(agent, "_await_control_response",
+                        lambda *a, **k: {"still_queued": []})
+
+    result = agent._cancel("run")
+    assert result == {"cancelled": "run", "still_queued": []}
+    assert not (run_dir / "cancelled").exists(), \
+        "an interrupt that landed must not leave the session's every " \
+        "later turn reading as pre-emptively stopped"
+
+
 def test_a_reopened_chat_is_told_the_last_turn_was_stopped(agent, tmp_path,
                                                           monkeypatch):
     """The transcript cannot say why a reply stops mid-thought — a killed run

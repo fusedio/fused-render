@@ -4781,6 +4781,19 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
         request_id = _write_control_request(run_dir, "interrupt")
         response = _await_control_response(run_dir, request_id)
         if response is not None:
+            # The interrupt LANDED — the whole point of trying it first is
+            # that the session survives, so the marker written above (which
+            # exists to tell every later reader "this run's end was asked
+            # for") must not outlive the turn it was asked for. Left in
+            # place, it would taint every later poll of the same run_id —
+            # spanning a whole multi-turn session now, not one turn — as
+            # cancelled forever: a clean turn 3 would read as "the turn
+            # finished before the stop landed", and a real error on turn 3
+            # would be swallowed into a silent "Stopped." instead of shown.
+            try:
+                os.remove(os.path.join(run_dir, "cancelled"))
+            except OSError:
+                pass
             return {"cancelled": run_id,
                     "still_queued": list(response.get("still_queued") or [])}
         # No answer inside the timeout — the host may be stuck, or died
