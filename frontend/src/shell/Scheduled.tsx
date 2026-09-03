@@ -83,7 +83,7 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
+import { CARD_LANES, TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { isUnderDir } from "./current-apps-lib";
@@ -626,7 +626,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // everything would be an answer to a different question than the
               // one the card was asked.
               onShowRunning={() => {
-                setFilters((f) => ({ ...f, statuses: ["in_progress"] }));
+                setFilters((f) => ({ ...f, statuses: CARD_LANES }));
                 pickView("list");
               }}
             />

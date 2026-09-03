@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import {
   HOME_RESULT_CAP,
+  SCAN_START_GRACE_MS,
   activeRow,
+  aiSearchUsable,
   answerFrom,
   formatElapsed,
   homeCountNote,
+  indexGap,
   isAiRow,
   isOpenRow,
   nameStart,
@@ -14,6 +17,7 @@ import {
   positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  scanStarting,
   stepHighlight,
   submitRow,
   type HomeAnswer,
@@ -571,5 +575,121 @@ describe("redirectsToSearch", () => {
     // Not merely redundant: focusing on every keystroke would reset the caret
     // to the end, so editing the middle of a query would be impossible.
     expect(redirectsToSearch(key({ tagName: "INPUT", isSearchInput: true }))).toBe(false);
+  });
+});
+
+describe("aiSearchUsable", () => {
+  it("offers AI search before the poll has answered", () => {
+    // `null` is "no status yet"; hiding the row for the first second of every
+    // page load would be its own wrong answer.
+    expect(aiSearchUsable(null)).toBe(true);
+  });
+
+  it("withholds the offer with no index built", () => {
+    // AI search executes its spec against the same file index
+    // (routers/search._search_index) — with nothing built it raises
+    // IndexUnavailable, so offering the row is a click into a wall.
+    expect(aiSearchUsable({ has_index: false })).toBe(false);
+  });
+
+  it("offers it once the index exists", () => {
+    expect(aiSearchUsable({ has_index: true })).toBe(true);
+  });
+});
+
+describe("indexGap", () => {
+  it("separates a scan that is running from one that is not", () => {
+    // The distinction the page did not make, and the whole of the
+    // sit-on-"indexing"-for-20-minutes report: `uncovered` with nothing
+    // running is not a build in progress, it is a build that has to be asked
+    // for.
+    expect(indexGap("scanning", true)).toBe("scanning");
+    expect(indexGap("uncovered", false)).toBe("buildable");
+  });
+
+  it("takes the live poll's word for a scan the answer predates", () => {
+    // `reason` was fixed when the answer was ranked, so the scan the user
+    // just started is only visible in the status poll until the next query.
+    expect(indexGap("uncovered", true)).toBe("scanning");
+  });
+
+  it("demotes a stale `scanning` once the poll says nothing is running", () => {
+    // The other way into the same wedge: the rank landed while the startup
+    // scan was alive, then that worker was killed. Status goes idle,
+    // `last_completed_at` never moves so nothing re-ranks, and a `reason`
+    // frozen at "scanning" would keep promising a build (with a frozen file
+    // count for evidence) until the user gave up.
+    expect(indexGap("scanning", false)).toBe("buildable");
+  });
+
+  it("trusts `reason` while the poll has not answered", () => {
+    // `null` is "no status yet", not "idle" — demoting on it would flash
+    // "your files aren't indexed" over a scan that is genuinely running, on
+    // every first paint.
+    expect(indexGap("scanning", null)).toBe("scanning");
+    expect(indexGap("uncovered", null)).toBe("buildable");
+  });
+
+  it("never claims a scan while indexing is off", () => {
+    // Nothing can be in flight with the pref off — every trigger is gated and
+    // a running scan is cancelled at toggle-off — so a lagging `scanning`
+    // from the poll must not out-vote it, or the note promises a build that
+    // cannot start.
+    expect(indexGap("disabled", true)).toBe("disabled");
+    expect(indexGap("disabled", false)).toBe("disabled");
+  });
+
+  it("calls the permanently uncoverable reasons what they are", () => {
+    // Offering "index it now" for these would be a button that cannot work.
+    for (const r of ["mount", "package", "ignored"] as const)
+      expect(indexGap(r, false)).toBe("unavailable");
+  });
+
+  it("treats an unnamed miss as buildable", () => {
+    // `""` only reaches here if a not-covered answer arrived without a
+    // reason; a scan is the one thing that could fix it, so offer that
+    // rather than a dead end.
+    expect(indexGap("", false)).toBe("buildable");
+  });
+});
+
+describe("scanStarting", () => {
+  const at = 1_000_000;
+  const pending = { at, completedAt: 500 };
+
+  it("is false with nothing requested", () => {
+    expect(scanStarting(null, false, 500, at)).toBe(false);
+  });
+
+  it("holds the claim across the gap between the POST and the poll", () => {
+    // The window the button was previously re-offered in: the request has
+    // returned, the idle poll is up to ten seconds from its next look, and
+    // status still says idle with the same completion stamp.
+    expect(scanStarting(pending, false, 500, at + 900)).toBe(true);
+    // No status at all yet counts the same way.
+    expect(scanStarting(pending, null, null, at + 900)).toBe(true);
+  });
+
+  it("hands off as soon as the poll sees the run", () => {
+    // From here `indexGap` says "scanning" and the note has a live file count
+    // to show, which is a better claim than this one.
+    expect(scanStarting(pending, true, 500, at + 900)).toBe(false);
+  });
+
+  it("hands off to a scan that finished before the poll looked", () => {
+    // A small root can be scanned and done inside one poll interval, so
+    // "starting" must also end on a MOVED completion stamp — otherwise a
+    // finished scan keeps the button disabled.
+    expect(scanStarting(pending, false, 900, at + 900)).toBe(false);
+  });
+
+  it("gives up rather than claim a start forever", () => {
+    // A scan that died between two polls without writing a completion stamp
+    // leaves status idle and the stamp frozen — indistinguishable, from here,
+    // from a request the poll simply has not caught up with. After the grace
+    // window the button comes back, because clicking again is the one thing
+    // that can help and staring at "Starting the scan…" is the bug this file
+    // exists to fix.
+    expect(scanStarting(pending, false, 500, at + SCAN_START_GRACE_MS)).toBe(false);
   });
 });

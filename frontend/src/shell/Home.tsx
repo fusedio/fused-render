@@ -432,7 +432,10 @@ export default function Home({ config }: { config: Config }) {
   // as the explorer home. The index poll only runs while the box needs its
   // "indexing…" caveat.
   const [searching, setSearching] = useState(false);
-  const indexScan = useIndexStatus(searching);
+  // Bumped when the box starts a scan, so the poll looks again immediately
+  // instead of on its next idle beat (see FilesSearch's `onScanRequested`).
+  const [indexNonce, setIndexNonce] = useState(0);
+  const indexScan = useIndexStatus(searching, indexNonce);
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
   return (
@@ -444,6 +447,7 @@ export default function Home({ config }: { config: Config }) {
             initialQuery={initialQuery}
             indexScan={indexScan}
             onActiveChange={setSearching}
+            onScanRequested={() => setIndexNonce((n) => n + 1)}
           />
         </header>
 

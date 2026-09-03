@@ -276,6 +276,37 @@
   color: var(--fg);
 }
 
+/* The one action the buildable-index screen asks of the user, promoted out
+   of the muted .fh-result-note footnote into a real callout — a link-button
+   buried mid-sentence at 12px tested as invisible. A compact single-row bar,
+   not a full panel: this sits above a results list that is otherwise empty,
+   so it should read as "the thing to do here" without taking over the box. */
+.fh-index-cta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-alt);
+  margin-bottom: 8px;
+}
+
+.fh-index-cta-text {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+/* Position only — chassis and hover come from `.btn.btn-secondary` untouched.
+   Secondary, not primary: `.fh-panel` has no surface of its own, so a filled
+   `var(--fg)` primary is a near-white block sitting on the bare page, louder
+   than anything else on it. The bordered button inside the callout is already
+   unmissable next to the 12px muted note it replaced. */
+.fh-index-cta-btn {
+  margin-left: auto;
+}
+
 .fh-result-note kbd {
   font: inherit;
   padding: 0 4px;

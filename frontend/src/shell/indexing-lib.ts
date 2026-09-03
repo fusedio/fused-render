@@ -52,3 +52,16 @@ export function unionWithDefaults(text: string, defaults: string[]): string {
     lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
   return [...base, ...missing].join("\n");
 }
+
+// The one line of a failed scan's `error` worth putting in a settings panel.
+//
+// A scan that raised reports `traceback.format_exc()` (index/scan.py's
+// `run_end msg="failed"`), so the raw value is a multi-line Python traceback:
+// a screen of this app's own file paths, with the only part the user could act
+// on — "No space left on device", "Permission denied" — at the bottom. The
+// last non-empty line IS the exception, and a short one-line error (an
+// abandoned worker's own message) passes through unchanged.
+export function scanErrorLine(error: string): string {
+  const lines = error.split("\n").filter((l) => l.trim() !== "");
+  return lines.length === 0 ? "" : lines[lines.length - 1].trim();
+}
