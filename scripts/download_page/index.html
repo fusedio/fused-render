@@ -343,7 +343,6 @@
   }
   .stack-svg .guide { stroke: rgba(243, 242, 237, 0.14); stroke-width: 1; stroke-dasharray: 3 5; fill: none; }
   /* the wheel: four plates orbit in the iso plane; the front one sits over the file at full size */
-  .stack-svg .layer { transition: opacity 0.3s linear; }
   .stack-svg .plate { fill: rgba(26, 26, 24, 0.96); stroke: rgba(243, 242, 237, 0.16); stroke-width: 1; transition: fill 0.4s var(--ease), stroke 0.4s var(--ease); }
   .stack-svg .layer.top .plate { fill: rgba(229, 255, 68, 0.08); stroke: rgba(229, 255, 68, 0.55); }
   .stack-svg .glyph { fill: none; stroke: var(--ink-3); stroke-width: 1.4; stroke-linecap: round; transition: stroke 0.4s var(--ease); }
@@ -2004,9 +2003,11 @@
       var r = scroller.getBoundingClientRect();
       return r.top < innerHeight && r.bottom > 0;
     }
+    var capT = 0;
     function setCaption(ci) {
       cap.classList.add("swap");
-      setTimeout(function () { capH.textContent = CAP[ci][0]; capP.textContent = CAP[ci][1]; cap.classList.remove("swap"); }, 360);
+      clearTimeout(capT);
+      capT = setTimeout(function () { capH.textContent = CAP[ci][0]; capP.textContent = CAP[ci][1]; cap.classList.remove("swap"); }, 360);
     }
     function play(ci) {
       var key = ORDER[ci], el = stream[key], len = lens[key];
