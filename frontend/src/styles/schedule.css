@@ -2621,19 +2621,13 @@ input.schedule-when-field {
    with unread output drew "1 unread" in the pseudo and no "!" anywhere.
 
    So the mark is a real ELEMENT (`.schedule-ring-bang`, ScheduleTaskViews
-   .StatusIcon) and neither mark is dropped. The fill stays gated on `--unread`
-   ALONE for every lane — that gate has its own scar (see below), and a
-   lane-qualified exception here is the exact shape of the bug it records. The
-   element stacks OVER the fill by `z-index` (the ring is the `position:
-   relative` that makes that mean anything), and over a filled centre the glyph
-   is KNOCKED OUT rather than tinted, because a currentColor "!" on a
-   currentColor disc is a "!" nobody can see.
-
-   The knockout is `--bg` because the glyph's ink sits INSIDE the 8px disc — a
-   9px bold "!" is about 6px of ink — so it only has to contrast with the amber
-   under it, never match the row behind it (which is tinted on hover, and would
-   be an impossible thing to match anyway). Read the pair as one mark: the disc
-   says nobody has read this, and the hole punched in it says it is asking. */
+   .StatusIcon). And on a waiting ring the "!" REPLACES the unread fill rather
+   than stacking on it: the two marks share the same 8px middle, and a knocked-out
+   glyph on a filled disc read as a different icon from the hollow "!" the Board
+   card drew for the very same task (Akshil, 2026-09-03: "the icons status should
+   be same in board and list view"). One task, one glyph, every view — the "!" is
+   the whole message while a run is asking, and "unread" comes back as the fill
+   the moment it stops. The count tooltip still says the number. */
 .schedule-ring--needs_attention { color: var(--status-failed); }
 
 .schedule-ring-bang {
@@ -2646,14 +2640,15 @@ input.schedule-when-field {
   font-weight: 700;
   line-height: 1;
   color: currentColor;
-  /* Over the unread fill, which is a pseudo of the same box and would otherwise
-     paint on top of it. */
   z-index: 1;
   pointer-events: none;
 }
 
-.schedule-ring--unread > .schedule-ring-bang {
-  color: var(--bg);
+/* The one lane-qualified exception to the `--unread`-alone gate below, and the
+   reason is above: while the ring carries a "!" the fill would draw UNDER it and
+   make the waiting glyph differ between views. */
+.schedule-ring--needs_attention.schedule-ring--unread::after {
+  content: none;
 }
 
 /* -- The inner dot: UNREAD, not merely settled ---------------------------------
