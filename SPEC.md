@@ -5855,6 +5855,21 @@ stop it short of quitting the app.
   comment used to cite; `failedJobs`, with no remaining callers once
   `RepoUpdatesDock.tsx` started calling `isFailure` directly, is deleted.
 
+- **BG-21** **Two more code-review fixes on BG-17/BG-18's rework, plus its
+  one previously untested piece (D662).** `retiredEngines`'s stopping-marker
+  used to be consumed by the very next poll regardless of what it saw, so a
+  rejected Stop or an engine a `restart()` revived left the marker spent for
+  nothing while the engine was still there — its actual later idle
+  retirement then drew no toast at all, since `stoppingRef` had already
+  forgotten to expect it. The marker is now consumed only by the snapshot
+  where the engine is ACTUALLY missing. `ActivityDock.tsx`'s terminal-job
+  routing (BG-18) now filters `jobRows` before `terminalJobs`, so a schedule
+  run — already toasted, already rowed on the Scheduled page — no longer
+  also accumulates a permanent, silent Notifications entry. `ActivityDock.
+  test.tsx` gives `retiredEngines` its first test coverage: ordinary churn,
+  a Stop within and past its grace window, a revived engine, and the
+  late-retirement-after-rejected-Stop case above.
+
 ---
 
 ## 37. AI Models — What the Hugging Face Cache Holds (D249)
