@@ -24,6 +24,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import {
   missingDefaults,
   patternsToText,
+  scanErrorLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -183,6 +184,19 @@ export function IndexingPanel({
               ? " Searching a folder walks it live until one exists."
               : ""}
           </p>
+        )}
+        {/* How the last scan ENDED, when it ended badly. Nothing used to show
+            this anywhere in the app: a worker that dies without a `run_end`
+            (killed, OOM, a spawn that never reached Python) reads as
+            `scanning` for ABANDONED_RUN_S and then simply stops, leaving "No
+            index yet" with nothing running and no reason given — which is how
+            a first-run failure can be waited out for twenty minutes. Only
+            while idle: mid-scan this is the PREVIOUS run's verdict, and the
+            counts above are the live story. */}
+        {status && status.error && !scanning && (
+          <ErrorBanner>
+            The last scan did not finish: {scanErrorLine(status.error)}
+          </ErrorBanner>
         )}
         <div className="prefs-actions">
           <button

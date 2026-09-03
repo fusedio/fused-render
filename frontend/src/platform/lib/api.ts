@@ -585,8 +585,10 @@ export interface IndexRankHit {
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other three never (see listing/index-source, which is the only place that
-// switches on this). `disabled` is the one of those three that can become
+// other three never. Two places switch on this: listing/index-source picks the
+// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
+// turns it into what the home box tells the user. `disabled` is the one of
+// those three that can become
 // fixable again — turning the indexing preference back on — but the client
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the
@@ -2619,22 +2621,39 @@ export interface Task {
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
-  // `failed` is a status of its own and not a kind of `done`: a run that
+  // `blocked` is a status of its own and not a kind of `done`: a run that
   // started and broke is news, and filing it under done meant a view had to
   // remember to read the boolean below to say so — which is how a failed task
-  // could simply not be shown.
+  // could simply not be shown. It was called `failed` until 2026-09-03; the
+  // wider word is what lets ONE lane hold both ways a task stops moving (see
+  // schedule-lib.BOARD_COLUMNS), and `blocked_reason` says which.
   //
-  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // `needs_attention` sits ABOVE `in_progress`: the run is in flight and is
+  // waiting on a permission or question card nobody has answered, which is the
+  // one kind of in-flight that never ends on its own.
+  //
+  // A SKIPPED occurrence is `archived`, not `blocked`. It was filed away and
   // never attempted (the coalescer dropped it, or the user cancelled it), which
   // is a different thing from a run that tried and broke; only something that
   // actually ran can fail.
-  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
+    | "archived";
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose
   // session is live again, reads a different status while this stays true.
   // Anything asking "which column" should read `status`.
   failed: boolean;
+  // WHY it is not moving, for the two statuses that need a reason. "permission"
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
+  // `blocked`, and "" to every other task — which is most of them. It is what
+  // decides the row's button: Retry on a run that broke, Open on one somebody is
+  // being waited on. Absent on an older server; read as "".
+  blocked_reason?: "permission" | "question" | "failed" | "";
+  // The one line under a needs-attention row's title: which tool, and what it
+  // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
+  // whenever nothing is waiting.
+  attention?: { tool: string; summary: string } | null;
   live: boolean;
   unread: number;
   last_active: number;
@@ -4023,6 +4042,17 @@ export interface ScheduledMessage {
   // continue the chat it was scheduled from.
   session_learned?: boolean;
   permission_mode: string;
+  // WHICH Claude the run is launched with (`--model`, an alias or a full id)
+  // and how hard it thinks (`--effort`). "" on both means "pass no flag": the
+  // session detects its own defaults, which is what every task did before these
+  // were askable. Optional in the type because an entry stored before the
+  // fields existed simply has neither.
+  //
+  // Read back for one reason: editing a task is cancel + re-create, so the New
+  // task form has to prefill from here and send them again or the choice dies
+  // on the first edit.
+  model?: string;
+  effort?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -4120,6 +4150,17 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
+  // The run's model (`--model`: an alias like "fable", or a pinned full id like
+  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // rather than sent empty, like everything else optional here — the server
+  // stores "" for "pass no flag", so an absent key and a blank one already mean
+  // the same thing and the shorter body is the honest one.
+  //
+  // Neither is validated client-side. The CLI is the authority on what it
+  // accepts, and a list duplicated here would go stale the day it learns a new
+  // model; see the note at the create endpoint.
+  model?: string;
+  effort?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;
@@ -4223,6 +4264,11 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // Append-only with monotonically increasing ids, so a poller both dedups and
 // orders by tracking a high-water mark. Bounded server-side: it is a narration,
 // not history — the schedule store holds every outcome durably.
+//
+// NOTHING IS NARRATED FOR A RUN PARKED ON A CARD, deliberately (Akshil,
+// 2026-09-03): the Tasks page says it on its own — the row wears the Needs
+// attention ring and sorts to the top — and a toast for it would interrupt the
+// reader for a run that has not finished doing anything yet.
 export type ScheduleEventKind = "done" | "failed" | "missed";
 
 export interface ScheduleEvent {

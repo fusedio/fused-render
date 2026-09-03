@@ -1,9 +1,11 @@
 // The pure half of Indexing.tsx: text<->pattern conversion, stale-default
-// detection, and the "Restore defaults" union merge.
+// detection, the "Restore defaults" union merge, and the one line of a failed
+// scan's traceback the panel shows.
 import { describe, expect, it } from "bun:test";
 import {
   missingDefaults,
   patternsToText,
+  scanErrorLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -80,5 +82,31 @@ describe("unionWithDefaults", () => {
   it("keeps an interior blank line the user typed", () => {
     const text = "a\n\nb";
     expect(unionWithDefaults(text, ["node_modules"])).toBe("a\n\nb\nnode_modules");
+  });
+});
+
+describe("scanErrorLine", () => {
+  it("pulls the exception out of a Python traceback", () => {
+    // What a failed scan actually reports (traceback.format_exc()). The
+    // actionable half is the last line; the rest is this app's own files.
+    const tb = [
+      "Traceback (most recent call last):",
+      '  File "/opt/fused/index/scan.py", line 214, in _walk',
+      "    store.flush(rows)",
+      "OSError: [Errno 28] No space left on device",
+    ].join("\n");
+    expect(scanErrorLine(tb)).toBe("OSError: [Errno 28] No space left on device");
+  });
+
+  it("passes a one-line error through unchanged", () => {
+    // An abandoned worker's own message is already the whole story.
+    expect(scanErrorLine("worker exited without finishing")).toBe(
+      "worker exited without finishing",
+    );
+  });
+
+  it("survives trailing newlines and an all-blank value", () => {
+    expect(scanErrorLine("ValueError: bad root\n\n")).toBe("ValueError: bad root");
+    expect(scanErrorLine("\n  \n")).toBe("");
   });
 });
