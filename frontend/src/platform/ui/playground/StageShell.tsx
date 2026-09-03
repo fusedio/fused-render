@@ -15,6 +15,13 @@ import { cn } from "@platform/lib/utils";
 /** The tour's landmark. See above — a hook, not a style. */
 export const TOUR_MODEL_RAIL = "pg-side";
 
+/** The page's `<main>` while this tab is showing (was `.pg-fill`): a flex
+ *  column that owns the viewport height, `cc-main`'s 40px scroll runway cut to
+ *  16px because a viewport-filling tab has nothing below the composer, and the
+ *  22px gap under the head row that every other tab gets from its caption. */
+export const playgroundFillClass =
+  "flex flex-col overflow-y-hidden pb-4! [&>.cc-page-head]:mb-[22px]";
+
 export function PlaygroundBody({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
