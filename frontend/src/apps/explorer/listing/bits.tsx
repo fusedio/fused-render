@@ -2,25 +2,33 @@
 // pill, and search-match highlighting.
 import { highlightSegments } from "@platform/lib/fuzzy";
 import { FLIP_KEY_ATTR } from "@platform/lib/flip";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 
-// Shimmering placeholder rows shown while the listing fetch is in flight —
-// same column shape as the real rows (icon + name + size + mtime), just with
-// shimmer bars instead of text so the table never reads as "frozen". The
-// width cycles make the bars ragged like real filenames.
+// Placeholder rows shown while the listing fetch is in flight — same column
+// shape as the real rows (icon + name + size + mtime), just with pulsing bars
+// instead of text so the table never reads as "frozen". The width cycles make
+// the bars ragged like real filenames. shadcn `Skeleton` carries the pulse, so
+// the reduced-motion guard comes with it.
 const SKEL_NAME_W = [70, 45, 82, 38, 60, 50, 74, 42, 66, 34];
 const SKEL_SIZE_W = [34, 28, 40, 24, 36, 30, 26, 38, 32, 22];
 export function skeletonRows(n: number): React.ReactNode {
   return Array.from({ length: n }, (_, i) => (
     <tr key={i} className="skel-row">
       <td className="name">
-        <span className="skel-bar icon-skel" />
-        <span className="skel-bar" style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }} />
+        <Skeleton className="inline-block size-4 shrink-0 rounded-sm align-middle" />
+        <Skeleton
+          className="inline-block h-2.5 rounded-sm align-middle"
+          style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }}
+        />
       </td>
       <td className="size">
-        <span className="skel-bar" style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }} />
+        <Skeleton
+          className="inline-block h-2.5 rounded-sm align-middle"
+          style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }}
+        />
       </td>
       <td className="mtime">
-        <span className="skel-bar" style={{ width: 84 }} />
+        <Skeleton className="inline-block h-2.5 w-21 rounded-sm align-middle" />
       </td>
     </tr>
   ));

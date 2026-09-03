@@ -455,23 +455,7 @@ html.side-reopening iframe {
   font-size: 12px;
   border-top: 1px solid var(--border);
 }
-.listing-load-more {
-  margin-left: 10px;
-  padding: 3px 10px;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.listing-load-more:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.listing-load-more:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+/* The Load more button is a shadcn outline Button (Listing.tsx). */
 
 /* Error panel: dark maroon card + red border + mono red text, matching the
    fused_render/static/runtime.js overlay reference. Canonical error style —

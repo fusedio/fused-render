@@ -768,24 +768,11 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Skeleton loading state: shimmering bars shaped like the real listing rows
-   (icon + name + size + mtime), plus a full-pane placeholder while a preview
-   loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
-.skel-bar {
-  display: inline-block;
-  height: 10px;
-  border-radius: 3px;
-  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
-  background-size: 200% 100%;
-  animation: skel-shimmer 1.2s ease-in-out infinite;
-}
-
-.skel-bar.icon-skel {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  flex: 0 0 auto;
-}
+/* THE LISTING'S SKELETON BARS are shadcn `Skeleton`s now (listing/bits.tsx),
+   which is where their pulse and its reduced-motion guard live. The shimmer
+   keyframes below stay for `.skel-lines`, the shared "content is loading"
+   block — whose only consumer is shell/AppFiles.tsx, a file this surface does
+   not own. */
 
 @keyframes skel-shimmer {
   from {
@@ -1099,15 +1086,6 @@ table.listing-table tr.skel-row:hover {
   min-width: 0;
 }
 
-.listing-search .listing-search-input {
-  width: 100%;
-  padding-right: 10px;
-  /* Room for the magnifier below: 9px gutter + a 14px glyph + 5px before the
-     text. The glyph is out of flow, so this padding is the only thing keeping
-     the placeholder and the caret off it. */
-  padding-left: 28px;
-}
-
 /* The magnifier INSIDE the field's left edge — the same glyph the tight-bar
    fold stands in with (.listing-search-open), so folding and unfolding reads as
    one icon moving rather than two different marks, and it is the one part of
@@ -1218,28 +1196,12 @@ table.listing-table tr.skel-row:hover {
   opacity: 0.86;
 }
 
-/* Search-input chrome (explorer header). */
-.listing-search-input {
-  width: 100%;
-  font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-}
-
-.listing-search-input::placeholder {
-  color: var(--fg-muted);
-}
-
-/* Focus affordance: a muted border brighten, not the accent yellow — still
-   clearly perceivable against the resting --border, just not loud. */
-.listing-search-input:focus {
-  outline: none;
-  border-color: var(--fg-muted);
-}
+/* SEARCH-INPUT CHROME IS THE SHADCN INPUT'S NOW (Listing.tsx) — background,
+   hairline, radius, focus ring, placeholder colour and the 13px type all come
+   from the primitive, and so do the two paddings that hold the placeholder off
+   the magnifier. The rules ABOVE that reserve room for a pinned chip
+   (`.has-pin` / `.wide-pin`) deliberately stay in CSS: they are unlayered, so
+   they still out-rank the utility padding they are overriding. */
 
 /* Matched-substring highlight in search results (explorer). */
 .search-mark {
@@ -1338,30 +1300,11 @@ table.listing-table th {
    set by its text, hence the translate rather than a matching height.
    Left as --fg-muted with the labels beside it: it is chrome for the folder,
    not a fourth column heading, and it should not out-weigh the sorted column. */
-table.listing-table .listing-head-menu {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: background 90ms var(--ease-out), color 90ms var(--ease-out);
-}
-
-/* The same wash every other quiet icon button in the chrome uses (.bar-ctl). */
-table.listing-table .listing-head-menu:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
+/* The folder's `⋮` — the listing's own menu of what the crumb bar's path menu
+   used to offer over a folder, plus the background right-click's set. It is a
+   `BarButton` now (Listing.tsx), positioned with utilities against the sticky
+   <th>; `.listing-head-menu` survives only as the name the <th>'s
+   `padding-right` berth is documented against. */
 
 /* Only a header that sorts something gets the affordance. Search mode's single
    PATH header does not sort (relevance order only — Listing.tsx's thead), and

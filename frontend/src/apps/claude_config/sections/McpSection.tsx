@@ -251,7 +251,7 @@ export default function McpSection() {
                           {/* Why, in the CLI's own words. This is the whole
                               reason a failed row is worth expanding. */}
                           {s.statusDetail && (
-                            <PropertyRow label="Detail" className="[&>dd]:whitespace-normal [&>dd]:text-left">
+                            <PropertyRow label="Detail" className="[&>dd]:flex-1 [&>dd]:whitespace-normal [&>dd]:text-left">
                               {s.statusDetail}
                             </PropertyRow>
                           )}

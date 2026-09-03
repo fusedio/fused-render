@@ -179,6 +179,14 @@
     border-width: 0;
     padding: 0;
   }
+  /* React's mount point (frontend/index.html), transparent to the layout so
+     #app stays the layout root. Structural, not decorative: without it the
+     shell's flex layout collapses. It lived in a page stylesheet for a while,
+     where a class-name sweep read the whole file as dead and would have taken
+     this with it — hence its home beside the reset. */
+  #root {
+    display: contents;
+  }
   h1,
   h2,
   h3 {

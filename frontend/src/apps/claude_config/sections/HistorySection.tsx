@@ -182,7 +182,13 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
             {data.log.map((e, i) => (
               <ListRow
                 key={e.sha}
-                secondary={e.message}
+                // The `secondary` slot, but not secondary CONTENT: on every
+                // other list the description sits beside a name and reads
+                // muted, while here the message is the whole row and the date
+                // and sha beside it are the metadata. Lifted back to
+                // foreground at the call site rather than by a new ListRow
+                // prop — the slot's truncation and title still apply.
+                secondary={<span className="text-foreground">{e.message}</span>}
                 secondaryTitle={e.message}
                 meta={
                   <>

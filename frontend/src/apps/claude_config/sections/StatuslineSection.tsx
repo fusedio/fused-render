@@ -88,7 +88,11 @@ export default function StatuslineSection() {
       {/* The hero: what the thing actually looks like. Log-viewer shape — the
           block is always dark, so its base text is fixed light rather than the
           theme's foreground (which is near-black in the light theme). */}
-      <div className="relative bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200">
+      {/* Bordered as well as tinted: in the dark theme neutral-950 is within a
+          hair of the page background, so the fill alone left the block with no
+          edge at all. The border is what makes it read as a block there; in the
+          light theme the fill was already doing that on its own. */}
+      <div className="relative border border-border bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200">
         {running && (
           <StatusDot bucket="yellow" pulse label="Running" className="absolute top-3 right-3" />
         )}
@@ -102,7 +106,12 @@ export default function StatuslineSection() {
                 : "(empty output)"}
         </pre>
       </div>
-      <PropertyList className="max-w-3xl [&_dd]:text-left [&_dd]:whitespace-normal [&_dt]:w-24">
+      {/* The composite's `dd` hugs its content on the right, which is the look
+          a narrow properties panel wants. Here the property list IS the page
+          and the values are paths and sentences, so `flex-1` on the value cell
+          gives them a left-aligned column of their own — without it
+          `text-left` has nothing to align inside. */}
+      <PropertyList className="max-w-3xl [&_dd]:flex-1 [&_dd]:text-left [&_dd]:whitespace-normal [&_dt]:w-24">
         <PropertyRow label="Command">
           <Code>{data.command}</Code>
         </PropertyRow>

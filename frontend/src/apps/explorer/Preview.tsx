@@ -84,6 +84,14 @@ import {
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { BarButton } from "@apps/explorer/bar/BarButton";
+import { Alert, AlertDescription, AlertTitle } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import { Card } from "@platform/shadcn/ui/card";
+import { PropertyList, PropertyRow } from "@platform/ui/flow/PropertyRow";
+
+// Inline code inside a notice: a plate that reads as a quoted value rather than
+// as prose. Three call sites in RegistryFixNotice, hence the constant.
+const CODE_CLASS = "rounded-sm border border-border bg-background px-1.5 py-px font-mono text-xs";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
@@ -1964,7 +1972,11 @@ function TemplatePreview({
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
-            className="preview-browse-chip"
+            /* `preview-browse-chip` is a HOOK: the chip exists only under an
+               EMBED host that is not a snapshot, and that gate is a body class
+               (`body.embed:not(.snapshot)`), so preview.css still owns the
+               display switch. Everything else about it is here. */
+            className="preview-browse-chip absolute top-2.5 right-2.5 z-[2] items-center rounded-md border border-border bg-muted px-2.5 py-[5px] text-[11px] leading-none text-muted-foreground transition-colors hover:border-ring hover:text-foreground motion-reduce:transition-none"
             onClick={
               IS_FOREIGN_EMBED
                 ? () =>
@@ -2105,23 +2117,28 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
   };
 
   return (
-    <div className="metadata-card registry-fix-notice">
+    // The "get me out of this" panel, shown above the plain metadata card when
+    // the reason nothing renders is a FIXABLE Template Registry state — a
+    // disabling user override, or a corrupt registry.json. An Alert rather than
+    // a second Card: it is a condition to act on, not a description of the
+    // file, and it carries the one button that clears it.
+    <Alert className="max-w-[480px] border-border">
       {registryError && (
         <>
-          <p>
-            Your Template Registry file couldn't be read: <code>{registryError}</code>
-          </p>
-          <p className="registry-fix-hint">
+          <AlertTitle>
+            Your Template Registry file couldn&apos;t be read: <code className={CODE_CLASS}>{registryError}</code>
+          </AlertTitle>
+          <AlertDescription className="text-xs">
             Any custom preview bindings in it are being ignored until this is fixed.
-          </p>
-          <button
-            type="button"
-            className="btn btn-primary"
+          </AlertDescription>
+          <Button
+            size="sm"
+            className="mt-2 w-fit"
             disabled={busy}
             onClick={() => run(repairTemplateRegistry, (r) => r.repaired)}
           >
             Repair Template Registry
-          </button>
+          </Button>
         </>
       )}
       {coreRegistryError && (
@@ -2129,33 +2146,34 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
         // anything a request handler may rewrite — it's immutable data healed
         // only by ensure_core_templates' startup check, so the honest fix
         // really is "restart the app", not a click here.
-        <p>
-          Fused Render's built-in Template Registry couldn't be read: <code>{coreRegistryError}</code>. Restarting
-          the app usually fixes this.
-        </p>
+        <AlertTitle>
+          Fused Render&apos;s built-in Template Registry couldn&apos;t be read:{" "}
+          <code className={CODE_CLASS}>{coreRegistryError}</code>. Restarting the app usually fixes this.
+        </AlertTitle>
       )}
       {resetTarget && (
         <>
-          <p>
-            Previews for <code>{resetTarget.key}</code> files are turned off in your Template Registry.
-          </p>
+          <AlertTitle>
+            Previews for <code className={CODE_CLASS}>{resetTarget.key}</code> files are turned off in your
+            Template Registry.
+          </AlertTitle>
           {resetTarget.coreTemplates && resetTarget.coreTemplates.length > 0 && (
-            <p className="registry-fix-hint">
+            <AlertDescription className="text-xs">
               Restoring the default will bring back: {resetTarget.coreTemplates.join(", ")}.
-            </p>
+            </AlertDescription>
           )}
-          <button
-            type="button"
-            className="btn btn-primary"
+          <Button
+            size="sm"
+            className="mt-2 w-fit"
             disabled={busy}
             onClick={() => run(() => resetRegistryBinding(resetTarget.key))}
           >
             Restore default previews for {resetTarget.key}
-          </button>
+          </Button>
         </>
       )}
-      {actionError && <p className="registry-fix-error">{actionError}</p>}
-    </div>
+      {actionError && <p className="m-0 mt-1 text-xs text-destructive">{actionError}</p>}
+    </Alert>
   );
 }
 
@@ -2178,23 +2196,30 @@ function FallbackPreview({
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
-        <div className="metadata-stack">
+        {/* `.preview-body` is a flex ROW (it also hosts the mode iframe), so
+            the fallback's cards need their own column wrapper to stack instead
+            of sitting side by side. The gap only costs space when the registry
+            notice is actually there — a lone child gets none. */}
+        <div className="flex flex-col gap-4 p-6">
           <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
-          <div className="metadata-card">
-            <dl>
-              <dt>Name</dt>
-              <dd>{stat.name}</dd>
-              <dt>Path</dt>
-              <dd>{fsPath}</dd>
-              <dt>Size</dt>
-              <dd>{formatSize(stat.size)}</dd>
-              <dt>Modified</dt>
-              <dd>{formatMtimeFull(stat.mtime)}</dd>
-            </dl>
-            <a href={rawUrl(fsPath)} download={stat.name}>
+          <Card className="max-w-[480px] gap-3 p-5">
+            <PropertyList className="space-y-0">
+              <PropertyRow label="Name">{stat.name}</PropertyRow>
+              <PropertyRow label="Path">
+                <span className="break-all whitespace-normal">{fsPath}</span>
+              </PropertyRow>
+              <PropertyRow label="Size">{formatSize(stat.size)}</PropertyRow>
+              <PropertyRow label="Modified">{formatMtimeFull(stat.mtime)}</PropertyRow>
+            </PropertyList>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-fit"
+              render={<a href={rawUrl(fsPath)} download={stat.name} />}
+            >
               Download
-            </a>
-          </div>
+            </Button>
+          </Card>
         </div>
       </div>
       {fileMenu.overlays}

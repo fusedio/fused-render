@@ -217,7 +217,11 @@ export function Row({
   control: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-6 px-4 py-2.5 text-sm border-b border-border last:border-b-0">
+    // Stacked below `sm`, two columns above it — the breakpoint the deleted
+    // claude-config.css carried for this row. A 240px control column crushed
+    // into a narrow window is illegible, and the label is the half that has
+    // somewhere to go.
+    <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6 px-4 py-2.5 text-sm border-b border-border last:border-b-0">
       <div className="min-w-0 max-w-prose">
         <div className="font-medium">{label}</div>
         {doc ? <div className="text-xs text-muted-foreground mt-0.5">{doc}</div> : null}
@@ -640,7 +644,9 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
         {files.length > 0 && (
           <div className="space-y-1">
             <SectionHeading className="text-xs">Files</SectionHeading>
-            <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200 space-y-0.5 max-h-64 overflow-y-auto">
+            {/* The same bordered log block Statusline's preview uses — see the
+                note there for why the fill alone isn't enough in dark. */}
+            <div className="border border-border bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200 space-y-0.5 max-h-64 overflow-y-auto">
               {files.map((f) => (
                 <div className="flex items-baseline gap-2" key={f.status + f.path}>
                   <StatusBadge bucket={FSTAT_BUCKET[f.status] ?? "neutral"} className="font-mono w-6 justify-center px-0">

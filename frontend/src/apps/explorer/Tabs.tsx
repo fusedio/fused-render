@@ -39,8 +39,13 @@ import PaneModeMenu from "@apps/explorer/PaneModeMenu";
 // so it speaks the path's dialect, not the UI's. The active one is marked by
 // the underline plus a lifted plate; hover only brightens the ink, because a
 // hover background this close to the active plate reads as "already selected".
+// `border-0 border-b-2` and `bg-transparent`, both load-bearing: this is a bare
+// <button> with no `data-slot`, so the base layer's control reset (which is
+// keyed on that attribute) does not reach it and the UA's own outset border and
+// grey fill would show through. Tailwind's `border-b-2` alone sets one side's
+// width and leaves the other three at the UA's 2px.
 const TAB_CLASS =
-  "inline-flex max-w-[200px] shrink-0 items-center gap-1.5 border-b-2 border-transparent bg-transparent px-2 py-[5px] font-mono text-xs text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none";
+  "inline-flex max-w-[200px] shrink-0 items-center gap-1.5 border-0 border-b-2 border-transparent bg-transparent px-2 py-[5px] font-mono text-xs text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none";
 const TAB_ACTIVE_CLASS = "border-b-primary bg-muted text-foreground";
 // The two trailing glyphs inside a tab (open-in-new-tab, close): 15px boxes so
 // they fit the 30px strip without stretching it.

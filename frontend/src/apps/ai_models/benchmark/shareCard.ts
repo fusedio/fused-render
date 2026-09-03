@@ -20,12 +20,11 @@
 // so redrawing them is both exact and cheap.
 //
 // **The card is always DARK, whatever theme the app is in.** It is a poster,
-// not a screenshot: every shared card should look like the same artefact, and
-// the lime mark reads as branding on dark and as a highlighter stain on white.
-// That is why the palette below is literal hex rather than a `getComputedStyle`
-// read of the app's tokens — the values are the dark palette's own
-// (styles/tokens.css), copied deliberately, because a canvas cannot reference a
-// CSS variable and a theme-following card would ship two different brands.
+// not a screenshot: every shared card should look like the same artefact
+// wherever it lands. That is why the palette below is literal hex rather than a
+// `getComputedStyle` read of the app's tokens — a canvas cannot reference a CSS
+// variable, and a theme-following card would ship two different artefacts for
+// the same numbers.
 import { formatSize } from "@platform/lib/format";
 import {
   formatMetricSpecValue,
@@ -39,13 +38,20 @@ import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { type AiBenchmarkMachine } from "@platform/lib/api";
 import logoMark from "@assets/logo-black-bg-transparent.png";
 
-// The dark palette, value for value from styles/tokens.css' `:root` block.
+// The dark palette as literals, because this draws into a PNG rather than the
+// DOM: a canvas cannot read a CSS custom property, so these are the only
+// colours in the app allowed to restate the tokens. They are the resolved
+// sRGB of styles/tailwind.css' dark block — background, card, foreground,
+// muted-foreground, border — and must be recomputed if those move.
+// `series` is chart-1, not an accent: this card plots one model against
+// others, and chromatic colour here means "a series", which is exactly what
+// the chart tokens are for.
 const INK = {
-  bg: "#131417",
-  fg: "#e8eaed",
-  muted: "#9aa0a6",
-  border: "#2a2d33",
-  accent: "#E5FF44",
+  bg: "#0a0a0a",
+  fg: "#fafafa",
+  muted: "#a1a1a1",
+  border: "#262626",
+  series: "#1447e6",
 };
 
 const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
@@ -277,7 +283,7 @@ export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
     // that rounds to nothing must still leave a mark, or the card shows a row
     // with no bar at all where the number says otherwise.
     const width = Math.max(2, (bar.value / axisMax) * plotW);
-    ctx.fillStyle = INK.accent;
+    ctx.fillStyle = INK.series;
     roundedRect(ctx, plotX, mid - BAR_H / 2, width, BAR_H, 3);
     ctx.fill();
     ctx.fillStyle = INK.muted;
