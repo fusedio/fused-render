@@ -3,52 +3,51 @@
 // An embedding model has no output a newcomer can look at — a vector is 768
 // floats — so this stage demos the thing vectors are FOR: rank a handful of
 // lines against a query by meaning rather than by shared words. The lines come
-// prefilled and the query does not — a starter pill fills both and runs, so the
-// first ranked list still costs zero typing — and every sample's query
-// deliberately shares no word with its best matches: that gap is the whole
-// demonstration.
+// prefilled and the query does not — a starter pill fills both and runs — and
+// every sample's query deliberately shares no word with its best matches.
 //
 // One POST per run (`/api/ai/embed`, SPEC §40): the query and the lines ride
-// the same batch, so every score comes from one forward pass. Vectors return
-// unit-length (embed_common.unit_normalize, in both workers), so a dot
-// product IS the cosine similarity — no other math lives here.
+// the same batch. Vectors return unit-length, so a dot product IS the cosine
+// similarity — no other math lives here.
 //
 // Bars are scaled against the BEST match, never drawn raw: SigLIP
 // text-to-text cosines sit around 0.2–0.4, and a 31% bar on the right answer
-// reads as broken to the reader this tab exists for. The raw score stays on
-// hover. Query and lines are session state, never URL state — they are the
-// transcript, and the URL carries only the setup (PlaygroundTab's rule).
+// reads as broken. The raw score stays on hover. Query and lines are session
+// state, never URL state — they are the transcript.
 //
 // **TWO CONTROLS THAT APPEAR PER MODEL, both off the server's own answer**
-// (SPEC §40), because the capability serves two shapes of checkpoint and the
-// route refuses the wrong parameter for either:
-//
-// * a query/document toggle, only where `entry.promptScheme` is non-null. A
-//   retrieval encoder instructs a question and a passage differently; a dual
-//   encoder has no such convention and the route 400s a `kind` sent to one,
-//   because a parameter that changed nothing would be worse than one refused.
-// * an IMAGES mode, only where `entry.acceptsPaths` is true. That is a vision
-//   tower, which a prose encoder does not have.
-//
-// Both read the server's flags and neither re-derives them, which is the rule
-// `imageInput.ts` states for `acceptsImage`: a control drawn off anything else
-// is a control whose request comes back 400. `=== true` / `!= null` rather than
-// truthiness on a possibly-absent field, for that module's reason too — an older
-// server sends neither, and absence has to read as "no control".
+// (SPEC §40): a query/document toggle, only where `entry.promptScheme` is
+// non-null; and an IMAGES mode, only where `entry.acceptsPaths` is true. Both
+// read the server's flags and neither re-derives them.
 import { useEffect, useRef, useState } from "react";
 import { embedPaths, embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Button } from "@platform/shadcn/ui/button";
 import { Card } from "@platform/shadcn/ui/card";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
-import { useConfigOpen, ConfigPanel, RailChips, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
+import { cn } from "@platform/lib/utils";
+import { Tiny } from "@platform/ui/flow/Typography";
+import {
+  AnswerBlock,
+  ClearButton,
+  ComposerCard,
+  ComposerSide,
+  ConfigPanel,
+  RailChips,
+  RailField,
+  ResultSlot,
+  RunButton,
+  StageHeader,
+  StarterCards,
+  StatusLine,
+  composerInputClass,
+  useConfigOpen,
+  type Starter,
+} from "./controls";
 import { StarterIcons } from "./starterIcons";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
-// query and the six lines it is searched against travel together, because the
-// demonstration is the gap between them. Every set is built the same way —
-// three lines that match the query in meaning while sharing NO word with it,
-// three that share nothing at all — so a keyword search would come back empty
-// on exactly the lines this ranks first.
+// query and the six lines it is searched against travel together.
 interface EmbedSample extends Starter {
   lines: string[];
 }
@@ -168,36 +167,23 @@ const STARTERS: EmbedSample[] = [
   },
 ];
 
-// The LINES are prefilled and the QUERY is not. The lines have to be: they are
-// the corpus, they live behind the settings cog, and an empty one leaves Search
-// disabled for a reason the reader cannot see from the composer. The query used
-// to be prefilled too — the first sample's — and that is what the starter pills
-// are for: a filled composer nobody typed into reads as a search already made,
-// and it made the pills look like they would do something the box had already
-// done. Empty, the box asks its question and the pills answer it in one click.
+// The LINES are prefilled and the QUERY is not: the lines are the corpus, they
+// live behind the settings cog, and an empty one leaves Search disabled for a
+// reason the reader cannot see from the composer.
 const DEFAULT_LINES = STARTERS[0].lines.join("\n");
 
 // One under embed_common.MAX_ITEMS (64): the query rides in the same batch.
 const MAX_LINES = 63;
 
-// Pictures ride a SEPARATE batch from the query — one call per tower, since the
-// two towers are two sessions — so the full 64 is available here. Held well
-// below it anyway: this is a demonstration a reader assembles by hand through
-// the OS file dialog, one picture per click.
+// Pictures ride a SEPARATE batch from the query, so the full 64 is available
+// here. Held well below it anyway.
 const MAX_PICTURES = 12;
 
-// What the file dialog offers, and what is checked after it regardless. The
-// checks are the runner's real ones: `embed_common.open_image` reads anything
-// Pillow can, plus HEIC through pillow-heif — which is the format an iPhone
-// photo library is actually in, so leaving it out would make the mode work on
-// screenshots and fail on the photographs.
+// What the file dialog offers, and what is checked after it regardless —
+// `embed_common.open_image` reads anything Pillow can, plus HEIC.
 const PICTURE_TYPES = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic", "heif"];
 
-// The two things a text can BE to a retrieval model — `formats.TEXT_EMBED_KINDS`,
-// and the route refuses anything else. "Searching for" / "Being searched" rather
-// than "query" / "document": this tab is read by someone who has not met the
-// vocabulary, and the API names are on the composer seed and in the skill where
-// a page author meets them.
+// The two things a text can BE to a retrieval model — `formats.TEXT_EMBED_KINDS`.
 const KINDS = [
   { value: "query" as const, label: "Searching for",
     title: "Prefix these as a QUERY — the thing you are searching WITH" },
@@ -205,14 +191,9 @@ const KINDS = [
     title: "Prefix these as DOCUMENTS — the things you are searching THROUGH" },
 ];
 
-/** The last segment of a path, on either separator.
- *
- * `pickFile` hands back a NATIVE path, so a Windows `C:\\photos\\cat.png` split
- * on "/" alone has no separator to find and the whole string becomes the
- * "name" — the full drive path rendered as a filename in the corpus list and in
- * every ranked row. Both separators, because this string's shape depends on the
- * reader's OS and not on anything this component controls.
- */
+/** The last segment of a path, on either separator — `pickFile` hands back a
+ *  NATIVE path, so a Windows `C:\\photos\\cat.png` split on "/" alone has no
+ *  separator to find. */
 function basename(path: string): string {
   const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return (at >= 0 ? path.slice(at + 1) : path) || path;
@@ -227,6 +208,44 @@ interface RankedPicture {
   path: string;
   name: string;
   score: number;
+}
+
+/** One ranked row: the match strength as a wash behind the line, scaled to
+ *  the best match, so the top row is always full and the rest read relative
+ *  to it. */
+function RankedRow({
+  bar,
+  title,
+  thumb,
+  text,
+  score,
+}: {
+  bar: number;
+  title: string;
+  thumb?: string;
+  text: string;
+  score: number;
+}) {
+  return (
+    <li
+      className={cn(
+        "relative flex gap-3 overflow-hidden border-b border-border px-3 py-2 text-sm last:border-b-0",
+        thumb ? "items-center" : "items-baseline",
+      )}
+      title={title}
+    >
+      <span
+        className="pointer-events-none absolute inset-y-0 left-0 bg-primary/10"
+        style={{ width: `${Math.max(0, bar * 100)}%` }}
+        aria-hidden="true"
+      />
+      {thumb && (
+        <img className="relative size-10 flex-none rounded-sm bg-muted object-cover" src={thumb} alt={text} />
+      )}
+      <span className="relative min-w-0 flex-1">{text}</span>
+      <Tiny className="relative flex-none tabular-nums">{score.toFixed(2)}</Tiny>
+    </li>
+  );
 }
 
 export function EmbedStage({
@@ -246,12 +265,8 @@ export function EmbedStage({
   const [ranked, setRanked] = useState<Ranked[] | null>(null);
   const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
-  // The server's two per-model answers, read once and never re-derived — see
-  // the module header. `pictureMode` is state because the reader chooses it,
-  // but it is FORCED off the moment the selected model cannot serve it: the mode
-  // survives a model switch otherwise (the stage remounts per model id, but a
-  // reader who switched engines mid-session would otherwise see an images tab
-  // whose every request 400s), which is `usableBase`'s argument applied here.
+  // The server's two per-model answers, read once and never re-derived.
+  // `pictureMode` is FORCED off the moment the selected model cannot serve it.
   const ranksPictures = entry.acceptsPaths === true;
   const scheme = entry.promptScheme ?? null;
   const [wantPictures, setWantPictures] = useState(false);
@@ -264,29 +279,16 @@ export function EmbedStage({
   // **Which model produced the scores currently on screen — recorded at the run,
   // not read live.** `model` is the SIDEBAR's selection and changes the instant
   // the reader picks another one, while the results below are still the old
-  // model's. Rendering `model` beside them would label a list with the name of
-  // something that did not compute it, which is worse than saying nothing: this
-  // stage is where a person watches scores change and forms a belief about what
-  // a model does.
-  //
-  // It matters here more than the shape suggests. Two models on ONE engine's
-  // list can share a dimension — `nomic-embed-text-v1.5` and the SigLIP2 base
-  // export are both 768 — so switching models produces vectors that are the same
-  // size, in a different space, with no error anywhere. The scores just quietly
-  // stop meaning what they meant. `SKILL.md`'s "Store the model beside the
-  // vectors" is that rule for a page that persists them; this is the same rule
-  // for a surface that displays them.
+  // model's. Two models can share a dimension and produce vectors in a
+  // different space with no error anywhere.
   const [vectorModel, setVectorModel] = useState<string | null>(null);
 
-  // The run itself is one quick POST, but the cold-start watch loop is not —
-  // leaving the stage must stop it, same as the chat stage's rule.
+  // The cold-start watch loop must stop when the stage is left.
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   // Both inputs are arguments with the current state as their default: a
-  // sample card sets the query AND the corpus and runs in the same click, and
-  // reading them back off state would run the PREVIOUS scenario (setState is
-  // not visible until the next render).
+  // sample card sets the query AND the corpus and runs in the same click.
   const run = async (askText = query, lineText = lines) => {
     const asked = askText.trim();
     const items = lineText
@@ -302,17 +304,9 @@ export function EmbedStage({
     setBusy(true);
     const controller = new AbortController();
     abortRef.current = controller;
-    // `kind` on the corpus side only where the model HAS a scheme — see the
-    // module header on why sending it otherwise is a 400 rather than a no-op.
-    // The query and the lines ride one batch, so one `kind` covers both, which
-    // is why the toggle says what THESE texts are rather than pretending the two
-    // sides can differ in one call. A reader who wants the asymmetric pair runs
-    // the corpus as "Being searched" and the query as "Searching for", which is
-    // exactly what `fused.ai.embed` lets a page do with two calls.
+    // `kind` on the corpus side only where the model HAS a scheme.
     const ask = () => embedTexts(model, [asked, ...items], scheme ? kind : undefined);
     try {
-      // The same bounded wait the text stage uses (AI-5) — one place, because
-      // this dance drifted the moment either copy learned anything.
       const result = await withModelReady(ask, {
         signal: controller.signal,
         downloaded,
@@ -328,9 +322,7 @@ export function EmbedStage({
       }));
       scored.sort((a, b) => b.score - a.score);
       setRanked(scored);
-      // `response.modelId` — what the SERVER says it used, not what was asked for. A
-      // bare call takes the capability's default, so the request's own `model` is
-      // not always the answer.
+      // `response.modelId` — what the SERVER says it used, not what was asked for.
       setVectorModel(result.response?.modelId ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
@@ -341,12 +333,8 @@ export function EmbedStage({
     }
   };
 
-  /** Point the ranking at pictures ALREADY on this disk — no copy, no upload.
-   *
-   *  `<input type=file>` cannot do this: a browser hands over bytes and strips
-   *  the path on purpose, and the route takes a PATH because the worker is a
-   *  separate process that opens the file itself. So the only way to one is the
-   *  OS dialog raised in the server process, exactly as `ImageStage` does it. */
+  /** Point the ranking at pictures ALREADY on this disk — no copy, no upload:
+   *  the OS dialog raised in the server process, exactly as `ImageStage`. */
   const addPicture = async () => {
     setError(null);
     setAttaching(true);
@@ -363,7 +351,7 @@ export function EmbedStage({
           : [...current, path],
       );
       // A new picture invalidates the ranking rather than being appended to it
-      // unscored — a list where one row has no bar reads as a broken render.
+      // unscored.
       setRankedPictures(null);
     } catch (e) {
       setError((e as Error).message);
@@ -372,18 +360,9 @@ export function EmbedStage({
     }
   };
 
-  /** Rank the chosen pictures against the typed phrase.
-   *
-   *  TWO calls, not one, and that is the shape of a dual encoder rather than an
-   *  inefficiency: the towers are two separate sessions, so the phrase goes
-   *  through the text tower and the pictures through the vision one. They land
-   *  in the SAME space — that is what a dual encoder IS — so the dot product
-   *  across them is the cosine similarity, the same arithmetic the text mode
-   *  uses.
-   *
-   *  No `kind` on either call: a model that reports `acceptsPaths` is a dual
-   *  encoder, and a dual encoder has no retrieval convention, so the toggle is
-   *  not drawn in this mode and the route would refuse the field anyway. */
+  /** Rank the chosen pictures against the typed phrase. TWO calls, not one —
+   *  the towers are two separate sessions — landing in the SAME space. No
+   *  `kind` on either call. */
   const runPictures = async (askText = query) => {
     const asked = askText.trim();
     if (!asked || !pictures.length || busy) return;
@@ -425,85 +404,71 @@ export function EmbedStage({
     : 1;
 
   return (
-    <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
-        {/* The action, and the way to the settings. The hero card above names
-            the model and its state. */}
-        <StageHeader
-          title={pictureMode ? "Search pictures by meaning" : "Search lines by meaning"}
-          configOpen={configOpen}
-          onToggleConfig={toggleConfig}
+    <Card className="w-full flex-none gap-3.5 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+      <StageHeader
+        title={pictureMode ? "Search pictures by meaning" : "Search lines by meaning"}
+        configOpen={configOpen}
+        onToggleConfig={toggleConfig}
+      />
+      {/* The MODE switch, drawn only where the model has a vision tower to
+          serve the second half (`entry.acceptsPaths`). */}
+      {ranksPictures && (
+        <RailChips
+          label="Mode"
+          options={[
+            { value: "lines", label: "Lines",
+              title: "Rank written lines against the phrase" },
+            { value: "pictures", label: "Pictures",
+              title: "Rank pictures on this disk against the phrase — the same "
+                + "vector space, through this model's vision tower" },
+          ]}
+          active={pictureMode ? "pictures" : "lines"}
+          onPick={(value) => {
+            setWantPictures(value === "pictures");
+            // Each mode keeps its own ranking, and neither is shown under the
+            // other's heading.
+            setError(null);
+          }}
         />
-        {/* The MODE switch, and it is drawn only where the model has a vision
-            tower to serve the second half (`entry.acceptsPaths`). A prose
-            encoder sees no tab at all rather than a disabled one: there is
-            nothing the reader could do about it, and a control that is always
-            grey is a question the page keeps asking and answering itself. */}
-        {ranksPictures && (
-          <RailChips
-            options={[
-              { value: "lines", label: "Lines",
-                title: "Rank written lines against the phrase" },
-              { value: "pictures", label: "Pictures",
-                title: "Rank pictures on this disk against the phrase — the same "
-                  + "vector space, through this model's vision tower" },
-            ]}
-            active={pictureMode ? "pictures" : "lines"}
-            onPick={(value) => {
-              setWantPictures(value === "pictures");
-              // Each mode keeps its own ranking, and neither is shown under the
-              // other's heading — a stale list read as the new one is the same
-              // failure `ResultSlot` exists to prevent on a re-search.
-              setError(null);
-            }}
-          />
-        )}
-        {/* The retrieval KIND, drawn only where this model has a prompt scheme
-            to apply — and never in the pictures mode, where there is no text
-            corpus for it to be about. A dual encoder reports no scheme, so the
-            SigLIP rows never show this. */}
-        {scheme && !pictureMode && (
-          <RailChips options={KINDS} active={kind} onPick={setKind} />
-        )}
-        <div className="pg-composer">
-          <input
-            type="text"
-            value={query}
-            placeholder="What are you looking for?"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void (pictureMode ? runPictures() : run());
-            }}
-          />
-          {/* Same stack as the other composers — Clear at the top, Search at
-              the foot — so Clear sits in one place across the playground and
-              never appears BESIDE the input, stealing its width. */}
-          <div className="pg-composer-side">
-            {(pictureMode ? rankedPictures : ranked) && !busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the results"
-                onClick={() => (pictureMode ? setRankedPictures(null) : setRanked(null))}
-              >
-                Clear
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
-              disabled={
-                busy
-                || !query.trim()
-                || (pictureMode ? !pictures.length : !lines.trim())
-              }
-              title="Enter to run"
-              onClick={() => void (pictureMode ? runPictures() : run())}
-            >
-              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
-            </button>
-          </div>
-        </div>
+      )}
+      {/* The retrieval KIND, drawn only where this model has a prompt scheme
+          to apply — and never in the pictures mode. */}
+      {scheme && !pictureMode && (
+        <RailChips label="Text kind" options={KINDS} active={kind} onPick={setKind} />
+      )}
+      <ComposerCard>
+        <input
+          type="text"
+          className={composerInputClass}
+          value={query}
+          placeholder="What are you looking for?"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void (pictureMode ? runPictures() : run());
+          }}
+        />
+        {/* Same stack as the other composers — Clear at the top, Search at
+            the foot. */}
+        <ComposerSide>
+          {(pictureMode ? rankedPictures : ranked) && !busy && (
+            <ClearButton
+              title="Clear the results"
+              onClick={() => (pictureMode ? setRankedPictures(null) : setRanked(null))}
+            />
+          )}
+          <RunButton
+            disabled={
+              busy
+              || !query.trim()
+              || (pictureMode ? !pictures.length : !lines.trim())
+            }
+            title="Enter to run"
+            onClick={() => void (pictureMode ? runPictures() : run())}
+          >
+            {busy ? "Searching…" : "Search"}
+          </RunButton>
+        </ComposerSide>
+      </ComposerCard>
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         {pictureMode ? (
@@ -511,15 +476,17 @@ export function EmbedStage({
             label="Pictures to search"
             hint={`Files already on this disk, up to ${MAX_PICTURES}.`}
           >
-            <div className="pg-embed-pictures">
+            <div className="flex flex-col items-start gap-1">
               {pictures.map((path) => (
-                <div key={path} className="pg-embed-picture-row">
-                  <span className="pg-embed-picture-name" title={path}>
+                <div key={path} className="flex w-full items-center gap-2 text-xs">
+                  <span className="min-w-0 flex-1 truncate" title={path}>
                     {basename(path)}
                   </span>
-                  <button
+                  <Button
                     type="button"
-                    className="pg-ghost-btn"
+                    variant="ghost"
+                    size="xs"
+                    className="text-muted-foreground"
                     title="Remove this picture"
                     onClick={() => {
                       setPictures((current) => current.filter((p) => p !== path));
@@ -527,17 +494,18 @@ export function EmbedStage({
                     }}
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               ))}
-              <button
+              <Button
                 type="button"
-                className="pg-ghost-btn"
+                variant="outline"
+                size="xs"
                 disabled={attaching || pictures.length >= MAX_PICTURES}
                 onClick={() => void addPicture()}
               >
                 {attaching ? "Choosing…" : "Add a picture…"}
-              </button>
+              </Button>
             </div>
           </RailField>
         ) : (
@@ -553,113 +521,75 @@ export function EmbedStage({
         )}
       </ConfigPanel>
 
+      {/* Until there is a ranking to read, the examples. Each one sets both
+          halves of the scenario and runs it. */}
+      {!ranked && !busy && !pictureMode && (
+        <StarterCards
+          samples={STARTERS}
+          onPick={(sample) => {
+            const corpus = sample.lines.join("\n");
+            setQuery(sample.prompt);
+            setLines(corpus);
+            void run(sample.prompt, corpus);
+          }}
+        />
+      )}
 
-        {/* Until there is a ranking to read, the examples. Each one sets both
-            halves of the scenario and runs it — see `run`'s arguments. */}
-        {!ranked && !busy && !pictureMode && (
-          <StarterCards
-            samples={STARTERS}
-            onPick={(sample) => {
-              const corpus = sample.lines.join("\n");
-              setQuery(sample.prompt);
-              setLines(corpus);
-              void run(sample.prompt, corpus);
-            }}
-          />
-        )}
-
-        {status && <p className="pg-status">{status}</p>}
-        {error && <p className="pg-error">{error}</p>}
-        {pictureMode ? (
-          rankedPictures && !busy ? (
-            <div className="pg-answer-block">
-              <p className="pg-answer-label">
-                Ranked by meaning
-                {vectorModel && (
-                  <span className="pg-answer-provenance" title={
-                    `These scores were computed by ${vectorModel}. Vectors from two `
-                    + `models are not comparable, even when they are the same size.`}
-                  >
-                    {vectorModel}
-                  </span>
-                )}
-              </p>
-              <ol className="pg-embed-results pg-embed-thumbs">
-                {rankedPictures.map((row) => (
-                  <li
-                    key={row.path}
-                    className="pg-embed-row"
-                    title={`${row.path} — similarity ${row.score.toFixed(3)}`}
-                  >
-                    <span
-                      className="pg-embed-bar"
-                      style={{ width: `${Math.max(0, (row.score / bestPicture) * 100)}%` }}
-                      aria-hidden="true"
-                    />
-                    {/* Through `/api/fs/raw`, the one door every local file in
-                        this app goes through — the shell has no other way to
-                        read a picture off the user's own disk. */}
-                    <img className="pg-embed-thumb" src={rawUrl(row.path)} alt={row.name} />
-                    <span className="pg-embed-text">{row.name}</span>
-                    <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          ) : (
-            <ResultSlot
-              label="Ranked by meaning"
-              capability="embeddings"
-              note={
-                pictures.length
-                  ? "The pictures come back here, ordered by how close they are to the phrase."
-                  : "Add a picture or two behind the settings cog, then type what you are looking for."
-              }
-            />
-          )
-        ) : ranked && !busy ? (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">
-              Ranked by meaning
-              {vectorModel && (
-                <span className="pg-answer-provenance" title={
-                  `These scores were computed by ${vectorModel}. Vectors from two `
-                  + `models are not comparable, even when they are the same size.`}
-                >
-                  {vectorModel}
-                </span>
-              )}
-            </p>
-            <ol className="pg-embed-results">
-              {ranked.map((row, at) => (
-                <li
-                  key={at}
-                  className="pg-embed-row"
-                  title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
-                >
-                  <span
-                    className="pg-embed-bar"
-                    style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
-                    aria-hidden="true"
-                  />
-                  <span className="pg-embed-text">{row.text}</span>
-                  <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-                </li>
+      {status && <StatusLine status="loading">{status}</StatusLine>}
+      {error && <StatusLine status="error">{error}</StatusLine>}
+      {pictureMode ? (
+        rankedPictures && !busy ? (
+          <AnswerBlock label="Ranked by meaning" provenance={vectorModel}>
+            <ol className="m-0 list-none overflow-hidden rounded-lg border border-border bg-card p-0">
+              {rankedPictures.map((row) => (
+                <RankedRow
+                  key={row.path}
+                  bar={row.score / bestPicture}
+                  title={`${row.path} — similarity ${row.score.toFixed(3)}`}
+                  // Through `/api/fs/raw`, the one door every local file in
+                  // this app goes through.
+                  thumb={rawUrl(row.path)}
+                  text={row.name}
+                  score={row.score}
+                />
               ))}
             </ol>
-          </div>
+          </AnswerBlock>
         ) : (
-          // The slot covers BOTH "nothing has run" and "a re-search is in
-          // flight": the ranking is dropped while `busy` so a stale order is
-          // never read as the new one, and without the slot that left the
-          // column briefly empty at exactly the moment something is happening.
           <ResultSlot
             label="Ranked by meaning"
             capability="embeddings"
-            note="The lines come back here, ordered by how close they are to the query."
+            note={
+              pictures.length
+                ? "The pictures come back here, ordered by how close they are to the phrase."
+                : "Add a picture or two behind the settings cog, then type what you are looking for."
+            }
           />
-        )}
-      </Card>
-    </div>
+        )
+      ) : ranked && !busy ? (
+        <AnswerBlock label="Ranked by meaning" provenance={vectorModel}>
+          <ol className="m-0 list-none overflow-hidden rounded-lg border border-border bg-card p-0">
+            {ranked.map((row, at) => (
+              <RankedRow
+                key={at}
+                bar={row.score / best}
+                title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
+                text={row.text}
+                score={row.score}
+              />
+            ))}
+          </ol>
+        </AnswerBlock>
+      ) : (
+        // The slot covers BOTH "nothing has run" and "a re-search is in
+        // flight": the ranking is dropped while `busy` so a stale order is
+        // never read as the new one.
+        <ResultSlot
+          label="Ranked by meaning"
+          capability="embeddings"
+          note="The lines come back here, ordered by how close they are to the query."
+        />
+      )}
+    </Card>
   );
 }

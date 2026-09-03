@@ -19,7 +19,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
+import { CARD_GRID, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import {
   refreshIsPending,
@@ -57,6 +57,25 @@ import {
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight } from "@apps/explorer/listing/bits";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@platform/shadcn/ui/input-group";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import { Muted } from "@platform/ui/flow/Typography";
+import { ArrowRight, ChevronDown, Loader2, Search, Sparkles } from "lucide-react";
+
+// One result row's frame: EntityRow density, hover/active wash off the accent
+// token. Shared by the file, open and AI rows so the three stay one list.
+const ROW_CLASS =
+  "flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-foreground no-underline hover:bg-accent/50 disabled:cursor-default";
+const ROW_ACTIVE_CLASS = "bg-accent/30 shadow-[inset_2px_0_0_var(--color-foreground)]";
+// The result list: bordered, square, bounded so the sticky AI row has something
+// to stick against — 440px is a FLOOR (short viewports still scroll), tall ones
+// get the rest of their height; 11rem is the chrome above the list.
+const RESULTS_CLASS =
+  "m-0 list-none overflow-y-auto rounded-lg border border-border bg-card p-0 max-h-[max(440px,calc(100dvh-11rem))] [&>li+li]:border-t [&>li+li]:border-border";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
 // multiple, so it's the same rule for every tab regardless of how many columns
@@ -100,26 +119,6 @@ const AI_OFF: AiPhase = { status: "off" };
 // expensive plan cold. This one runs both passes and comes back empty.
 const WARM_QUERY = "zqxjv";
 
-function MagnifierIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="M21 21l-4.3-4.3" />
-    </svg>
-  );
-}
-
-function SparkIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3l1.8 4.9L18.7 9.7l-4.9 1.8L12 16.4l-1.8-4.9L5.3 9.7l4.9-1.8L12 3z" />
-      <path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z" />
-    </svg>
-  );
-}
-
 // One file hit. An <a> (not a button) so cmd/ctrl-click opens it the way every
 // other path in this app does.
 function FileRow({
@@ -150,7 +149,7 @@ function FileRow({
   return (
     <li role="option" id={id} aria-selected={active}>
       <a
-        className={"fh-result" + (active ? " is-active" : "")}
+        className={cn(ROW_CLASS, active && ROW_ACTIVE_CLASS)}
         href={urlForFsPath(hit.path)}
         title={hit.path}
         onMouseMove={onHover}
@@ -161,15 +160,15 @@ function FileRow({
           navigate(hit.path, { isDir: hit.is_dir });
         }}
       >
-        <span className="fh-result-icon" aria-hidden="true">
+        <span className="inline-flex shrink-0" aria-hidden="true">
           {iconForEntry(name, hit.is_dir)}
         </span>
-        <span className="fh-result-name">{renderHighlight(name, namePos)}</span>
-        <span className="fh-result-path">{renderHighlight(display, pathPos)}</span>
-        <span className="fh-result-meta">
+        <span className="max-w-[40%] shrink-0 truncate font-medium">{renderHighlight(name, namePos)}</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{renderHighlight(display, pathPos)}</span>
+        <span className="inline-flex shrink-0 gap-3 text-xs text-muted-foreground tabular-nums">
           {hit.is_dir ? "" : formatSize(hit.size)}
           {hit.mtime !== null && (
-            <span className="fh-result-date" title={formatMtimeFull(hit.mtime)}>
+            <span className="min-w-[88px] text-right" title={formatMtimeFull(hit.mtime)}>
               {formatMtime(hit.mtime)}
             </span>
           )}
@@ -200,18 +199,14 @@ function OpenRow({
 }) {
   return (
     <li role="option" id={id} aria-selected={active}>
-      <button
-        type="button"
-        className={"fh-result fh-open-row" + (active ? " is-active" : "")}
-        onClick={onOpen}
-      >
-        <span className="fh-result-icon" aria-hidden="true">
+      <button type="button" className={cn(ROW_CLASS, active && ROW_ACTIVE_CLASS)} onClick={onOpen}>
+        <span className="inline-flex shrink-0" aria-hidden="true">
           {iconForEntry(basename(path), isDir)}
         </span>
-        <span className="fh-result-name">Open</span>
-        <span className="fh-result-path">{path}</span>
-        <span className="fh-result-meta">
-          <kbd>↵</kbd>
+        <span className="shrink-0 font-medium">Open</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{path}</span>
+        <span className="inline-flex shrink-0 text-xs text-muted-foreground">
+          <Kbd>↵</Kbd>
         </span>
       </button>
     </li>
@@ -222,13 +217,10 @@ function OpenRow({
 // it (accent glyph, no path, no size) because activating it costs a model call
 // and a wait, and because on a zero-hit query it is the only thing on screen.
 //
-// It does NOT reuse `.fh-result-path` / `.fh-result-meta` for the query echo
-// and the `↵` hint, even though it reuses `.fh-result`/`.fh-result-name` for
-// layout: those two classes are the file rows' PATH and DATE/SIZE columns, and
-// borrowing them here made the query — "parquet" — land in the same visual
-// column as a file's `~/Work/...` path, and the `↵` align with a date. Nothing
-// about this row is a file, so it gets its own two classes instead
-// (`.fh-ai-query`, `.fh-ai-hint`; preferences.css).
+// The query echo is italic and the `↵` hint has its own fixed slot, not the
+// file rows' PATH and DATE/SIZE columns: borrowing those made the query —
+// "parquet" — land in the same visual column as a file's `~/Work/...` path,
+// and the `↵` align with a date. Nothing about this row is a file.
 //
 // Deliberately NOT hoverable, unlike the file rows: setting the highlight on
 // mousemove meant nudging the pointer across the list armed Enter to spend a
@@ -248,25 +240,28 @@ function AiActionRow({
   onRun: () => void;
 }) {
   return (
-    // `fh-ai-row` (sticky/background/border-top — preferences.css) lives on
-    // THIS <li>, not the button inside it: `position: sticky` is bound to its
-    // element's own containing block, and a <li> that wraps exactly one
-    // full-width button has no room of its own to offset within — sticky on
-    // the button was a no-op that never actually stuck. `fh-ai-action`
-    // carries what genuinely IS about the button (the accent name, the
-    // disabled cursor).
-    <li className="fh-ai-row" role="option" id={id} aria-selected={active}>
+    // sticky/background/border-top live on THIS <li>, not the button inside
+    // it: `position: sticky` is bound to its element's own containing block,
+    // and a <li> that wraps exactly one full-width button has no room of its
+    // own to offset within — sticky on the button was a no-op that never
+    // actually stuck.
+    <li
+      className="sticky bottom-0 border-t border-border bg-background"
+      role="option"
+      id={id}
+      aria-selected={active}
+    >
       <button
         type="button"
-        className={"fh-result fh-ai-action" + (active ? " is-active" : "")}
+        className={cn(ROW_CLASS, "py-3", active && ROW_ACTIVE_CLASS)}
         disabled={running}
         onClick={onRun}
       >
-        <span className="fh-result-icon fh-ai-glyph" aria-hidden="true">
-          <SparkIcon />
+        <span className="inline-flex shrink-0" aria-hidden="true">
+          <Sparkles className="size-4" />
         </span>
-        <span className="fh-result-name">Search with AI</span>
-        <span className="fh-ai-query">“{query}”</span>
+        <span className="shrink-0 font-medium">Search with AI</span>
+        <span className="min-w-0 flex-1 truncate text-xs italic text-muted-foreground">“{query}”</span>
         {/* The badge only claims Enter when Enter actually runs THIS row.
             `activeRow` pre-selects the AI row exactly when it is the only
             content on screen (settled, zero file hits) — every other time
@@ -275,8 +270,8 @@ function AiActionRow({
             The span stays in the layout (not conditionally rendered) even
             empty, so the row's columns do not reflow as the highlight moves
             onto or off it. */}
-        <span className="fh-ai-hint">
-          {running ? "Asking…" : active ? <kbd>↵</kbd> : null}
+        <span className="w-14 shrink-0 text-right text-xs text-muted-foreground">
+          {running ? "Asking…" : active ? <Kbd>↵</Kbd> : null}
         </span>
       </button>
     </li>
@@ -288,16 +283,18 @@ function AiActionRow({
 function AiResults({ home, query, result }: { home: string; query: string; result: AiSearchResult }) {
   const summary = describeSpec(result.spec);
   return (
-    <div className="fh-panel">
-      <p className="fh-search-summary">
-        <span className="fh-ai-badge">
-          <SparkIcon /> AI
+    <div className="mt-2.5">
+      <Muted className="mb-2 flex items-center gap-2 text-xs">
+        <Badge variant="secondary" className="gap-1">
+          <Sparkles className="size-3" /> AI
+        </Badge>
+        <span>
+          {summary ? `Understood as: ${summary}` : "No filters — showing closest matches."}
+          {result.truncated && " · Broad query: showing the first slice of matches."}
         </span>
-        {summary ? `Understood as: ${summary}` : "No filters — showing closest matches."}
-        {result.truncated && " · Broad query: showing the first slice of matches."}
-      </p>
+      </Muted>
       {result.hits.length ? (
-        <ul className="fh-results" role="listbox" aria-label="AI search results">
+        <ul className={RESULTS_CLASS} role="listbox" aria-label="AI search results">
           {result.hits.map((h) => (
             <FileRow
               key={h.path}
@@ -316,9 +313,7 @@ function AiResults({ home, query, result }: { home: string; query: string; resul
           ))}
         </ul>
       ) : (
-        <p className="fh-empty">
-          AI search found nothing for “{query}”. Try different words, or fewer of them.
-        </p>
+        <Muted>AI search found nothing for “{query}”. Try different words, or fewer of them.</Muted>
       )}
     </div>
   );
@@ -815,15 +810,15 @@ export function FilesSearch({
   };
 
   return (
-    <div className="files-search-wrap">
-      <div className="files-search">
-        <span className="files-search-icon" aria-hidden="true">
-          <MagnifierIcon />
-        </span>
-        <input
+    <div className="text-left">
+      <InputGroup className="h-11 bg-background shadow-sm">
+        <InputGroupAddon>
+          <Search aria-hidden="true" />
+        </InputGroupAddon>
+        <InputGroupInput
           ref={inputEl}
           type="search"
-          className="files-search-input"
+          className="h-full text-sm [&::-webkit-search-cancel-button]:appearance-none"
           placeholder="Search your files — or paste a path like ~/Downloads"
           aria-label="Search your files"
           role="combobox"
@@ -858,11 +853,13 @@ export function FilesSearch({
           }}
         />
         {active && (
-          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
-            Clear
-          </button>
+          <InputGroupAddon align="inline-end">
+            <Button variant="outline" size="xs" title="Clear search (esc)" onClick={clear}>
+              Clear
+            </Button>
+          </InputGroupAddon>
         )}
-      </div>
+      </InputGroup>
 
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
@@ -881,8 +878,8 @@ export function FilesSearch({
       {!active ? null : showingAi ? (
         <AiResults home={home} query={ai.query} result={ai.result} />
       ) : (
-        <div className="fh-panel">
-          <p className="fh-result-note">
+        <div className="mt-2.5">
+          <Muted className="mb-2 text-xs">
             {/* Branch on the ANSWER IN HAND, not on the request state: while a
                 new query is in flight the previous answer is what is on screen,
                 and a note that denies having rows over rows that are visibly
@@ -908,7 +905,7 @@ export function FilesSearch({
                 (see `hits`, above) have likely narrowed to nothing. */}
             {showOpenRow ? (
               <>
-                <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
+                <Kbd>↵</Kbd> to open · <Kbd>esc</Kbd> to clear
               </>
             ) : !searchable ? (
               "Keep typing…"
@@ -925,13 +922,14 @@ export function FilesSearch({
               // resolve by waiting.
               <>
                 File indexing is off —{" "}
-                <button
-                  type="button"
-                  className="fh-link-button"
+                <Button
+                  variant="link"
+                  size="xs"
+                  className="h-auto p-0 text-xs text-muted-foreground underline"
                   onClick={() => navigateUrl("/preferences?tab=indexing")}
                 >
                   enable it in Preferences
-                </button>
+                </Button>
                 .
               </>
             ) : !answer.covered ? (
@@ -972,8 +970,8 @@ export function FilesSearch({
                     never had a chance to include. */}
                 {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
                 {" · "}
-                <kbd>↑</kbd>
-                <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd> to pick · <Kbd>esc</Kbd> to clear
               </>
             )}
             {/* Only once the wait is long enough to be worth mentioning: under
@@ -981,21 +979,23 @@ export function FilesSearch({
                 and a note that appears and vanishes reads as slower than one
                 that never appeared. */}
             {searchable && !showOpenRow && slow && hits.length > 0 && (
-              <span className="fh-searching-note"> · Searching…</span>
+              <span className="opacity-70"> · Searching…</span>
             )}
             {caveat && (
-              <span className="fh-index-chip" title={caveat.title}>
+              <Badge variant="outline" className="ml-2 gap-1 align-baseline" title={caveat.title}>
                 {/* Only while a scan is actually running. The chip also carries
                     the "not refreshed" caveat, whose entire point is that NO
                     work is in flight — a spinner there asserts the opposite of
                     what the words next to it say. (Listing.tsx keeps its
                     spinner on walk status for the same reason: the spinner
                     tracks work, the caveat tracks trust.) */}
-                {indexScan?.scanning && <span className="fh-index-spinner" aria-hidden="true" />}
+                {indexScan?.scanning && (
+                  <Loader2 className="size-3 motion-safe:animate-spin" aria-hidden="true" />
+                )}
                 {caveat.note}
-              </span>
+              </Badge>
             )}
-          </p>
+          </Muted>
           {/* Nothing to show below MIN_QUERY_CHARS UNLESS an address resolved
               (an "Open" row needs no search — it isn't ranked, it's stat'd —
               so it is not gated on the same threshold): otherwise no request
@@ -1004,7 +1004,7 @@ export function FilesSearch({
               above already says why the list is empty. */}
           {(searchable || showOpenRow) && (
             <ul
-              className={"fh-results" + (behind ? " is-stale" : "")}
+              className={cn(RESULTS_CLASS, behind && "opacity-85")}
               id="fh-result-list"
               role="listbox"
               aria-label="Search results"
@@ -1049,23 +1049,12 @@ export function FilesSearch({
 // The fold's "Show more" — a quiet pill under the grid, shared by both tabs.
 function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
   return (
-    <button type="button" className="fhb-more" onClick={onClick}>
-      {expanded ? "Show less" : "Show more"}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-        style={expanded ? { transform: "rotate(180deg)" } : undefined}
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
-    </button>
+    <div className="mt-3 flex justify-center">
+      <Button variant="ghost" size="sm" onClick={onClick}>
+        {expanded ? "Show less" : "Show more"}
+        <ChevronDown className={cn("size-3.5", expanded && "rotate-180")} />
+      </Button>
+    </div>
   );
 }
 
@@ -1227,13 +1216,13 @@ export default function FilesHome({ config }: { config: Config }) {
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
   return (
-    <div className="files-home">
-      <div className="files-home-inner">
+    <div className="h-full overflow-y-auto scrollbar-auto-hide bg-background text-foreground">
+      <div className="mx-auto max-w-[1120px] px-7 pb-18 pt-9">
         {/* No brand row or headline: the search prompt is the whole hero —
             the page title lives in the sidebar's Explorer entry, and a
             "Find and preview your files" restatement above the box only
             pushed the one thing you came to use further down. */}
-        <header className="home-hero files-hero">
+        <header className="pb-2.5 pt-4">
           <FilesSearch
             home={home}
             initialQuery={initialQuery}
@@ -1244,56 +1233,28 @@ export default function FilesHome({ config }: { config: Config }) {
 
         {searching ? null : (
           <>
-          <section className="fh-section">
-            <div className="fh-tabs">
-              <div className="fh-tablist" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "sessions"}
-                className={"fh-tab" + (tab === "sessions" ? " active" : "")}
-                onClick={() => setTab("sessions")}
-              >
-                Claude Sessions
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "recents"}
-                className={"fh-tab" + (tab === "recents" ? " active" : "")}
-                onClick={() => setTab("recents")}
-              >
-                Recents
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "repos"}
-                className={"fh-tab" + (tab === "repos" ? " active" : "")}
-                onClick={() => setTab("repos")}
-              >
-                Repos
-              </button>
-              </div>
+          <section className="mt-7">
+            <div className="mb-3.5 flex items-end justify-between border-b border-border pb-1">
+              <Tabs value={tab} onValueChange={(v) => setTab(v as LaunchTab)}>
+                <TabsList variant="line">
+                  <TabsTrigger value="sessions">Claude Sessions</TabsTrigger>
+                  <TabsTrigger value="recents">Recents</TabsTrigger>
+                  <TabsTrigger value="repos">Repos</TabsTrigger>
+                </TabsList>
+              </Tabs>
               {/* Browse rides the tab strip's right edge — the one action in a
                   row of filters, so it sits opposite them rather than above
                   them. Like the grids, it yields to search results. */}
-              <button
-                type="button"
-                className="files-hero-cta"
-                onClick={() => navigate(home, { isDir: true })}
-              >
+              <Button variant="outline" size="sm" className="mb-1" onClick={() => navigate(home, { isDir: true })}>
                 Browse files
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              </button>
+                <ArrowRight />
+              </Button>
             </div>
 
             {tab === "recents" ? (
               recents.length ? (
                 <>
-                  <div className="fhb-grid">
+                  <div className={CARD_GRID}>
                     {shownRecents.map((r) => {
                       const fsPath = recentFsPath(r.url);
                       return (
@@ -1314,7 +1275,7 @@ export default function FilesHome({ config }: { config: Config }) {
                   )}
                 </>
               ) : (
-                <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
+                <Muted>Nothing opened yet. Files you view will show up here.</Muted>
               )
             ) : tab === "repos" ? (
               repoList.length ? (
@@ -1323,9 +1284,9 @@ export default function FilesHome({ config }: { config: Config }) {
                       warning. An index is always a little behind the filesystem,
                       so alarming copy here would cry wolf permanently. */}
                   {reposStaleNote(reposTab) && (
-                    <p className="fh-search-summary">{reposStaleNote(reposTab)}</p>
+                    <Muted className="mb-2 text-xs">{reposStaleNote(reposTab)}</Muted>
                   )}
-                  <div className="fhb-grid">
+                  <div className={CARD_GRID}>
                     {shownRepos.map((r) => (
                       <FolderPreviewCard key={r.path} path={r.path} />
                     ))}
@@ -1342,13 +1303,13 @@ export default function FilesHome({ config }: { config: Config }) {
                 // have no repos" can never be shown for "we haven't finished
                 // looking" (or the reverse) — the distinction the index makes
                 // necessary, and the one three earlier versions of this got wrong.
-                <p className="fh-empty">{reposMessage(reposTab)}</p>
+                <Muted>{reposMessage(reposTab)}</Muted>
               )
             ) : shownSessions === null ? (
-              <p className="fh-empty">Looking for artifacts…</p>
+              <Muted>Looking for artifacts…</Muted>
             ) : sessionFolders && sessionFolders.length ? (
               <>
-                <div className="fhb-grid">
+                <div className={CARD_GRID}>
                   {shownSessions.map((f) => (
                     <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
@@ -1361,9 +1322,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 )}
               </>
             ) : (
-              <p className="fh-empty">
-                No Claude Code sessions found on this machine.
-              </p>
+              <Muted>No Claude Code sessions found on this machine.</Muted>
             )}
           </section>
           </>

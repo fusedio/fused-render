@@ -31,6 +31,30 @@ import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
+import { cn } from "@platform/lib/utils";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Star, TriangleAlert } from "lucide-react";
+
+// The card grid every home tab (and the shell Home page) lays these out in.
+export const CARD_GRID = "grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]";
+
+// The card: flat, square (rounded-lg is 0px), one hairline, no lift on hover.
+const CARD_CLASS =
+  "flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card p-1.5 text-foreground no-underline shadow-sm transition-colors hover:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50";
+// The 16/10 body well every card body (thumb, stack, note) fills.
+const WELL_CLASS = "relative block aspect-[16/10] overflow-hidden rounded-lg border border-border bg-background";
+// The absolute-fill preview box. `[&_iframe]` carries what used to be
+// `.fhb-preview iframe`: pointer-events:none is what retargets every press
+// onto the card so a click anywhere opens the bookmark.
+const PREVIEW_CLASS =
+  "block overflow-hidden [&_iframe]:absolute [&_iframe]:top-0 [&_iframe]:left-0 [&_iframe]:border-0 [&_iframe]:bg-background [&_iframe]:origin-top-left [&_iframe]:pointer-events-none";
+// Two placements: absolute-fill inside a CardThumb well, or in-flow as the
+// front sheet's flex-grown body (right under its title row — one card, no
+// seam; the sheet's overflow clip rounds the top corners).
+const PREVIEW_FILL = "absolute inset-0";
+const PREVIEW_INLINE = "relative z-0 min-h-[60px] w-full flex-1 bg-background";
+const previewClass = (inline?: boolean) => cn(PREVIEW_CLASS, inline ? PREVIEW_INLINE : PREVIEW_FILL);
+const SKEL_CLASS = "absolute inset-0 rounded-none pointer-events-none motion-reduce:animate-none";
 
 // The iframe renders at desktop width and is scaled into the preview box —
 // same pure-CSS trick as AppPreviewCard.
@@ -59,7 +83,7 @@ function joinPath(dir: string, name: string): string {
 // onto every /render it builds, so a card peeking at an app's entry page never
 // records the app open (GET /render records by default, D301) — without it,
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
-export function LivePreview({ src }: { src: string }) {
+export function LivePreview({ src, inline }: { src: string; inline?: boolean }) {
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   const { started, settled } = usePreviewStart(nearViewport);
   // Separate from `started`/`settled`: those track the SCHEDULER's slot (freed
@@ -82,17 +106,17 @@ export function LivePreview({ src }: { src: string }) {
   }, [started, src]);
   if (!started) {
     return (
-      <span ref={previewRef} className="fhb-preview" aria-hidden="true">
-        <span className="fhb-preview-skel" />
+      <span ref={previewRef} className={previewClass(inline)} aria-hidden="true">
+        <Skeleton className={SKEL_CLASS} />
       </span>
     );
   }
   return (
-    <span ref={previewRef} className="fhb-preview" aria-hidden="true">
+    <span ref={previewRef} className={previewClass(inline)} aria-hidden="true">
       {/* The near-viewport observer is the lazy gate; the shared scheduler is
           the concurrency gate. Keeping them separate means a browser-delayed
           iframe never holds one of the scheduler's two permits. */}
-      {!loaded && <span className="fhb-preview-skel" />}
+      {!loaded && <Skeleton className={SKEL_CLASS} />}
       <iframe
         {...thumbFrame(src)}
         style={{
@@ -116,8 +140,8 @@ export function LivePreview({ src }: { src: string }) {
           settled();
         }}
       />
-      {/* No shield span: `.fhb-preview iframe` is already `pointer-events: none`
-          (preferences.css), so every press retargets onto the card itself. The
+      {/* No shield span: the iframe is already `pointer-events: none`
+          (PREVIEW_CLASS), so every press retargets onto the card itself. The
           image peek below keeps its shield — an <img> carries the browser's
           native drag gesture, which pointer-events does not stop. */}
     </span>
@@ -149,19 +173,19 @@ const APP_PROBE_LIMIT = 3;
 // render because THIS component was chosen instead of it. Falling back to the
 // caller's iframe on the error keeps the old guarantee that a card is never
 // blank.
-function ImagePreview({ src, fallback }: { src: string; fallback: ReactNode }) {
+function ImagePreview({ src, fallback, inline }: { src: string; fallback: ReactNode; inline?: boolean }) {
   const [failed, setFailed] = useState(false);
   if (failed) return <>{fallback}</>;
   return (
-    <span className="fhb-preview" aria-hidden="true">
+    <span className={previewClass(inline)} aria-hidden="true">
       <img
-        className="fhb-shot"
+        className="absolute inset-0 h-full w-full object-cover bg-background"
         src={src}
         alt=""
         loading="lazy"
         onError={() => setFailed(true)}
       />
-      <span className="fhb-shield" />
+      <span className="absolute inset-0" />
     </span>
   );
 }
@@ -253,23 +277,23 @@ function FolderStack({ path }: { path: string }) {
   // The front sheet's body, under its title row: the peeked view, or (once
   // settled with nothing to peek) a count so the card isn't a void. Either way
   // it is ONE preview per card — the back sheets load nothing (see below).
-  const livePeek = peekPath ? <LivePreview src={embedUrlForFsPath(peekPath)} /> : null;
+  const livePeek = peekPath ? <LivePreview src={embedUrlForFsPath(peekPath)} inline /> : null;
   const body = peekPath ? (
     isPreviewImage(peekPath) ? (
       // A broken image falls back to the embed of that same path, which renders
       // the file through the shell — worst case its own error state, never a
       // blank card.
-      <ImagePreview src={rawUrl(peekPath)} fallback={livePeek} />
+      <ImagePreview src={rawUrl(peekPath)} fallback={livePeek} inline />
     ) : (
       livePeek
     )
   ) : settled ? (
-    <span className="fhb-sheet-note">
+    <span className="flex min-h-[60px] flex-1 items-center justify-center p-3 text-xs text-muted-foreground">
       {`${teaser.length} item${teaser.length === 1 ? "" : "s"}`}
     </span>
   ) : null;
   return (
-    <span className="fhb-stack">
+    <span className={cn(WELL_CLASS, "group/stack flex flex-col items-stretch px-2.5 pt-2.5")}>
       {/* Back sheet first: natural stacking keeps the front sheet on top.
           Each entry is ONE sheet — a title row whose card body slides down
           behind the sheet in front of it; the front sheet carries the
@@ -281,35 +305,32 @@ function FolderStack({ path }: { path: string }) {
           stack uses, so the silhouette (how many pages, which one is in
           front) is on screen from first paint and only the ink — names,
           the peeked body — arrives once listDir and the subfolder probe both
-          land. Reuses `.skel-bar.icon-skel` (explorer.css) for the row icon
-          rather than a bespoke square, and `.fhb-sheet-skel-body` for the
-          front sheet's body — the same slot `.fhb-sheet-d0 .fhb-preview`
-          fills below, sized to match without the specificity fight that
-          layering onto `.fhb-preview` itself would cause (see
-          preferences.css). */}
+          land. */}
       {!settled &&
         [2, 1, 0].map((depth) => (
-          <span key={depth} className={`fhb-sheet fhb-sheet-d${depth}`}>
-            <span className="fhb-sheet-row">
-              <span className="skel-bar icon-skel" />
-              <span className="skel-bar" style={{ width: depth === 0 ? "55%" : "70%" }} />
-            </span>
+          <Sheet key={depth} depth={depth}>
+            <SheetRow>
+              <Skeleton className="size-3.5 shrink-0 motion-reduce:animate-none" />
+              <Skeleton className="h-2.5 motion-reduce:animate-none" style={{ width: depth === 0 ? "55%" : "70%" }} />
+            </SheetRow>
             {depth === 0 ? (
-              <span className="fhb-sheet-skel-body" />
+              <Skeleton className="min-h-[60px] w-full flex-1 rounded-none motion-reduce:animate-none" />
             ) : (
-              <span className="fhb-sheet-peek" />
+              <SheetPeek />
             )}
-          </span>
+          </Sheet>
         ))}
       {settled &&
         shown.map((e, i) => {
           const depth = shown.length - 1 - i;
           return (
-            <span key={e.name} className={`fhb-sheet fhb-sheet-d${depth}`}>
-              <span className="fhb-sheet-row">
-                <span className="fhb-sheet-icon">{iconForEntry(e.name, e.is_dir)}</span>
-                <span className="fhb-sheet-label">{e.name}</span>
-              </span>
+            <Sheet key={e.name} depth={depth}>
+              <SheetRow>
+                <span className="flex shrink-0 items-center text-muted-foreground [&_svg]:size-3.5">
+                  {iconForEntry(e.name, e.is_dir)}
+                </span>
+                <span className="min-w-0 truncate">{e.name}</span>
+              </SheetRow>
               {depth === 0 ? (
                 body
               ) : (
@@ -317,27 +338,18 @@ function FolderStack({ path }: { path: string }) {
                 // hover fan) but load NO iframe: one live preview per card —
                 // the front sheet's — is the whole embed budget; a strip per
                 // back sheet tripled the page loads a card grid spawns.
-                <span className="fhb-sheet-peek" />
+                <SheetPeek />
               )}
-            </span>
+            </Sheet>
           );
         })}
       {/* Nothing to stack: the mark stands in the card's place. Both theme
-          renders are in the DOM; CSS shows the one matching data-theme. */}
+          renders are in the DOM; the dark variant shows the one matching
+          data-theme. */}
       {shown.length === 0 && settled && (
-        <span className="fhb-note fhb-empty">
-          <img
-            className="fhb-empty-mark fhb-empty-mark-dark"
-            src={logoMarkDark}
-            alt=""
-            aria-hidden="true"
-          />
-          <img
-            className="fhb-empty-mark fhb-empty-mark-light"
-            src={logoMarkLight}
-            alt=""
-            aria-hidden="true"
-          />
+        <span className="flex flex-1 flex-col items-center justify-center gap-2.5 p-3 text-center text-xs text-muted-foreground">
+          <img className="size-10 opacity-35 hidden dark:block" src={logoMarkDark} alt="" aria-hidden="true" />
+          <img className="size-10 opacity-35 dark:hidden" src={logoMarkLight} alt="" aria-hidden="true" />
           Empty folder
         </span>
       )}
@@ -345,60 +357,104 @@ function FolderStack({ path }: { path: string }) {
   );
 }
 
+// One sheet of the folder stack. Depth 0 is the front sheet (flex-grown, its
+// body is the peek); deeper sheets tuck behind it with a negative bottom
+// margin that the card's hover relaxes — the "fan". Margin animates only
+// under motion-safe.
+function Sheet({ depth, children }: { depth: number; children: ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "flex min-w-0 flex-col rounded-t-md border border-b-0 border-border bg-card text-[10px] shadow-sm motion-safe:transition-[margin] motion-safe:duration-200",
+        depth === 0 && "z-30 min-h-0 flex-1 overflow-hidden",
+        depth === 1 && "z-20 mx-2.5 -mb-[33px] group-hover/stack:-mb-[18px]",
+        depth === 2 && "z-10 mx-5 -mb-[33px] group-hover/stack:-mb-[18px]",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function SheetRow({ children }: { children: ReactNode }) {
+  return <span className="flex min-w-0 items-center gap-2 p-2.5">{children}</span>;
+}
+
+// A back sheet's blank page-body strip — a step lighter than the sheet so the
+// fan reads as pages, not bars.
+function SheetPeek() {
+  return <span className="relative h-5 shrink-0 overflow-hidden bg-muted" />;
+}
+
 // Card shell: header row (icon tile + name over path) above the body. An
 // anchor so middle-click / Cmd-click open a new tab (same as LaunchCard).
-function CardShell({
-  b,
+// Exported so the shell Home page can build its skeleton and its own card
+// variants on the real shell instead of mimicking it.
+export function CardShell({
+  href,
+  title,
   icon,
-  isDir,
+  name,
+  path,
+  badge,
+  onClick,
   children,
 }: {
-  b: Bookmark;
+  href: string;
+  title: string;
   icon: ReactNode;
-  isDir: boolean | null;
+  name: ReactNode;
+  path: ReactNode;
+  badge?: ReactNode;
+  onClick: () => void;
   children: ReactNode;
 }) {
-  const fsPath = bookmarkFsPath(b.url);
   return (
     <a
-      className="fhb-card"
-      href={b.url}
-      title={fsPath}
+      className={CARD_CLASS}
+      href={href}
+      title={title}
       onClick={(e) => {
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
           return;
         e.preventDefault();
-        // Open AND arm, like the sidebar row — the breadcrumb's
-        // Update-bookmark tracking should work no matter where the
-        // bookmark was opened from.
-        armBookmark(b.id, b.url);
-        navigateUrl(b.url, isDir === true ? { isDir: true } : undefined);
+        onClick();
       }}
     >
-      <span className="fhb-card-head">
-        <span className="fh-card-icon" aria-hidden="true">
+      <span className="flex min-w-0 items-center gap-2.5 px-2 pb-2.5 pt-1.5">
+        <span
+          className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-foreground"
+          aria-hidden="true"
+        >
           {icon}
         </span>
-        <span className="fh-card-text">
-          <span className="fh-card-name">{b.name}</span>
-          <span className="fh-card-path">{fsPath}</span>
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate text-sm font-medium">{name}</span>
+          <span className="truncate text-xs text-muted-foreground">{path}</span>
         </span>
-        {isBookmarkMissing(b.id) && (
-          <span className="bookmark-missing-badge" title={`File not found: ${fsPath}`}>
-            ⚠
-          </span>
-        )}
+        {badge != null && <span className="ml-auto shrink-0">{badge}</span>}
       </span>
       {children}
     </a>
   );
 }
 
-const STAR_ICON = (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-    <path d="M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6L8 1.6z" />
-  </svg>
-);
+// The 16/10 body well a card's thumbnail (or skeleton) sits in.
+export function CardThumb({ className, children }: { className?: string; children?: ReactNode }) {
+  return <span className={cn(WELL_CLASS, className)}>{children}</span>;
+}
+
+// Placeholder body: missing target, stat in flight.
+function CardNote({ children, ...rest }: { children?: ReactNode; "aria-hidden"?: boolean }) {
+  return (
+    <span
+      className="flex aspect-[16/10] items-center justify-center rounded-lg bg-muted/50 p-3 text-center text-xs text-muted-foreground"
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
 
 export function BookmarkPreviewCard({ b }: { b: Bookmark }) {
   const fsPath = bookmarkFsPath(b.url);
@@ -426,26 +482,44 @@ export function BookmarkPreviewCard({ b }: { b: Bookmark }) {
   }, [fsPath, sentinel, missing]);
 
   const icon = b.icon ? (
-    <span className="fh-card-emoji">{b.icon}</span>
+    <span className="text-[17px] leading-none">{b.icon}</span>
   ) : isDir === null ? (
-    STAR_ICON
+    <Star className="size-4" />
   ) : (
     iconForEntry(basename(fsPath), isDir)
   );
 
   return (
-    <CardShell b={b} icon={icon} isDir={isDir}>
+    <CardShell
+      href={b.url}
+      title={fsPath}
+      icon={icon}
+      name={b.name}
+      path={fsPath}
+      badge={
+        missing ? (
+          <TriangleAlert className="size-3.5 text-destructive" aria-label={`File not found: ${fsPath}`} />
+        ) : undefined
+      }
+      onClick={() => {
+        // Open AND arm, like the sidebar row — the breadcrumb's
+        // Update-bookmark tracking should work no matter where the
+        // bookmark was opened from.
+        armBookmark(b.id, b.url);
+        navigateUrl(b.url, isDir === true ? { isDir: true } : undefined);
+      }}
+    >
       {missing ? (
-        <span className="fhb-note">File not found — the target was moved or deleted</span>
+        <CardNote>File not found — the target was moved or deleted</CardNote>
       ) : isDir === null ? (
         // Stat in flight: hold the body's box so the grid doesn't reflow.
-        <span className="fhb-note" aria-hidden="true" />
+        <CardNote aria-hidden />
       ) : isDir ? (
         <FolderStack path={fsPath} />
       ) : (
-        <span className="fhb-thumb">
+        <CardThumb>
           <LivePreview src={embedUrlForBookmark(b.url)} />
-        </span>
+        </CardThumb>
       )}
     </CardShell>
   );
@@ -467,30 +541,18 @@ export function RecentPreviewCard({
   name: string;
 }) {
   return (
-    <a
-      className="fhb-card"
+    <CardShell
       href={url}
       title={path}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-          return;
-        e.preventDefault();
-        navigateUrl(url);
-      }}
+      icon={iconForEntry(basename(path), false)}
+      name={name}
+      path={path}
+      onClick={() => navigateUrl(url)}
     >
-      <span className="fhb-card-head">
-        <span className="fh-card-icon" aria-hidden="true">
-          {iconForEntry(basename(path), false)}
-        </span>
-        <span className="fh-card-text">
-          <span className="fh-card-name">{name}</span>
-          <span className="fh-card-path">{path}</span>
-        </span>
-      </span>
-      <span className="fhb-thumb">
+      <CardThumb>
         <LivePreview src={embedUrlForBookmark(url)} />
-      </span>
-    </a>
+      </CardThumb>
+    </CardShell>
   );
 }
 
@@ -505,27 +567,15 @@ export function RecentPreviewCard({
 // card's header, so it would have to arrive as a prop — none does, on purpose.
 export function FolderPreviewCard({ path }: { path: string }) {
   return (
-    <a
-      className="fhb-card"
+    <CardShell
       href={urlForFsPath(path)}
       title={path}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-          return;
-        e.preventDefault();
-        navigate(path, { isDir: true });
-      }}
+      icon={iconForEntry(basename(path), true)}
+      name={basename(path)}
+      path={path}
+      onClick={() => navigate(path, { isDir: true })}
     >
-      <span className="fhb-card-head">
-        <span className="fh-card-icon" aria-hidden="true">
-          {iconForEntry(basename(path), true)}
-        </span>
-        <span className="fh-card-text">
-          <span className="fh-card-name">{basename(path)}</span>
-          <span className="fh-card-path">{path}</span>
-        </span>
-      </span>
       <FolderStack path={path} />
-    </a>
+    </CardShell>
   );
 }

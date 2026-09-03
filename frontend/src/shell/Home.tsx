@@ -7,6 +7,11 @@
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { buttonVariants } from "@platform/shadcn/ui/button";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Muted, Page, PageBody, SectionTitle, Tiny } from "@platform/ui/flow/Typography";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
@@ -30,7 +35,9 @@ import { tabHref } from "@apps/ai_models/routes";
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
 // The full lists live behind "See all".
-// Card width + gap must match the .home-row CSS.
+// The card width the count is measured against (the rows themselves are equal
+// grid columns — see Row — so this is the floor a card is allowed to shrink
+// toward, not a pixel width drawn anywhere).
 const CARD_W = 330;
 const CARD_GAP = 16;
 // The ceiling on what a section may fetch/keep — enough for a very wide
@@ -128,18 +135,20 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="fh-section home-section">
-      <div className="home-sec-head">
-        <h2 className="home-sec-title">
-          <a className="home-sec-title-link" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
+    <section id={id} className="space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <SectionTitle>
+          <a className="hover:text-muted-foreground" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
             {title}
           </a>
-        </h2>
-        <a className="home-sec-more" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
+        </SectionTitle>
+        <a
+          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-muted-foreground hover:text-foreground")}
+          href={seeAllHref}
+          onClick={(e) => softNavigate(e, seeAllHref)}
+        >
           See all
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M9 6l6 6-6 6" />
-          </svg>
+          <ChevronRight aria-hidden="true" />
         </a>
       </div>
       {children}
@@ -147,61 +156,47 @@ function Section({
   );
 }
 
-// Skeleton for one card while a strip's fetch is in flight. Two variants,
-// because Home's two async strips draw two DIFFERENT real cards and a single
-// shared shape would be wrong for one of them:
-//   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
-//     row (tag pill, timestamp) OVER a full-bleed thumb. No icon: the real
-//     card has none.
-//   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
-//     head row over an inset thumb well. The real card's head DOES carry an
-//     icon, but it's a static decorative folder glyph, identical on every
-//     card and independent of the fetch — shimmering it (or even placing an
-//     inert placeholder for it) would claim something is loading that isn't,
-//     so both variants render NO icon.
-// Built by reusing the real card's own classes rather than a bespoke shimmer
-// shape with hand-measured dimensions: the browser lays both variants out
-// with the exact same box model (padding, border, font metrics) the real
-// card gets, so the skeleton's height tracks the real card's automatically —
-// including through a CSS change neither this file nor a hand-derived
-// constant would notice. Pure decoration — `aria-hidden`, with the row
-// wrapper (below) carrying the one `role="status"` announcement for the
-// whole strip, the way the old "Loading apps" line (a single ~18px
-// paragraph) used to speak for the row rather than each line in it.
-function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
-  if (variant === "app") {
-    return (
-      <span className="app-pcard home-skel-card" aria-hidden="true">
-        <span className="app-pcard-body">
-          <span className="skel-bar" style={{ width: "58%" }} />
-          <span className="app-pcard-meta">
-            <span className="skel-bar" style={{ width: "46px" }} />
-            <span className="skel-bar" style={{ width: "64px" }} />
-          </span>
-        </span>
-        <span className="app-pcard-thumb home-skel-body" />
-      </span>
-    );
-  }
+// One row of cards: as many equal columns as the page measured fit (see
+// useStripCount), so nothing wraps, clips, or scrolls. Cards fill the width
+// rather than sitting in a centred fixed-pixel column.
+function Row({ count, children, ...rest }: { count: number; children: React.ReactNode } & React.ComponentProps<"div">) {
   return (
-    <span className="fhb-card home-skel-card" aria-hidden="true">
-      <span className="fhb-card-head">
-        {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
-            real content — the name/path text — decides its width, and here
-            it's the head row's ONLY child, since the icon is deliberately
-            gone); a percentage-width `.skel-bar` inside it has nothing to
-            shrink-to-fit against, so `home-skel-text` grows it to fill the
-            head row like the real text effectively does once it's long
-            enough to need the ellipsis. */}
-        <span className="fh-card-text home-skel-text">
-          {/* Wider bar on top: a name reads longer than the path underneath it
-              on every real card head, and matching that keeps the skeleton
-              from looking like a title-less placeholder. */}
-          <span className="skel-bar" style={{ width: "72%" }} />
-          <span className="skel-bar" style={{ width: "48%" }} />
-        </span>
+    <div
+      className="grid gap-4"
+      style={{ gridTemplateColumns: `repeat(${Math.max(1, count)}, minmax(0, 1fr))` }}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+// Skeleton for one card while a strip's fetch is in flight. Two variants,
+// because Home's two async strips draw two DIFFERENT real cards:
+//   - "app"    mirrors AppPreviewCard — title + a meta row (tag pill, timestamp)
+//     OVER a full-bleed thumb. No icon: the real card has none.
+//   - "folder" mirrors FolderPreviewCard — a head row (name over path) over an
+//     inset thumb well. The real card's head DOES carry an icon, but it's a
+//     static decorative folder glyph, identical on every card and independent
+//     of the fetch — shimmering it would claim something is loading that isn't,
+//     so neither variant renders an icon.
+// Pure decoration — `aria-hidden`, with the row wrapper (below) carrying the
+// one `role="status"` announcement for the whole strip.
+function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
+  return (
+    <span className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3" aria-hidden="true">
+      <span className="flex flex-col gap-1.5">
+        <Skeleton className="h-3.5 w-[58%]" />
+        {variant === "app" ? (
+          <span className="flex gap-2">
+            <Skeleton className="h-3 w-12" />
+            <Skeleton className="h-3 w-16" />
+          </span>
+        ) : (
+          <Skeleton className="h-3 w-[48%]" />
+        )}
       </span>
-      <span className="fhb-thumb home-skel-body" />
+      <Skeleton className="aspect-[16/10] w-full rounded-lg" />
     </span>
   );
 }
@@ -222,12 +217,18 @@ function SkeletonRow({
   variant: "app" | "folder";
 }) {
   return (
-    <div className="home-row" role="status" aria-busy="true" aria-label={label}>
+    <Row count={count} role="status" aria-busy="true" aria-label={label}>
       {Array.from({ length: Math.max(1, count) }, (_, i) => (
         <SkeletonCard key={i} variant={variant} />
       ))}
-    </div>
+    </Row>
   );
+}
+
+// The terminal empty state for a strip: one muted line, deliberately NOT a
+// card-height well — this state is permanent, not a loading flicker.
+function EmptyLine({ children }: { children: React.ReactNode }) {
+  return <Muted className="py-5 text-center">{children}</Muted>;
 }
 
 // The AI Playground strip's glyph vocabulary — plain strokes on the current
@@ -321,25 +322,45 @@ function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
   const head = PLAYGROUND_HEADS[group.capability] ?? "chat";
   const flow = PLAYGROUND_FLOWS[group.capability] ?? [head, head];
   return (
-    <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
-      <span className="fhb-card-head">
-        <span className="fh-card-icon home-pg-icon" aria-hidden="true">
+    <a
+      className="group flex flex-col gap-2 rounded-lg border border-border bg-card p-3 text-sm shadow-sm transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
+      href={href}
+      onClick={(e) => softNavigate(e, href)}
+    >
+      <span className="flex items-center gap-2.5">
+        <span className="flex size-4 shrink-0 items-center text-muted-foreground [&_svg]:size-4" aria-hidden="true">
           {MEDIA_GLYPHS[head]}
         </span>
-        <span className="fh-card-text">
-          <span className="fh-card-name">{group.label}</span>
-          <span className="fh-card-path">Runs on this machine</span>
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">{group.label}</span>
+          <Tiny className="truncate">Runs on this machine</Tiny>
         </span>
       </span>
-      <span className="home-pg-body" aria-hidden="true">
-        <span className="home-pg-flow">
-          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[0]]}</span>
-          <span className="home-pg-arrow">{FLOW_ARROW}</span>
-          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[1]]}</span>
+      {/* in-glyph → out-glyph: the card draws the task as the mapping it
+          performs (speech becomes text) rather than as one decorative icon.
+          Same tile twice is intended for chat → chat — the pair is what reads
+          as "text in, text out". */}
+      <span
+        className="flex aspect-[16/10] flex-col items-center justify-center gap-2.5 overflow-hidden rounded-lg border border-border bg-muted"
+        aria-hidden="true"
+      >
+        <span className="flex items-center gap-3">
+          <FlowGlyph>{MEDIA_GLYPHS[flow[0]]}</FlowGlyph>
+          <span className="flex size-4 text-muted-foreground [&_svg]:size-4">{FLOW_ARROW}</span>
+          <FlowGlyph>{MEDIA_GLYPHS[flow[1]]}</FlowGlyph>
         </span>
-        <span className="home-pg-blurb">{group.blurb}</span>
+        <Tiny className="max-w-[85%] text-center group-hover:text-foreground">{group.blurb}</Tiny>
       </span>
     </a>
+  );
+}
+
+// One side of the flow pair: a squared-corner tile on the card ground.
+function FlowGlyph({ children }: { children: ReactNode }) {
+  return (
+    <span className="flex size-14 items-center justify-center rounded-md border border-border bg-background text-foreground [&_svg]:size-7">
+      {children}
+    </span>
   );
 }
 
@@ -436,9 +457,11 @@ export default function Home({ config }: { config: Config }) {
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
   return (
-    <div className="files-home">
-      <div className="files-home-inner home-wide">
-        <header className="home-hero files-hero">
+    <Page>
+      <PageBody className="px-6 pt-2 pb-16 md:px-8">
+        {/* `home-hero` is a DOM hook for the welcome tour only
+            (platform/lib/tours/home.ts); nothing styles it. */}
+        <header className="home-hero mx-auto w-full max-w-5xl pt-4 pb-2 text-left">
           <FilesSearch
             home={home}
             initialQuery={initialQuery}
@@ -448,39 +471,29 @@ export default function Home({ config }: { config: Config }) {
         </header>
 
         {searching ? null : (
-          // Outer div is the full-width measuring element; the inner column is
-          // exactly as wide as the cards that fit and centered, so the section
-          // titles and "See all" stay flush with the cards' edges.
-          <div ref={stripRef}>
-            <div
-              className="home-strips"
-              style={
-                count === null
-                  ? undefined
-                  : { width: count * (CARD_W + CARD_GAP) - CARD_GAP }
-              }
-            >
+          // The measuring element for useStripCount: the rows fill its width
+          // with as many equal columns as whole cards fit.
+          <div ref={stripRef} className="space-y-8">
             {/* Above the strips, because on a machine where Claude Code is not
                 set up this is the only thing on the page the user can act on —
                 and it renders nothing at all once there is nothing to say.
-                Inside the measured column so it lines up with the cards rather
-                than spanning the window. Hidden while a search is live for the
-                same reason the strips are: the search result IS the page then. */}
+                Hidden while a search is live for the same reason the strips
+                are: the search result IS the page then. */}
             <ClaudeHealthStrip />
             <FdaStrip />
             <Section id="home-sec-apps" title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <SkeletonRow count={shown} label="Loading apps" variant="app" />
               ) : apps.length ? (
-                <div className="home-row">
+                <Row count={shown}>
                   {apps.slice(0, shown).map((app) => (
                     <AppPreviewCard key={app.path} app={app} />
                   ))}
-                </div>
+                </Row>
               ) : (
-                <p className="fh-empty">
+                <EmptyLine>
                   {appsError ?? "No apps yet. Build one and it'll show up here."}
-                </p>
+                </EmptyLine>
               )}
             </Section>
 
@@ -489,11 +502,11 @@ export default function Home({ config }: { config: Config }) {
               title="AI Playground"
               seeAllHref={tabHref("playground", "")}
             >
-              <div className="home-row">
+              <Row count={shown}>
                 {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
                   <PlaygroundPreviewCard key={group.capability} group={group} />
                 ))}
-              </div>
+              </Row>
             </Section>
 
             <Section
@@ -504,19 +517,19 @@ export default function Home({ config }: { config: Config }) {
               {sessions === null ? (
                 <SkeletonRow count={shown} label="Loading Claude sessions" variant="folder" />
               ) : sessions.length ? (
-                <div className="home-row">
+                <Row count={shown}>
                   {sessions.slice(0, shown).map((f) => (
                     <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
-                </div>
+                </Row>
               ) : (
-                <p className="fh-empty">No Claude Code sessions found on this machine.</p>
+                <EmptyLine>No Claude Code sessions found on this machine.</EmptyLine>
               )}
             </Section>
 
             <Section title="Recent files" seeAllHref="/explorer?tab=recents">
               {recents.length ? (
-                <div className="home-row">
+                <Row count={shown}>
                   {recents.slice(0, shown).map((r) => {
                     const fsPath = recentFsPath(r.url);
                     return (
@@ -528,15 +541,14 @@ export default function Home({ config }: { config: Config }) {
                       />
                     );
                   })}
-                </div>
+                </Row>
               ) : (
-                <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
+                <EmptyLine>Nothing opened yet. Files you view will show up here.</EmptyLine>
               )}
             </Section>
-            </div>
           </div>
         )}
-      </div>
-    </div>
+      </PageBody>
+    </Page>
   );
 }

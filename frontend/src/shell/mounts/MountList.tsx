@@ -1,16 +1,24 @@
-// The mount list: one card per mount, with its health dot, upload queue and
-// per-mount actions. Split out of shell/Mounts.tsx, which is now just the page.
+// The mount list: one dense row per mount, with its health icon, upload queue
+// and per-mount actions. Split out of shell/Mounts.tsx, which is now just the
+// page. Rows follow the Flow entity-row recipe but are written out here rather
+// than through <EntityRow>: a mount row has a second line (the remote spec, an
+// upload notice, its own error), which the single-line composite has no slot for.
 import { useState } from "react";
+import { FolderOpenIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { deleteMount, reconnectMount } from "@platform/lib/api";
 import type { Mount, MountUploads } from "@platform/lib/api";
 import type { RcloneRemote } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { uploadNotice } from "@platform/lib/uploads";
+import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { StatusIcon } from "@platform/ui/flow/StatusIcon";
 import { ProviderIcon } from "@platform/ui/ProviderIcons";
 import type { ProviderIconKey } from "@platform/ui/ProviderIcons";
+import type { StatusBucket } from "@platform/ui/status-colors";
+import { Note } from "./bits";
 
-// The card's mark, from the SERVER's classification of the remote behind the
+// The row's mark, from the SERVER's classification of the remote behind the
 // mount — never from sniffing its name. The server only tells us the coarse
 // cloud (s3 / gcs / other) and whether it is anonymous, so this is a family
 // mark rather than a brand logo: a bucket for object storage, a globe for
@@ -24,6 +32,16 @@ function markFor(remoteSpec: string, remotes: RcloneRemote[]): ProviderIconKey {
   if (r.kind === "public") return "public";
   return r.provider === "s3" || r.provider === "gcs" ? "detected" : "s3compat";
 }
+
+// Mount health → status-colors bucket. Explicit rather than `status={state}`:
+// the shared map knows "stale" as orange (a waiting state) and knows nothing of
+// "mounted"/"disconnected", and here both broken states are the same red.
+const HEALTH_BUCKET: Record<Mount["state"], StatusBucket> = {
+  mounted: "green",
+  disconnected: "red",
+  stale: "red",
+  unmounted: "neutral",
+};
 
 // Files written to this mount that haven't reached the remote yet (D221).
 // Worth its own line because a mount caches writes locally and uploads them
@@ -40,27 +58,26 @@ function UploadQueue({ uploads }: { uploads?: MountUploads | null }) {
       return null;
     case "unknown":
       return (
-        <div className="mount-hint warn" title={notice.reason}>
+        <Note tone="warn" title={notice.reason}>
           Upload status unavailable — saved files may not have reached the remote.
-        </div>
+        </Note>
       );
     case "failed":
       return (
-        <div
-          className="mount-hint warn"
+        <Note
+          tone="warn"
           title="These files were saved on your computer but the remote rejected the upload — rclone keeps retrying with a growing delay."
         >
-          {notice.failed} {notice.failed === 1 ? "file has" : "files have"} not reached the
-          remote
+          {notice.failed} {notice.failed === 1 ? "file has" : "files have"} not reached the remote
           {notice.names.length > 0 && <> — {notice.names.join(", ")}</>}
           {notice.truncated && <> …</>}. Saved locally; still retrying.
-        </div>
+        </Note>
       );
     case "pending":
       return (
-        <div className="mount-hint" title="Saved on your computer and uploading to the remote.">
+        <Note title="Saved on your computer and uploading to the remote.">
           Uploading {notice.pending} {notice.pending === 1 ? "file" : "files"}…
-        </div>
+        </Note>
       );
   }
 }
@@ -71,7 +88,7 @@ export function MountRow({
   onChanged,
 }: {
   conn: Mount;
-  // Only to classify the card's mark (markFor) — the row itself is driven
+  // Only to classify the row's mark (markFor) — the row itself is driven
   // entirely by `conn`.
   remotes: RcloneRemote[];
   onChanged: () => void;
@@ -110,78 +127,80 @@ export function MountRow({
   const broken = conn.state === "disconnected" || conn.state === "stale";
 
   return (
-    <div className="mount-card">
-      <div className="mount-card-main">
-        <span className="mount-card-mark" aria-hidden="true">
+    <div data-slot="entity-row" className="flex flex-col gap-2 px-4 py-2 text-sm border-b border-border last:border-b-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <StatusIcon bucket={HEALTH_BUCKET[conn.state]} filled={conn.state === "mounted"} label={dotLabel} />
+        <span className="shrink-0 flex items-center text-muted-foreground size-4 [&_svg]:size-full" aria-hidden="true">
           <ProviderIcon provider={iconKey} />
         </span>
-        <div className="mount-card-info">
-          <div className="mount-card-name">
-            <span
-              className={`mount-dot ${conn.state}`}
-              role="img"
-              aria-label={dotLabel}
-              title={dotLabel}
-            />
-            {conn.name}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="font-medium truncate">{conn.name}</span>
             {conn.read_only && (
-              <span className="mount-hint" title="This remote rejects writes — files open read-only">
-                {" "}
-                — read-only
+              <span className="text-xs text-muted-foreground shrink-0" title="This remote rejects writes — files open read-only">
+                read-only
               </span>
             )}
             {broken && (
-              <span
-                className="mount-hint warn"
+              <Note
+                tone="warn"
+                className="shrink-0"
                 title="The mount stopped responding — remote data is not flowing. Use Reconnect to restore it."
               >
-                {" "}
-                — disconnected
-              </span>
+                disconnected
+              </Note>
             )}
           </div>
-          <div className="deploy-muted mount-remote" title={conn.mountpoint}>
+          <div className="font-mono text-xs text-muted-foreground truncate" title={conn.mountpoint}>
             {conn.remote}
           </div>
           <UploadQueue uploads={conn.uploads} />
         </div>
-        <div className="mount-card-actions">
+        <div className="shrink-0 flex items-center gap-1">
           {conn.state === "mounted" ? (
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="ghost"
+              size="sm"
               disabled={busy}
+              title="Open this mount in the explorer"
               onClick={() => navigate(conn.mountpoint, { isDir: true })}
             >
+              <FolderOpenIcon data-icon="inline-start" />
               Open
-            </button>
+            </Button>
           ) : (
             // "disconnected", "stale" and "unmounted" all recover the same way: there is
             // no unmount action (mounts automount and stay up), so Reconnect is
             // the single "something's wrong" repair — it force-clears any dead
             // mountpoint and mounts fresh (reconnect_mount also handles the
             // never-mounted case, where it just attaches).
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="ghost"
+              size="sm"
               disabled={busy}
               onClick={() => act(() => reconnectMount(conn.id))}
             >
+              <RefreshCwIcon data-icon="inline-start" className={busy ? "motion-safe:animate-spin" : undefined} />
               {busy ? "Reconnecting…" : "Reconnect"}
-            </button>
+            </Button>
           )}
-          {/* A LABELLED remove, not a bare "✕". Same behaviour as before
-              (removing a mount only unmounts it; nothing on the remote is
-              touched), but the glyph gave no clue which of those two it was. */}
-          <button
+          {/* An icon-only remove, but LABELLED (aria-label + title): removing a
+              mount only unmounts it; nothing on the remote is touched, and a
+              bare "✕" gave no clue which of those two it was. */}
+          <Button
             type="button"
-            className="btn mount-remove"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive"
             disabled={busy}
+            aria-label={`Remove mount ${conn.name}`}
             title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
             onClick={() => act(() => deleteMount(conn.id))}
           >
-            Remove
-          </button>
+            <XIcon />
+          </Button>
         </div>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}

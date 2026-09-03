@@ -13,15 +13,10 @@
 // answers 409 with the job id of the load this send just started (AI-5), and
 // this component owns the dance — watch the job, narrate it, retry ONCE.
 //
-// A model whose checkpoint has a vision tower (AI-11j: `entry.acceptsImage`,
-// grown from an IMAGE_GENERATION-only flag to cover this capability too once
-// mlx_text switched to mlx-vlm) can also be handed a picture to ask about,
-// on THIS turn only — `mlx_text/worker.py`'s own boundary, which costs this
-// stage nothing extra since it already sends `history: []` (a single turn,
-// not a chat). Kept deliberately smaller than `ImageStage`'s attachment row:
-// no webcam here — a screenshot or a saved photo is the ordinary "what is
-// this" ask, and the picker alone covers it without a second capture UI to
-// keep in step with the image stage's own.
+// A model whose checkpoint has a vision tower (AI-11j: `entry.acceptsImage`)
+// can also be handed a picture to ask about, on THIS turn only —
+// `mlx_text/worker.py`'s own boundary, which costs this stage nothing extra
+// since it already sends `history: []` (a single turn, not a chat).
 import { useEffect, useRef, useState } from "react";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import {
@@ -36,30 +31,40 @@ import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
+import { Tiny } from "@platform/ui/flow/Typography";
 import {
+  AnswerBlock,
+  AnswerBox,
+  AttachButton,
+  AttachChip,
+  ClearButton,
+  ComposerCard,
+  ComposerSide,
   ConfigPanel,
-  useConfigOpen,
   CopyButton,
+  Lightbox,
   RailField,
   RailReset,
   RailSlider,
   ResultSlot,
+  RunButton,
   StageHeader,
   StarterCards,
+  StatusLine,
+  StopButton,
+  composerTextareaClass,
+  useConfigOpen,
   type Starter,
 } from "./controls";
 import { useAutoGrow } from "@platform/lib/autoGrow";
+import { cn } from "@platform/lib/utils";
 import { StarterIcons } from "./starterIcons";
 import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The three formats `ImageStage`'s own picker restricts to (`ATTACH_EXTENSIONS`
-// there) — kept identical here for one reason only: consistency with the
-// picture-picking experience elsewhere in the Playground, not a size-parsing
-// dependency (this stage never reads a picture's pixel dimensions, unlike the
-// image stage's server-side header parse). A dialog that only ever offers
-// three formats and then refuses a fourth picked around it is the one
-// experience this app tries to give everywhere a picture is attached.
+// there) — kept identical here for consistency with the picture-picking
+// experience elsewhere in the Playground.
 const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
 const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 
@@ -68,9 +73,7 @@ const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 // also the WORKER's own default — the slider states the truth of a bare call.
 const DEFAULTS = { temperature: 0.7, top_p: 0.95, max_tokens: 1024 };
 // The server's `_SAMPLING` bounds, restated because it REJECTS an out-of-range
-// value rather than clamping it — so a hand-edited or stale link has to be
-// clamped on the way IN, or every run on that link 400s. Keep in step with
-// server/ai.py.
+// value rather than clamping it. Keep in step with server/ai.py.
 const LIMITS = {
   temperature: [0, 2],
   top_p: [0, 1],
@@ -78,18 +81,11 @@ const LIMITS = {
 } as const;
 
 // No system prompt by default. This stage's job is to show what THIS model does
-// on a bare `fused.ai` call, and a standing prompt of ours — however short — is
-// a second author in every reply: verbosity, formatting and reasoning length all
-// come out steered, and nothing on screen says by whom. The panel's field is
-// there for anyone who wants one, and `system=` still rides the URL when it is
-// set. A model that rambles or thinks out loud without one is telling the reader
-// something true about itself, which is what they came to find out.
+// on a bare `fused.ai` call, and a standing prompt of ours is a second author
+// in every reply. The panel's field is there for anyone who wants one.
 
 // Eight authored examples — two pages of four (D465). Each is a real ask with
-// its constraints spelled out, not a topic: what to write, how long, what to
-// leave out. A one-line "write a haiku" tests that the model answers; these
-// test what the reader actually came to find out, which is whether it follows
-// the shape it was given.
+// its constraints spelled out, not a topic.
 const STARTERS: Starter[] = [
   {
     name: "How it guesses",
@@ -186,21 +182,15 @@ export function TextStage({
 
   // Can THIS model be asked about a picture at all — the server's own answer
   // (AI-11j), read through `imageInput.ts` so the row drawn here and the
-  // `images` field a send actually carries cannot come to disagree, exactly
-  // as `ImageStage` already keeps `editable`/`base` in step.
+  // `images` field a send actually carries cannot come to disagree.
   const attachable = canAttachImage(entry.acceptsImage);
   // Deliberately NOT persisted to the URL, unlike `ImageStage`'s `img` param:
-  // an image here rides the CURRENT turn only (`mlx_text/worker.py`'s own
-  // boundary) and this stage already sends `history: []` on every send — a
-  // picture surviving a reload would model a permanence the request itself
-  // never had, and a stale path pointing at a picture the user has since
-  // moved would silently 400 the next send.
+  // an image here rides the CURRENT turn only.
   const [attachment, setAttachment] = useState<AttachedImage | null>(null);
   const attachedImage = usableAttachment(entry.acceptsImage, attachment);
   const [attaching, setAttaching] = useState(false);
-  // Is the attached picture open at full size? A thumbnail 28px on a side is a
-  // reminder of WHICH picture, not a look at it — the same rule ImageStage's
-  // own lightbox exists for.
+  // Is the attached picture open at full size? A 28px thumbnail is a reminder
+  // of WHICH picture, not a look at it.
   const [showAttachment, setShowAttachment] = useState(false);
 
   const [temperature, setTemperature] = useState(() =>
@@ -227,9 +217,9 @@ export function TextStage({
 
   const abortRef = useRef<AbortController | null>(null);
   const { ref: boxRef } = useAutoGrow(prompt);
-  // Set on the way in as well as cleared on the way out, the same shape
-  // `ImageStage`'s own flag has: a pick awaits the dialog, and a continuation
-  // that lands after an unmount must not write state from a dead component.
+  // Set on the way in as well as cleared on the way out: a pick awaits the
+  // dialog, and a continuation that lands after an unmount must not write
+  // state from a dead component.
   const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;
@@ -239,8 +229,7 @@ export function TextStage({
   }, []);
 
   // Leaving the stage must not orphan a generation burning battery behind a
-  // tab the user left: abort the fetch AND tell the worker (an abort alone
-  // closes the relay; the model keeps generating).
+  // tab the user left: abort the fetch AND tell the worker.
   useEffect(
     () => () => {
       if (abortRef.current) {
@@ -251,19 +240,8 @@ export function TextStage({
     [],
   );
 
-  // Escape closes the preview — the one keystroke somebody reaches for before
-  // the ✕, and the same answer every overlay in this app gives it.
-  useEffect(() => {
-    if (!showAttachment) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowAttachment(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [showAttachment]);
-
   /** Point the composer at a file that is ALREADY on this disk — no copy, no
-   *  upload, the user's own path, exactly as `ImageStage.choose` does and for
-   *  the identical reason: a browser's `<input type=file>` strips the path,
-   *  so the OS dialog raised in the server process is the only way to one. */
+   *  upload, the user's own path, exactly as `ImageStage.choose` does. */
   const choose = async () => {
     setError(null);
     setAttaching(true);
@@ -287,10 +265,7 @@ export function TextStage({
     }
   };
 
-  // The camera, shared with the image stage (webcam.tsx). The only difference
-  // between the two is this stage's answer to the frame: there it is a picture
-  // to EDIT, here one to ask a question about — everything up to the blob is
-  // the same code.
+  // The camera, shared with the image stage (webcam.tsx).
   const webcam = useWebcam({ onError: setError });
 
   const openCamera = async () => {
@@ -298,9 +273,7 @@ export function TextStage({
     await webcam.start();
   };
 
-  /** The frame, written to the app's cache dir and attached. A capture is the
-   *  one attachment with no path of its own — it does not exist anywhere until
-   *  it is saved — which is why this is the only attach route that writes. */
+  /** The frame, written to the app's cache dir and attached. */
   const capture = () =>
     webcam.capture((blob) => {
       void (async () => {
@@ -343,10 +316,7 @@ export function TextStage({
         signal: controller.signal,
         onChunk: (text) => setReply((r) => (r ? { ...r, text: r.text + text } : r)),
         // The attached picture, if this model can actually be sent one right
-        // now — `attachedImage` already applies `usableAttachment`, so an
-        // attachment kept from a model that could ask about it, switched to
-        // one that cannot, is never sent (the same rule `ImageStage`'s `base`
-        // applies to its own render request).
+        // now — `attachedImage` already applies `usableAttachment`.
         ...(attachedImage ? { images: [attachedImage.path] } : {}),
       });
 
@@ -375,7 +345,7 @@ export function TextStage({
 
   // Back to empty. Settings stay put — this clears the prompt, its reply, AND
   // the attached picture, which is part of the request rather than of the
-  // setup (the same rule `ImageStage.clear` follows for its own attachment).
+  // setup.
   const clear = () => {
     setPrompt("");
     setReply(null);
@@ -396,50 +366,37 @@ export function TextStage({
   const stats = replyStats(reply?.usage, reply?.seconds);
 
   // Hoisted because the composer has two shapes below and this button is the
-  // one thing both put in the same place — the bottom-right corner. Written
-  // twice it would be two buttons to keep in step.
+  // one thing both put in the same place — the bottom-right corner.
   const runButton = streaming ? (
-    <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
-      Stop
-    </button>
+    <StopButton onClick={stop}>Stop</StopButton>
   ) : (
-    <button
-      type="button"
-      className="btn btn-primary pg-send"
+    <RunButton
       disabled={!prompt.trim()}
       title="Enter to run · Shift+Enter for a new line"
       onClick={() => void send()}
     >
-      Run <kbd className="pg-kbd">⏎</kbd>
-    </button>
+      Run
+    </RunButton>
   );
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <Card className="w-full flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
-      <StageHeader
-        title="Try a prompt"
-        configOpen={configOpen}
-        onToggleConfig={toggleConfig}
-      />
+      <StageHeader title="Try a prompt" configOpen={configOpen} onToggleConfig={toggleConfig} />
 
       {/* Two shapes, one composer. Without an attachment this stage is the
           plain row every other text-in stage is: [prompt | Clear-over-Run].
           The moment the model can be asked about a picture (AI-11j) it becomes
           `ImageStage`'s STACKED composer instead — prompt across the whole box,
           a floor holding the attach pill beside Run, Clear floating in the
-          corner. The attach row used to be a third child of the ROW flex,
-          which laid it out BESIDE the prompt: the pill took the left of the
-          box, the placeholder was squeezed into the middle, and neither read as
-          belonging to the other. Same classes as the image stage throughout, so
-          the two are one feature wearing one layout. */}
-      <div className={"pg-composer" + (attachable ? " pg-composer-stack" : "")}>
+          corner. */}
+      <ComposerCard stacked={attachable}>
         <textarea
           ref={boxRef}
           value={prompt}
           rows={3}
+          className={cn(composerTextareaClass, attachable && "flex-none pr-16")}
           placeholder={
             attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
           }
@@ -452,122 +409,77 @@ export function TextStage({
           }}
         />
         {/* Stacked, Clear floats in the box's top-right corner rather than
-            taking a slot above Run: on this shape the two are not sharing a row
-            with the prompt, so a slot of its own would cost the box a permanent
-            40px of height for a button that only exists once there is a reply.
-            The row shape keeps the stack — see the column below. */}
+            taking a slot above Run: a slot of its own would cost the box a
+            permanent row of height for a button that only exists once there
+            is a reply. */}
         {attachable && !streaming && reply && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
-            title="Clear the prompt and reply"
-            onClick={clear}
-          >
-            Clear
-          </button>
+          <ClearButton corner title="Clear the prompt and reply" onClick={clear} />
         )}
         {attachable ? (
           /* The composer's floor: the way to attach a picture, the picture
              itself once there is one, then Run — one cluster in the
              bottom-right corner, exactly as the image stage arranges its own. */
-          <div className="pg-composer-foot">
+          <div className="flex items-end justify-end gap-2">
             {attachedImage && (
-              <span className="pg-attach">
-                <button
-                  type="button"
-                  className="pg-attach-open"
-                  title="See this picture"
-                  aria-label="See this picture"
-                  onClick={() => setShowAttachment(true)}
-                >
-                  <img src={rawUrl(attachedImage.path)} alt="" />
-                </button>
-                <button
-                  type="button"
-                  className="pg-attach-drop"
-                  title="Remove this image"
-                  aria-label="Remove this image"
-                  onClick={() => setAttachment(null)}
-                >
-                  ✕
-                </button>
-              </span>
+              <AttachChip
+                src={rawUrl(attachedImage.path)}
+                onOpen={() => setShowAttachment(true)}
+                onRemove={() => setAttachment(null)}
+              />
             )}
-            <div className="pg-attach-row">
-              <button
-                type="button"
-                className="pg-attach-btn"
+            <div className="flex flex-wrap items-center gap-2 px-1">
+              <AttachButton
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
                 <span>{attachedImage ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
-                type="button"
-                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+              </AttachButton>
+              <AttachButton
+                active={webcam.open}
                 title="Take one with the webcam"
                 disabled={attaching}
                 onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
                 {StarterIcons.camera}
                 <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
+              </AttachButton>
+              {attaching && <Tiny>Working…</Tiny>}
             </div>
-            <div className="pg-composer-side">{runButton}</div>
+            <ComposerSide floor={false}>{runButton}</ComposerSide>
           </div>
         ) : (
           /* Clear at the top of this column, Run at the bottom — not inline with
-             the prompt. Inline, Clear appeared and disappeared BESIDE the text,
-             narrowing the box by its own width and rewrapping the prompt taller
-             than the height the grow already wrote. The column's width is set by
-             Run, the wider of the two, so nothing moves when Clear comes and
-             goes. */
-          <div className="pg-composer-side">
+             the prompt, so nothing moves when Clear comes and goes. */
+          <ComposerSide>
             {!streaming && reply && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the prompt and reply"
-                onClick={clear}
-              >
-                Clear
-              </button>
+              <ClearButton title="Clear the prompt and reply" onClick={clear} />
             )}
             {runButton}
-          </div>
+          </ComposerSide>
         )}
-      </div>
+      </ComposerCard>
 
-      {/* The attached picture at full size — the whole modal, no title bar, no
-          filename, no actions: the ✕ above already removes it, and this only
-          exists because a 28px thumbnail cannot be looked at. Click the
-          backdrop or press Escape to close, exactly as `ImageStage`'s own
-          lightbox answers to both. */}
       {webcam.open && (
         <WebcamOverlay videoRef={webcam.videoRef} onCapture={capture} onClose={webcam.stop} />
       )}
 
-      {attachedImage && showAttachment && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached picture"
-          onClick={() => setShowAttachment(false)}
+      {/* The attached picture at full size — the whole modal, no title bar, no
+          filename, no actions: the ✕ on the chip already removes it, and this
+          only exists because a 28px thumbnail cannot be looked at. */}
+      {attachedImage && (
+        <Lightbox
+          open={showAttachment}
+          onClose={() => setShowAttachment(false)}
+          label="The attached picture"
         >
-          <img src={rawUrl(attachedImage.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
-            type="button"
-            className="pg-lightbox-close"
-            title="Close"
-            aria-label="Close"
-            onClick={() => setShowAttachment(false)}
-          >
-            ✕
-          </button>
-        </div>
+          <img
+            src={rawUrl(attachedImage.path)}
+            alt=""
+            className="max-h-[calc(100vh-6rem)] max-w-full rounded-md object-contain"
+          />
+        </Lightbox>
       )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
@@ -593,8 +505,7 @@ export function TextStage({
           onChange={setMaxTokens}
         />
         {/* "clear", not the other controls' "reset": resetting this one IS
-            emptying it, and a button that says reset beside a prompt the
-            user wrote reads like it would restore one of ours. */}
+            emptying it. */}
         <RailField
           label="System prompt"
           action={system !== "" && <RailReset onClick={() => setSystem("")}>clear</RailReset>}
@@ -626,8 +537,8 @@ export function TextStage({
         <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
       )}
 
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
+      {status && <StatusLine status="loading">{status}</StatusLine>}
+      {error && <StatusLine status="error">{error}</StatusLine>}
 
       {!(reply && shown) ? (
         <ResultSlot
@@ -636,32 +547,37 @@ export function TextStage({
           note="The reply appears here. Ask something above, then Run."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Response</p>
-          <div className="pg-answer">
-          {!reply.pending && reply.text && (
-            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
-          )}
-          {shown.think !== null && (
-            <details className="pg-think">
-              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
-              <div className="pg-think-body">{shown.think}</div>
-            </details>
-          )}
-          {shown.answer ? (
-            renderMarkdown(shown.answer)
-          ) : reply.pending && !shown.thinking ? (
-            <span className="pg-cursor" aria-label="Generating" />
-          ) : null}
-          {!reply.pending && stats && (
-            <div className="pg-turn-foot">
-              <span>{stats}</span>
-            </div>
-          )}
-          </div>
-        </div>
+        <AnswerBlock label="Response" status={reply.pending ? "running" : null}>
+          <AnswerBox>
+            {!reply.pending && reply.text && (
+              <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
+            )}
+            {shown.think !== null && (
+              <details className="mb-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer">
+                  {shown.thinking ? "Thinking…" : "Thought process"}
+                </summary>
+                <div className="mt-1 border-l-2 border-border pl-2.5 whitespace-pre-wrap">
+                  {shown.think}
+                </div>
+              </details>
+            )}
+            {shown.answer ? (
+              renderMarkdown(shown.answer)
+            ) : reply.pending && !shown.thinking ? (
+              <span
+                className="text-primary after:content-['▍'] motion-safe:animate-pulse"
+                aria-label="Generating"
+              />
+            ) : null}
+            {!reply.pending && stats && (
+              <Tiny className="mt-1.5 flex items-baseline gap-3 tabular-nums">
+                <span>{stats}</span>
+              </Tiny>
+            )}
+          </AnswerBox>
+        </AnswerBlock>
       )}
-      </Card>
-    </div>
+    </Card>
   );
 }

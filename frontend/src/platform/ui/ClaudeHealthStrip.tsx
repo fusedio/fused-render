@@ -41,6 +41,12 @@ import {
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
 
+import { cn } from "@platform/lib/utils";
+import { Button, buttonVariants } from "@platform/shadcn/ui/button";
+import { CommandPlate } from "@platform/ui/CopyButton";
+import { OutputBlock, SetupIssue, SetupStrip } from "@platform/ui/SetupStrip";
+import { bucketText } from "@platform/ui/status-colors";
+
 // The last snapshot seen, so walking between Home and /apps — which both render
 // this — starts from what we already know instead of flashing an empty frame.
 //
@@ -58,32 +64,6 @@ let cached: ClaudeHealth | null = null;
 //: work, so near-simultaneous ones collapse into the first.
 const FOCUS_RECHECK_MS = 3000;
 
-function CopyCommand({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="update-badge-command">
-      <code>{command}</code>
-      <button
-        type="button"
-        className="update-badge-copy"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(command);
-          } catch {
-            // Clipboard denied. The command is on screen either way, and a
-            // button stuck on "Copied" would be a lie about what happened.
-            return;
-          }
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 2000);
-        }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
-  );
-}
-
 /** How often to ask the server how the install is getting on. The record is an
     in-memory read on the server side, so this is cheap; the interval is set by
     what reads as live rather than by cost. */
@@ -95,39 +75,28 @@ const INSTALL_POLL_MS = 1200;
     someone read a consent screen. */
 const LOGIN_POLL_MS = 2000;
 
-/** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
- *  scroll box rather than summarised: the whole reason to surface either is
- *  that the exact string is what a user can search for and what an issue needs.
- */
-function OutputBlock({ label, text }: { label: string; text: string }) {
-  if (!text.trim()) return null;
-  return (
-    <div className="claude-health-output">
-      <div className="claude-health-output-label">{label}</div>
-      <pre>{text}</pre>
-    </div>
-  );
-}
-
+// `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
+// scroll box (SetupStrip's OutputBlock) rather than summarised: the whole
+// reason to surface either is that the exact string is what a user can search
+// for and what an issue needs.
 function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
   if (!doctor.warnings.length) {
     return <OutputBlock label="claude doctor" text={doctor.text} />;
   }
   return (
-    <div className="claude-health-doctor">
-      <div className="claude-health-output-label">
+    <div>
+      <div className={cn("mb-1 text-xs font-semibold", bucketText.orange)}>
         claude doctor found {doctor.warnings.length}{" "}
         {doctor.warnings.length === 1 ? "problem" : "problems"}
       </div>
-      <ul className="claude-health-doctor-list">
+      <ul className="m-0 flex list-none flex-col gap-2 p-0">
         {doctor.warnings.map((w, i) => (
-          <li key={i}>
-            <span className="claude-health-doctor-problem">{w.problem}</span>
-            {/* The CLI's own suggested fix. Shown as a command to copy when it
-                reads like one, because "Run claude install to repair the
-                installation." is exactly the sentence a user then has to
-                retype by hand. */}
-            {w.fix && <span className="claude-health-doctor-fix">{w.fix}</span>}
+          <li key={i} className="flex flex-col gap-0.5 rounded-md border border-border bg-background px-2.5 py-1.5">
+            <span className="text-xs break-words">{w.problem}</span>
+            {/* The CLI's own suggested fix, kept visually subordinate to the
+                problem it answers — it is advice from Claude Code about Claude
+                Code, not from us. */}
+            {w.fix && <span className="font-mono text-xs break-words text-muted-foreground">{w.fix}</span>}
           </li>
         ))}
       </ul>
@@ -178,16 +147,23 @@ function IssueRow({
   const signingIn = Boolean(issue.action?.kind === "login" && login?.in_flight);
   const loginError = issue.action?.kind === "login" ? login?.error ?? null : null;
 
+  const note = "m-0 text-xs break-words text-muted-foreground";
+  const problem = cn("m-0 break-words", bucketText.orange);
+
   return (
-    <li className="claude-health-issue">
-      <div className="claude-health-issue-title">{issue.title}</div>
-      <p className="claude-health-issue-detail">{issue.detail}</p>
+    <SetupIssue>
+      <div>
+        <div className="font-semibold">{issue.title}</div>
+        <p className="m-0 text-muted-foreground">{issue.detail}</p>
+      </div>
 
       {issue.action && (
-        <div className="claude-health-actions">
-          <button
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The one affirmative control in the strip, so it takes the primary
+              fill while "Check again" stays quiet. */}
+          <Button
             type="button"
-            className="claude-health-action"
+            size="sm"
             onClick={() => onAct(issue)}
             disabled={busy || running || signingIn}
           >
@@ -196,32 +172,33 @@ function IssueRow({
               : finished
                 ? "Done"
                 : issue.action.label}
-          </button>
+          </Button>
           {signingIn && (
-            <button
-              type="button"
-              className="claude-health-action claude-health-action-quiet"
-              onClick={onCancelLogin}
-            >
+            /* Quiet on purpose: the affirmative control in that row is the one
+               already pressed, and two fills side by side would make calling it
+               off look like the next step rather than the way out. */
+            <Button type="button" variant="outline" size="sm" onClick={onCancelLogin}>
               Cancel
-            </button>
+            </Button>
           )}
           {/* What will actually run, before it runs. Piping a remote script
               into a shell on someone's behalf is a thing to disclose, not to
               do quietly behind a friendly label. */}
           {issue.command && (
-            <code className="claude-health-action-cmd">{issue.command}</code>
+            <code className="rounded-md border border-border bg-background px-1.5 py-0.5 font-mono text-xs break-all text-muted-foreground">
+              {issue.command}
+            </code>
           )}
         </div>
       )}
 
       {running && (
-        <p className="claude-health-progress" role="status">
+        <p className={note} role="status">
           {install!.detail || "Working…"}
         </p>
       )}
       {signingIn && (
-        <p className="claude-health-progress" role="status">
+        <p className={note} role="status">
           Finish signing in with the browser window that just opened.
         </p>
       )}
@@ -229,18 +206,16 @@ function IssueRow({
           code 400` is the loopback exchange rejecting the code, and it is the
           only diagnosis on offer — the server derives this one line and keeps
           the rest of the output in memory. */}
-      {loginError && !signingIn && (
-        <p className="claude-health-error">{loginError}</p>
-      )}
+      {loginError && !signingIn && <p className={problem}>{loginError}</p>}
       {failed && (
         <OutputBlock
           label={install!.error || "It didn't work"}
           text={install!.output}
         />
       )}
-      {actionError && <p className="claude-health-error">{actionError}</p>}
+      {actionError && <p className={problem}>{actionError}</p>}
       {doneNote && (
-        <p className="claude-health-progress" role="status">
+        <p className={note} role="status">
           {doneNote}
         </p>
       )}
@@ -249,16 +224,16 @@ function IssueRow({
       {/* Still a command to copy, even where a button exists: a user on a
           locked-down machine, or one who would simply rather run it themselves,
           should not have to press our button to find out what it was. */}
-      {issue.command && !issue.action && <CopyCommand command={issue.command} />}
+      {issue.command && !issue.action && <CommandPlate command={issue.command} />}
       <a
-        className="version-panel-link"
+        className={cn(buttonVariants({ variant: "link", size: "sm" }), "w-fit px-0")}
         href={issueHelpUrl(issue)}
         target="_blank"
         rel="noreferrer"
       >
         How to fix this ↗
       </a>
-    </li>
+    </SetupIssue>
   );
 }
 
@@ -544,36 +519,20 @@ export function ClaudeHealthStrip() {
   };
 
   return (
-    <section className="claude-health" role="status" aria-label="Claude Code setup">
-      <div className="claude-health-head">
-        <h2 className="claude-health-title">
-          {/* Says what is still needed, not that something is broken: nothing IS
-              broken — the app is running and the explorer works. Same posture as
-              the TroubleCard's warning tint (SPEC §42: "Nothing red"). */}
-          Finish setting up Claude Code
-        </h2>
-        <div className="claude-health-head-actions">
-          <button
-            type="button"
-            className="version-panel-link"
-            onClick={check}
-            disabled={busy}
-          >
-            {busy ? "Checking…" : "Check again"}
-          </button>
-          <button
-            type="button"
-            className="claude-health-close"
-            onClick={close}
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="claude-health-issues">
-        {issues.map((issue) => (
+    // Says what is still needed, not that something is broken: nothing IS
+    // broken — the app is running and the explorer works. Same posture as the
+    // TroubleCard's warning tint (SPEC §42: "Nothing red").
+    <SetupStrip
+      label="Claude Code setup"
+      title="Finish setting up Claude Code"
+      onDismiss={close}
+      actions={
+        <Button type="button" variant="ghost" size="xs" onClick={check} disabled={busy}>
+          {busy ? "Checking…" : "Check again"}
+        </Button>
+      }
+    >
+      {issues.map((issue) => (
           <IssueRow
             key={issue.id}
             issue={issue}
@@ -589,8 +548,7 @@ export function ClaudeHealthStrip() {
             doneNote={issue.id === "not-on-path" ? linkedNote : null}
           />
         ))}
-      </ul>
-    </section>
+    </SetupStrip>
   );
 }
 

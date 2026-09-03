@@ -1,17 +1,17 @@
 /* The phone grid's stylesheet: the shell's Tailwind layer + tokens (so shadcn
-   components and the palette are the same ones the desktop uses), plus the few
-   rules the page itself needs. No base.css — that is the desktop app's 20k
-   lines and this page is a single screen. */
+   components and the palette are the same ones the desktop uses), plus the
+   document resets the page needs — Tailwind runs WITHOUT preflight here and
+   there is no base.css (that is the desktop app's 20k lines and this page is a
+   single screen). Everything else is utilities in App.tsx. */
 @import "../styles/tailwind.css";
 @import "../styles/tokens.css";
 
 html,
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--background);
+  color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 15px;
   line-height: 1.4;
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
@@ -28,52 +28,8 @@ a {
   text-decoration: none;
 }
 
-/* The monogram tile: an app without icon.svg gets its initial in a hue hashed
-   from its name (--tile-h, set inline), so the same app is the same colour on
-   every visit and two apps are never confused by shape alone. Muted chroma —
-   the yellow accent stays the only saturated thing on the page. */
-.lan-tile {
-  background:
-    linear-gradient(160deg, oklch(0.36 0.06 var(--tile-h)) 0%, oklch(0.24 0.05 var(--tile-h)) 100%);
-  color: oklch(0.93 0.05 var(--tile-h));
-}
-:root[data-theme="light"] .lan-tile {
-  background:
-    linear-gradient(160deg, oklch(0.93 0.05 var(--tile-h)) 0%, oklch(0.86 0.06 var(--tile-h)) 100%);
-  color: oklch(0.38 0.09 var(--tile-h));
-}
-/* An author's icon.svg is shown as-is on the theme's raised surface — the same
-   treatment the sidebar gives it (icon.svg renders unfiltered, D-row for #898),
-   so an icon looks the same in both places. */
-.lan-tile--icon {
-  background: linear-gradient(160deg, #262830 0%, #1b1d21 100%);
-}
-:root[data-theme="light"] .lan-tile--icon {
-  background: linear-gradient(160deg, #f4f4f2 0%, #e6e6e2 100%);
-}
-
-.lan-card {
-  transition: transform 120ms var(--ease-out, ease-out);
-}
-.lan-card:active {
-  transform: scale(0.97);
-}
-
-/* The filter strip scrolls sideways under the thumb; no scrollbar chrome. */
-.lan-strip {
-  scrollbar-width: none;
-}
+/* The filter strip scrolls sideways under the thumb; no scrollbar chrome
+   (`scrollbar-width: none` is set inline; WebKit needs the pseudo-element). */
 .lan-strip::-webkit-scrollbar {
   display: none;
-}
-
-.lan-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lan-card {
-    transition: none;
-  }
 }

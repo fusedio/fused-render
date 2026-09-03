@@ -136,7 +136,7 @@ describe("the displayed scores say which model produced them", () => {
     expect(STAGE).toContain("setVectorModel(images.response?.modelId ?? model)");
     // The label renders the recorded value, never the prop.
     expect(STAGE).toContain("{vectorModel}");
-    expect(STAGE).not.toContain('pg-answer-provenance">\n                    {model}');
+    expect(STAGE).not.toContain("provenance={model}");
   });
 
   it("prefers the SERVER's answer over the requested id", () => {
@@ -149,9 +149,9 @@ describe("the displayed scores say which model produced them", () => {
   });
 
   it("both result surfaces carry it, texts and pictures alike", () => {
-    // Two `pg-answer-block`s, two labels — the picture mode is where a model
-    // switch is most tempting, since the corpus stays put.
-    const labels = STAGE.match(/pg-answer-provenance/g) ?? [];
+    // Two answer blocks, two provenance labels — the picture mode is where a
+    // model switch is most tempting, since the corpus stays put.
+    const labels = STAGE.match(/provenance=\{vectorModel\}/g) ?? [];
     expect(labels.length).toBe(2);
   });
 });

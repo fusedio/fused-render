@@ -12,7 +12,10 @@
 // their own AI or into an issue and get an actual answer from, because it
 // carries the installation it happened in — which is the fact every diagnosis
 // needs and the one nobody can look up for themselves.
-import { useState } from "react";
+//
+// WARNING-toned (orange bucket), not error-toned: nothing here is a crash. The
+// app is working; a thing beside it is not.
+import { ExternalLinkIcon } from "lucide-react";
 
 import {
   CLAUDE_INSTALL_COMMAND,
@@ -23,6 +26,12 @@ import {
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
+import { cn } from "@platform/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@platform/shadcn/ui/alert";
+import { Button, buttonVariants } from "@platform/shadcn/ui/button";
+import { CommandPlate, CopyButton } from "@platform/ui/CopyButton";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
+import { bucketText } from "@platform/ui/status-colors";
 
 // Plain-language headings and explanations, following the download page's
 // troubleshooting tabs so the app and the page tell one story. Deliberately
@@ -54,26 +63,17 @@ const SAID: Record<string, { title: string; explain: string }> = {
   raw: { title: "Something went wrong", explain: "" },
 };
 
-function CopyLine({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
+function HelpLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <button
-      type="button"
-      className="update-badge-copy"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-        } catch {
-          // No clipboard permission. Saying nothing would leave the user
-          // pressing it again forever; the text is on screen either way.
-          return;
-        }
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 2000);
-      }}
+    <a
+      className={buttonVariants({ variant: "outline", size: "sm" })}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
     >
-      {copied ? "Copied" : label}
-    </button>
+      {children}
+      <ExternalLinkIcon />
+    </a>
   );
 }
 
@@ -95,10 +95,9 @@ export function TroubleCard({
       because the boot failure is exactly the case that knows none of it. */
   facts?: TroubleFacts;
   onRetry?: () => void;
-  /** The notification-stack variant: 340px wide, stacked under a failed row.
-      Says WHICH failure and where to go, and leaves the explaining to the
-      Preferences tab — a full card in a corner popup is a wall, and the
-      surface it sits in is a notification rather than a page. */
+  /** The notification-stack variant: no plate of its own, stacked under a
+      failed row. Says WHICH failure and where to go, and leaves the explaining
+      to the Preferences tab — a full card in a corner popup is a wall. */
   compact?: boolean;
   /** Words for a caller that knows more than the classifier can. The template
       registry is the case: it is not one of the download page's four, so it
@@ -119,20 +118,16 @@ export function TroubleCard({
 
   if (compact) {
     return (
-      <div className="trouble-compact" role="alert">
-        <div className="trouble-title">{said.title}</div>
-        <div className="trouble-compact-error">{String(error || "").trim()}</div>
-        <div className="trouble-actions">
-          <CopyLine text={report} label="Copy the details" />
-          <CopyLine text={instructions} label="Copy Claude Code instructions" />
-          <a
-            className="version-panel-link"
-            href={troubleHelpUrl(kind)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            How to fix this ↗
-          </a>
+      <div className="flex flex-col gap-1.5 px-2.5 pt-1.5 pb-2.5 text-xs" role="alert">
+        <div className={cn("font-semibold", bucketText.orange)}>{said.title}</div>
+        {/* Clamped rather than scrolled: this sits in a narrow column where a
+            long traceback would own the whole card, and the copy button
+            carries the full text anyway. */}
+        <div className="line-clamp-3 break-words text-muted-foreground">{String(error || "").trim()}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <CopyButton text={report} label="Copy the details" />
+          <CopyButton text={instructions} label="Copy Claude Code instructions" />
+          <HelpLink href={troubleHelpUrl(kind)}>How to fix this</HelpLink>
           {children}
         </div>
       </div>
@@ -140,53 +135,55 @@ export function TroubleCard({
   }
 
   return (
-    <div className="trouble-card" role="alert">
-      <div className="trouble-title">{said.title}</div>
-      {said.explain && <p className="trouble-explain">{said.explain}</p>}
+    <Alert className="my-3 max-w-2xl gap-2 px-4 py-3.5">
+      <AlertTitle className={cn("flex items-center gap-2 text-sm font-semibold", bucketText.orange)}>
+        <StatusDot bucket="orange" />
+        {said.title}
+      </AlertTitle>
+      {said.explain && <AlertDescription>{said.explain}</AlertDescription>}
 
       {/* Verbatim, in a box, scrollable. Rewording it would make it
-          unsearchable, and searching it is the first thing anyone does. */}
-      <pre className="trouble-error">{String(error || "(no message)").trim()}</pre>
+          unsearchable, and searching it is the first thing anyone does. Wraps
+          rather than ellipsising — a clipped traceback is the half that does not
+          say what happened — and caps its height so a long one cannot push the
+          actions below the fold. */}
+      <pre className="m-0 max-h-56 overflow-auto rounded-md border border-border bg-background px-2.5 py-2 font-mono text-xs whitespace-pre-wrap break-words">
+        {String(error || "(no message)").trim()}
+      </pre>
 
       {kind === "notfound" && (
-        <div className="trouble-install">
-          <div className="trouble-label">Install Claude Code</div>
-          <div className="update-badge-command">
-            <code>{CLAUDE_INSTALL_COMMAND}</code>
-            <CopyLine text={CLAUDE_INSTALL_COMMAND} label="Copy" />
-          </div>
-          <p className="deploy-muted">
+        <div className="flex flex-col gap-1.5">
+          <div className="text-xs font-semibold">Install Claude Code</div>
+          <CommandPlate command={CLAUDE_INSTALL_COMMAND} />
+          <p className="m-0 text-sm text-muted-foreground">
             Run it in a terminal, then quit Fused Render and open it again.
           </p>
         </div>
       )}
 
-      <div className="trouble-actions">
+      {/* ONE look for the whole row, links and buttons alike: they are peers —
+          copy this, read about this, retry this. */}
+      <div className="flex flex-wrap items-center gap-2">
         {/* FIRST, and labelled for what it is FOR rather than what it does:
             this is the one action that helps whether the user fixes it
             themselves or asks someone else. */}
-        <CopyLine text={report} label="Copy the details" />
+        <CopyButton text={report} label="Copy the details" />
         {/* The other reader. `report` describes the problem to a PERSON; this
             is a brief for an agent that can act on it — the goal, the checks
             worth running first, and what "fixed" looks like. Pasting an error
             alone gets a guess back. */}
-        <CopyLine text={instructions} label="Copy Claude Code instructions" />
-        <a
-          className="version-panel-link"
-          href={troubleHelpUrl(kind)}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {isClaudeTrouble(kind) ? "How to fix this" : "Troubleshooting"} ↗
-        </a>
+        <CopyButton text={instructions} label="Copy Claude Code instructions" />
+        <HelpLink href={troubleHelpUrl(kind)}>
+          {isClaudeTrouble(kind) ? "How to fix this" : "Troubleshooting"}
+        </HelpLink>
         {onRetry && (
-          <button type="button" className="version-panel-link" onClick={onRetry}>
+          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
             Try again
-          </button>
+          </Button>
         )}
         {children}
       </div>
-    </div>
+    </Alert>
   );
 }
 

@@ -18,7 +18,12 @@
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { statPath } from "@platform/lib/api";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { cn } from "@platform/lib/utils";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
+import { Button } from "@platform/shadcn/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@platform/shadcn/ui/tooltip";
+import { Muted } from "@platform/ui/flow/Typography";
+import { SyncStrip } from "./SyncStrip";
 import {
   fixWithClaude,
   getAccessToken,
@@ -389,98 +394,80 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const enforced = ackState === "acked";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+    <div className="flex h-full flex-col bg-background text-foreground">
+      {error && (
+        <Alert variant="destructive" className="rounded-none border-x-0 border-t-0">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
       {locked && (
-        <div
-          style={{
-            padding: "8px 12px",
-            borderBottom: enforced
-              ? "1px solid rgba(90,140,255,0.35)"
-              : "1px solid rgba(210,150,40,0.45)",
-            background: enforced
-              ? "rgba(90,140,255,0.08)"
-              : "rgba(210,150,40,0.10)",
-            fontSize: 13,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            // This bar never overlaps the panes below it, but it carries no
-            // interactive elements either way — pointer-events: none end to
-            // end, so nothing here can ever be the thing standing between a
-            // click and the iframe.
-            pointerEvents: "none",
-          }}
+        // This bar never overlaps the panes below it, but it carries no
+        // interactive elements either way — pointer-events: none end to end,
+        // so nothing here can ever be the thing standing between a click and
+        // the iframe. Yellow = the sync is in flight and enforced by the
+        // workbench; orange = advisory only (waiting on the user to hold off).
+        <SyncStrip
+          bucket={enforced ? "yellow" : "orange"}
+          badge={enforced ? "Syncing" : "Advisory"}
+          className="pointer-events-none"
         >
-          <strong>{lockMessage(lockHold)}</strong>
+          <strong className="font-medium">{lockMessage(lockHold)}</strong>
           {enforced ? (
-            <span style={{ opacity: 0.85 }}>
+            <Muted className="inline">
               — the workbench enforces this itself; pan and zoom still work.
-            </span>
+            </Muted>
           ) : (
             // Never claim protection we do not have: without the ack the
             // workbench's own autosave timers are still running, and an
             // overlay cannot stop them.
-            <span style={{ opacity: 0.85 }}>
+            <Muted className="inline">
               — please don’t edit it in the workbench. This version of the
               workbench can’t be locked, so changes made there may overwrite
               Claude’s work.
-            </span>
+            </Muted>
           )}
-        </div>
+        </SyncStrip>
       )}
       {sync?.push_state === "error" && sync.error && (
-        <div
-          style={{
-            padding: "8px 12px",
-            borderBottom: "1px solid rgba(220,60,60,0.35)",
-            background: "rgba(220,60,60,0.08)",
-            fontSize: 13,
-          }}
+        <SyncStrip
+          bucket="red"
+          badge="Error"
+          detail={
+            sync.error_detail?.length > 0 && (
+              <pre className="mt-1.5 max-h-[140px] overflow-auto font-mono text-xs whitespace-pre-wrap text-muted-foreground">
+                {sync.error_detail.join("\n")}
+              </pre>
+            )
+          }
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <strong>{sync.error}</strong>
-            <button
-              className="btn btn-primary"
-              disabled={fixBusy || !!sync.fix_active}
-              onClick={() => void onFix()}
-              title="Start a Claude session on the local clone, primed with these errors"
+          <strong className="font-medium">{sync.error}</strong>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="sm"
+                  disabled={fixBusy || !!sync.fix_active}
+                  onClick={() => void onFix()}
+                />
+              }
             >
               {sync.fix_active
                 ? "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
-            </button>
-            {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
-          </div>
-          {sync.error_detail?.length > 0 && (
-            <pre
-              style={{
-                margin: "6px 0 0",
-                maxHeight: 140,
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-                fontSize: 12,
-                opacity: 0.85,
-              }}
-            >
-              {sync.error_detail.join("\n")}
-            </pre>
-          )}
-        </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              Start a Claude session on the local clone, primed with these errors
+            </TooltipContent>
+          </Tooltip>
+          {fixError && <span className="text-destructive">{fixError}</span>}
+        </SyncStrip>
       )}
-      <div
-        ref={rowRef}
-        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
-      >
+      <div ref={rowRef} className="flex min-h-0 flex-1 flex-row">
         <div
-          style={{
-            flex: `0 0 ${leftFrac * 100}%`,
-            minWidth: 0,
-            position: "relative",
-            pointerEvents: dragging ? "none" : "auto",
-          }}
+          className={cn("relative min-w-0", dragging && "pointer-events-none")}
+          style={{ flex: `0 0 ${leftFrac * 100}%` }}
         >
           {frameSrc ? (
             <iframe
@@ -496,7 +483,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
-            !error && <p style={{ padding: 16 }}>Loading workbench…</p>
+            !error && <Muted className="p-4">Loading workbench…</Muted>
           )}
           {locked && !enforced && (
             // Fallback for a workbench that hasn't (yet, or ever) acked this
@@ -504,18 +491,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             // not a guarantee — the workbench's own autosave and its upstream
             // auto-acknowledge run on timers inside the frame and are
             // untouched by an overlay. Deliberately a LIGHT, translucent
-            // scrim (not the near-black 45% this used to be) — the canvas
-            // must stay visible underneath, and the banner above already
-            // says this is only a courtesy.
+            // scrim — the canvas must stay visible underneath, and the banner
+            // above already says this is only a courtesy.
             <div
               data-testid="workbench-lock-scrim"
               title={lockMessage(lockHold)}
-              style={{
-                position: "absolute",
-                inset: 0,
-                background: "rgba(20,20,25,0.14)",
-                cursor: "not-allowed",
-              }}
+              className="absolute inset-0 cursor-not-allowed bg-foreground/10"
             />
           )}
         </div>
@@ -524,22 +505,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             e.preventDefault();
             setDragging(true);
           }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
-          }}
+          className={cn(
+            "shrink-0 basis-1.5 cursor-col-resize motion-safe:transition-colors",
+            dragging ? "bg-ring" : "bg-border hover:bg-ring/60",
+          )}
           title="Drag to resize"
         />
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            pointerEvents: dragging ? "none" : "auto",
-          }}
-        >
+        <div className={cn("min-w-0 flex-1", dragging && "pointer-events-none")}>
           {editorSrc ? (
             <iframe
               // key forces a REMOUNT when a fix run starts: the template only
@@ -559,7 +531,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
-            !error && <p style={{ padding: 16 }}>Loading editor…</p>
+            !error && <Muted className="p-4">Loading editor…</Muted>
           )}
         </div>
       </div>

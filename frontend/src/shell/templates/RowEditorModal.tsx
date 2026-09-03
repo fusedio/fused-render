@@ -1,10 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { putRegistryBinding, resetRegistryBinding } from "@platform/lib/api";
 import type { RegistryEntry, RegistryResult, TemplateInventory } from "@platform/lib/api";
 import { KeyBuilder } from "@shell/templates/KeyBuilder";
 import { TemplatePicker } from "@shell/templates/TemplatePicker";
-import { Modal } from "@platform/ui/modal/Modal";
+import { TemplatesDialog } from "@shell/templates/TemplatesDialog";
+import { TemplateChip, WarnText } from "@shell/templates/chips";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldLabel, FieldTitle } from "@platform/shadcn/ui/field";
+import { Identifier, Muted, Tiny } from "@platform/ui/flow/Typography";
 
 export function RowEditorModal({
   mode,
@@ -23,6 +28,7 @@ export function RowEditorModal({
 }) {
   const formId = useId();
   const keyInputId = useId();
+  const keyInputRef = useRef<HTMLInputElement>(null);
 
   // Create mode: the key comes from the builder. Edit mode: the key is fixed.
   const [builtKey, setBuiltKey] = useState("");
@@ -70,9 +76,9 @@ export function RowEditorModal({
 
   const canSave = (mode === "edit" || keyValid) && chosen.length > 0 && busy === null;
 
-  // Wired to the shared Modal's dirty guard: an unsaved edit intercepts the
-  // first close attempt. Create mode is dirty once a key or a template is set;
-  // edit mode once the ordered list differs from what was loaded.
+  // Wired to the dialog's dirty guard: an unsaved edit intercepts the first
+  // close attempt. Create mode is dirty once a key or a template is set; edit
+  // mode once the ordered list differs from what was loaded.
   const dirty =
     mode === "create"
       ? builtKey.trim() !== "" || chosen.length > 0
@@ -85,8 +91,8 @@ export function RowEditorModal({
     try {
       await putRegistryBinding(key, chosen);
       // onSaved/onClose act on the still-mounted parent page — call them even
-      // if this modal already unmounted (Escape/✕ closed it mid-request), so a
-      // succeeded server write is always reflected. Only modal-local setState
+      // if this dialog already unmounted (Escape/✕ closed it mid-request), so a
+      // succeeded server write is always reflected. Only dialog-local setState
       // in the catch stays alive-guarded.
       onSaved();
       onClose();
@@ -139,17 +145,19 @@ export function RowEditorModal({
   const coreDefault = entry?.coreTemplates ?? null;
 
   return (
-    <Modal
+    <TemplatesDialog
       title={mode === "create" ? "Add extension" : "Edit binding"}
       onClose={onClose}
       busy={busy !== null}
       dirty={dirty}
-      dialogClassName="templates-editor"
+      initialFocus={mode === "create" ? keyInputRef : undefined}
       footer={
         <>
-          <button
+          <Button
             type="button"
-            className="btn btn-danger-text"
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive sm:mr-auto"
             onClick={doDisable}
             disabled={busy !== null || (mode === "create" && !keyValid)}
             title="Write a null binding — previews are disabled for this type"
@@ -159,11 +167,12 @@ export function RowEditorModal({
               : confirmDisable
                 ? "Click again to disable"
                 : "Disable for this type"}
-          </button>
+          </Button>
           {mode === "edit" && entry?.overridesCore && (
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="outline"
+              size="sm"
               onClick={doReset}
               disabled={busy !== null}
               title={
@@ -173,22 +182,17 @@ export function RowEditorModal({
               }
             >
               {busy === "reset" ? "Resetting…" : "Reset to core"}
-            </button>
+            </Button>
           )}
           {/* Intentionally bypasses the dirty guard: an explicit Cancel click
               is explicit intent, unlike Esc/backdrop/✕. */}
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onClose}
-            disabled={busy !== null}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy !== null}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
             form={formId}
-            className="btn btn-primary"
+            size="sm"
             disabled={!canSave}
             title={
               chosen.length === 0
@@ -199,45 +203,49 @@ export function RowEditorModal({
             }
           >
             {busy === "save" ? "Saving…" : "Save"}
-          </button>
+          </Button>
         </>
       }
     >
       <form
         id={formId}
+        className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
           void doSave();
         }}
       >
         {mode === "create" ? (
-          <div className="templates-field">
-            <label htmlFor={keyInputId}>Key</label>
+          <Field>
+            <FieldLabel htmlFor={keyInputId}>Key</FieldLabel>
             <KeyBuilder
               inputId={keyInputId}
+              inputRef={keyInputRef}
               onChange={(k, valid) => {
                 setBuiltKey(k);
                 setKeyValid(valid);
               }}
             />
-          </div>
+          </Field>
         ) : (
-          <div className="templates-field">
-            <span className="templates-field-label">Key</span>
-            <div>
-              <code className="templates-key-fixed">{key}</code>
-              {entry && <span className="deploy-muted"> · {entry.keyKind}</span>}
+          <Field>
+            <FieldTitle>Key</FieldTitle>
+            <div className="flex items-center gap-2">
+              <Identifier className="rounded-md border border-border bg-muted px-1.5 py-0.5 text-foreground">
+                {key}
+              </Identifier>
+              {entry && <Tiny>{entry.keyKind}</Tiny>}
             </div>
-          </div>
+          </Field>
         )}
 
-        <div className="templates-field">
-          <span className="templates-field-label">Templates (first is the default)</span>
-          <div className="templates-chiplist">
+        <Field>
+          <FieldTitle>Templates (first is the default)</FieldTitle>
+          <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border border-border bg-card p-2">
             {chosen.length === 0 && (
-              <span className="deploy-muted">
+              <Muted className="text-xs">
                 No templates — add at least one, or disable previews for this type.
-              </span>
+              </Muted>
             )}
             {chosen.map((name, i) => {
               // "_"-prefixed names are shell sentinels (_render/_listing) —
@@ -246,11 +254,11 @@ export function RowEditorModal({
               const isSentinel = name.startsWith("_");
               const broken = !isSentinel && !known.has(name);
               return (
-                <span
+                <TemplateChip
                   key={i + " " + name}
-                  className={
-                    "templates-chip" + (i === 0 ? " default" : "") + (broken ? " broken" : "")
-                  }
+                  name={name}
+                  isDefault={i === 0}
+                  broken={broken}
                   draggable
                   onDragStart={() => (dragIndex.current = i)}
                   onDragOver={(e) => e.preventDefault()}
@@ -259,63 +267,49 @@ export function RowEditorModal({
                     dragIndex.current = null;
                   }}
                   title={broken ? "no template folder resolves to this name" : undefined}
-                >
-                  {i === 0 && <span className="templates-chip-badge">default</span>}
-                  <span className="templates-chip-name">{name}</span>
-                  <button
-                    type="button"
-                    className="templates-chip-x"
-                    title="Remove"
-                    onClick={() => setChosen((prev) => prev.filter((_, j) => j !== i))}
-                  >
-                    ✕
-                  </button>
-                </span>
+                  onRemove={() => setChosen((prev) => prev.filter((_, j) => j !== i))}
+                  removeLabel={"Remove " + name}
+                />
               );
             })}
+            <TemplatePicker
+              inventory={inventory}
+              registry={registry}
+              exclude={chosen}
+              open={pickerOpen}
+              onOpenChange={setPickerOpen}
+              onPick={(name) => {
+                setChosen((prev) => (prev.includes(name) ? prev : [...prev, name]));
+                setPickerOpen(false);
+              }}
+              trigger={
+                <Button type="button" variant="ghost" size="xs" onClick={() => setPickerOpen((v) => !v)}>
+                  <PlusIcon data-icon="inline-start" />
+                  Add template
+                </Button>
+              }
+            />
           </div>
-          <div className="templates-add-wrap">
-            <button
-              type="button"
-              className="templates-add-btn"
-              onClick={() => setPickerOpen((v) => !v)}
-            >
-              + Add template
-            </button>
-            {pickerOpen && (
-              <TemplatePicker
-                inventory={inventory}
-                registry={registry}
-                exclude={chosen}
-                onPick={(name) => {
-                  setChosen((prev) => (prev.includes(name) ? prev : [...prev, name]));
-                  setPickerOpen(false);
-                }}
-                onClose={() => setPickerOpen(false)}
-              />
-            )}
-          </div>
-          <div className="deploy-muted templates-reorder-hint">
-            Drag chips to reorder — the first is the default mode.
-          </div>
+          <Tiny>Drag chips to reorder — the first is the default mode.</Tiny>
           {brokenNames.length > 0 && (
-            <div className="templates-broken-note">
-              ⚠ {brokenNames.join(", ")} {brokenNames.length === 1 ? "resolves" : "resolve"} to no
-              template folder — a dangling registry pointer that won't render. Remove{" "}
-              {brokenNames.length === 1 ? "it" : "them"} here, or add the missing template. Nothing
-              is removed automatically.
-            </div>
+            <WarnText className="flex items-start gap-1.5">
+              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                {brokenNames.join(", ")} {brokenNames.length === 1 ? "resolves" : "resolve"} to no
+                template folder — a dangling registry pointer that won't render. Remove{" "}
+                {brokenNames.length === 1 ? "it" : "them"} here, or add the missing template. Nothing
+                is removed automatically.
+              </span>
+            </WarnText>
           )}
-        </div>
+        </Field>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
 
         {mode === "edit" && entry?.overridesCore && coreDefault && (
-          <div className="deploy-muted">
-            Core default: {coreDefault.length > 0 ? coreDefault.join(" → ") : "(none)"}
-          </div>
+          <Tiny>Core default: {coreDefault.length > 0 ? coreDefault.join(" → ") : "(none)"}</Tiny>
         )}
       </form>
-    </Modal>
+    </TemplatesDialog>
   );
 }

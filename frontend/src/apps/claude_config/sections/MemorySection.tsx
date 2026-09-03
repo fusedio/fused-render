@@ -1,15 +1,11 @@
 // Memory section: a read-only viewer of Claude Code's persistent memory under
 // projects/*/memory/, with the per-folder git lifecycle beside it.
 //
-// Round 2 redesign: the memory FILE is the row now, not the project. Before
-// this, a row was a project folder and the files hid inside an expanded <dl>
-// as one newline-joined blob — the files ARE the content of this tab (which
-// lesson lives where), so they earn a row each, grouped under the project
-// that owns them. Each file's row shows its name and the one-line
-// `description` from its own YAML frontmatter (claude_config/memory.py parses
-// it; falls back to nothing shown when the frontmatter is missing or
-// malformed — the row's own filename already carries the fallback, so there
-// is no separate "untitled" state to invent).
+// The memory FILE is the row, grouped under the project that owns it. Each
+// file's row shows its name and the one-line `description` from its own YAML
+// frontmatter (claude_config/memory.py parses it; nothing shown when the
+// frontmatter is missing or malformed — the filename already carries the
+// fallback).
 //
 // Contents are Claude's to author — nothing here edits a memory file. What the
 // UI adds is the lifecycle the files themselves can't express: which folders
@@ -17,32 +13,23 @@
 // deletes the .md files and commits the deletion (recoverable from History,
 // which is why Clear is a confirm and not a two-step). All three live on the
 // project GROUP, not on an individual file row, because they act on the
-// whole folder.
-//
-// Commit's history: round 2 first dropped it outright (argument: the drift
-// marker is the fact, the *act* of committing belongs on History) — then the
-// user asked for it back, smaller. It returns as a plain .cc-iconbtn beside
-// Reveal and Clear rather than the old always-visible, always-enabled .btn,
-// and it renders ONLY when this project actually has drift (`dirty > 0`)
-// instead of sitting there disabled with no indication of what it would do —
-// that ambiguity was the original complaint. Fading in on
-// hover/focus-within like Clear (see .cc-memgroup-actions in
-// claude-config.css); Reveal alone stays permanently visible, since it is
-// informational rather than an act on the repo.
+// whole folder. Reveal stays visible outright (informational); Commit — only
+// when the project has drift — and Clear fade in on hover/focus-within.
 //
 // A group is titled by the PROJECT FOLDER, not by the projects/ directory
-// name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
-// as nothing. The server resolves it — from a session transcript's recorded
-// cwd, else against the filesystem — and sends null when it cannot, in which
-// case this shows the slug rather than a path that might not exist. See
-// claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
-// an option.
+// name: that name is a munged cwd and reads as nothing. The server resolves
+// it and sends null when it cannot, in which case this shows the slug rather
+// than a path that might not exist.
 import { useCallback } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Check, Folder, Trash2 } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { StatusBadge } from "@platform/ui/flow/StatusIcon";
+import { SectionHeading, Tiny } from "@platform/ui/flow/Typography";
 import * as cc from "../api";
 import {
   Empty,
-  Icon,
+  ErrorNote,
   List,
   ListRow,
   ListSkeleton,
@@ -83,7 +70,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
     reload();
   };
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
+  if (error) return <ErrorNote>{error}</ErrorNote>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />;
 
   const fileCount = data.projects.reduce((n, p) => n + p.files.length, 0);
@@ -102,58 +89,53 @@ export default function MemorySection({ onChanged }: SectionProps) {
         const dirty = p.changes.length;
         const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
         return (
-          <div className="cc-memgroup" key={p.project}>
-            <div className="cc-memgroup-head">
-              <div className="cc-memgroup-title">
+          <section className="space-y-2 group/mem" key={p.project}>
+            <div className="flex items-center gap-3 min-w-0">
+              <SectionHeading
+                className={cn("flex items-center gap-2 min-w-0 normal-case tracking-normal", p.pathConfirmed && "font-mono text-xs")}
+              >
                 {/* The folder, when the server could confirm which one it is —
                     mono, because it is a path. Otherwise the raw slug, NOT
-                    dressed up as a path: the encoding is lossy and a
-                    plausible-looking /Users/me/Work/fused/render that doesn't
-                    exist would be worse than the slug it came from. */}
-                <span className={p.pathConfirmed ? "cc-mono" : undefined} title={p.path ?? undefined}>
+                    dressed up as a path. */}
+                <span className="truncate" title={p.path ?? undefined}>
                   {p.path ?? p.project}
                 </span>
-                <span className="cc-memgroup-count">{count}</span>
-                {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
-              </div>
-              {/* Reveal is informational and stays visible outright. Commit
-                  and Clear are acts on the repo — Commit only exists to look
-                  at when there is drift to act on, and Clear is the most
-                  destructive thing on this page — so both fade in on
-                  hover/focus-within (cc-memgroup-head:hover/:focus-within
-                  below) rather than sitting there always, reachable by
-                  keyboard and visible outright where hover doesn't apply.
-                  Reveal being first is what the CSS rule keys off of. */}
-              <div className="cc-memgroup-actions">
-                <button
-                  type="button"
-                  className="cc-iconbtn"
+                <Tiny className="font-sans shrink-0">{count}</Tiny>
+                {dirty > 0 && <StatusBadge bucket="orange" className="font-sans">{dirty} uncommitted</StatusBadge>}
+              </SectionHeading>
+              <div className="ml-auto flex items-center gap-0.5 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
                   title="Reveal in Finder"
                   aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
                   onClick={() => guard(cc.memory.open(p.project))}
                 >
-                  <Icon name="folder" />
-                </button>
-                {dirty > 0 && (
-                  <button
-                    type="button"
-                    className="cc-iconbtn"
-                    title="Commit this project's memory folder"
-                    aria-label={`Commit memory for ${p.path ?? p.project}`}
-                    onClick={() => commit(p.project)}
+                  <Folder />
+                </Button>
+                <span className="flex items-center gap-0.5 opacity-0 group-hover/mem:opacity-100 group-focus-within/mem:opacity-100 motion-safe:transition-opacity">
+                  {dirty > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      title="Commit this project's memory folder"
+                      aria-label={`Commit memory for ${p.path ?? p.project}`}
+                      onClick={() => commit(p.project)}
+                    >
+                      <Check />
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="hover:text-destructive"
+                    title="Clear this project's memory"
+                    aria-label={`Clear memory for ${p.path ?? p.project}`}
+                    onClick={() => clear(p.project)}
                   >
-                    <Icon name="check" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="cc-iconbtn cc-iconbtn-danger"
-                  title="Clear this project's memory"
-                  aria-label={`Clear memory for ${p.path ?? p.project}`}
-                  onClick={() => clear(p.project)}
-                >
-                  <Icon name="trash" />
-                </button>
+                    <Trash2 />
+                  </Button>
+                </span>
               </div>
             </div>
             <List>
@@ -163,12 +145,12 @@ export default function MemorySection({ onChanged }: SectionProps) {
                   name={f.name}
                   nameMono
                   secondary={f.description ?? undefined}
-                  secondaryClass="cc-lrow-sub-clamp2"
+                  secondaryClamp2
                   secondaryTitle={f.description ?? undefined}
                 />
               ))}
             </List>
-          </div>
+          </section>
         );
       })}
     </>

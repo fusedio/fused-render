@@ -1,11 +1,11 @@
 // Templates management view (TEMPLATE_MGMT_SPEC §3) — the `/view/_templates`
 // sentinel route, entered from the sidebar footer. Two sections on one page:
 //   A. Bindings table — one row per registry key (extension → ordered
-//      templates). Edit via the Row editor modal (pattern builder + template
+//      templates). Edit via the Row editor dialog (pattern builder + template
 //      list), disable, or reset a user override to core.
-//   B. Inventory panel — every resolved template folder grouped by source
-//      (core = locked/read-only, user = editable), with export / reveal / open
-//      and a multi-step import wizard.
+//   B. Library — every resolved template folder grouped by source (core =
+//      locked/read-only, user = editable), a properties panel for the focused
+//      one with export / open / delete, and a multi-step import wizard.
 //
 // Template file CONTENTS are not edited here — that is the file explorer's job
 // (§4 non-goal). This view manages bindings + the template pool only.
@@ -19,7 +19,9 @@ import { NewTemplateModal } from "@shell/templates/NewTemplateModal";
 import { RowEditorModal } from "@shell/templates/RowEditorModal";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Page, PageHeader } from "@platform/ui/flow/Typography";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 
 type PageTab = "bindings" | "library";
 
@@ -73,33 +75,34 @@ export default function Templates() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loading = !error && (!inventory || !registry);
+
   return (
-    <div className="templates-page">
-      <div className="templates-header">
-        <h1>Templates</h1>
-        <p className="templates-subtitle">
-          Manage which templates render each file type, browse the template pool, and import or
-          export user templates.
-        </p>
-      </div>
-      <div className="templates-tabs">
-        <button
-          type="button"
-          className={"templates-tab" + (tab === "bindings" ? " active" : "")}
-          onClick={() => setTab("bindings")}
-        >
-          File bindings
-        </button>
-        <button
-          type="button"
-          className={"templates-tab" + (tab === "library" ? " active" : "")}
-          onClick={() => setTab("library")}
-        >
-          Library
-        </button>
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!error && (!inventory || !registry) && <SkeletonLines rows={5} label="Loading templates" />}
+    <Page className="flex-1">
+      <PageHeader
+        title="Templates"
+        description="Manage which templates render each file type, browse the template pool, and import or export user templates."
+        actions={
+          <Tabs value={tab} onValueChange={(v) => setTab(v as PageTab)}>
+            <TabsList variant="line">
+              <TabsTrigger value="bindings">File bindings</TabsTrigger>
+              <TabsTrigger value="library">Library</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        }
+      />
+      {error && (
+        <div className="px-6 py-4">
+          <ErrorBanner>{error}</ErrorBanner>
+        </div>
+      )}
+      {loading && (
+        <div className="space-y-2 px-6 py-4" role="status" aria-busy="true" aria-label="Loading templates">
+          {[72, 54, 63, 48, 66].map((w, i) => (
+            <Skeleton key={i} className="h-4" style={{ width: `${w}%` }} />
+          ))}
+        </div>
+      )}
       {inventory && registry && tab === "bindings" && (
         <BindingsTable
           registry={registry}
@@ -126,9 +129,7 @@ export default function Templates() {
           onSaved={load}
         />
       )}
-      {importing && (
-        <ImportWizard onClose={() => setImporting(false)} onImported={load} />
-      )}
+      {importing && <ImportWizard onClose={() => setImporting(false)} onImported={load} />}
       {creatingNew && (
         <NewTemplateModal
           // Literal-extension keys already in the registry (simple + compound;
@@ -151,11 +152,11 @@ export default function Templates() {
           // Mounted at this level (not inside InventoryPanel, D-precedent:
           // ImportWizard above) so a failed onCreated refresh — which fail-
           // closes inventory/registry to null and would otherwise unmount
-          // InventoryPanel — can't take the modal down with it. The success
+          // InventoryPanel — can't take the dialog down with it. The success
           // screen and "Open in Claude" CTA stay visible regardless.
           onCreated={load}
         />
       )}
-    </div>
+    </Page>
   );
 }

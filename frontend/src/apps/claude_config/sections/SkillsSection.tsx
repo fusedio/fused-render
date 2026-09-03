@@ -2,50 +2,28 @@
 // skills/*/SKILL.md — name + description from the frontmatter, source (when
 // the `skills` CLI recorded one), and a `bunx skills add` command to match.
 //
-// Round 2 fixed four defects the live page showed:
+// No disclosure: the description IS a skill's whole contract with the model,
+// so it gets the room to be read on the row itself (clamped to two lines so
+// one long entry cannot run four times taller than its neighbours). Source,
+// when recorded, sits in the meta slot. `linked` (installed via the `skills`
+// CLI) is the norm, so the badge marks the EXCEPTION — a skill that is NOT
+// linked, i.e. authored or dropped in by hand. Absent data renders nothing.
 //
-//   1. The expanded row repeated its own description verbatim, adding only a
-//      "Source" line — one line of new information is not worth a
-//      disclosure, so there is none any more. The description gets the room
-//      to be read on the row itself instead of ellipsizing mid-sentence —
-//      a skill's description IS its whole contract with the model. Source,
-//      when recorded, sits in the meta slot instead of behind a second click.
-//   2. `linked` (installed via the `skills` CLI, a symlink into .agents) was a
-//      badge on 9 of 10 rows, distinguishing almost nothing from its position
-//      right after the name. It now marks the EXCEPTION — a skill that is
-//      NOT linked, i.e. authored or dropped in by hand rather than managed —
-//      because that is the one worth calling out.
-//   3. "no recorded source" used to render as right-aligned italic meta on
-//      the rows lacking one, creating a ragged second column that existed
-//      only to say nothing was there. Absent data now renders nothing.
-//
-// Round 2 FOLLOW-UP after a live look at the page fixed three more: the name
-// column had no shared left edge (it shrink-wrapped against the description
-// instead of sitting in a fixed column — .cc-skills-list gives it one, and
-// tops the row instead of centering it, since the description can now be two
-// lines); the description was let wrap UNBOUNDED, so one long entry ran ~4x
-// taller than its neighbours (clamped to 2 lines, `.cc-lrow-sub-clamp2` —
-// shared with Memory's file rows so the two tabs agree); and at a narrow
-// width the description was the thing that disappeared while the source
-// (lower-value, repetitive across a marketplace) stayed — inverted below.
-//
-// A SECOND follow-up: the "not linked" badge rode as a `pills` sibling of the
-// name inside the row's flex flow, so on cocoindex — the one row that has it
-// — it pushed the description's start x rightward, the exact same class of
-// defect the fixed name column had just fixed for the other nine. It moves
-// into the name box itself now (stacked under the name, `.cc-skills-namebox`
-// below), so it can never again be the thing that breaks the shared left
-// edge, no matter how many rows end up carrying it.
+// The "not linked" badge stacks UNDER the name inside the name box rather than
+// riding beside it, so it can never push the description's start x rightward
+// on the one row that carries it.
 import { useCallback } from "react";
+import { Copy, Folder } from "lucide-react";
 import { copyToClipboard } from "@platform/lib/clipboard";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import * as cc from "../api";
 import {
   Empty,
-  Icon,
+  ErrorNote,
   List,
   ListRow,
   ListSkeleton,
+  Meta,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -64,7 +42,7 @@ export default function SkillsSection() {
     else toastErr("Copy failed");
   };
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
+  if (error) return <ErrorNote>{error}</ErrorNote>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />;
 
   return (
@@ -72,51 +50,47 @@ export default function SkillsSection() {
       <SectionToolbar summary={`${data.skills.length} skill(s)`} onRefresh={reload} />
       {!data.skills.length && <Empty>No local skills under skills/*/SKILL.md.</Empty>}
       {data.skills.length > 0 && (
-        <div className="cc-skills-list">
-          <List>
-            {data.skills.map((s) => (
-              <ListRow
-                key={s.slug}
-                name={
-                  <span className="cc-skills-namebox">
-                    <span className="cc-skills-namebox-text">{s.name}</span>
-                    {!s.linked && <Pill>not linked</Pill>}
-                  </span>
-                }
-                secondary={s.description || undefined}
-                secondaryClass="cc-lrow-sub-clamp2"
-                secondaryTitle={s.description || undefined}
-                meta={
-                  s.source ? <span className="cc-lrow-meta cc-mono">{s.source}</span> : null
-                }
-                actions={
-                  <>
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      title="Reveal in Finder"
-                      aria-label={`Reveal ${s.name} in Finder`}
-                      onClick={() => guard(cc.skills.open(s.slug))}
+        <List>
+          {data.skills.map((s) => (
+            <ListRow
+              key={s.slug}
+              name={
+                <span className="flex flex-col items-start gap-0.5 w-44">
+                  <span className="truncate max-w-full">{s.name}</span>
+                  {!s.linked && <Pill>not linked</Pill>}
+                </span>
+              }
+              secondary={s.description || undefined}
+              secondaryClamp2
+              secondaryTitle={s.description || undefined}
+              meta={s.source ? <Meta mono className="hidden lg:inline">{s.source}</Meta> : null}
+              actions={
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    title="Reveal in Finder"
+                    aria-label={`Reveal ${s.name} in Finder`}
+                    onClick={() => guard(cc.skills.open(s.slug))}
+                  >
+                    <Folder />
+                  </Button>
+                  {s.shareCommand && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      title={`Copy install command — ${s.shareCommand}`}
+                      aria-label={`Copy the install command for ${s.name}`}
+                      onClick={() => share(s.shareCommand as string)}
                     >
-                      <Icon name="folder" />
-                    </button>
-                    {s.shareCommand && (
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
-                        title={`Copy install command — ${s.shareCommand}`}
-                        aria-label={`Copy the install command for ${s.name}`}
-                        onClick={() => share(s.shareCommand as string)}
-                      >
-                        <Icon name="copy" />
-                      </button>
-                    )}
-                  </>
-                }
-              />
-            ))}
-          </List>
-        </div>
+                      <Copy />
+                    </Button>
+                  )}
+                </>
+              }
+            />
+          ))}
+        </List>
       )}
     </>
   );

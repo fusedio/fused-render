@@ -10,20 +10,30 @@
 // settings.json is using Claude's OWN default, which may well be `true`. But
 // "unset" and "we don't know what happens" are not the same thing, and the
 // catalog usually documents the default — so a toggle shows THAT position,
-// dashed and muted, and only falls back to the indeterminate middle when the
-// catalog has no boolean to show. A select shows an italic "— default: … —"
-// placeholder. Either way the "Claude default" text stays beside the control
-// and the reset link (which patches null, deleting the leaf) only appears once
+// dashed and muted, and only falls back to the unknown rendering when the
+// catalog has no boolean to show. A select shows a "— default: … —"
+// placeholder. Either way the "Claude default" hint stays beside the control
+// and the reset button (which patches null, deleting the leaf) only appears once
 // a key actually has a value — those two are what keep an inherited value
 // distinguishable from a chosen one.
 import { useCallback, useEffect, useState } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Info, RefreshCw, Undo2 } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
 import * as cc from "../api";
 import type { PrefEntry } from "../api";
 import {
+  ErrorNote,
   Group,
-  Icon,
+  List,
+  ListSkeleton,
   Row,
   SKELETON_ROWS,
   SectionToolbar,
@@ -54,11 +64,16 @@ function toggleUnsetLabel(d: PrefEntry): string {
 // Strictly `typeof === "boolean"`: the catalog's `default` is any JSON scalar
 // and `null` is ambiguous there (it means both "not documented" and "documented
 // as null", see api.ts), so anything that isn't already a boolean means we do
-// not know — and the switch must stay in the indeterminate middle rather than
+// not know — and the switch must stay in the unknown rendering rather than
 // coerce "true"/1 into a position we'd be asserting on Claude's behalf.
 function boolDefault(d: PrefEntry): boolean | null {
   return typeof d.default === "boolean" ? d.default : null;
 }
+
+// The select's "no value" option. A sentinel rather than "" because the Select
+// primitive reserves null for "nothing picked" and an empty string is a real
+// value to it; translated back to null at the patch boundary.
+const UNSET = "__unset__";
 
 // A text/number field. Local draft state so typing isn't a write per keystroke;
 // the value is committed on blur or Enter, exactly where the original app's
@@ -98,8 +113,8 @@ function ScalarControl({
   };
 
   return (
-    <input
-      className="field-control cc-scalar"
+    <Input
+      className="w-56"
       type={entry.control === "number" ? "number" : "text"}
       aria-label={entry.label}
       value={draft}
@@ -116,6 +131,47 @@ function ScalarControl({
         if (e.key === "Enter") e.currentTarget.blur();
       }}
     />
+  );
+}
+
+// The select over the catalog's options. The value on disk when the catalog
+// doesn't list it gets its own option: settings.json is not validated against
+// our curated options, and a select with no matching option would fall back to
+// the placeholder — i.e. a key that IS set (model: "fable") would render as
+// "Claude default". Showing it is the difference between reporting the file
+// and contradicting it.
+function SelectControl({
+  entry,
+  value,
+  onCommit,
+}: {
+  entry: PrefEntry;
+  value: unknown;
+  onCommit: (next: string | null) => void;
+}) {
+  const isSet = value !== null && value !== undefined;
+  const current = isSet ? String(value) : UNSET;
+  const options = entry.options || [];
+  const items: Record<string, string> = { [UNSET]: `— ${unsetLabel(entry)} —` };
+  if (isSet && !options.includes(current)) items[current] = `${current} (not in catalog)`;
+  for (const o of options) items[o] = o;
+  return (
+    <Select
+      value={current}
+      items={items}
+      onValueChange={(v) => onCommit(v === null || v === UNSET ? null : String(v))}
+    >
+      <SelectTrigger size="sm" aria-label={entry.label} className="w-56">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {Object.entries(items).map(([v, label]) => (
+          <SelectItem key={v} value={v} className={v === UNSET ? "text-muted-foreground" : undefined}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -162,8 +218,8 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
     }
   };
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading preferences" />;
+  if (error) return <ErrorNote>{error}</ErrorNote>;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading preferences" />;
 
   const groups: { name: string; items: PrefEntry[] }[] = [];
   for (const d of data.schema) {
@@ -176,12 +232,6 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
   }
 
   return (
-    // Full width (owner, 2026-08-26, reversing the ~1000px .cc-prefs cap
-    // from the previous decision): no wrapper needed to bound the measure
-    // any more, so back to a fragment. The void that cap existed to close —
-    // .cc-row-meta's 60ch cap leaving .cc-row-control's right-anchored
-    // (margin-left: auto) column stranded far from its label — is handled
-    // at the row level now instead (see .cc-row-meta's own comment).
     <>
       {/* Two different acts, deliberately not merged: the icon re-reads
           settings.json (what every other tab's refresh does), while "Refresh
@@ -190,126 +240,97 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
           the same glyph as a local re-read. */}
       <SectionToolbar summary={`${data.schema.length} settings from the checked-in catalog`}
         onRefresh={reload}>
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={refreshing}
           title="Re-fetch defaults & docs from code.claude.com and rewrite settings_catalog.json"
           onClick={refresh}
         >
-          <Icon name="refresh" />
+          <RefreshCw />
           {refreshing ? "Refreshing…" : "Refresh catalog"}
-        </button>
+        </Button>
       </SectionToolbar>
       {groups.map((g) => (
         <Group key={g.name} title={g.name}>
-          {g.items.map((d) => {
-            const val = data.prefs[d.key];
-            const isSet = val !== null && val !== undefined;
-            return (
-              <Row
-                key={d.key}
-                label={d.label}
-                doc={d.doc || null}
-                control={
-                  <>
-                    {isSet ? (
-                      // A ghost icon button, not a bare word floating mid-row —
-                      // and rendered ONLY once the value actually differs from
-                      // the default, so it never sits beside a control that
-                      // has nothing to reset.
-                      <button
-                        type="button"
-                        className="cc-iconbtn cc-reset"
-                        title="Reset to default"
-                        aria-label={`Reset ${d.label} to default`}
-                        onClick={() => patch(d.key, null)}
-                      >
-                        <Icon name="undo" />
-                      </button>
-                    ) : (
-                      // Column 1's other state: a quiet hint rather than
-                      // inline text, so the fact ("Claude default", or the
-                      // documented default value — unbounded in length) can't
-                      // ellipsize into something that reads as a truncated
-                      // VALUE. Carried as a tooltip instead; the same fact is
-                      // also stated by the control itself (a toggle sits at
-                      // its default position, a select/scalar shows it as its
-                      // own placeholder/option text), so this is a redundant
-                      // second channel, not the only one.
-                      <span
-                        className="cc-row-hint"
-                        title={d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
-                        // A select already restates this as its own selected
-                        // option text and a scalar as its own placeholder, so
-                        // the hint is a redundant second channel there and can
-                        // stay decorative. A toggle has NO such text — its
-                        // "inherited" state is a dashed border and nothing
-                        // else — so for that control the fact belongs to
-                        // screen readers and keyboard users too, not only to
-                        // a mouse hovering the tooltip.
-                        aria-hidden={d.control === "toggle" ? undefined : true}
-                      >
-                        <Icon name="info" />
-                        {d.control === "toggle" && (
-                          <span className="sr-only">{toggleUnsetLabel(d)}</span>
-                        )}
-                      </span>
-                    )}
-                    {d.control === "toggle" && (
-                      // Unset + a documented boolean -> show that position,
-                      // muted; unset with nothing documented -> null, the
-                      // indeterminate middle. Clicking an inherited `true`
-                      // writes an explicit `false` (the browser flips
-                      // e.target.checked off the position it is showing), so
-                      // the one thing you cannot do from here is explicitly
-                      // pin the value that already equals the default — which
-                      // is a no-op write anyway, and `reset` still makes the
-                      // return trip.
-                      <Toggle3
-                        label={d.label}
-                        value={isSet ? !!val : boolDefault(d)}
-                        inherited={!isSet && boolDefault(d) !== null}
-                        onChange={(next) => patch(d.key, next)}
-                      />
-                    )}
-                    {d.control === "select" && (
-                      <select
-                        className="field-control"
-                        aria-label={d.label}
-                        value={isSet ? String(val) : ""}
-                        onChange={(e) => patch(d.key, e.target.value === "" ? null : e.target.value)}
-                      >
-                        <option value="">— {unsetLabel(d)} —</option>
-                        {/* The value on disk when the catalog doesn't list it.
-                            settings.json is not validated against our curated
-                            options, and a select with no matching option falls
-                            back to the placeholder — i.e. a key that IS set
-                            (model: "fable") would render as "Claude default".
-                            Showing it as its own option is the difference
-                            between reporting the file and contradicting it. */}
-                        {isSet && !(d.options || []).includes(String(val)) && (
-                          <option value={String(val)}>{String(val)} (not in catalog)</option>
-                        )}
-                        {(d.options || []).map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    {(d.control === "text" || d.control === "number") && (
-                      <ScalarControl
-                        entry={d}
-                        value={val}
-                        onCommit={(next) => patch(d.key, next)}
-                      />
-                    )}
-                  </>
-                }
-              />
-            );
-          })}
+          <List>
+            {g.items.map((d) => {
+              const val = data.prefs[d.key];
+              const isSet = val !== null && val !== undefined;
+              return (
+                <Row
+                  key={d.key}
+                  label={d.label}
+                  doc={d.doc || null}
+                  control={
+                    <>
+                      {isSet ? (
+                        // A ghost icon button, not a bare word floating mid-row —
+                        // and rendered ONLY once the value actually differs from
+                        // the default, so it never sits beside a control that
+                        // has nothing to reset.
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          title="Reset to default"
+                          aria-label={`Reset ${d.label} to default`}
+                          onClick={() => patch(d.key, null)}
+                        >
+                          <Undo2 />
+                        </Button>
+                      ) : (
+                        // Column 1's other state: a quiet hint rather than
+                        // inline text, so the fact ("Claude default", or the
+                        // documented default value — unbounded in length) can't
+                        // ellipsize into something that reads as a truncated
+                        // VALUE. Carried as a tooltip; the control itself also
+                        // states it (a toggle sits at its default position, a
+                        // select/scalar shows it as its own placeholder text).
+                        // A toggle has NO such text, so for that control the
+                        // fact belongs to screen readers too.
+                        <span
+                          className="inline-flex size-6 items-center justify-center text-muted-foreground"
+                          title={d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                          aria-hidden={d.control === "toggle" ? undefined : true}
+                        >
+                          <Info className="size-3.5" />
+                          {d.control === "toggle" && (
+                            <span className="sr-only">{toggleUnsetLabel(d)}</span>
+                          )}
+                        </span>
+                      )}
+                      {d.control === "toggle" && (
+                        // Unset + a documented boolean -> show that position,
+                        // muted; unset with nothing documented -> null, the
+                        // unknown rendering. Clicking an inherited `true` writes
+                        // an explicit `false` (the switch flips off the position
+                        // it is showing), so the one thing you cannot do from
+                        // here is explicitly pin the value that already equals
+                        // the default — which is a no-op write anyway, and
+                        // `reset` still makes the return trip.
+                        <Toggle3
+                          label={d.label}
+                          value={isSet ? !!val : boolDefault(d)}
+                          inherited={!isSet && boolDefault(d) !== null}
+                          onChange={(next) => patch(d.key, next)}
+                        />
+                      )}
+                      {d.control === "select" && (
+                        <SelectControl entry={d} value={val} onCommit={(next) => patch(d.key, next)} />
+                      )}
+                      {(d.control === "text" || d.control === "number") && (
+                        <ScalarControl
+                          entry={d}
+                          value={val}
+                          onCommit={(next) => patch(d.key, next)}
+                        />
+                      )}
+                    </>
+                  }
+                />
+              );
+            })}
+          </List>
         </Group>
       ))}
     </>

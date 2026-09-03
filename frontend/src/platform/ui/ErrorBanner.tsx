@@ -1,14 +1,16 @@
-// Shared error card: a role="alert" region with a full 1px error-tinted border
-// and a subtle error-tinted background (no left stripe). Replaces the ad-hoc
-// .deploy-error divs scattered across the modals/forms.
+// Shared error card: a role="alert" region in the destructive Alert variant.
+// Replaces the ad-hoc .deploy-error divs scattered across the modals/forms.
 import type { ReactNode } from "react";
+import { Alert, AlertDescription } from "@platform/shadcn/ui/alert";
 
 export function ErrorBanner({ children }: { children: ReactNode }) {
   if (children == null || children === false) return null;
   return (
-    <div className="error-banner deploy-error" role="alert">
-      {children}
-    </div>
+    <Alert variant="destructive" className="border-destructive/40">
+      <AlertDescription className="max-h-44 overflow-y-auto whitespace-pre-wrap break-words">
+        {children}
+      </AlertDescription>
+    </Alert>
   );
 }
 

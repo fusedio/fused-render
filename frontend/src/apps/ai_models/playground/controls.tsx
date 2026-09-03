@@ -2,23 +2,44 @@
 //
 // Every stage is one centered column reading as an API surface: input, Run,
 // result — with all four capabilities' parameters hidden until the cog in the
-// stage's title row asks for them (D430, D431, reshaped). Each control is a
-// slider+number pair with a one-line hint, defaults baked in and a
-// per-control reset once a value moves.
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
-import { MenuIcons } from "@platform/ui/MenuIcons";
-import { Card, CardContent, CardHeader, CardTitle } from "@platform/shadcn/ui/card";
-import { Checkbox } from "@platform/shadcn/ui/checkbox";
-import { Field, FieldContent, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
+// stage's title row asks for them (D430, D431, reshaped). The settings live in
+// a right-side properties panel (Flow rule 8: a panel over a modal), reached
+// through a portal so the panel sits beside the WHOLE stage column while its
+// state stays with the stage that owns it. Each control is a property row —
+// label left, value right — with the slider or picker beneath.
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import { Check, Copy, RefreshCw, Settings2, X } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@platform/shadcn/ui/dialog";
 import { Input } from "@platform/shadcn/ui/input";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@platform/shadcn/ui/select";
 import { Slider } from "@platform/shadcn/ui/slider";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
+import { PropertiesPanel, PropertyList, PropertyRow } from "@platform/ui/flow/PropertyRow";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
+import { SectionHeading, Tiny } from "@platform/ui/flow/Typography";
 import { capabilityIcon } from "./capabilityIcons";
 
 /** The stage's one-line title, with the config cog right-aligned on the same
  *  row. The cog lives up here rather than under the input because the title
  *  row is the stage's own header — the settings belong to the stage, not to
  *  the prompt — and a toggle at the end of the heading is where a settings
- *  affordance is looked for. The open state belongs to the STAGE: the card it
+ *  affordance is looked for. The open state belongs to the STAGE: the panel it
  *  reveals is a sibling beside the column, not a child of this row. */
 export function StageHeader({
   title,
@@ -30,54 +51,32 @@ export function StageHeader({
   onToggleConfig: () => void;
 }) {
   return (
-    <div className="pg-work-head">
-      <h2 className="pg-work-title">{title}</h2>
-      <button
+    <div className="flex items-center justify-between gap-3">
+      <h2 className="m-0 text-sm font-semibold">{title}</h2>
+      <Button
         type="button"
-        className={"pg-cog" + (configOpen ? " active" : "")}
+        variant="ghost"
+        size="icon-sm"
+        className={cn("text-muted-foreground", configOpen && "bg-muted text-foreground")}
         aria-expanded={configOpen}
         aria-label={configOpen ? "Hide the settings" : "Show the settings"}
         title={configOpen ? "Hide the settings" : "Show the settings"}
         onClick={onToggleConfig}
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .33-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.11a1.6 1.6 0 0 0 1.47-1.05 1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.33H9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.33 1.77V9a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97Z" />
-        </svg>
-      </button>
+        <Settings2 />
+      </Button>
     </div>
   );
 }
 
-/** How long the settings card's exit animation runs, in ms. Mirrors
- *  `--pg-fade` in ai-playground.css — the timer below unmounts the card, the
- *  stylesheet fades it, and a value that disagrees either cuts the fade off
- *  mid-way or leaves an invisible card mounted after it. */
+/** How long the settings panel's exit fade runs, in ms. The timer below
+ *  unmounts the panel; the utility class fades it; a value that disagrees
+ *  either cuts the fade off mid-way or leaves an invisible panel mounted. */
 const CONFIG_EXIT_MS = 160;
 
-/** Where the uncommon parameters live, revealed by the cog above — a narrow
- *  card BESIDE the column rather than a band across it, so the settings sit in
- *  the stage's right gutter and the input/result column keeps reading top to
- *  bottom. Wide enough windows give the card the whole gutter and the column
- *  does not move at all; narrower ones let it borrow some column width (see
- *  `.pg-work.has-config`, ai-playground.css) rather than cover anything.
- *
- *  Closed by default on purpose: the surface it hides behind has to read as a
- *  simple call. Unmounted while closed, not hidden — every control inside is
- *  driven by stage state, so nothing is lost by not rendering it. */
 /** The panel's open state, as the one hook every stage uses: closed by
  *  default, and `touched` remembers whether the cog has ever been clicked.
- *  ConfigPanel animates its entry only when it has — a card already open at
+ *  ConfigPanel animates its entry only when it has — a panel already open at
  *  page load must not fade in a beat after everything else. */
 export function useConfigOpen() {
   const [open, setOpen] = useState(false);
@@ -89,26 +88,27 @@ export function useConfigOpen() {
   return { open, toggle, touched };
 }
 
+/** Where the properties panel is drawn: PlaygroundTab renders an empty slot
+ *  as the right-hand sibling of the scrolling stage column and provides it
+ *  here; `ConfigPanel` portals into it. Null (no provider, or the slot not yet
+ *  mounted) falls back to rendering in place. */
+export const PanelSlotContext = createContext<HTMLElement | null>(null);
+
 export function ConfigPanel({
   open,
   animated = true,
   children,
 }: {
   open: boolean;
-  /** False on a mount the user did not cause (the initial load): the fold-in
-   *  animation and its wait are skipped, the card is just there. */
+  /** False on a mount the user did not cause (the initial load): the fade-in
+   *  is skipped, the panel is just there. */
   animated?: boolean;
   children: ReactNode;
 }) {
-  // Mount is kept for the length of the exit so the card can fade OUT as well
-  // as in: a panel that pops out of existence while the column glides back
-  // under it is the half-animated version, and reads worse than no animation
-  // at all. This unmount is also what STARTS the column's glide back: the
-  // stylesheet holds the open geometry for as long as a closing card is
-  // mounted (`:has(.pg-config-card.is-closing)`, ai-playground.css), because
-  // the card's open place and the column's closed place overlap — a card
-  // fading over a column already in motion can only be clipped by the stage or
-  // laid on top of the composer.
+  const slot = useContext(PanelSlotContext);
+  // Mount is kept for the length of the exit so the panel can fade OUT as well
+  // as in. Opacity only (the brief's rule): the column beside it snaps to its
+  // new width, the panel itself fades.
   const [shown, setShown] = useState(open);
   useEffect(() => {
     if (open) {
@@ -120,39 +120,36 @@ export function ConfigPanel({
     return () => window.clearTimeout(timer);
   }, [open, shown]);
   if (!shown) return null;
-  return (
-    <aside
-      className={
-        "pg-config-card" + (open ? "" : " is-closing") + (animated ? "" : " no-entry")
-      }
+  const panel = (
+    <PropertiesPanel
       aria-label="Settings"
+      data-state={open ? "open" : "closing"}
       // On the way out it is a picture of a panel, not a panel: nothing in it
       // can be reached or read while it fades.
       aria-hidden={open ? undefined : true}
+      className={cn(
+        "h-full min-h-0 motion-safe:transition-opacity motion-safe:duration-150 motion-safe:ease-out motion-reduce:transition-none",
+        open ? "opacity-100" : "pointer-events-none opacity-0",
+        open && animated && "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150",
+        !slot && "w-full border-t border-l-0 border-border",
+      )}
     >
-      {/* Two boxes, not one: beside the column the <aside> is a full-height
-          rail and this inner box is what sticks inside it. The Card carries
-          `pg-config-inner` so the sticky, fold-in/out and reduced-motion rules
-          in ai-playground.css keep landing on it. */}
-      <Card className="pg-config-inner flex-none">
-        <CardHeader>
-          <CardTitle className="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
-            Settings
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">{children}</CardContent>
-      </Card>
-    </aside>
+      <SectionHeading className="mb-3">Settings</SectionHeading>
+      <PropertyList className="space-y-4">{children}</PropertyList>
+    </PropertiesPanel>
   );
+  return slot ? createPortal(panel, slot) : panel;
 }
 
 /** Copy, as an icon in a result card's top-right corner. */
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
+    <Button
       type="button"
-      className="pg-copy-btn"
+      variant="ghost"
+      size="icon-xs"
+      className="absolute top-2 right-2 text-muted-foreground"
       title={copied ? "Copied" : label}
       aria-label={label}
       onClick={() => {
@@ -161,27 +158,14 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
         window.setTimeout(() => setCopied(false), 1200);
       }}
     >
-      {copied ? (
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M20 6L9 17l-5-5" />
-        </svg>
-      ) : (
-        MenuIcons.copy
-      )}
-    </button>
+      {copied ? <Check /> : <Copy />}
+    </Button>
   );
 }
 
-/** One continuous parameter: label row (name, live value, reset), slider,
- *  hint. The number is editable — research note: sliders alone hide the range
- *  and playgrounds pair them with a numeric input.
+/** One continuous parameter: property row (name, editable value, reset), the
+ *  slider, a one-line hint. The number is editable — research note: sliders
+ *  alone hide the range and playgrounds pair them with a numeric input.
  *
  *  The input holds a DRAFT string and commits on blur or Enter. Clamping on
  *  every keystroke made the box untypeable: "1" on the way to "1024" was
@@ -230,31 +214,32 @@ export function RailSlider({
     if (clamped !== value) onChange(clamped);
   };
   return (
-    <Field className="gap-1.5">
-      <div className="flex w-full items-center gap-2">
-        <FieldLabel className="text-xs font-semibold">{label}</FieldLabel>
-        {moved && (
-          <RailReset title={`Back to ${fallback}`} onClick={() => onChange(fallback)}>
-            reset
-          </RailReset>
-        )}
-        <Input
-          className="ml-auto h-6 w-16 shrink-0 rounded-md px-1.5 text-right text-xs tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            }
-          }}
-        />
-      </div>
+    <div className="space-y-1.5">
+      <PropertyRow label={label} className="items-center py-0">
+        <span className="inline-flex items-center gap-2">
+          {moved && (
+            <RailReset title={`Back to ${fallback}`} onClick={() => onChange(fallback)}>
+              reset
+            </RailReset>
+          )}
+          <Input
+            className="h-6 w-16 shrink-0 px-1.5 text-right text-xs tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              }
+            }}
+          />
+        </span>
+      </PropertyRow>
       {/* Base UI wants an array here — a bare number renders a thumb per
           bound (see slider.tsx's _values fallback), i.e. two of them. */}
       <Slider
@@ -264,16 +249,14 @@ export function RailSlider({
         value={[value]}
         onValueChange={(next) => onChange(Array.isArray(next) ? next[0] : next)}
       />
-      <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
-    </Field>
+      <Tiny className="block leading-snug">{hint}</Tiny>
+    </div>
   );
 }
 
 /** The panel's "back to the default" affordance — a bare dotted-underline
- *  word, deliberately quieter than a Button: it sits inside a label row and
- *  must not compete with the value beside it. The appearance/border/background
- *  resets are load-bearing — preflight is off, so the UA's button chrome
- *  shows without them. */
+ *  word, deliberately quieter than a Button: it sits inside a property row and
+ *  must not compete with the value beside it. */
 export function RailReset({
   title,
   onClick,
@@ -284,21 +267,22 @@ export function RailReset({
   children: ReactNode;
 }) {
   return (
-    <button
+    <Button
       type="button"
-      className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+      variant="link"
+      size="xs"
+      className="h-auto px-0 text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
       title={title}
       onClick={onClick}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
-/** One non-slider setting: label row (name, optional quiet action on the
+/** One non-slider setting: property row (name, optional quiet action on the
  *  right), the control itself, a one-line hint. The shape every stage's
- *  bespoke rows (seed, language, system prompt…) share, so the stages compose
- *  this instead of hand-rolling Field internals. */
+ *  bespoke rows (seed, language, system prompt…) share. */
 export function RailField({
   label,
   action,
@@ -311,21 +295,17 @@ export function RailField({
   children: ReactNode;
 }) {
   return (
-    <Field className="gap-1.5">
-      <div className="flex w-full items-baseline gap-2">
-        <FieldLabel className="text-xs font-semibold">{label}</FieldLabel>
-        {action && <span className="ml-auto">{action}</span>}
-      </div>
+    <div className="space-y-1.5">
+      <PropertyRow label={label} className="items-center py-0">
+        {action ?? null}
+      </PropertyRow>
       {children}
-      {hint && <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>}
-    </Field>
+      {hint && <Tiny className="block leading-snug">{hint}</Tiny>}
+    </div>
   );
 }
 
-/** A boolean setting: checkbox beside its name-and-hint. The label is tied to
- *  the checkbox by id, NOT by wrapping the Field in a FieldLabel — a
- *  FieldLabel with a Field child is shadcn's choice-card composition, and
- *  brings the card's border, padding and checked-highlight with it. */
+/** A boolean setting: a switch on the property row, its hint beneath. */
 export function RailCheck({
   label,
   hint,
@@ -339,39 +319,40 @@ export function RailCheck({
 }) {
   const id = useId();
   return (
-    <Field orientation="horizontal" className="items-start gap-2">
-      <Checkbox
-        id={id}
-        className="mt-0.5"
-        checked={checked}
-        onCheckedChange={(next) => onChange(!!next)}
-      />
-      <FieldContent className="gap-0.5">
-        <FieldLabel htmlFor={id} className="text-xs font-semibold">
-          {label}
-        </FieldLabel>
-        <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
-      </FieldContent>
-    </Field>
+    <div className="space-y-1">
+      <PropertyRow label={<label htmlFor={id}>{label}</label>} className="items-center py-0">
+        <Switch id={id} size="sm" checked={checked} onCheckedChange={(next) => onChange(!!next)} />
+      </PropertyRow>
+      <Tiny className="block leading-snug">{hint}</Tiny>
+    </div>
   );
 }
 
-/** A native <select> in the Input's clothes. Native on purpose — the two- and
- *  three-option pickers in the panel don't earn a popover — and the UA keeps
- *  its own dropdown arrow, so no `appearance-none`. */
-export function RailSelect({
-  className,
-  ...props
-}: ComponentProps<"select">) {
+/** A small closed picker, in the panel's width. */
+export function RailSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+  label?: string;
+}) {
   return (
-    <select
-      data-slot="rail-select"
-      className={
-        "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 " +
-        (className ?? "")
-      }
-      {...props}
-    />
+    <Select value={value} onValueChange={(v) => onChange(v as T)}>
+      <SelectTrigger size="sm" className="w-full" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {o.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -382,26 +363,37 @@ export function RailChips<T extends string>({
   options,
   active,
   onPick,
+  label,
 }: {
   options: { value: T; label: string; title?: string }[];
   active: T | null;
   onPick: (value: T) => void;
+  label?: string;
 }) {
   return (
-    <div className="pg-chips" role="group">
+    <ToggleGroup
+      value={active === null ? [] : [active]}
+      onValueChange={(v) => {
+        const next = (v as string[])[0];
+        if (next !== undefined) onPick(next as T);
+      }}
+      variant="outline"
+      size="sm"
+      spacing={1}
+      className="w-max max-w-full flex-nowrap overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      aria-label={label}
+    >
       {options.map((option) => (
-        <button
+        <ToggleGroupItem
           key={option.value}
-          type="button"
-          className={"pg-chip" + (option.value === active ? " active" : "")}
-          aria-pressed={option.value === active}
+          value={option.value}
+          className="rounded-full px-2.5 text-xs tabular-nums"
           title={option.title}
-          onClick={() => onPick(option.value)}
         >
           {option.label}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -417,46 +409,32 @@ export interface Starter {
   name: string;
   icon: ReactNode;
   prompt: string;
-  /** What hover says, when the prompt alone does not say it. The embed stage's
-   *  prompt is a three-word query, and the interesting half of that sample is
-   *  what the query is searched AGAINST. */
+  /** What hover says, when the prompt alone does not say it. */
   detail?: string;
   /** A picture the sample brings WITH it, as a URL the app serves
-   *  (`/static/samples/…`). The image stage's edit examples carry one: an edit
-   *  prompt with no photo to edit demonstrates nothing, and hunting for a
-   *  suitable file is the step that stops somebody trying it at all. The stage
-   *  decides what to do with it — this row only carries it, the way `detail`
-   *  does. */
+   *  (`/static/samples/…`). The image stage's edit examples carry one. */
   image?: string;
 }
 
-/** How many pills a page WANTS. Four fills the 680px column as one row, and
- *  every stage authors eight, so rotate is two pages at full width. */
+/** How many pills a page WANTS. Four fills the column as one row, and every
+ *  stage authors eight, so rotate is two pages at full width. */
 const STARTER_PAGE = 4;
 
 /** …and the fewest it will fall to. The row never ellipsises a name — when the
- *  width runs out it shows one pill fewer (see the measure below), and the
- *  settings card's narrower column is the case that asked for it. Two rather
- *  than three because a long-named pair can outgrow a very narrow column too,
- *  and three clipped names are worse than two whole ones. */
+ *  width runs out it shows one pill fewer (see the measure below). */
 const STARTER_MIN = 2;
 
 /** Example prompts, as one row of outlined pills under the input: an icon and
  *  a short name each, with a round rotate button at the end (D465).
  *
- *  Research's one consistent finding on empty inputs (Open WebUI chips, AI
- *  Studio gallery, Replicate pre-fills): a blank box gives no value, a
- *  clickable example gives immediate value. They sit under the box rather than
- *  in a centered empty state because that is where the thing they fill is.
- *
- *  Only a PAGE of them shows, with rotate for the rest: eight full prompts laid
- *  out at once is a wall in front of the input, and the reader only needs one.
- *  Rotation steps by whatever is on screen and is modular over the authored
- *  order — no shuffle, so clicking back around lands on the same pills.
+ *  Only a PAGE of them shows, with rotate for the rest. Rotation steps by
+ *  whatever is on screen and is modular over the authored order — no shuffle.
  *
  *  How many is on screen is MEASURED, never truncated: the pills hug their
  *  names, so a narrower column shows one pill fewer rather than four cut-off
- *  labels. See the layout effect below. */
+ *  labels. The measure needs three things on the row: `overflow-hidden`,
+ *  `min-w-0 shrink` (so it can report an overflow) and `whitespace-nowrap`
+ *  pills. */
 export function StarterCards<S extends Starter>({
   samples,
   onPick,
@@ -465,22 +443,18 @@ export function StarterCards<S extends Starter>({
   onPick: (sample: S) => void;
 }) {
   const [offset, setOffset] = useState(0);
-  // How many fit, measured rather than guessed at a breakpoint: the pills hug
-  // their names, so what fits depends on which four names are up — a threshold
-  // in px would clip one page and leave a gap on another.
   const [page, setPage] = useState(STARTER_PAGE);
   const rowRef = useRef<HTMLDivElement>(null);
-  // The loop is: ask for the full page, and while the row overflows, ask for
-  // one fewer. It settles in at most two extra renders and cannot oscillate —
-  // the row is `flex: 1`, so its own width does not change with the count.
+  // Ask for the full page, and while the row overflows, ask for one fewer. It
+  // settles in at most two extra renders and cannot oscillate.
   useLayoutEffect(() => {
     const row = rowRef.current;
     if (!row) return;
     if (page > STARTER_MIN && row.scrollWidth > row.clientWidth + 1) setPage(page - 1);
   }, [page, offset, samples]);
   // A resize re-opens the question upwards: dropping a pill is a one-way
-  // ratchet within a layout, so a column that grows back (the settings card
-  // closing) has to re-ask for the full page and let the measure trim again.
+  // ratchet within a layout, so a column that grows back has to re-ask for the
+  // full page and let the measure trim again.
   useEffect(() => {
     const row = rowRef.current;
     if (!row || typeof ResizeObserver === "undefined") return;
@@ -492,59 +466,85 @@ export function StarterCards<S extends Starter>({
     return samples[(offset + at) % samples.length];
   });
   return (
-    <div className="pg-starters">
-      <div className="pg-starter-grid" ref={rowRef}>
+    <div className="flex items-start gap-2 p-0.5">
+      <div className="flex min-w-0 shrink flex-nowrap gap-2 overflow-hidden" ref={rowRef}>
         {shown.map((sample) => (
-          <button
+          <Button
             key={sample.name}
             type="button"
-            className="pg-starter-card"
+            variant="outline"
+            size="sm"
+            className="flex-none rounded-full text-xs whitespace-nowrap text-muted-foreground hover:text-foreground [&_svg]:opacity-75 hover:[&_svg]:opacity-100"
             // The pill shows a name; the prompt it stands for is only legible
             // on hover, so the title is load-bearing here, not decoration.
             title={sample.detail ?? sample.prompt}
             onClick={() => onPick(sample)}
           >
-            <span className="pg-starter-icon" aria-hidden="true">
+            <span aria-hidden="true" className="flex">
               {sample.icon}
             </span>
-            <span className="pg-starter-name">{sample.name}</span>
-          </button>
+            {sample.name}
+          </Button>
         ))}
       </div>
       {samples.length > page && (
-        <button
+        <Button
           type="button"
-          className="pg-starter-rotate"
+          variant="outline"
+          size="icon-sm"
+          className="rounded-full text-muted-foreground hover:text-foreground"
           title="Show other examples"
           aria-label="Show other examples"
           onClick={() => setOffset((at) => (at + page) % samples.length)}
         >
-          {MenuIcons.refresh}
-        </button>
+          <RefreshCw />
+        </Button>
       )}
+    </div>
+  );
+}
+
+/** Label above, box below — the result in both its states. `pg-answer-block`
+ *  is a bare MARKER class with no stylesheet behind it: the AI tour
+ *  (platform/lib/tours/ai.ts) spotlights this element by that name. */
+export function AnswerBlock({
+  label,
+  status,
+  provenance,
+  children,
+}: {
+  label: string;
+  /** A status the label carries beside it — `running` while streaming. */
+  status?: string | null;
+  /** Which model produced what is below — the embed stage's provenance. */
+  provenance?: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <div className="pg-answer-block flex flex-col gap-2">
+      <p className="m-0 flex min-w-0 items-baseline gap-2 text-xs font-semibold text-muted-foreground">
+        {status && <StatusDot status={status} pulse className="self-center" />}
+        {label}
+        {provenance && (
+          <span
+            data-slot="answer-provenance"
+            className="min-w-0 truncate font-normal tabular-nums opacity-75"
+            title={`These scores were computed by ${provenance}. Vectors from two models are not comparable, even when they are the same size.`}
+          >
+            {provenance}
+          </span>
+        )}
+      </p>
+      {children}
     </div>
   );
 }
 
 /** The result canvas, idle. Every stage draws one where its answer will land,
  *  so a stage that has not run yet reads as *waiting* rather than as half a
- *  page — the empty band between the prompt and the app strip below was the
- *  loudest unfinished signal on the tab.
- *
- *  It is a PLACEHOLDER, not a skeleton: no shimmer, no fake rows. A dashed
- *  frame with the capability's own sidebar glyph and one line naming what
- *  arrives here — the same grammar an empty folder or an empty inbox gets.
- *
- *  One box, one height, on all five stages, rather than the aspect-locked
- *  frame the image and video renders actually fill. An aspect-locked idle
- *  frame would avoid the first render's layout shift, but a 9:16 placeholder
- *  is ~1.8 column widths of empty dashed box — trading the void this fixes for
- *  a taller one. The shift on first Generate is cheap and reads as the frame
- *  BECOMING the picture.
- *
- *  `label` repeats the filled block's own heading ("Result", "Response",
- *  "Transcript", …) and the slot sits in the SAME JSX position, so idle and
- *  filled are one box in two states rather than two siblings taking turns. */
+ *  page. A PLACEHOLDER, not a skeleton: no shimmer, no fake rows — a dashed
+ *  frame with the capability's own glyph and one line naming what arrives.
+ *  One box, one height, on all five stages. */
 export function ResultSlot({
   label,
   capability,
@@ -555,14 +555,242 @@ export function ResultSlot({
   note: string;
 }) {
   return (
-    <div className="pg-answer-block">
-      <p className="pg-answer-label">{label}</p>
-      <div className="pg-slot">
-        <span className="pg-slot-icon" aria-hidden="true">
+    <AnswerBlock label={label}>
+      <div className="flex min-h-[200px] flex-col items-center justify-center gap-2.5 rounded-lg border border-dashed border-border bg-muted/30 p-6 text-center">
+        <span
+          aria-hidden="true"
+          className="grid place-items-center text-muted-foreground opacity-50 [&_svg]:size-6"
+        >
           {capabilityIcon(capability)}
         </span>
-        <p className="pg-slot-note">{note}</p>
+        <Tiny className="block max-w-[34ch] leading-normal">{note}</Tiny>
       </div>
+    </AnswerBlock>
+  );
+}
+
+/** The filled result box — a bordered muted surface with room top-right for
+ *  the copy button. */
+export function AnswerBox({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        "relative rounded-lg border border-border bg-muted/30 py-3.5 pr-11 pl-4 text-sm leading-relaxed [overflow-wrap:anywhere]",
+        className,
+      )}
+    >
+      {children}
     </div>
+  );
+}
+
+/** The focal composer: one square Card holding the input and the Run button.
+ *  `pg-composer` is a bare MARKER class (see AnswerBlock) the AI tour targets;
+ *  `stacked` puts the prompt across the whole box with a floor beneath it. */
+export function ComposerCard({
+  stacked,
+  className,
+  children,
+}: {
+  stacked?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "pg-composer relative flex gap-2 rounded-lg border border-border bg-card p-2 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+        stacked ? "flex-col items-stretch" : "items-end",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** The prompt box inside a ComposerCard — a PLAIN <textarea>/<input>, not the
+ *  shadcn Textarea: that one is a function component with no forwardRef, and
+ *  `useAutoGrow` needs the element. Chrome off (the card is the border). The
+ *  two heights are what `useAutoGrow` depends on — a three-line floor and the
+ *  ten-line backstop `COMPOSER_MAX_LINES` names (platform/lib/autoGrow.ts). */
+export const composerTextareaClass =
+  "field-sizing-fixed min-h-[calc(4.5em+12px)] max-h-[calc(15em+12px)] min-w-0 flex-1 resize-none border-0 bg-transparent px-1 py-1.5 font-[inherit] text-sm leading-normal text-foreground outline-none placeholder:text-muted-foreground";
+
+/** The one-line input (the embed stage's search): top-aligned, so it starts
+ *  where every other stage's prompt starts. */
+export const composerInputClass =
+  "min-w-0 flex-1 self-start border-0 bg-transparent px-1 py-1.5 font-[inherit] text-sm leading-normal text-foreground outline-none placeholder:text-muted-foreground";
+
+/** The button column beside a row composer: Clear (when offered) above Run,
+ *  in the bottom-right corner. Its 72px floor keeps a one-line composer from
+ *  growing when Clear appears. */
+export function ComposerSide({ floor = true, children }: { floor?: boolean; children: ReactNode }) {
+  return (
+    <div className={cn("flex flex-none flex-col items-end justify-end gap-2", floor && "min-h-[72px]")}>
+      {children}
+    </div>
+  );
+}
+
+/** The one primary action of a stage, with its Enter hint. `pg-send` is a bare
+ *  MARKER class for the AI tour. */
+export function RunButton({ children, ...props }: Omit<ComponentProps<typeof Button>, "variant" | "size">) {
+  return (
+    <Button type="button" className="pg-send flex-none" {...props}>
+      {children}
+      <Kbd className="ml-1 bg-primary-foreground/15 text-primary-foreground">⏎</Kbd>
+    </Button>
+  );
+}
+
+/** Stop, in the Run slot, while a run is live. */
+export function StopButton(props: Omit<ComponentProps<typeof Button>, "variant" | "size">) {
+  return <Button type="button" variant="secondary" className="pg-send flex-none" {...props} />;
+}
+
+/** The quiet Clear beside a composer. `corner` floats it in a stacked
+ *  composer's top-right, out of flow, so it adds no height. */
+export function ClearButton({
+  corner,
+  className,
+  ...props
+}: Omit<ComponentProps<typeof Button>, "variant" | "size"> & { corner?: boolean }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={cn("text-muted-foreground", corner && "absolute top-2 right-2 z-10", className)}
+      {...props}
+    >
+      Clear
+    </Button>
+  );
+}
+
+/** A one-line status or error under the composer, with its dot. */
+export function StatusLine({ status, children }: { status: "loading" | "error"; children: ReactNode }) {
+  return (
+    <p
+      className={cn(
+        "m-0 flex items-center gap-2 text-xs",
+        status === "error" ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
+      <StatusDot status={status} pulse={status === "loading"} />
+      <span>{children}</span>
+    </p>
+  );
+}
+
+/** A neutral progress bar — the fraction of a job done, not a threshold
+ *  meter, so it wears the primary fill. */
+export function ProgressBar({ pct }: { pct: number }) {
+  return (
+    <span className="block h-1 w-full max-w-80 overflow-hidden rounded-full bg-muted">
+      <span
+        className="block h-full bg-primary motion-safe:transition-[width] motion-safe:duration-300"
+        style={{ width: `${pct}%` }}
+      />
+    </span>
+  );
+}
+
+/** A picture (or the webcam) at full size, over everything — the whole modal,
+ *  no title bar beyond the accessible one. Escape and the backdrop close it,
+ *  the two things anybody tries. */
+export function Lightbox({
+  open,
+  onClose,
+  label,
+  closeLabel = "Close",
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  label: string;
+  closeLabel?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        showCloseButton={false}
+        className="flex max-h-[calc(100vh-4rem)] w-fit max-w-[calc(100vw-4rem)] flex-col items-center gap-3 p-3 sm:max-w-[calc(100vw-4rem)]"
+      >
+        <DialogTitle className="sr-only">{label}</DialogTitle>
+        {children}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="absolute top-2 right-2"
+          title={closeLabel}
+          aria-label={closeLabel}
+          onClick={onClose}
+        >
+          <X />
+        </Button>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The attached picture, as a chip on the composer's floor: the thumbnail
+ *  (opens the lightbox) and the ✕ that removes it. */
+export function AttachChip({
+  src,
+  onOpen,
+  onRemove,
+}: {
+  src: string;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <span className="mr-auto inline-flex items-center gap-1 rounded-md border border-border bg-background p-0.5">
+      <button
+        type="button"
+        className="block cursor-zoom-in rounded-sm border-0 bg-transparent p-0 leading-none hover:opacity-80"
+        title="See this picture"
+        aria-label="See this picture"
+        onClick={onOpen}
+      >
+        <img src={src} alt="" className="size-7 rounded-sm bg-muted object-cover" />
+      </button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        className="size-5.5 text-muted-foreground"
+        title="Remove this image"
+        aria-label="Remove this image"
+        onClick={onRemove}
+      >
+        <X />
+      </Button>
+    </span>
+  );
+}
+
+/** One way to attach a picture — a small outlined pill with an icon. */
+export function AttachButton({
+  active,
+  className,
+  ...props
+}: Omit<ComponentProps<typeof Button>, "variant" | "size"> & { active?: boolean }) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={cn(
+        "h-7 rounded-full text-xs text-muted-foreground hover:text-foreground",
+        active && "border-ring text-foreground",
+        className,
+      )}
+      {...props}
+    />
   );
 }

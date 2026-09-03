@@ -7,18 +7,16 @@
 // escapes intact and is rendered through ./ansi.tsx so the preview reads the way
 // the terminal does. It runs once on open, and again on demand.
 //
-// The preview IS the content, so it is the first thing on the page. It used to
-// come last, under a stack of CardSubs about tracked-ness and byte counts and
-// field lists, which made the tab read as a debug dump of a file rather than as
-// "here is your status line". Those facts are all still here — as a definition
-// list UNDER the preview, where metadata belongs — and re-running it is the
-// same toolbar refresh icon every other tab has rather than a bespoke button.
+// The preview IS the content, so it is the first thing on the page — in the
+// log-viewer shape (a dark mono block). The facts about the file follow as a
+// property list UNDER the preview, where metadata belongs, and re-running it is
+// the same toolbar refresh icon every other tab has.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { PropertyList, PropertyRow } from "@platform/ui/flow/PropertyRow";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
 import * as cc from "../api";
-import { renderAnsi } from "../ansi";
-import { Empty, SKELETON_ROWS, SectionToolbar, useModuleData } from "../bits";
+import { LOG_ERROR_CLASS, renderAnsi } from "../ansi";
+import { Code, Empty, ErrorNote, ListSkeleton, SKELETON_ROWS, SectionToolbar, useModuleData } from "../bits";
 
 export default function StatuslineSection() {
   const load = useCallback(() => cc.statusline.get(), []);
@@ -60,8 +58,8 @@ export default function StatuslineSection() {
     if (configured) void preview();
   }, [configured, preview]);
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading status line" />;
+  if (error) return <ErrorNote>{error}</ErrorNote>;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading status line" />;
   if (!data.configured) {
     // No action offered, deliberately: this tab is a viewer, and configuring a
     // status line means putting a command in settings.json (or letting the
@@ -69,7 +67,7 @@ export default function StatuslineSection() {
     return (
       <Empty>
         No status line configured. Claude Code shows its default until settings.json has a{" "}
-        <span className="cc-mono">statusLine</span> command.
+        <Code>statusLine</Code> command.
       </Empty>
     );
   }
@@ -87,57 +85,50 @@ export default function StatuslineSection() {
         refreshLabel="Re-run preview"
         refreshBusy={running}
       />
-      {/* The hero: what the thing actually looks like. */}
-      <pre className="cc-pre cc-mono cc-statusline">
-        {running && output === null
-          ? "Running…"
-          : previewError
-            ? `Preview failed: ${previewError}`
-            : output
-              ? renderAnsi(output)
-              : "(empty output)"}
-      </pre>
-      <dl className="cc-dl">
-        <dt className="cc-dl-key">Command</dt>
-        <dd className="cc-dl-val cc-mono">{data.command}</dd>
+      {/* The hero: what the thing actually looks like. Log-viewer shape — the
+          block is always dark, so its base text is fixed light rather than the
+          theme's foreground (which is near-black in the light theme). */}
+      <div className="relative bg-neutral-950 rounded-lg p-3 font-mono text-xs text-neutral-200">
+        {running && (
+          <StatusDot bucket="yellow" pulse label="Running" className="absolute top-3 right-3" />
+        )}
+        <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs">
+          {running && output === null
+            ? "Running…"
+            : previewError
+              ? <span className={LOG_ERROR_CLASS}>Preview failed: {previewError}</span>
+              : output
+                ? renderAnsi(output)
+                : "(empty output)"}
+        </pre>
+      </div>
+      <PropertyList className="max-w-3xl [&_dd]:text-left [&_dd]:whitespace-normal [&_dt]:w-24">
+        <PropertyRow label="Command">
+          <Code>{data.command}</Code>
+        </PropertyRow>
         {sc ? (
           <>
-            {sc.description && (
-              <>
-                <dt className="cc-dl-key">Description</dt>
-                <dd className="cc-dl-val">{sc.description}</dd>
-              </>
-            )}
-            <dt className="cc-dl-key">Script</dt>
-            <dd className="cc-dl-val cc-mono">{sc.path}</dd>
-            <dt className="cc-dl-key">File</dt>
-            <dd className="cc-dl-val">
-              {sc.tracked ? "tracked in your config repo" : "not tracked"} · {sc.size} bytes ·
-              modified {new Date(sc.modified).toLocaleString()}
-            </dd>
-            <dt className="cc-dl-key">Shows</dt>
-            <dd className="cc-dl-val">
-              {sc.fields.length
-                ? sc.fields.join(" · ")
-                : "couldn't introspect this command's fields"}
-            </dd>
+            {sc.description && <PropertyRow label="Description">{sc.description}</PropertyRow>}
+            <PropertyRow label="Script">
+              <Code>{sc.path}</Code>
+            </PropertyRow>
+            <PropertyRow label="File">
+              {sc.tracked ? "tracked in your config repo" : "not tracked"} · {sc.size} bytes · modified{" "}
+              {new Date(sc.modified).toLocaleString()}
+            </PropertyRow>
+            <PropertyRow label="Shows">
+              {sc.fields.length ? sc.fields.join(" · ") : "couldn't introspect this command's fields"}
+            </PropertyRow>
             {sc.otherFields.length > 0 && (
-              <>
-                <dt className="cc-dl-key">Also reads</dt>
-                <dd className="cc-dl-val">{sc.otherFields.join(", ")}</dd>
-              </>
+              <PropertyRow label="Also reads">{sc.otherFields.join(", ")}</PropertyRow>
             )}
           </>
         ) : (
-          <>
-            <dt className="cc-dl-key">Script</dt>
-            <dd className="cc-dl-val">
-              This command doesn&apos;t point at a local script we can read — showing the command
-              only.
-            </dd>
-          </>
+          <PropertyRow label="Script">
+            This command doesn&apos;t point at a local script we can read — showing the command only.
+          </PropertyRow>
         )}
-      </dl>
+      </PropertyList>
     </>
   );
 }

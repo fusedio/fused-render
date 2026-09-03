@@ -14,6 +14,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { Button } from "@platform/shadcn/ui/button";
+import { StatusDot } from "@platform/ui/flow/StatusIcon";
 
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
@@ -22,6 +24,19 @@ function formatProgress(done: number | null, total: number | null): string {
   if (total) return `${Math.min(100, Math.round((100 * (done ?? 0)) / total))}%`;
   if (!done) return "";
   return `${Math.round(done / (1024 * 1024))} MB`;
+}
+
+function Command({ command, copied, onCopy }: { command: string; copied: boolean; onCopy: () => void }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <code className="min-w-0 shrink overflow-x-auto whitespace-nowrap rounded-sm bg-muted px-1.5 py-1 font-mono text-xs">
+        {command}
+      </code>
+      <Button variant="outline" size="xs" onClick={onCopy}>
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
 }
 
 export default function UpdateBadge() {
@@ -88,82 +103,72 @@ export default function UpdateBadge() {
       : status.state === "installed"
         ? "Ready to restart"
         : `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`;
-  const dot = <span className="update-badge-dot" aria-hidden="true" />;
+  // Blue = upcoming: the update is there to take, nothing is wrong.
+  const dot = <StatusDot bucket="blue" />;
 
   // The installed state has no panel of its own — ServerStatusBanner's restart
   // card says the rest — so the row is a status line, not a dead toggle.
   if (status.state === "installed") {
     return (
-      <div className="update-badge">
-        <div className="update-badge-row update-badge-row-static">
-          {dot}
-          {label}
-        </div>
+      <div className="mx-2 my-0.5 flex items-center gap-2 rounded-md bg-sidebar-accent px-2 py-1.5 text-xs">
+        {dot}
+        {label}
       </div>
     );
   }
 
   return (
-    <div className="update-badge">
-      <button
-        type="button"
-        className="update-badge-row"
+    <div className="mx-2 my-0.5 text-xs">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full justify-start gap-2 bg-sidebar-accent/60 hover:bg-sidebar-accent px-2 text-xs"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
         {dot}
         {label}
-      </button>
+      </Button>
       {open && (
-        <div className="update-badge-panel">
+        <div className="flex flex-col gap-2 p-2">
           {status.state === "available" && status.method === "brew" && (
             <>
-              <div className="update-badge-text">
+              <p className="m-0 leading-snug text-muted-foreground">
                 Installed with Homebrew — run this in your terminal:
-              </div>
+              </p>
               {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
+                <Command command={status.manual_command} copied={copied} onCopy={copyCommand} />
               )}
             </>
           )}
           {status.state === "available" && status.method !== "brew" && (
             <>
-              <div className="update-badge-text">
+              <p className="m-0 leading-snug text-muted-foreground">
                 Downloads the new version and installs it in place.
-              </div>
-              <button type="button" className="update-badge-action" onClick={install}>
+              </p>
+              <Button size="xs" className="self-start" onClick={install}>
                 Update to v{status.latest_version}
-              </button>
+              </Button>
             </>
           )}
           {status.state === "installing" && (
-            <div className="update-badge-text">
+            <p className="m-0 leading-snug text-muted-foreground">
               Downloading… {formatProgress(status.progress, status.progress_total)}
-            </div>
+            </p>
           )}
           {status.state === "error" && (
             <>
-              <div className="update-badge-text update-badge-error">
+              <p className="m-0 leading-snug">
                 {status.manual_command
                   ? "Automatic update failed. Run this in your terminal:"
                   : `Update failed: ${status.error ?? "unknown error"}`}
-              </div>
+              </p>
               {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
+                <Command command={status.manual_command} copied={copied} onCopy={copyCommand} />
               )}
-              <button type="button" className="update-badge-action" onClick={install}>
+              <Button size="xs" className="self-start" onClick={install}>
                 Try again
-              </button>
+              </Button>
             </>
           )}
         </div>

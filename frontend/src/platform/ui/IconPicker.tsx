@@ -1,8 +1,12 @@
 // Notion-style emoji picker popover for bookmark icons: search box, emoji
 // grid grouped by category, and a Remove action that restores the default ★.
 // Pure presentation — the caller owns positioning (anchor rect) and persists
-// the chosen icon.
+// the chosen icon. Styled as a shadcn popover surface (square, bordered,
+// shadow-sm) with the Input/Button primitives; the search stays a native
+// <input> underneath so the focus ref attaches (Input does not forward refs).
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Button } from "@platform/shadcn/ui/button";
+import { cn } from "@platform/lib/utils";
 
 interface Category {
   name: string;
@@ -300,12 +304,19 @@ export default function IconPicker({
   let flatIdx = 0;
 
   return (
-    <div className="icon-picker" ref={rootRef} role="dialog" aria-label="Choose icon">
-      <div className="icon-picker-head">
+    <div
+      // position:fixed against the one-shot anchor rect; the layout effect
+      // above writes top/left. z-50 sits above the sidebar it opens from.
+      className="fixed z-50 flex w-[292px] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-sm"
+      ref={rootRef}
+      role="dialog"
+      aria-label="Choose icon"
+    >
+      <div className="flex items-center gap-1.5 border-b border-border p-2">
         <input
           ref={inputRef}
           type="text"
-          className="icon-picker-search"
+          className="h-7 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
           placeholder="Filter…"
           aria-label="Filter icons"
           role="combobox"
@@ -319,16 +330,25 @@ export default function IconPicker({
           }}
           onKeyDown={onSearchKeyDown}
         />
-        <button className="icon-picker-remove" title="Reset to default star" onClick={onRemove}>
+        <Button variant="ghost" size="xs" title="Reset to default star" onClick={onRemove}>
           Remove
-        </button>
+        </Button>
       </div>
-      <div className="icon-picker-body" id={`${baseId}-grid`} role="listbox" aria-label="Icons">
-        {sections.length === 0 && <div className="icon-picker-empty">No match</div>}
+      <div
+        className="max-h-[260px] overflow-y-auto p-2 scrollbar-auto-hide"
+        id={`${baseId}-grid`}
+        role="listbox"
+        aria-label="Icons"
+      >
+        {sections.length === 0 && (
+          <div className="px-1 py-3 text-center text-xs text-muted-foreground">No match</div>
+        )}
         {sections.map((cat) => (
           <React.Fragment key={cat.name}>
-            <div className="icon-picker-cat">{cat.name}</div>
-            <div className="icon-picker-grid">
+            <div className="px-1 pt-2 pb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase first:pt-0">
+              {cat.name}
+            </div>
+            <div className="grid grid-cols-8 gap-0.5">
               {cat.emoji.map(([emoji, kw]) => {
                 const i = flatIdx++;
                 return (
@@ -338,7 +358,10 @@ export default function IconPicker({
                     role="option"
                     aria-selected={i === activeIdx}
                     tabIndex={-1}
-                    className={"icon-picker-cell" + (i === activeIdx ? " active" : "")}
+                    className={cn(
+                      "flex size-8 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-base leading-none hover:bg-accent",
+                      i === activeIdx && "bg-accent ring-[1.5px] ring-ring/60",
+                    )}
                     title={kw}
                     onClick={() => onPick(emoji)}
                   >

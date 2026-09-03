@@ -54,3 +54,26 @@ repo first (`flow`), then propagate here by re-sync. If the target app needs a
 divergence (e.g. brand accent color), record it in this file under a
 "Deviations" section with the reason — undocumented drift is how design
 languages die.
+
+## Deviations (fused-render)
+
+- **Dark keyed off `data-theme`, not `.dark`.** The pre-paint bootstrap in
+  `frontend/index.html` stamps `data-theme` on `<html>`, and framed shells
+  (embed panes, `.fused` apps) inherit theme through that attribute. The
+  `dark` variant in `styles/tailwind.css` is `:root:not([data-theme="light"])`.
+  Dark stays the no-attribute default.
+- **Primitives are base-ui, not Radix.** `components.json` is shadcn
+  `base-nova` on `@base-ui/react`; the app already shipped 15 primitives on
+  it before adopting Flow. Same `data-slot`/`cn()`/`cva` shape as
+  `assets/button.tsx`; only the underlying headless library differs.
+- **No preflight.** ~27k lines of legacy CSS predate Tailwind; the token
+  sheet imports `theme.css` + `utilities.css` only and applies form-control
+  font inheritance to `[data-slot]` roots. Revisit once the legacy files are
+  gone.
+- **Two token vocabularies coexist.** `styles/tokens.css` (legacy `--fg`,
+  `--bg`, `--border`, `--accent` …) is re-pointed at the same neutral OKLCH
+  values as the Flow set, so unconverted surfaces wear the language; shadcn's
+  border/accent read `--sh-border`/`--sh-accent` to dodge the name clash.
+  Delete legacy tokens as their last consumer is converted.
+- **Brand chartreuse retired.** `--accent` (#E5FF44) now equals the neutral
+  primary in both themes. Chromatic colour is status/priority/chart only.

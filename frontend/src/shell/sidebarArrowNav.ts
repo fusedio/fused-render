@@ -22,7 +22,18 @@ import { useEffect } from "react";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { appPathFromPath } from "@shell/current-apps-lib";
 
-const ROW_LINKS = "#sidebar a.bookmark-name";
+// Two dialects, one list: the Projects rows mark their link with
+// `data-sidebar-row` (CurrentAppsSection), the bookmark tree still speaks the
+// legacy `a.bookmark-name`. Same for "which row is current" — `aria-current`
+// on the link, or the legacy `.active` on its row.
+const ROW_LINKS = "#sidebar a[data-sidebar-row], #sidebar a.bookmark-name";
+
+function isCurrentRow(a: HTMLAnchorElement): boolean {
+  return (
+    a.getAttribute("aria-current") === "page" ||
+    !!a.closest(".bookmark-row")?.classList.contains("active")
+  );
+}
 
 // Set when an arrow step navigated; consumed by the next mount.
 let refocusPending = false;
@@ -43,7 +54,7 @@ function currentIndex(links: HTMLAnchorElement[]): number {
   const el = document.activeElement;
   const focused = links.findIndex((a) => a === el);
   if (focused !== -1) return focused;
-  return links.findIndex((a) => a.closest(".bookmark-row")?.classList.contains("active"));
+  return links.findIndex(isCurrentRow);
 }
 
 export function stepSidebarRow(e: KeyboardEvent): void {
@@ -83,9 +94,7 @@ export function useSidebarArrowNav(): void {
   useEffect(() => {
     if (refocusPending) {
       refocusPending = false;
-      const active = rowLinks().find((a) =>
-        a.closest(".bookmark-row")?.classList.contains("active"),
-      );
+      const active = rowLinks().find(isCurrentRow);
       active?.focus({ preventScroll: false });
     }
     document.addEventListener("keydown", stepSidebarRow);

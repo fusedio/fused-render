@@ -37,7 +37,10 @@ import type { AppInfo } from "@platform/lib/api";
 import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
-import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Download } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { cn } from "@platform/lib/utils";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import {
@@ -53,8 +56,15 @@ import { timeAgo } from "@platform/lib/format";
 
 // The iframe renders at a fixed desktop width and is scaled to the card by a
 // pure-CSS trick: 400% width/height + scale(0.25) means the visual size is
-// exactly the .app-pcard-thumb box, whatever the grid column resolves to.
+// exactly the thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
+
+// Layout the scaled thumbnail iframe needs on top of thumbFrame()'s attributes.
+// `pointer-events-none` is load-bearing: it retargets every press — middle-click
+// included — onto the card's own <a>, which is why the live branch below needs
+// no shield span of its own.
+const THUMB_IFRAME =
+  "absolute top-0 left-0 border-0 bg-card origin-top-left pointer-events-none";
 
 // The page a card's live thumbnail shows. Plain: everything that makes it a
 // PICTURE rather than a use of the app — the two URL stamps, the sandbox seal,
@@ -99,7 +109,7 @@ export function AppPreviewCard({
   const [shotLoaded, setShotLoaded] = useState(false);
   // Whether the pointer has ever entered the card. The still's ENTRANCE fade
   // (first decode, below) and the hover crossfade's INSTANT snap-back
-  // (`.app-pcard-shot` in apps.css) land on the same end state — opaque, not
+  // (the still `<img>` below) land on the same end state — opaque, not
   // hovered — so a style computed purely from (hovered, liveReady, shotLoaded)
   // cannot tell the two apart; a CSS transition only looks at the style being
   // entered, not how it got there. Before the first hover, reaching that state
@@ -198,7 +208,14 @@ export function AppPreviewCard({
   // and "Open in new tab" land on the same place a left click does.
   return (
     <a
-      className="app-pcard"
+      // `app-pcard` is a bare HOOK, not a style: the Home tour targets
+      // `#home-sec-apps .app-pcard` (platform/lib/tours/home.ts). Square card
+      // (rounded-lg is 0px), border + background shift do the separating.
+      className={cn(
+        "app-pcard group/card relative flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-foreground no-underline",
+        "cursor-pointer transition-colors hover:border-ring/60 hover:shadow-sm motion-reduce:transition-none",
+        "focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+      )}
       href={href ?? hrefFor(app)}
       onClick={(e) => {
         if (!href) return onAppCardClick(e, app);
@@ -224,13 +241,15 @@ export function AppPreviewCard({
       }}
       title={openTargetFor(app).path}
     >
-      <span className="app-pcard-body">
-        <span className="app-pcard-title">{title}</span>
-        <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{app.tag}</span>
-          {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
-          {badge && <span className="app-pcard-name">{badge}</span>}
-          {ago && <span className="app-pcard-ago">{ago}</span>}
+      <span className="flex min-w-0 flex-col gap-1 px-3.5 pt-2.5 pb-3">
+        <span className="truncate text-sm font-medium">{title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 font-mono text-[length:inherit] font-normal text-muted-foreground">
+            {app.tag}
+          </Badge>
+          {title !== app.name && <span className="truncate">{app.name}</span>}
+          {badge && <span className="truncate">{badge}</span>}
+          {ago && <span className="ml-auto shrink-0">{ago}</span>}
         </span>
       </span>
       {/* `data-capture-ready` marks the thumb as a picture of the APP — the
@@ -242,7 +261,9 @@ export function AppPreviewCard({
           element that is showing what the reader is looking at. Absent, not
           "0", so the selector is a plain presence test. */}
       <span
-        className="app-pcard-thumb"
+        // `app-pcard-thumb` is a hook too: Apps.tsx finds the capture crop
+        // source by `.app-pcard-thumb[data-capture-ready]` (appShot, D396).
+        className="app-pcard-thumb relative block aspect-[16/10] overflow-hidden border-t border-border bg-background"
         aria-hidden="true"
         ref={thumbRef}
         data-capture-ready={bodyLive ? "" : undefined}
@@ -262,7 +283,7 @@ export function AppPreviewCard({
         {((shotSrc && !shotFailed && !shotLoaded) ||
           (wantsLive &&
             (!liveStarted || !(shotSrc && !shotFailed ? liveReady : bodyPainted)))) && (
-          <span className="app-pcard-skel" />
+          <span className="pointer-events-none absolute inset-0 bg-muted motion-safe:animate-pulse" />
         )}
         {shotSrc && !shotFailed ? (
           <>
@@ -278,6 +299,7 @@ export function AppPreviewCard({
             {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
                 {...thumbFrame(liveSrc)}
+                className={THUMB_IFRAME}
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
@@ -298,8 +320,12 @@ export function AppPreviewCard({
                 }}
               />
             )}
+            {/* `cover`, not `contain`: a thumbnail crops, it does not letterbox.
+                The fade-OUT transition rides in the inline style together with
+                the opacity, so hover-end (which removes the whole style)
+                restores the still instantly — see the comment below. */}
             <img
-              className="app-pcard-shot"
+              className="absolute inset-0 h-full w-full bg-card object-cover"
               src={shotSrc}
               alt=""
               loading="lazy"
@@ -326,7 +352,7 @@ export function AppPreviewCard({
                 its own, but it DOES carry the browser's native drag-the-image
                 gesture, which starts a drag on the card instead of the click
                 that opens it. */}
-            <span className="app-pcard-shield" />
+            <span className="absolute inset-0" />
           </>
         ) : liveSrc && nearViewport && liveStarted ? (
           <>
@@ -334,6 +360,7 @@ export function AppPreviewCard({
                 above; the same failure mode applies here to `bodyPainted`. */}
             <iframe
               {...thumbFrame(liveSrc)}
+              className={THUMB_IFRAME}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
@@ -367,8 +394,8 @@ export function AppPreviewCard({
                 setBodyPainted(true);
               }}
             />
-            {/* No shield span here. `.app-pcard-thumb iframe` is already
-                `pointer-events: none` (apps.css), which retargets every press —
+            {/* No shield span here. THUMB_IFRAME is already
+                `pointer-events-none`, which retargets every press —
                 middle-click included — onto the card's own <a>. The `<img>`
                 branch above keeps its shield for a different reason: an image
                 carries the browser's native drag gesture, which pointer-events
@@ -388,9 +415,22 @@ export function AppPreviewCard({
           exported .fused card (kind "appfile", D396): its path is the file
           itself and the export route only takes app folders. */}
       {app.kind !== "appfile" && (
-      <button
+      <Button
         type="button"
-        className="app-pcard-export"
+        variant="outline"
+        size="icon-xs"
+        className={cn(
+          // Hidden until the CARD is hovered so the grid stays quiet; keyboard
+          // users get it via focus-visible. z-index lifts it over the thumb and
+          // its pointer shield.
+          "absolute right-2 bottom-2 z-[2] text-muted-foreground opacity-0 transition-opacity hover:text-foreground motion-reduce:transition-none",
+          "group-hover/card:opacity-100 focus-visible:opacity-100",
+          // While appShot photographs the screen the chip must not be in the
+          // pixels: clicking it does not end the hover, so it would sit in the
+          // baked preview.png forever. `!` because the group-hover rule above
+          // would otherwise win; no transition, so it is gone by the next frame.
+          "[body[data-capture-shooting]_&]:opacity-0! [body[data-capture-shooting]_&]:transition-none",
+        )}
         title={"Export " + (app.title || app.name) + " as a .fused app file"}
         aria-label="Export app file"
         onClick={(e) => {
@@ -413,8 +453,8 @@ export function AppPreviewCard({
           );
         }}
       >
-        {MenuIcons.download}
-      </button>
+        <Download />
+      </Button>
       )}
     </a>
   );

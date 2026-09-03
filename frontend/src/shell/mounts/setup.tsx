@@ -1,7 +1,9 @@
 // The six provider setup flows and the picker that opens them. Each one ends by
 // handing a created remote back to the Add-mount form. Split out of
 // shell/Mounts.tsx.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import { ExternalLinkIcon } from "lucide-react";
 import {
   cancelRemoteOAuth,
   createDetectedRemote,
@@ -20,9 +22,40 @@ import {
   saveGoogleClient,
 } from "@platform/lib/google-client";
 import type { GoogleOAuthClient } from "@platform/lib/google-client";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Field, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { Field, TextInput } from "@platform/ui/field/fields";
+import { EntityList, EntityRow } from "@platform/ui/flow/EntityRow";
+import { Muted } from "@platform/ui/flow/Typography";
 import { ProviderIcon } from "@platform/ui/ProviderIcons";
+import { Callout, Code, LinkButton, Note, Panel } from "./bits";
+
+// A labelled text input inside a setup form. Required fields carry a star in
+// the label (aria-hidden — `required` on the input is what assistive tech reads).
+function TextField({
+  label,
+  required,
+  className,
+  ...input
+}: { label: string; required?: boolean; className?: string } & Omit<ComponentProps<"input">, "className">) {
+  const id = useId();
+  return (
+    <Field className={className}>
+      <FieldLabel htmlFor={id}>
+        {label}
+        {required && (
+          <span aria-hidden="true" className="text-muted-foreground">
+            *
+          </span>
+        )}
+      </FieldLabel>
+      <Input id={id} required={required} {...input} />
+    </Field>
+  );
+}
 
 export function AddRemote({
   onCreated,
@@ -67,74 +100,75 @@ export function AddRemote({
   };
 
   return (
-    <div className="mount-panel">
-      <p className="mount-panel-lede">
-        Storage that speaks S3 at its own endpoint — Cloudflare R2, Backblaze B2, Wasabi,
-        MinIO.
-      </p>
+    <Panel lede="Storage that speaks S3 at its own endpoint — Cloudflare R2, Backblaze B2, Wasabi, MinIO.">
       <form
-        className="mount-panel-grid"
+        className="grid grid-cols-1 sm:grid-cols-2 gap-3"
         onSubmit={(e) => {
           e.preventDefault();
           if (canSubmit) void add();
         }}
       >
-        <div className="mount-panel-wide">
-          <Field label="Remote name" required>
-            <TextInput
-              placeholder="e.g. r2"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </Field>
-        </div>
+        <TextField
+          className="sm:col-span-2"
+          label="Remote name"
+          required
+          placeholder="e.g. r2"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
         {/* Endpoint and Region share a row: they are the same fact (where this
             storage lives), and the endpoint is what makes a remote
             "S3-compatible" at all. The old order put Region beside the remote's
             NAME — two unrelated answers on one line. */}
-        <Field label="Endpoint">
-          <TextInput
-            placeholder="blank for AWS S3"
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-          />
-        </Field>
-        <Field label="Region">
-          <TextInput
-            placeholder="optional"
-            value={region}
-            onChange={(e) => setRegion(e.target.value)}
-          />
-        </Field>
-        <Field label="Access key ID" required>
-          <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
-        </Field>
-        <Field label="Secret access key" required>
-          <TextInput
-            type="password"
-            value={secretKey}
-            onChange={(e) => setSecretKey(e.target.value)}
-          />
-        </Field>
-        <div className="mount-panel-wide mount-panel-actions">
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
+        <TextField label="Endpoint" placeholder="blank for AWS S3" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
+        <TextField label="Region" placeholder="optional" value={region} onChange={(e) => setRegion(e.target.value)} />
+        <TextField label="Access key ID" required value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+        <TextField
+          label="Secret access key"
+          required
+          type="password"
+          value={secretKey}
+          onChange={(e) => setSecretKey(e.target.value)}
+        />
+        <div className="sm:col-span-2 flex justify-end">
+          <Button type="submit" disabled={!canSubmit}>
             {busy ? "Creating…" : "Create remote"}
-          </button>
+          </Button>
         </div>
       </form>
-      <p className="mount-note">
-        Keys go straight into rclone’s own config; fused-render never stores them. For plain
-        AWS S3 use <b>AWS S3</b>, and for Drive, Dropbox or Box use those — they have no keys
-        to paste.
-      </p>
+      <Note>
+        Keys go straight into rclone’s own config; fused-render never stores them. For plain AWS S3 use{" "}
+        <b>AWS S3</b>, and for Drive, Dropbox or Box use those — they have no keys to paste.
+      </Note>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+    </Panel>
   );
 }
 
 // Poll cadence for a browser sign-in. Faster than the account flow's 2s: the
 // user is sitting on a modal watching for the browser round-trip to land.
 const OAUTH_POLL_MS = 1500;
+
+// One row of the Google Cloud checklist: numeral (from the <ol>), bold title,
+// a right-aligned quiet link that opens the exact console page, and whatever
+// caveat sits under it.
+function Step({ n, title, onOpen, children }: { n: number; title: ReactNode; onOpen: () => void; children?: ReactNode }) {
+  return (
+    <li className="px-4 py-2 border-b border-border last:border-b-0 space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium flex items-baseline gap-2">
+          <span className="font-mono text-xs text-muted-foreground tabular-nums">{n}.</span>
+          <span>{title}</span>
+        </span>
+        <Button type="button" variant="ghost" size="xs" onClick={onOpen}>
+          Open
+          <ExternalLinkIcon data-icon="inline-end" />
+        </Button>
+      </div>
+      {children}
+    </li>
+  );
+}
 
 // The Google Cloud console setup, as a stepper that does the navigating.
 //
@@ -194,25 +228,20 @@ function GoogleClientSetup({
 
   if (saved && !expanded) {
     return (
-      <div className="mount-callout">
-        <div className="mount-callout-title">Using your Google API client</div>
-        <div className="mount-callout-body">
-          <code>{client.clientId}</code> — remembered on this machine, so you only set
-          this up once.
-        </div>
-        <button type="button" className="mount-link" onClick={() => setExpanded(true)}>
-          Use a different client
-        </button>
-      </div>
+      <Callout
+        title="Using your Google API client"
+        action={<LinkButton onClick={() => setExpanded(true)}>Use a different client</LinkButton>}
+      >
+        <Code>{client.clientId}</Code> — remembered on this machine, so you only set this up once.
+      </Callout>
     );
   }
 
   return (
-    <div className="mount-setup">
-      {/* The list header, not a second .mount-panel-lede: the modal already
-          opened with one body-size sentence and this checklist is content
-          under it. */}
-      <p className="mount-steps-head">
+    <div className="space-y-3">
+      {/* The list header, not a second lede: the modal already opened with one
+          body-size sentence and this checklist is content under it. */}
+      <p className="text-sm">
         Drive needs <b>your own</b> Google API client — one time, on this machine.
       </p>
       {/* One bordered checklist, not four button blocks: each step is a single
@@ -222,93 +251,58 @@ function GoogleClientSetup({
           the quiet link treatment keeps the visual weight on the drop zone
           below, which is the only input this modal actually exists to
           collect. */}
-      <ol className="mount-steps">
-        <li className="mount-step">
-          <div className="mount-step-row">
-            <span className="mount-step-title">Create or pick a Google Cloud project</span>
-            <button
-              type="button"
-              className="mount-step-open"
-              onClick={() => open(urls.createProject)}
-            >
-              Open&nbsp;↗
-            </button>
-          </div>
-          <p className="mount-note">Any project works; a free one is fine.</p>
-          <TextInput
-            className="mount-step-project"
+      <ol className="border border-border rounded-lg bg-card list-none m-0 p-0">
+        <Step n={1} title="Create or pick a Google Cloud project" onOpen={() => open(urls.createProject)}>
+          <Note>Any project works; a free one is fine.</Note>
+          <Input
+            className="h-7 text-xs"
             placeholder="Project ID (optional — the links below jump straight to it)"
             aria-label="Project ID (optional — the links below jump straight to it)"
             value={project}
             onChange={(e) => setProject(e.target.value)}
           />
-        </li>
-        <li className="mount-step">
-          <div className="mount-step-row">
-            <span className="mount-step-title">Enable the Google Drive API</span>
-            <button
-              type="button"
-              className="mount-step-open"
-              onClick={() => open(urls.enableApi)}
-            >
-              Open&nbsp;↗
-            </button>
-          </div>
-        </li>
-        <li className="mount-step">
-          <div className="mount-step-row">
-            <span className="mount-step-title">Configure the consent screen</span>
-            <button
-              type="button"
-              className="mount-step-open"
-              onClick={() => open(urls.consentScreen)}
-            >
-              Open&nbsp;↗
-            </button>
-          </div>
-          <p className="mount-note">
-            Pick <b>External</b>, fill in the required name/email, and publish{" "}
-            <b>In production</b>.
-          </p>
+        </Step>
+        <Step n={2} title="Enable the Google Drive API" onOpen={() => open(urls.enableApi)} />
+        <Step n={3} title="Configure the consent screen" onOpen={() => open(urls.consentScreen)}>
+          <Note>
+            Pick <b>External</b>, fill in the required name/email, and publish <b>In production</b>.
+          </Note>
           {/* The one caveat that keeps two sentences, because both are costly
               and neither is guessable. "Testing" LOOKS like the cautious
               choice and silently breaks the mount a week later — Google drops
               refresh tokens issued by a Testing-mode client after 7 days. And
               the scary "unverified app" warning stops people mid-flow even
               though verification is simply not required at this scale. */}
-          <p className="mount-note warn">
-            Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7
-            days and the mount stops working. The “unverified app” warning is expected;
-            click through <i>Advanced → Go to … (unsafe)</i>.
-          </p>
-        </li>
-        <li className="mount-step">
-          <div className="mount-step-row">
-            <span className="mount-step-title">
+          <Note tone="warn">
+            Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7 days and the mount stops
+            working. The “unverified app” warning is expected; click through <i>Advanced → Go to … (unsafe)</i>.
+          </Note>
+        </Step>
+        <Step
+          n={4}
+          title={
+            <>
               Create an OAuth client, type <b>Desktop app</b>
-            </span>
-            <button
-              type="button"
-              className="mount-step-open"
-              onClick={() => open(urls.createClient)}
-            >
-              Open&nbsp;↗
-            </button>
-          </div>
+            </>
+          }
+          onOpen={() => open(urls.createClient)}
+        >
           {/* Desktop app is not a preference: rclone authorize serves a
               loopback redirect, which is exactly what a Desktop client
               permits and a Web client does not without a registered URI. */}
-          <p className="mount-note">
-            Only Desktop app allows the local sign-in redirect. Download its JSON.
-          </p>
-        </li>
+          <Note>Only Desktop app allows the local sign-in redirect. Download its JSON.</Note>
+        </Step>
       </ol>
 
-      {/* A <label> around a hidden file input, so the whole zone is the
+      {/* A <label> around a visually-hidden file input, so the whole zone is the
           browse button — the visible native control matched nothing else on
           the page and buried the modal's one real input. */}
       <label
-        className={"mount-drop" + (dragOver ? " mount-drop--over" : "")}
+        className={cn(
+          "flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-center text-sm cursor-pointer",
+          "hover:bg-accent/50 has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/50 motion-safe:transition-colors",
+          dragOver && "bg-accent/50 border-ring",
+        )}
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -322,54 +316,55 @@ function GoogleClientSetup({
       >
         <input
           type="file"
+          className="sr-only"
           accept=".json,application/json"
           onChange={(e) => void takeFile(e.target.files?.[0])}
         />
-        <b>Drop the downloaded <code>client_secret_….json</code> here</b>
-        <span className="mount-drop-sub">or click to browse for it</span>
+        <b>
+          Drop the downloaded <Code>client_secret_….json</Code> here
+        </b>
+        <span className="text-xs text-muted-foreground">or click to browse for it</span>
       </label>
       {fileError && <ErrorBanner>{fileError}</ErrorBanner>}
 
       {/* The fallback, deliberately below the file path: it works, but it is
           the step people mistype. */}
-      <details className="mount-manual">
-        <summary>Or paste the client ID and secret</summary>
-        <div className="mount-panel-grid">
-          <Field label="Client ID" required>
-            <TextInput
-              placeholder="….apps.googleusercontent.com"
-              value={client.clientId}
-              onChange={(e) => onChange({ ...client, clientId: e.target.value.trim() })}
-            />
-          </Field>
-          <Field label="Client secret" required>
-            <TextInput
-              type="password"
-              value={client.clientSecret}
-              onChange={(e) =>
-                onChange({ ...client, clientSecret: e.target.value.trim() })
-              }
-            />
-          </Field>
+      <details className="group text-sm">
+        <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground select-none">
+          Or paste the client ID and secret
+        </summary>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
+          <TextField
+            label="Client ID"
+            required
+            placeholder="….apps.googleusercontent.com"
+            value={client.clientId}
+            onChange={(e) => onChange({ ...client, clientId: e.target.value.trim() })}
+          />
+          <TextField
+            label="Client secret"
+            required
+            type="password"
+            value={client.clientSecret}
+            onChange={(e) => onChange({ ...client, clientSecret: e.target.value.trim() })}
+          />
         </div>
       </details>
 
       {client.clientId && client.clientSecret && (
-        <p className="mount-note">
-          Client <code>{client.clientId}</code> ready.{" "}
+        <Note>
+          Client <Code>{client.clientId}</Code> ready.{" "}
           {saved && (
-            <button
-              type="button"
-              className="mount-link"
+            <LinkButton
               onClick={() => {
                 onForget();
                 setExpanded(true);
               }}
             >
               Forget the saved client
-            </button>
+            </LinkButton>
           )}
-        </p>
+        </Note>
       )}
     </div>
   );
@@ -440,6 +435,7 @@ export function OAuthSignIn({
   // timeout can't rescue us — reading it needs the fetch that is failing).
   const failures = useRef(0);
   const startedAt = useRef(0);
+  const replaceId = useId();
 
   const stopPolling = () => {
     if (timer.current !== null) {
@@ -622,16 +618,12 @@ export function OAuthSignIn({
   };
 
   return (
-    <div className="mount-panel">
-      <p className="mount-panel-lede">
-        Opens {provider.label} in your browser to approve access, read-write.
-      </p>
-      <p className="mount-note">
-        rclone handles the sign-in and writes the token into its own config; fused-render
-        never stores it.
+    <Panel lede={<>Opens {provider.label} in your browser to approve access, read-write.</>}>
+      <Note>
+        rclone handles the sign-in and writes the token into its own config; fused-render never stores it.
         {provider.key === "drive" &&
           " Google Docs, Sheets and Slides are skipped — they aren’t real files and can’t be opened or saved through a mount."}
-      </p>
+      </Note>
       {provider.needsClient && !connecting && (
         <GoogleClientSetup
           client={client}
@@ -644,77 +636,63 @@ export function OAuthSignIn({
           }}
         />
       )}
-      {/* Name + action on one grid row, bottom-aligned by the grid rather than
-          by a blank <Field label=" "> caption. */}
+      {/* Name + action on one row, bottom-aligned by the flex row rather than
+          by a blank label caption. */}
       <form
-        className="mount-panel-row"
+        className="flex items-end gap-3"
         onSubmit={(e) => {
           e.preventDefault();
           if (!connecting && !nameError && clientReady) void begin();
         }}
       >
-        <Field label="Remote name" required>
-          <TextInput
-            value={name}
-            disabled={connecting}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </Field>
+        <TextField
+          className="flex-1"
+          label="Remote name"
+          required
+          value={name}
+          disabled={connecting}
+          onChange={(e) => setName(e.target.value)}
+        />
         {connecting ? (
           // Disabled while standing down: the click has been accepted and the
           // port is not free yet, so a second one has nothing to do.
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={cancel}
-            disabled={standingDown}
-          >
+          <Button type="button" variant="outline" onClick={cancel} disabled={standingDown}>
             {standingDown ? "Canceling…" : "Cancel"}
-          </button>
+          </Button>
         ) : blockedByOther ? (
-          <button type="button" className="btn btn-secondary" onClick={cancelOther}>
+          <Button type="button" variant="outline" onClick={cancelOther}>
             Cancel that sign-in
-          </button>
+          </Button>
         ) : (
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={!!nameError || !clientReady}
-          >
+          <Button type="submit" disabled={!!nameError || !clientReady}>
             Sign in to {provider.label}
-          </button>
+          </Button>
         )}
       </form>
-      {!connecting && !clientReady && (
-        <p className="mount-note">Add your Google API client above to enable the sign-in.</p>
-      )}
+      {!connecting && !clientReady && <Note>Add your Google API client above to enable the sign-in.</Note>}
       {connecting && (
-        <p className="mount-note" role="status">
+        <Note role="status">
           {standingDown
             ? "Canceling the sign-in — waiting for the server to let go of it."
             : "Waiting for you to approve access in your browser… If no tab opened, check for a blocked window."}
-        </p>
+        </Note>
       )}
       {!connecting && collides && (
         // Re-signing in under the name you already use is the NATURAL action
         // (a revoked or expired token is the usual reason to be here), so this
         // has to be possible — just never by accident. config/create
         // overwrites, and the server refuses without this flag.
-        <label className="mount-note mount-note-check">
-          <input
-            type="checkbox"
-            checked={replace}
-            onChange={(e) => setReplace(e.target.checked)}
-          />{" "}
-          Replace the existing “{trimmed}” remote — use this to sign in again after a
-          token expired or was revoked.
-        </label>
+        <div className="flex items-start gap-2">
+          <Checkbox id={replaceId} checked={replace} onCheckedChange={(c) => setReplace(c === true)} className="mt-0.5" />
+          <label htmlFor={replaceId} className="text-xs text-muted-foreground leading-snug cursor-pointer">
+            Replace the existing “{trimmed}” remote — use this to sign in again after a token expired or was
+            revoked.
+          </label>
+        </div>
       )}
-      {!connecting && nameError && trimmed !== "" && (
-        <p className="mount-note warn">{nameError}</p>
-      )}
+      {!connecting && nameError && trimmed !== "" && <Note tone="warn">{nameError}</Note>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+    </Panel>
   );
 }
 
@@ -767,58 +745,58 @@ export function DetectedRemoteSetup({
   };
 
   return (
-    <div className="mount-panel">
-      <p className="mount-panel-lede">
-        {kind === "detected"
+    <Panel
+      lede={
+        kind === "detected"
           ? "Credentials already on this machine — your ~/.aws profiles, gcloud application-default credentials, and the usual environment variables."
-          : "Anonymous access to open data — AWS Open Data, public GCS datasets, and anything else readable without an account."}
-      </p>
-      <p className="mount-note">
+          : "Anonymous access to open data — AWS Open Data, public GCS datasets, and anything else readable without an account."
+      }
+    >
+      <Note>
         {kind === "detected" ? (
           <>
-            Nothing is copied: the remote is created with <code>env_auth</code>, so rclone
-            reads them where they already live.
+            Nothing is copied: the remote is created with <Code>env_auth</Code>, so rclone reads them where they
+            already live.
           </>
         ) : (
           <>Read-only by nature, and it works even with no cloud credentials at all.</>
         )}
-      </p>
+      </Note>
       {options.length === 0 ? (
         // Only "detected" can be empty — the two public remotes are built in.
-        <div className="mount-empty">
-          No credentials detected. Run <code>aws sso login</code> or{" "}
-          <code>gcloud auth application-default login</code>, then reopen this — or use{" "}
-          <b>S3-compatible storage</b> to paste keys directly.
-        </div>
+        <Muted className="border border-dashed border-border rounded-lg p-4 text-center">
+          No credentials detected. Run <Code>aws sso login</Code> or <Code>gcloud auth application-default login</Code>
+          , then reopen this — or use <b>S3-compatible storage</b> to paste keys directly.
+        </Muted>
       ) : (
-        <div className="mount-list">
+        <EntityList>
           {options.map((s) => (
-            <div className="mount-card" key={s.id}>
-              <div className="mount-card-main">
-                <div className="mount-card-info">
-                  <div className="mount-card-name">{s.label}</div>
-                  <div className="mount-remote">
-                    <code>{s.remote_name}:</code>
-                    {s.exists && <span className="mount-hint"> — already set up</span>}
-                  </div>
-                </div>
-                <div className="mount-card-actions">
-                  <button
-                    type="button"
-                    className={"btn " + (s.exists ? "btn-secondary" : "btn-primary")}
-                    disabled={busy !== null}
-                    onClick={() => void use(s)}
-                  >
-                    {busy === s.id ? "Setting up…" : "Use"}
-                  </button>
-                </div>
-              </div>
-            </div>
+            <EntityRow
+              key={s.id}
+              title={s.label}
+              meta={
+                <>
+                  <span className="font-mono">{s.remote_name}:</span>
+                  {s.exists && " — already set up"}
+                </>
+              }
+              trailing={
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={s.exists ? "outline" : "default"}
+                  disabled={busy !== null}
+                  onClick={() => void use(s)}
+                >
+                  {busy === s.id ? "Setting up…" : "Use"}
+                </Button>
+              }
+            />
           ))}
-        </div>
+        </EntityList>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
+    </Panel>
   );
 }
 
@@ -875,33 +853,30 @@ export const STORAGE_OPTIONS: { key: SetupKey; name: string; cost: string; title
 // The bottom of the Add-mount section, not a section of its own: this is the
 // branch you take when you have no link to paste yet, so it lives inside the
 // one add flow rather than under a second heading with its own vocabulary.
+// Dense bordered rows (Flow), not spaced cards: mark, name, setup cost.
 export function ProviderPicker({ onPick }: { onPick: (key: SetupKey) => void }) {
   return (
-    <div className="mount-providers">
-      <div className="mount-providers-head">
-        No link? Connect a provider first — tokens and keys go straight into rclone’s own
-        config, never here.
-      </div>
-      <div className="mount-picker">
+    <div className="space-y-2 pt-2">
+      <Muted className="text-xs">
+        No link? Connect a provider first — tokens and keys go straight into rclone’s own config, never here.
+      </Muted>
+      <EntityList className="grid sm:grid-cols-2 [&>*:nth-last-child(2)]:sm:border-b-0 sm:[&>*:nth-child(odd)]:border-r sm:[&>*:nth-child(odd)]:border-border">
         {STORAGE_OPTIONS.map((o) => (
-          <button
-            type="button"
+          <EntityRow
             key={o.key}
-            className="mount-provider"
             onClick={() => onPick(o.key)}
-          >
-            {/* The icon is a column of its own, not a glyph inline with the
-                name — it reads as the card's mark that way. */}
-            <span className="mount-provider-mark">
-              <ProviderIcon provider={o.key} />
-            </span>
-            <span className="mount-provider-text">
-              <span className="mount-provider-name">{o.name}</span>
-              <span className="mount-provider-cost">{o.cost}</span>
-            </span>
-          </button>
+            leading={
+              // The icon is a column of its own, not a glyph inline with the
+              // name — it reads as the row's mark that way.
+              <span className="size-4 [&_svg]:size-full">
+                <ProviderIcon provider={o.key} />
+              </span>
+            }
+            title={o.name}
+            meta={o.cost}
+          />
         ))}
-      </div>
+      </EntityList>
     </div>
   );
 }

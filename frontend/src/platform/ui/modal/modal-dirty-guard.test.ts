@@ -16,13 +16,9 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { decideClose, isDisarmingInteraction } from "./dirty-guard";
 
 let modal: string;
-let css: string;
 
 beforeAll(async () => {
   modal = await Bun.file(new URL("./Modal.tsx", import.meta.url).pathname).text();
-  css = await Bun.file(
-    new URL("../../../styles/buttons-modal.css", import.meta.url).pathname,
-  ).text();
 });
 
 describe("the armed ✕", () => {
@@ -33,13 +29,11 @@ describe("the armed ✕", () => {
     expect(modal).toContain('(confirmClose ? " is-armed" : "")');
   });
 
-  test("…and the stylesheet actually gives that class a look", () => {
-    // The half a typo would silently eat: a class nothing styles is exactly the
-    // dead click this fixes. Pinned to the selector, and to the fact that it
-    // repeats itself for :hover — without that, moving the mouse cools the
-    // button back down while the guard is still live.
-    expect(css).toContain(".deploy-close.is-armed");
-    expect(css).toContain(".deploy-close.is-armed:hover:not(:disabled)");
+  test("…and the armed state actually gets a look", () => {
+    // The half a typo would silently eat: a state nothing styles is exactly the
+    // dead click this fixes. The tint comes from the status map (orange = waiting
+    // on the user), applied off the same flag.
+    expect(modal).toContain("confirmClose && bucketBadge.orange");
   });
 
   test("it says what the next press will do, in the tooltip and to a screen reader", () => {

@@ -46,12 +46,9 @@
 @import "./styles/new-task.css";
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
-@import "./styles/app-page.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
-@import "./styles/home.css";
 /* After home.css: the canvases listing is another page-family surface that
    layers its card grid over the .btn / .field-control vocabulary above. */
-@import "./styles/canvases.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";

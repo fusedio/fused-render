@@ -40,6 +40,11 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia } from "@platform/shadcn/ui/empty";
+import { EntityList } from "@platform/ui/flow/EntityRow";
+import { PropertyList, PropertyRow } from "@platform/ui/flow/PropertyRow";
+import { StatusBadge } from "@platform/ui/flow/StatusIcon";
+import { SectionHeading, Tiny } from "@platform/ui/flow/Typography";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
@@ -79,17 +84,39 @@ type Run =
     }
   | { kind: "failed"; message: string };
 
-// What a row says about its kind, in words — only where the kind is unusual.
-// The common case (a `main()`) says nothing: a list where every line shouted
-// MAIN read as a terminal dump. The glyph (KindGlyph) carries the rest.
-const KIND_NOTE: Record<EndpointKind, string | null> = {
-  udf: "udf",
-  main: null,
-  result: "static result",
-  none: null,
-  error: "won't parse",
-  unreadable: "can't read",
+// The row's trailing chip — the Swagger "method" slot: what kind of entrypoint
+// the file has, in one word. The common case (a `main()`) still gets its chip
+// so the column reads as a column; broken files take the red status bucket.
+const KIND_CHIP: Record<EndpointKind, string> = {
+  udf: "UDF",
+  main: "MAIN",
+  result: "RESULT",
+  none: "MODULE",
+  error: "ERROR",
+  unreadable: "UNREADABLE",
 };
+
+function KindChip({ kind }: { kind: EndpointKind }) {
+  const label = KIND_CHIP[kind];
+  if (kind === "error" || kind === "unreadable") {
+    return (
+      <StatusBadge bucket="red" className="font-mono tracking-wide">
+        {label}
+      </StatusBadge>
+    );
+  }
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "font-mono tracking-wide text-muted-foreground",
+        kind === "none" && "border-dashed",
+      )}
+    >
+      {label}
+    </Badge>
+  );
+}
 
 /** The row's leading glyph: a play mark for anything Execute works on, a file
  *  mark for a helper module, a warning for a file that does not parse. Muted at
@@ -120,7 +147,7 @@ function KindGlyph({ kind }: { kind: EndpointKind }) {
   );
 }
 
-const MONO = "font-mono text-[12.5px]";
+const MONO = "font-mono text-xs";
 
 export default function AppApi({
   dir,
@@ -237,7 +264,7 @@ export default function AppApi({
   // document never scrolls): a long list, or an open row with a tall response,
   // scrolls here. The list inside hugs its rows (flex-none).
   return (
-    <div className="app-api flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto scrollbar-auto-hide">
       {load.kind === "loading" && (
         <SkeletonLines rows={3} label="Reading Python files" />
       )}
@@ -251,7 +278,7 @@ export default function AppApi({
               apart on the right — what the folder needs installed. The engine
               is not named: nobody chooses it on this page. */}
           {endpoints.length > 0 && (
-            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1 text-[13px] text-muted-foreground">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1 text-sm text-muted-foreground">
               <p className="m-0">
                 {callable === 0
                   ? "Nothing to run yet"
@@ -274,7 +301,7 @@ export default function AppApi({
                     <Badge
                       key={d}
                       variant="outline"
-                      className="h-[18px] font-normal text-muted-foreground"
+                      className="font-mono font-normal text-muted-foreground"
                     >
                       {d}
                     </Badge>
@@ -285,22 +312,24 @@ export default function AppApi({
           )}
 
           {endpoints.length === 0 && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-border py-16 text-[13px] text-muted-foreground">
-              <FileCode2 className="size-7 opacity-60" aria-hidden />
-              <p className="m-0">No Python files in this app yet.</p>
-              <p className="m-0">
-                Add a <code className={MONO}>.py</code> with a{" "}
-                <code className={MONO}>main()</code> and it shows up here as an
-                endpoint.
-              </p>
-            </div>
+            <Empty className="border border-border py-16">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <FileCode2 />
+                </EmptyMedia>
+                <EmptyDescription>
+                  No Python files in this app yet. Add a <code className={MONO}>.py</code> with a{" "}
+                  <code className={MONO}>main()</code> and it shows up here as an endpoint.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
 
           {/* Hugs its rows — no flex-1: four endpoints should not be stretched
               into a full-height frame with a void under them. */}
           {endpoints.length > 0 && (
-            <div className="flex flex-none flex-col rounded-xl border border-border">
-              <ul className="m-0 list-none divide-y divide-border p-0">
+            <EntityList className="flex flex-none flex-col">
+              <ul className="m-0 list-none p-0">
                 {endpoints.map((ep) => (
                   <EndpointRow
                     key={ep.rel}
@@ -316,7 +345,7 @@ export default function AppApi({
                 ))}
               </ul>
               {data.truncated && (
-                <p className="m-0 px-4 py-3 text-[12px] text-muted-foreground">
+                <p className="m-0 border-t border-border px-4 py-3 text-xs text-muted-foreground">
                   Showing the first {endpoints.length} files.{" "}
                   <a href={folderHref} className="text-inherit underline">
                     Open the folder
@@ -324,7 +353,7 @@ export default function AppApi({
                   for the rest.
                 </p>
               )}
-            </div>
+            </EntityList>
           )}
         </>
       )}
@@ -358,10 +387,8 @@ function EndpointRow({
   const params = fn?.params ?? [];
   const runnable = isRunnable(ep);
   const summary = summaryLine(fn?.docstring ?? ep.module_docstring);
-  // Only the unusual kinds get a word on the row; MAIN on every line said
-  // nothing. A missing docstring falls back to the parameter NAMES — enough to
-  // tell two endpoints apart, without the types and defaults.
-  const kindNote = KIND_NOTE[kind];
+  // A missing docstring falls back to the parameter NAMES — enough to tell two
+  // endpoints apart, without the types and defaults.
   const paramHint =
     fn && params.length > 0
       ? params.map((p) => p.name).join(" · ")
@@ -388,22 +415,31 @@ function EndpointRow({
   };
 
   return (
-    <li className={cn("app-api-row group/row", open && "bg-muted/30")}>
-      {/* The route line: a glyph for what the file is, its name, one sentence
-          about it, and — on hover, or always once open — "Copy as cURL". The
-          signature is NOT here: types and defaults belong to the open form, and
-          a wall of them made the list read as code. The copy control is a
-          sibling of the toggle (a button cannot nest a button), floated over a
-          gap the toggle reserves for it. */}
-      <div className="relative">
+    <li className={cn("group/row border-b border-border last:border-b-0", open && "bg-accent/20")}>
+      {/* The route line — an entity row: a glyph for what the file is, its name
+          (mono identifier), one sentence about it; then a right cluster — "Copy
+          as cURL" (on hover, or always once open), the kind chip, the chevron.
+          The signature is NOT here: types and defaults belong to the open form,
+          and a wall of them made the list read as code. The toggle is its own
+          <button> (not EntityRow: the row needs aria-expanded/aria-controls,
+          which the shared composite does not pass) and the cluster sits BESIDE
+          it, because a button cannot nest a button; the chip + chevron half of
+          the cluster forwards its click to the toggle so the whole line still
+          opens the row. */}
+      <div
+        className={cn(
+          "flex w-full min-w-0 items-stretch text-sm",
+          "hover:bg-accent/50 has-[button[aria-expanded]:focus-visible]:bg-accent/50",
+        )}
+      >
         <button
           type="button"
+          data-slot="entity-row"
           onClick={onToggle}
           aria-expanded={open}
           aria-controls={bodyId}
           className={cn(
-            "flex w-full items-center gap-3 border-0 bg-transparent px-4 py-3 text-left text-foreground",
-            "cursor-pointer hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
+            "flex min-w-0 flex-1 cursor-pointer items-center gap-3 border-0 bg-transparent py-2 pl-4 text-left text-foreground focus-visible:outline-none",
             !runnable && "text-muted-foreground",
           )}
         >
@@ -420,47 +456,50 @@ function EndpointRow({
               {crumb && <span className="text-muted-foreground">{crumb}</span>}
               {name}
             </span>
-            {kindNote && (
-              <span className="flex-none text-[11px] tracking-[0.04em] text-muted-foreground uppercase">
-                {kindNote}
-              </span>
-            )}
-            <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
               {summary || paramHint}
             </span>
           </span>
-          {/* Room for the floated "Copy as cURL" button. */}
-          {runnable && <span className="w-[104px] flex-none" aria-hidden />}
-          <ChevronRight
-            aria-hidden
-            className={cn(
-              "size-3.5 flex-none text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
-              open && "rotate-90",
-            )}
-          />
         </button>
-        {runnable && (
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={copyCurl}
-            title="Copy this call as a curl command"
-            className={cn(
-              "absolute inset-y-0 right-[42px] my-auto rounded-md border-border bg-transparent px-1.5 font-normal text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
-              "group-hover/row:pointer-events-auto group-hover/row:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 motion-reduce:transition-none",
-              // Hidden means hidden: no hit-testing, so a tap in the gap on a
-              // collapsed row (touch has no hover) reaches the toggle beneath.
-              open ? "opacity-100" : "pointer-events-none opacity-0",
-            )}
+        <span className="flex flex-none items-center gap-2 pr-4 pl-2">
+          {runnable && (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={copyCurl}
+              title="Copy this call as a curl command"
+              className={cn(
+                "border-border bg-transparent px-1.5 font-normal text-muted-foreground transition-opacity hover:bg-transparent hover:text-foreground dark:hover:bg-transparent",
+                "group-hover/row:pointer-events-auto group-hover/row:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 motion-reduce:transition-none",
+                // Hidden means hidden: no hit-testing, so a tap on a collapsed
+                // row (touch has no hover) reaches the toggle beside it.
+                open ? "opacity-100" : "pointer-events-none opacity-0",
+              )}
+            >
+              {copied ? (
+                <Check data-icon="inline-start" />
+              ) : (
+                <Copy data-icon="inline-start" />
+              )}
+              {copied ? "Copied" : "Copy as cURL"}
+            </Button>
+          )}
+          {/* Not a second button (one toggle per row for assistive tech): a
+              plain span that hands its click to the toggle. */}
+          <span
+            className="flex cursor-pointer items-center gap-2"
+            onClick={onToggle}
+            aria-hidden
           >
-            {copied ? (
-              <Check data-icon="inline-start" />
-            ) : (
-              <Copy data-icon="inline-start" />
-            )}
-            {copied ? "Copied" : "Copy as cURL"}
-          </Button>
-        )}
+            <KindChip kind={kind} />
+            <ChevronRight
+              className={cn(
+                "size-3.5 flex-none text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
+                open && "rotate-90",
+              )}
+            />
+          </span>
+        </span>
       </div>
 
       {open && (
@@ -468,11 +507,35 @@ function EndpointRow({
           id={bodyId}
           className="flex flex-col gap-4 border-t border-border px-4 pt-3 pb-4"
         >
-          {fn && (
-            <p className={cn(MONO, "m-0 text-muted-foreground")}>
-              <Signature fn={fn} />
-            </p>
-          )}
+          <PropertyList className="max-w-2xl">
+            <PropertyRow label="File">
+              <span className={MONO} title={ep.path}>
+                {ep.rel}
+              </span>
+            </PropertyRow>
+            {fn && (
+              <PropertyRow label="Signature">
+                <span className={cn(MONO, "text-muted-foreground")} title={fn.name}>
+                  <Signature fn={fn} />
+                </span>
+              </PropertyRow>
+            )}
+            <PropertyRow label="Entrypoint">
+              <span className="text-xs">
+                {kind === "udf"
+                  ? "@fused.udf"
+                  : kind === "main"
+                    ? "main()"
+                    : kind === "result"
+                      ? "static result ="
+                      : kind === "none"
+                        ? "none — helper module"
+                        : kind === "error"
+                          ? "won't parse"
+                          : "can't read"}
+              </span>
+            </PropertyRow>
+          </PropertyList>
           {kind === "error" && (
             <pre
               className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}
@@ -489,7 +552,7 @@ function EndpointRow({
           )}
 
           {(ep.module_docstring || fn?.docstring) && (
-            <div className="flex flex-col gap-2 text-[13px] leading-relaxed text-foreground/85">
+            <div className="flex flex-col gap-2 text-sm leading-relaxed text-foreground/85">
               {ep.module_docstring && (
                 <p className="m-0 whitespace-pre-wrap">
                   {ep.module_docstring.trim()}
@@ -502,7 +565,7 @@ function EndpointRow({
           )}
 
           {kind === "none" && (
-            <p className="m-0 text-[12.5px] text-muted-foreground">
+            <p className="m-0 text-xs text-muted-foreground">
               No <code className={MONO}>main()</code> here — a helper module,
               imported by the others rather than called on its own. Define{" "}
               <code className={MONO}>main()</code> to make it an endpoint.
@@ -510,7 +573,7 @@ function EndpointRow({
           )}
 
           {kind === "result" && (
-            <p className="m-0 text-[12.5px] text-muted-foreground">
+            <p className="m-0 text-xs text-muted-foreground">
               Static script — assigns <code className={MONO}>result</code> at
               the top level, no parameters.
             </p>
@@ -518,9 +581,9 @@ function EndpointRow({
 
           {fn && (
             <section className="flex flex-col gap-2">
-              <Eyebrow>Parameters</Eyebrow>
+              <SectionHeading className="text-xs">Parameters</SectionHeading>
               {params.length === 0 && (
-                <p className="m-0 text-[12.5px] text-muted-foreground">None.</p>
+                <p className="m-0 text-xs text-muted-foreground">None.</p>
               )}
               {params.length > 0 && (
                 <div className="grid grid-cols-[minmax(120px,max-content)_minmax(80px,max-content)_1fr] items-start gap-x-5 gap-y-2.5">
@@ -551,15 +614,15 @@ function EndpointRow({
                 {run?.kind === "running" ? "Running…" : "Execute"}
               </Button>
               {run?.kind === "failed" && (
-                <span className="text-[12.5px] text-destructive">
+                <span className="text-xs text-destructive">
                   {run.message}
                 </span>
               )}
               {run?.kind === "done" && (
-                <span className="text-[12px] text-muted-foreground tabular-nums">
+                <Tiny className="tabular-nums">
                   {run.result.ok ? "Returned" : "Failed"} in{" "}
                   {formatMs(run.result.duration_ms ?? run.ms)}
-                </span>
+                </Tiny>
               )}
             </div>
           )}
@@ -629,7 +692,7 @@ function ParamRow({
       <div
         className={cn(
           MONO,
-          "flex flex-col gap-0.5 pt-1.5 text-[11.5px] leading-snug",
+          "flex flex-col gap-0.5 pt-1.5 text-xs leading-snug",
         )}
       >
         <span className="text-primary">{p.annotation ?? "any"}</span>
@@ -697,29 +760,22 @@ function Response({
   const body = JSON.stringify({ py, params: run.sent }, null, 2);
   return (
     <section className="flex flex-col gap-2">
-      <Eyebrow>Response</Eyebrow>
+      <SectionHeading className="text-xs">Response</SectionHeading>
       <div className="overflow-hidden rounded-lg border border-border">
         <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5">
-          <Badge
-            variant="outline"
-            className={cn(
-              MONO,
-              "h-[18px] rounded-md border-transparent px-1.5 text-[10.5px] font-semibold tracking-[0.06em]",
-              result.ok
-                ? "bg-primary/10 text-primary"
-                : "bg-destructive/10 text-destructive",
-            )}
+          {/* Status colour from the one map: green = ok, red = error. */}
+          <StatusBadge
+            status={result.ok ? "ok" : "error"}
+            className="font-mono font-semibold tracking-wide"
           >
             {result.ok ? "OK" : "ERROR"}
-          </Badge>
+          </StatusBadge>
           {!result.ok && result.error?.type && (
             <span className={cn(MONO, "text-muted-foreground")}>
               {result.error.type}
             </span>
           )}
-          <span className="ml-auto text-[11.5px] text-muted-foreground tabular-nums">
-            {formatMs(result.duration_ms ?? run.ms)}
-          </span>
+          <Tiny className="ml-auto tabular-nums">{formatMs(result.duration_ms ?? run.ms)}</Tiny>
         </div>
         <pre
           className={cn(
@@ -755,7 +811,7 @@ function Fold({
 }) {
   return (
     <details className="border-t border-border" open={open}>
-      <summary className="cursor-pointer select-none px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
         {label}
       </summary>
       <pre
@@ -767,14 +823,6 @@ function Fold({
         {children}
       </pre>
     </details>
-  );
-}
-
-function Eyebrow({ children }: { children: string }) {
-  return (
-    <h3 className="m-0 text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
-      {children}
-    </h3>
   );
 }
 

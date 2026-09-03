@@ -1,13 +1,11 @@
-// The download manager's own ✕, for any card on /ai-models whose model is being
+// The download manager's own ✕, for any row on /ai-models whose model is being
 // fetched right now.
 //
-// Shared because all three card kinds need it and for one reason: a multi-GB
-// download the user changed their mind about must be stoppable from the card
-// that started it, wherever that card is. It lived in `RecommendedCard` while
-// only the not-on-disk cards had it, and a partly downloaded repo card was left
-// with a disabled "Downloading…" button and no way to stop the pull at all
-// (D440) — which on a 40GB fetch is the difference between a mistake and a
-// mistake you have to wait out.
+// Shared because every model row needs it and for one reason: a multi-GB
+// download the user changed their mind about must be stoppable from the row
+// that started it, wherever that row is (D440).
+import { XIcon } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
 import { isRunning, type Job } from "@platform/lib/jobs";
 
 export function CancelButton({
@@ -26,14 +24,14 @@ export function CancelButton({
     job && isRunning(job) && job.cancellable && !job.cancel_requested && !job.stalled ? job : null;
   if (!cancellable) return null;
   return (
-    <button
-      type="button"
-      className="cc-iconbtn"
+    <Button
+      variant="ghost"
+      size="icon-xs"
       title={`Stop downloading ${id}`}
       aria-label={`Stop downloading ${id}`}
       onClick={() => onCancel(cancellable)}
     >
-      ✕
-    </button>
+      <XIcon />
+    </Button>
   );
 }

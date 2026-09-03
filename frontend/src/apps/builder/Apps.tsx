@@ -25,6 +25,11 @@ import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { PageHeader } from "@platform/ui/flow/Typography";
+import { Input } from "@platform/shadcn/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia } from "@platform/shadcn/ui/empty";
+import { LayoutGrid, Search } from "lucide-react";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 
@@ -67,6 +72,11 @@ const MODES: { key: FilterMode; label: string }[] = [
   { key: "category", label: "Category" },
   { key: "repo", label: "Folders" },
 ];
+
+// A filter chip: a mono pill, muted until pressed (grey plate, not white — the
+// filter row must not out-shout the cards it filters).
+const CHIP =
+  "h-6 rounded-full border border-border px-2.5 font-mono text-xs font-normal text-muted-foreground aria-pressed:text-foreground";
 
 const modeLabel = (m: FilterMode): string =>
   MODES.find((x) => x.key === m)?.label ?? m;
@@ -286,9 +296,33 @@ export default function Apps({ config }: { config: Config }) {
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
 
+  // Filter chips as a single-select toggle group: base-ui hands back an array,
+  // and re-clicking the active chip yields [] — which is exactly "clear".
+  const chipValue = active === null ? ["__all"] : [active];
+  const onChips = (v: unknown[]) => {
+    const next = (v[0] as string | undefined) ?? null;
+    setFilter(mode, next === null || next === "__all" ? null : next);
+  };
+  // The facet selector must never be empty: re-clicking the active facet is a
+  // no-op rather than a deselect.
+  const onMode = (v: unknown[]) => {
+    const next = v[0] as FilterMode | undefined;
+    if (!next || next === mode) return;
+    setMode(next);
+    setFilter(next, null);
+  };
+  const countLine =
+    apps.status === "partial"
+      ? "Recently opened — loading all apps…"
+      : shown.length === all.length
+        ? `${all.length} app${all.length === 1 ? "" : "s"}`
+        : `${shown.length} of ${all.length} apps`;
+
   return (
-    <div className="apps-page">
-      <div className="apps-inner">
+    // `apps-page` is a HOOK, not a style: preview-start.ts finds the scroll
+    // root for the card intersection observers by `.apps-page`.
+    <div className="apps-page flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-auto-hide bg-background text-foreground">
+      <div className="mx-auto w-full max-w-[1120px] px-7 pt-9 pb-18">
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
@@ -302,93 +336,99 @@ export default function Apps({ config }: { config: Config }) {
         <ClaudeHealthStrip />
         <FdaStrip />
 
-        <div className="apps-toolbar">
-          {/* Facet selector: which chip set filters the grid. Switching facets
-              resets the filter to All — a selection from the old facet would
-              otherwise keep narrowing the grid invisibly under the new chips. */}
-          <div className="apps-filter-mode" role="group" aria-label="Filter by">
-            {MODES.map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                className={"apps-filter-mode-btn" + (mode === m.key ? " is-active" : "")}
-                onClick={() => {
-                  setMode(m.key);
-                  setFilter(m.key, null);
-                }}
+        <PageHeader
+          className="px-0 py-3 mb-4"
+          title="Apps"
+          // Skeleton only while there is nothing drawable at all: once the fast
+          // row has landed the cards themselves are the loading indicator, and
+          // the count line says the rest is still coming.
+          description={apps.status !== "loading" ? countLine : undefined}
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {/* Facet selector: which chip set filters the grid. Switching
+                  facets resets the filter to All — a selection from the old
+                  facet would otherwise keep narrowing the grid invisibly under
+                  the new chips. */}
+              <ToggleGroup
+                aria-label="Filter by"
+                value={[mode]}
+                onValueChange={onMode}
+                variant="outline"
+                size="sm"
+                spacing={0}
               >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          {/* Held open through the partial phase (chips are catalog-derived and
-              so still empty then): letting the row appear when the catalog
-              lands would push the grid down under a pointer already on a
-              card. */}
-          {(chips.length > 0 || tag !== null || category !== null
-            || apps.status === "partial") && (
-            <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
-              {/* Active only when nothing filters; clicking clears both params. */}
-              <button
-                type="button"
-                className={"apps-tag-chip" + (tag === null && category === null ? " is-active" : "")}
-                onClick={() => setFilter(mode, null)}
-              >
-                All
-              </button>
-              {chips.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  className={"apps-tag-chip" + (active === c ? " is-active" : "")}
-                  onClick={() => setFilter(mode, active === c ? null : c)}
+                {MODES.map((m) => (
+                  <ToggleGroupItem key={m.key} value={m.key} className="text-xs">
+                    {m.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              {/* Held open through the partial phase (chips are catalog-derived
+                  and so still empty then): letting the row appear when the
+                  catalog lands would push the grid down under a pointer already
+                  on a card. */}
+              {(chips.length > 0 || tag !== null || category !== null
+                || apps.status === "partial") && (
+                <ToggleGroup
+                  aria-label={`Filter by ${modeLabel(mode)}`}
+                  value={chipValue}
+                  onValueChange={onChips}
+                  size="sm"
+                  className="flex-wrap justify-end gap-1"
                 >
-                  {c}
-                </button>
-              ))}
+                  {/* Active only when nothing filters; clicking clears both params. */}
+                  <ToggleGroupItem value="__all" className={CHIP}>
+                    All
+                  </ToggleGroupItem>
+                  {chips.map((c) => (
+                    <ToggleGroupItem key={c} value={c} className={CHIP}>
+                      {c}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              )}
+              <div className="relative w-60 max-w-full">
+                <Search
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                  type="search"
+                  placeholder="Search apps…"
+                  aria-label="Search apps"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  autoFocus
+                  className="h-7 pl-8 text-sm"
+                />
+              </div>
             </div>
-          )}
-          <div className="apps-search">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M21 21l-4.3-4.3" />
-            </svg>
-            <input
-              type="search"
-              placeholder="Search apps…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoFocus
-            />
-          </div>
-        </div>
+          }
+        />
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
-        {/* Skeleton only while there is nothing drawable at all: once the fast
-            row has landed the cards themselves are the loading indicator, and
-            the count line below says the rest is still coming. */}
         {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status !== "loading" && (
           <>
-            <div className="apps-count">
-              {apps.status === "partial"
-                ? "Recently opened — loading all apps…"
-                : shown.length === all.length
-                  ? `${all.length} app${all.length === 1 ? "" : "s"}`
-                  : `${shown.length} of ${all.length} apps`}
-            </div>
             {shown.length === 0 ? (
               // Nothing to say yet during the partial phase: "no apps match" is
               // a claim about the whole catalog, which has not arrived.
               apps.status === "partial" ? null : (
-                <div className="home-empty">
-                  {all.length === 0
-                    ? "No apps yet. Describe one in the composer above to create it."
-                    : "No apps match — clear the search or filter."}
-                </div>
+                <Empty className="border border-border py-12">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <LayoutGrid />
+                    </EmptyMedia>
+                    <EmptyDescription>
+                      {all.length === 0
+                        ? "No apps yet. Describe one in the composer above to create it."
+                        : "No apps match — clear the search or filter."}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               )
             ) : (
-              <div className="apps-cards">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
                 {shown.map((app) => (
                   <AppPreviewCard
                     key={app.path}

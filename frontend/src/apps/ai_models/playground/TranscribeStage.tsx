@@ -10,9 +10,8 @@
 // `POST /api/ai/transcribe` takes a PATH — the transcript is a file and the
 // run outlives the page on purpose — so both inputs land bytes on disk first
 // through `POST /api/fs/upload`, into this stage's own scratch dir under the
-// app's cache. A browser file picker has no path to give; the upload is the
-// door, not a workaround. Only the WATCH stops on unmount: the run itself is a
-// job, visible in Activity.
+// app's cache. Only the WATCH stops on unmount: the run itself is a job,
+// visible in Activity.
 import { useEffect, useRef, useState } from "react";
 import { getConfig, mkdir, rawUrl } from "@platform/lib/api";
 import { cancelJob, type Job } from "@platform/lib/jobs";
@@ -24,9 +23,27 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
+import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
-import { useConfigOpen, ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
+import { Tiny } from "@platform/ui/flow/Typography";
+import { bucketBorder, bucketFill } from "@platform/ui/status-colors";
+import { cn } from "@platform/lib/utils";
+import {
+  AnswerBlock,
+  AnswerBox,
+  ClearButton,
+  ConfigPanel,
+  CopyButton,
+  ProgressBar,
+  RailCheck,
+  RailField,
+  RailSelect,
+  ResultSlot,
+  StageHeader,
+  StatusLine,
+  useConfigOpen,
+} from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -42,13 +59,46 @@ function clock(seconds: number | undefined): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+const TASKS = [
+  { value: "transcribe" as const, label: "Transcribe — same language" },
+  { value: "translate" as const, label: "Translate into English" },
+];
+
+/** The record button: idle = ring + red dot; live = red ring + square + pulse.
+ *  The state IS the treatment — research's "three explicit states" rule. */
+function RecordButton({
+  live,
+  disabled,
+  onClick,
+}: {
+  live?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex size-13 flex-none cursor-pointer items-center justify-center rounded-full border-2 border-border bg-card hover:border-ring disabled:cursor-default disabled:opacity-50",
+        live && cn(bucketBorder.red, "motion-safe:animate-pulse"),
+      )}
+      disabled={disabled}
+      title={live ? undefined : "Record from the microphone"}
+      onClick={onClick}
+    >
+      <span
+        className={cn(bucketFill.red, live ? "size-4 rounded-sm" : "size-[18px] rounded-full")}
+      />
+    </button>
+  );
+}
+
 export function TranscribeStage({ model }: { model: string }) {
   const [phase, setPhase] = useState<Phase>({ step: "idle" });
   // The audio the run heard, as its server path. In the URL (`src`) on
-  // purpose: this stage is keyed by model id (AiModelsPlayground), so picking
-  // another model REMOUNTS it — and "same recording, different model" is
-  // exactly the comparison a playground should make effortless. The param
-  // survives the remount; the player and the Transcribe button come back.
+  // purpose: this stage is keyed by model id, so picking another model
+  // REMOUNTS it — and "same recording, different model" is exactly the
+  // comparison a playground should make effortless.
   const [source, setSource] = useState<{ path: string; name: string } | null>(() => {
     const path = readParam("src");
     return path ? { path, name: path.split("/").pop() ?? path } : null;
@@ -82,10 +132,8 @@ export function TranscribeStage({ model }: { model: string }) {
 
   const abortRef = useRef<AbortController | null>(null);
   // `land()` awaits the config, the mkdir and the upload before it starts a
-  // job at all, so an unmount inside that window runs the cleanup below while
-  // the continuation is still queued — it would then start a watch against a
-  // controller the cleanup has already come and gone for, leaking a 1/s poll
-  // from a dead component. The flag is what the continuation checks.
+  // job at all, so an unmount inside that window must stop the continuation
+  // from starting a watch from a dead component.
   const aliveRef = useRef(true);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -101,11 +149,7 @@ export function TranscribeStage({ model }: { model: string }) {
   };
 
   useEffect(() => {
-    // Set on the way IN as well as cleared on the way out. The app does not
-    // mount under StrictMode today, but its dev double-mount reuses the same
-    // instance and its refs — a flag only ever cleared would latch false on
-    // the simulated unmount and kill transcription for the rest of the
-    // session. Two other modules here already guard that double invocation.
+    // Set on the way IN as well as cleared on the way out (dev double-mount).
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
@@ -144,9 +188,7 @@ export function TranscribeStage({ model }: { model: string }) {
 
   const transcribePath = async (path: string) => {
     if (!aliveRef.current) return;
-    // Published BEFORE the first await, for the same reason ImageStage does
-    // it: an unmount during this POST used to leave the ref null, so nothing
-    // aborted the watch that the continuation went on to start.
+    // Published BEFORE the first await, for the same reason ImageStage does it.
     const controller = new AbortController();
     abortRef.current = controller;
     const started = await startTranscribe({
@@ -165,10 +207,7 @@ export function TranscribeStage({ model }: { model: string }) {
           p.step === "running" && p.started.jobId === started.jobId ? { ...p, job } : p,
         ),
       );
-      // Stop was pressed. Falling through would read back two artefacts that
-      // were never written and then report "the transcript could not be read
-      // back — it is saved in the transcripts folder", which is a lie about a
-      // run the user themselves killed.
+      // Stop was pressed: the artefacts were never written.
       if (outcome.state === "cancelled") {
         setPhase({ step: "idle" });
         return;
@@ -180,11 +219,7 @@ export function TranscribeStage({ model }: { model: string }) {
       return;
     }
     // The final words come from the final `.json` — NOT another read of the
-    // partial file: the Sink DELETES the partial on a clean exit (a finished
-    // run's partial is duplicate bytes, its docstring says so), so on a short
-    // clip that finishes before the first tail tick the partial never renders
-    // and a re-read here finds nothing. The settled record has the same
-    // segments, plus the joined text.
+    // partial file: the Sink DELETES the partial on a clean exit.
     try {
       const res = await fetch(rawUrl(started.output) + "&t=" + Date.now());
       if (res.ok) {
@@ -209,19 +244,13 @@ export function TranscribeStage({ model }: { model: string }) {
         return;
       }
     } catch {
-      // Both artefacts unreadable — say THAT, below, never "no speech":
-      // a failed read is a fact about the read, not about the audio.
+      // Both artefacts unreadable — say THAT, below, never "no speech".
     }
     setPhase({ step: "done", started, text: "", readFailed: true });
   };
 
   // Bytes this stage invented — a mic take, or a dropped file the server has no
-  // path for — land in the app's own scratch dir, `<cache>/transcribe-playground`
-  // (`~/.fused-render/cache/…`), NOT in the user's home. `~/recordings` is a
-  // folder the user browses, holding the capture feature's takes; a playground
-  // upload dropped in there is a file nobody can tell from one they made on
-  // purpose. Both levels are mkdir'd because `/api/fs/mkdir` creates ONE
-  // directory by design and on a fresh machine neither exists.
+  // path for — land in the app's own scratch dir, `<cache>/transcribe-playground`.
   const land = async (data: Blob, name: string) => {
     setError(null);
     setPhase({ step: "uploading", name });
@@ -307,215 +336,198 @@ export function TranscribeStage({ model }: { model: string }) {
   };
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
-        {/* The action, and the way to the settings. The hero card above names
-            the model and its state. */}
-        <StageHeader
-          title="Transcribe a recording"
-          configOpen={configOpen}
-          onToggleConfig={toggleConfig}
-        />
+    <Card className="w-full flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+      <StageHeader
+        title="Transcribe a recording"
+        configOpen={configOpen}
+        onToggleConfig={toggleConfig}
+      />
 
-        {phase.step === "recording" ? (
-          <div className="pg-recording">
-            <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
-              <span className="pg-rec-square" />
-            </button>
-            <div className="pg-rec-info">
-              <span className="pg-rec-time">{clock(elapsed)}</span>
-              <span className="pg-meter" aria-hidden="true">
-                {Array.from({ length: 12 }, (_, i) => (
-                  <span
-                    key={i}
-                    className={"pg-meter-bar" + (level * 12 > i ? " lit" : "")}
-                  />
-                ))}
-              </span>
-              <span className="pg-rec-hint">Recording — click to stop and transcribe</span>
-            </div>
+      {phase.step === "recording" ? (
+        <div className={cn("flex items-center gap-4 rounded-lg border-[1.5px] bg-card p-4", bucketBorder.red)}>
+          <RecordButton live onClick={() => recorderRef.current?.stop()} />
+          <div className="flex flex-wrap items-center gap-3.5">
+            <span className="text-base font-semibold tabular-nums">{clock(elapsed)}</span>
+            {/* The level meter: 12 bars, lit from the left by the live RMS. */}
+            <span className="inline-flex h-5 items-center gap-[3px]" aria-hidden="true">
+              {Array.from({ length: 12 }, (_, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "w-1 rounded-full",
+                    level * 12 > i ? cn("h-4", bucketFill.green) : "h-2 bg-muted",
+                  )}
+                />
+              ))}
+            </span>
+            <Tiny>Recording — click to stop and transcribe</Tiny>
           </div>
-        ) : (
-          <div
-            className={"pg-dropzone" + (dragging ? " dragging" : "") + (busy ? " busy" : "")}
-            onDragOver={(e) => {
-              e.preventDefault();
-              if (!busy) setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              const file = e.dataTransfer.files?.[0];
-              if (file && !busy) void land(file, file.name);
-            }}
-          >
-            <button type="button" className="pg-rec-btn" disabled={busy} onClick={() => void record()} title="Record from the microphone">
-              <span className="pg-rec-dot" />
-            </button>
-            <div className="pg-drop-copy">
-              <p className="pg-drop-title">
-                {busy ? "Working…" : "Record, or drop an audio / video file"}
-              </p>
-              <p className="pg-drop-sub">
-                {busy ? (
-                  phase.step === "uploading" ? (
-                    `Saving ${phase.name}…`
-                  ) : (
-                    progress
-                  )
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "pg-composer flex items-center gap-4 rounded-lg border-[1.5px] border-dashed border-border bg-card p-4",
+            dragging && "border-ring bg-accent/30",
+            busy && "border-solid",
+          )}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!busy) setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const file = e.dataTransfer.files?.[0];
+            if (file && !busy) void land(file, file.name);
+          }}
+        >
+          <RecordButton disabled={busy} onClick={() => void record()} />
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <p className="m-0 text-sm font-semibold">
+              {busy ? "Working…" : "Record, or drop an audio / video file"}
+            </p>
+            <Tiny className="block">
+              {busy ? (
+                phase.step === "uploading" ? (
+                  `Saving ${phase.name}…`
                 ) : (
-                  <>
-                    …or{" "}
-                    <label className="pg-browse">
-                      browse for one
-                      <input
-                        type="file"
-                        accept="audio/*,video/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = "";
-                          if (file) void land(file, file.name);
-                        }}
-                      />
-                    </label>{" "}
-                    — the words appear as they are decoded.
-                  </>
-                )}
-              </p>
-              {pct !== null && (
-                <span className="pg-bar">
-                  <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                </span>
-              )}
-            </div>
-            {phase.step === "running" && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
-              >
-                Stop
-              </button>
-            )}
-          </div>
-        )}
-
-        <ConfigPanel open={configOpen} animated={configTouched.current}>
-          <RailField label="Task">
-            <RailSelect
-              value={task}
-              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-            >
-              <option value="transcribe">Transcribe — same language</option>
-              <option value="translate">Translate into English</option>
-            </RailSelect>
-          </RailField>
-          <RailField label="Language" hint="Set it only when detection gets it wrong.">
-            <Input
-              type="text"
-              value={language}
-              placeholder="Detected automatically"
-              onChange={(e) => setLanguage(e.target.value)}
-            />
-          </RailField>
-          <RailCheck
-            label="Skip silence"
-            hint="Much faster on recordings with gaps. Turn off if it clips speech."
-            checked={vad}
-            onChange={setVad}
-          />
-          <RailCheck
-            label="Word timestamps"
-            hint="Per-word timings in the saved transcript. Slower."
-            checked={words}
-            onChange={setWords}
-          />
-        </ConfigPanel>
-
-
-        {error && <p className="pg-error">{error}</p>}
-
-        {source && phase.step !== "recording" && (
-          // The recording itself, playable — hearing what the model heard is
-          // how a surprising transcript stops being a mystery. And because the
-          // path rides the URL, this row is also the compare loop: pick
-          // another model in the sidebar and the same recording is one click
-          // from a fresh run.
-          <div className="pg-audio-row">
-            <div className="pg-audio-meta">
-              <span className="pg-audio-label">What the model hears</span>
-              <span className="pg-audio-name">{source.name}</span>
-            </div>
-            <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
-            {!busy && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  setError(null);
-                  void transcribePath(source.path).catch((e: Error) => {
-                    setError(e.message);
-                    setPhase({ step: "idle" });
-                  });
-                }}
-              >
-                {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
-              </button>
-            )}
-            {!busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Drop this recording and start over"
-                onClick={clear}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-
-        {segments.length === 0 && phase.step !== "done" ? (
-          <ResultSlot
-            label="Transcript"
-            capability="automatic-speech-recognition"
-            note="The words come back here, timed — record something above, or pick a file."
-          />
-        ) : (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">Transcript</p>
-            <div className="pg-segments">
-              {phase.step === "done" && finalText() && (
-                <CopyButton text={finalText()} label="Copy the transcript" />
-              )}
-              {segments.length > 0 ? (
-                segments.map((segment, index) => (
-                  <div key={index} className="pg-segment">
-                    <span className="pg-segment-time">{clock(segment.start)}</span>
-                    <span className="pg-segment-text">
-                      {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
-                      {segment.text}
-                    </span>
-                  </div>
-                ))
-              ) : phase.step === "done" && phase.text.trim() ? (
-                <p className="pg-transcript-text">{phase.text.trim()}</p>
-              ) : phase.step === "done" && phase.readFailed ? (
-                // The read failed, not the recording — the file is still saved.
-                <p className="pg-transcript-text pg-transcript-empty">
-                  The run finished, but the transcript could not be read back — it is saved in
-                  the transcripts folder.
-                </p>
+                  progress
+                )
               ) : (
-                <p className="pg-transcript-text pg-transcript-empty">
-                  No speech was detected in this recording.
-                </p>
+                <>
+                  …or{" "}
+                  <label className="relative cursor-pointer text-foreground underline decoration-dotted">
+                    browse for one
+                    <input
+                      type="file"
+                      className="absolute inset-0 w-full cursor-pointer opacity-0"
+                      accept="audio/*,video/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void land(file, file.name);
+                      }}
+                    />
+                  </label>{" "}
+                  — the words appear as they are decoded.
+                </>
               )}
-            </div>
+            </Tiny>
+            {pct !== null && <ProgressBar pct={pct} />}
           </div>
-        )}
-      </Card>
-    </div>
+          {phase.step === "running" && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
+            >
+              Stop
+            </Button>
+          )}
+        </div>
+      )}
+
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <RailField label="Task">
+          <RailSelect label="Task" value={task} options={TASKS} onChange={setTask} />
+        </RailField>
+        <RailField label="Language" hint="Set it only when detection gets it wrong.">
+          <Input
+            type="text"
+            value={language}
+            placeholder="Detected automatically"
+            onChange={(e) => setLanguage(e.target.value)}
+          />
+        </RailField>
+        <RailCheck
+          label="Skip silence"
+          hint="Much faster on recordings with gaps. Turn off if it clips speech."
+          checked={vad}
+          onChange={setVad}
+        />
+        <RailCheck
+          label="Word timestamps"
+          hint="Per-word timings in the saved transcript. Slower."
+          checked={words}
+          onChange={setWords}
+        />
+      </ConfigPanel>
+
+      {error && <StatusLine status="error">{error}</StatusLine>}
+
+      {source && phase.step !== "recording" && (
+        // The recording itself, playable — hearing what the model heard is how
+        // a surprising transcript stops being a mystery. Because the path
+        // rides the URL, this row is also the compare loop.
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-lg border border-border bg-card px-3.5 py-2.5">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <Tiny className="font-semibold uppercase tracking-wide">What the model hears</Tiny>
+            <Tiny className="max-w-[220px] truncate">{source.name}</Tiny>
+          </div>
+          <audio
+            className="h-9 min-w-[200px] flex-[1_1_240px]"
+            controls
+            preload="metadata"
+            src={rawUrl(source.path)}
+          />
+          {!busy && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setError(null);
+                void transcribePath(source.path).catch((e: Error) => {
+                  setError(e.message);
+                  setPhase({ step: "idle" });
+                });
+              }}
+            >
+              {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
+            </Button>
+          )}
+          {!busy && <ClearButton title="Drop this recording and start over" onClick={clear} />}
+        </div>
+      )}
+
+      {segments.length === 0 && phase.step !== "done" ? (
+        <ResultSlot
+          label="Transcript"
+          capability="automatic-speech-recognition"
+          note="The words come back here, timed — record something above, or pick a file."
+        />
+      ) : (
+        <AnswerBlock label="Transcript" status={phase.step === "running" ? "running" : null}>
+          <AnswerBox className="flex min-h-[140px] flex-col gap-1.5 overflow-y-auto py-3">
+            {phase.step === "done" && finalText() && (
+              <CopyButton text={finalText()} label="Copy the transcript" />
+            )}
+            {segments.length > 0 ? (
+              segments.map((segment, index) => (
+                <div key={index} className="flex gap-3 text-sm leading-relaxed">
+                  <Tiny className="w-[42px] flex-none pt-0.5 tabular-nums">{clock(segment.start)}</Tiny>
+                  <span className="min-w-0">
+                    {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
+                    {segment.text}
+                  </span>
+                </div>
+              ))
+            ) : phase.step === "done" && phase.text.trim() ? (
+              <p className="m-0 text-sm leading-relaxed whitespace-pre-wrap">{phase.text.trim()}</p>
+            ) : phase.step === "done" && phase.readFailed ? (
+              // The read failed, not the recording — the file is still saved.
+              <p className="m-0 text-sm leading-relaxed text-muted-foreground">
+                The run finished, but the transcript could not be read back — it is saved in
+                the transcripts folder.
+              </p>
+            ) : (
+              <p className="m-0 text-sm leading-relaxed text-muted-foreground">
+                No speech was detected in this recording.
+              </p>
+            )}
+          </AnswerBox>
+        </AnswerBlock>
+      )}
+    </Card>
   );
 }

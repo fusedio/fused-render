@@ -5,7 +5,10 @@
 // now". It is deliberately a small surface: the index maintains itself (a scan
 // on every startup, incremental after the first), so these are the escape
 // hatches, not the normal path.
-import { useEffect, useState } from "react";
+//
+// Only consumer: shell/Preferences.tsx, whose row vocabulary
+// (shell/prefs/SettingRow.tsx) this panel shares.
+import { useEffect, useId, useState } from "react";
 import {
   askIndex,
   deleteIndex,
@@ -21,6 +24,13 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Button } from "@platform/shadcn/ui/button";
+import { Kbd } from "@platform/shadcn/ui/kbd";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@platform/shadcn/ui/table";
+import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Muted } from "@platform/ui/flow/Typography";
+import { Code, SettingRow, SettingRows, SettingsSection } from "@shell/prefs/SettingRow";
 
 // The editor is a textarea, one pattern per line, because that IS the format:
 // the server's own parser takes newline-separated text, comments and all
@@ -34,7 +44,7 @@ function textToPatterns(text: string): string[] {
   return text.split("\n");
 }
 
-// Same pattern as Preferences.tsx's ReaderToggle: local busy/error, a PUT
+// Same pattern as Preferences.tsx's SwitchRow: local busy/error, a PUT
 // that returns the full Prefs, and the parent re-renders from it. Kept here
 // rather than in Preferences.tsx because it is entirely about indexing, and
 // every other control on this panel already lives here.
@@ -48,6 +58,7 @@ function IndexingToggle({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const enabled = prefs.indexing.enabled;
+  const id = useId();
 
   const toggle = async () => {
     if (busy) return;
@@ -63,17 +74,14 @@ function IndexingToggle({
   };
 
   return (
-    <section className="prefs-section">
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable file indexing.</b> Turning this off stops all background scans — search
-          falls back to slower live walks of the folder you're in, and the existing index
-          keeps answering until it goes stale.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    <SettingRow
+      label="Enable file indexing"
+      controlId={id}
+      description="Turning this off stops all background scans — search falls back to slower live walks of the folder you're in, and the existing index keeps answering until it goes stale."
+      note={error && <ErrorBanner>{error}</ErrorBanner>}
+    >
+      <Switch id={id} checked={enabled} disabled={busy} onCheckedChange={() => void toggle()} />
+    </SettingRow>
   );
 }
 
@@ -146,150 +154,149 @@ export function IndexingPanel({
 
   const dirty = config !== null && text !== patternsToText(config.ignore);
   const indexingOff = !prefs.indexing.enabled;
+  const scanTitle = indexingOff ? "Indexing is off — turn it back on above to scan" : undefined;
 
   return (
     <>
-      <IndexingToggle prefs={prefs} onChange={onChange} />
-      <section className="prefs-section">
-        <h2>File index</h2>
-        <p className="deploy-muted">
-          A local index of your files' names, sizes and dates — no file contents. It is what
-          makes searching inside a folder instant instead of re-walking the tree, and it
-          survives restarts. It is rebuilt in the background when the app starts;
-          unchanged folders cost one check each, so that is usually a second or two.
-        </p>
-        {!status && <SkeletonLines rows={2} label="Loading index status" />}
-        {status && (
-          <p className="deploy-muted">
-            {status.has_index ? (
+      <SettingsSection
+        title="File index"
+        description="A local index of your files' names, sizes and dates — no file contents. It is what makes searching inside a folder instant instead of re-walking the tree, and it survives restarts. It is rebuilt in the background when the app starts; unchanged folders cost one check each, so that is usually a second or two."
+      >
+        <SettingRows>
+          <IndexingToggle prefs={prefs} onChange={onChange} />
+          <SettingRow
+            label="Index"
+            description={
+              !status ? (
+                <SkeletonLines rows={1} label="Loading index status" />
+              ) : (
+                <>
+                  {status.has_index ? (
+                    <>
+                      <b>{status.files_indexed.toLocaleString()} files</b> indexed
+                      {status.last_completed_at ? `, last updated ${formatMtimeFull(status.last_completed_at)}` : ""}.
+                    </>
+                  ) : (
+                    <b>No index yet.</b>
+                  )}{" "}
+                  {scanning
+                    ? `Scanning now — ${status.files.toLocaleString()} files so far${
+                        status.root ? ` under ${status.root}` : ""
+                      }.`
+                    : config?.roots.length
+                      ? `Covers ${config.roots.join(", ")}.`
+                      : ""}
+                  {!status.has_index && !scanning ? " Searching a folder walks it live until one exists." : ""}
+                </>
+              )
+            }
+            note={
               <>
-                <b>{status.files_indexed.toLocaleString()} files</b> indexed
-                {status.last_completed_at
-                  ? `, last updated ${formatMtimeFull(status.last_completed_at)}`
-                  : ""}
-                .
+                {indexingOff && (
+                  <>Indexing is off, so Re-index and Full scan have nothing to do — turn it back on above first.</>
+                )}
+                {note && <span className="block">{note}</span>}
+                {error && <ErrorBanner>{error}</ErrorBanner>}
               </>
-            ) : (
-              <b>No index yet.</b>
-            )}{" "}
-            {scanning
-              ? `Scanning now — ${status.files.toLocaleString()} files so far${
-                  status.root ? ` under ${status.root}` : ""
-                }.`
-              : config?.roots.length
-                ? `Covers ${config.roots.join(", ")}.`
-                : ""}
-            {!status.has_index && !scanning
-              ? " Searching a folder walks it live until one exists."
-              : ""}
-          </p>
-        )}
-        <div className="prefs-actions">
-          <button
-            type="button"
-            disabled={busy || scanning || indexingOff}
-            title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Check for changes since the last scan (fast — unchanged folders are skipped)"
-            }
-            onClick={() =>
-              act(async () => {
-                await startIndexScan();
-                return "Scan started.";
-              })
             }
           >
-            {scanning ? "Scanning…" : "Re-index"}
-          </button>
-          <button
-            type="button"
-            disabled={busy || scanning || indexingOff}
-            title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
-            }
-            onClick={() =>
-              act(async () => {
-                await startIndexScan({ full: true });
-                return "Full rebuild started.";
-              })
-            }
-          >
-            Full scan
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={busy}
-            title="Delete the index. Search keeps working — it falls back to walking the folder — until the next scan."
-            onClick={() =>
-              act(async () => {
-                await deleteIndex();
-                return "Index deleted. Search falls back to walking folders until the next scan.";
-              })
-            }
-          >
-            Delete index
-          </button>
-        </div>
-        {indexingOff && (
-          <p className="deploy-muted">
-            Indexing is off, so Re-index and Full scan have nothing to do — turn it back on
-            above first.
-          </p>
-        )}
-        {note && <p className="deploy-muted">{note}</p>}
-        {error && <ErrorBanner>{error}</ErrorBanner>}
-      </section>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy || scanning || indexingOff}
+              title={scanTitle ?? "Check for changes since the last scan (fast — unchanged folders are skipped)"}
+              onClick={() =>
+                act(async () => {
+                  await startIndexScan();
+                  return "Scan started.";
+                })
+              }
+            >
+              {scanning ? "Scanning…" : "Re-index"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy || scanning || indexingOff}
+              title={
+                scanTitle ??
+                "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
+              }
+              onClick={() =>
+                act(async () => {
+                  await startIndexScan({ full: true });
+                  return "Full rebuild started.";
+                })
+              }
+            >
+              Full scan
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={busy}
+              title="Delete the index. Search keeps working — it falls back to walking the folder — until the next scan."
+              onClick={() =>
+                act(async () => {
+                  await deleteIndex();
+                  return "Index deleted. Search falls back to walking folders until the next scan.";
+                })
+              }
+            >
+              Delete index
+            </Button>
+          </SettingRow>
+        </SettingRows>
+      </SettingsSection>
 
-      <section className="prefs-section">
-        <h2>Skipped folders</h2>
-        <p className="deploy-muted">
-          Folders the index never looks inside — dependency and build caches, which are huge
-          and machine-generated. One rule per line. A bare name (<code>node_modules</code>)
-          matches at any depth, <code>*.egg-info</code> matches a name pattern, and anything
-          containing a slash (<code>~/Library/Caches</code>) matches that path and everything
-          under it. Lines starting with <code>#</code> are comments.
-        </p>
-        <p className="deploy-muted">
-          Remote mounts are never indexed and cannot be added here: reading them means network
-          round-trips per folder, and a background crawl of one can break the mount.
-        </p>
+      <SettingsSection
+        title="Skipped folders"
+        description={
+          <>
+            Folders the index never looks inside — dependency and build caches, which are huge and
+            machine-generated. One rule per line. A bare name (<Code>node_modules</Code>) matches at any depth,{" "}
+            <Code>*.egg-info</Code> matches a name pattern, and anything containing a slash (
+            <Code>~/Library/Caches</Code>) matches that path and everything under it. Lines starting with{" "}
+            <Code>#</Code> are comments. Remote mounts are never indexed and cannot be added here: reading them
+            means network round-trips per folder, and a background crawl of one can break the mount.
+          </>
+        }
+      >
         {!config && !error && <SkeletonLines rows={4} label="Loading skip rules" />}
         {config && (
-          <>
-            <textarea
-              className="prefs-textarea"
+          <div className="space-y-2">
+            <Textarea
+              className="font-mono text-xs min-h-48"
               rows={10}
               spellCheck={false}
               value={text}
               onChange={(e) => setText(e.target.value)}
               aria-label="Skipped folders, one rule per line"
             />
-            <div className="prefs-actions">
-              <button type="button" disabled={busy || !dirty} onClick={save}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" size="sm" disabled={busy || !dirty} onClick={save}>
                 Save
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="ghost"
+                size="sm"
                 disabled={busy || text === patternsToText(config.defaults)}
                 onClick={restoreDefaults}
               >
                 Restore defaults
-              </button>
+              </Button>
             </div>
-            <p className="deploy-muted">
-              Changing these rules rebuilds the index, so folders you just excluded stop
-              appearing in search and ones you re-included start appearing.
-            </p>
-            <p className="deploy-muted">
-              Stored at <code>{config.location}</code>.
-            </p>
-          </>
+            <Muted className="text-xs">
+              Changing these rules rebuilds the index, so folders you just excluded stop appearing in search and
+              ones you re-included start appearing. Stored at <Code>{config.location}</Code>.
+            </Muted>
+          </div>
         )}
-      </section>
+      </SettingsSection>
 
       <QuerySection />
     </>
@@ -317,6 +324,7 @@ function QuerySection() {
   const [ask, setAsk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<IndexQueryOutcome | null>(null);
+  const askId = useId();
 
   const run = async () => {
     const body = text.trim();
@@ -337,87 +345,97 @@ function QuerySection() {
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Query</h2>
-      <p className="deploy-muted">
-        Read-only SQL over the index. Two tables: <code>files</code>(path, dir, name, ext,
-        size, mtime, depth) and <code>dirs</code>(dir, n_files, total_size, mtime_ns,
-        n_subdirs, depth). <code>size</code> is bytes and <code>mtime</code> is epoch
-        seconds. Nothing here can write, and nothing can read a file outside the index.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={ask} onChange={(e) => setAsk(e.target.checked)} />
-        <span>
-          <b>Ask in plain English.</b> The question goes to Claude, which writes the SQL;
-          the statement it produced is shown with the results and runs under the same
-          guard as one you typed.
-        </span>
-      </label>
-      <textarea
-        className="prefs-textarea index-query-input"
-        rows={ask ? 3 : 6}
-        spellCheck={false}
-        value={text}
-        placeholder={ask ? "Which folders are using the most space?" : EXAMPLE_SQL}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          // ⌘↵ / Ctrl+↵ runs, because Enter has to stay a newline in a
-          // multi-line statement.
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            void run();
-          }
-        }}
-        aria-label={ask ? "Question about the index" : "SQL to run against the index"}
-      />
-      <div className="prefs-actions">
-        <button type="button" disabled={busy || !text.trim()} onClick={() => void run()}>
-          {busy ? "Running…" : ask ? "Ask" : "Run"}
-        </button>
-        <span className="deploy-muted">⌘↵</span>
+    <SettingsSection
+      title="Query"
+      description={
+        <>
+          Read-only SQL over the index. Two tables: <Code>files</Code>(path, dir, name, ext, size, mtime, depth)
+          and <Code>dirs</Code>(dir, n_files, total_size, mtime_ns, n_subdirs, depth). <Code>size</Code> is
+          bytes and <Code>mtime</Code> is epoch seconds. Nothing here can write, and nothing can read a file
+          outside the index.
+        </>
+      }
+    >
+      <SettingRows>
+        <SettingRow
+          label="Ask in plain English"
+          controlId={askId}
+          description="The question goes to Claude, which writes the SQL; the statement it produced is shown with the results and runs under the same guard as one you typed."
+        >
+          <Switch id={askId} checked={ask} onCheckedChange={(c) => setAsk(c)} />
+        </SettingRow>
+      </SettingRows>
+      <div className="space-y-2">
+        <Textarea
+          className={ask ? "min-h-20" : "font-mono text-xs min-h-32"}
+          rows={ask ? 3 : 6}
+          spellCheck={false}
+          value={text}
+          placeholder={ask ? "Which folders are using the most space?" : EXAMPLE_SQL}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // ⌘↵ / Ctrl+↵ runs, because Enter has to stay a newline in a
+            // multi-line statement.
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void run();
+            }
+          }}
+          aria-label={ask ? "Question about the index" : "SQL to run against the index"}
+        />
+        <div className="flex items-center gap-2">
+          <Button type="button" size="sm" disabled={busy || !text.trim()} onClick={() => void run()}>
+            {busy ? "Running…" : ask ? "Ask" : "Run"}
+          </Button>
+          <Kbd>⌘↵</Kbd>
+        </div>
       </div>
       {outcome?.sql && (
-        <pre className="index-query-sql">
+        <pre className="border border-border rounded-lg bg-card p-3 font-mono text-xs overflow-x-auto">
           <code>{outcome.sql}</code>
         </pre>
       )}
       {outcome && !outcome.ok && <ErrorBanner>{outcome.error}</ErrorBanner>}
       {outcome?.ok && <QueryTable outcome={outcome} />}
-    </section>
+    </SettingsSection>
   );
 }
 
 function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) {
   const { columns, rows, truncated } = outcome.table;
   if (rows.length === 0) {
-    return <p className="deploy-muted">No rows.</p>;
+    return <Muted>No rows.</Muted>;
   }
   return (
-    <>
-      <div className="index-query-results">
-        <table>
-          <thead>
-            <tr>
+    <div className="space-y-2">
+      <div className="border border-border rounded-lg bg-card max-h-96 overflow-auto scrollbar-auto-hide">
+        <Table className="font-mono text-xs">
+          <TableHeader>
+            <TableRow>
               {columns.map((c, i) => (
-                <th key={i}>{c}</th>
+                <TableHead key={i} className="whitespace-nowrap">
+                  {c}
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((row, i) => (
-              <tr key={i}>
+              <TableRow key={i}>
                 {row.map((cell, j) => (
-                  <td key={j}>{cell}</td>
+                  <TableCell key={j} className="whitespace-nowrap tabular-nums">
+                    {cell}
+                  </TableCell>
                 ))}
-              </tr>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
-      <p className="deploy-muted">
+      <Muted className="text-xs">
         {rows.length.toLocaleString()} {rows.length === 1 ? "row" : "rows"}
         {truncated ? ` — stopped at ${QUERY_LIMIT}; add a LIMIT or an aggregate.` : "."}
-      </p>
-    </>
+      </Muted>
+    </div>
   );
 }

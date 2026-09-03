@@ -1,76 +1,70 @@
 // The video stage: prompt in, a short clip with audio out (SPEC §40).
 //
 // Shaped like the text and image stages (D431): heading with a cog,
-// prompt, Generate — and every parameter behind the Config card, which is
-// what replaced the settings rail this stage was first written with.
+// prompt, Generate — and every parameter behind the settings panel.
 //
 // `ImageStage`'s minimal sibling — no aspect chips, no live preview (this
 // build has none), no guidance (H3 is CFG-distilled and takes no such
 // parameter). What is genuinely different from an image render: the output
 // is a `<video controls>` rather than an `<img>`, `frames` is a fourth
 // numeric setting alongside width/height/steps, and a render can run for a
-// long time — `onProgress`'s row survives a tab switch (it shows in
-// Activity), same as the image stage, and only the WATCH stops on unmount.
-// That length is also why this stage keeps the settled caption and the
-// gallery strip the image stage dropped: a clip that cost an hour is worth
-// naming the seed of, and worth being able to go back to.
+// long time — the row survives a tab switch (it shows in Activity), same as
+// the image stage, and only the WATCH stops on unmount. That length is also
+// why this stage keeps the settled caption and the gallery strip the image
+// stage dropped.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
+import { Tiny } from "@platform/ui/flow/Typography";
 import {
+  AnswerBlock,
+  AttachButton,
+  AttachChip,
+  ClearButton,
+  ComposerCard,
+  ComposerSide,
   ConfigPanel,
-  useConfigOpen,
+  Lightbox,
+  ProgressBar,
   RailField,
   RailReset,
   RailSlider,
   ResultSlot,
+  RunButton,
   StageHeader,
   StarterCards,
+  StatusLine,
+  StopButton,
+  composerTextareaClass,
+  useConfigOpen,
   type Starter,
 } from "./controls";
 import { canEdit, usableBase, type AttachedImage } from "./imageInput";
 import { useAutoGrow } from "@platform/lib/autoGrow";
+import { cn } from "@platform/lib/utils";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The three formats the server's own header reader understands (AI-9f) —
-// identical list to the image stage's `ATTACH_EXTENSIONS`, restated rather
-// than imported: a shared constant would tie the two stages' file filters
-// together for a fact that just happens to coincide today (both routes go
-// through `_image_pixel_size`), not one they are required to share forever.
+// identical list to the image stage's, restated rather than imported: a fact
+// that happens to coincide today, not one they are required to share forever.
 const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
 const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 
-// Small canvas by default — the first clip arriving quickly is the point,
-// exactly like the image stage's 512² default. This is a UI choice
-// independent of which engine is serving (H3's own valid canvas ceiling,
-// `width * height <= 768 * 1344`, and the identical one LTX-2.3 shares —
-// see `registry.py`'s own comment on why the pixel budget stays SHARED
-// across every video runner — are both enforced server-side regardless).
+// Small canvas by default — the first clip arriving quickly is the point.
+// The pixel budget is enforced server-side regardless.
 const DEFAULTS = { width: 512, height: 512 };
 const SIZE_RANGE = [256, 1344] as const;
-// [2, 50]: the floor of 2 came from the dropped `h3-video` runner, which
-// refused 1 step outright ("denoising steps must be in [2, 1000]"), and is
-// kept as the app's own on that runner's removal (D468) — 1 step is not a
-// meaningfully faster render on any engine. Both ends are shared across
-// every engine, same as `SIZE_RANGE` — an app-chosen safety rail, not a
-// fact about the engine's weights (`registry.py`'s own `MIN_VIDEO_FRAMES_N`
-// comment makes the identical argument about the frame grid's own window).
+// [2, 50]: an app-chosen safety rail shared across every engine.
 const STEPS_RANGE = [2, 50] as const;
 
-// **The fallback when the server sends no traits at all** — a capability row
-// from a build old enough to predate this field, or one the caller built by
-// hand for a test. **It must stay byte-for-byte the row
-// `registry.video_traits_for` falls back to** (`ltx-video`'s, since D468
-// dropped `h3-video` and with it the 5 + 17n / 864x480 / 20-step row both
-// sides used to name): a client that guesses a different grid than the
-// server snaps to draws a slider whose every value the render then moves,
-// which is the exact "a control that lies about what will run" failure the
-// `videoTraits` payload exists to close. If that server-side fallback moves
-// again, this moves with it.
+// **The fallback when the server sends no traits at all.** It must stay
+// byte-for-byte the row `registry.video_traits_for` falls back to
+// (`ltx-video`'s): a client that guesses a different grid than the server
+// snaps to draws a slider whose every value the render then moves.
 const FALLBACK_TRAITS: NonNullable<AiCatalogCapability["videoTraits"]> = {
   framesBase: 1,
   framesStep: 8,
@@ -85,9 +79,7 @@ const FALLBACK_TRAITS: NonNullable<AiCatalogCapability["videoTraits"]> = {
 
 // Eight authored examples — two pages of four (D465). Every one names a
 // subject AND a MOTION, because motion is the whole difference between this
-// stage and the image one: a prompt that describes only a scene gets a clip
-// that barely moves, and a newcomer has no way to know that is their prompt's
-// fault rather than the model's.
+// stage and the image one.
 const STARTERS: Starter[] = [
   {
     name: "Paper boat",
@@ -149,18 +141,11 @@ const STARTERS: Starter[] = [
 
 /** The `image`/`width`/`height` fields of one render request.
  *
- *  Deliberately NOT `imageInput.ts`'s own `imageFields` (the image STAGE's
- *  version): that function's third case sends a CLIENT-computed size
- *  alongside `image` (`fitToImage`'s arithmetic — cap 640, snapped to a
- *  multiple of 16), and that arithmetic is the image route's own, not this
- *  one's. `/api/ai/video` derives its default canvas off the reference
- *  itself, on the ENGINE's own 64-multiple two-stage grid
- *  (`_video_default_size`, D621) — sending `fitToImage`'s pair would bypass
- *  that derivation and echo a canvas nobody actually rendered (a 1280x704
- *  reference would send 640x352, while the engine renders 640x320). So with
- *  no size picked by hand, `width`/`height` are left off entirely and the
- *  server derives them off the reference's own header — the third case here
- *  is simply "leave them out", not "compute a smaller version of them". */
+ *  Deliberately NOT `imageInput.ts`'s own `imageFields`: that function's third
+ *  case sends a CLIENT-computed size alongside `image`, and that arithmetic is
+ *  the image route's own. `/api/ai/video` derives its default canvas off the
+ *  reference itself (`_video_default_size`, D621), so with no size picked by
+ *  hand `width`/`height` are left off entirely. */
 function videoImageFields(
   base: AttachedImage | null,
   sizeFromImage: boolean,
@@ -185,10 +170,9 @@ export function VideoStage({
 }: {
   model: string;
   entry: AiCatalogModel;
-  /** `selected.row.videoTraits` — the RESOLVED engine's own request shape,
-   *  never a fact about `entry` (one model, not one engine). `null` on a
-   *  machine where nothing serves video generation at all, or from a build
-   *  old enough to predate this field — see `FALLBACK_TRAITS`. */
+  /** `selected.row.videoTraits` — the RESOLVED engine's own request shape.
+   *  `null` on a machine where nothing serves video generation at all, or from
+   *  a build old enough to predate this field — see `FALLBACK_TRAITS`. */
   traits: AiCatalogCapability["videoTraits"];
 }) {
   const engineTraits = traits ?? FALLBACK_TRAITS;
@@ -209,12 +193,8 @@ export function VideoStage({
   const [error, setError] = useState<string | null>(null);
 
   // A reference image (SPEC AI-15) — the same gate and attachment shape
-  // `ImageStage.tsx` uses for its own base image (AI-9f), reused as-is
-  // through `imageInput.ts` rather than reimplemented: `canEdit`/`usableBase`
-  // both take a plain `boolean | undefined`, so `engineTraits.supportsImage`
-  // slots in exactly where `entry.acceptsImage` does there. **Not**
-  // `imageFields`/`fitToImage`, unlike the image stage — see `videoImageFields`
-  // below for why this stage computes its own request fields instead.
+  // `ImageStage.tsx` uses for its own base image (AI-9f), reused through
+  // `imageInput.ts`.
   const editable = canEdit(engineTraits.supportsImage);
   const [attachment, setAttachment] = useState<AttachedImage | null>(() => {
     const path = readParam("img");
@@ -225,9 +205,7 @@ export function VideoStage({
   const [attaching, setAttaching] = useState(false);
   const [showBase, setShowBase] = useState(false);
   // Is the size the REFERENCE's? Only with one attached, and only until
-  // somebody picks a size themselves — same rule `ImageStage.tsx`'s own
-  // `sizeIsTheImages` states, mirrored here so the two stages stay
-  // recognisably the same component.
+  // somebody picks a size themselves.
   const sizeIsTheImages = base !== null && sizeFromImage;
 
   useEffect(() => {
@@ -240,9 +218,7 @@ export function VideoStage({
         steps: steps !== modelSteps ? String(steps) : null,
         seed: seed ? seed : null,
         // Omitted rather than nulled on an engine that cannot condition on
-        // one — same rule `ImageStage.tsx` follows for `img`, so switching
-        // to an engine without `supportsImage` and back does not silently
-        // drop the attachment.
+        // one — same rule `ImageStage.tsx` follows for `img`.
         ...(editable ? { img: attachment ? attachment.path : null } : {}),
       });
     }, 300);
@@ -252,21 +228,11 @@ export function VideoStage({
     engineTraits.defaultFrames, editable, attachment,
   ]);
 
-  useEffect(() => {
-    if (!showBase) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowBase(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [showBase]);
-
   const { ref: boxRef } = useAutoGrow(prompt);
 
   const abortRef = useRef<AbortController | null>(null);
-  // Set on the way in as well as cleared on the way out, the same shape
-  // `ImageStage.tsx`'s own flag has: the OS file dialog `choose()` awaits is a
-  // server-side modal that can stay open arbitrarily long, and a continuation
-  // that lands after this component has unmounted (a model switch while the
-  // dialog is up) must not write state on a dead component.
+  // Set on the way in as well as cleared on the way out: the OS file dialog
+  // `choose()` awaits can stay open arbitrarily long.
   const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;
@@ -278,9 +244,7 @@ export function VideoStage({
 
   const attach = (picked: AttachedImage) => {
     setAttachment(picked);
-    // A fresh reference is a fresh size question, and the honest default is
-    // that reference's own shape — even where the last one had been
-    // overridden.
+    // A fresh reference is a fresh size question.
     setSizeFromImage(true);
   };
 
@@ -348,16 +312,13 @@ export function VideoStage({
     }
   };
 
-  // Back to empty: the prompt, the result, and the attached reference —
-  // it is part of the request rather than part of the setup, the same rule
-  // `ImageStage.tsx`'s own Clear follows. Settings stay put, and so does the
-  // gallery strip — a clip already rendered is not what Clear is about.
+  // Back to empty: the prompt, the result, and the attached reference.
+  // Settings stay put, and so does the gallery strip.
   const clear = () => {
     setPrompt("");
     setRun(null);
     setError(null);
     setAttachment(null);
-    // The height follows the emptied prompt on its own (useAutoGrow).
     boxRef.current?.focus();
   };
 
@@ -367,21 +328,15 @@ export function VideoStage({
   const settled = run?.started;
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
-      {/* The action, and the way to the settings. The hero card above names
-          the model and its state. */}
-      <StageHeader
-        title="Describe a video"
-        configOpen={configOpen}
-        onToggleConfig={toggleConfig}
-      />
+    <Card className="w-full flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+      <StageHeader title="Describe a video" configOpen={configOpen} onToggleConfig={toggleConfig} />
 
-      <div className="pg-composer">
+      <ComposerCard>
         <textarea
           ref={boxRef}
           rows={3}
           value={prompt}
+          className={composerTextareaClass}
           placeholder="Describe the video…"
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
@@ -391,82 +346,49 @@ export function VideoStage({
             }
           }}
         />
-        {/* Clear at the top of this column, Generate at the bottom —
-            the column's width is set by Generate, the wider of the two, so
-            nothing moves when Clear comes and goes. */}
-        <div className="pg-composer-side">
-          {!busy && run && (
-            <button
-              type="button"
-              className="pg-ghost-btn pg-clear"
-              title="Clear the prompt and the clip"
-              onClick={clear}
-            >
-              Clear
-            </button>
-          )}
+        {/* Clear at the top of this column, Generate at the bottom — the
+            column's width is set by Generate, so nothing moves when Clear
+            comes and goes. */}
+        <ComposerSide>
+          {!busy && run && <ClearButton title="Clear the prompt and the clip" onClick={clear} />}
           {busy ? (
-            <button
-              type="button"
-              className="btn btn-secondary pg-send"
-              onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
-            >
+            <StopButton onClick={() => void cancelJob(run.started.jobId).catch(() => {})}>
               Stop
-            </button>
+            </StopButton>
           ) : (
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
+            <RunButton
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              Generate
+            </RunButton>
           )}
-        </div>
-      </div>
+        </ComposerSide>
+      </ComposerCard>
 
-      {/* The reference image, on its own line below the composer — same
-          pattern `ImageStage.tsx` uses for its own base image, drawn only
+      {/* The reference image, on its own line below the composer — drawn only
           when the resolved engine can honour one at all (`editable`). */}
       {(base || editable) && (
-        <div className="pg-composer-foot">
+        <div className="flex items-end justify-end gap-2">
           {base && (
-            <span className="pg-attach">
-              <button
-                type="button"
-                className="pg-attach-open"
-                title="See this picture"
-                aria-label="See this picture"
-                onClick={() => setShowBase(true)}
-              >
-                <img src={rawUrl(base.path)} alt="" />
-              </button>
-              <button
-                type="button"
-                className="pg-attach-drop"
-                title="Remove this image"
-                aria-label="Remove this image"
-                onClick={() => setAttachment(null)}
-              >
-                ✕
-              </button>
-            </span>
+            <AttachChip
+              src={rawUrl(base.path)}
+              onOpen={() => setShowBase(true)}
+              onRemove={() => setAttachment(null)}
+            />
           )}
           {editable && (
-            <div className="pg-attach-row">
-              <button
-                type="button"
-                className="pg-attach-btn"
+            <div className="flex flex-wrap items-center gap-2 px-1">
+              <AttachButton
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add a reference image"}</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
+              </AttachButton>
+              {attaching && <Tiny>Working…</Tiny>}
             </div>
           )}
         </div>
@@ -474,11 +396,7 @@ export function VideoStage({
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         {/* Hidden, not disabled, while the attached reference decides the
-            size: a slider parked on 512 is a control saying something about a
-            canvas that will not run — the render comes back at the
-            reference's own shape instead. One line replaces them, and it is
-            also the way back to picking a size by hand. Same shape
-            `ImageStage.tsx` uses for its own `sizeIsTheImages`. */}
+            size. */}
         {sizeIsTheImages ? (
           <RailField
             label="Size"
@@ -531,10 +449,7 @@ export function VideoStage({
           fallback={modelSteps}
           onChange={setSteps}
         />
-        <RailField
-          label="Seed"
-          hint="Same seed + same prompt + same settings = the same video."
-        >
+        <RailField label="Seed" hint="Same seed + same prompt + same settings = the same video.">
           <Input
             type="text"
             inputMode="numeric"
@@ -545,38 +460,25 @@ export function VideoStage({
         </RailField>
       </ConfigPanel>
 
-      {/* The attached reference at full size — same whole-modal shape
-          `ImageStage.tsx` uses for its own base image: a 28px thumbnail
-          cannot be looked at. Click the backdrop or press Escape to close. */}
-      {base && showBase && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached reference image"
-          onClick={() => setShowBase(false)}
+      {base && (
+        <Lightbox
+          open={showBase}
+          onClose={() => setShowBase(false)}
+          label="The attached reference image"
         >
-          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
-            type="button"
-            className="pg-lightbox-close"
-            title="Close"
-            aria-label="Close"
-            onClick={() => setShowBase(false)}
-          >
-            ✕
-          </button>
-        </div>
+          <img
+            src={rawUrl(base.path)}
+            alt=""
+            className="max-h-[calc(100vh-6rem)] max-w-full rounded-md object-contain"
+          />
+        </Lightbox>
       )}
 
       {/* Examples first, under the box they fill; hidden once a clip is on
-          screen, which is what that space is then for. */}
+          screen. */}
       {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
 
-      {/* Every knob is behind the cog; the surface above is prompt and
-          Generate. The four sliders in the order a render is thought about:
-          how big, how long, how carefully — then the seed. */}
-
-      {error && <p className="pg-error">{error}</p>}
+      {error && <StatusLine status="error">{error}</StatusLine>}
 
       {!run ? (
         <ResultSlot
@@ -585,11 +487,10 @@ export function VideoStage({
           note="Your clip appears here. Describe one above, then Generate."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
+        <AnswerBlock label="Result" status={busy ? "running" : null}>
+          <figure className="m-0 flex flex-col gap-2">
             <div
-              className="pg-image-frame"
+              className="relative max-w-full self-start leading-none"
               style={{
                 aspectRatio: `${run.started.width} / ${run.started.height}`,
                 width: "100%",
@@ -598,64 +499,60 @@ export function VideoStage({
               {run.done ? (
                 <video
                   key={run.started.jobId}
+                  className="block size-full rounded-lg border border-border bg-muted/30 object-contain"
                   src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
                   controls
                 />
               ) : (
-                <div className="pg-image-wait" aria-hidden="true" />
+                <div
+                  className="size-full rounded-lg border border-border bg-muted motion-safe:animate-pulse"
+                  aria-hidden="true"
+                />
               )}
             </div>
             {/* Unlike the image stage, the settled line STAYS after a render:
-                `frames` is rounded to the engine's own grid, so what ran is
-                genuinely not what was asked for — and a clip that took an hour
-                is worth being able to reproduce, which is what the seed button
-                is for. */}
-            <figcaption className="pg-image-caption">
+                `frames` is rounded to the engine's own grid, and a clip that
+                took an hour is worth being able to reproduce. */}
+            <figcaption className="flex flex-col gap-1.5 text-xs text-muted-foreground tabular-nums">
               {busy ? (
                 <>
                   <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                  {pct !== null && (
-                    <span className="pg-bar">
-                      <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
+                  {pct !== null && <ProgressBar pct={pct} />}
                 </>
               ) : settled ? (
-                <>
+                <span>
                   {settled.width}×{settled.height} · {settled.frames} frames · {settled.steps} steps
                   ·{" "}
                   <button
                     type="button"
-                    className="pg-seed"
+                    className="cursor-pointer border-0 bg-transparent p-0 font-[inherit] text-muted-foreground underline decoration-dotted hover:text-foreground"
                     title="Reuse this seed — the same prompt and settings render the same video"
                     onClick={() => setSeed(String(settled.seed))}
                   >
                     seed {settled.seed}
                   </button>
-                </>
+                </span>
               ) : null}
             </figcaption>
           </figure>
-        </div>
+        </AnswerBlock>
       )}
 
       {/* Past clips, kept because a video render is the one call here that can
-          cost an hour — losing it to the next Generate is not a fair trade. */}
+          cost an hour. */}
       {gallery.length > 0 && (
-        <div className="pg-image-strip">
+        <div className="flex gap-2 overflow-x-auto pb-0.5">
           {gallery.map((item) => (
             <video
               key={item.jobId}
               src={rawUrl(item.path) + "&t=" + item.jobId}
-              className={
-                (run?.started.jobId === item.jobId ? "active" : "") + (busy ? " disabled" : "")
-              }
-              // Disabled, not wired to a no-op click: a render here can run
-              // for HOURS (unlike the image stage's seconds), so swapping
-              // `run` mid-render would silently drop the in-flight Stop
-              // button and its progress -- Generate would even re-enable
-              // while the render kept going underneath. Picking a past
-              // clip is safe once there is nothing left to lose.
+              className={cn(
+                "h-[84px] cursor-pointer rounded-lg border border-border opacity-80 hover:opacity-100",
+                run?.started.jobId === item.jobId && "border-ring opacity-100",
+                // Disabled, not wired to a no-op click: swapping `run`
+                // mid-render would silently drop the in-flight Stop button.
+                busy && "pointer-events-none cursor-not-allowed opacity-40",
+              )}
               title={
                 busy
                   ? "Finish or stop the current render to view another clip"
@@ -667,7 +564,6 @@ export function VideoStage({
           ))}
         </div>
       )}
-      </Card>
-    </div>
+    </Card>
   );
 }

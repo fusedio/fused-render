@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createTemplate, openTemplateInClaude } from "@platform/lib/api";
 import type { NewTemplateResult } from "@platform/lib/api";
-import { Modal } from "@platform/ui/modal/Modal";
+import { TemplatesDialog } from "@shell/templates/TemplatesDialog";
+import { KeyPill, TemplateChip } from "@shell/templates/chips";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { TextInput } from "@platform/ui/field/fields";
 import { isMod } from "@platform/lib/platform";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
+import { Identifier, Muted, Tiny } from "@platform/ui/flow/Typography";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
 // are optional dot-keys the new template gets appended to — additive only, it
@@ -32,6 +36,7 @@ export function NewTemplateModal({
   const [openError, setOpenError] = useState<string | null>(null);
 
   const alive = useRef(true);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const extInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => () => {
     alive.current = false;
@@ -125,7 +130,7 @@ export function NewTemplateModal({
       const exts = Array.from(new Set([...extensions, ...extra]));
       const res = await createTemplate(trimmedName, exts);
       // The template landed server-side — refresh the parent regardless of
-      // whether this modal is still mounted (matches ImportWizard's posture).
+      // whether this dialog is still mounted (matches ImportWizard's posture).
       onCreated();
       if (!alive.current) return;
       setResult(res);
@@ -151,146 +156,141 @@ export function NewTemplateModal({
   };
 
   return (
-    <Modal
+    <TemplatesDialog
       title="New template"
+      description={
+        result
+          ? undefined
+          : "Scaffold a new user template. Add it as a mode for file extensions now — appended to existing bindings, never replacing them — or add bindings later from the File bindings tab."
+      }
       onClose={onClose}
       busy={busy}
-      dialogClassName="templates-new"
+      className="sm:max-w-[520px]"
+      initialFocus={result ? undefined : nameInputRef}
       footer={
         result ? (
           <>
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Done
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => openInClaude(result.name)}
-              disabled={opening}
-            >
+            </Button>
+            <Button type="button" size="sm" onClick={() => openInClaude(result.name)} disabled={opening}>
               {opening ? "Opening…" : "Open in Claude"}
-            </button>
+            </Button>
           </>
         ) : (
           <>
-            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
               Cancel
-            </button>
-            <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
+            </Button>
+            <Button type="button" size="sm" onClick={create} disabled={!canCreate}>
               {busy ? "Creating…" : "Create"}
-            </button>
+            </Button>
           </>
         )
       }
     >
       {result ? (
         <>
-          <div className="templates-result">
-                <div className="templates-result-line">
-                  Created <code>{result.name}</code>.
-                </div>
-                {result.bindings.length > 0 && (
-                  <div className="templates-result-line">
-                    <span className="deploy-muted">Added as a mode for:</span>{" "}
-                    {result.bindings.map((b) => (
-                      <code key={b} className="templates-usedby-chip">
-                        {b}
-                      </code>
-                    ))}
-                  </div>
-                )}
+          <div className="space-y-1">
+            <div>
+              Created <Identifier className="text-foreground">{result.name}</Identifier>.
+            </div>
+            {result.bindings.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <Tiny>Added as a mode for:</Tiny>
+                {result.bindings.map((b) => (
+                  <KeyPill key={b}>{b}</KeyPill>
+                ))}
               </div>
-          <p className="deploy-muted">
+            )}
+          </div>
+          <Muted>
             Edit the template's files from the file explorer, or open Claude Code in its folder to
             build it out.
-          </p>
+          </Muted>
           {openError && <ErrorBanner>{openError}</ErrorBanner>}
         </>
       ) : (
         <>
-              <p className="deploy-muted templates-field-hint">
-                Scaffold a new user template. Add it as a mode for file extensions now — it's
-                appended to any existing bindings, never replacing them — or leave that empty and
-                add bindings later from the File bindings tab.
-              </p>
-              <div className="templates-field">
-                <label htmlFor="new-template-name">Name</label>
-                <TextInput
-                  id="new-template-name"
-                  type="text"
-                  placeholder="my-template"
-                  value={name}
-                  autoFocus
-                  disabled={busy}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={onNameKey}
+          <Field>
+            <FieldLabel htmlFor="new-template-name">Name</FieldLabel>
+            <Input
+              id="new-template-name"
+              ref={nameInputRef}
+              type="text"
+              placeholder="my-template"
+              value={name}
+              autoFocus
+              disabled={busy}
+              aria-invalid={nameError ? true : undefined}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={onNameKey}
+            />
+            {nameError && <div className="text-xs text-destructive">{nameError}</div>}
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="new-template-ext">Extensions</FieldLabel>
+            <div
+              className="flex min-h-8 flex-wrap items-center gap-1 rounded-md border border-input px-1.5 py-1 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30"
+              onClick={() => extInputRef.current?.focus()}
+            >
+              {extensions.map((ext) => (
+                <TemplateChip
+                  key={ext}
+                  small
+                  name={ext}
+                  onRemove={() => removeExtension(ext)}
+                  removeDisabled={busy}
+                  removeLabel={"Remove " + ext}
                 />
-                {nameError && <div className="templates-key-error">{nameError}</div>}
-              </div>
-              <div className="templates-field">
-                <label htmlFor="new-template-ext">Extensions</label>
-                <div className="templates-chip-input">
-                  {extensions.map((ext) => (
-                    <span key={ext} className="templates-chip small">
-                      {ext}
-                      <button
-                        type="button"
-                        className="templates-chip-x"
-                        onClick={() => removeExtension(ext)}
-                        disabled={busy}
-                        aria-label={"Remove " + ext}
-                      >
-                        ✕
-                      </button>
-                    </span>
+              ))}
+              <input
+                id="new-template-ext"
+                ref={extInputRef}
+                type="text"
+                className="h-5 min-w-16 flex-1 bg-transparent font-mono text-xs outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                placeholder={extensions.length === 0 ? ".csv" : ""}
+                value={extDraft}
+                disabled={busy}
+                onChange={(e) => setExtDraft(e.target.value)}
+                onKeyDown={onExtKey}
+                onBlur={addExtension}
+              />
+            </div>
+            {suggestions.length > 0 && (
+              <div className="space-y-1">
+                <Tiny>From your bindings:</Tiny>
+                {/* Truncated to ~3 rows; typing narrows the list to surface the rest. */}
+                <div className="flex max-h-[4.75rem] flex-wrap gap-1 overflow-hidden">
+                  {suggestions.map((ext) => (
+                    <button
+                      key={ext}
+                      type="button"
+                      className="inline-flex h-5 items-center rounded-md border border-dashed border-border px-1.5 font-mono text-xs text-muted-foreground hover:border-solid hover:bg-accent hover:text-foreground disabled:opacity-50"
+                      disabled={busy}
+                      // preventDefault on mousedown so the input's onBlur (which
+                      // would commit the draft) doesn't fire before this click.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        addExt(ext);
+                        setExtDraft("");
+                        extInputRef.current?.focus();
+                      }}
+                    >
+                      + {ext}
+                    </button>
                   ))}
-                  <input
-                    id="new-template-ext"
-                    ref={extInputRef}
-                    type="text"
-                    className="templates-chip-draft"
-                    placeholder={extensions.length === 0 ? ".csv" : ""}
-                    value={extDraft}
-                    disabled={busy}
-                    onChange={(e) => setExtDraft(e.target.value)}
-                    onKeyDown={onExtKey}
-                    onBlur={addExtension}
-                  />
                 </div>
-                {suggestions.length > 0 && (
-                  <div className="templates-ext-suggest-wrap">
-                    <span className="deploy-muted templates-field-hint">From your bindings:</span>
-                    {/* Truncated to ~3 rows; typing narrows the list to surface the rest. */}
-                    <div className="templates-ext-suggestions">
-                      {suggestions.map((ext) => (
-                        <button
-                          key={ext}
-                          type="button"
-                          className="templates-chip small templates-ext-suggestion"
-                          disabled={busy}
-                          // preventDefault on mousedown so the input's onBlur (which
-                          // would commit the draft) doesn't fire before this click.
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            addExt(ext);
-                            setExtDraft("");
-                            extInputRef.current?.focus();
-                          }}
-                        >
-                          + {ext}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <span className="deploy-muted templates-field-hint">
-                  Pick a known extension above, or type your own and press Enter (the leading dot is
-                  added for you).
-                </span>
               </div>
+            )}
+            <FieldDescription className="text-xs">
+              Pick a known extension above, or type your own and press Enter (the leading dot is
+              added for you).
+            </FieldDescription>
+          </Field>
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </>
       )}
-    </Modal>
+    </TemplatesDialog>
   );
 }
