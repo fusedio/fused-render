@@ -3475,6 +3475,24 @@ def _write_poll_cursor(run_dir: str, value: int) -> None:
         pass  # costs the next poll a full re-parse; never worth raising over
 
 
+def _starts_new_turn(row: dict) -> bool:
+    """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
+    message `_write_inbox_entry` put on the wire — the one row shape that
+    provably begins a fresh, user-authored turn.
+
+    A D415 wake looks like a `user` row too on the PERSISTED transcript (the
+    synthetic `<task-notification>` XML), but its `content` is a bare
+    string; a real echoed turn's `content` is always the list
+    `_write_inbox_entry` builds. The live `system/task_notification` shape
+    fails the `type == "user"` check outright. Both wake shapes correctly
+    read as "not a new turn" here."""
+    if row.get("type") != "user":
+        return False
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, list)
+
+
 def _read_current_turn(run_dir: str) -> tuple:
     """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
     offset onward, and the offset `_poll` should persist for next time.
@@ -3501,15 +3519,23 @@ def _read_current_turn(run_dir: str) -> tuple:
     cold-attach read above, whose rows are a real, once-only reflection of
     everything that already happened, not an ongoing leak.
 
-    The cursor only ever advances past a `result` row that has something
-    AFTER it in the bytes just read — another complete line, or even a
-    half-written one. That is deliberate: a `result` with nothing after it
-    yet is exactly the D415 "turn might still be open" case (see `_poll`'s own
-    comment on `done`) — the CLI could still wake itself for another turn on
-    the same held-open stdin, and next poll needs to see whatever that wake
-    writes. A `result` already followed by more bytes has no such ambiguity:
-    the turn it closed is provably over, so everything through its newline is
-    dead weight for every future poll (this one included, once written back).
+    The cursor only ever advances to the start of the newest row that is
+    provably a fresh, user-authored turn — `_starts_new_turn`'s check, which
+    only a genuine `_start`/`_send` message echoed back by
+    `--replay-user-messages` satisfies. A `result` alone, even one with more
+    bytes after it, is NOT enough: a D415 wake (`system/task_notification`,
+    or its persisted `<task-notification>` form) is exactly a `result`
+    followed by more bytes that belong to the SAME displayed turn, not a new
+    one — `_segments_from_rows` renders that combination as one notice-joined
+    reply, and a page rendering the whole `segments` list fresh every poll
+    (see `renderSegments` in template.html) needs the ORIGINAL text still in
+    that list on every later poll, not just the wake's own continuation.
+    Advancing past a `result` a wake continues would make the next poll
+    return only the wake, silently erasing the reply already on screen (the
+    bug this rule exists to prevent). Everything before the newest genuine
+    turn's own start IS provably dead weight for every future poll (this one
+    included, once written back), because a real new turn only ever begins
+    once the one before it — wakes and all — is completely finished.
 
     Reads via binary seek-then-decode, not a text-mode file's `.seek()`, on
     the same reasoning `_scan_transcript` already leans on: the offset being
@@ -3557,18 +3583,19 @@ def _read_current_turn(run_dir: str) -> tuple:
     # read, same as the pre-cursor behavior — a one-time cost, not a
     # per-poll one.
     rows = []
-    pos = cursor
+    line_start = cursor
     advance_to = None
-    n = len(complete)
-    for i, raw_line in enumerate(complete):
-        pos += len(raw_line) + 1
+    for raw_line in complete:
+        pos = line_start + len(raw_line) + 1
         try:
             row = json.loads(raw_line.decode("utf-8", "replace"))
         except ValueError:
+            line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
-        if row.get("type") == "result" and (i < n - 1 or tail):
-            advance_to = pos  # more bytes follow this close — see docstring
+        if _starts_new_turn(row):
+            advance_to = line_start  # the newest genuine turn's own start
+        line_start = pos
 
     if tail:
         try:

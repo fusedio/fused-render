@@ -83,6 +83,15 @@ def _result_row(session="s"):
     return {"type": "result", "session_id": session, "result": "done"}
 
 
+def _user_row(text):
+    """The CLI's own `--replay-user-messages` echo of a turn `_send`/`_start`
+    put on the wire — the one row shape `_starts_new_turn` treats as
+    provably a fresh turn, as opposed to a D415 wake (which never has this
+    exact `content`-is-a-list shape)."""
+    return {"type": "user", "message": {"role": "user",
+            "content": [{"type": "text", "text": text}]}}
+
+
 def _poll(agent, run_dir, alive=True):
     agent.RUNS = str(run_dir.parent)
     agent._alive = lambda _run_dir: alive
@@ -93,20 +102,22 @@ def _poll(agent, run_dir, alive=True):
 
 def test_a_naturally_advanced_cursor_trims_the_next_poll_to_the_new_turn(
         agent, run_dir):
-    """A realistic sequence: turn 1 streams, closes, and turn 2 starts before
+    """A realistic sequence: turn 1 streams, closes, and turn 2 — a genuine
+    new user message, echoed back by `--replay-user-messages` — starts before
     anyone polls again. THAT poll (the one that first sees turn 1's `result`
-    with turn 2's own row already behind it) still returns the full window —
-    the cursor it writes only takes effect on the poll AFTER it. The one
-    after that reads turn 2 alone, byte-identical to a page that hand-placed
-    a cursor at the same offset (test below) — proving the offset the
-    natural advance computed is the same one a warm read would compute."""
+    with turn 2's own echoed row already behind it) still returns the full
+    window — the cursor it writes only takes effect on the poll AFTER it. The
+    one after that reads turn 2 alone, byte-identical to a page that
+    hand-placed a cursor at the same offset (test below) — proving the offset
+    the natural advance computed is the same one a warm read would compute."""
     _write(run_dir, [_text_row("first turn")])
     mid_turn_1 = _poll(agent, run_dir)
     assert mid_turn_1["text"] == "first turn"
     assert _cursor(run_dir) is None, \
         "turn 1's result has not been written yet, nothing to skip past"
 
-    _append(run_dir, [_result_row(), _text_row("second turn")])
+    _append(run_dir, [_result_row(), _user_row("second turn"),
+                       _text_row("second turn")])
     still_full_window = _poll(agent, run_dir)
     assert still_full_window["text"] == "first turnsecond turn", \
         "the cursor advance this poll computes only applies to the NEXT call"
@@ -125,7 +136,7 @@ def test_a_cursor_planted_directly_at_the_newest_turn_reads_identically(
     turn_1 = "".join(json.dumps(r) + "\n" for r in
                       [_text_row("first turn"), _result_row()])
     turn_2 = "".join(json.dumps(r) + "\n" for r in
-                      [_text_row("second turn")])
+                      [_user_row("second turn"), _text_row("second turn")])
     _write(run_dir, [turn_1 + turn_2])
 
     (run_dir / "cursor").write_text(str(len(turn_1.encode("utf-8"))),
@@ -200,11 +211,12 @@ def test_a_wake_is_not_skipped_even_once_the_cursor_has_moved(agent, run_dir):
     behind the cursor — proving the advance logic only ever skips bytes a
     previous call already returned, never bytes still waiting to be seen."""
     _write(run_dir, [_text_row("first turn"), _result_row(),
-                      _text_row("second turn")])
+                      _user_row("second turn"), _text_row("second turn")])
     first = _poll(agent, run_dir)
     assert first["text"] == "first turnsecond turn"
     assert _cursor(run_dir) not in (None, 0), \
-        "turn 1's result was followed by turn 2's own text, so it advanced"
+        "turn 1's result was followed by turn 2's own echoed message, so " \
+        "it advanced"
 
     _append(run_dir, [_result_row(), _text_row("woken up")])
     second = _poll(agent, run_dir)
