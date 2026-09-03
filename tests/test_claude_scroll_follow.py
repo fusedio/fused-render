@@ -61,6 +61,19 @@ const logwrap = {
   set scrollTop(v) { this._top = v; writes.push(v); },
   addEventListener(name, fn) { handlers[name] = fn; },
 };
+// The transcript's two children, and the observer that watches them grow. Both
+// are recorded rather than faked away: which elements the page decided to watch
+// is part of what these tests check.
+const log = { id: "log" };
+const document = { getElementById: (id) => ({ id }) };
+const observed = [];
+let growthCb = null;
+class ResizeObserver {
+  constructor(cb) { growthCb = cb; }
+  observe(el) { observed.push(el.id); }
+}
+// Fire what the browser fires when something in the log changes height.
+const grow = (h) => { logwrap.scrollHeight = h; growthCb(); };
 // Drive a reader gesture: move the port, then fire the scroll event the browser
 // would have fired. Bypasses the setter so it is not recorded as our own write.
 const userScrollTo = (top) => { logwrap._top = top; handlers.scroll(); };
@@ -249,3 +262,55 @@ def test_only_a_blocked_run_may_scroll_the_reader_unasked(html):
     note = html[html.index("function addNote(text, working, glyph)"):]
     note = note[:note.index("\n}\n")]
     assert "followBottom();" in note
+
+
+# ------------------------------------------------- growth follows on its own
+#
+# The flag says WHETHER to follow; these say the page no longer relies on each
+# write site remembering to ASK. Most of what lands in a live turn reaches its
+# final height AFTER the append that scrolled — a tool card expanding when its
+# output arrives, a code block growing under the highlighter, a picture or an
+# artifact iframe that takes up room only once it loads, the bubble re-rendering
+# as markdown at message end. Each of those left the reader one element's height
+# short of the bottom with the rest of the turn arriving off-screen.
+
+
+def test_content_growing_after_the_append_keeps_the_reader_at_the_bottom(html):
+    """The reported bug, in one line: nothing called followBottom() for this
+    growth, because the code that caused it does not know it caused it."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+grow(1400);                               // a tool card expanded under the reader
+console.log(JSON.stringify({ writes, followTail }));
+""")
+    assert out["writes"] == [1400], "growth after the append was not followed"
+    assert out["followTail"] is True
+
+
+def test_growth_does_not_yank_a_reader_who_scrolled_away(html):
+    """The observer answers with the SAME flag, so it inherits the whole
+    contract — including the part where a reader who scrolled up is left alone."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+wheelUp(); userScrollTo(200);
+grow(1400);
+console.log(JSON.stringify({ writes: writes.length, top: logwrap._top }));
+""")
+    assert out["writes"] == 0
+    assert out["top"] == 200
+
+
+def test_both_children_of_the_scrollport_are_watched(html):
+    """#log and #queue: queued messages render as a sibling AFTER the log, so a
+    queue that grows moves the bottom just as a turn does."""
+    out = _run(html, """
+console.log(JSON.stringify({ observed }));
+""")
+    assert out["observed"] == ["log", "queue"]
+
+
+def test_a_picture_finishing_its_load_is_followed_too(html):
+    """`load` does not bubble, so the listener has to be in the capture phase —
+    one on the scrollport for every image and iframe the transcript will hold."""
+    body = _follow_block(html)
+    assert 'logwrap.addEventListener("load", followBottom, true);' in body

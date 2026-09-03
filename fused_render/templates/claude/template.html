@@ -2690,7 +2690,8 @@
   .send:hover { filter: brightness(1.1); transform: translateY(-1px); }
   .send:active { transform: none; }
   /* While a run is live the send buttons become stop buttons: the arrow hides and
-     a stop square shows. Clicking then kills the run (same as Escape). */
+     a stop square shows. Clicking then kills the run — the ONLY keyless way to
+     do it, and with Escape out of the business the only one on this page. */
   .send .ic-stop { display: none; }
   body.running .send .ic-send { display: none; }
   body.running .send .ic-stop { display: block; }
@@ -6706,10 +6707,9 @@ async function annCommit() {
   if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
-  // stopPropagation, because the document-level Escape binding also kills a live
-  // run: without it, closing the composer would end the turn as well (this
-  // handler runs first and would leave the popover already hidden, so the
-  // precedence check up there could not see it).
+  // stopPropagation, because the document-level Escape binding would otherwise
+  // see an ALREADY-CLOSED composer (this handler runs first) and fall through to
+  // the next claimant, leaving annotate mode as well. One press, one undo.
   if (e.key === "Escape") { e.stopPropagation(); annCloseComposer(); }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -8031,9 +8031,9 @@ function applyNarrowView() {
   // arming annotate mode with both columns on screen and then dragging the
   // divider under 800px used to hide the control and keep the state: NARROW_MQ's
   // change handler called through to here and the guard failed. The cost was
-  // `escapeAction` returning "exit-annotate" ahead of "stop-run", so the user's
-  // first Escape during a live turn disarmed an invisible switch instead of
-  // stopping the run.
+  // `escapeAction` returning "exit-annotate" for a switch that was not on
+  // screen, so the user's first Escape disarmed an invisible mode instead of
+  // doing the visible thing they meant.
   //
   // The widened test costs nothing on the calls it newly reaches (a narrow,
   // chat-view params.onChange for `split`): the reset is idempotent, and
@@ -11223,8 +11223,9 @@ document.addEventListener("pointerdown", (ev) => {
   }
 });
 // Capture phase, and the event is CONSUMED — same discipline as .selpop's
-// Escape: the document-level binding kills a live run, and dismissing a confirm
-// must not also do that.
+// Escape: the document-level binding has its own claimants (the screenshot
+// viewer, the annotation composer, annotate mode), and dismissing a confirm must
+// not also close one of those.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape" || !schedPopFor) return;
   ev.stopPropagation();
@@ -11679,9 +11680,10 @@ document.addEventListener("pointerdown", (ev) => {
   if (selPopFor && !selPop.contains(ev.target) && ev.target !== selPopFor) closeSelPop();
 });
 // Capture phase, and the event is CONSUMED when it closes a menu: the
-// document-level Escape binding kills a live run (and annotate has its own
-// exit), and dismissing a dropdown must not also do either. Same discipline
-// as the annotate composer's stopPropagation on its Escape.
+// document-level Escape binding would otherwise take the same press for one of
+// its own claimants (annotate mode has its exit there), and dismissing a
+// dropdown must not also do that. Same discipline as the annotate composer's
+// stopPropagation on its Escape.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape" || !selPopFor) return;
   ev.stopPropagation();
@@ -11870,6 +11872,44 @@ logwrap.addEventListener("scroll", () => {
   else if (nearBottom()) followTail = true;
   lastTop = top; lastHeight = h;
 }, { passive: true });
+
+// ── growth follows, wherever it comes from ─────────────────────────────────
+// The flag above says WHETHER to follow; every write site so far also had to
+// remember to ASK. That is the half that kept leaking: a mid-turn write only
+// stays pinned if the code that made it calls followBottom() afterwards AND the
+// element it appended has its final height by then. Neither holds for most of
+// what lands in a live turn — a tool card that expands when its output arrives,
+// the working line re-rendering a longer verb, a code block growing as the
+// highlighter runs, an artifact iframe or a picture that only takes up room once
+// it loads, a permission card, the whole bubble re-rendering as markdown at
+// message end. Every one of those grows the transcript AFTER the append that
+// scrolled, so the reader sat one card's height short of the bottom and the rest
+// of the turn arrived off-screen — the reported "some elements come in and mess
+// that behaviour".
+//
+// So growth is observed instead of announced. A ResizeObserver on the two
+// children of the scrollport fires on any height change whatever caused it, and
+// the answer is the same one flag: if the reader is following, follow. This
+// makes followBottom() at a write site a belt-and-braces nicety rather than the
+// mechanism, which is why none of them had to be hunted down.
+//
+// Writing scrollTop cannot resize anything, so this observer cannot re-enter
+// itself — no "ResizeObserver loop" noise of the kind fitComposerChrome had to
+// be restructured around (see the column observer above).
+// Both children by id rather than `queueEl`, which is declared with the queue's
+// own code several thousand lines below and is still in its temporal dead zone
+// here.
+const followGrowth = new ResizeObserver(followBottom);
+for (const el of [log, document.getElementById("queue")]) followGrowth.observe(el);
+// Belt and braces for the one growth a ResizeObserver can miss: a replaced
+// element that reserves its box up front (an <img> with width/height, an iframe
+// with a fixed height) paints into a box that never changes size, and any
+// LAYOUT its load shifts around it may land in the same frame the observer
+// already answered. `load` does not bubble, hence the capture phase, and one
+// listener on the scrollport covers every picture and frame the transcript will
+// ever hold — including the ones a restored history fetches through /api/fs/raw
+// long after their turn was rendered.
+logwrap.addEventListener("load", followBottom, true);
 
 // ── scroll to one message (?msg=<transcript record uuid>) ──────────────────
 //
@@ -13609,8 +13649,8 @@ function parkResolvedCard(card) {
   const port = logwrap.getBoundingClientRect();
   const wasVisible = box.bottom > port.top && box.top < port.bottom;
   seg.appendChild(el);
-  if (followTail) scrollBottom();
-  else if (wasVisible) el.scrollIntoView({ block: "nearest" });
+  followBottom();
+  if (!followTail && wasVisible) el.scrollIntoView({ block: "nearest" });
 }
 
 // Reconcile the poll's request list with what is on screen. Idempotent — poll
@@ -14705,8 +14745,9 @@ async function answerAppState(list, run_id, working) {
 // Mirrors the claude template (this chat is a fork of it): agent.py could always
 // kill a run, and until the stop button nothing called it — a turn that went off
 // the rails could only be waited out or escaped by navigating away, which leaves
-// the detached subprocess working on. pollLoop publishes the live run so the
-// button and Escape have something to aim at, which covers a re-attached run too.
+// the detached subprocess working on. pollLoop publishes the live run so the stop
+// button has something to aim at, which covers a re-attached run too. The button
+// is the whole of it: Escape stops nothing here (see escapeAction).
 let activeRun = null;
 let activeWorking = null;
 // The live turn's segment container, or null between turns. Published by pollLoop
@@ -14775,24 +14816,32 @@ async function stopRun() {
   }
 }
 
-// Escape has four claimants in this pane: the screenshot viewer, the annotation
-// composer, annotate mode, and a live run. Ordered least-destructive first —
-// closing a picture undoes nothing at all, dismissing a popover is small and
-// repeatable, leaving annotate mode costs one click to undo, killing a turn costs
-// the turn. So a user reaching for Escape with a text box in front of them means
-// the text box, and one reaching for it while annotating means annotate mode, not
-// the run they may also have going. Split out as a pure decision so the
+// Escape has three claimants in this pane: the screenshot viewer, the annotation
+// composer, and annotate mode. Ordered least-destructive first — closing a
+// picture undoes nothing at all, dismissing a popover is small and repeatable,
+// leaving annotate mode costs one click to undo. So a user reaching for Escape
+// with a text box in front of them means the text box, and one reaching for it
+// while annotating means annotate mode. Split out as a pure decision so the
 // precedence is a tested rule and not an ordering accident.
 //
 // The viewer goes FIRST for a stronger reason than cheapness: it is MODAL. It
-// covers the composer and the pane, so every other claimant is behind it, and an
-// Escape that stopped a run the user could not even see would be the worst
-// outcome this key can produce.
-function escapeAction(viewerOpen, composerOpen, annotating, runId) {
+// covers the composer and the pane, so every other claimant is behind it.
+//
+// A LIVE RUN IS NOT A CLAIMANT, and used to be the last one. Escape killed the
+// turn whenever nothing else wanted the key, so a reader who reached for it out
+// of habit — dismissing a popover this page had already closed, backing out of
+// the shell's own UI, or simply clearing a stray focus — lost the whole turn to
+// a keystroke never aimed at the run (Akshil, 2026-09-03). Work in progress is
+// not something a bare keypress may throw away, and no other claimant here costs
+// anything to undo, so the key has no destructive branch left at all. Stopping
+// is a deliberate press on a control that says what it does: the stop square the
+// send button becomes, and the ✕ on the tasks queue card. stopRun() is unchanged
+// and still reachable from both.
+function escapeAction(viewerOpen, composerOpen, annotating) {
   if (viewerOpen) return "close-viewer";
   if (composerOpen) return "close-composer";
   if (annotating) return "exit-annotate";
-  return runId ? "stop-run" : "";
+  return "";
 }
 
 // Gated on there being something to do, so the binding is inert the rest of the
@@ -14803,13 +14852,12 @@ function onEscape(e) {
   // The textarea's own Escape handler stops propagation, so what reaches here
   // with the popover open is an Escape pressed with focus somewhere else.
   const act = escapeAction(!shotView.hidden, annPop.style.display === "block",
-                           annOn, activeRun);
+                           annOn);
   if (!act) return;
   e.preventDefault();
   if (act === "close-viewer") shotViewClose();
   else if (act === "close-composer") annCloseComposer();
-  else if (act === "exit-annotate") annSetMode(false);
-  else stopRun();
+  else annSetMode(false);
 }
 
 // Bound on BOTH documents. Annotate mode is driven with the pointer over the
@@ -15075,7 +15123,7 @@ let logGen = 0;
 async function pollLoop(run_id, gen = logGen) {
   const seat = ++loopSeq;
   const w = addWorking();
-  // This run is now the one the stop button and Escape aim at. Set here, the one
+  // This run is now the one the stop button aims at. Set here, the one
   // place a run is ever in flight, which covers a re-attached run for free.
   activeRun = run_id;
   activeWorking = w;
@@ -15205,13 +15253,13 @@ async function pollLoop(run_id, gen = logGen) {
     // running forever, holding the whole closure — one leaked timer per turn.
     w.stop();
     if (w.el.isConnected) w.el.remove();
-    // Nothing is interruptible any more. Cleared even when the loop threw: an
-    // Escape landing after this must not cancel a finished run and then mislabel
-    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653),
+    // Nothing is interruptible any more. Cleared even when the loop threw: a
+    // stop click landing after this must not cancel a finished run and then
+    // mislabel the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (PR #653),
     // and ownership means being the NEWEST loop, not matching the run id: a
     // chat left mid-turn and reopened re-attaches to the SAME run_id, and the
     // abandoned loop's late finally matched it and stripped the new loop's
-    // Stop square and Escape target.
+    // Stop square.
     if (loopSeq === seat) {
       activeRun = null;
       activeWorking = null;
@@ -15257,16 +15305,16 @@ function noteChatActivity() {
 
 // The composer's send buttons double as stop buttons while a run is live: the
 // arrow swaps for a stop square (CSS on body.running) and a click aims at the
-// run, same as Escape. Labels follow so a screen reader hears the real action.
+// run. It is the only thing that does — Escape deliberately stops nothing (see
+// escapeAction). Labels follow so a screen reader hears the real action.
 function setRunningUi(on) {
   document.body.classList.toggle("running", on);
   document.querySelectorAll(".send").forEach((b) => {
     b.setAttribute("aria-label", on ? "Stop" : "Send");
-    // No "(Esc)" hint: Escape's first claim is the annotation composer, then
-    // annotate mode (default ON) — during a normal run it disarms annotating,
-    // not the turn. Advertising it here would teach a keystroke that usually
-    // does something else; the working line's own stop control stays the
-    // keyboard-adjacent path.
+    // No "(Esc)" hint, and there is nothing to hint at any more: Escape has no
+    // claim on a run at all. Its claimants are the screenshot viewer, the
+    // annotation composer and annotate mode; the button (and the working line's
+    // own stop control) is the only way to end a turn.
     b.title = on ? "Stop this turn" : "";
   });
 }
@@ -15982,10 +16030,13 @@ function applyComposerBlockState() {
   // reader who was at the bottom is put back at the bottom. Measured before the
   // render, applied only on the hidden → shown edge: on the way out the log grows
   // downward and there is nothing to correct.
+  // "Was the reader at the bottom" is the follow flag, not a geometry read: this
+  // banner SHRINKS the scrollport as it appears, which is precisely the case a
+  // distance threshold gets wrong (the gap crosses 60px because the viewport
+  // moved, not because the reader did). See the follow-the-tail block.
   const wasHidden = schedBlockEl.hidden;
-  const pinned = wasHidden && nearBottom();
   renderSchedBlock();
-  if (pinned && !schedBlockEl.hidden) scrollBottom();
+  if (wasHidden && !schedBlockEl.hidden) followBottom();
   const blocked = schedBlocked();
   box.disabled = blocked;
   // Short, because this box is 300px wide in the side pane and a longer line is
@@ -16135,8 +16186,8 @@ document.addEventListener("pointerdown", (ev) => {
   if (schedStopArmed && !schedBlockEl.contains(ev.target)) schedDisarmStop();
 });
 // Capture phase and the event is CONSUMED — the same discipline the schedule
-// confirm takes: the document-level Escape binding kills a live run, and backing
-// out of a half-pressed confirm must not also do that.
+// confirm takes: the document-level Escape binding has claimants of its own, and
+// backing out of a half-pressed confirm must not also trip one of them.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape" || !schedStopArmed) return;
   ev.stopPropagation();
@@ -16679,8 +16730,9 @@ document.getElementById("inputbox").onsubmit = (e) => {
 };
 box.addEventListener("keydown", (e) => {
   // Enter never stops a run — a user drafting the next message mid-run must not
-  // kill the turn with a keystroke meant to queue text. Only the button (now a
-  // stop square) and Escape do.
+  // kill the turn with a keystroke meant to queue text. NO key does: Escape lost
+  // that job for the same reason (see escapeAction). Only the button, now a stop
+  // square, ends a turn.
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
 });
 
@@ -16737,9 +16789,9 @@ function renderLogSkeleton() {
 //   * NO SKELETON. The turns already on screen are the right thing to look at
 //     until the new ones are ready; blanking to placeholders for the length of a
 //     round trip is a flicker that announces nothing.
-//   * SCROLL IS KEPT, not sent to the bottom — except for a reader who was
-//     already at the bottom, who is following along and gets carried with the
-//     new turn (the same `nearBottom` rule streaming output obeys).
+//   * SCROLL IS KEPT, not sent to the bottom — except for a reader who is
+//     following along, who gets carried with the new turn (the same `followTail`
+//     flag streaming output obeys).
 //   * The per-transcript records are NOT cleared. `scheduleResetForNewTranscript`
 //     re-baselines which scheduled runs may attach, so doing it here would write
 //     a run that fired seconds ago off as "already on screen", every five
@@ -16755,7 +16807,7 @@ async function loadHistory(session_id, opts) {
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
-  const keepTop = refresh && !nearBottom() ? logwrap.scrollTop : null;
+  const keepTop = refresh && !followTail ? logwrap.scrollTop : null;
   permCards.clear();
   notedSkills.clear();
   if (!refresh) {
