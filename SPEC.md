@@ -11169,11 +11169,15 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
     which fields a given child populated, plus the four LIFETIME fields the
     panel's detail line is built from — `uptime_s`, `idle_timeout_s` (`0` for
     a resident child, which the panel states as "no idle timeout" rather than
-    drawing a countdown that will never run), `idle_for_s` and `busy` (a call
-    in flight, i.e. the reason `reap_idle_children` is skipping this child).
-    All four are derived from ONE `now` and `_busy` is snapshotted under the
-    same `_lock` hold as `_children`, so a single row can never report an
-    uptime and a countdown taken a poll apart. The panel renders them as
+    drawing a countdown that will never run), `idle_for_s` and `busy` (idle-
+    retire is currently skipping this child — either a call `mark_busy`
+    counted, or a child past its own idle timeout whose worker still reports
+    an in-flight call via `_inflight`, the case a 504'd proxy call leaves
+    behind: its `finally` calls `mark_idle` while the worker's `main()` keeps
+    running). Only `uptime_s` and `idle_for_s` are derived from the SAME
+    `now`; `_busy` is snapshotted under the same `_lock` hold as `_children`,
+    so a single row can never report an uptime and a countdown taken a poll
+    apart. The panel renders them as
     "Warm worker · up 12m · retires in 13m if idle" (`engineDetail`,
     platform/ui/DownloadManager.tsx); the KIND in that sentence is derived
     client-side from `folder`/`module`, deliberately not a wire field, since
