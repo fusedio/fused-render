@@ -32,6 +32,16 @@
    card would otherwise fall under ~300px — the width below which a chat turn
    stops being a paragraph. Below one row's worth of height (a short window) the
    row floor keeps a card readable and the wall simply scrolls sooner. */
+/* The page itself is content-sized (`flex: 0 1 auto`, so a short List is a short
+   page), which for every other view is right: their content is rows, and rows
+   have a height of their own. A wall's rows are sized FROM the page, so the page
+   has to reach the bottom first or "two rows fill the height" resolves against a
+   height of nothing. Scoped with `:has()` so the other three views keep their
+   shape — a Board with two cards must not become a full-height Board. */
+.schedule-page:has(> .schedule-main > .task-cards) {
+  flex: 1 1 auto;
+}
+
 .schedule-page .schedule-main > .task-cards {
   flex: 1 1 auto;
   min-height: 0;

@@ -6540,6 +6540,9 @@ describe("the Cards view's frame", () => {
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
     expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
+    // ...and the page grows to the fold for THIS view only — every other view is
+    // content-sized, and the rows here are sized from the page.
+    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
     expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
