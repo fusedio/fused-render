@@ -16,7 +16,7 @@ The ops, grouped by what they can cost you:
 
   safe        stage, unstage, stage_all, unstage_all, commit, branch_create,
               branch_checkout, stash_push, stash_apply, stash_pop, fetch, pull,
-              push
+              push, set_identity, remote_add
   destructive discard, discard_all, stash_drop   ← can lose uncommitted work
 
 Every destructive op is **individually addressable and never a side effect of a
@@ -176,6 +176,7 @@ _SAFE_OPS = (
     "branch_create", "branch_checkout", "branch_delete",
     "stash_push", "stash_apply", "stash_pop",
     "fetch", "pull", "push",
+    "set_identity", "remote_add",
 )
 #
 # `resolve` is here rather than in `_SAFE_OPS` because it OVERWRITES a file in
@@ -549,7 +550,7 @@ def _resolve(root, rel, content):
                path=rel)
 
 
-def _check_strings(op, paths, message, name, index, content=""):
+def _check_strings(op, paths, message, name, index, content="", email="", url=""):
     """Everything that can be decided WITHOUT touching the filesystem or git.
 
     Ordering, not just validation. `_locate` is itself a git call, so validating
@@ -612,6 +613,33 @@ def _check_strings(op, paths, message, name, index, content=""):
     if op in ("stash_apply", "stash_pop", "stash_drop"):
         if not isinstance(index, int) or isinstance(index, bool) or index < 0:
             raise _Refused("bad-index", "That is not a stash entry.")
+
+    if op == "set_identity":
+        # `git config <key> <value>` has no `--` terminator between the key and
+        # the value — unlike `check-ref-format` for a branch name, there is no
+        # form of this call that would let git reject a dash-leading value on
+        # its own terms, so the leading-dash rule has to run here, in Python,
+        # exactly like it does for a branch name.
+        if not isinstance(name, str) or not name.strip():
+            raise _Refused("bad-identity", "No name was given.")
+        if not isinstance(email, str) or not email.strip():
+            raise _Refused("bad-identity", "No email was given.")
+        if name.startswith("-") or email.startswith("-"):
+            raise _Refused("bad-identity",
+                           "That name or email is not something git would "
+                           "accept as one.")
+
+    if op == "remote_add":
+        # `url` is REQUIRED — a remote with no URL is not a remote — and `name`
+        # is not: an empty one means "use the conventional name", resolved in
+        # `_remote_add` rather than here, because a default is a decision about
+        # WHAT to do, not a fact about whether the input is well-formed.
+        if not isinstance(url, str) or not url.strip():
+            raise _Refused("bad-remote", "No remote URL was given.")
+        if url.startswith("-"):
+            raise _Refused("bad-remote", f"{url!r} is not a valid remote URL.")
+        if name and (not isinstance(name, str) or name.startswith("-")):
+            raise _Refused("bad-remote", f"{name!r} is not a valid remote name.")
 
 
 def _contain(root, rel, full):
@@ -834,6 +862,29 @@ def _require_remote(root, branch):
             "This repository has several remotes and no upstream for this "
             "branch, so there is no obvious one to use. Pick one in a terminal.")
     return remote
+
+
+def _refuse_existing_remote(root):
+    """Refuse `remote_add` outright when this repository already has ONE.
+
+    Not "already has a remote called `<name>`" — ANY remote at all. `remote_add`
+    exists for exactly one situation, "Publish to GitHub" wiring up `origin` on
+    a repository that has none, and it is deliberately not a general-purpose
+    remote editor: it never overwrites a URL, never adds a second remote beside
+    a first, and offers no way to change one that already exists. That is what
+    makes it safe to have NO confirmation step of its own — the one thing it
+    could clobber, it refuses to touch. Changing an existing remote is a
+    terminal's job (`git remote set-url` / `git remote add` for a second one),
+    same as every other decision this module declines to make silently.
+    """
+    existing = [_repo_name("remote", line.strip())
+               for line in _git_ok(root, "remote").decode("utf-8", "replace")
+               .split("\n") if line.strip()]
+    if existing:
+        raise _Refused(
+            "remote-exists",
+            f"This repository already has a remote ({existing[0]}). Add or "
+            "change a remote from a terminal.")
 
 
 def _ok(op, detail, **extra):
@@ -1145,6 +1196,52 @@ def _push(root):
     return _ok("push", f"Published {branch} to {remote}.")
 
 
+def _set_identity(root, name, email):
+    """Give this repository its own committer identity, and nothing else.
+
+    `--local` is the whole point of the flag: without it, `git config` writes
+    to the first config file that already has the key, or — on a machine with
+    no `~/.gitconfig` entry for it yet — falls back to creating one there. That
+    would reach past this repository into the user's OWN global config, which
+    is a much bigger and much more surprising write than "let me commit here".
+    `--local` pins the write to `.git/config`, always, regardless of what the
+    global file does or does not already hold.
+
+    Two separate calls rather than one that sets both: `git config` takes one
+    key and one value, and there is no atomic multi-key form to reach for
+    instead — the closest git gets is `git config --edit`, which needs an
+    editor and a terminal, both absent here. A failure partway through (the
+    name write succeeds, the email write's `_git_ok` then refuses) leaves a
+    RECORDED name and no email, which is git's own ordinary "some identity
+    configured, not all of it" state — the same state a user editing
+    `.git/config` by hand could reach, and not a state this module invented.
+    """
+    _git_ok(root, "config", "--local", "user.name", name)
+    _git_ok(root, "config", "--local", "user.email", email)
+    return _ok("set_identity", f"Set the identity for this repository to "
+               f"{name} <{email}>.", name=name, email=email)
+
+
+def _remote_add(root, name, url):
+    """Add the ONE remote a fresh repository needs to publish anywhere.
+
+    `--` before both positionals, for the reason `_repo_name`'s docstring gives
+    at length: `url` is a string the page collected from the user (so `_` is
+    not enough on its own — a hand-written call could still hold one), and
+    `name` either defaults to a literal this module wrote or is a second
+    user-typed string, and `git remote add` has no rule of its own against a
+    dash-leading value in either position the way `check-ref-format` does for a
+    branch. Both are already refused for a leading dash before this runs
+    (`_check_strings`); `--` is kept anyway, for the same "depending on either
+    guarantee alone is how one gets missed" reason `_push` keeps it.
+    """
+    _refuse_existing_remote(root)
+    remote_name = name.strip() if (name or "").strip() else "origin"
+    _git_ok(root, "remote", "add", "--", remote_name, url)
+    return _ok("remote_add", f"Added remote {remote_name}.",
+               name=remote_name, url=url)
+
+
 # ------------------------------------------------------------------ dispatch
 
 
@@ -1159,6 +1256,8 @@ def main(
     checkout: bool = True,
     sha: str = "",
     content: str = "",
+    email: str = "",
+    url: str = "",
 ) -> dict:
     """One mutation, or a refusal payload.
 
@@ -1168,7 +1267,7 @@ def main(
     try:
         # Strings first, always — `_locate` forks git, so nothing malformed may
         # get that far.
-        _check_strings(op, paths, message, name, index, content)
+        _check_strings(op, paths, message, name, index, content, email, url)
         root, scope, scope_is_dir = _locate(file)
 
         if op in _PATH_OPS:
@@ -1228,7 +1327,11 @@ def main(
             return _fetch(root)
         if op == "pull":
             return _pull(root)
-        return _push(root)
+        if op == "push":
+            return _push(root)
+        if op == "set_identity":
+            return _set_identity(root, name, email)
+        return _remote_add(root, name, url)
     except _Refused as refused:
         return refused.payload
 
