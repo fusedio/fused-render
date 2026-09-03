@@ -2193,10 +2193,15 @@ export interface RunningEngine {
   /** The manifest's idle-retire policy in seconds; `0` means resident — a
    *  written `daemon =` and every template daemon. */
   idle_timeout_s: number;
-  /** Seconds since the last call was routed here. Only meaningful against a
-   *  non-zero `idle_timeout_s`. */
+  /** Seconds since the last call finished (stamped at completion, not at
+   *  routing — and at bring-up for a child that has never served one). Only
+   *  meaningful against a non-zero `idle_timeout_s`. */
   idle_for_s: number;
-  /** A call is in flight, which is why idle-retire is skipping this child. */
+  /** Idle-retire is currently skipping this child. NOT "a call is in flight
+   *  right now": `mark_busy` only runs for a bounded child (`idle_timeout_s
+   *  > 0`), so a resident `daemon =` app serving a request always reports
+   *  `busy: false` here — this field structurally cannot answer "is this
+   *  engine in use". */
   busy: boolean;
 }
 
