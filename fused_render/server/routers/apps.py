@@ -23,8 +23,8 @@ what one listed app looks like. Each app reports its entry twice: ``entry`` is
 the file a card opens and previews, ``entry_html`` the narrower claim that the
 entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
 pointed at). For an app of this shape they are the same file. ``preview_image``
-is a third, unrelated path: an authored ``preview.png`` at the folder's root,
-which a card shows INSTEAD of rendering the entry live.
+is a third, unrelated path: an authored ``preview.png`` (or ``preview.webp``)
+at the folder's root, which a card shows INSTEAD of rendering the entry live.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
@@ -558,12 +558,12 @@ def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default
     }
 
 
-# The authored thumbnail's cap and signature — the same two the .fused
-# export applies to a capture (appfile.py), because it is the same picture:
-# a card still, ~1280x800, and canvas.toBlob("image/png") is the only thing
-# that produces it.
+# The authored thumbnail's cap — the same one the .fused export applies to a
+# capture (appfile.py), because it is the same picture: a card still,
+# ~1280x800, and canvas.toBlob("image/png") is the only thing that produces it.
+# The signature check is `app_listing.preview_media_type`, shared with the
+# export and the folder's own thumbnail rule.
 _PREVIEW_MAX_BYTES = 8 * 1024 * 1024
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 @router.post("/api/apps/preview")
@@ -578,8 +578,17 @@ async def api_app_set_preview(
     app's entry page (Akshil, 2026-08-27): the page captures the pixels the
     preview frame is showing (appShot.captureAppPreview — the same tab capture
     the .fused export bakes in) and posts them here. The file lands under the
-    ONE name `app_listing.app_preview_image` reads, so a card shows it on its
-    next listing with no new plumbing.
+    FIRST of the names `app_listing.app_preview_image` reads, so a card shows it
+    on its next listing with no new plumbing.
+
+    PNG only, and deliberately so even though a folder's authored still may also
+    be a `preview.webp`: the bytes here are always `canvas.toBlob(…,
+    "image/png")`, and a route that wrote the other name would let a capture
+    land UNDER an existing `preview.png` in the read order and be invisible. An
+    author's own `preview.webp` is left on disk, shadowed by the PNG this
+    writes — non-destructive, and `replaced` (resolved through
+    `app_preview_image`, so it sees either name) already told the caller its
+    thumbnail was about to change.
 
     Only an APP folder takes one — `app_listing.app_entry(path)` must resolve —
     because a preview.png in a folder that is not an app is a stray file
@@ -602,12 +611,12 @@ async def api_app_set_preview(
     if preview is None:
         return _error("preview.png is required")
     raw = await preview.read(_PREVIEW_MAX_BYTES + 1)
-    if not raw or not raw.startswith(_PNG_MAGIC):
+    if not raw or app_listing.preview_media_type(raw) != "image/png":
         return _error("preview must be a PNG")
     if len(raw) > _PREVIEW_MAX_BYTES:
         return _error("preview is larger than 8 MiB")
     target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
-    replaced = os.path.isfile(target)
+    replaced = app_listing.app_preview_image(path) is not None
     tmp = os.path.join(path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp")
     try:
         with open(tmp, "wb") as fh:

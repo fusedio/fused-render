@@ -245,13 +245,13 @@ def test_export_bakes_a_capture_only_when_no_authored_preview(tmp_path):
     a = _app_folder(tmp_path / "one", "a")
     out_a = tmp_path / "a.fused"
     appfile.export_app_file(str(a), str(out_a), preview_bytes=PNG)
-    assert appfile.read_preview(str(out_a)) == PNG
+    assert appfile.read_preview(str(out_a)) == (PNG, "image/png")
 
     b = _app_folder(tmp_path / "two", "b")
     (b / "preview.png").write_bytes(PNG + b"authored")
     out_b = tmp_path / "b.fused"
     appfile.export_app_file(str(b), str(out_b), preview_bytes=PNG)
-    assert appfile.read_preview(str(out_b)) == PNG + b"authored"
+    assert appfile.read_preview(str(out_b)) == (PNG + b"authored", "image/png")
 
 
 def test_export_refuses_a_non_png_capture(tmp_path):
@@ -287,7 +287,7 @@ def test_post_export_carries_the_capture_into_the_download(client, tmp_path):
     assert r.status_code == 200
     out = tmp_path / "posted.fused"
     out.write_bytes(r.content)
-    assert appfile.read_preview(str(out)) == PNG
+    assert appfile.read_preview(str(out)) == (PNG, "image/png")
     # The guard holds: no X-Fused, no export.
     assert client.post("/api/appfile/export",
                        data={"path": str(a)}).status_code == 403
@@ -316,7 +316,7 @@ def test_an_over_cap_capture_is_dropped_and_the_export_still_ships(
     assert r.status_code == 200
     out2 = tmp_path / "atcap.fused"
     out2.write_bytes(r.content)
-    assert appfile.read_preview(str(out2)) == PNG
+    assert appfile.read_preview(str(out2)) == (PNG, "image/png")
 
 
 def test_a_non_png_capture_is_still_an_error_not_a_silent_drop(client, tmp_path):

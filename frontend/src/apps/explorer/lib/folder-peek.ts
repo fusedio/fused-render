@@ -3,17 +3,24 @@
 // one per card is the whole embed budget — so this ranking decides the single
 // thing a folder shows about itself.
 //
-// The order, best first: `preview.png`, `index.html`, `readme.md`, then any
-// other file by extension tier. Ties break alphabetically, since entries arrive
-// sorted.
+// The order, best first: an authored still (`preview.png` / `preview.webp`),
+// `index.html`, `readme.md`, then any other file by extension tier. Ties break
+// alphabetically, since entries arrive sorted.
 //
 // Pure and DOM-free, in lib/ rather than beside the card component, so the rule
 // can be pinned by a test that imports a function instead of a React tree (the
 // same reason lib/app-button.ts exists).
 import type { FsEntry } from "@platform/lib/api";
 
-// The authored thumbnail, and the same file the /apps hub shows on an app card
-// (fused_render/app_listing.PREVIEW_IMAGE_NAME).
+// The authored thumbnail names, and the same files the /apps hub shows on an
+// app card (fused_render/app_listing.PREVIEW_IMAGE_NAMES — this list must stay
+// that list). PNG is what every capture in the product produces; webp is what
+// an author's own screenshot usually already is.
+//
+// Both share ONE rank rather than being ordered against each other: the server
+// prefers the PNG when a folder holds both, but a peek only ever shows the one
+// file it picked, and entries arrive sorted — so `preview.png` wins that tie
+// here anyway, by name.
 //
 // Compared EXACTLY, case included, which is the rule the server was made to
 // meet rather than the other way round: `os.path.isfile` inherits the
@@ -25,7 +32,12 @@ import type { FsEntry } from "@platform/lib/api";
 //
 // Matched by whole NAME, not by extension: any other .png in the folder is just
 // a file, and would be a poor guess at what the folder is about.
-export const PREVIEW_IMAGE_NAME = "preview.png";
+export const PREVIEW_IMAGE_NAMES = ["preview.png", "preview.webp"] as const;
+
+// The best-known one, for a caller that needs a single name to show or probe.
+export const PREVIEW_IMAGE_NAME = PREVIEW_IMAGE_NAMES[0];
+
+const PREVIEW_NAME_SET: ReadonlySet<string> = new Set(PREVIEW_IMAGE_NAMES);
 
 const PREVIEW_RANK = 0;
 
@@ -51,7 +63,7 @@ const PEEK_EXT_BASE = NAMED_BASE + NAMED_PEEK_ORDER.length;
 export const PAGE_RANK = PEEK_EXT_BASE + PEEK_EXT_ORDER.indexOf("html");
 
 export function peekRank(name: string): number {
-  if (name === PREVIEW_IMAGE_NAME) return PREVIEW_RANK;
+  if (PREVIEW_NAME_SET.has(name)) return PREVIEW_RANK;
   const lower = name.toLowerCase();
   const named = NAMED_PEEK_ORDER.indexOf(lower);
   if (named !== -1) return NAMED_BASE + named;
@@ -135,5 +147,5 @@ export function bestPeekFile(entries: FsEntry[]): FsEntry | null {
 // <img>, and its own chrome around it. Takes a PATH — the peek may come from a
 // probed subfolder, so only the basename is the name.
 export function isPreviewImage(fsPath: string): boolean {
-  return fsPath.slice(fsPath.lastIndexOf("/") + 1) === PREVIEW_IMAGE_NAME;
+  return PREVIEW_NAME_SET.has(fsPath.slice(fsPath.lastIndexOf("/") + 1));
 }

@@ -10538,9 +10538,13 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   search box still reach the rows). Opened exports join Home's recents row
   (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
   Home path).
-- **AF-11** (D396) The exported card's thumbnail is the payload's
-  `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
-  single-member zip read (never an extraction). Without one, a file the user
+- **AF-11** (D396) The exported card's thumbnail is the payload's authored
+  still — `preview.png`, else `preview.webp`, the same two names and the same
+  PNG-first precedence a FOLDER's thumbnail follows
+  (`app_listing.PREVIEW_IMAGE_NAMES`) — streamed by
+  `GET /api/appfile/preview?path=`, a bounded single-member zip read (never an
+  extraction) whose content type is sniffed from the bytes, since a zip member
+  name is whatever its author typed. Without one, a file the user
   has OPENED before live-renders instead: the card iframes its own fusedapp
   view under `_preview=1`, whose preview contract is `preview: true` on
   `POST /api/appfile/open` — reuse an existing extract only (`reuse_only`:
@@ -10552,9 +10556,9 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   behind `fused.capture.screenshot()` pointed at a browser-measured rect,
   PNG bytes back and no file in `<home>/recordings`; chosen over DOM
   serialization because canvas/WebGL apps rasterize blank) when and only
-  when the folder has no authored `preview.png`. The crop
+  when the folder has no authored still under either name. The crop
   source is the card's own thumbnail when it is on screen AND HAS PAINTED
-  the app — a card without a preview.png renders the live app there, so
+  the app — a card without an authored still renders the live app there, so
   nothing navigates or flashes, but only two card previews start at a time
   (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
   state of a card and cropping one would bake an empty box in as the
@@ -10574,7 +10578,8 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   granted the first shot raises the TCC dialog and that export ships plain.
   The
   X-Fused `POST /api/appfile/export` variant writes it as
-  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
+  `files/preview.png` (PNG or WebP magic + 8 MiB cap, the member named for
+  what the bytes ARE — a capture is always PNG; the authored still always
   wins; every capture failure — unsupported, permission denied, off-display,
   blank, over-cap — exports plain: the route drops a too-big screenshot rather than
   failing the download, where `export_app_file` itself still raises for a
@@ -11283,7 +11288,8 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
   rendered (D507).**
   `AppPreviewCard`'s live thumbnail (Home's app strip, the `/apps` hub — the
   card mounts an app's own `entry_html` live and sandboxed
-  `allow-scripts allow-same-origin` whenever it has no `preview.png`, or on
+  `allow-scripts allow-same-origin` whenever it has no authored still
+  (`preview.png` / `preview.webp`), or on
   hover for ANY app) is not an
   "open"; `fused.daemon.enable()` unconditionally on page load used to fire
   on every such peek regardless (the OpenWhisper bug this whole feature

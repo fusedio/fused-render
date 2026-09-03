@@ -30,7 +30,7 @@ interface LanAppRow {
   linked: boolean;
   recency: number; // epoch seconds; 0 = never opened and no mtime
   url: string;
-  preview: string | null; // preview.png, full-bleed
+  preview: string | null; // the authored still, full-bleed
   icon: string | null; // icon.svg
 }
 

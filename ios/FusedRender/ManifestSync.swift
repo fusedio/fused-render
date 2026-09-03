@@ -1,6 +1,6 @@
 // Keeps the shared manifest (Shared/AppManifest.swift) current: whenever the
 // grid loads, fetch the same /api/lan/apps the grid shows — with the webview's
-// cookie — cache each preview.png, write apps.json, and tell WidgetKit and the
+// cookie — cache each app's still, write apps.json, and tell WidgetKit and the
 // Home Screen quick actions. Best-effort throughout: a failed refresh leaves
 // the last manifest in place.
 import Foundation
@@ -58,7 +58,7 @@ enum ManifestSync {
         log.info("manifest: \(apps.count) apps from \(server.host, privacy: .public)")
     }
 
-    /// Download preview.png once per (app, mtime-less) — re-fetched on every
+    /// Download the authored still once per (app, mtime-less) — re-fetched on every
     /// refresh but only rewritten when the bytes changed; downscaled to widget
     /// size so the container stays small.
     private static func cachePreview(_ relative: String, for app: ManifestApp, cookieHeader: String,

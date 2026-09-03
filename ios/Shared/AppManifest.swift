@@ -34,7 +34,7 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     var url: String
     var tag: String?
     var recency: Double
-    /// Cached preview.png in `previews/`, when the app has one.
+    /// Cached authored still (preview.png / preview.webp) in `previews/`, when the app has one.
     var previewFile: String?
 
     /// A plain hex digest, not "host:port|/path": AppIntents persists a chosen
