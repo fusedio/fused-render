@@ -1978,6 +1978,39 @@ describe("the unread mark", () => {
     expect(css(SCHEDULE_CSS)).toContain(".schedule-cal-popover .schedule-ring--unread::after");
   });
 
+  it("keeps the waiting \"!\" on top of that centre, and legible on it", () => {
+    // The two marks share the ring's 8px middle and the fill is a LATER pseudo,
+    // so without this the fill paints over the glyph — and both being
+    // `currentColor`, an unread parked run (the common case: a run that has been
+    // going long enough to raise a card has usually written something nobody has
+    // read) wore the mark of every other unread row instead of the one mark that
+    // says it is asking (bugbot, PR #969).
+    //
+    // Neither mark may be dropped: the fill's gate is `--unread` alone for every
+    // lane (the test above is the scar), and the "!" is the feature. So they
+    // stack, and the glyph is knocked out where it overlaps.
+    // A real ELEMENT and not a pseudo, which is the other half of the same bug
+    // and was only findable in the running app: a ring has two pseudos and this
+    // component had already spent both — `::after` is the fill, `::before` is
+    // the `[data-tip]` count tooltip every CONTAINER ring carries — so a
+    // `::before` of ours lost on exactly the rows that matter (a waiting task
+    // row with unread output drew "1 unread" and no "!").
+    expect(VIEWS).toContain('<span className="schedule-ring-bang" aria-hidden="true">!</span>');
+    expect(SCHEDULE_CSS).not.toContain(".schedule-ring--needs_attention::before");
+    const mark = block(SCHEDULE_CSS, ".schedule-ring-bang");
+    expect(mark).toContain("z-index: 1");
+    expect(mark).toContain("position: absolute");
+    const over = block(SCHEDULE_CSS, ".schedule-ring--unread > .schedule-ring-bang");
+    expect(over).toContain("color: var(--bg)");
+    // ...and the fix did NOT reach for the forbidden shape — no lane beside
+    // `--unread` on the fill itself, which is what the test above holds.
+    expect(SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, ""))
+      .not.toContain(".schedule-ring--needs_attention.schedule-ring--unread::after");
+    // The ring is `position: relative`, which is what makes that z-index mean
+    // anything at all — a stacking index inside a static box is a no-op.
+    expect(block(SCHEDULE_CSS, ".schedule-ring")).toContain("position: relative");
+  });
+
   it("fills a TASK row's ring from its whole thread, and names the count", () => {
     // The row's ring is the one mark now: hue for the lane, shape for read-state.
     // `unread` is the MERGED count this render is drawing (taskUnread over the
@@ -7293,7 +7326,9 @@ describe("the waiting row's own affordances", () => {
     // It ellipsises BEFORE the title does — the ask must never cost the task its
     // own name — which is a CSS fact and so is read out of the sheet.
     const rule = block(TASKS_CSS, ".tasks-asking");
-    expect(rule).toContain("flex: 0 1 auto");
+    // A RATIO, not a flag: an ordinary `1` shrinks the caption and the title by
+    // the same proportion, which at ~500px is two ellipses and no fact.
+    expect(rule).toContain("flex: 0 999 auto");
     expect(rule).toContain("text-overflow: ellipsis");
     expect(rule).toContain("var(--status-attention)");
   });

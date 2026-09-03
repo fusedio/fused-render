@@ -2604,15 +2604,41 @@ input.schedule-when-field {
    run IS in progress. What is different about it is that it has stopped and is
    asking, and a glyph says that where a shade cannot.
 
-   The bar and dot are drawn from `currentColor` at the ring's own centre, so the
-   mark inherits the hue and needs no second token. The unread fill (`::after`)
-   is not drawn on this ring at the same time — a waiting run has nothing to have
-   read — but the rule below is `--unread` alone, so if the server ever says both
-   the fill wins the centre and the "!" moves nowhere: they are the same 8px. */
+   The glyph is drawn from `currentColor` at the ring's own centre, so the mark
+   inherits the hue and needs no second token.
+
+   BOTH MARKS AT ONCE IS THE COMMON CASE, not the corner one (bugbot, PR #969),
+   and the first cut of this got it wrong twice over. A run that has been going
+   long enough to raise a card has almost always written something nobody has
+   read, so the ring carries `--unread` too — and the unread fill is an `::after`
+   on the same 8px centre, in the same `currentColor`, painting after anything
+   `::before` draws. The "!" ended up invisibly underneath it: the one row on the
+   page that is asking for something wore the mark of every other unread row.
+
+   AND THE `::before` WAS NOT OURS TO TAKE ANYWAY, which is the second half and
+   was only findable in the running app. A ring has two pseudos and this
+   component had already spent both: `::after` is the fill, and `::before` is the
+   fast count tooltip every CONTAINER ring carries (`[data-tip]`, below). That
+   rule won on precisely the rows the mark matters most on — a waiting task row
+   with unread output drew "1 unread" in the pseudo and no "!" anywhere.
+
+   So the mark is a real ELEMENT (`.schedule-ring-bang`, ScheduleTaskViews
+   .StatusIcon) and neither mark is dropped. The fill stays gated on `--unread`
+   ALONE for every lane — that gate has its own scar (see below), and a
+   lane-qualified exception here is the exact shape of the bug it records. The
+   element stacks OVER the fill by `z-index` (the ring is the `position:
+   relative` that makes that mean anything), and over a filled centre the glyph
+   is KNOCKED OUT rather than tinted, because a currentColor "!" on a
+   currentColor disc is a "!" nobody can see.
+
+   The knockout is `--bg` because the glyph's ink sits INSIDE the 8px disc — a
+   9px bold "!" is about 6px of ink — so it only has to contrast with the amber
+   under it, never match the row behind it (which is tinted on hover, and would
+   be an impossible thing to match anyway). Read the pair as one mark: the disc
+   says nobody has read this, and the hole punched in it says it is asking. */
 .schedule-ring--needs_attention { color: var(--status-attention); }
 
-.schedule-ring--needs_attention::before {
-  content: "!";
+.schedule-ring-bang {
   position: absolute;
   inset: 0;
   display: flex;
@@ -2622,6 +2648,14 @@ input.schedule-when-field {
   font-weight: 700;
   line-height: 1;
   color: currentColor;
+  /* Over the unread fill, which is a pseudo of the same box and would otherwise
+     paint on top of it. */
+  z-index: 1;
+  pointer-events: none;
+}
+
+.schedule-ring--unread > .schedule-ring-bang {
+  color: var(--bg);
 }
 
 /* -- The inner dot: UNREAD, not merely settled ---------------------------------

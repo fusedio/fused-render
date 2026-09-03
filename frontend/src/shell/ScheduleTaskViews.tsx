@@ -372,7 +372,23 @@ export function StatusIcon({
       aria-label={said ? `${text}, ${said}` : text}
       data-tip={many ?? ""}
       title={many ? "" : text}
-    />
+    >
+      {/* THE WAITING MARK IS AN ELEMENT, not a pseudo, and that is not a style
+          preference — a ring has exactly two pseudos and BOTH are already spent
+          on this very component. `::after` is the unread fill, and `::before` is
+          the fast count tooltip every container ring carries (`[data-tip]`,
+          schedule.css), which outranked a `::before` of ours on precisely the
+          rows the mark matters most on: a task row waiting on an answer wore no
+          "!" at all, because it also had "1 unread" to say. Found in the live
+          app, after the CSS looked right in isolation.
+
+          `aria-hidden` because the ring's `aria-label` already reads "Needs
+          attention" — a screen reader announcing a bare "!" after it would be
+          the same fact twice, in punctuation. */}
+      {status === "needs_attention" && (
+        <span className="schedule-ring-bang" aria-hidden="true">!</span>
+      )}
+    </span>
   );
 }
 

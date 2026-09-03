@@ -938,7 +938,13 @@ button.tasks-caret,
    out of the row. `--status-attention` is the same hue the ring wears, which is
    what pairs the two marks without a third. */
 .tasks-asking {
-  flex: 0 1 auto;
+  /* SHRINKS FIRST, and by a lot. `flex-shrink` is a RATIO, so an ordinary `1`
+     here means the caption and the title give up the same proportion of their
+     width — at ~500px that left an 18px title beside a 4px caption, two
+     ellipses and no readable fact between them (measured in the running app).
+     A large ratio spends this element's width before the title's: the ask is
+     the second thing on the row, and the task's own name is the first. */
+  flex: 0 999 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
