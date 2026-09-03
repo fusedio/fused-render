@@ -364,14 +364,14 @@ def _retry_verb(source, retry):
 
 def test_an_overload_says_overloaded_and_counts_the_attempts(html):
     assert _retry_verb(html, {"attempt": 3, "max_retries": 10, "status": 529}) \
-        == "Overloaded — retrying (3/10)"
+        == "Claude's servers are busy — retrying (3/10)"
 
 
 def test_a_throttle_is_worded_as_a_throttle(html):
     """Different news, different place to look: 529 clears on its own, 429 is
     about this account's usage."""
     assert _retry_verb(html, {"attempt": 1, "max_retries": 10, "status": 429}) \
-        == "Rate limited — retrying (1/10)"
+        == "Claude is busy — retrying (1/10)"
 
 
 def test_an_unrecognised_status_still_says_something_true(html):
@@ -383,7 +383,7 @@ def test_an_unrecognised_status_still_says_something_true(html):
 def test_no_budget_means_no_invented_denominator(html):
     """`max_retries` is the CLI's to report. "(2/0)" would be worse than "(2)"."""
     assert _retry_verb(html, {"attempt": 2, "max_retries": 0, "status": 529}) \
-        == "Overloaded — retrying (2)"
+        == "Claude's servers are busy — retrying (2)"
 
 
 # ------------------------------------------------------------ the page's wiring

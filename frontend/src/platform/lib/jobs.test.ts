@@ -5,11 +5,12 @@
 import { expect, test } from "bun:test";
 import {
   aggregateProgress,
-  SCHEDULE_JOB_PREFIX,
   jobTypeLabel,
-  clearableCount,
+  SCHEDULE_JOB_PREFIX,
+  activeJobByModel,
   GRACE_MS,
   jobAmount,
+  jobDetail,
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
@@ -17,6 +18,7 @@ import {
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  terminalNotifications,
   trackSeenIds,
   type Job,
 } from "@platform/lib/jobs";
@@ -137,6 +139,44 @@ test("a stalled row blames the right reporter", () => {
   expect(server).not.toContain("page");
 });
 
+test("a running job with no detail and no message reads as empty — the fallback is the call site's job (jobDetail)", () => {
+  // `jobStatusLine` no longer folds `jobDetail` in itself (Change 3): a
+  // running download can carry a real progress AMOUNT with no phase text at
+  // all, a fact this function never sees, so falling back here would win
+  // over that amount at the render site. Callers apply `jobDetail` only once
+  // BOTH the status line and the amount are known to be empty.
+  expect(jobStatusLine(job({ state: "running", detail: undefined }))).toBe("");
+});
+
+test("jobDetail names the kind and how long it has been running, from facts every job always carries", () => {
+  const now = 10_000;
+  const started_at = now - 125; // 2m 5s ago
+  expect(jobDetail(job({ kind: "download", started_at, stalled: false }), now)).toBe(
+    "Download · started 2m ago"
+  );
+  expect(jobDetail(job({ kind: "task", started_at, stalled: false }), now)).toBe(
+    "Task · started 2m ago"
+  );
+});
+
+test("jobDetail folds in stalled, since a job with nothing else to say and no reporter left needs it most", () => {
+  const now = 10_000;
+  const started_at = now - 5;
+  expect(jobDetail(job({ kind: "download", started_at, stalled: true }), now)).toBe(
+    "Download · started 5s ago · not reporting"
+  );
+});
+
+test("jobDetail measures against the SERVER's clock, not the browser's (C4)", () => {
+  // `started_at` is a server timestamp; a browser clock that has drifted
+  // hours from the server's must not leak into what "started X ago" says.
+  const serverNow = 1_000_000;
+  const started_at = serverNow - 30; // 30s ago, by the SERVER's clock
+  expect(jobDetail(job({ started_at, stalled: false }), serverNow)).toBe(
+    "Download · started 30s ago"
+  );
+});
+
 test("stalled outranks a pending cancel, and says both", () => {
   // "Cancelling…" claims something is working on the request. If the reporter
   // died before honoring it, that claim would stand for the whole ten-minute
@@ -213,14 +253,26 @@ test("the poll idles once the grace window has elapsed", () => {
 // orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still
 // takes a stalled row on purpose; only the bulk sweep changed.
 
-test("clearableCount counts terminal rows but not a stalled running one", () => {
-  const jobs = [
-    job({ id: "run", state: "running", stalled: false }),
-    job({ id: "stalled", state: "running", stalled: true }),
-    job({ id: "done", state: "done" }),
-    job({ id: "err", state: "error" }),
-  ];
-  expect(clearableCount(jobs)).toBe(2);
+// ------------------------------------------------------------- activeJobByModel
+
+test("activeJobByModel (Part A item 1 / C3) drops a done job — a finished pull must not read as still busy forever", () => {
+  const done = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "done" });
+  expect(activeJobByModel([done]).get("FLUX.2-klein-4B")).toBeUndefined();
+});
+
+test("activeJobByModel keeps a running server job, keyed by its title", () => {
+  const running = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "running" });
+  expect(activeJobByModel([running]).get("FLUX.2-klein-4B")).toBe(running);
+});
+
+test("activeJobByModel keeps a waiting server job — parked on a question is not finished", () => {
+  const waiting = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "waiting" });
+  expect(activeJobByModel([waiting]).get("FLUX.2-klein-4B")).toBe(waiting);
+});
+
+test("activeJobByModel ignores a page-owned job — a card only asks about its own model's server-side job", () => {
+  const pageJob = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "page", state: "running" });
+  expect(activeJobByModel([pageJob]).size).toBe(0);
 });
 
 test("jobsAfterClear keeps every running row, stalled included", () => {
@@ -270,7 +322,43 @@ test("mergedRows is a no-op when nothing has waiting_for set", () => {
   expect(mergedRows(jobs)).toEqual(jobs);
 });
 
-// ---- the chip's one word and one line (statusbar redesign) ------------------
+// --------------------------------------------------------- terminalNotifications
+//
+// `ActivityDock.tsx`'s `onJobsReported` — what actually reaches Notifications
+// from a full snapshot. `mergedRows` has to run FIRST, on the unfiltered
+// snapshot, or a load that has already gone terminal but whose waiter has not
+// yet cleared its own `waiting_for` (the one-tick gap `_wait_ready`'s poll
+// loop leaves between the load finishing and the waiter noticing) reaches
+// Notifications on its own — a second completion entry for what Activity is,
+// at that very moment, still drawing as one row.
+
+test("terminalNotifications withholds a load's completion while its merged waiter is still running", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications surfaces the load once the waiter itself has gone terminal", () => {
+  const jobs = [
+    job({ id: "waiter", state: "done", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs).map((j) => j.id).sort()).toEqual(["load", "waiter"]);
+});
+
+test("terminalNotifications still drops a scheduled run's own job", () => {
+  const jobs = [job({ id: "sys:schedule:e1", state: "done" })];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications leaves an ordinary terminal job alone", () => {
+  const jobs = [job({ id: "dl", state: "done" })];
+  expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
+});
+
+// ---- the chip's one word and one line (D673, statusbar redesign) ------------
 
 test("a single job's chip word is its title's own -ing verb, capitalised", () => {
   expect(jobTypeLabel(job({ title: "erasing text using flux" }))).toBe("Erasing");

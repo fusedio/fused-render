@@ -69,8 +69,8 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // No `ignored` flag here (unlike FsEntry): the walk PRUNES gitignored
-  // entries server-side, so nothing ignored ever reaches search results.
+  // No `ignored` flag here (unlike FsEntry): the walk does not consult
+  // .gitignore at all, so there is no verdict to carry.
 }
 
 export interface WalkResult {
@@ -2188,6 +2188,21 @@ export interface RunningEngine {
   /** The module a `main =` daemon serves — "" for a `daemon =` app or a
    *  template daemon. */
   module: string;
+  /** Seconds since this child's bring-up began. */
+  uptime_s: number;
+  /** The manifest's idle-retire policy in seconds; `0` means resident — a
+   *  written `daemon =` and every template daemon. */
+  idle_timeout_s: number;
+  /** Seconds since the last call finished (stamped at completion, not at
+   *  routing — and at bring-up for a child that has never served one). Only
+   *  meaningful against a non-zero `idle_timeout_s`. */
+  idle_for_s: number;
+  /** Idle-retire is currently skipping this child. NOT "a call is in flight
+   *  right now": `mark_busy` only runs for a bounded child (`idle_timeout_s
+   *  > 0`), so a resident `daemon =` app serving a request always reports
+   *  `busy: false` here — this field structurally cannot answer "is this
+   *  engine in use". */
+  busy: boolean;
 }
 
 /** Every engine daemon running right now — the status bar's Engines section.

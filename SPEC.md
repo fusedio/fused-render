@@ -1527,34 +1527,31 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** Machine-noise pruning is **gitignore-driven inside git
-  repositories** (D100): entries the containing repo's own gitignore rules
-  ignore are never emitted **nor descended** — the generic answer to `dist/`,
-  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
-  repo's own file as the authority (negations like `!keep.log` honored).
-  Verdicts come from one streaming `git check-ignore --stdin` co-process per
-  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
-  closed when the walk ends); each directory inherits its repo root through
-  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
-  a walk rooted *below* a repo root resolves it via one `git rev-parse
-  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
-  scope (an un-inited project, an Obsidian vault) prunes the same way: the
-  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
-  check-ignore honors standalone `.gitignore` files too (cascading into
-  subdirs, negations included). Pruning is an optimization, never a
-  dependency: git missing or failing degrades to no gitignore pruning.
-  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
-  upward for nothing (no work-tree boundary to find), so an ancestor's
-  standalone `.gitignore` doesn't apply there.
+- **SR-2** Machine-noise pruning is **name-based**: `WALK_IGNORE_DIRS`
+  segments are never emitted **nor descended**, checked by bare name
+  everywhere in the tree — no per-repo gitignore parsing, no git co-process,
+  no repo-root resolution. This is a deliberately smaller floor than the
+  index's own scan-time exclusions (`DEFAULT_IGNORE_NAMES`,
+  `fused_render/index/ignore.py`), which additionally prune generic
+  build-output names (`dist`, `build`, `target`, …) and are user-editable.
+  The two are allowed to diverge — a live directory listing and a maintained
+  corpus answer different questions — everywhere except `WALK_IGNORE_DIRS`
+  itself, which both sides share (`SHARED_IGNORE_DIRS` in
+  `fused_render/index/ignore.py`) so a folder's presence never flips between
+  the walk and the index-backed search that answers from the same corpus.
 - **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
-  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
-  by bare name everywhere: it covers junk outside any repo (a stray
-  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
-  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
-  apply in hidden mode too — those trees are machine noise, not "hidden
-  data" (a `.py` extension search must not drown in `.git` object files).
-  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
-- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  `.venv`, `site-packages`) is the **universal floor**, checked by bare name
+  everywhere: it covers junk outside any repo (a stray `node_modules` in
+  `~/Downloads`, `Library/Python/*/site-packages`). `.git` is **not** in this
+  set — it is a leaf-name entry instead (`WALK_LEAF_DIR_NAMES`, alongside the
+  macOS package suffixes in SR-3): emitted as one entry but never descended,
+  which keeps it in lockstep with the index's own `.git` dirs row
+  (`/api/git-repos` reads that row instead of stat-ing every directory).
+  Both SR-2 and SR-2a apply in hidden mode too — those trees are machine
+  noise, not "hidden data" (a `.py` extension search must not drown in
+  `.git` object files). `.git` *files* (worktree/submodule pointers) are
+  ordinary files and do show.
+- **SR-2b** Because `WALK_IGNORE_DIRS` pruning excludes junk outright, walk
   entries carry **no `ignored` dimming flag** — dimming remains a
   `/api/fs/list` (plain listing) concern, where ignored entries are still
   shown. Search excludes; the listing dims. (VS Code's split: explorer shows
@@ -5501,7 +5498,10 @@ stop it short of quitting the app.
   disappears so it keeps up with this short a post-read sweep instead of
   lagging behind on its idle (5s) cadence. An
   **error is exempt** and stays
-  until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
+  until dismissed (the persistent-error toast's rule, §3). **SUPERSEDED for
+  `done`/`cancelled` by D663**: every terminal state now gets the same
+  unconditional exemption `error` already had, not only after a first read —
+  see BG-17. `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
   **Live SERVER work is never evicted by the cap at all** (D288), so the list
@@ -5754,7 +5754,182 @@ stop it short of quitting the app.
   unacknowledged; opening the panel — the user's own click, for any
   reason — is what clears it.
 
-  **Status bar chips, statusbar redesign (D655, 2026-09-02) — SUPERSEDES the
+- **BG-17** **The queue slot, and a scheduled/task run's own row, are gone
+  from Activity entirely (D661, user: "a task is not something I even want
+  in the activity. that was added unintentionally").** `DownloadManager`'s
+  `QueueSlot`/`queue` prop, `ActivityDock`'s `QueueRowView`/`useQueue()`, and
+  `shell/queue-dock-lib.ts` (with its test) are deleted outright rather than
+  left unused. `jobRows` now excludes every `sys:schedule:*` job
+  unconditionally — no "exempt only while running" carve-out — so a
+  scheduled run's own turn never draws a row here in any state.
+  `schedule-toast.ts`/`App.tsx`'s toast consumption and `schedule.py`'s
+  `_emit()`/`_report()` are untouched: the toast is still how a scheduled
+  run's own page-equivalent surface announces itself, this only removes the
+  DUPLICATE row Activity was drawing for the same event. `DownloadManager`
+  gains a decoupled `onJobsReported?: (jobs: Job[]) => void` prop in the
+  queue slot's place, for a caller that wants to observe reported jobs
+  without the deleted queue machinery.
+
+  **Flagged capability loss: there is no longer a way to cancel an
+  already-running scheduled/task turn from Activity.** The queue's own ✕ was
+  the only reachable control for a live scheduled turn; removing the row
+  removes that control with it, and nothing replaces it. **Flagged
+  trade-off: `pokeTasks()`'s fast-poll path**, which used to piggyback on the
+  queue row's presence to tighten cadence while a scheduled turn ran, now has
+  no Activity-side signal to key off and reverts to its unaccelerated
+  latency for that case.
+
+- **BG-18** **Every terminal job — not only a failure — now reaches
+  Notifications, not only `error` (D662, broadening D586).** `jobs.ts` gains
+  `isTerminal(job)`/`terminalJobs(jobs)`; `inFlightJobs` narrows to
+  running/waiting only (non-terminal), and `isFailure`/`failedJobs` stay
+  scoped to real errors for `RepoUpdatesDock`'s `.is-failure` tint, so a
+  plain success does not turn the chip red. A terminal job can never
+  auto-open a panel by arriving (BG-17's D567 rule already covered this; it
+  now also covers `done`/`cancelled`, not only `error`). Server-side,
+  `fused_render/jobs.py`'s `_sweep()` exemption (BG-6) is extended from
+  `("error", WAITING)` to `TERMINAL_STATES` (`done`/`error`/`cancelled`) plus
+  `WAITING` (D663): once every finished job routes to a list meant to hold a
+  log, the old per-row `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S` clock (BG-6)
+  was deleting the very entry that list exists to keep, before anyone had
+  looked. Those constants and `Job.first_read_at` stay in `jobs.py` — other
+  `mark_read` callers (`routers/jobs.py`, `supervisor.py`,
+  `capture/__init__.py`) have their own reasons independent of this branch —
+  but no reachable job state exercises the read-gated clock any more.
+  `ActivityDock` also now toasts when a background engine retires on its own
+  (D664), by diffing successive `useRunningEngines()` snapshots and excluding
+  a user-initiated stop — the only way to learn a background daemon went idle
+  is to notice it missing between two polls, since nothing server-side calls
+  it out as an event.
+
+- **BG-19** **No card may render a single line of text — title alone, with
+  nothing beneath it (D665).** `jobs.ts` gains `jobDetail(job, nowS)`, a
+  last-resort fallback built only from facts every job always carries (kind,
+  `started_at`, `stalled`) — `"Download · started 2m ago"`, or with
+  `· not reporting` folded in once stalled. `engineDuration` (previously
+  local to the engine rows) moves into `jobs.ts` so both share the same
+  coarse-duration formatting. `jobDetail` is applied at the CALL SITE
+  (`DownloadManager.tsx`'s status-line computation), never inside
+  `jobStatusLine` itself: a running job can carry a real progress AMOUNT
+  with no phase text at all, a fact `jobStatusLine` never sees, so folding
+  the fallback in there would win over that amount rather than only firing
+  once both the status line and the amount are empty — real detail,
+  progress and failure text all still win. `RepoUpdatesDock.tsx`'s own rows
+  (`repoStatusText`, the pairing row) already always render a fixed non-empty
+  line, so the sweep for this gap found nothing left to fix there; the only
+  place it existed was the shared `JobRow` `RepoUpdatesDock.tsx` reuses from
+  `DownloadManager.tsx`, fixed once at the source. `nowS` is `JobsSnapshot.now`
+  (the server's clock), threaded down from `useJobs` through
+  `DownloadManagerView` and `JobRow` — never the browser's `Date.now()`, which
+  drifts from `job.started_at`'s server timestamp after a tab throttle or a
+  sleep (D666).
+
+- **BG-20** **A follow-up review of BG-17/BG-18 closes three gaps D663's
+  keep-until-dismissed policy opened, and confirms one thing it left
+  implicit (D667).** A card that reads a job's mere PRESENCE in the registry
+  as "still busy" — `useCacheScan.ts`/`PlaygroundTab.tsx`'s `jobByModel` maps,
+  `RepoCard.tsx`'s button gates — now stays stuck on a model whose pull or
+  load finished minutes ago, since the row no longer disappears on its own;
+  `jobs.ts`'s `activeJobByModel(jobs)` (mirroring `inFlightJobs`'s own
+  `!isTerminal` filter) is now the one place these maps get built, plus a
+  belt-and-braces `!isTerminal(job)` check on `RepoCard.tsx`'s own gates.
+  `POST /api/jobs/clear` and `clearableCount`/`jobsAfterClear`/
+  `clearFinishedJobs` (jobs.ts), unreachable once BG-17 deleted Activity's
+  own Clear button, get a real caller again: `RepoUpdatesDock.tsx` draws a
+  second "Clear" — for finished jobs, separate from its existing repo-rows
+  one — at 2+ finished jobs (D604's plurality-not-presence rule), since a
+  repo row's dismissal is local and ephemeral while a job's is server-side
+  and permanent, and one button cannot honestly speak for both. `MAX_JOBS`
+  (64) is confirmed the sole bound on registry growth now that no terminal
+  row ages out on its own, via the eviction ordering BG-6 already
+  describes (finished before running, least-recently-updated first, live
+  `SERVER` work never evicted at all). `isFailure`'s doc, `GRACE_MS`, and
+  `failedJobs` were swept for the same class of staleness this policy
+  change could have left behind: `isFailure`'s comment is rewritten to
+  state what it decides now (the `.is-failure` tint, not routing);
+  `GRACE_MS` is confirmed still doing real work (catching the RUNNING→
+  terminal transition fast) independent of the sweep-timing reasoning its
+  comment used to cite; `failedJobs`, with no remaining callers once
+  `RepoUpdatesDock.tsx` started calling `isFailure` directly, is deleted.
+
+- **BG-21** **Two more code-review fixes on BG-17/BG-18's rework, plus its
+  one previously untested piece (D668).** `retiredEngines`'s stopping-marker
+  used to be consumed by the very next poll regardless of what it saw, so a
+  rejected Stop or an engine a `restart()` revived left the marker spent for
+  nothing while the engine was still there — its actual later idle
+  retirement then drew no toast at all, since `stoppingRef` had already
+  forgotten to expect it. The marker is now consumed only by the snapshot
+  where the engine is ACTUALLY missing. `ActivityDock.tsx`'s terminal-job
+  routing (BG-18) now filters `jobRows` before `terminalJobs`, so a schedule
+  run — already toasted, already rowed on the Scheduled page — no longer
+  also accumulates a permanent, silent Notifications entry. `ActivityDock.
+  test.tsx` gives `retiredEngines` its first test coverage: ordinary churn,
+  a Stop within and past its grace window, a revived engine, and the
+  late-retirement-after-rejected-Stop case above.
+
+- **BG-22** **D663's keep-until-dismissed exemption is scoped to a row some
+  surface can show and let the user dismiss, not to every terminal state
+  unconditionally (D669).** A `sys:schedule:*` row is never drawn by any
+  frontend surface — `jobRows` drops it from Activity, and `terminalJobs`
+  runs after `jobRows` in `ActivityDock.tsx`, so it never reaches
+  Notifications either — so the exemption bought it nothing but unbounded
+  accumulation, one invisible row per scheduled turn. `_sweep` now ages a
+  schedule row out on the original read-gated `FINISHED_TTL_S`/
+  `FINISHED_UNREAD_DROP_S` clock (BG-6); every other terminal row keeps
+  D663's keep-until-dismissed behavior. Separately, `MAX_JOBS`'s eviction
+  order (BG-6/BG-20) excluded `WAITING` from `evictable` entirely: a
+  `WAITING` row's reporter has already exited, so its `updated_at` never
+  advances, and ordering evictable rows oldest-`updated_at`-first made a
+  long-open `WAITING` row (uv's "Install anyway" prompt) the first thing
+  the cap evicted — the exact row `_sweep`'s own age-out exemption exists
+  to protect, lost to the other mechanism instead. And `clear_finished`
+  (the bulk Clear button's backend, `fused_render/jobs.py`) is rescoped
+  from `state != RUNNING` to `state in TERMINAL_STATES`: the button never
+  showed or counted a `WAITING` row, but its old filter took one anyway.
+
+- **BG-23** **`ActivityDock.tsx`'s `onJobsReported` applies `mergedRows`
+  before `jobRows`/`terminalJobs` (D670), and the two "Clear" buttons
+  (BG-15/BG-20) get distinct visible labels.** `jobs.ts` gains
+  `terminalNotifications(jobs)` — `mergedRows` then `jobRows` then
+  `terminalJobs`, the same order `DownloadManagerView` already uses for
+  its own Running list — closing a gap where a render sharing a model
+  load with another render could reach Notifications as two completions:
+  `_wait_ready` (D628) clears a waiter's `waiting_for` in a `try`/`finally`
+  around its poll loop, so a poll landing between the load going terminal
+  and the waiter noticing saw the load as its own, independent
+  completion. The repo-updates and finished-job Clear buttons now read
+  "Clear updates" and "Clear finished" rather than sharing the word
+  "Clear" with only a `title` (invisible before a click) distinguishing
+  the reversible, client-side one from the permanent, server-side one.
+  `clearableCount` (jobs.ts) is deleted — BG-20's claim that it "gets a
+  real caller again" from the second Clear button does not hold up, that
+  button gates and counts on `terminal.length` directly — along with the
+  `.q-row`/`.q-row-head`/`.q-title`/`.q-open`/`.q-x`/`.q-spin`/`.q-status`/
+  `.q-note` CSS rules in `notifications.css`, dead since BG-17 deleted the
+  scheduled-message queue row's JSX; `.q-all` keeps its rule, drawn now by
+  `RepoRowView`'s own buttons.
+
+- **BG-24** **A task/scheduled message that finishes successfully speaks no
+  toast at all (D671, user: "why does task completion still show toast
+  messages?" / "remove that too").** `schedule-toast.ts`'s `toastForEvent`
+  returns `ScheduleToast | null`, `null` for `kind === "done"` — a plain
+  success is not news, and the Tasks page is where its result lives.
+  `scheduleEvents.ts`'s poll loop skips a `null` instead of rendering an
+  empty strip. `failed` and `missed` are UNCHANGED: with tasks gone from
+  Activity (BG-17) and excluded from Notifications routing, nothing else
+  would surface either one, and a silent failure or silent miss would be
+  strictly worse than the toast the user was objecting to — the complaint
+  was about *completion*, not about being warned. Both surviving outcomes
+  are now identical in shape (a persistent error with an "Open" action onto
+  `/tasks`), so `ScheduleToast`'s now-constant `tone`/`needsAttention`
+  fields, and the `push` branch in `scheduleEvents.ts` that used to render a
+  lesser, self-dismissing toast for `done`, are deleted rather than left
+  stranded. `schedule.py`'s `_emit()` is untouched — its `done` event still
+  has a client consumer, since `scheduleEvents.ts` still reads it to drive
+  `onOutcome`'s Tasks-page pulse and to ack it off the server's queue, just
+  never to raise a toast.
+
+  **Status bar chips, statusbar redesign (D673, 2026-09-02) — SUPERSEDES the
   "one circle" rule of D588/D590 above and RETIRES `lib/autoExpand.ts`.** Every
   chip is `platform/ui/StatusChip.tsx`: a label, a numeral from two things
   (Notifications from one), and a 2px progress line along the chip's bottom
@@ -11185,7 +11360,22 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
     child with `engine_id`, `pid`, `version`, `folder` (set for a background
     app's own daemon, empty for a template) and `module` (set for a `main =`
     warm worker, empty otherwise) so a row can be labelled without guessing
-    which fields a given child populated. Read-only and UNGUARDED, the same
+    which fields a given child populated, plus the four LIFETIME fields the
+    panel's detail line is built from — `uptime_s`, `idle_timeout_s` (`0` for
+    a resident child, which the panel states as "no idle timeout" rather than
+    drawing a countdown that will never run), `idle_for_s` and `busy` (idle-
+    retire is currently skipping this child — either a call `mark_busy`
+    counted, or a child past its own idle timeout whose worker still reports
+    an in-flight call via `_inflight`, the case a 504'd proxy call leaves
+    behind: its `finally` calls `mark_idle` while the worker's `main()` keeps
+    running). Only `uptime_s` and `idle_for_s` are derived from the SAME
+    `now`; `_busy` is snapshotted under the same `_lock` hold as `_children`,
+    so a single row can never report an uptime and a countdown taken a poll
+    apart. The panel renders them as
+    "Warm worker · up 12m · retires in 13m if idle" (`engineDetail`,
+    platform/ui/DownloadManager.tsx); the KIND in that sentence is derived
+    client-side from `folder`/`module`, deliberately not a wire field, since
+    those two already determine it. Read-only and UNGUARDED, the same
     posture as `GET /api/apps/background/running` and as this router's
     proxied GETs. The work is `engine_host.running_engines()`, which keeps
     the same lock discipline `background_running_folders` established —

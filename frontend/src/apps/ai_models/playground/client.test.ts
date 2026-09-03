@@ -8,24 +8,12 @@
 // manual smoke, because the happy path never drops a poll.
 import { expect, test } from "bun:test";
 
+import { installDomShim } from "@platform/lib/testDomShim";
+
 // client.ts reaches api.ts/router.ts, which read `location` at module scope;
-// bun has no DOM. Same shim as router.test.ts.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/ai-models/playground",
-  search: "",
-  href: "http://localhost/ai-models/playground",
-  origin: "http://localhost",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent() {},
-  addEventListener() {},
-  removeEventListener() {},
-};
+// bun has no DOM. See testDomShim.ts for why this is the one shared stub
+// every suite in the run installs, rather than a stub hand-rolled per file.
+installDomShim();
 
 // Dynamic, so the shim above is in place before the module graph evaluates.
 const { ModelLoading, streamChat, watchJob, withModelReady } = await import("./client");

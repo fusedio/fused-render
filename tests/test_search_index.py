@@ -250,6 +250,32 @@ def test_index_engine_screens_hidden_and_junk_paths(tmp_path):
     assert _paths(out) == ["/r/keep.txt"]
 
 
+def test_screened_rows_do_not_spend_the_result_budget(tmp_path, monkeypatch):
+    """A screened row must never occupy a LIMIT slot that a real match could
+    have used.
+
+    `_screen` runs AFTER the page is fetched, so if the exclusion only lived
+    there, a page dominated by junk rows (a `node_modules` a scan never
+    reached, say — DEFAULT_IGNORE_NAMES is user-editable and the scan-time
+    exclusion is not a guarantee for every index on disk) would come back
+    truncated and empty while a real match sat one row further down. Pushing
+    the exclusion into the WHERE clause (`_index_where`) is what keeps this
+    from happening: a `node_modules` row is never fetched in the first place,
+    so it can never eat a slot before `_screen` gets a chance to drop it."""
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
+    cfg = _index(
+        tmp_path, "/r",
+        # More matching junk rows than the budget, all NEWER than the real
+        # match — under `ORDER BY mtime DESC` they would fill the page first.
+        [(f"/r/node_modules/pkg{i}/hit-{i}.txt", 10, 100_000.0 + i) for i in range(10)]
+        + [("/r/real/hit-real.txt", 10, 1.0)],
+        dirs=["/r/node_modules"] + [f"/r/node_modules/pkg{i}" for i in range(10)]
+             + ["/r/real"])
+    out = _search_index(spec(name_terms=["hit"]), cfg)
+    assert _paths(out) == ["/r/real/hit-real.txt"]
+    assert out["truncated"] is False
+
+
 def test_index_engine_marks_a_capped_result_set_truncated(tmp_path, monkeypatch):
     cfg = _index(tmp_path, "/r", [(f"/r/hit-{i}.txt", 10, 100.0 + i)
                                   for i in range(5)])
@@ -351,55 +377,6 @@ def test_the_folder_reserve_still_bounds_folders_when_files_compete(tmp_path,
     assert out["truncated"] is True
 
 
-def test_gitignored_hits_do_not_spend_the_result_cap(tmp_path, monkeypatch):
-    """The cap is a budget for hits the user can SEE.
-
-    Gitignored rows can only be recognised outside SQL (git is not a duckdb
-    function), so a page that filters down to nothing has to be followed by
-    another — otherwise a build directory's 100k generated files answer the
-    whole query with an empty list, and with no engine behind this one that is a
-    hard false miss, not a degraded result."""
-    import subprocess as sp
-
-    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    sp.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / ".gitignore").write_text("dist/\n")
-    (repo / "dist").mkdir()
-    root = str(repo).replace(os.sep, "/")
-    # The four NEWEST matches are all gitignored; the two real ones are oldest.
-    files = [(f"{root}/dist/bundle-{i}.js", 10, 10_000.0 + i) for i in range(4)]
-    files += [(f"{root}/app.js", 10, 100.0), (f"{root}/main.js", 10, 101.0)]
-    cfg = _index(tmp_path, root, files, dirs=[f"{root}/dist"])
-    out = _search_index(spec(extensions=["js"]), cfg)
-    assert _paths(out) == [f"{root}/app.js", f"{root}/main.js"]
-    # Everything that matched was either returned or filtered — nothing is being
-    # withheld, so the client must not be told there is more.
-    assert out["truncated"] is False
-
-
-def test_the_cap_still_bounds_a_result_set_with_ignored_hits(tmp_path, monkeypatch):
-    """The refill fills the cap; it does not lift it, and `truncated` still says
-    when rows were left behind."""
-    import subprocess as sp
-
-    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    sp.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / ".gitignore").write_text("dist/\n")
-    (repo / "dist").mkdir()
-    root = str(repo).replace(os.sep, "/")
-    files = [(f"{root}/dist/bundle-{i}.js", 10, 10_000.0 + i) for i in range(3)]
-    files += [(f"{root}/keep-{i}.js", 10, 100.0 + i) for i in range(6)]
-    cfg = _index(tmp_path, root, files, dirs=[f"{root}/dist"])
-    out = _search_index(spec(extensions=["js"]), cfg)
-    assert len(out["entries"]) == 3
-    assert all("/dist/" not in e["path"] for e in out["entries"])
-    assert out["truncated"] is True
-
-
 def test_index_engine_reads_through_the_manifest_not_a_glob(tmp_path):
     """A compaction leaves the PREVIOUS generation's partitions on disk for
     readers still holding the old manifest (index-store.md §4). Globbing the
@@ -415,24 +392,6 @@ def test_index_engine_reads_through_the_manifest_not_a_glob(tmp_path):
     assert len(os.listdir(cfg.files_dir)) > 1  # both generations on disk
     out = _search_index(spec(name_terms=["a"]), cfg)
     assert [e["path"] for e in out["entries"]] == ["/r/a.txt"]
-
-
-def test_index_engine_drops_gitignored_hits(tmp_path):
-    import subprocess as sp
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    sp.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / ".gitignore").write_text("out/\n")
-    (repo / "out").mkdir()
-    (repo / "out" / "junk.mov").write_bytes(b"x")
-    (repo / "keep.mov").write_bytes(b"x")
-    root = str(repo).replace(os.sep, "/")
-    cfg = _index(tmp_path, root,
-                 [(f"{root}/out/junk.mov", 1, 100.0), (f"{root}/keep.mov", 1, 100.0)],
-                 dirs=[f"{root}/out"])
-    out = _search_index(spec(extensions=["mov"]), cfg)
-    assert _paths(out) == [f"{root}/keep.mov"]
 
 
 # -- when the index cannot answer ---------------------------------------------

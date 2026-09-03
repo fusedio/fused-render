@@ -4,23 +4,12 @@
 // user clicks a pre-rename bookmark and lands on an unrecognized route.
 import { describe, expect, test } from "bun:test";
 
-// router.ts reads `location` at module scope; bun has no DOM. Same shim as
-// appEntry.test.ts (see the comment there).
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/",
-  search: "",
-  href: "http://localhost/",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent() {},
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-};
+import { installDomShim } from "./testDomShim";
+
+// router.ts reads `location` at module scope; bun has no DOM. See
+// testDomShim.ts for why this is the one shared stub every suite in the run
+// installs, rather than a stub hand-rolled per file.
+installDomShim();
 
 const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
 

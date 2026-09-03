@@ -320,11 +320,11 @@
  *     path. query({sql, limit}) — one read-only SQL statement over the `files`
  *     and `dirs` views, which is how you get totals, per-extension breakdowns
  *     and path matches too.
- *     TWO methods on purpose. `query` already subsumes what wrapped
- *     stats/lookup calls did, and readiness rides on every response, so a
+ *     TWO methods on purpose. `query` already subsumes what a wrapped
+ *     stats call would be, and readiness rides on every response, so a
  *     `status` method was surface without capability. Scanning, editing
  *     roots/ignore and the repos derivation stay raw fetch + `X-Fused: 1`
- *     (section C of skills/fused-render-index) — managing the index is a shell
+ *     (documented in skills/fused-render-index) — managing the index is a shell
  *     action, not a render path, and so are /api/index/delete (wipes the whole
  *     store) and /api/index/ask (spends AI credits per call).
  *     Both resolve with the endpoint's own payload PLUS a normalized
@@ -4771,9 +4771,9 @@
   //   the only ones that check behaviour rather than spelling.
   //
   //   TWO methods, deliberately: `search` and `query`. `query` is read-only SQL
-  //   over the same `files`/`dirs` views that /api/index/stats and /lookup read,
-  //   so wrapping those was a second spelling of one capability; readiness rides
-  //   on every response, so `status` was not needed as a method either. Scanning,
+  //   over the same `files`/`dirs` views /api/index/stats reads, so wrapping
+  //   stats too was a second spelling of one capability; readiness rides on
+  //   every response, so `status` was not needed as a method either. Scanning,
   //   config and the repos derivation stay raw-fetch-only (with `X-Fused: 1`) —
   //   managing the index is a shell action, not something a render path does.
   function fileIndexUrl(path, params) {
@@ -4910,9 +4910,9 @@
     });
   }
 
-  // The workhorse, and the reason `stats`/`lookup` are not here: totals, a
+  // The workhorse, and the reason `stats` is not a separate method: totals, a
   // per-extension breakdown and a path match are all SELECTs over `files`/`dirs`,
-  // and the guard (index/query.py) is the same one those routes read through.
+  // and the guard (index/query.py) is the same one that route reads through.
   function fileIndexQuery(opts) {
     opts = opts || {};
     const body = { sql: opts.sql };
