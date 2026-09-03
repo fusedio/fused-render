@@ -81,8 +81,8 @@ WORKSPACE = fused_dir()
 SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
 
 GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
-# The clone (every app + its preview.png) is the long call: 25 apps, ~10 MiB
-# even shallow, and it runs on a first-visit request path.
+# The clone (every app, with its preview still and assets) is the long call —
+# tens of megabytes even shallow, on a first-visit request path.
 CLONE_TIMEOUT = 180
 LOCK_TIMEOUT = CLONE_TIMEOUT + 20
 
@@ -282,15 +282,12 @@ def _refresh():
         # module clones once and never fetches again (D550), and the two
         # reads it does perform work fine at depth 1 (`rev-parse HEAD` for
         # the catalog's commit, `remote get-url origin` for _cache_ready).
-        # Measured against fused-render-community-apps: 29.35 -> 9.72 MiB
-        # transferred, 1022 -> 317 objects, 44 -> 25 MB on disk. Depth is
-        # worth MORE than it looks, and increasingly so: the upstream
-        # recompression of its previews and assets added slim blobs without
-        # removing the fat originals from history, so a full clone pays for
-        # both copies (it grew from 22.03 MiB before that cleanup, while
-        # shallow fell from 18.59). The rest of the weight is the working
-        # tree itself (14.20 MB raw at HEAD, previews ~3.5 MB of it), which
-        # only the community repo can shrink.
+        # Depth is worth more than it looks, and grows more so over time: the
+        # repo's heaviest content is preview stills and app assets, and every
+        # recompression pass upstream adds a slim blob without removing the
+        # fat original from history — a full clone pays for both copies, a
+        # shallow one only for HEAD. What is left after depth is the working
+        # tree itself, which only the community repo can shrink.
         #
         # It stays an ordinary git work tree, which is what SPEC §33/GT-20
         # needs: `fetch` + `rev-list --left-right --count HEAD...origin/x` +
@@ -298,9 +295,10 @@ def _refresh():
         # Update row still reports and applies upstream commits. A user who
         # wants the full log runs `git fetch --unshallow` themselves.
         #
-        # Not partial (`--filter=blob:none`): every blob is checked out
-        # anyway, so it measured ~0.3 MiB better while leaving a promisor
-        # remote — a network dependency — inside the user's editable tree.
+        # Not partial (`--filter=blob:none`): the tree is fully checked out,
+        # so every blob gets fetched anyway — it measured barely better than
+        # plain shallow, and the price is a promisor remote (a standing
+        # network dependency) inside the user's editable tree.
         r = _git(WORKSPACE, "clone", "--depth", "1", "--single-branch",
                  "--no-tags", "--", REPO_URL,
                  os.path.join(staging, "showcase"), timeout=CLONE_TIMEOUT)
