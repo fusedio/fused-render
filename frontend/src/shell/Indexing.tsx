@@ -21,18 +21,12 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-
-// The editor is a textarea, one pattern per line, because that IS the format:
-// the server's own parser takes newline-separated text, comments and all
-// (index/specs/scan-ignore.md §2). A row-per-chip widget would be a second,
-// lossier representation of the same list.
-function patternsToText(patterns: string[]): string {
-  return patterns.join("\n");
-}
-
-function textToPatterns(text: string): string[] {
-  return text.split("\n");
-}
+import {
+  missingDefaults,
+  patternsToText,
+  textToPatterns,
+  unionWithDefaults,
+} from "./indexing-lib";
 
 // Same pattern as Preferences.tsx's ReaderToggle: local busy/error, a PUT
 // that returns the full Prefs, and the parent re-renders from it. Kept here
@@ -140,11 +134,17 @@ export function IndexingPanel({
         : "Saved.";
     });
 
+  // Union, not replace: a saved config predating a `defaults` addition (e.g.
+  // the `dist`/`build`/`out` group, D656) is missing patterns the user never
+  // chose to exclude — they just never had the chance to. Replacing would
+  // also discard whatever the user has added of their own, which is exactly
+  // why a user in that position would rightly not press this button.
   const restoreDefaults = () => {
-    if (config) setText(patternsToText(config.defaults));
+    if (config) setText(unionWithDefaults(text, config.defaults));
   };
 
   const dirty = config !== null && text !== patternsToText(config.ignore);
+  const stale = config !== null ? missingDefaults(config.ignore, config.defaults) : [];
   const indexingOff = !prefs.indexing.enabled;
 
   return (
@@ -274,12 +274,18 @@ export function IndexingPanel({
               </button>
               <button
                 type="button"
-                disabled={busy || text === patternsToText(config.defaults)}
+                disabled={busy || unionWithDefaults(text, config.defaults) === text}
                 onClick={restoreDefaults}
               >
                 Restore defaults
               </button>
             </div>
+            {stale.length > 0 && (
+              <p className="deploy-muted">
+                New skip rules are available: {stale.join(", ")}. Restoring defaults adds
+                them; your own entries are kept.
+              </p>
+            )}
             <p className="deploy-muted">
               Changing these rules rebuilds the index, so folders you just excluded stop
               appearing in search and ones you re-included start appearing.

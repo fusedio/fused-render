@@ -4,8 +4,7 @@ Ported from OpenIndex's `query.py` MINUS its `sql` action, which was an
 arbitrary read/write surface with no allowlist and no read-only flag. User SQL
 lives in `guarded_query.py` instead, where the confinement is the whole point of
 the module (specs/query.md §5); nothing here takes a caller's statement.
-`stats` and `lookup` build SQL only from escaped literals, an int-cast
-limit/offset and a fixed sort allowlist.
+`stats` builds SQL only from escaped literals, same as every other reader here.
 
 duckdb is imported inside each function, not at module top: this module is
 imported by the server's router, and a call against a missing index should not
@@ -32,8 +31,6 @@ from fused_render.index.store import (
 
 logger = logging.getLogger(__name__)
 
-_DRIVE = re.compile(r"^[A-Za-z]:/")
-
 # A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
 # ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
 # reduced to "". Every root normalization below restores the trailing "/" for
@@ -50,14 +47,6 @@ def _root_or_bare(stripped: str) -> str:
     root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
     unchanged."""
     return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
-
-SORTS = {
-    "path": "path ASC", "size": "size DESC", "mtime": "mtime DESC",
-    "name": "name ASC",
-}
-
-# Rows a single lookup may return, whatever the caller asks for.
-MAX_LIMIT = 5_000
 
 # Entries an in-folder corpus may return — the same cap /api/fs/walk uses, so
 # swapping the corpus source cannot change how much the client holds.
@@ -125,27 +114,6 @@ def prune(parts, prefix):
     return out
 
 
-def pattern_for(q: str):
-    """Turn a user query into (like_pattern, prune_prefix).
-
-    `*` is a wildcard; everything else is a literal substring match anywhere
-    in the path. A query starting with `/`, a drive letter or `~` is anchored
-    at the start, and its literal lead-in (up to the first `*`) prunes
-    partitions."""
-    q = norm(q)
-    anchored = q.startswith("/") or q.startswith("~") or bool(_DRIVE.match(q))
-    if q.startswith("~"):
-        q = norm(os.path.expanduser(q))
-    lit = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    pat = lit.replace("*", "%")
-    if not anchored:
-        pat = "%" + pat
-    if not pat.endswith("%"):
-        pat += "%"
-    prune_prefix = q.split("*", 1)[0] if anchored else ""
-    return pat, prune_prefix
-
-
 def files_src(cfg: IndexConfig, parts) -> str:
     """A duckdb source over exactly the partitions the MANIFEST names.
 
@@ -172,48 +140,22 @@ def _depth_col(con, src: str, path_col: str) -> str:
     return "depth" if "depth" in cols else depth_expr(path_col)
 
 
-def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
-           sort: str = "mtime") -> dict:
-    """Files whose path matches `query`, with partition-pruning telemetry.
-    An index that was never built answers `{empty: True}` rather than raising —
-    "no index yet" is a state the UI renders, not an error."""
-    m = read_manifest(cfg)
-    if m is None:
-        return {"empty": True, "location": cfg.dir, "rows": [], "total": 0,
-                "partitions": [], "scanned_partitions": 0, "of_partitions": 0}
-    import duckdb
+def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
+         token=None) -> dict:
+    """Totals for ONE subtree — the explicit `root`, else the manifest's
+    `last_root`. An index may hold several roots, so a whole-index total
+    would be a number nobody asked for.
 
-    q = (query or "").strip().rstrip("/")
-    pat, prune_prefix = pattern_for(q) if q else ("%", "")
-    hit = prune(m["partitions"], prune_prefix)
-    base = {"empty": False, "location": cfg.dir,
-            "partitions": [p["file"] for p in hit],
-            "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"])}
-    if not hit:
-        return {**base, "rows": [], "total": 0}
-    where = (f"WHERE path ILIKE '{_q(pat)}' ESCAPE '\\'" if q else "WHERE 1=1")
-    order = SORTS.get(sort, SORTS["mtime"])
-    limit = max(0, min(int(limit), MAX_LIMIT))
-    offset = max(0, int(offset))
-    src = files_src(cfg, hit)
-    con = duckdb.connect()
-    total = con.execute(f"SELECT count(*) FROM {src} {where}").fetchone()[0]
-    rows = con.execute(
-        f"SELECT path, dir, name, ext, size, mtime FROM {src} {where} "
-        f"ORDER BY {order} LIMIT {limit} OFFSET {offset}").fetchall()
-    cols = ["path", "dir", "name", "ext", "size", "mtime"]
-    return {**base, "rows": [dict(zip(cols, r)) for r in rows],
-            "total": int(total)}
+    The default is a `count(*)`/`sum(size)` over partitions PRUNED to the
+    root's range (`prune`, query.md §4) — no per-extension grouping. Pass
+    `breakdown=True` for `types`: the same partitions, but a `GROUP BY ext`
+    pass over them, which most callers never read and shouldn't pay for.
 
-
-def stats(cfg: IndexConfig, root: str = "") -> dict:
-    """Totals + per-extension breakdown for ONE subtree — the explicit `root`,
-    else the manifest's `last_root`. An index may hold several roots, so a
-    whole-index total would be a number nobody asked for.
-
-    Known cost (inherited): this reads every partition to group by extension;
-    there is no cached rollup."""
+    `token` (index/cancel.CancelToken), when given, is bound to the connection
+    the moment it exists and checked before each query — same contract
+    `search_ranked` documents at length. `breakdown=True` is the only pass
+    here expensive enough for cancellation to matter in practice, but the
+    check costs nothing on the cheap path either."""
     m = read_manifest(cfg)
     if m is None:
         return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
@@ -221,39 +163,67 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
     import duckdb
 
     con = duckdb.connect()
-    root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
-    root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
-    # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
-    # drive root "C:/" via _root_or_bare above) — appending another "/"
-    # unconditionally, as a plain `root != "/"` check used to, would double
-    # it on the drive-root case and match nothing.
-    pfx = like_literal(root if root.endswith("/") else root + "/")
-    inside = (f"(dir = '{_q(root)}' "
-              f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
-    n_rows, total_size, n_dirs = 0, 0, 0
-    types = []
-    if os.path.exists(cfg.dirs_parquet):
-        n_dirs = con.execute(
-            f"SELECT count(*) FROM {dirs_src(cfg)} "
-            f"WHERE {inside}").fetchone()[0]
-    if m.get("partitions"):
-        by_ext = con.execute(
-            f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
-            f"coalesce(sum(size), 0) s "
-            f"FROM {files_src(cfg, m['partitions'])} "
-            f"WHERE {inside} "
-            f"GROUP BY 1 ORDER BY s DESC").fetchall()
-        n_rows = sum(r[1] for r in by_ext)
-        total_size = sum(r[2] for r in by_ext)
-        top, rest = by_ext[:50], by_ext[50:]
-        types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
-        if rest:
-            types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
-                          "size": int(sum(r[2] for r in rest))})
-    return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
-            "dirs": int(n_dirs), "total_size": int(total_size),
-            "updated": m.get("updated"), "last_root": root,
-            "partitions": m["partitions"], "types": types}
+    if token is not None:
+        token.bind(con)
+    try:
+        root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
+        root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
+        # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
+        # drive root "C:/" via _root_or_bare above) — appending another "/"
+        # unconditionally, as a plain `root != "/"` check used to, would double
+        # it on the drive-root case and match nothing.
+        prefix = root if root.endswith("/") else root + "/"
+        pfx = like_literal(prefix)
+        inside = (f"(dir = '{_q(root)}' "
+                  f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+        hit = prune(m["partitions"], prefix)
+        n_rows, total_size, n_dirs = 0, 0, 0
+        types = []
+        if os.path.exists(cfg.dirs_parquet):
+            if token is not None:
+                token.check()
+            n_dirs = con.execute(
+                f"SELECT count(*) FROM {dirs_src(cfg)} "
+                f"WHERE {inside}").fetchone()[0]
+        if hit and breakdown:
+            if token is not None:
+                token.check()
+            by_ext = con.execute(
+                f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
+                f"coalesce(sum(size), 0) s "
+                f"FROM {files_src(cfg, hit)} "
+                f"WHERE {inside} "
+                f"GROUP BY 1 ORDER BY s DESC").fetchall()
+            n_rows = sum(r[1] for r in by_ext)
+            total_size = sum(r[2] for r in by_ext)
+            top, rest = by_ext[:50], by_ext[50:]
+            types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
+            if rest:
+                types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
+                              "size": int(sum(r[2] for r in rest))})
+        elif hit:
+            if token is not None:
+                token.check()
+            n_rows, total_size = con.execute(
+                f"SELECT count(*), coalesce(sum(size), 0) "
+                f"FROM {files_src(cfg, hit)} WHERE {inside}").fetchone()
+        return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
+                "dirs": int(n_dirs), "total_size": int(total_size),
+                "updated": m.get("updated"), "last_root": root,
+                "partitions": m["partitions"], "types": types}
+    except duckdb.InterruptException:
+        # Same attribution rule search_ranked's identical handler documents:
+        # only an interrupt THIS token caused becomes Cancelled.
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
+        if token is not None:
+            token.unbind()
+        con.close()
 
 
 def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
@@ -295,7 +265,7 @@ def _coverage_reason(con, cfg: IndexConfig, root: str) -> str:
 
 
 def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
-                 include_dirs: bool = True) -> dict:
+                 include_dirs: bool = True, token=None) -> dict:
     """The explorer's in-folder corpus for `root`, from the index.
 
     Returns entries in exactly the shape /api/fs/walk streams — `rel` (posix,
@@ -312,6 +282,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     it — it wants the whole corpus, so client-side fuzzy matching stays
     subsequence-based rather than being pre-narrowed to substrings — but it
     keeps the endpoint useful for a caller that only wants the hits.
+
+    `token`, when given, follows `search_ranked`'s contract exactly: bound to
+    the connection as soon as it exists, checked before the one real query,
+    and an interrupt this token caused re-raises as `Cancelled`.
     """
     # `or "/"` because rstrip eats the filesystem root down to the empty
     # string, which the guard below then reads as "no root given" — so a
@@ -334,63 +308,79 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    covered = _root_is_covered(con, cfg, root)
-    if not covered:
-        return {**empty, "updated": updated, "age_s": age}
-    # See stats()'s identical fix above: root already ends in "/" for
-    # any bare root (POSIX or a Windows drive), not only "/" itself.
-    prefix = root if root.endswith("/") else root + "/"
-    prefix_like = like_literal(prefix)
-    limit = max(0, min(int(limit), MAX_CORPUS))
-    hit = prune(m["partitions"], prefix)
-    qlit = like_literal(q.strip()) if q and q.strip() else ""
-    # Files and directories compete in ONE depth-ordered query, not two.
-    #
-    # Two queries meant the files branch was served first and directories got
-    # only `limit - len(files)` rows — so on any tree big enough to truncate the
-    # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
-    # naming a folder returned the files inside it and never the folder. The
-    # live walk never had this bug because BFS interleaves both kinds.
-    #
-    # Shallow entries first (smaller `depth`), path order within a depth: when
-    # the cap bites on a >limit tree, the capped corpus keeps the same
-    # breadth-first character as the walk it replaces — plain ORDER BY path
-    # would starve everything after the first deep subtree.
-    #
-    # The trade: directories now spend part of the budget files used to have,
-    # so a very large tree carries slightly fewer files. A corpus with no
-    # folders in it at all is strictly worse.
-    branches = []
-    if hit:
-        fsrc = files_src(cfg, hit)
-        like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT path, size, mtime, false AS is_dir, "
-            f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
-            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
-    if include_dirs:
-        dsrc = dirs_src(cfg)
-        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
-            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-            f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
-            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
-    entries, truncated = [], False
-    if branches:
-        # One row past the cap, so "there was more" is known without a count.
-        rows = con.execute(
-            " UNION ALL ".join(branches)
-            + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
-        for path, size, mtime, is_dir, _depth in rows[:limit]:
-            entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
-                            "size": int(size) if size is not None else None,
-                            "mtime": float(mtime) if mtime is not None else None})
-        truncated = len(rows) > limit
-    return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-            "root": root, "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"]), "entries": entries,
-            "truncated": truncated, "total": len(entries)}
+    if token is not None:
+        token.bind(con)
+    try:
+        covered = _root_is_covered(con, cfg, root)
+        if not covered:
+            return {**empty, "updated": updated, "age_s": age}
+        # See stats()'s identical fix above: root already ends in "/" for
+        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        prefix = root if root.endswith("/") else root + "/"
+        prefix_like = like_literal(prefix)
+        limit = max(0, min(int(limit), MAX_CORPUS))
+        hit = prune(m["partitions"], prefix)
+        qlit = like_literal(q.strip()) if q and q.strip() else ""
+        # Files and directories compete in ONE depth-ordered query, not two.
+        #
+        # Two queries meant the files branch was served first and directories got
+        # only `limit - len(files)` rows — so on any tree big enough to truncate the
+        # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
+        # naming a folder returned the files inside it and never the folder. The
+        # live walk never had this bug because BFS interleaves both kinds.
+        #
+        # Shallow entries first (smaller `depth`), path order within a depth: when
+        # the cap bites on a >limit tree, the capped corpus keeps the same
+        # breadth-first character as the walk it replaces — plain ORDER BY path
+        # would starve everything after the first deep subtree.
+        #
+        # The trade: directories now spend part of the budget files used to have,
+        # so a very large tree carries slightly fewer files. A corpus with no
+        # folders in it at all is strictly worse.
+        branches = []
+        if hit:
+            fsrc = files_src(cfg, hit)
+            like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT path, size, mtime, false AS is_dir, "
+                f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
+                f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+        if include_dirs:
+            dsrc = dirs_src(cfg)
+            dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+                f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+                f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
+                f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
+        entries, truncated = [], False
+        if branches:
+            if token is not None:
+                token.check()
+            # One row past the cap, so "there was more" is known without a count.
+            rows = con.execute(
+                " UNION ALL ".join(branches)
+                + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
+            for path, size, mtime, is_dir, _depth in rows[:limit]:
+                entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
+                                "size": int(size) if size is not None else None,
+                                "mtime": float(mtime) if mtime is not None else None})
+            truncated = len(rows) > limit
+        return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+                "root": root, "scanned_partitions": len(hit),
+                "of_partitions": len(m["partitions"]), "entries": entries,
+                "truncated": truncated, "total": len(entries)}
+    except duckdb.InterruptException:
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
+        if token is not None:
+            token.unbind()
+        con.close()
 
 
 # Rows stage A hands to the Python ranker. Measured basis (571k rows under
@@ -424,77 +414,10 @@ def _subseq_regex(q: str) -> str:
                      for c in q)
 
 
-# root -> (index generation, ignore-root rels). The `.gitignore` rows under a
-# root change only when the index does, and the query behind them is a scan of
-# the path column — a few tens of ms that a keystroke must not pay. Keyed on the
-# manifest's `updated`, so a completed scan re-discovers exactly once.
-#
-# CAPPED, and the cap is not decoration. This used to be "bounded by the number
-# of roots ever searched in one process", which was true when the home page was
-# the only caller: one root, one entry. The in-folder search makes every folder
-# anybody browses into a root, so the bound became "every folder visited this
-# session" — a dict that only grows, holding a list of rels per entry.
-ORACLE_CACHE_MAX = 32
-_ORACLE_RELS: dict = {}
-
-
-def _remember_oracle_rels(key, value) -> None:
-    """Insert or refresh, evicting the least recently USED."""
-    _ORACLE_RELS.pop(key, None)
-    _ORACLE_RELS[key] = value
-    while len(_ORACLE_RELS) > ORACLE_CACHE_MAX:
-        _ORACLE_RELS.pop(next(iter(_ORACLE_RELS)))
-
-
-def _recall_oracle_rels(key):
-    """Read, and count the read as use.
-
-    Recency has to move on the READ or the policy is first-in-first-out with
-    an LRU's name on it: the folder somebody searches all day would be evicted
-    by thirty-two others they opened once, and re-pay the path-column scan
-    that this cache exists to skip."""
-    cached = _ORACLE_RELS.pop(key, None)
-    if cached is not None:
-        _ORACLE_RELS[key] = cached
-    return cached
-
-
-def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
-                  updated) -> list:
-    """Dirs under `root` that hold a `.gitignore`, as rels ('' = the root).
-
-    The server's gitignore filter needs these, and it cannot get them from a
-    ranked payload: stage A drops every dot-leading rel unless the query asks
-    for hidden entries, so `.gitignore` is essentially never a candidate, and a
-    filter that discovers its oracles from the rows it is given then decides
-    nothing at all (server/index_gitignore.filter_corpus). The index knows
-    where they are, so it says.
-
-    Not the same question as "which oracle decides this row" — that stays in
-    the filter. This is only the discovery half, moved to the one place that
-    can see the whole tree cheaply."""
-    key = (cfg.dir, root)
-    cached = _recall_oracle_rels(key)
-    if cached is not None and cached[0] == updated:
-        return cached[1]
-    rels = []
-    if parts:
-        rel_from = len(prefix) + 1
-        rows = con.execute(
-            f"SELECT DISTINCT substr(path, {rel_from}) AS rel "
-            f"FROM {files_src(cfg, parts)} "
-            f"WHERE path LIKE '{like_literal(root)}/%' ESCAPE '\\' "
-            f"AND path LIKE '%/.gitignore' ESCAPE '\\'").fetchall()
-        for (rel,) in rows:
-            rels.append(rel[: -len("/.gitignore")] if "/" in rel else "")
-    _remember_oracle_rels(key, (updated, rels))
-    return rels
-
-
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
                   cap: int = RANK_CANDIDATE_CAP,
-                  gitignore_filter=None, token=None) -> dict:
+                  token=None) -> dict:
     """Search `root` for `q` — filtered AND ranked here, top `limit` returned.
 
     The home page used to fetch the whole corpus and rank it in the browser:
@@ -529,12 +452,9 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
       rows below the cut that nobody will ever see. `escalated` reports which
       happened.
 
-      The check is made AFTER ranking and gitignore-filtering pass 1, not on
-      the raw SQL row count, so no safety margin is needed or used: the number
-      compared against `limit` is the number of rows the user would actually
-      get. A margin over the raw count would be the guess this avoids —
-      gitignore can drop any fraction of a pass, and guessing high spends the
-      143 ms it was trying to save.
+      The check is made AFTER ranking pass 1, not on the raw SQL row count, so
+      no safety margin is needed or used: the number compared against `limit`
+      is the number of rows the user would actually get.
 
       Deliberately NOT taken: a depth cap on pass 1. `depth` is already a
       tie-break in the ORDER BY, so shallow-first is delivered without a
@@ -542,9 +462,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
       round trip precisely when the first answer was wrong.
     - **B, in Python.** `rank_entries` (index/rank.py) over those ≤`cap` rows —
       the real fuzzy scoring, in parity with the browser's ranker — then the
-      gitignore filter, THEN the cut to `limit`. That order is not incidental:
-      filtering after the cut is what makes today's corpus report `truncated`
-      while holding fewer rows than it claims.
+      cut to `limit`.
 
     KNOWN, and logged rather than hidden: stage A's cap can in principle drop a
     row stage B would have ranked first. It is unlikely because the two agree
@@ -554,13 +472,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `truncated: true` in the response. Silent truncation is what this removes,
     not what it reintroduces.
 
-    `gitignore_filter(root, entries, oracle_rels) -> entries` is how the server
-    layer hands in `index_gitignore.filter_corpus`; the index package does not
-    import the server. `oracle_rels` is this function's half of that job — the
-    dirs holding a `.gitignore`, read out of the INDEX (`_ignore_roots`),
-    because a filter that discovers them from a 200-row ranked payload finds
-    none and therefore filters nothing. Omitted, nothing is filtered.
-
     Coverage semantics are `search_under`'s exactly: an uncovered root, a
     missing index or a package directory answers `covered: false` with no hits
     — never an error, because "no index yet", "not covered" and "a scan is
@@ -569,11 +480,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked at every phase boundary in
     `pass_over` — before each `execute`, after the `fetchall`, before
-    `rank_entries`, before the gitignore filter. Binding is to the whole
-    CONNECTION, though, not just `pass_over`'s statement, so a
-    `duckdb.InterruptException` can land in any query run on it —
-    `_coverage_reason`'s and `_ignore_roots`' included, both of which execute
-    on this same connection before `pass_over` ever does. One try/except
+    `rank_entries`. Binding is to the whole CONNECTION, though, not just
+    `pass_over`'s statement, so a `duckdb.InterruptException` can land in any
+    query run on it — `_coverage_reason`'s included, which executes on this
+    same connection before `pass_over` ever does. One try/except
     around the whole bound region (not one per query site) re-raises as
     `Cancelled` an interrupt this token caused; one it did NOT cause (a real
     duckdb error, or another caller's timeout on a connection this function
@@ -695,9 +605,9 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             if token is not None:
                 token.check()
             # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
-            # and the gitignore filter below — this fires on every keystroke, so
-            # it stays DEBUG rather than something louder (same reasoning as the
-            # cap-bit line right after it).
+            # below — this fires on every keystroke, so it stays DEBUG rather
+            # than something louder (same reasoning as the cap-bit line right
+            # after it).
             logger.debug("index rank: stage A (%s) for %r under %s: %d row(s) "
                         "in %.1fms", name, qs, root,
                         len(rows), (time.monotonic() - t0) * 1000)
@@ -719,12 +629,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             if token is not None:
                 token.check()
             ranked = rank_entries(qs, entries)
-            if gitignore_filter is not None:
-                if token is not None:
-                    token.check()
-                ranked = gitignore_filter(
-                    root, ranked,
-                    _ignore_roots(con, cfg, hit, root, prefix, updated))
             return ranked, len(rows) > cap
 
         # The LADDER (see the docstring): the cheap substring pass first, and the
@@ -744,10 +648,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     except duckdb.InterruptException:
         # `token.bind(con)` above binds the WHOLE connection, not just
         # pass_over's own SELECT — con.interrupt() can land in any statement
-        # run on it, including `_coverage_reason`'s and `_ignore_roots`'
-        # queries above, both of which run on this same bound connection
-        # before pass_over ever does. Handled once here for the entire bound
-        # region rather than wrapping each query site separately.
+        # run on it, including `_coverage_reason`'s query above, which runs on
+        # this same bound connection before pass_over ever does. Handled once
+        # here for the entire bound region rather than wrapping each query
+        # site separately.
         #
         # An interrupt with NO token, or one this token did not cause, is a
         # real error (someone else's timeout, a genuine duckdb abort) and
