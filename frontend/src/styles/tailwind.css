@@ -150,3 +150,169 @@
     color: inherit;
   }
 }
+
+/* ---- Playground: the six keyframes and the one custom breakpoint ----------
+   The Playground composites (platform/ui/playground/) are pure Tailwind, with
+   three exceptions that a utility cannot express and that live here instead of
+   in a stylesheet of their own:
+
+   1. `@custom-variant pg-narrow` — the tab's own 760px stacking point, which
+      is not on Tailwind's scale (`max-md` is 767.98px). Same query, same value
+      as the `@media (max-width: 760px)` block it replaces.
+   2. `--animate-pg-*` + their `@keyframes` — registered in `@theme` so the
+      composites reach them as `animate-pg-blink` and friends.
+   3. The settings fold — a two-track container-query grid whose tracks glide,
+      held open through the exit by `:has()`, with the card fading on a delay
+      inside it. Grid-template transitions, `:has()` and container queries are
+      all beyond a utility class, so the fold keeps the shape it had in
+      ai-playground.css, renamed onto the composites' own hooks.
+
+   Deliberately UNLAYERED, like the `[data-slot]` block above: ai-playground.css
+   is unlayered too, and while the stage files still render `.pg-work` (steps
+   4-8) the fold's rules have to out-rank the ones they are replacing. */
+@custom-variant pg-narrow (@media (max-width: 760px));
+
+@theme {
+  --animate-pg-ring-spin: pg-ring-spin 1.1s linear infinite;
+  --animate-pg-blink: pg-blink 1s steps(2) infinite;
+  --animate-pg-shimmer: pg-shimmer 1.4s linear infinite;
+  --animate-pg-pulse: pg-pulse 1.6s ease-out infinite;
+}
+
+/* 0% at twelve o'clock, so the arc starts where the ring's own start point is
+   drawn (SVG puts it at three). */
+@keyframes pg-ring-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+@keyframes pg-blink {
+  50% { opacity: 0; }
+}
+
+@keyframes pg-shimmer {
+  to { background-position: -200% 0; }
+}
+
+@keyframes pg-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(var(--error-rgb), 0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(var(--error-rgb), 0); }
+}
+
+/* Both directions travel the same 8px, so the settings card leaves the way it
+   arrived. */
+@keyframes pg-fold-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pg-fold-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(8px); }
+}
+
+/* -- the settings fold ------------------------------------------------------
+   `.stage-work-grid` is the work column, `.stage-config-rail` the full-height
+   rail the card travels in, `.stage-config-inner` the card that sticks inside
+   it. Closed, the grid is one track and lays out exactly as a flex column did;
+   open (`.is-open`), the content track gives the card's track back and both
+   states are plain lengths, so the flip itself glides. */
+.stage-work-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.stage-config-inner {
+  animation: pg-fold-in var(--pg-fade) cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+/* A mount the user did not cause (the page loading with the panel open) has
+   nothing to animate FROM. */
+.stage-config-rail.no-entry > .stage-config-inner {
+  animation: none;
+}
+
+.stage-config-rail.is-closing > .stage-config-inner {
+  animation: pg-fold-out var(--pg-fade) ease-in both;
+}
+
+/* Side-by-side survives down to a 480px content track: content = frame - 16
+   gap - 240 card, and the frame is 100cqw - 32 below its cap, so 768cqw is the
+   floor. Below it the card moves into flow under the input. */
+@container (min-width: 768px) {
+  .stage-work-grid {
+    grid-template-columns: 100% 0px;
+    column-gap: 0px;
+    transition:
+      grid-template-columns var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1),
+      column-gap var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1);
+    position: relative;
+  }
+
+  /* Open geometry — held for the card's whole LIFE, not just while the cog
+     says open: the `:has()` half keeps it in force through the exit, until the
+     card actually unmounts, which is what sequences the fold. */
+  .stage-work-grid.is-open,
+  .stage-work-grid:has(.stage-config-rail.is-closing),
+  /* TRANSITIONAL, dies with ai-playground.css: the five stage files still
+     render `.pg-work`, so the rail's own exit has to keep THEIR grid open too
+     — the `:has()` in ai-playground.css names `.pg-config-card`, which the
+     rail no longer wears. */
+  .pg-work:has(.stage-config-rail.is-closing) {
+    grid-template-columns: calc(100% - var(--pg-gap) - var(--pg-card)) var(--pg-card);
+    column-gap: var(--pg-gap);
+  }
+
+  /* Without it auto-placement drops the grid's SECOND child into the empty
+     second column. */
+  .stage-work-grid > * {
+    grid-column: 1;
+  }
+
+  /* The shadcn Card ships `overflow-hidden`; kept, the rail would be clipped
+     at the work card's edge instead of escaping into the side track. */
+  .stage-work-grid > .stage-work-card {
+    overflow: visible;
+  }
+
+  /* The panel lives INSIDE the work card in the DOM — which is where the
+     narrow fallback needs it in flow — and escapes here: pinned to the right
+     edge at the track's width, which is exactly the reserved second column. */
+  .stage-config-rail {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: var(--pg-card);
+  }
+
+  /* The card rides the rail: it stays on screen while a long result scrolls
+     past it. Sticky cannot live on the rail itself — an abspos box has nothing
+     to stick within — which is why the rail and the card are two boxes. */
+  .stage-config-rail > .stage-config-inner {
+    position: sticky;
+    top: 0;
+  }
+
+  /* The wait that keeps the card out of the moving track's way — one whole
+     glide, so the first pixel it paints lands in a gutter that already exists.
+     Not on the way out: the exit fades at once. */
+  .stage-config-rail:not(.is-closing) > .stage-config-inner {
+    animation-delay: var(--pg-glide);
+  }
+}
+
+/* Asked for no motion: the fold still happens, it just happens at once. The
+   exit KEEPS its duration in JS, so the animation is dropped rather than
+   zeroed. */
+@media (prefers-reduced-motion: reduce) {
+  .stage-work-grid {
+    transition: none;
+  }
+  .stage-config-inner,
+  .stage-config-rail.is-closing > .stage-config-inner {
+    animation: none;
+  }
+}
