@@ -250,6 +250,32 @@ def test_index_engine_screens_hidden_and_junk_paths(tmp_path):
     assert _paths(out) == ["/r/keep.txt"]
 
 
+def test_screened_rows_do_not_spend_the_result_budget(tmp_path, monkeypatch):
+    """A screened row must never occupy a LIMIT slot that a real match could
+    have used.
+
+    `_screen` runs AFTER the page is fetched, so if the exclusion only lived
+    there, a page dominated by junk rows (a `node_modules` a scan never
+    reached, say — DEFAULT_IGNORE_NAMES is user-editable and the scan-time
+    exclusion is not a guarantee for every index on disk) would come back
+    truncated and empty while a real match sat one row further down. Pushing
+    the exclusion into the WHERE clause (`_index_where`) is what keeps this
+    from happening: a `node_modules` row is never fetched in the first place,
+    so it can never eat a slot before `_screen` gets a chance to drop it."""
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
+    cfg = _index(
+        tmp_path, "/r",
+        # More matching junk rows than the budget, all NEWER than the real
+        # match — under `ORDER BY mtime DESC` they would fill the page first.
+        [(f"/r/node_modules/pkg{i}/hit-{i}.txt", 10, 100_000.0 + i) for i in range(10)]
+        + [("/r/real/hit-real.txt", 10, 1.0)],
+        dirs=["/r/node_modules"] + [f"/r/node_modules/pkg{i}" for i in range(10)]
+             + ["/r/real"])
+    out = _search_index(spec(name_terms=["hit"]), cfg)
+    assert _paths(out) == ["/r/real/hit-real.txt"]
+    assert out["truncated"] is False
+
+
 def test_index_engine_marks_a_capped_result_set_truncated(tmp_path, monkeypatch):
     cfg = _index(tmp_path, "/r", [(f"/r/hit-{i}.txt", 10, 100.0 + i)
                                   for i in range(5)])

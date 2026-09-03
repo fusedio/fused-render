@@ -62,6 +62,7 @@ from fused_render.server.common import _error
 # the pre-existing private name here because this module's callers (and its
 # tests) already know it as that.
 from fused_render.server.walk import junk_path as _junk_path
+from fused_render.server.walk import WALK_IGNORE_DIRS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -221,6 +222,15 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr,
     # spent on rows from ~/.cache that would be dropped a moment later;
     # _junk_path stays the single standard, this is only a budget prefilter.
     pieces = [f"{path_expr} NOT LIKE '%/.%'"]
+    # Same reasoning for WALK_IGNORE_DIRS segments: a node_modules (etc.) row
+    # must never occupy a LIMIT slot that _screen only throws away afterward,
+    # stranding a real match past the page. Checked as both a middle segment
+    # (.../name/...) and the path's own final segment (.../name), since a dirs
+    # row's path IS the directory and carries no trailing separator.
+    for _name in WALK_IGNORE_DIRS:
+        _lit = like_literal(_name)
+        pieces.append(f"{path_expr} NOT LIKE '%/{_lit}/%' ESCAPE '\\'")
+        pieces.append(f"{path_expr} NOT LIKE '%/{_lit}' ESCAPE '\\'")
     if spec["name_terms"]:
         # Substring, case-insensitive, OR'd across terms: the model lists
         # synonyms, and requiring all of them would over-filter. Recall matters
@@ -314,12 +324,11 @@ def _row_entry(row) -> dict:
 def _screen(rows) -> list:
     """Response entries for `rows`, minus the hits no search may surface.
 
-    `_junk_path` is the one screening standard left: dot-segments and
-    WALK_IGNORE_DIRS names. In practice it rarely drops an index row at all —
-    the scan itself already excludes the index's (user-editable)
-    DEFAULT_IGNORE_NAMES at build time, so a matching directory's rows were
-    never written to the index in the first place. This is a parity check
-    against the walk's own rules, not a bulk filter."""
+    `_junk_path` is the one screening standard: dot-segments and
+    WALK_IGNORE_DIRS names. Both halves are also pushed into `_index_where`, so
+    by the time rows reach here they should already be clean — this call is a
+    parity backstop against the walk's own rules (and against any index built
+    before that predicate existed), not the mechanism doing the excluding."""
     return [_row_entry(r) for r in rows if not _junk_path(r[0])]
 
 
@@ -327,10 +336,10 @@ def _collect(con, sql, budget: int):
     """Up to `budget` screened entries for one branch, plus whether the branch
     had more rows than it was allowed to contribute.
 
-    One page, `budget + 1` rows: screening now only drops the rare dot-segment
-    or WALK_IGNORE_DIRS row (see `_screen`), never a whole ignored subtree's
-    worth in one query, so a second page buys nothing worth the extra duckdb
-    round trip."""
+    One page, `budget + 1` rows: `_index_where` already excludes dot-segment
+    and WALK_IGNORE_DIRS rows before the LIMIT is applied, so `_screen` here
+    has nothing left to drop in the common case and a second page buys nothing
+    worth the extra duckdb round trip."""
     rows = con.execute(f"{sql} LIMIT {budget + 1}").fetchall()
     more = len(rows) > budget
     kept = _screen(rows[:budget])
