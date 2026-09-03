@@ -264,6 +264,41 @@ def test_the_ending_of_a_run_that_beat_the_stop_says_so(template):
     assert end["keepText"] is True
 
 
+# ---------------------------------------------------------- stopAllowed, in node
+
+def _stop_allowed(run_id, seat, stopped_seat, template="claude"):
+    """Run the page's real `stopAllowed` over one (run_id, seat, stoppedSeat)
+    triple, the same node-extraction pattern `_run_ending` uses above."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own stop-allowed decision")
+    html = _html(template)
+    start = html.index("function stopAllowed(")
+    fn = html[start:html.index("\n\n", start)]
+    script = fn + "\nconsole.log(JSON.stringify(stopAllowed(%s, %s, %s)));" % (
+        json.dumps(run_id), json.dumps(seat), json.dumps(stopped_seat))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_stop_already_asked_for_on_this_turn_is_not_repeated(template):
+    assert _stop_allowed("run-1", 3, 3, template) is False
+
+
+def test_a_new_turns_seat_is_not_blocked_by_an_earlier_turns_stop(template):
+    """B3 regression: `activeRun`'s run_id now spans a whole multi-turn
+    session behind a session host, so a guard keyed on run_id alone (rather
+    than the seat pollLoop hands out fresh each turn) went dead for every
+    turn after the first one Stop was ever pressed on. Pressing Stop again on
+    a LATER turn of the same run must still go through."""
+    assert _stop_allowed("run-1", 4, 3, template) is True
+
+
+def test_stop_is_never_allowed_with_no_run_or_no_seat(template):
+    assert _stop_allowed("", 1, 0, template) is False
+    assert _stop_allowed("run-1", 0, 0, template) is False
+
+
 # `test_the_two_chats_decide_endings_identically` lived here: it ran `runEnding`
 # from both chat templates over the same four terminal payloads and demanded byte
 # equality, which is what made the duplicated implementation safe. There is no

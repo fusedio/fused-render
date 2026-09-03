@@ -14680,7 +14680,23 @@ let activeWorking = null;
 let activeSegBody = null;
 // Keyed by id, not a bare boolean: it is read when a run ENDS, and a stale flag
 // would label the next turn's ending as a stop too.
-let stoppedRun = "";
+// `run_id` alone used to identify a stop worth blocking a repeat of — right
+// while a run was one turn. A session host (Task 2) makes one run_id span a
+// whole chat: gating the guard on it made Stop dead for every turn after the
+// first one it was ever pressed on. `activeSeat` is pollLoop's own per-call
+// counter (`loopSeq`), unique to the turn currently owning the chrome, so
+// `stoppedSeat` tracks "a stop was asked for on THIS turn's chrome" instead
+// of "this run was ever stopped".
+let activeSeat = 0;
+let stoppedSeat = 0;
+
+// Whether a Stop press should go through, given the run and turn currently
+// live and the turn a stop was last asked for. Pure, so it is tested the same
+// way `runEnding`/`escapeAction` are — against the page's own source, not a
+// re-implementation of the rule in the test.
+function stopAllowed(runId, seat, lastStoppedSeat) {
+  return !!runId && !!seat && lastStoppedSeat !== seat;
+}
 
 // How a finished run ends on screen. Killing claude leaves the run dead with no
 // `result` row, which `_poll` reports as an error BY DESIGN (a truncated reply
@@ -14707,8 +14723,9 @@ function runEnding(data, stopped) {
 
 async function stopRun() {
   const run_id = activeRun;
-  if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
-  stoppedRun = run_id;
+  const seat = activeSeat;
+  if (!stopAllowed(run_id, seat, stoppedSeat)) return;  // nothing live, or already going
+  stoppedSeat = seat;
   if (activeWorking) activeWorking.setStopping(true);
   try {
     const result = await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
@@ -14728,7 +14745,7 @@ async function stopRun() {
     // The kill never reached the backend, so the run is still going and the poll
     // loop is still streaming it. Take the claim back: leaving it set would
     // relabel this run's real ending as a stop the user never got.
-    stoppedRun = "";
+    stoppedSeat = 0;
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
@@ -14865,6 +14882,7 @@ async function pollLoop(run_id, gen = logGen) {
   // This run is now the one the stop button and Escape aim at. Set here, the one
   // place a run is ever in flight, which covers a re-attached run for free.
   activeRun = run_id;
+  activeSeat = seat;
   activeWorking = w;
   setRunningUi(true);
   // A real run owns the chrome now: the transcript-follower's line (if it beat
@@ -14950,7 +14968,7 @@ async function pollLoop(run_id, gen = logGen) {
         // One last read: a page published in the final seconds of the turn would
         // otherwise sit unmentioned until the user went back to the landing page.
         pollArtifacts();
-        const end = runEnding(data, stoppedRun === run_id);
+        const end = runEnding(data, stoppedSeat === seat);
         if (!end.keepText) {
           if (typer) typer.abort();
           if (reply) reply.remove();
@@ -15001,6 +15019,7 @@ async function pollLoop(run_id, gen = logGen) {
     // Stop square and Escape target.
     if (loopSeq === seat) {
       activeRun = null;
+      activeSeat = 0;
       activeWorking = null;
       activeSegBody = null;
       setRunningUi(false);
