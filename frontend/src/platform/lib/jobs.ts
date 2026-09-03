@@ -399,10 +399,19 @@ const JOB_KIND_TEXT: Record<JobKind, string> = { download: "Download", task: "Ta
  * empty: what kind of work this is, and how long it has been going. `stalled`
  * is folded in because a job with nothing else to say and no reporter left is
  * exactly the case most likely to need this fallback at all.
+ *
+ * `nowS` (C4 fix) is the SERVER's clock (`JobsSnapshot.now`), the same rule
+ * `JobsSnapshot.now`'s own doc states and every other age in this file
+ * follows — never the browser's `Date.now()`. `job.started_at` is a server
+ * timestamp; measuring it against the browser's clock instead reads wrong
+ * by however far the two have drifted, which after a tab throttle or a
+ * laptop sleep is not a rounding error — it is the same "finished in 3
+ * seconds' time" symptom `JobsSnapshot.now` exists to prevent, just for a
+ * duration instead of an age.
  */
-export function jobDetail(job: Job): string {
+export function jobDetail(job: Job, nowS: number): string {
   const kind = JOB_KIND_TEXT[job.kind] ?? "Job";
-  const started = `started ${engineDuration(Date.now() / 1000 - job.started_at)} ago`;
+  const started = `started ${engineDuration(nowS - job.started_at)} ago`;
   return job.stalled ? `${kind} · ${started} · not reporting` : `${kind} · ${started}`;
 }
 

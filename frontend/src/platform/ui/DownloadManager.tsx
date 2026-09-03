@@ -132,10 +132,17 @@ function useJobs(): {
    *  pre-existing jobs as arrivals on load (D574 bug 2). */
   settled: boolean;
   jobs: Job[];
+  /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
+   *  what `jobDetail` measures a running job's age against (C4 fix), never
+   *  the browser's `Date.now()`. Starts at `Date.now() / 1000` so a row
+   *  drawn before the first response lands still gets a plausible age
+   *  rather than measuring against zero. */
+  now: number;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [now, setNow] = useState<number>(() => Date.now() / 1000);
   const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
@@ -199,6 +206,7 @@ function useJobs(): {
         setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
+          setNow(snapshot.now);
           scheduleFor(snapshot.jobs);
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
@@ -255,7 +263,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, settled, refresh, patch };
+  return { jobs, now, settled, refresh, patch };
 }
 
 function Bar({ job }: { job: Job }) {
@@ -447,6 +455,7 @@ export function JobRow({
   onPatch,
   cancelFn = cancelJob,
   dismissFn = dismissJob,
+  now = Date.now() / 1000,
 }: {
   job: Job;
   onChanged: () => void;
@@ -459,6 +468,13 @@ export function JobRow({
    *  `@platform/lib/api`, which this module itself calls into). */
   cancelFn?: (id: string) => Promise<Job>;
   dismissFn?: (id: string) => Promise<{ dismissed: string }>;
+  /** The SERVER's clock (`JobsSnapshot.now`), threaded down from `useJobs`
+   *  for `jobDetail`'s fallback below (C4 fix). Defaults to the browser's
+   *  clock only for callers that genuinely have no server read to give —
+   *  `RepoUpdatesDock.tsx`'s terminal jobs, whose `jobStatusLine` never
+   *  falls through to `jobDetail` at all since every terminal state has its
+   *  own non-empty status text — and for tests that do not care. */
+  now?: number;
 }) {
   const [busy, setBusy] = useState(false);
   // A REJECTED cancel/dismiss must say so, not vanish (D572, user: "the
@@ -504,7 +520,8 @@ export function JobRow({
   // it) (D659): a running job with no server detail and no progress amount
   // falls through to `jobDetail`'s always-present facts (kind, started-when,
   // stalled) rather than leaving the row silent.
-  const statusLine = failure ?? ([status, amount].filter(Boolean).join(" · ") || jobDetail(job));
+  const statusLine =
+    failure ?? ([status, amount].filter(Boolean).join(" · ") || jobDetail(job, now));
 
   // Two controls, one meaning each — because "stop this" and "take it off my
   // screen" read as the same gesture when both hide behind an identical ✕, and
@@ -648,8 +665,15 @@ export function DownloadManagerView({
   onJobsReported,
   refresh,
   patch,
+  now,
 }: {
   reported: Job[];
+  /** The SERVER's clock (`JobsSnapshot.now`) as of `reported` — threaded down
+   *  to `JobRow`'s `jobDetail` fallback so a running row's age is measured
+   *  against the same clock its `started_at` came from (C4 fix). Optional so
+   *  a test mounting this view with a fixed list can omit it; real callers
+   *  always have one from `useJobs`. */
+  now?: number;
   /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
    *  gets `true`: sections ALWAYS start collapsed now (D603), unconditionally,
    *  with no stored preference to consult. KEPT rather than deleted with the
@@ -881,7 +905,13 @@ export function DownloadManagerView({
                         {showHeadings && <div className="dl-section-head">Running</div>}
                         <div className="dl-rows">
                           {jobs.map((job) => (
-                            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                            <JobRow
+                              key={job.id}
+                              job={job}
+                              onChanged={refresh}
+                              onPatch={patch}
+                              now={now ?? Date.now() / 1000}
+                            />
                           ))}
                         </div>
                       </div>
@@ -914,7 +944,7 @@ export default function DownloadManager({
   engines?: EnginesSlot;
   onJobsReported?: (jobs: Job[]) => void;
 }) {
-  const { jobs: reported, settled, refresh, patch } = useJobs();
+  const { jobs: reported, now, settled, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
@@ -923,6 +953,7 @@ export default function DownloadManager({
       onJobsReported={onJobsReported}
       refresh={refresh}
       patch={patch}
+      now={now}
     />
   );
 }

@@ -63,8 +63,8 @@ function text(node: ReactTestRendererJSON | string | null): string {
     .join("");
 }
 
-function renderRow(job: Job): ReactTestRendererJSON {
-  const tree = create(<JobRow job={job} onChanged={() => {}} onPatch={() => {}} />).toJSON();
+function renderRow(job: Job, now?: number): ReactTestRendererJSON {
+  const tree = create(<JobRow job={job} onChanged={() => {}} onPatch={() => {}} now={now} />).toJSON();
   if (tree === null || Array.isArray(tree)) throw new Error("JobRow did not render a single root node");
   return tree;
 }
@@ -222,4 +222,25 @@ test("a successful Cancel shows no failure line", async () => {
   // this test fail for the right behaviour.
   const after = tree.toJSON() as ReactTestRendererJSON;
   expect(text(after)).not.toContain("Could not cancel");
+});
+
+test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
+  // No status text (no `detail`, no `message`) and no amount (`unit: ""`,
+  // both `done`/`total` null): this is D659's fallback case, `jobDetail`,
+  // which must read `now` off the `now` prop threaded from `useJobs`'s own
+  // server-clock read, not off the browser's `Date.now()`.
+  const now = 1_000_000;
+  const root = renderRow(
+    {
+      ...BASE,
+      detail: "",
+      message: "",
+      unit: "",
+      done: null,
+      total: null,
+      started_at: now - 125, // 2m 5s ago, by the clock passed in
+    },
+    now,
+  );
+  expect(text(root)).toContain("started 2m ago");
 });

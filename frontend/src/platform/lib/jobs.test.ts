@@ -146,19 +146,31 @@ test("a running job with no detail and no message reads as empty — the fallbac
 });
 
 test("jobDetail names the kind and how long it has been running, from facts every job always carries", () => {
-  const started_at = Date.now() / 1000 - 125; // 2m 5s ago
-  expect(jobDetail(job({ kind: "download", started_at, stalled: false }))).toBe(
+  const now = 10_000;
+  const started_at = now - 125; // 2m 5s ago
+  expect(jobDetail(job({ kind: "download", started_at, stalled: false }), now)).toBe(
     "Download · started 2m ago"
   );
-  expect(jobDetail(job({ kind: "task", started_at, stalled: false }))).toBe(
+  expect(jobDetail(job({ kind: "task", started_at, stalled: false }), now)).toBe(
     "Task · started 2m ago"
   );
 });
 
 test("jobDetail folds in stalled, since a job with nothing else to say and no reporter left needs it most", () => {
-  const started_at = Date.now() / 1000 - 5;
-  expect(jobDetail(job({ kind: "download", started_at, stalled: true }))).toBe(
+  const now = 10_000;
+  const started_at = now - 5;
+  expect(jobDetail(job({ kind: "download", started_at, stalled: true }), now)).toBe(
     "Download · started 5s ago · not reporting"
+  );
+});
+
+test("jobDetail measures against the SERVER's clock, not the browser's (C4)", () => {
+  // `started_at` is a server timestamp; a browser clock that has drifted
+  // hours from the server's must not leak into what "started X ago" says.
+  const serverNow = 1_000_000;
+  const started_at = serverNow - 30; // 30s ago, by the SERVER's clock
+  expect(jobDetail(job({ started_at, stalled: false }), serverNow)).toBe(
+    "Download · started 30s ago"
   );
 });
 
