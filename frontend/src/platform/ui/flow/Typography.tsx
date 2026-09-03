@@ -19,7 +19,7 @@ export function PageHeader({
   return (
     <header data-slot="page-header" className={cn("flex items-start justify-between gap-4 px-6 py-4 border-b border-border", className)}>
       <div className="min-w-0">
-        <h1 className="text-xl font-bold leading-tight truncate">{title}</h1>
+        <h1 className="m-0 text-xl font-bold leading-tight truncate">{title}</h1>
         {description != null && <p className="text-sm text-muted-foreground mt-0.5">{description}</p>}
       </div>
       {actions != null && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
@@ -28,12 +28,12 @@ export function PageHeader({
 }
 
 export function SectionTitle({ className, ...props }: ComponentProps<"h2">) {
-  return <h2 className={cn("text-lg font-semibold", className)} {...props} />;
+  return <h2 className={cn("m-0 text-lg font-semibold", className)} {...props} />;
 }
 
 export function SectionHeading({ className, ...props }: ComponentProps<"h3">) {
   return (
-    <h3 className={cn("text-sm font-semibold text-muted-foreground uppercase tracking-wide", className)} {...props} />
+    <h3 className={cn("m-0 text-sm font-semibold text-muted-foreground uppercase tracking-wide", className)} {...props} />
   );
 }
 

@@ -171,6 +171,22 @@
   h3 {
     text-wrap: balance;
   }
+  /* The one piece of preflight the converted surfaces genuinely need. With no
+     preflight, every legacy CSS file carried its own `a { text-decoration:
+     none }`; as those files are deleted their anchors fall back to the UA's
+     blue underline. Layered in `base`, so both Tailwind utilities and the
+     remaining unlayered legacy rules still out-rank it. */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  /* Headings inside the shadcn/flow subtree size themselves with utilities;
+     the UA's own margin-block is what nothing overrides. Scoped to the
+     stamped roots so legacy pages keep the margins they were written against. */
+  [data-slot] :is(h1, h2, h3, h4, h5, h6),
+  [data-slot]:is(h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+  }
   a,
   button,
   [role="button"],
