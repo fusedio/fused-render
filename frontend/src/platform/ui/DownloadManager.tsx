@@ -558,13 +558,15 @@ export function JobRow({
     }
   };
 
-  // Belt-and-braces, not the mechanism: `DownloadManagerView`'s `inFlightJobs`
-  // filter is what actually keeps a terminal job out of the header count, the
-  // rows and the empty-card gate — this is a cheap second guard for any
-  // caller that renders a `JobRow` directly (this file's own test does). No
-  // exemptions: a "done" job belongs in Notifications now, never here.
-  if (job.state === "done") return null;
-
+  // NO EXEMPTION FOR "done" HERE (C1 fix): `JobRow` is reused verbatim by
+  // `RepoUpdatesDock.tsx` to draw every terminal job — done, error and
+  // cancelled alike — in Notifications, and a `done` job returning null left
+  // that panel counting it (`total`, the filled circle, `alsoDrawn`
+  // occupancy) while drawing nothing for it: a phantom entry with no row and
+  // no ✕, permanent once D657 stopped sweeping it. Keeping a terminal job out
+  // of THIS file's own Jobs section is `DownloadManagerView`'s job — it only
+  // ever hands `JobRow` `inFlightJobs`, so a "done" row never reaches this
+  // component from there at all.
   return (
     <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
       <div className="dl-row-head">

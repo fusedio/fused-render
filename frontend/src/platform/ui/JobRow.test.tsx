@@ -108,15 +108,17 @@ test("a model equal to the title draws no .dl-model suffix — a load row must n
   expect(findAll(root, "dl-model")).toHaveLength(0);
 });
 
-test("a done job draws nothing at all — success clears itself from the corner", () => {
-  // PR #785: success used to be cleared server-side (supervisor._finish
-  // dismissed the row instantly), which raced every poller including
-  // fused_ai.py's own job watcher. The clearing now happens here instead —
-  // the server reports a real, observable "done" state and the frontend
-  // simply does not draw it. `error`/`cancelled` rows are NOT this: they
-  // must stay visible until the user dismisses them.
-  const tree = create(<JobRow job={{ ...BASE, state: "done" }} onChanged={() => {}} onPatch={() => {}} />).toJSON();
-  expect(tree).toBeNull();
+test("a done job draws a row with a working dismiss control (C1)", () => {
+  // `JobRow` itself draws every state it is handed — a `done` job included.
+  // What keeps a terminal job out of THIS file's own Jobs section is
+  // `DownloadManagerView` only ever passing it `inFlightJobs`; `JobRow`
+  // returning null for "done" left `RepoUpdatesDock.tsx`'s reuse of this same
+  // component silently unable to draw the very rows Notifications exists to
+  // hold (C1) — a done job filled the chip's circle and the panel's count
+  // but drew no row and no ✕, permanently once D657 stopped sweeping it.
+  const root = renderRow({ ...BASE, state: "done" });
+  expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
+  expect(findAll(root, "dl-x")).toHaveLength(1);
 });
 
 test("an error job still draws — only a success clears itself", () => {
