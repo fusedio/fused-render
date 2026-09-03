@@ -1134,6 +1134,48 @@
       -webkit-text-fill-color: var(--status-progress);
     }
   }
+  /* COMPACT (`?compact=1`, see the const of that name) — the transcript and
+     nothing else. Its host is a WALL of these documents, twelve at once on the
+     Tasks page's Cards view, and each one is a 420px box: the strip, the top bar
+     and the composer together are ~120px of chrome, which on that box is a third
+     of the card spent saying "Claude" twelve times over.
+
+     The five that go are exactly the ones either duplicated by the host or
+     unusable in it. The card's own head already carries the status ring, the
+     title and the time, so #topbar is those same facts a second time. #anntools
+     annotates a PANE this layout does not have. And the composer is the one that
+     matters: a card is read, never typed into — a textarea inside a read-only
+     tile is an affordance that lies, and typing is what the card's Open button
+     is for (design-principles §4). #home goes with it because a session that has
+     not started has no transcript either, and the landing composer is a
+     composer. #footnote goes with it too, and that one had to be found by
+     looking: it is a sibling of #home rather than a child of it, so hiding the
+     landing left one line of standing advice about approvals sitting under a
+     transcript nobody can reply to — the only visible thing on the tile that was
+     not the run.
+
+     `display: none` from the STYLESHEET, not an inline style and not a `[hidden]`
+     the script sets: an inline `display` under the body element is what
+     tests/test_claude_narrow.py refuses, and the force flag D146 bans is the
+     only thing that could then override one — so the whole state is one class
+     the boot stamps once. Nothing here is toggled at runtime; compact is a host
+     fact, decided when the src was built, exactly like `chat_only`.
+
+     The chrome is HIDDEN and not removed. Everything above still exists, still
+     wired, still updating — `body.running #topbar .tb-run` goes on shimmering
+     into a box nobody can see, which costs nothing and means this is a class
+     away from being a whole chat again, with no teardown to undo. */
+  body.chat-compact #topbar,
+  body.chat-compact #anntools,
+  body.chat-compact #inputbox,
+  body.chat-compact #home,
+  body.chat-compact #footnote {
+    display: none;
+  }
+  /* With the bar gone, #log's 24px of top padding is no longer the gap under a
+     border — it is dead space above the first line of the only thing the card is
+     for. Halved rather than dropped: the turns still need to start off the edge. */
+  body.chat-compact #log { padding-top: 12px; }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
      composer block's `.sb-id` has them: the same identifier must not shift
      width as its digits change. */
@@ -4256,6 +4298,37 @@ const BASENAME = FILE.split("/").pop();
 // fused.params), so this one is read directly.
 const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 
+// READ-MOSTLY: the transcript, with no top bar, no annotate strip and no
+// composer (the `body.chat-compact` block in the stylesheet is the whole of it).
+//
+// The host is the Tasks page's Cards view (shell/TaskCards.tsx) — a grid of
+// these documents, one per running task, each in a 420px tile whose own head
+// already says which task it is and when it last moved. What it wants from this
+// page is the one thing it cannot draw itself: the turns, arriving live. So the
+// param says "you are a tile", and everything the tile's frame already provides
+// is taken away rather than repeated at a size nobody can read.
+//
+// A HOST FACT, so it is read off THIS FRAME'S OWN URL, exactly like `chat_only`
+// above and for the argument spelled out there: the host chose this when it
+// built the iframe src, and a layout choice that outlived the host that made it
+// — which is what putting it through fused.params, onto the shell's URL, would
+// do — is a bookmark that opens a crippled chat.
+//
+// Two things it deliberately is NOT. It is not `chat_only`: that one is about
+// the PANE (the host is already showing the file, so this document's own preview
+// column is redundant), and the two are orthogonal — a tile passes both, and a
+// sidebar passes only the first. And it is not a read-only MODE: nothing here
+// disables sending, adopts a different poll, or refuses a keystroke; the
+// composer is simply not on screen. Anything the page could do it can still do,
+// which is why the class is all there is to it and why there is no state to get
+// out of sync.
+//
+// The class is stamped HERE rather than in a boot function so it is applied
+// before the first paint of anything below — a tile that showed a composer for a
+// frame and then took it away would be the one flicker on a wall of twelve.
+const COMPACT = new URLSearchParams(location.search).get("compact") === "1";
+if (COMPACT) document.body.classList.add("chat-compact");
+
 // A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
 // operation is NOT read off this document's URL at all (review #804 round 2 —
 // it used to be a `_fused_ask` query param here, the same "host fact, read off
@@ -4589,7 +4662,7 @@ function searchParamsOf(search) {
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
-                             "path", "msg"]);
+                             "compact", "path", "msg"]);
 
 function appParamsOf(all) {
   const out = {};
