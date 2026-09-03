@@ -31,6 +31,21 @@ interface Row {
   issueIds: ClaudeIssue["id"][];
 }
 
+// WHO is signed in, when the CLI said. "as <email> · <org> (<plan>)" for a
+// claude.ai login, "Using an API key" for a key, the generic line otherwise —
+// so the green check names the account it is vouching for.
+function signedInHint(h: ClaudeHealth): string {
+  const a = h.account;
+  if (h.signed_in !== true || !a) return "Uses your existing Claude subscription — no key to paste.";
+  if (a.method === "apiKey") return "Using an API key from the environment (ANTHROPIC_API_KEY).";
+  if (a.email) {
+    const where = [a.org, a.plan].filter(Boolean).join(" · ");
+    return `Signed in as ${a.email}${where ? ` (${where})` : ""}.`;
+  }
+  if (a.method === "oauthToken") return "Using an OAuth token from the environment.";
+  return a.method ? `Signed in via ${a.method}.` : "Signed in.";
+}
+
 function rowsFor(h: ClaudeHealth): Row[] {
   const runnable = h.found && !h.broken;
   return [
@@ -51,7 +66,7 @@ function rowsFor(h: ClaudeHealth): Row[] {
     {
       id: "signed-in",
       label: "Signed in",
-      hint: "Uses your existing Claude subscription — no key to paste.",
+      hint: signedInHint(h),
       state: !runnable ? "open" : h.signed_in === true ? "done" : h.signed_in === false ? "open" : "unknown",
       issueIds: ["signed-out"],
     },

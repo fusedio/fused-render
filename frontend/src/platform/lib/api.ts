@@ -229,6 +229,16 @@ export interface ClaudeHealth {
       asked (no runnable CLI, or one predating the subcommand), NOT that it said
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
+  /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
+      "apiKey", …) plus the claude.ai account's email / org / plan when it has
+      one. An env token with no CLI answer reports as an API key. null when
+      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+  account: {
+    method: string | null;
+    email: string | null;
+    org: string | null;
+    plan: string | null;
+  } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show —
       it used to, and it guessed wrong on Windows. */

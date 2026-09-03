@@ -34,6 +34,7 @@ function healthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
     min_version: "2.0.0",
     outdated: false,
     signed_in: true,
+    account: { method: "claude.ai", email: "x@example.com", org: "Example", plan: "team" },
     config_dir: "/Users/x/.claude",
     platform: "darwin",
     install_command: "curl -fsSL https://claude.ai/install.sh | bash",
