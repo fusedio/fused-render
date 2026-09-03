@@ -11166,7 +11166,18 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
     child with `engine_id`, `pid`, `version`, `folder` (set for a background
     app's own daemon, empty for a template) and `module` (set for a `main =`
     warm worker, empty otherwise) so a row can be labelled without guessing
-    which fields a given child populated. Read-only and UNGUARDED, the same
+    which fields a given child populated, plus the four LIFETIME fields the
+    panel's detail line is built from — `uptime_s`, `idle_timeout_s` (`0` for
+    a resident child, which the panel states as "no idle timeout" rather than
+    drawing a countdown that will never run), `idle_for_s` and `busy` (a call
+    in flight, i.e. the reason `reap_idle_children` is skipping this child).
+    All four are derived from ONE `now` and `_busy` is snapshotted under the
+    same `_lock` hold as `_children`, so a single row can never report an
+    uptime and a countdown taken a poll apart. The panel renders them as
+    "Warm worker · up 12m · retires in 13m if idle" (`engineDetail`,
+    platform/ui/DownloadManager.tsx); the KIND in that sentence is derived
+    client-side from `folder`/`module`, deliberately not a wire field, since
+    those two already determine it. Read-only and UNGUARDED, the same
     posture as `GET /api/apps/background/running` and as this router's
     proxied GETs. The work is `engine_host.running_engines()`, which keeps
     the same lock discipline `background_running_folders` established —

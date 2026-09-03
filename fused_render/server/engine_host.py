@@ -130,6 +130,13 @@ class Child:
     #: Last call routed to this child (monotonic); drives idle-retire for a
     #: child whose `idle_timeout_s` is non-zero.
     last_used: float = field(default_factory=time.monotonic)
+    #: When this child's bring-up began (monotonic) — stamped at construction,
+    #: so it counts from the moment the spawn started rather than from the
+    #: first ping, and it is NOT restamped the way `last_used` is. Read only by
+    #: `running_engines`, for the uptime the status bar's Activity panel shows;
+    #: a heal-restart builds a new `Child`, so the uptime is this PROCESS's,
+    #: which is what "pid 1234, up 3m" has to mean.
+    started_at: float = field(default_factory=time.monotonic)
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
@@ -632,9 +639,30 @@ def running_engines() -> list[dict]:
     background child only, and `module` for a `main =` daemon (a `daemon =`
     app leaves it empty), so the caller can label a row without having to
     guess the manifest's protocol.
+
+    THE LIFETIME FIELDS ANSWER "WHY IS THIS STILL HERE, AND FOR HOW LONG"
+    (user call: a daemon row that says only its name leaves the panel
+    unreadable — "if a daemon has a timeout, lets also mention that"). All
+    three are derived from the same `now`, so one row cannot report an
+    uptime and a countdown taken a poll apart:
+
+    * `uptime_s` — seconds since this child's bring-up began.
+    * `idle_timeout_s` — the manifest's own policy, `0` for a resident child
+      (`daemon =`, and every template daemon), which the caller renders as
+      "no idle timeout" rather than as "retires in 0s".
+    * `idle_for_s` — seconds since the last call was routed here. Reported
+      for every child, but only meaningful against a non-zero timeout.
+    * `busy` — a call is in flight, which is exactly why idle-retire is
+      skipping this child (`reap_idle_children`'s `_busy` gate); without it
+      a stalled-looking countdown has no explanation.
+
+    `_busy` is snapshotted under the same `_lock` hold as `_children` so the
+    two cannot disagree about a child, and `_alive()` still runs outside it.
     """
+    now = time.monotonic()
     with _lock:
         children = list(_children.values())
+        busy = dict(_busy)
     return [
         {
             "engine_id": c.engine_id,
@@ -642,6 +670,10 @@ def running_engines() -> list[dict]:
             "version": c.version,
             "folder": c.folder,
             "module": c.module,
+            "uptime_s": max(0.0, now - c.started_at),
+            "idle_timeout_s": c.idle_timeout_s,
+            "idle_for_s": max(0.0, now - c.last_used),
+            "busy": busy.get(c.engine_id, 0) > 0,
         }
         for c in children
         if _alive(c)

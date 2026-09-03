@@ -24,6 +24,9 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 import {
   DownloadManagerView,
   engineLabel,
+  engineDetail,
+  engineDuration,
+  engineKind,
   type EnginesSlot,
   type QueueSlot,
 } from "@platform/ui/DownloadManager";
@@ -951,6 +954,10 @@ const runningEngine = (over: Partial<RunningEngine> = {}): RunningEngine => ({
   version: "",
   folder: "",
   module: "",
+  uptime_s: 0,
+  idle_timeout_s: 0,
+  idle_for_s: 0,
+  busy: false,
   ...over,
 });
 
@@ -992,6 +999,95 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop");
   });
 
+  test("the row says what the daemon is, how long it has been up, and when it retires", () => {
+    const tree = renderActivity({
+      engines: {
+        engines: [
+          runningEngine({
+            folder: "/apps/geotiff",
+            module: "compute.py",
+            uptime_s: 725,
+            idle_timeout_s: 900,
+            idle_for_s: 120,
+          }),
+        ],
+        onStop: async () => {},
+      },
+    });
+    expect(text(findAll(findAll(tree, "dl-row")[0], "dl-status")[0])).toBe(
+      "Warm worker · up 12m · retires in 13m if idle",
+    );
+  });
+
+  test("a resident daemon says so rather than drawing a countdown it will never run", () => {
+    // The user's own ask: a timeout is mentioned when there is one, and its
+    // ABSENCE is stated too — that is what separates a daemon meant to stay
+    // up from one that has been left behind.
+    expect(engineDetail(runningEngine({ folder: "/apps/s3-browser", uptime_s: 90 }))).toBe(
+      "Background app · up 1m · no idle timeout",
+    );
+  });
+
+  test("a busy daemon explains the stopped countdown instead of freezing one", () => {
+    expect(
+      engineDetail(
+        runningEngine({
+          folder: "/apps/x", module: "m.py", uptime_s: 30,
+          idle_timeout_s: 900, idle_for_s: 0, busy: true,
+        }),
+      ),
+    ).toBe("Warm worker · up 30s · in use · idle timeout 15m");
+  });
+
+  test("a child already past its timeout reads as retiring, never as a negative countdown", () => {
+    expect(
+      engineDetail(
+        runningEngine({
+          folder: "/apps/x", module: "m.py", uptime_s: 3600,
+          idle_timeout_s: 900, idle_for_s: 1000,
+        }),
+      ),
+    ).toBe("Warm worker · up 1h · retiring now");
+  });
+
+  test("a template engine is named as one — it has no folder to label it", () => {
+    expect(engineKind(runningEngine({ engine_id: "map" }))).toBe("template");
+    expect(engineDetail(runningEngine({ engine_id: "map", uptime_s: 7565 }))).toBe(
+      "Template engine · up 2h 6m · no idle timeout",
+    );
+  });
+
+  test("durations step up a unit rather than counting seconds the poll cannot see", () => {
+    expect(engineDuration(0)).toBe("0s");
+    expect(engineDuration(59.9)).toBe("59s");
+    expect(engineDuration(60)).toBe("1m");
+    expect(engineDuration(3600)).toBe("1h");
+    expect(engineDuration(-5)).toBe("0s");
+  });
+
+  test("a failed Stop replaces the detail line rather than stacking under it", async () => {
+    const tree = create(
+      <DownloadManagerView
+        reported={[]}
+        engines={{
+          engines: [runningEngine({ folder: "/apps/x" })],
+          onStop: async () => {
+            throw new Error("no");
+          },
+        }}
+        initialCollapsed={false}
+        refresh={() => {}}
+        patch={() => {}}
+      />,
+    );
+    await act(async () => {
+      findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-cancel")[0].props.onClick();
+    });
+    const rows = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-status");
+    expect(rows).toHaveLength(1);
+    expect(text(rows[0])).toContain("Could not stop");
+  });
+
   test("the row carries no wire field beyond what RunningEngine declares", () => {
     // Guards against the class of defect where a fixture supplies a field
     // (`kind`, say) the server no longer sends and the panel silently
@@ -1000,7 +1096,10 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     // build time, not just a missing assertion.
     const engine = runningEngine();
     expect(Object.keys(engine).sort()).toEqual(
-      ["engine_id", "folder", "module", "pid", "version"].sort(),
+      [
+        "engine_id", "folder", "module", "pid", "version",
+        "uptime_s", "idle_timeout_s", "idle_for_s", "busy",
+      ].sort(),
     );
   });
 

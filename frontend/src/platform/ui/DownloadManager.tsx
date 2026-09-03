@@ -358,6 +358,69 @@ export function engineLabel(engine: RunningEngine): string {
   return engine.module || engine.engine_id;
 }
 
+/** A COARSE duration, in the largest unit that still says something true:
+ *  seconds under a minute, whole minutes under an hour, then `2h 5m`. The
+ *  engines poll is every 10s (shell/ActivityDock.tsx), so a row that counted
+ *  seconds would be wrong between ticks more often than right; minutes are
+ *  the finest unit this data can honestly carry. */
+export function engineDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
+}
+
+/** WHICH OF THE THREE KINDS of child this row is, from the two fields the
+ *  server already sends (`running_engines`): a folder with no module is an
+ *  app's own written daemon, a folder WITH one is the shipped worker running
+ *  that module's `main(**params)`, and no folder at all is a built-in
+ *  template's daemon. Derived here rather than added to the wire because the
+ *  two fields already determine it — a `kind` field would be a second answer
+ *  to one question, free to disagree. */
+export function engineKind(engine: RunningEngine): "app" | "worker" | "template" {
+  if (!engine.folder) return "template";
+  return engine.module ? "worker" : "app";
+}
+
+const KIND_TEXT = {
+  app: "Background app",
+  worker: "Warm worker",
+  template: "Template engine",
+} as const;
+
+/** The sentence under an engine row's name — what this daemon IS, how long it
+ *  has been up, and what will end it (user call: "can we also add some more
+ *  context regarding the activity. if a daemon has a timeout, lets also
+ *  mention that"). A row used to be a bare folder name beside a Stop button,
+ *  which said nothing about why a process the user never started was running
+ *  or when it would go away on its own.
+ *
+ *  The last clause is the whole point and has three cases, in the order they
+ *  answer "when does this stop":
+ *    * no timeout at all — a resident daemon stays until it is stopped, and
+ *      saying so is the difference between "deliberate" and "leaked";
+ *    * a call in flight — the countdown is not running (`reap_idle_children`
+ *      skips a busy child), so a frozen "retires in" would read as a bug;
+ *    * otherwise the countdown itself, hedged with "if idle" because any
+ *      call landing before it expires resets it.
+ *
+ *  Pure and exported so the wording is testable without a render. */
+export function engineDetail(engine: RunningEngine): string {
+  const parts = [KIND_TEXT[engineKind(engine)], `up ${engineDuration(engine.uptime_s)}`];
+  if (engine.idle_timeout_s <= 0) {
+    parts.push("no idle timeout");
+  } else if (engine.busy) {
+    parts.push(`in use · idle timeout ${engineDuration(engine.idle_timeout_s)}`);
+  } else {
+    const left = engine.idle_timeout_s - engine.idle_for_s;
+    parts.push(left <= 0 ? "retiring now" : `retires in ${engineDuration(left)} if idle`);
+  }
+  return parts.join(" · ");
+}
+
 function EngineRow({
   engine,
   onStop,
@@ -383,14 +446,20 @@ function EngineRow({
   return (
     <div className="dl-row">
       <div className="dl-row-head">
-        <span className="dl-title dl-title-id" title={engine.folder || engine.engine_id}>
+        <span
+          className="dl-title dl-title-id"
+          title={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
+        >
           {engineLabel(engine)}
         </span>
         <button className="dl-row-cancel" onClick={stop} disabled={busy}>
           {busy ? "Stopping…" : "Stop"}
         </button>
       </div>
-      {failure && <div className="dl-status">{failure}</div>}
+      {/* The failure REPLACES the detail line rather than stacking under it:
+          a row whose Stop just failed has one thing worth reading, and the
+          uptime is still there in the next poll's row. */}
+      <div className="dl-status">{failure || engineDetail(engine)}</div>
     </div>
   );
 }

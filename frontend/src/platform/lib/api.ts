@@ -2188,6 +2188,16 @@ export interface RunningEngine {
   /** The module a `main =` daemon serves — "" for a `daemon =` app or a
    *  template daemon. */
   module: string;
+  /** Seconds since this child's bring-up began. */
+  uptime_s: number;
+  /** The manifest's idle-retire policy in seconds; `0` means resident — a
+   *  written `daemon =` and every template daemon. */
+  idle_timeout_s: number;
+  /** Seconds since the last call was routed here. Only meaningful against a
+   *  non-zero `idle_timeout_s`. */
+  idle_for_s: number;
+  /** A call is in flight, which is why idle-retire is skipping this child. */
+  busy: boolean;
 }
 
 /** Every engine daemon running right now — the status bar's Engines section.
