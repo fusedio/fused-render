@@ -3584,22 +3584,29 @@ def _read_current_turn(run_dir: str) -> tuple:
     everything that already happened, not an ongoing leak.
 
     The cursor only ever advances to the start of the newest row that is
-    provably a fresh, user-authored turn — `_starts_new_turn`'s check, which
-    only a genuine `_start`/`_send` message echoed back by
-    `--replay-user-messages` satisfies. A `result` alone, even one with more
-    bytes after it, is NOT enough: a D415 wake (`system/task_notification`,
-    or its persisted `<task-notification>` form) is exactly a `result`
-    followed by more bytes that belong to the SAME displayed turn, not a new
-    one — `_segments_from_rows` renders that combination as one notice-joined
-    reply, and a page rendering the whole `segments` list fresh every poll
-    (see `renderSegments` in template.html) needs the ORIGINAL text still in
-    that list on every later poll, not just the wake's own continuation.
-    Advancing past a `result` a wake continues would make the next poll
-    return only the wake, silently erasing the reply already on screen (the
-    bug this rule exists to prevent). Everything before the newest genuine
-    turn's own start IS provably dead weight for every future poll (this one
-    included, once written back), because a real new turn only ever begins
-    once the one before it — wakes and all — is completely finished.
+    provably a fresh, user-authored turn — `_starts_new_turn`'s check
+    (`_start`/`_send` echoed back by `--replay-user-messages`) AND a `result`
+    row closing the previous turn somewhere between `cursor` and it. The
+    second half matters because `_send` exists precisely to fold a follow-up
+    into a turn still in flight: the CLI echoes that follow-up back in the
+    exact same shape, but with no `result` in between, since the turn it is
+    joining has not closed. Treating that echo as a fresh turn boundary would
+    skip past text the current turn already streamed, so the NEXT poll's
+    `rows`/`segments` would shrink instead of only ever growing — the bug this
+    half of the rule exists to prevent, mirroring the one below it. A `result`
+    alone, even one with more bytes after it, is NOT enough either: a D415
+    wake (`system/task_notification`, or its persisted `<task-notification>`
+    form) is exactly a `result` followed by more bytes that belong to the
+    SAME displayed turn, not a new one — `_segments_from_rows` renders that
+    combination as one notice-joined reply, and a page rendering the whole
+    `segments` list fresh every poll (see `renderSegments` in template.html)
+    needs the ORIGINAL text still in that list on every later poll, not just
+    the wake's own continuation. Advancing past a `result` a wake continues
+    would make the next poll return only the wake, silently erasing the reply
+    already on screen. Everything before the newest genuine turn's own start
+    IS provably dead weight for every future poll (this one included, once
+    written back), because a real new turn only ever begins once the one
+    before it — wakes, absorbed follow-ups and all — is completely finished.
 
     Reads via binary seek-then-decode, not a text-mode file's `.seek()`, on
     the same reasoning `_scan_transcript` already leans on: the offset being
@@ -3649,6 +3656,18 @@ def _read_current_turn(run_dir: str) -> tuple:
     rows = []
     line_start = cursor
     advance_to = None
+    # A `_starts_new_turn` row only proves a genuine new turn when a `result`
+    # closed the one before it SINCE this scan started (i.e. since `cursor`,
+    # or since the last row this same scan already advanced past). `_send`
+    # exists precisely so a follow-up can be absorbed into a turn still in
+    # flight — the CLI echoes that follow-up back in exactly the same shape
+    # a fresh turn's opening message has, but with no `result` in between.
+    # Advancing on it anyway would jump the cursor past text the current
+    # turn already streamed, so the NEXT poll's `rows` (and therefore
+    # `segments`) would shrink — the docstring's "a real new turn only
+    # begins once the one before it is completely finished" premise holds
+    # for `_start`-opened turns, not for one folded in mid-turn by `_send`.
+    seen_result = False
     for raw_line in complete:
         pos = line_start + len(raw_line) + 1
         try:
@@ -3657,8 +3676,11 @@ def _read_current_turn(run_dir: str) -> tuple:
             line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
-        if _starts_new_turn(row):
+        if row.get("type") == "result":
+            seen_result = True
+        elif seen_result and _starts_new_turn(row):
             advance_to = line_start  # the newest genuine turn's own start
+            seen_result = False      # this turn needs its own result too
         line_start = pos
 
     if tail:

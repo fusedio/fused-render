@@ -247,3 +247,36 @@ def test_a_tool_result_row_does_not_advance_the_cursor(agent, run_dir):
     assert result["text"] == "call a tool and reply"
     assert _cursor(run_dir) in (None, 0), \
         "a tool_result is not a fresh, user-authored turn"
+
+
+# ------------------------------------------ (e) a follow-up absorbed mid-turn
+
+def test_a_followup_echoed_midturn_does_not_advance_the_cursor(agent, run_dir):
+    """`_send`'s whole point is a follow-up landing INSIDE a turn still in
+    flight — the CLI echoes it back (`--replay-user-messages`) with no
+    `result` row in between, because the turn it is being absorbed into has
+    not closed yet. `_starts_new_turn` reads that echo exactly like a genuine
+    new turn's own opening message, but the docstring's premise ("a real new
+    turn only begins once the one before it is completely finished") does not
+    hold here — the cursor must not jump past text this turn already
+    streamed, or a later poll's `segments`/`text` would shrink and silently
+    erase what is already on screen."""
+    _write(run_dir, [_user_row("turn one"),
+                      _text_row("Part one of the answer. ")])
+    first = _poll(agent, run_dir)
+    assert first["text"] == "Part one of the answer. "
+
+    # The follow-up's own echo lands mid-turn — no `result` row before it.
+    _append(run_dir, [_user_row("continue"), _text_row("Part two. ")])
+    second = _poll(agent, run_dir)
+    assert second["text"] == "Part one of the answer. Part two. ", \
+        "the absorbed follow-up must not have advanced the cursor past " \
+        "text this turn already streamed"
+
+    # A third poll (nothing new) must see EXACTLY the same window — proving
+    # the cursor genuinely did not move, not just that this one read was
+    # still wide enough to cover the gap.
+    third = _poll(agent, run_dir)
+    assert third["text"] == second["text"]
+    assert len(third["segments"]) == len(second["segments"]), \
+        "segments must never shrink between polls of the same open turn"
