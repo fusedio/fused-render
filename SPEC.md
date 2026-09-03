@@ -5501,7 +5501,10 @@ stop it short of quitting the app.
   disappears so it keeps up with this short a post-read sweep instead of
   lagging behind on its idle (5s) cadence. An
   **error is exempt** and stays
-  until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
+  until dismissed (the persistent-error toast's rule, §3). **SUPERSEDED for
+  `done`/`cancelled` by D657**: every terminal state now gets the same
+  unconditional exemption `error` already had, not only after a first read —
+  see BG-17. `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
   **Live SERVER work is never evicted by the cap at all** (D288), so the list
@@ -5753,6 +5756,72 @@ stop it short of quitting the app.
   `localStorage`. The hook now only answers whether something arrived
   unacknowledged; opening the panel — the user's own click, for any
   reason — is what clears it.
+
+- **BG-17** **The queue slot, and a scheduled/task run's own row, are gone
+  from Activity entirely (D655, user: "a task is not something I even want
+  in the activity. that was added unintentionally").** `DownloadManager`'s
+  `QueueSlot`/`queue` prop, `ActivityDock`'s `QueueRowView`/`useQueue()`, and
+  `shell/queue-dock-lib.ts` (with its test) are deleted outright rather than
+  left unused. `jobRows` now excludes every `sys:schedule:*` job
+  unconditionally — no "exempt only while running" carve-out — so a
+  scheduled run's own turn never draws a row here in any state.
+  `schedule-toast.ts`/`App.tsx`'s toast consumption and `schedule.py`'s
+  `_emit()`/`_report()` are untouched: the toast is still how a scheduled
+  run's own page-equivalent surface announces itself, this only removes the
+  DUPLICATE row Activity was drawing for the same event. `DownloadManager`
+  gains a decoupled `onJobsReported?: (jobs: Job[]) => void` prop in the
+  queue slot's place, for a caller that wants to observe reported jobs
+  without the deleted queue machinery.
+
+  **Flagged capability loss: there is no longer a way to cancel an
+  already-running scheduled/task turn from Activity.** The queue's own ✕ was
+  the only reachable control for a live scheduled turn; removing the row
+  removes that control with it, and nothing replaces it. **Flagged
+  trade-off: `pokeTasks()`'s fast-poll path**, which used to piggyback on the
+  queue row's presence to tighten cadence while a scheduled turn ran, now has
+  no Activity-side signal to key off and reverts to its unaccelerated
+  latency for that case.
+
+- **BG-18** **Every terminal job — not only a failure — now reaches
+  Notifications, not only `error` (D656, broadening D586).** `jobs.ts` gains
+  `isTerminal(job)`/`terminalJobs(jobs)`; `inFlightJobs` narrows to
+  running/waiting only (non-terminal), and `isFailure`/`failedJobs` stay
+  scoped to real errors for `RepoUpdatesDock`'s `.is-failure` tint, so a
+  plain success does not turn the chip red. A terminal job can never
+  auto-open a panel by arriving (BG-17's D567 rule already covered this; it
+  now also covers `done`/`cancelled`, not only `error`). Server-side,
+  `fused_render/jobs.py`'s `_sweep()` exemption (BG-6) is extended from
+  `("error", WAITING)` to `TERMINAL_STATES` (`done`/`error`/`cancelled`) plus
+  `WAITING` (D657): once every finished job routes to a list meant to hold a
+  log, the old per-row `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S` clock (BG-6)
+  was deleting the very entry that list exists to keep, before anyone had
+  looked. Those constants and `Job.first_read_at` stay in `jobs.py` — other
+  `mark_read` callers (`routers/jobs.py`, `supervisor.py`,
+  `capture/__init__.py`) have their own reasons independent of this branch —
+  but no reachable job state exercises the read-gated clock any more.
+  `ActivityDock` also now toasts when a background engine retires on its own
+  (D658), by diffing successive `useRunningEngines()` snapshots and excluding
+  a user-initiated stop — the only way to learn a background daemon went idle
+  is to notice it missing between two polls, since nothing server-side calls
+  it out as an event.
+
+- **BG-19** **No card may render a single line of text — title alone, with
+  nothing beneath it (D659).** `jobs.ts` gains `jobDetail(job)`, a
+  last-resort fallback built only from facts every job always carries (kind,
+  `started_at`, `stalled`) — `"Download · started 2m ago"`, or with
+  `· not reporting` folded in once stalled. `engineDuration` (previously
+  local to the engine rows) moves into `jobs.ts` so both share the same
+  coarse-duration formatting. `jobDetail` is applied at the CALL SITE
+  (`DownloadManager.tsx`'s status-line computation), never inside
+  `jobStatusLine` itself: a running job can carry a real progress AMOUNT
+  with no phase text at all, a fact `jobStatusLine` never sees, so folding
+  the fallback in there would win over that amount rather than only firing
+  once both the status line and the amount are empty — real detail,
+  progress and failure text all still win. `RepoUpdatesDock.tsx`'s own rows
+  (`repoStatusText`, the pairing row) already always render a fixed non-empty
+  line, so the sweep for this gap found nothing left to fix there; the only
+  place it existed was the shared `JobRow` `RepoUpdatesDock.tsx` reuses from
+  `DownloadManager.tsx`, fixed once at the source.
 
 ---
 
