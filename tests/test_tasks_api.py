@@ -259,6 +259,84 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
     assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
 
 
+def test_started_is_the_clock_that_does_not_move_while_last_active_does(
+        client, projects_dir, state_dir):
+    """`started` names when the conversation BEGAN, `last_active` when it last
+    said something. The Cards wall orders by the first one precisely because the
+    second one climbs on every write, and a wall of live chats that re-sorts
+    itself while its runs are talking is one the reader cannot watch (Akshil,
+    2026-09-03: "when i create a new task the layout shifts multiple times")."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("start it", T9),
+        _assistant("working", T10),
+    ])
+    first = _tasks(client)[0]
+    assert first["started"] == tasks_mod.tasks_store.epoch(T9)
+    assert first["last_active"] > first["started"]
+
+    # The run says something an hour later: the row's activity moves, its start
+    # does not. This is the whole contract the wall's order rests on.
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("start it", T9),
+        _assistant("working", T10),
+        _assistant("still working", T11),
+    ])
+    later = _tasks(client)[0]
+    assert later["started"] == first["started"]
+    assert later["last_active"] > first["last_active"]
+
+
+def test_started_does_not_move_when_the_transcript_shows_up(
+        client, projects_dir, state_dir):
+    """A scheduled run is listed before it has said anything, and again after.
+    `started` is the same number both times.
+
+    bugbot, PR #984. It used to be `_place`'s `order`, which SWITCHES SOURCE at
+    exactly that moment — the entry's `created` while there is no transcript, the
+    transcript's first record once there is one. Harmless for `order`'s own job
+    (allocating a task number once), and not harmless at all for the Cards wall,
+    which orders by this to stop a card moving after it appears: the switch is a
+    card jumping the moment its run speaks. Taking the EARLIEST of the two pins
+    it, because `created` always precedes anything the run says."""
+    _already_using(state_dir)
+    # Scheduled a day before it fires, and it fires an hour before it speaks —
+    # the gap that made the two clocks disagree.
+    _seed_schedule([_entry("e1", "run the report", T10, created=T9,
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+
+    before = _tasks(client)[0]
+    assert before["started"] == tasks_mod.tasks_store.epoch(T9)
+
+    # The run opens its session and says its first thing an hour later.
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("run the report", T11),
+        _assistant("done", T11),
+    ])
+    after = _tasks(client)[0]
+    assert after["started"] == before["started"], (
+        "the transcript's arrival must not restamp a task that already began"
+    )
+    # ...while `order` itself is untouched: it still switches, because task-number
+    # allocation is a different question and this fix must not answer it.
+    assert after["last_active"] > after["started"]
+
+
+def test_started_is_the_transcript_head_for_a_task_with_no_entry(
+        client, projects_dir, state_dir):
+    """A chat typed into a terminal has no scheduled entry and therefore no
+    `created`. Its transcript's FIRST line is the one line in it that never
+    changes, so that is the stamp — equally fixed, by a different route."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-b", "/home/me/proj", [
+        _user("hello", T9),
+        _assistant("hi", T10),
+    ])
+    task = _tasks(client)[0]
+    assert task["started"] == tasks_mod.tasks_store.epoch(T9)
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
@@ -272,16 +350,26 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     full = _tasks(client)
     pulse = _pulse(client)
 
-    # `project` rides along for the sidebar's Current apps section (D487) —
-    # the one listing fact that reader needs beyond the status summary.
-    pulse_fields = ("key", "status", "unread", "last_active", "project")
+    # `project` rides along for the sidebar's Current apps section (D487), and
+    # `task_id`/`title`/`target`/`session_id` for the Notifications section's
+    # needs-attention rows (2026-09-03), which have to NAME the waiting task and
+    # then open its conversation. Four short strings on a row that is being built
+    # anyway; the alternative was a second /api/tasks poll from the status bar.
+    pulse_fields = (
+        "key", "status", "unread", "last_active", "project",
+        "task_id", "title", "target", "session_id",
+    )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
         for row in full
     ]
     assert set(pulse[0]) == set(pulse_fields)
+    # COMPACT IS ABOUT THE HEAVY FIELDS, not about how many there are: what this
+    # endpoint exists to leave behind is the parsed transcript — the message
+    # previews and the description — never a title of a few dozen characters.
     assert "messages" not in pulse[0]
-    assert "title" not in pulse[0]
+    assert "description" not in pulse[0]
+    assert "a large message body the sidebar must not receive" not in json.dumps(pulse)
     assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 

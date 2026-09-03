@@ -512,8 +512,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const unseen = tasksActive ? 0 : pulse.unseen;
   const tasksTip = pulseTitle(pulse);
 
-  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): yellow while
-  // anything runs, green for completions not yet shown, nothing at all
+  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): red while a run is
+  // waiting on an answer, yellow while anything else runs, green for completions
+  // not yet shown, nothing at all
   // otherwise. It began as the collapsed rail's whole signal — no label there to
   // hang a word on — and the expanded row deliberately went without it. That was
   // wrong in use: the icon is where the eye lands whatever the sidebar's width,
@@ -522,19 +523,27 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // constant, and expanding ADDS words beside it ("N running" + the count chip)
   // instead of trading the dot for them.
   //
-  // Still ONE dot: yellow outranks green — a reader told work is in flight does
-  // not also need sending to the page mid-run. The hues are the status ring's
-  // own (--status-progress / --status-done, schedule.css) — one status, one
-  // colour, on every surface that names it (design-principles §1).
+  // Still ONE dot: red outranks yellow outranks green — a reader told work is in
+  // flight does not also need sending to the page mid-run, and a run that has
+  // STOPPED to ask something outranks both, because it is the only one of the
+  // three that goes nowhere until the reader acts. The hues are the status
+  // ring's own (--status-failed / --status-progress / --status-done,
+  // schedule.css) — one status, one colour, on every surface that names it
+  // (design-principles §1); red is the hue the Blocked ring already wears, and
+  // `needs_attention` is drawn in Blocked (schedule-lib.laneOf).
   //
-  // A WAITING TASK GETS NO DOT OF ITS OWN (Akshil, 2026-09-03). It is counted in
-  // `running` — its turn genuinely is in flight — so it wears the plain yellow
-  // like every other running task, and the fact that it is waiting is said in
-  // WORDS (below, and in the tooltip) rather than by a mark that moves. A
-  // pulsing dot was tried and taken out: the rail's corner is the one place on
-  // screen a reader cannot look away from, and nothing there may blink.
+  // A WAITING TASK NOW GETS ITS OWN COLOUR, AND STILL NO MOVEMENT (Akshil,
+  // 2026-09-03, revising the same day's "no dot of its own"). It is counted in
+  // `running` too — its turn genuinely is in flight — so before this it wore the
+  // plain yellow and the waiting was said in WORDS alone, which is invisible at
+  // rail width, where there are no words. A different HUE says it at both widths
+  // and costs nothing that moves: the pulsing dot tried first stays out, because
+  // the rail's corner is the one place on screen a reader cannot look away from,
+  // and nothing there may blink. The words below and the tooltip are unchanged.
   const tasksDot =
-    pulse.running > 0 ? (
+    pulse.attention > 0 ? (
+      <span className="sidebar-rail-dot is-attention" title={tasksTip} />
+    ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
     ) : unseen > 0 ? (
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
@@ -555,7 +564,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
         {pulse.attention > 0 ? (
-          <span className="sidebar-running" title={tasksTip}>
+          // Red, like the dot beside it: one state, one colour, on the mark and
+          // on the words (Akshil, 2026-09-03: "this should be red as well").
+          <span className="sidebar-running is-attention" title={tasksTip}>
             {attentionLabel(pulse.attention)}
           </span>
         ) : pulse.running > 0 && (

@@ -2656,6 +2656,15 @@ export interface Task {
   attention?: { tool: string; summary: string } | null;
   live: boolean;
   unread: number;
+  // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
+  // it: the scheduled entry's `created`, else the transcript's first record
+  // (routers/tasks.py `_place`, which says why it is the earliest and not
+  // whichever one exists). The one time on this row that never moves, which is
+  // why the Cards wall orders by it (tasks-lib.cardsForTasks) instead of by
+  // `last_active`, a number that climbs every time a run says anything. 0 when
+  // the task has neither a transcript nor an entry yet; absent on an older
+  // server, which reads the same way.
+  started?: number;
   last_active: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
@@ -2686,13 +2695,30 @@ export interface Task {
   messages: TaskMessage[];
 }
 
-// The global sidebar needs task state, not the Tasks page's titles, paths,
-// descriptions, and message previews. Keep this structural subset compatible
-// with Task so the Tasks page can still publish its full rows into the shared
-// pulse store while every other route polls the compact endpoint.
+// The global sidebar needs task state, not the Tasks page's paths, descriptions
+// and message previews — which is where a task listing's weight actually is.
+// Keep this structural subset compatible with Task so the Tasks page can still
+// publish its full rows into the shared pulse store while every other route
+// polls the compact endpoint.
 // `project` is here for the sidebar's Current apps section (D487), which groups
-// live tasks by the workspace app they belong to off this same poll.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
+// live tasks by the workspace app they belong to off this same poll; `task_id`,
+// `title`, `target` and `session_id` for the Notifications section's
+// needs-attention rows (2026-09-03), which have to NAME the task and then open
+// its conversation (tasks-lib `attentionRows`/`taskHref`) — see
+// routers/tasks.py `_PULSE_FIELDS` for why four short strings beat the second
+// /api/tasks poll the alternative would have cost.
+export type TaskPulseTask = Pick<
+  Task,
+  | "key"
+  | "status"
+  | "unread"
+  | "last_active"
+  | "project"
+  | "task_id"
+  | "title"
+  | "target"
+  | "session_id"
+>;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
