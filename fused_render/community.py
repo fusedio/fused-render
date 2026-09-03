@@ -18,8 +18,10 @@ Actions:
               there yet, then return the same payload as `catalog`; once the
               clone exists this never fetches or syncs it again
 
-The repo is a FULL clone living inside the user's workspace
-(~/Fused/showcase). It is the user's tree: apps are edited in place, and
+The repo is a full WORKING TREE (every app's files on disk, no sparse
+checkout, no materialize step) living inside the user's workspace
+(~/Fused/showcase), cloned SHALLOW — `--depth 1 --single-branch --no-tags`,
+one commit of history. It is the user's tree: apps are edited in place, and
 nothing here ever resets, deletes, fetches, or syncs it once cloned — that
 is the whole point of "edit in the showcase" (there is no separate installed
 copy to keep in sync). Opening an app there IS opening your copy.
@@ -74,12 +76,14 @@ LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 # The one definition of the workspace, imported rather than mirrored — this
 # used to be a hand-copied expanduser() that had to be kept in step by hand.
 WORKSPACE = fused_dir()
-# The full clone of the community repo, inside the user's workspace so the
+# The clone of the community repo, inside the user's workspace so the
 # explorer lists it like any other folder and apps are editable in place.
 SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
 
 GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
-CLONE_TIMEOUT = 180  # the full clone (every app + preview.png) is the long call
+# The clone (every app + its preview.png) is the long call: 25 apps, ~19 MiB
+# even shallow, and it runs on a first-visit request path.
+CLONE_TIMEOUT = 180
 LOCK_TIMEOUT = CLONE_TIMEOUT + 20
 
 
@@ -274,7 +278,26 @@ def _refresh():
     # rename — no half-clone ever flashes up in the explorer listing.
     staging = tempfile.mkdtemp(dir=WORKSPACE, prefix=".showcase-clone-")
     try:
-        r = _git(WORKSPACE, "clone", "--", REPO_URL,
+        # Shallow, one branch, no tags. Nobody here reads history: this
+        # module clones once and never fetches again (D550), and the two
+        # reads it does perform work fine at depth 1 (`rev-parse HEAD` for
+        # the catalog's commit, `remote get-url origin` for _cache_ready).
+        # Measured against fused-render-community-apps: 22.03 -> 18.59 MiB
+        # transferred, 931 -> 317 objects. The rest of the weight is the
+        # working tree itself (preview.png files alone are ~9 MiB), which
+        # only the community repo can shrink.
+        #
+        # It stays an ordinary git work tree, which is what SPEC §33/GT-20
+        # needs: `fetch` + `rev-list --left-right --count HEAD...origin/x` +
+        # `pull --ff-only` all behave on a shallow clone, so the opt-in
+        # Update row still reports and applies upstream commits. A user who
+        # wants the full log runs `git fetch --unshallow` themselves.
+        #
+        # Not partial (`--filter=blob:none`): every blob is checked out
+        # anyway, so it measured ~0.3 MiB better while leaving a promisor
+        # remote — a network dependency — inside the user's editable tree.
+        r = _git(WORKSPACE, "clone", "--depth", "1", "--single-branch",
+                 "--no-tags", "--", REPO_URL,
                  os.path.join(staging, "showcase"), timeout=CLONE_TIMEOUT)
         if r.returncode != 0:
             detail = (r.stderr or "").strip().splitlines()
