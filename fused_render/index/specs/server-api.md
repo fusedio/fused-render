@@ -25,6 +25,28 @@ unguarded like every other read endpoint and none of them can write.
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
 | `POST /api/index/delete` | X-Fused | drop the whole store (§5) |
 
+### 1.1 Cancellation — an abandoned request stops, quietly
+
+`GET /api/index/stats`, `GET /api/index/search`, `GET /api/index/rank`,
+`POST /api/index/query` and `POST /api/index/ask` each dispatch their real work
+onto a worker thread (`asyncio.to_thread`), which **cannot be killed** once
+started — Python has no thread-preemption. Instead each of these routes wraps
+its body in `async with cancellable(request) as token:` (`index/cancel.py`),
+which starts a task polling `request.is_disconnected()` for the duration of the
+block and calls `token.cancel()` the moment the client is gone. The `token`
+passed into `stats`/`search_under`/`run_guarded`/`search_ranked` makes the
+QUERY ITSELF notice, cooperatively: a `check()` at each phase boundary, and
+`token.cancel()` also calling `con.interrupt()` on the bound connection so a
+`con.execute()` already in flight unblocks too.
+
+A cancelled request is not an error — it is a client that stopped waiting,
+normal for a per-keystroke search box. The route logs it at `debug` (never
+louder) and answers `Response(status_code=499)` — a body nobody reads, since
+nobody is listening. `POST /api/index/scan`, `scan-folder`, and `cancel`
+deliberately do NOT use this: a scan is a detached, long-running background
+job with its own run-directory cancel flag (§1's `cancel` route), not a
+request/response the caller is blocked on.
+
 Every route resolves its `IndexConfig` from disk **per request**. That is what
 de-globalizing the engine bought: an ignore-list edit applies to the next scan with no
 restart, and a test's redirected home is honoured by the same process that served the

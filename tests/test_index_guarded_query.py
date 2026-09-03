@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from fused_render.index import guarded_query
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
 from fused_render.index.store import Sink, compact, schemas
@@ -221,3 +222,75 @@ def test_values_that_json_cannot_hold_leave_as_strings(tmp_path):
                       "SELECT DATE '2020-01-01' d, CAST(1 AS HUGEINT) h, "
                       "'x'::BLOB b")
     assert out["rows"] == [["2020-01-01", 1, "x"]]
+
+
+# -- cancellation: a `token` handed to run_guarded -----------------------------
+#
+# `run_guarded` coexists with its own TIMEOUT_S timer (both call
+# `con.interrupt()` on the same connection); only an interrupt attributable to
+# THIS token is re-raised as `Cancelled` — a real TIMEOUT_S timeout keeps
+# surfacing as `duckdb.InterruptException`, unchanged from
+# test_a_runaway_statement_is_interrupted above.
+
+def test_an_uncancelled_token_changes_nothing(tmp_path):
+    cfg = _index(tmp_path)
+    token = CancelToken()
+    assert (run_guarded(cfg, "SELECT * FROM files", token=token)
+            == run_guarded(cfg, "SELECT * FROM files"))
+
+
+def test_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    cfg = _index(tmp_path)
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        run_guarded(cfg, "SELECT * FROM files", token=token)
+
+
+def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path)
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "_guarded" in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        run_guarded(cfg, "SELECT * FROM files", token=token)
+
+
+def test_a_real_timeout_is_not_read_as_this_tokens_cancellation(tmp_path, monkeypatch):
+    """A `token` can be bound at the same time TIMEOUT_S's own timer fires —
+    that interrupt is not this token's doing, so it must keep surfacing as
+    `duckdb.InterruptException`, not `Cancelled`."""
+    monkeypatch.setattr(guarded_query, "TIMEOUT_S", 0.05)
+    token = CancelToken()
+    with pytest.raises(Exception) as exc:
+        run_guarded(_index(tmp_path),
+                    "SELECT count(*) FROM range(100000000) a, range(1000) b",
+                    token=token)
+    assert "interrupt" in str(exc.value).lower()
+    assert not isinstance(exc.value, Cancelled)
+
+
+def test_a_cancel_after_return_does_not_touch_the_closed_connection(tmp_path):
+    cfg = _index(tmp_path)
+    token = CancelToken()
+    run_guarded(cfg, "SELECT * FROM files", token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True

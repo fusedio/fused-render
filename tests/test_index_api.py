@@ -2,7 +2,9 @@
 
 See fused_render/index/specs/server-api.md.
 """
+import asyncio
 import json
+import logging
 import os
 import time
 
@@ -1533,3 +1535,124 @@ def _write_dirs_index(cfg, dirs):
         sink.add(d, "s", ("sig", [], 0, mtime_ns, 0))
     sink.close()
     compact(cfg, next(iter(dirs)), shards, pa, pq)
+
+
+# -- cancellation: an abandoned request gets a quiet 499 -----------------------
+#
+# Same end-to-end shape /api/index/rank already covers (test_index_search.py's
+# test_rank_route_answers_a_disconnected_client_with_a_quiet_499): the worker
+# function is monkeypatched to a controllable stand-in — sleeping briefly on
+# its OWN thread, never the event loop — that then consults the very token
+# the route handed it, exactly as the real query.py/guarded_query.py
+# functions do. A real (tiny, near-instant) index would make the outcome a
+# coin flip on scheduling order against `_watch_disconnect`'s poll.
+
+class _DisconnectedRequest:
+    """`app.state` is only there for `api_index_ask`'s `ai_session` lookup —
+    the other three routes never touch it."""
+
+    class app:
+        class state:
+            pass
+
+    async def is_disconnected(self):
+        return True
+
+
+def test_stats_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_stats(cfg, root="", breakdown=False, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", slow_cancellable_stats)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_stats(request=_DisconnectedRequest()))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_search_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_search(cfg, root, q="", limit=None, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"covered": False, "fresh": False, "updated": None, "age_s": None,
+                "root": root, "entries": [], "truncated": False, "total": 0,
+                "scanned_partitions": 0, "of_partitions": 0}
+
+    monkeypatch.setattr(index_router, "index_search", slow_cancellable_search)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_search(
+                request=_DisconnectedRequest(), root=str(tmp_path)))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_query_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_guarded(cfg, sql, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"columns": [], "rows": [], "truncated": False}
+
+    monkeypatch.setattr(index_router, "_guarded", slow_cancellable_guarded)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_query(
+                request=_DisconnectedRequest(),
+                body={"sql": "SELECT 1"}, x_fused="1"))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_ask_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("SELECT 1"))
+
+    def slow_cancellable_guarded(cfg, sql, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"columns": [], "rows": [], "truncated": False}
+
+    monkeypatch.setattr(index_router, "_guarded", slow_cancellable_guarded)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_ask(
+                request=_DisconnectedRequest(),
+                body={"prompt": "anything"}, x_fused="1"))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)

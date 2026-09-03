@@ -26,11 +26,10 @@ import re
 import threading
 
 from fastapi import APIRouter, Body, Header, Query, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
-from fused_render.index.cancel import CancelToken, Cancelled
+from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
@@ -855,9 +854,18 @@ def api_index_status(run_id: str = Query(default=""),
 # -------------------------------------------------------------------- reading
 
 @router.get("/api/index/stats")
-def api_index_stats(root: str = Query(default=""),
-                    breakdown: bool = Query(default=False)):
-    return {"ok": True, **index_stats(load_config(), root=root, breakdown=breakdown)}
+async def api_index_stats(request: Request, root: str = Query(default=""),
+                          breakdown: bool = Query(default=False)):
+    cfg = load_config()
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                index_stats, cfg, root=root, breakdown=breakdown, token=token)
+        except Cancelled:
+            logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
+                        root, breakdown)
+            return Response(status_code=499)
+    return {"ok": True, **out}
 
 
 # The one value of `fmt` that means anything. Anything else — including the
@@ -869,10 +877,11 @@ COLUMNS_FMT = "columns"
 
 
 @router.get("/api/index/search")
-def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
-                     limit: int = Query(default=MAX_CORPUS),
-                     fmt: str = Query(default=""),
-                     accept_encoding: str | None = Header(default=None)):
+async def api_index_search(request: Request, root: str = Query(default=""),
+                           q: str = Query(default=""),
+                           limit: int = Query(default=MAX_CORPUS),
+                           fmt: str = Query(default=""),
+                           accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
     Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
@@ -888,30 +897,16 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if not root.strip():
         return _error("'root' is required")
     cfg = load_config()
-    out = index_search(cfg, root, q=q, limit=limit)
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                index_search, cfg, root, q=q, limit=limit, token=token)
+        except Cancelled:
+            logger.debug("index search: %r under %s abandoned by the client", q, root)
+            return Response(status_code=499)
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
-
-
-# How often the disconnect watcher polls `request.is_disconnected()` while a
-# rank request is in flight on the worker thread. `is_disconnected()` is the
-# only signal an async route that is ALSO doing real work off the event loop
-# has for "the client gave up" — the same tradeoff `api_fs_walk` already makes
-# (fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a `receive`-driven variant
-# is not worth the added complexity here.
-_RANK_DISCONNECT_POLL_S = 0.1
-
-
-async def _watch_disconnect(request: Request, token: CancelToken) -> None:
-    """Cancel `token` the moment `request` disconnects; otherwise run forever
-    until the caller cancels THIS task (the route's `finally`, once the rank
-    finished on its own — see `api_index_rank`)."""
-    while True:
-        if await request.is_disconnected():
-            token.cancel()
-            return
-        await asyncio.sleep(_RANK_DISCONNECT_POLL_S)
 
 
 @router.get("/api/index/rank")
@@ -949,9 +944,10 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     happens to be a coroutine — a fast typist fires and abandons this route
     on every keystroke, and the abandoned ones used to run to completion:
     both duckdb ladder passes and the Python ranking. The actual query runs
-    on a worker thread (`asyncio.to_thread`), watched by `_watch_disconnect` polling
-    `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
-    which is index/cancel.py's job from there. Two honest limitations:
+    on a worker thread (`asyncio.to_thread`), watched by `cancellable`
+    (index/cancel.py) polling `request.is_disconnected()`; on disconnect it
+    calls `token.cancel()`, which is `CancelToken`'s job from there. Two
+    honest limitations:
 
       * `asyncio.to_thread` cannot kill the thread it started — nothing in
         Python can. `token.cancel()` is what makes the QUERY inside that
@@ -963,7 +959,7 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
         itself skippable.
       * `is_disconnected()` polling is the only disconnect signal available
         to a route that is also doing work; a `receive`-driven variant is not
-        worth the complexity here (see `_watch_disconnect`).
+        worth the complexity here (see `cancel.py`'s `_watch_disconnect`).
 
     `Cancelled` escaping the worker thread is NOT logged as an error — a
     cancelled rank is a client that stopped waiting, which is normal
@@ -976,17 +972,13 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     import time
     t0 = time.monotonic()
     cfg = load_config()
-    token = CancelToken()
-    work = asyncio.create_task(asyncio.to_thread(_rank_body, cfg, root, q, limit, token))
-    watch = asyncio.create_task(_watch_disconnect(request, token))
-    try:
-        out = await work
-    except Cancelled:
-        logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                    q, root, (time.monotonic() - t0) * 1000)
-        return Response(status_code=499)
-    finally:
-        watch.cancel()
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(_rank_body, cfg, root, q, limit, token)
+        except Cancelled:
+            logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                        q, root, (time.monotonic() - t0) * 1000)
+            return Response(status_code=499)
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
@@ -1094,27 +1086,33 @@ def _accepts_gzip(accept_encoding: str | None) -> bool:
 DEFAULT_QUERY_LIMIT = 200
 
 
-def _guarded(cfg: IndexConfig, sql: str, limit) -> dict | object:
+def _guarded(cfg: IndexConfig, sql: str, limit, token=None) -> dict | object:
     """`run_guarded` with both failure modes mapped to a 400.
 
     duckdb's own exceptions are 400s too, not 500s: "no such column" is the
     caller's mistake, and the panel shows the message verbatim so a typo is
-    self-explanatory. Only the message travels — no traceback."""
+    self-explanatory. Only the message travels — no traceback.
+
+    `Cancelled` is deliberately NOT caught here — it is not a duckdb error to
+    flatten into a 400, it is the caller's own `token` doing its job, and it
+    must keep propagating so the route can answer 499 instead."""
     try:
         n = int(limit) if limit is not None else DEFAULT_QUERY_LIMIT
     except (TypeError, ValueError):
         return _error("'limit' must be a number")
     try:
-        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT))
+        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT), token=token)
     except ValueError as e:
         return _error(str(e))
+    except Cancelled:
+        raise
     except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
         return _error(f"{type(e).__name__}: {e}")
 
 
 @router.post("/api/index/query")
-def api_index_query(body: dict = Body(default={}),
-                    x_fused: str | None = Header(default=None)):
+async def api_index_query(request: Request, body: dict = Body(default={}),
+                          x_fused: str | None = Header(default=None)):
     """Run one read-only statement against `files` / `dirs`.
 
     Guarded like the mutating routes even though it writes nothing: it executes
@@ -1126,7 +1124,13 @@ def api_index_query(body: dict = Body(default={}),
     sql = body.get("sql")
     if not isinstance(sql, str) or not sql.strip():
         return _error("'sql' must be a non-empty string")
-    out = _guarded(load_config(), sql, body.get("limit"))
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                _guarded, load_config(), sql, body.get("limit"), token)
+        except Cancelled:
+            logger.debug("index query: abandoned by the client")
+            return Response(status_code=499)
     if not isinstance(out, dict):
         return out
     return {"ok": True, **out}
@@ -1210,13 +1214,22 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
     sql = _sql_from_answer((answered.get("result") or {}).get("text") or "")
     if not sql:
         return _error("the model answered with no SQL", status=502)
-    # In a threadpool, unlike `query` next door: that one is a plain `def`
-    # handler, so FastAPI already threadpools it, while this handler must be
-    # `async` for the relay `await` above — and a duckdb query bounded only by
-    # guarded_query.TIMEOUT_S (10s) run inline would block the event loop, and
-    # with it every other request the app is making meanwhile.
-    out = await run_in_threadpool(
-        lambda: _guarded(load_config(), sql, body.get("limit")))
+    # On a worker thread, unlike `query` next door for the same reason that
+    # one is: this handler must be `async` for the relay `await` above, and a
+    # duckdb query bounded only by guarded_query.TIMEOUT_S (10s) run inline
+    # would block the event loop, and with it every other request the app is
+    # making meanwhile. `cancellable` wraps only this SQL-execution part, not
+    # the AI relay above — the relay owns its own timeout/cancellation, and a
+    # client that gave up mid-relay is the relay's disconnect to notice, not
+    # this route's; a token bound before the relay's `await` would just sit
+    # idle for however long that hop takes.
+    async with cancellable(request) as token:
+        try:
+            out = await asyncio.to_thread(
+                _guarded, load_config(), sql, body.get("limit"), token)
+        except Cancelled:
+            logger.debug("index ask: abandoned by the client")
+            return Response(status_code=499)
     if not isinstance(out, dict):
         # Same 400, plus the statement that earned it.
         return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},

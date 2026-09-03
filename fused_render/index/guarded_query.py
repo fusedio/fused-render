@@ -37,6 +37,7 @@ See specs/query.md §5.
 import os
 import threading
 
+from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.store import parquet_src, partition_files
 
@@ -148,15 +149,24 @@ def _jsonable(v):
     return str(v)
 
 
-def run_guarded(cfg: IndexConfig, sql: str, limit: int = 200) -> dict:
+def run_guarded(cfg: IndexConfig, sql: str, limit: int = 200, token=None) -> dict:
     """Run one read-only statement against the index; `{columns, rows, truncated}`.
 
     Raises ValueError for anything the statement-type gate refuses (the caller
     turns that into a 400). A statement that parses but cannot run — a bad
-    column, a path outside the index — surfaces duckdb's own exception."""
+    column, a path outside the index — surfaces duckdb's own exception.
+
+    `token` (index/cancel.CancelToken), when given, is bound alongside the
+    existing `TIMEOUT_S` timer — both call `con.interrupt()` on the same
+    connection, and whichever fires first wins. Only an interrupt THIS token
+    caused is re-raised as `Cancelled`; a real timeout, or any other duckdb
+    error, keeps surfacing as itself, exactly as `search_ranked` and `stats`
+    already do."""
     body = _one_read_statement(sql)
     cap = max(0, min(int(limit), MAX_LIMIT))
     con = _connect(cfg)
+    if token is not None:
+        token.bind(con)
     # A statement that would return the whole index must not be MATERIALISED in
     # full just to be trimmed afterwards, so the cap goes into the SQL. PRAGMA
     # parses as SELECT but is not a subquery-able expression, so a wrap that
@@ -167,6 +177,8 @@ def run_guarded(cfg: IndexConfig, sql: str, limit: int = 200) -> dict:
     timer = threading.Timer(TIMEOUT_S, con.interrupt)
     timer.start()
     try:
+        if token is not None:
+            token.check()
         try:
             cur = con.execute(
                 f"SELECT * FROM ({body}) AS _guarded LIMIT {cap + 1}")
@@ -174,8 +186,14 @@ def run_guarded(cfg: IndexConfig, sql: str, limit: int = 200) -> dict:
             cur = con.execute(body)
         rows = cur.fetchmany(cap + 1)
         columns = [d[0] for d in (cur.description or [])]
+    except duckdb.InterruptException:
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
     finally:
         timer.cancel()
+        if token is not None:
+            token.unbind()
         con.close()
     return {"columns": columns,
             "rows": [[_jsonable(v) for v in r] for r in rows[:cap]],

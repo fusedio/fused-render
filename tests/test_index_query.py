@@ -10,8 +10,10 @@ import os
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from fused_render.index import query as index_query
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.query import prune, stats
 from fused_render.index.store import Sink, compact
@@ -130,3 +132,85 @@ def test_stats_does_not_count_a_lookalike_underscore_sibling(tmp_path):
     assert stats(cfg, root="/x/my_dir")["rows"] == 1
 
 
+# -- cancellation: a `token` handed to stats -----------------------------------
+#
+# `stats` follows `search_ranked`'s contract exactly (see
+# tests/test_index_search.py's "cancellation: a `token` handed to
+# search_ranked" section for the full case list against the reference
+# implementation) — bind right after connect, `token.check()` before each
+# real query, an InterruptException attributed to this token becomes
+# `Cancelled`. These are scoped to stats's own wrinkle: two possible query
+# sites (`n_dirs`, and `by_ext` only when `breakdown=True`).
+
+def test_stats_an_uncancelled_token_changes_nothing(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"],
+                sizes={"/r/a.txt": 1, "/r/b.bin": 2})
+    token = CancelToken()
+    assert stats(cfg, breakdown=True, token=token) == stats(cfg, breakdown=True)
+
+
+def test_stats_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        stats(cfg, token=token)
+
+
+def test_stats_an_interrupt_during_the_breakdown_becomes_cancelled(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "GROUP BY" in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        stats(cfg, breakdown=True, token=token)
+
+
+def test_stats_an_interrupt_with_no_token_is_not_swallowed(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"])
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "GROUP BY" in sql:
+                raise duckdb_module.InterruptException("simulated, not this token's doing")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(duckdb_module.InterruptException):
+        stats(cfg, breakdown=True)
+
+
+def test_stats_a_cancel_after_return_does_not_touch_the_closed_connection(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
+    token = CancelToken()
+    stats(cfg, token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True

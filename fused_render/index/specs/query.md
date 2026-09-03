@@ -13,10 +13,19 @@ not an error.
 
 | Function | Params | Returns |
 |---|---|---|
-| `stats` | `root`, `breakdown` | totals + manifest; per-extension breakdown when `breakdown` is truthy |
+| `stats` | `root`, `breakdown`, `token` | totals + manifest; per-extension breakdown when `breakdown` is truthy |
+| `search_under` | `root`, `q`, `limit`, `include_dirs`, `token` | the explorer's in-folder corpus (§6) |
 
 duckdb is imported inside each function, not at module top, so a call on a missing
 index stays cheap — and so importing the server's router does not pull duckdb in.
+
+`token` (`index/cancel.CancelToken`), when given, is bound to the connection the
+moment it exists, checked before each real query, and turns a
+`duckdb.InterruptException` this token's own `cancel()` caused into `Cancelled` —
+anything else keeps surfacing as itself. `server-api.md`'s `cancellable(request)`
+is what supplies one per HTTP request; every route the token reaches
+(`stats`, `search`, `query`, `ask`, `rank`) answers an abandoned request with a
+quiet 499 rather than finishing work nobody is waiting on.
 
 ## 2. `stats`
 
@@ -59,7 +68,7 @@ executes arbitrary local Python for the same caller, so confined read-only SQL a
 capability. What the guard buys is that a mistyped — or model-written — statement cannot
 write to the index or read a file outside it.
 
-`run_guarded(cfg, sql, limit)` returns `{columns, rows, truncated}` over two views,
+`run_guarded(cfg, sql, limit, token)` returns `{columns, rows, truncated}` over two views,
 `files` and `dirs`, whose columns are exactly the stored schemas (`index-store.md §2`).
 Two independent guards, and **both** are necessary:
 
@@ -105,7 +114,11 @@ whole-index query is never materialized just to be trimmed), clamped server-side
 A PRAGMA is not a subquery-able expression, so a wrap that fails to parse falls back to
 the bare statement and a fetch cap — those answer in tens of rows by nature. And
 `TIMEOUT_S` (10 s) arms a `con.interrupt()`: a cross join is trivial to type and
-impossible to bound by inspection, and the caller is a text box.
+impossible to bound by inspection, and the caller is a text box. `token`, when
+given, arms a second `con.interrupt()` on the same connection — whichever fires
+first wins, and only an interrupt this token's own `cancel()` caused comes back
+as `Cancelled`; a real `TIMEOUT_S` timeout keeps surfacing as
+`duckdb.InterruptException`, mapped to the caller's usual 400.
 
 **Natural language** (`POST /api/index/ask`) is a thin hop on top: the question goes to
 the existing AI relay with a system prompt carrying the two schemas and the units, the

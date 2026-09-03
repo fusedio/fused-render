@@ -1052,3 +1052,91 @@ def test_scanning_is_never_reported_while_indexing_is_off(home, tmp_path,
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "alpha"}).json()
     assert body["reason"] != "scanning"
+
+
+# -- cancellation: a `token` handed to search_under ---------------------------
+#
+# `search_under` follows `search_ranked`'s contract exactly (see this file's
+# earlier "cancellation: a `token` handed to search_ranked" section) — bind
+# right after connect, `token.check()` before the one real query, an
+# InterruptException attributed to this token becomes `Cancelled`. These
+# tests are scoped to the cases that differ in behavior for search_under, not
+# a full re-run of every search_ranked case.
+
+def test_search_under_an_uncancelled_token_changes_nothing(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"])
+    token = CancelToken()
+    with_token = search_under(cfg, "/r", token=token)
+    without_token = search_under(cfg, "/r")
+    with_token.pop("age_s")
+    without_token.pop("age_s")
+    assert with_token == without_token
+
+
+def test_search_under_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        search_under(cfg, "/r", token=token)
+
+
+def test_search_under_an_interrupt_attributed_to_the_token_becomes_cancelled(
+    tmp_path, monkeypatch
+):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "UNION ALL" in sql or ("SELECT path" in sql and "LIMIT" in sql):
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_under(cfg, "/r", token=token)
+
+
+def test_search_under_an_interrupt_with_no_token_is_not_swallowed(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "UNION ALL" in sql or ("SELECT path" in sql and "LIMIT" in sql):
+                raise duckdb_module.InterruptException("simulated, not this token's doing")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(duckdb_module.InterruptException):
+        search_under(cfg, "/r")
+
+
+def test_search_under_a_cancel_after_return_does_not_touch_the_closed_connection(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    token = CancelToken()
+    search_under(cfg, "/r", token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True

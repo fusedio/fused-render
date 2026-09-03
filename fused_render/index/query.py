@@ -140,7 +140,8 @@ def _depth_col(con, src: str, path_col: str) -> str:
     return "depth" if "depth" in cols else depth_expr(path_col)
 
 
-def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False) -> dict:
+def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
+         token=None) -> dict:
     """Totals for ONE subtree — the explicit `root`, else the manifest's
     `last_root`. An index may hold several roots, so a whole-index total
     would be a number nobody asked for.
@@ -148,7 +149,13 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False) -> dict:
     The default is a `count(*)`/`sum(size)` over partitions PRUNED to the
     root's range (`prune`, query.md §4) — no per-extension grouping. Pass
     `breakdown=True` for `types`: the same partitions, but a `GROUP BY ext`
-    pass over them, which most callers never read and shouldn't pay for."""
+    pass over them, which most callers never read and shouldn't pay for.
+
+    `token` (index/cancel.CancelToken), when given, is bound to the connection
+    the moment it exists and checked before each query — same contract
+    `search_ranked` documents at length. `breakdown=True` is the only pass
+    here expensive enough for cancellation to matter in practice, but the
+    check costs nothing on the cheap path either."""
     m = read_manifest(cfg)
     if m is None:
         return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
@@ -156,45 +163,63 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False) -> dict:
     import duckdb
 
     con = duckdb.connect()
-    root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
-    root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
-    # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
-    # drive root "C:/" via _root_or_bare above) — appending another "/"
-    # unconditionally, as a plain `root != "/"` check used to, would double
-    # it on the drive-root case and match nothing.
-    prefix = root if root.endswith("/") else root + "/"
-    pfx = like_literal(prefix)
-    inside = (f"(dir = '{_q(root)}' "
-              f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
-    hit = prune(m["partitions"], prefix)
-    n_rows, total_size, n_dirs = 0, 0, 0
-    types = []
-    if os.path.exists(cfg.dirs_parquet):
-        n_dirs = con.execute(
-            f"SELECT count(*) FROM {dirs_src(cfg)} "
-            f"WHERE {inside}").fetchone()[0]
-    if hit and breakdown:
-        by_ext = con.execute(
-            f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
-            f"coalesce(sum(size), 0) s "
-            f"FROM {files_src(cfg, hit)} "
-            f"WHERE {inside} "
-            f"GROUP BY 1 ORDER BY s DESC").fetchall()
-        n_rows = sum(r[1] for r in by_ext)
-        total_size = sum(r[2] for r in by_ext)
-        top, rest = by_ext[:50], by_ext[50:]
-        types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
-        if rest:
-            types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
-                          "size": int(sum(r[2] for r in rest))})
-    elif hit:
-        n_rows, total_size = con.execute(
-            f"SELECT count(*), coalesce(sum(size), 0) "
-            f"FROM {files_src(cfg, hit)} WHERE {inside}").fetchone()
-    return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
-            "dirs": int(n_dirs), "total_size": int(total_size),
-            "updated": m.get("updated"), "last_root": root,
-            "partitions": m["partitions"], "types": types}
+    if token is not None:
+        token.bind(con)
+    try:
+        root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
+        root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
+        # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
+        # drive root "C:/" via _root_or_bare above) — appending another "/"
+        # unconditionally, as a plain `root != "/"` check used to, would double
+        # it on the drive-root case and match nothing.
+        prefix = root if root.endswith("/") else root + "/"
+        pfx = like_literal(prefix)
+        inside = (f"(dir = '{_q(root)}' "
+                  f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+        hit = prune(m["partitions"], prefix)
+        n_rows, total_size, n_dirs = 0, 0, 0
+        types = []
+        if os.path.exists(cfg.dirs_parquet):
+            if token is not None:
+                token.check()
+            n_dirs = con.execute(
+                f"SELECT count(*) FROM {dirs_src(cfg)} "
+                f"WHERE {inside}").fetchone()[0]
+        if hit and breakdown:
+            if token is not None:
+                token.check()
+            by_ext = con.execute(
+                f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
+                f"coalesce(sum(size), 0) s "
+                f"FROM {files_src(cfg, hit)} "
+                f"WHERE {inside} "
+                f"GROUP BY 1 ORDER BY s DESC").fetchall()
+            n_rows = sum(r[1] for r in by_ext)
+            total_size = sum(r[2] for r in by_ext)
+            top, rest = by_ext[:50], by_ext[50:]
+            types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
+            if rest:
+                types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
+                              "size": int(sum(r[2] for r in rest))})
+        elif hit:
+            if token is not None:
+                token.check()
+            n_rows, total_size = con.execute(
+                f"SELECT count(*), coalesce(sum(size), 0) "
+                f"FROM {files_src(cfg, hit)} WHERE {inside}").fetchone()
+        return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
+                "dirs": int(n_dirs), "total_size": int(total_size),
+                "updated": m.get("updated"), "last_root": root,
+                "partitions": m["partitions"], "types": types}
+    except duckdb.InterruptException:
+        # Same attribution rule search_ranked's identical handler documents:
+        # only an interrupt THIS token caused becomes Cancelled.
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        if token is not None:
+            token.unbind()
 
 
 def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
@@ -236,7 +261,7 @@ def _coverage_reason(con, cfg: IndexConfig, root: str) -> str:
 
 
 def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
-                 include_dirs: bool = True) -> dict:
+                 include_dirs: bool = True, token=None) -> dict:
     """The explorer's in-folder corpus for `root`, from the index.
 
     Returns entries in exactly the shape /api/fs/walk streams — `rel` (posix,
@@ -253,6 +278,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     it — it wants the whole corpus, so client-side fuzzy matching stays
     subsequence-based rather than being pre-narrowed to substrings — but it
     keeps the endpoint useful for a caller that only wants the hits.
+
+    `token`, when given, follows `search_ranked`'s contract exactly: bound to
+    the connection as soon as it exists, checked before the one real query,
+    and an interrupt this token caused re-raises as `Cancelled`.
     """
     # `or "/"` because rstrip eats the filesystem root down to the empty
     # string, which the guard below then reads as "no root given" — so a
@@ -275,63 +304,75 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    covered = _root_is_covered(con, cfg, root)
-    if not covered:
-        return {**empty, "updated": updated, "age_s": age}
-    # See stats()'s identical fix above: root already ends in "/" for
-    # any bare root (POSIX or a Windows drive), not only "/" itself.
-    prefix = root if root.endswith("/") else root + "/"
-    prefix_like = like_literal(prefix)
-    limit = max(0, min(int(limit), MAX_CORPUS))
-    hit = prune(m["partitions"], prefix)
-    qlit = like_literal(q.strip()) if q and q.strip() else ""
-    # Files and directories compete in ONE depth-ordered query, not two.
-    #
-    # Two queries meant the files branch was served first and directories got
-    # only `limit - len(files)` rows — so on any tree big enough to truncate the
-    # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
-    # naming a folder returned the files inside it and never the folder. The
-    # live walk never had this bug because BFS interleaves both kinds.
-    #
-    # Shallow entries first (smaller `depth`), path order within a depth: when
-    # the cap bites on a >limit tree, the capped corpus keeps the same
-    # breadth-first character as the walk it replaces — plain ORDER BY path
-    # would starve everything after the first deep subtree.
-    #
-    # The trade: directories now spend part of the budget files used to have,
-    # so a very large tree carries slightly fewer files. A corpus with no
-    # folders in it at all is strictly worse.
-    branches = []
-    if hit:
-        fsrc = files_src(cfg, hit)
-        like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT path, size, mtime, false AS is_dir, "
-            f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
-            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
-    if include_dirs:
-        dsrc = dirs_src(cfg)
-        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
-            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-            f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
-            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
-    entries, truncated = [], False
-    if branches:
-        # One row past the cap, so "there was more" is known without a count.
-        rows = con.execute(
-            " UNION ALL ".join(branches)
-            + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
-        for path, size, mtime, is_dir, _depth in rows[:limit]:
-            entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
-                            "size": int(size) if size is not None else None,
-                            "mtime": float(mtime) if mtime is not None else None})
-        truncated = len(rows) > limit
-    return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-            "root": root, "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"]), "entries": entries,
-            "truncated": truncated, "total": len(entries)}
+    if token is not None:
+        token.bind(con)
+    try:
+        covered = _root_is_covered(con, cfg, root)
+        if not covered:
+            return {**empty, "updated": updated, "age_s": age}
+        # See stats()'s identical fix above: root already ends in "/" for
+        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        prefix = root if root.endswith("/") else root + "/"
+        prefix_like = like_literal(prefix)
+        limit = max(0, min(int(limit), MAX_CORPUS))
+        hit = prune(m["partitions"], prefix)
+        qlit = like_literal(q.strip()) if q and q.strip() else ""
+        # Files and directories compete in ONE depth-ordered query, not two.
+        #
+        # Two queries meant the files branch was served first and directories got
+        # only `limit - len(files)` rows — so on any tree big enough to truncate the
+        # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
+        # naming a folder returned the files inside it and never the folder. The
+        # live walk never had this bug because BFS interleaves both kinds.
+        #
+        # Shallow entries first (smaller `depth`), path order within a depth: when
+        # the cap bites on a >limit tree, the capped corpus keeps the same
+        # breadth-first character as the walk it replaces — plain ORDER BY path
+        # would starve everything after the first deep subtree.
+        #
+        # The trade: directories now spend part of the budget files used to have,
+        # so a very large tree carries slightly fewer files. A corpus with no
+        # folders in it at all is strictly worse.
+        branches = []
+        if hit:
+            fsrc = files_src(cfg, hit)
+            like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT path, size, mtime, false AS is_dir, "
+                f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
+                f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+        if include_dirs:
+            dsrc = dirs_src(cfg)
+            dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+                f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+                f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
+                f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
+        entries, truncated = [], False
+        if branches:
+            if token is not None:
+                token.check()
+            # One row past the cap, so "there was more" is known without a count.
+            rows = con.execute(
+                " UNION ALL ".join(branches)
+                + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
+            for path, size, mtime, is_dir, _depth in rows[:limit]:
+                entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
+                                "size": int(size) if size is not None else None,
+                                "mtime": float(mtime) if mtime is not None else None})
+            truncated = len(rows) > limit
+        return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+                "root": root, "scanned_partitions": len(hit),
+                "of_partitions": len(m["partitions"]), "entries": entries,
+                "truncated": truncated, "total": len(entries)}
+    except duckdb.InterruptException:
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        if token is not None:
+            token.unbind()
 
 
 # Rows stage A hands to the Python ranker. Measured basis (571k rows under
