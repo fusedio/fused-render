@@ -170,11 +170,13 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
   tasks: {
     label: "Tasks",
     Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
-    // The nested Tasks page brings its own 22px page padding and a 1050px
-    // column (schedule.css); inside the gutter frame both would be a second
-    // gutter, so this wrapper zeroes them.
+    // The nested Tasks page used to bring its own page padding and 1050px
+    // column, which inside the gutter frame read as a second gutter — so this
+    // wrapper reached in and zeroed them by class. It answers for itself now:
+    // a `scope` drops its own padding and page header, so the wrapper is only
+    // the flex column.
     render: ({ dir }) => (
-      <div className="flex min-h-0 flex-1 flex-col [&_.schedule-page]:px-0 [&_.prefs-page.schedule-page>*]:max-w-none [&_.schedule-page>.prefs-section]:max-w-none">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Scheduled scope={{ project: dir }} />
       </div>
     ),

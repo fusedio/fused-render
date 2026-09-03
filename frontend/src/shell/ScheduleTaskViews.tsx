@@ -1594,7 +1594,10 @@ function TaskCard({
           {outcome && <OutcomePill text={outcome.text} title={outcome.title} />}
         </span>
         {/* UNREAD IS THE TITLE'S WEIGHT; the words are added for the tree. */}
-        <span className={cn("text-sm leading-snug [overflow-wrap:anywhere]", unread > 0 && "font-semibold")}>
+        {/* Three lines and then an ellipsis: a pasted prompt is one card among
+            many, and a card that grows to forty words pushes the whole lane
+            out of the viewport. `data-hint` on the frame carries the rest. */}
+        <span className={cn("text-sm leading-snug line-clamp-3 [overflow-wrap:anywhere]", unread > 0 && "font-semibold")}>
           {firstLine(task.title) || "(untitled)"}
           {unread > 0 && <span className="sr-only">{`, ${taskUnreadLabel(unread)}`}</span>}
         </span>

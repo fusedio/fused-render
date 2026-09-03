@@ -757,7 +757,11 @@ export default function ScheduleCalendar({
                         key={chip.key}
                         type="button"
                         className={cn(
-                          "schedule-cal-chip absolute z-(--lane) flex items-center gap-1 overflow-hidden rounded-sm border-l-2 border-(--chip) bg-(--chip)/15 px-1.5 text-left text-foreground hover:z-20 hover:bg-(--chip)/30 focus-visible:z-20 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                          // `cursor-pointer` is explicit: the column under the
+                          // chip is `cursor-cell` (a press there creates a
+                          // task), and Tailwind v4's preflight does not give a
+                          // button a pointer of its own.
+                          "schedule-cal-chip absolute z-(--lane) flex cursor-pointer items-center gap-1 overflow-hidden rounded-sm border-l-2 border-(--chip) bg-(--chip)/15 px-1.5 text-left text-foreground hover:z-20 hover:bg-(--chip)/30 focus-visible:z-20 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                           wide ? "text-xs" : "text-[11px]",
                           chip.projected && "border-dashed bg-transparent",
                           chip.time < now && !live && "opacity-70",
