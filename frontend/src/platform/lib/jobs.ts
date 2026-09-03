@@ -155,6 +155,29 @@ export function inFlightJobs(jobs: Job[]): Job[] {
   return jobs.filter((j) => !isTerminal(j));
 }
 
+/** Server-owned jobs (a pull, a load) keyed by the model id the caller's own
+ *  card matches on (`title`, which the supervisor sets to the model id, so a
+ *  card never re-derives it) — for a card to ask "is there a job for me" and
+ *  get back an ANSWER, not just a fact about history.
+ *
+ *  D657 keeps a finished job's row until it is dismissed rather than
+ *  sweeping it a few seconds after its first read, so a map built from every
+ *  `server` row regardless of state stayed non-null for a model for the rest
+ *  of the session once its pull or load finished — every consumer that
+ *  gated on PRESENCE (`RepoCard.tsx`'s `!!job` disables and
+ *  "Downloading…"/"Loading…" labels, `PlaygroundTab.tsx`'s `jobForSelected`)
+ *  read that as "still busy" forever, active again the moment anything else
+ *  on the page was, which is exactly when this page polls (`isBusy`,
+ *  `aiRuntime.ts`). Filtering here — the one place this map is built —
+ *  means presence in it means what it always should have: an active job,
+ *  matching this file's own `inFlightJobs` for the identical reason (Part A
+ *  item 1 / C3 fix). */
+export function activeJobByModel(jobs: Job[]): Map<string, Job> {
+  return new Map(
+    jobs.filter((j) => j.owner === "server" && !isTerminal(j)).map((j) => [j.title, j]),
+  );
+}
+
 /** What the Notifications chip's `.is-failure` tint is scoped to — a real
  *  `error`, not "any terminal state". A `done`/`cancelled` row belongs in
  *  Notifications now too, but neither is a failure and must not turn the

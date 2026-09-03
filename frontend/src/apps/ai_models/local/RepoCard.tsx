@@ -34,7 +34,7 @@ import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgre
 // recommended and Hub search cards still wear the hue on their own tags.
 import { unloadCountdown } from "@apps/ai_models/lib/engines";
 import { type AiLoadedModel, type AiModelRepo } from "@platform/lib/api";
-import { isRunning, type Job } from "@platform/lib/jobs";
+import { isRunning, isTerminal, type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, timeAgo } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
 import {
@@ -694,23 +694,31 @@ export function RepoCard({
                button does not do. With the trash beside it, those are the two
                ways out of this state.
                Disabled while the pull is actually running, where "Downloading…"
-               is what the label says and the job row below carries the bytes. */
+               is what the label says and the job row below carries the bytes.
+               `job && !isTerminal(job)`, not bare `!!job` (Part A item 1 / C3
+               fix): `jobByModel` (useCacheScan.ts) already excludes a
+               terminal job, so this is belt-and-braces for the same reason
+               `DownloadManager.tsx`'s `JobRow` keeps its own second guard —
+               the state is what this button actually means to ask, and
+               testing existence instead is what let a `done` row that
+               outlives dismissal (D657) wedge this button open for the rest
+               of the session. */
             <button
               type="button"
               className="am-card-power"
-              disabled={busy || fetching || !!job}
+              disabled={busy || fetching || (!!job && !isTerminal(job))}
               data-hint={`Continue downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
               aria-label={`Continue downloading ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
               <DownloadGlyph />
-              {fetching || job ? "Downloading…" : "Continue downloading"}
+              {fetching || (job && !isTerminal(job)) ? "Downloading…" : "Continue downloading"}
             </button>
           ) : (
             <button
               type="button"
               className="am-card-power"
-              disabled={busy || !!job || !!refusal}
+              disabled={busy || (!!job && !isTerminal(job)) || !!refusal}
               data-hint={refusal ?? `Load ${repo.id} into memory so it can answer`}
               /* The reason again, in the accessible name. A hover-only hint is
                  one a pointer user may never think to hover — while a screen
@@ -722,7 +730,7 @@ export function RepoCard({
               }
               onClick={onLoad}
             >
-              {job ? "Loading…" : "Load"}
+              {job && !isTerminal(job) ? "Loading…" : "Load"}
             </button>
           )}
           {/* THERE IS NO CancelButton HERE ANY MORE (2026-08-24). It was the way

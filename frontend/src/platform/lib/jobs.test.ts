@@ -4,6 +4,7 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
+  activeJobByModel,
   clearableCount,
   GRACE_MS,
   jobAmount,
@@ -245,6 +246,28 @@ test("clearableCount counts terminal rows but not a stalled running one", () => 
     job({ id: "err", state: "error" }),
   ];
   expect(clearableCount(jobs)).toBe(2);
+});
+
+// ------------------------------------------------------------- activeJobByModel
+
+test("activeJobByModel (Part A item 1 / C3) drops a done job — a finished pull must not read as still busy forever", () => {
+  const done = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "done" });
+  expect(activeJobByModel([done]).get("FLUX.2-klein-4B")).toBeUndefined();
+});
+
+test("activeJobByModel keeps a running server job, keyed by its title", () => {
+  const running = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "running" });
+  expect(activeJobByModel([running]).get("FLUX.2-klein-4B")).toBe(running);
+});
+
+test("activeJobByModel keeps a waiting server job — parked on a question is not finished", () => {
+  const waiting = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "waiting" });
+  expect(activeJobByModel([waiting]).get("FLUX.2-klein-4B")).toBe(waiting);
+});
+
+test("activeJobByModel ignores a page-owned job — a card only asks about its own model's server-side job", () => {
+  const pageJob = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "page", state: "running" });
+  expect(activeJobByModel([pageJob]).size).toBe(0);
 });
 
 test("jobsAfterClear keeps every running row, stalled included", () => {
