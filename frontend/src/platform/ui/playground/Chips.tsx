@@ -6,34 +6,33 @@
 // card's own padding and hands it back as scroll padding, so a clipped chip is
 // clipped by the card's edge rather than left floating mid-padding.
 //
-// The GROUP is shadcn's `ToggleGroup`: it is what carries `role="group"`, the
-// single-selection bookkeeping and each item's `aria-pressed`. The ITEMS are
-// base UI's `Toggle` rather than shadcn's `ToggleGroupItem`, on purpose: that
-// wrapper's `toggleVariants` bring a pressed fill, a `transition-all` and a 3px
-// focus ring the chip would then have to fight declaration by declaration, and
-// a chip that has to cancel six things to look like itself is not a chip built
-// on the primitive. The chip's own look is one `cva` below.
+// Plain buttons, not shadcn's `ToggleGroup`/`Toggle`: those bring a roving
+// tabindex (one chip tabbable, arrow keys move focus) which is a real keyboard
+// behaviour change from `main`, where every chip was its own tabbable
+// `<button>` with `aria-pressed` in a `role="group"` container. Behaviour here
+// must match `main` exactly; shadcn/base-ui is chrome only, not present at all.
 //
 // `active` may match NONE of the options (a hand-edited URL, a custom size),
 // and then no chip lights: the chips are a VIEW over the underlying params,
 // not the params.
-import { Toggle } from "@base-ui/react/toggle";
 import { cva } from "class-variance-authority";
 
 import { cn } from "@platform/lib/utils";
-import { ToggleGroup } from "@platform/shadcn/ui/toggle-group";
 
 import { INHERIT_FONT } from "./classes";
 
 export const chipVariants = cva(
-  "flex-none cursor-pointer rounded-[999px] border border-solid border-[var(--border)] bg-transparent px-2.5 py-1 text-xs tabular-nums transition-none " +
+  "flex-none cursor-pointer rounded-[999px] border border-solid bg-transparent px-2.5 py-1 text-xs tabular-nums transition-none " +
     INHERIT_FONT + " " +
     "hover:border-[var(--ctl-quiet-border-hover)] hover:bg-transparent hover:text-[var(--fg)]",
   {
     variants: {
       active: {
+        // Each state owns the border-color utility outright (rather than a
+        // base color a variant tries to override) so the two never collide
+        // in the generated stylesheet regardless of rule order.
         true: "border-[var(--accent)] text-[var(--fg)]",
-        false: "text-[var(--fg-muted)]",
+        false: "border-[var(--border)] text-[var(--fg-muted)]",
       },
     },
     defaultVariants: { active: false },
@@ -52,28 +51,26 @@ export function Chips<T extends string>({
   className?: string;
 }) {
   return (
-    <ToggleGroup
-      // Controlled by the caller's params, so a click on the lit chip re-picks
-      // the same value (as it always has) instead of un-pressing it.
-      value={active === null ? [] : [active]}
-      spacing={1.5}
+    <div
+      role="group"
       className={cn(
-        "w-auto flex-nowrap overflow-x-auto rounded-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        "flex w-auto flex-nowrap gap-1.5 overflow-x-auto rounded-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         "mx-[calc(var(--card-spacing,16px)*-1)] px-[var(--card-spacing,16px)] [scroll-padding-inline:var(--card-spacing,16px)]",
         className,
       )}
     >
       {options.map((option) => (
-        <Toggle
+        <button
           key={option.value}
-          value={option.value}
-          className={chipVariants({ active: option.value === active })}
+          type="button"
+          aria-pressed={option.value === active}
           title={option.title}
+          className={chipVariants({ active: option.value === active })}
           onClick={() => onPick(option.value)}
         >
           {option.label}
-        </Toggle>
+        </button>
       ))}
-    </ToggleGroup>
+    </div>
   );
 }
