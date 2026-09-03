@@ -207,7 +207,7 @@ export function StageButton({
   variant,
   className,
   ...props
-}: ComponentProps<typeof Button> & VariantProps<typeof stageButtonVariants>) {
+}: Omit<ComponentProps<typeof Button>, "variant"> & VariantProps<typeof stageButtonVariants>) {
   return <Button className={cn(stageButtonVariants({ variant, className }))} {...props} />;
 }
 

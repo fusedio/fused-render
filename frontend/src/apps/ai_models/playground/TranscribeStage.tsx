@@ -27,6 +27,40 @@ import {
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
 import { useConfigOpen, ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  AudioLabel,
+  AudioMeta,
+  AudioName,
+  AudioRow,
+  ClearButton,
+  Dropzone,
+  DropCopy,
+  DropSub,
+  DropTitle,
+  BrowseLabel,
+  LevelMeter,
+  ProgressBar,
+  RecordButton,
+  RecordDot,
+  RecordHint,
+  RecordInfo,
+  RecordSquare,
+  RecordTime,
+  RecordingRow,
+  Segment,
+  SegmentList,
+  SegmentText,
+  SegmentTime,
+  StageButton,
+  StageError,
+  TranscriptText,
+  audioPlayerClass,
+  levelMeterBarClass,
+  stageWorkCardClass,
+  workGridClass,
+} from "@platform/ui/playground";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -307,8 +341,8 @@ export function TranscribeStage({ model }: { model: string }) {
   };
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <div className={workGridClass(configOpen)}>
+      <Card className={stageWorkCardClass + " flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]"}>
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
@@ -318,26 +352,24 @@ export function TranscribeStage({ model }: { model: string }) {
         />
 
         {phase.step === "recording" ? (
-          <div className="pg-recording">
-            <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
-              <span className="pg-rec-square" />
-            </button>
-            <div className="pg-rec-info">
-              <span className="pg-rec-time">{clock(elapsed)}</span>
-              <span className="pg-meter" aria-hidden="true">
+          <RecordingRow>
+            <RecordButton type="button" live onClick={() => recorderRef.current?.stop()}>
+              <RecordSquare />
+            </RecordButton>
+            <RecordInfo>
+              <RecordTime>{clock(elapsed)}</RecordTime>
+              <LevelMeter>
                 {Array.from({ length: 12 }, (_, i) => (
-                  <span
-                    key={i}
-                    className={"pg-meter-bar" + (level * 12 > i ? " lit" : "")}
-                  />
+                  <span key={i} className={levelMeterBarClass(level * 12 > i)} />
                 ))}
-              </span>
-              <span className="pg-rec-hint">Recording — click to stop and transcribe</span>
-            </div>
-          </div>
+              </LevelMeter>
+              <RecordHint>Recording — click to stop and transcribe</RecordHint>
+            </RecordInfo>
+          </RecordingRow>
         ) : (
-          <div
-            className={"pg-dropzone" + (dragging ? " dragging" : "") + (busy ? " busy" : "")}
+          <Dropzone
+            dragging={dragging}
+            busy={busy}
             onDragOver={(e) => {
               e.preventDefault();
               if (!busy) setDragging(true);
@@ -350,14 +382,14 @@ export function TranscribeStage({ model }: { model: string }) {
               if (file && !busy) void land(file, file.name);
             }}
           >
-            <button type="button" className="pg-rec-btn" disabled={busy} onClick={() => void record()} title="Record from the microphone">
-              <span className="pg-rec-dot" />
-            </button>
-            <div className="pg-drop-copy">
-              <p className="pg-drop-title">
+            <RecordButton type="button" disabled={busy} onClick={() => void record()} title="Record from the microphone">
+              <RecordDot />
+            </RecordButton>
+            <DropCopy>
+              <DropTitle>
                 {busy ? "Working…" : "Record, or drop an audio / video file"}
-              </p>
-              <p className="pg-drop-sub">
+              </DropTitle>
+              <DropSub>
                 {busy ? (
                   phase.step === "uploading" ? (
                     `Saving ${phase.name}…`
@@ -367,7 +399,7 @@ export function TranscribeStage({ model }: { model: string }) {
                 ) : (
                   <>
                     …or{" "}
-                    <label className="pg-browse">
+                    <BrowseLabel>
                       browse for one
                       <input
                         type="file"
@@ -378,27 +410,23 @@ export function TranscribeStage({ model }: { model: string }) {
                           if (file) void land(file, file.name);
                         }}
                       />
-                    </label>{" "}
+                    </BrowseLabel>{" "}
                     — the words appear as they are decoded.
                   </>
                 )}
-              </p>
-              {pct !== null && (
-                <span className="pg-bar">
-                  <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                </span>
-              )}
-            </div>
+              </DropSub>
+              {pct !== null && <ProgressBar value={pct} />}
+            </DropCopy>
             {phase.step === "running" && (
-              <button
+              <StageButton
                 type="button"
-                className="btn btn-secondary"
+                variant="secondary"
                 onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
               >
                 Stop
-              </button>
+              </StageButton>
             )}
-          </div>
+          </Dropzone>
         )}
 
         <ConfigPanel open={configOpen} animated={configTouched.current}>
@@ -434,7 +462,7 @@ export function TranscribeStage({ model }: { model: string }) {
         </ConfigPanel>
 
 
-        {error && <p className="pg-error">{error}</p>}
+        {error && <StageError>{error}</StageError>}
 
         {source && phase.step !== "recording" && (
           // The recording itself, playable — hearing what the model heard is
@@ -442,16 +470,16 @@ export function TranscribeStage({ model }: { model: string }) {
           // path rides the URL, this row is also the compare loop: pick
           // another model in the sidebar and the same recording is one click
           // from a fresh run.
-          <div className="pg-audio-row">
-            <div className="pg-audio-meta">
-              <span className="pg-audio-label">What the model hears</span>
-              <span className="pg-audio-name">{source.name}</span>
-            </div>
-            <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
+          <AudioRow>
+            <AudioMeta>
+              <AudioLabel>What the model hears</AudioLabel>
+              <AudioName>{source.name}</AudioName>
+            </AudioMeta>
+            <audio className={audioPlayerClass} controls preload="metadata" src={rawUrl(source.path)} />
             {!busy && (
-              <button
+              <StageButton
                 type="button"
-                className="btn btn-secondary"
+                variant="secondary"
                 onClick={() => {
                   setError(null);
                   void transcribePath(source.path).catch((e: Error) => {
@@ -461,19 +489,19 @@ export function TranscribeStage({ model }: { model: string }) {
                 }}
               >
                 {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
-              </button>
+              </StageButton>
             )}
             {!busy && (
-              <button
+              <ClearButton
+                placement="bare"
                 type="button"
-                className="pg-ghost-btn pg-clear"
                 title="Drop this recording and start over"
                 onClick={clear}
               >
                 Clear
-              </button>
+              </ClearButton>
             )}
-          </div>
+          </AudioRow>
         )}
 
         {segments.length === 0 && phase.step !== "done" ? (
@@ -483,37 +511,37 @@ export function TranscribeStage({ model }: { model: string }) {
             note="The words come back here, timed — record something above, or pick a file."
           />
         ) : (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">Transcript</p>
-            <div className="pg-segments">
+          <AnswerBlock>
+            <AnswerLabel>Transcript</AnswerLabel>
+            <SegmentList>
               {phase.step === "done" && finalText() && (
                 <CopyButton text={finalText()} label="Copy the transcript" />
               )}
               {segments.length > 0 ? (
                 segments.map((segment, index) => (
-                  <div key={index} className="pg-segment">
-                    <span className="pg-segment-time">{clock(segment.start)}</span>
-                    <span className="pg-segment-text">
+                  <Segment key={index}>
+                    <SegmentTime>{clock(segment.start)}</SegmentTime>
+                    <SegmentText>
                       {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
                       {segment.text}
-                    </span>
-                  </div>
+                    </SegmentText>
+                  </Segment>
                 ))
               ) : phase.step === "done" && phase.text.trim() ? (
-                <p className="pg-transcript-text">{phase.text.trim()}</p>
+                <TranscriptText>{phase.text.trim()}</TranscriptText>
               ) : phase.step === "done" && phase.readFailed ? (
                 // The read failed, not the recording — the file is still saved.
-                <p className="pg-transcript-text pg-transcript-empty">
+                <TranscriptText empty>
                   The run finished, but the transcript could not be read back — it is saved in
                   the transcripts folder.
-                </p>
+                </TranscriptText>
               ) : (
-                <p className="pg-transcript-text pg-transcript-empty">
+                <TranscriptText empty>
                   No speech was detected in this recording.
-                </p>
+                </TranscriptText>
               )}
-            </div>
-          </div>
+            </SegmentList>
+          </AnswerBlock>
         )}
       </Card>
     </div>

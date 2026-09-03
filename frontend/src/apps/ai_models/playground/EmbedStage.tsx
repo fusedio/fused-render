@@ -41,6 +41,32 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { useConfigOpen, ConfigPanel, RailChips, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  AnswerProvenance,
+  ClearButton,
+  Composer,
+  ComposerKbd,
+  composerInputClass,
+  ComposerSide,
+  EmbedBar,
+  EmbedPictureName,
+  EmbedPictureRow,
+  EmbedPictures,
+  embedStageClass,
+  EmbedResults,
+  EmbedRow,
+  embedThumbClass,
+  EmbedScore,
+  EmbedText,
+  GhostButton,
+  StageButton,
+  StageError,
+  StageStatus,
+  stageWorkCardClass,
+  workGridClass,
+} from "@platform/ui/playground";
 import { StarterIcons } from "./starterIcons";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
@@ -425,8 +451,8 @@ export function EmbedStage({
     : 1;
 
   return (
-    <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <div className={workGridClass(configOpen, embedStageClass)}>
+      <Card className={stageWorkCardClass + " flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]"}>
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
@@ -465,9 +491,10 @@ export function EmbedStage({
         {scheme && !pictureMode && (
           <RailChips options={KINDS} active={kind} onPick={setKind} />
         )}
-        <div className="pg-composer">
+        <Composer>
           <input
             type="text"
+            className={composerInputClass}
             value={query}
             placeholder="What are you looking for?"
             onChange={(e) => setQuery(e.target.value)}
@@ -478,20 +505,18 @@ export function EmbedStage({
           {/* Same stack as the other composers — Clear at the top, Search at
               the foot — so Clear sits in one place across the playground and
               never appears BESIDE the input, stealing its width. */}
-          <div className="pg-composer-side">
+          <ComposerSide>
             {(pictureMode ? rankedPictures : ranked) && !busy && (
-              <button
+              <ClearButton
                 type="button"
-                className="pg-ghost-btn pg-clear"
                 title="Clear the results"
                 onClick={() => (pictureMode ? setRankedPictures(null) : setRanked(null))}
               >
                 Clear
-              </button>
+              </ClearButton>
             )}
-            <button
+            <StageButton
               type="button"
-              className="btn btn-primary pg-send"
               disabled={
                 busy
                 || !query.trim()
@@ -500,10 +525,10 @@ export function EmbedStage({
               title="Enter to run"
               onClick={() => void (pictureMode ? runPictures() : run())}
             >
-              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
-            </button>
-          </div>
-        </div>
+              {busy ? "Searching…" : "Search"} <ComposerKbd>⏎</ComposerKbd>
+            </StageButton>
+          </ComposerSide>
+        </Composer>
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         {pictureMode ? (
@@ -511,15 +536,14 @@ export function EmbedStage({
             label="Pictures to search"
             hint={`Files already on this disk, up to ${MAX_PICTURES}.`}
           >
-            <div className="pg-embed-pictures">
+            <EmbedPictures>
               {pictures.map((path) => (
-                <div key={path} className="pg-embed-picture-row">
-                  <span className="pg-embed-picture-name" title={path}>
+                <EmbedPictureRow key={path}>
+                  <EmbedPictureName title={path}>
                     {basename(path)}
-                  </span>
-                  <button
+                  </EmbedPictureName>
+                  <GhostButton
                     type="button"
-                    className="pg-ghost-btn"
                     title="Remove this picture"
                     onClick={() => {
                       setPictures((current) => current.filter((p) => p !== path));
@@ -527,18 +551,17 @@ export function EmbedStage({
                     }}
                   >
                     Remove
-                  </button>
-                </div>
+                  </GhostButton>
+                </EmbedPictureRow>
               ))}
-              <button
+              <GhostButton
                 type="button"
-                className="pg-ghost-btn"
                 disabled={attaching || pictures.length >= MAX_PICTURES}
                 onClick={() => void addPicture()}
               >
                 {attaching ? "Choosing…" : "Add a picture…"}
-              </button>
-            </div>
+              </GhostButton>
+            </EmbedPictures>
           </RailField>
         ) : (
           <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
@@ -568,44 +591,43 @@ export function EmbedStage({
           />
         )}
 
-        {status && <p className="pg-status">{status}</p>}
-        {error && <p className="pg-error">{error}</p>}
+        {status && <StageStatus>{status}</StageStatus>}
+        {error && <StageError>{error}</StageError>}
         {pictureMode ? (
           rankedPictures && !busy ? (
-            <div className="pg-answer-block">
-              <p className="pg-answer-label">
+            <AnswerBlock>
+              <AnswerLabel>
                 Ranked by meaning
                 {vectorModel && (
-                  <span className="pg-answer-provenance" title={
+                  <AnswerProvenance title={
                     `These scores were computed by ${vectorModel}. Vectors from two `
                     + `models are not comparable, even when they are the same size.`}
                   >
                     {vectorModel}
-                  </span>
+                  </AnswerProvenance>
                 )}
-              </p>
-              <ol className="pg-embed-results pg-embed-thumbs">
+              </AnswerLabel>
+              <EmbedResults>
                 {rankedPictures.map((row) => (
-                  <li
+                  <EmbedRow
                     key={row.path}
-                    className="pg-embed-row"
+                    media
                     title={`${row.path} — similarity ${row.score.toFixed(3)}`}
                   >
-                    <span
-                      className="pg-embed-bar"
+                    <EmbedBar
                       style={{ width: `${Math.max(0, (row.score / bestPicture) * 100)}%` }}
                       aria-hidden="true"
                     />
                     {/* Through `/api/fs/raw`, the one door every local file in
                         this app goes through — the shell has no other way to
                         read a picture off the user's own disk. */}
-                    <img className="pg-embed-thumb" src={rawUrl(row.path)} alt={row.name} />
-                    <span className="pg-embed-text">{row.name}</span>
-                    <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-                  </li>
+                    <img className={embedThumbClass} src={rawUrl(row.path)} alt={row.name} />
+                    <EmbedText>{row.name}</EmbedText>
+                    <EmbedScore>{row.score.toFixed(2)}</EmbedScore>
+                  </EmbedRow>
                 ))}
-              </ol>
-            </div>
+              </EmbedResults>
+            </AnswerBlock>
           ) : (
             <ResultSlot
               label="Ranked by meaning"
@@ -618,36 +640,34 @@ export function EmbedStage({
             />
           )
         ) : ranked && !busy ? (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">
+          <AnswerBlock>
+            <AnswerLabel>
               Ranked by meaning
               {vectorModel && (
-                <span className="pg-answer-provenance" title={
+                <AnswerProvenance title={
                   `These scores were computed by ${vectorModel}. Vectors from two `
                   + `models are not comparable, even when they are the same size.`}
                 >
                   {vectorModel}
-                </span>
+                </AnswerProvenance>
               )}
-            </p>
-            <ol className="pg-embed-results">
+            </AnswerLabel>
+            <EmbedResults>
               {ranked.map((row, at) => (
-                <li
+                <EmbedRow
                   key={at}
-                  className="pg-embed-row"
                   title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
                 >
-                  <span
-                    className="pg-embed-bar"
+                  <EmbedBar
                     style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
                     aria-hidden="true"
                   />
-                  <span className="pg-embed-text">{row.text}</span>
-                  <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-                </li>
+                  <EmbedText>{row.text}</EmbedText>
+                  <EmbedScore>{row.score.toFixed(2)}</EmbedScore>
+                </EmbedRow>
               ))}
-            </ol>
-          </div>
+            </EmbedResults>
+          </AnswerBlock>
         ) : (
           // The slot covers BOTH "nothing has run" and "a re-search is in
           // flight": the ranking is dropped while `busy` so a stale order is
