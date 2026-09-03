@@ -215,12 +215,6 @@
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
 
-  /* The Playground sidebar's model-card fills. A step DARKER than the usual
-     raised surface, which no single wash can do in both themes (--tint
-     lightens in dark and darkens in light), so each palette names its own
-     pre-composited pair rather than the stylesheet naming a literal. */
-  --pg-card-bg: oklch(0.175 0 0);
-  --pg-card-bg-hover: oklch(0.22 0 0);
   --status-done: #4ade80;
   --status-failed: #f87171;
   --status-archived: #cd93b6;
@@ -398,8 +392,6 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
-  --pg-card-bg: oklch(0.955 0 0);
-  --pg-card-bg-hover: oklch(0.93 0 0);
   --status-done: #16a34a;
   --status-failed: #dc2626;
   /* The rose deepened for white (see the dark block). Still warm, still low

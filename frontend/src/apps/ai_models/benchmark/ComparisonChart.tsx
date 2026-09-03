@@ -28,7 +28,18 @@
 // already produces "shortest bar wins" for a lower-is-better metric (the
 // winner's raw number is the smallest one), which is correct, not something
 // to invert.
+import { cn } from "@platform/lib/utils";
 import { formatMetricSpecValue, middleEllipsis, niceAxisTicks, shortModelName, type ComparisonBar, type MetricSpec } from "@apps/ai_models/lib/benchmark";
+
+/** The name column's width, shared by the name list AND the empty spacer in the
+ *  axis row below it — ONE constant for both, so the plot area and the tick row
+ *  explaining it can never drift out of alignment from editing one without the
+ *  other. */
+const NAMECOL = "shrink-0 basis-[26ch] min-w-0";
+
+/** A row's height, shared by a name and the bar beside it so the two columns
+ *  stay on the same baseline. */
+const ROW_H = "h-[22px]";
 
 export function ComparisonChart({
   bars,
@@ -65,23 +76,32 @@ export function ComparisonChart({
 
   return (
     <div
-      className="am-bench-compare"
+      // Capped independently of the tab's own ceiling: this is the one
+      // instrument here where more width is actively harmful — the name column
+      // is fixed-width while the plot stretches, so extra width lengthens every
+      // bar and drags the value label after it further from the name it belongs
+      // to. On the WHOLE wrapper, not just the body: the foot's tick labels are
+      // positioned by percentage of THEIR OWN element's width, so capping only
+      // the body would misalign every gridline from the tick that names it.
+      className="mb-4 max-w-[900px]"
       role="img"
       aria-label={`${metric.label} across ${bars.length} benchmarked models, ranked best to worst, peak ${formatMetricSpecValue(peak, metric)}`}
     >
-      <div className="am-bench-compare-body">
-        {/* The name column and the empty spacer in the axis row below share
-            ONE class (`am-bench-compare-namecol`) for their width, so the
-            plot area and the tick row it explains can never drift out of
-            alignment from editing one without the other. */}
-        <div className="am-bench-compare-names am-bench-compare-namecol">
+      <div className="flex gap-2.5">
+        {/* Width comes from NAMECOL, shared with the spacer in the axis row
+            below — see that constant. */}
+        <div className={cn("flex flex-col gap-1.5", NAMECOL)}>
           {bars.map((bar) => (
-            <div key={bar.model} className="am-bench-compare-name cc-mono" title={bar.model}>
+            <div
+              key={bar.model}
+              className={cn("flex items-center overflow-hidden whitespace-nowrap font-mono text-xs text-muted-foreground", ROW_H)}
+              title={bar.model}
+            >
               {middleEllipsis(shortModelName(bar.model), 26)}
             </div>
           ))}
         </div>
-        <div className="am-bench-compare-plot">
+        <div className="relative flex-1 min-w-0">
           {/* Gridlines, including the zero baseline — the same one-rule
               treatment `ModelTrendChart` gives its own axis: the baseline
               solid, the rest dashed and lighter, so the domain's zero start
@@ -89,25 +109,45 @@ export function ComparisonChart({
           {ticks.map((tick) => (
             <div
               key={tick.value}
-              className={tick.value === 0 ? "am-bench-compare-axis-line" : "am-bench-compare-gridline"}
+              className={
+                tick.value === 0
+                  ? "absolute inset-y-0 w-px bg-border"
+                  : "absolute inset-y-0 w-0 border-l border-dashed border-border opacity-60"
+              }
               style={{ left: `${pct(tick.value)}%` }}
             />
           ))}
-          <div className="am-bench-compare-rows">
+          <div className="flex flex-col gap-1.5">
             {bars.map((bar) => (
-              <div key={bar.model} className="am-bench-compare-row">
-                <div className="am-bench-compare-bar" style={{ width: `${pct(bar.value)}%` }} />
-                <span className="am-bench-compare-value">{formatMetricSpecValue(bar.value, metric)}</span>
+              <div key={bar.model} className={cn("flex items-center", ROW_H)}>
+                {/* The bar reads the same chart token the trend chart's line does —
+                    one instrument's worth of colour vocabulary across both, rather
+                    than a second palette decision for the same numbers drawn a
+                    different way. */}
+                <div className="h-2.5 min-w-[2px] rounded-full bg-chart-1" style={{ width: `${pct(bar.value)}%` }} />
+                <span className="ml-1.5 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+                  {formatMetricSpecValue(bar.value, metric)}
+                </span>
               </div>
             ))}
           </div>
         </div>
       </div>
-      <div className="am-bench-compare-foot">
-        <div className="am-bench-compare-namecol" aria-hidden="true" />
-        <div className="am-bench-compare-axis">
-          {ticks.map((tick) => (
-            <span key={tick.value} style={{ left: `${pct(tick.value)}%` }}>
+      <div className="flex gap-2.5 mt-1">
+        <div className={NAMECOL} aria-hidden="true" />
+        <div className="relative flex-1 min-w-0 h-3.5 text-xs tabular-nums text-muted-foreground">
+          {ticks.map((tick, i) => (
+            <span
+              key={tick.value}
+              className="absolute whitespace-nowrap"
+              // The first tick (0) and the last would hang off the plot's own
+              // edges under a centring shift — anchor those two inward instead
+              // of letting either spill past the chart's box.
+              style={{
+                left: `${pct(tick.value)}%`,
+                transform: i === 0 ? undefined : i === ticks.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+              }}
+            >
               {tick.label}
             </span>
           ))}
