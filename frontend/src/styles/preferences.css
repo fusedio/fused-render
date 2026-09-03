@@ -298,10 +298,11 @@
   color: var(--fg);
 }
 
+/* Position only — the size, weight and hover come from `.btn.btn-primary`
+   untouched, so this reads as the same button as every other primary action
+   in the app rather than a one-off small variant of it. */
 .fh-index-cta-btn {
   margin-left: auto;
-  padding: 4px 12px;
-  font-size: 12px;
 }
 
 .fh-result-note kbd {
