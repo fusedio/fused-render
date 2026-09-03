@@ -684,8 +684,14 @@
    nothing left running" clause had nothing left to say and is gone. Applied to
    the whole chip, so the whole line reads as needing a look rather than just
    the count inside it. */
-.dl-toggle.is-failure {
+/* A failure colours the COUNT BADGE, not the label (user: "don't change
+   notification text color, rather change count color to red"): the label
+   stays the same word in the same colour as its neighbours, and the pill
+   swaps its accent for the error tint — same shape, so the eye reads "the
+   number is the problem". */
+.dl-toggle.is-failure .sc-num {
   color: var(--error);
+  background: rgba(var(--error-rgb), 0.14);
 }
 
 .dl-clear {

@@ -501,9 +501,17 @@ function leadingVerb(text: string): string | null {
 
 export function jobTypeLabel(job: Job): string {
   if (job.state === "waiting") return "Waiting";
-  const verb = leadingVerb(job.detail || "") ?? leadingVerb(job.title);
+  const detail = job.detail || "";
+  // The one non-verb status a reporter writes: a Claude call parked behind
+  // another ("Queued — another Claude call is in flight", server/ai.py).
+  if (/^queued\b/i.test(detail.trim())) return "Queued";
+  const verb = leadingVerb(detail) ?? leadingVerb(job.title);
   if (verb) return verb;
-  return job.kind === "download" ? "Downloading" : "Working";
+  if (job.kind === "download") return "Downloading";
+  // A scheduled Claude run's title is the prompt and its detail the target
+  // path — neither carries a verb — so it names its own kind of work.
+  if (job.id.startsWith(SCHEDULE_JOB_PREFIX)) return "Running";
+  return "Working";
 }
 
 // One progress figure for the whole bar: the mean fraction of the RUNNING

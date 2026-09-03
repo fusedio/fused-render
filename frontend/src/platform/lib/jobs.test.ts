@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import {
   aggregateProgress,
+  SCHEDULE_JOB_PREFIX,
   jobTypeLabel,
   clearableCount,
   GRACE_MS,
@@ -288,6 +289,14 @@ test("a title with no leading verb falls back to the kind", () => {
   expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download" }))).toBe("Downloading");
   expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "task" }))).toBe("Working");
   expect(jobTypeLabel(job({ title: "Ring sizing", kind: "task" }))).toBe("Working");
+});
+
+test("a scheduled Claude run says Running; a queued Claude call says Queued", () => {
+  expect(
+    jobTypeLabel(job({ id: SCHEDULE_JOB_PREFIX + "abc", kind: "task", title: "Summarise the inbox", detail: "/Users/me/mail" })),
+  ).toBe("Running");
+  expect(jobTypeLabel(job({ title: "Claude", detail: "Queued — another Claude call is in flight" }))).toBe("Queued");
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download", detail: "Preparing MLX…" }))).toBe("Preparing");
 });
 
 test("a job parked on a question says Waiting whatever its title", () => {

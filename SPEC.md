@@ -5762,8 +5762,8 @@ stop it short of quitting the app.
   short name / `Models 2`; Activity reads `Activity` (muted) / the one job's
   own verb (`Erasing`, `Downloading`, `jobTypeLabel`) over its progress / 
   `Activity 2` over the mean fraction (`aggregateProgress`); Notifications
-  reads `Notifications` with a numeral, red-tinted when one of them is a failed
-  job. The numeral is one grey pill on every chip (`.sidebar-count-chip`'s
+  reads `Notifications` with a numeral whose badge turns red when one of them is
+  a failed job (the label keeps its colour). The numeral is one grey pill on every chip (`.sidebar-count-chip`'s
   style) and the progress line runs along the chip's TOP edge. Panels open on HOVER (120 ms in / 200 ms out) as a
   preview and PIN on click until a second click, Escape or an outside click
   (`platform/lib/statusChip.ts`); one panel at a time (D582). Nothing opens on
