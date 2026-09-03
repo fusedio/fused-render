@@ -29,7 +29,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import type { IndexRankResult, IndexStatus, StatResult } from "@platform/lib/api";
 import { Clock } from "@apps/explorer/listing/hook-harness";
-import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
+import {
+  INSTANT_DEBOUNCE_MS,
+  PENDING_INDICATOR_MS,
+  STALE_CLEAR_MS,
+} from "@platform/lib/instant-search";
 import { resetFsMutations } from "@platform/lib/index-freshness";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
@@ -810,6 +814,104 @@ describe("an uncovered index with no scan running offers the scan", () => {
     const note = noteText(box);
     expect(note).toContain("can’t be indexed");
     expect(note).not.toContain("Index them now");
+    box.unmount();
+  });
+});
+
+describe("the scan CTA follows the note's own precedence guards", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for `gap` reading `displayAnswer` alone: a held uncovered
+  // answer kept the CTA on screen after the note itself had moved on to
+  // "Keep typing…", offering "Index my files" next to a note that no longer
+  // has an uncovered answer to report on at all.
+  test("dropping below MIN_QUERY_CHARS removes the CTA along with the note's claim", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+
+    await flush(() => box.input().props.onChange({ target: { value: "r" } }));
+    expect(noteText(box)).toContain("Keep typing");
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+    box.unmount();
+  });
+
+  // Same bug, the other guard: once an address resolves the Open row is the
+  // whole story, and the CTA has nothing left to add to it.
+  test("a resolved address removes the CTA even with a held uncovered answer", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    await flush(() => statCalls[statCalls.length - 1].resolve({
+      path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+    }));
+    expect(box.renderer.root.findAllByProps({ id: "fh-row-0" }).length).toBeGreaterThan(0);
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+    box.unmount();
+  });
+});
+
+describe("the scan latch is one-shot: the poll owns the state once it sees the run", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for `pendingBuild` never being cleared: a scan that dies
+  // between two polls without moving `last_completed_at` left
+  // `scanStarting`'s last clause (`completedAt === pending.completedAt`) true
+  // again, re-arming "Starting the scan…" (disabled) for the rest of the
+  // 20s grace window on the one screen whose whole point is that waiting is
+  // futile — and blocking the retry the button exists to offer.
+  test("a scan that dies after the poll saw it running re-offers an enabled button", async () => {
+    const box = mount(scanStatus({ scanning: false, last_completed_at: 1000 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    type Button = { props: { onClick: () => void; disabled?: boolean } };
+    const button = () => (findByClass(box, "fh-index-cta-btn") as Button[])[0];
+    await flush(() => button().props.onClick());
+    expect(button().props.disabled).toBe(true);
+
+    // The poll sees the run: the latch's one job is done.
+    await flush(() => box.poll(scanStatus({ scanning: true, last_completed_at: 1000 })));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+
+    // The worker dies without moving `last_completed_at`. If the latch were
+    // still armed, `scanStarting` would read this as the SAME pending scan
+    // and re-disable the button reading "Starting the scan…".
+    await flush(() => box.poll(scanStatus({ scanning: false, last_completed_at: 1000 })));
+    const retry = button() as Button & { props: { children: unknown } };
+    expect(retry.props.disabled).toBe(false);
+    // Enabled AND saying the true thing: no scan is starting, so the button
+    // has to read as the offer again, not as a claim about a dead run.
+    expect(retry.props.children).toBe("Index my files");
+    box.unmount();
+  });
+});
+
+describe("the empty (buildable) note paints no leading separator", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for the slow-search suffix rendering unconditionally: the
+  // `buildable` branch of the note cascade returns null (the `.fh-index-cta`
+  // callout carries the message instead), so the suffix used to be the ONLY
+  // content of the paragraph — a leading "· Searching…" separating nothing.
+  test("the slow-search suffix drops its leading dot while the note is empty", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(noteText(box)).toBe("");
+
+    // Extend the query so a new request is pending (and left hanging). The
+    // debounce timer and the `slow` timer are each scheduled by an effect
+    // that only runs once React re-renders on the PREVIOUS timer firing, so
+    // each has to fire in its own flush — advancing past both in one call
+    // races ahead of the effect that schedules the second timer.
+    await flush(() => box.input().props.onChange({ target: { value: "reports" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the leading debounce
+    await flush(() => clock.advance(PENDING_INDICATOR_MS + 50)); // past the slow threshold
+    expect(noteText(box)).toBe("Searching…");
     box.unmount();
   });
 });

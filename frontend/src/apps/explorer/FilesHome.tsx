@@ -817,10 +817,28 @@ export function FilesSearch({
   // either direction (see `indexGap`). `indexScan?.scanning === true` would
   // collapse "no answer yet" into "idle" and lose half of that.
   const liveScanning = indexScan === null ? null : indexScan.scanning;
+  // Two renderers read `gap` — the note's ternary cascade below and the
+  // `.fh-index-cta` callout — so the guards deciding whether this screen is
+  // reporting on an uncovered answer AT ALL belong in the value, not repeated
+  // at each reader where they would drift apart. They are the cascade's own
+  // earlier branches: `showOpenRow`, `!searchable` and `suppressRank` each
+  // short-circuit it before any `gap === …` case, because a held answer must
+  // not describe a search that was never sent (see `hits` and `suppressRank`).
+  // Without them here, a stale uncovered `displayAnswer` puts "Index my files"
+  // on screen underneath "Keep typing…" or an "Open this path" row — two
+  // claims about what the screen means, only one of them true.
   const gap =
-    displayAnswer !== null && !displayAnswer.covered
+    displayAnswer !== null &&
+    !displayAnswer.covered &&
+    !showOpenRow &&
+    searchable &&
+    !suppressRank
       ? indexGap(displayAnswer.reason, liveScanning)
       : null;
+  // The `buildable` branch yields nothing — the `.fh-index-cta` callout is the
+  // message for that state — so the note paragraph is empty and the suffix's
+  // leading "·" would separate nothing.
+  const noteEmpty = gap === "buildable";
   // Whether AI search has anything to answer WITH. It executes its spec
   // against the same file index (`routers/search._search_index`), so with no
   // index built it fails the same way the instant search did — see
@@ -868,6 +886,16 @@ export function FilesSearch({
       },
     );
   };
+
+  // The latch bridges ONE round trip: the POST returning before the poll can
+  // see the run it started. Once the poll reports a run, that job is done and
+  // the poll owns the state — holding the latch any longer means a run that
+  // starts and then dies inside the grace window re-arms it, putting
+  // "Starting the scan…" back on screen for a scan that is already gone and
+  // disabling the retry.
+  useEffect(() => {
+    if (liveScanning === true) setPendingBuild(null);
+  }, [liveScanning]);
 
   // The row-model descriptor (lib/home-search): at most one leading "Open"
   // row, then files, then at most one AI row. `showOpenRow` forces the other
@@ -1129,7 +1157,9 @@ export function FilesSearch({
                 (see `displayAnswer`, above), and this suffix is what tells the
                 user a fresh answer for `q` is still on the way. */}
             {searchable && !showOpenRow && slow && displayAnswer !== null && (
-              <span className="fh-searching-note"> · Searching…</span>
+              <span className="fh-searching-note">
+                {noteEmpty ? "Searching…" : " · Searching…"}
+              </span>
             )}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
