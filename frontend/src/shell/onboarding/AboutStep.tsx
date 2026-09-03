@@ -14,22 +14,18 @@ const FEATURES = [
   {
     icon: <Bot className="size-4" />,
     title: "Frontier AI models",
-    body: "Claude Code builds and edits your apps, on the subscription you already have.",
   },
   {
     icon: <Cpu className="size-4" />,
     title: "AI models on device",
-    body: "Text, image, video and transcription models run locally, from the Hugging Face hub.",
   },
   {
     icon: <Code2 className="size-4" />,
     title: "Local Python",
-    body: "Every page can call a Python file beside it. The Fused engine runs it here.",
   },
   {
     icon: <Mic className="size-4" />,
     title: "Native APIs",
-    body: "Microphone, screen and camera, straight from a web page.",
   },
 ];
 
@@ -61,11 +57,10 @@ export function AboutStep({ eyebrow }: { eyebrow: string }) {
 
       <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-4">
         {FEATURES.map((f) => (
-          <li key={f.title} className="flex gap-3 rounded-xl border border-border bg-card p-4">
+          <li key={f.title} className="flex items-center gap-3 rounded-xl border border-border bg-card p-4">
             <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted">{f.icon}</span>
             <div className="min-w-0">
               <div className="text-sm font-medium">{f.title}</div>
-              <p className="text-xs leading-relaxed text-muted-foreground">{f.body}</p>
             </div>
           </li>
         ))}
