@@ -28,7 +28,22 @@ const store = new Map<string, string>();
   getItem: (k: string) => store.get(k) ?? null,
   setItem: (k: string, v: string) => void store.set(k, v),
 };
-(globalThis as { window?: unknown }).window ??= { dispatchEvent: () => true };
+// A COMPLETE ENOUGH `window`, not just the one method this file needs. Whoever
+// installs it first wins for the whole process (`bun test` shares one), so a
+// stub that carries only `dispatchEvent` hands every later file a `window` that
+// is truthy and half-missing — `toast.ts` does `window.setTimeout(...)` and gets
+// "window.setTimeout is not a function", which is not a failure this file's own
+// tests would ever show. Same reasoning as the `??=` above: install a superset,
+// never a subset, and never delete it afterwards.
+(globalThis as { window?: unknown }).window ??= {
+  dispatchEvent: () => true,
+  addEventListener() {},
+  removeEventListener() {},
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
+  setInterval: globalThis.setInterval.bind(globalThis),
+  clearInterval: globalThis.clearInterval.bind(globalThis),
+};
 
 // Record what `noteFixStarted` dispatches, by swapping the method IN THE TEST
 // rather than by owning the `window` stub: bun shares globals across suites and
