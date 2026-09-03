@@ -119,6 +119,73 @@ def test_concurrent_reads_are_on_distinct_channels():
             "supersedes the first and the first never settles")
 
 
+def _function_body(source, signature):
+    """The `{ ... }` body of a top-level function, by brace-depth walk — the
+    same technique `_run_python_calls` uses for argument lists, needed here
+    because these bodies span many lines and contain their own nested
+    object literals that a lazy regex would stop inside."""
+    start = source.index(signature) + len(signature)
+    open_brace = source.index("{", start)
+    depth, i = 1, open_brace + 1
+    while i < len(source) and depth:
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+        i += 1
+    return source[open_brace + 1:i - 1]
+
+
+def test_publish_never_runs_without_an_explicit_visibility():
+    """The radios open unchecked (§ toolbar's Publish-to-GitHub dialog) — no
+    default, because a "private" nobody chose is not a decision this app may
+    make for someone's code. The button's own `disabled` mirrors that, but a
+    disabled attribute is a suggestion a synthetic click can still bypass; the
+    real enforcement has to live in the handler that actually calls gh.
+    """
+    body = _function_body(_source(), "async function ghPublishClick(repo)")
+    guard = re.search(r"if\s*\(([^)]*)\)\s*return;", body)
+    assert guard, f"ghPublishClick has no early-return guard at all:\n{body[:200]}"
+    assert "ghVisibility" in guard.group(1), (
+        "ghPublishClick's guard does not mention ghVisibility, so a click "
+        f"with no radio picked could still reach the fetch: {guard.group(1)}")
+    # And the guard has to run BEFORE the network call, not merely exist
+    # somewhere in the function.
+    assert body.index(guard.group(0)) < body.index("/api/github/publish")
+
+
+def test_the_publish_button_only_replaces_the_dead_remote_slot():
+    """The toolbar's remote group is one morphing button choosing among five
+    mutually exclusive states (§ toolbar). Only the `!remote` branch is new
+    here — the four branches for when a remote already exists must still
+    read exactly as they did, so this pins the new branch's shape without
+    touching (or needing to touch) the others.
+    """
+    source = _source()
+    branch = _function_body(source, "if (!remote)")
+    assert "panel-publish" in branch, (
+        "the no-remote branch no longer wires up the publish action key")
+    assert "Publish to GitHub" in branch, branch
+    # The dead end this replaces was a button with nothing behind it; the
+    # live version must not reintroduce that by disabling itself.
+    assert "disabled: true" not in branch, (
+        "the no-remote branch disables its own button — this is the slot "
+        "that used to be a dead end and must render usable: " + branch)
+    assert "disabled:" not in branch, (
+        "the no-remote branch passes a `disabled` option at all, so it is "
+        "either always- or conditionally-disabled rather than a plain "
+        "enabled action: " + branch)
+
+    # The branches for when a remote DOES exist are untouched: still exactly
+    # the four labels this bar already spoke, still switched on the same
+    # `behind`/`ahead`/`canPush` reads `!remote` sits beside.
+    for label in ("Get latest", "Send", "Publish branch", "Check for updates"):
+        assert label in source, (
+            f"the existing remote-exists label {label!r} is gone from the "
+            "toolbar — an unrelated edit touched a branch this task was "
+            "not supposed to change")
+
+
 def test_chan_derives_the_key_from_the_module_and_the_op():
     """`chan` must not collapse to a constant.
 

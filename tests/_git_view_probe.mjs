@@ -167,6 +167,38 @@ const fused = {
   autoReload: () => {},
 };
 
+// ------------------------------------------------------------- fetch stub
+//
+// The template's own `ghFetch` calls the real `fetch` global for every
+// `/api/github/*` read the publish modal makes. Node has a real `fetch` in
+// scope even inside `new Function(...)` (it is not a true sandbox — see the
+// comment below on why compiling is still wrapped in a try), so without a
+// stub the probe would either hang on a real network call or the modal's
+// prerequisite states would never render (the "Publish to GitHub" scenarios
+// this file's tests need). `fixture.github`, keyed by the exact request
+// path, overrides one entry at a time — a test wanting "gh missing" sets
+// `{"/api/github/status": {"found": false, ...}}` and leaves the rest at
+// their default "everything is fine" shape, the same one-field-at-a-time
+// convention `fixture.payloads` already uses for `runPython`.
+const GH_DEFAULTS = {
+  "/api/github/status": { found: true, path: "/usr/bin/gh", source: "path",
+                          version: "2.50.0", signed_in: true, account: "octocat",
+                          checked_at: Date.now() / 1000 },
+  "/api/github/install": { state: "idle", detail: "", error: null,
+                           started_at: null, finished_at: null },
+  "/api/github/login": { in_flight: false, started_at: null, error: null },
+  "/api/github/publish": { state: "idle", detail: "", error: null,
+                           started_at: null, finished_at: null },
+};
+const ghTable = Object.assign({}, GH_DEFAULTS, fixture.github || {});
+function fetchStub(path, init) {
+  calls.push({ fetch: path, method: (init && init.method) || "GET" });
+  const body = Object.prototype.hasOwnProperty.call(ghTable, path)
+    ? ghTable[path] : { error: "no fixture for " + path };
+  return Promise.resolve({ ok: !body.error, status: body.error ? 400 : 200,
+                           json: () => Promise.resolve(body) });
+}
+
 // --------------------------------------------------------------- window stub
 let fatal = null;
 const unhandled = [];
@@ -206,12 +238,17 @@ try {
   const runner = new Function(
     "window", "document", "fused", "location", "history", "navigator",
     "requestAnimationFrame", "setInterval", "clearInterval", "matchMedia",
-    "getComputedStyle", "localStorage", "sessionStorage", "self",
+    "getComputedStyle", "localStorage", "sessionStorage", "self", "fetch",
     '"use strict";\n' + source);
+  // `fetch` is passed explicitly, same as every other ambient global here —
+  // `new Function` closes over the REAL global scope, not this module's, so
+  // a bare `fetch(...)` in the template would otherwise resolve to Node's own
+  // `fetch` and either hang the probe on a live network call or reach a host
+  // that was never asked for.
   runner(window, document, fused, location, history, { platform: "probe", clipboard: {} },
          window.requestAnimationFrame, window.setInterval, window.clearInterval,
          window.matchMedia, window.getComputedStyle, window.localStorage,
-         window.sessionStorage, window);
+         window.sessionStorage, window, fetchStub);
 } catch (err) {
   fatal = err && err.stack ? String(err.stack).split("\n").slice(0, 5).join(" | ") : String(err);
 }
@@ -229,8 +266,16 @@ function serialize(node) {
   if (!node || node.tagName === undefined) return "";
   const attrs = Object.entries(node.attrs || {})
     .map(([k, v]) => ` ${k}="${v}"`).join("");
+  // `disabled` and `checked` live as plain DOM PROPERTIES on the stub (`el()`
+  // assigns them straight onto the node, same as a real `<button disabled>`
+  // reflects a property rather than living in `.attrs`), so a test that needs
+  // to tell "rendered, but disabled" apart from "rendered, and usable" — the
+  // whole point of turning the old dead-end button into a live one — needs
+  // them surfaced here too, the same way a real `outerHTML` would show them.
+  const extra = (node.disabled ? ' disabled=""' : "")
+    + (node.checked ? ' checked=""' : "");
   const kids = (node.children || []).map(serialize).join("");
-  return `<${node.tagName.toLowerCase()}${attrs}>${node._text || ""}${kids}</${node.tagName.toLowerCase()}>`;
+  return `<${node.tagName.toLowerCase()}${attrs}${extra}>${node._text || ""}${kids}</${node.tagName.toLowerCase()}>`;
 }
 
 const view = byId.view;
