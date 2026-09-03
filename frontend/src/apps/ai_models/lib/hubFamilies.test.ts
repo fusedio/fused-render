@@ -399,4 +399,78 @@ describe("groupIntoFamilies", () => {
     const families = groupIntoFamilies(rows);
     expect(families[0].primary.id).toBe("org/base");
   });
+
+  it("groups a base carrying both params and quant with its tagged variant into one family headed by the base", () => {
+    // The regression this module exists to fix: an untagged base repo that
+    // happens to also carry measured `params`/`quant` (nothing prevents a
+    // root repo from having both) still has to key on the SAME string as a
+    // variant that names it in `base_model:`, or the two never meet.
+    const rows = [
+      model("black-forest-labs/FLUX.2-klein-4B", {
+        params: 3875544576, quant: "BF16", downloads: 530000,
+      }),
+      model("aydin99/FLUX.2-klein-4B-int8", {
+        baseModel: "black-forest-labs/FLUX.2-klein-4B", relation: "quantized",
+        format: null, downloads: 1000,
+      }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(1);
+    expect(families[0].primary.id).toBe("black-forest-labs/FLUX.2-klein-4B");
+    expect(families[0].variants.map((m) => m.id)).toEqual(["aydin99/FLUX.2-klein-4B-int8"]);
+  });
+
+  it("folds a base, an untagged mirror of it, and a tagged variant of it into one family headed by the base", () => {
+    const rows = [
+      model("black-forest-labs/FLUX.2-klein-4B", {
+        params: 3875544576, quant: "BF16", downloads: 530000,
+      }),
+      model("unsloth/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 3000 }),
+      model("aydin99/FLUX.2-klein-4B-int8", {
+        baseModel: "black-forest-labs/FLUX.2-klein-4B", relation: "quantized", format: null,
+      }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(1);
+    expect(families[0].primary.id).toBe("black-forest-labs/FLUX.2-klein-4B");
+    expect(families[0].variants.map((m) => m.id).sort()).toEqual([
+      "aydin99/FLUX.2-klein-4B-int8",
+      "unsloth/FLUX.2-klein-4B",
+    ]);
+  });
+
+  it("still lands a variant that names the MIRROR as its base in the family headed by the canonical member", () => {
+    const rows = [
+      model("black-forest-labs/FLUX.2-klein-4B", {
+        params: 3875544576, quant: "BF16", downloads: 530000,
+      }),
+      model("unsloth/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 3000 }),
+      model("aydin99/FLUX.2-klein-4B-int8", {
+        baseModel: "unsloth/FLUX.2-klein-4B", relation: "quantized", format: null,
+      }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(1);
+    expect(families[0].primary.id).toBe("black-forest-labs/FLUX.2-klein-4B");
+    expect(families[0].base?.id).toBe("black-forest-labs/FLUX.2-klein-4B");
+  });
+
+  it("elects the highest-download mirror as canonical, never a null-download one", () => {
+    // A variant naming the NULL-download mirror as its base still has to
+    // route to the family headed by the higher-download one — if the null
+    // member had won canonical election instead, the variant's key would
+    // point at a different, wrong bucket.
+    const rows = [
+      model("mirror-a/klein-4B", { params: 3875544576, quant: "BF16", downloads: null }),
+      model("mirror-b/klein-4B", { params: 3875544576, quant: "BF16", downloads: 500 }),
+      model("variant/klein-4B-int8", { baseModel: "mirror-a/klein-4B", relation: "quantized", format: null }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(1);
+    expect(families[0].primary.id).toBe("mirror-b/klein-4B");
+    expect(families[0].variants.map((m) => m.id).sort()).toEqual([
+      "mirror-a/klein-4B",
+      "variant/klein-4B-int8",
+    ]);
+  });
 });

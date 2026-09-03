@@ -508,6 +508,15 @@ _MAX_ID_LEN = 200
 _OVERFETCH = 4
 _MAX_FETCH = 200
 
+# `_pull_in_family_members`'s own bounds. Per-family: a republish spree
+# (a base with two dozen quantizations) must not by itself blow out a page,
+# so only the highest-ranked dozen of any one family's overflow members ride
+# along. Overall: a query where MANY kept rows each have their own overflowing
+# family must still return a payload of bounded size — capped independently of
+# `count` so a `limit=60` request cannot add another 720 rows on top.
+_FAMILY_PULL_IN_PER_FAMILY_CAP = 12
+_FAMILY_PULL_IN_TOTAL_CAP = 60
+
 # The tags a filter menu could offer are `ai/tasks.py`'s table, in its order —
 # every `pipeline_tag` the Hub serves, vendored from `@huggingface/tasks`. This
 # module used to keep its own hand-picked subset beside that; two lists of tags
@@ -1391,6 +1400,103 @@ def _store(key: tuple, value: dict) -> None:
         _cache[key] = (time.monotonic(), value)
 
 
+def _mirror_key(row: dict) -> tuple[str, int, str] | None:
+    """`(trailing name segment, params, quant)` — the untagged-republish
+    signal `hubFamilies.ts` mirrors on the frontend, absent (`None`) whenever
+    `params` or `quant` is unmeasured, since a null is not a value two rows
+    can agree on."""
+    params, quant = row.get("params"), row.get("quant")
+    if params is None or quant is None:
+        return None
+    return (row["id"].rsplit("/", 1)[-1], params, quant)
+
+
+def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dict]:
+    """`kept` (the rows `limit` would otherwise cut the response to) with any
+    `remaining` candidate reinserted that belongs to a family a kept row
+    already heads or belongs to — so a family never straddles the page
+    boundary with only its weaker half showing.
+
+    **`limit` counts MODELS, not rows returned by the Hub.** Grouping quant
+    and finetune republishes into one family is entirely the frontend's job
+    (`hubFamilies.ts`) — this function never groups anything itself — but a
+    family can only fold together the rows a search actually hands back, and
+    the Hub's own ranking routinely puts a base model and its strongest
+    republish on opposite sides of an ordinary page size. Reaching a little
+    past `limit` here is what keeps that fold from depending on where the cut
+    happened to fall.
+
+    **The membership test only has to be a SUPERSET of `hubFamilies.ts`'s own
+    key equality, never an exact match.** A row this function pulls in that
+    the frontend then declines to group renders as its own standalone family
+    — a harmless miss in the other direction. A row this function fails to
+    pull in reproduces the exact bug this exists to close. So every branch
+    below errs toward including a candidate, and the three tests it runs
+    mirror the frontend's own signals directly: a candidate names a kept
+    row as its base; a candidate and a kept row agree on the untagged mirror
+    triple (`_mirror_key`); or — the direction that is easy to skip and just
+    as necessary — a KEPT row names the CANDIDATE as its base, because the
+    base heads its family (D685) and its absence below the cut is exactly
+    what let a republish stand in for its own parent.
+
+    **A pulled-in row is built by the identical `_model_row` call as every
+    other row on the page** — this function only reorders and filters an
+    already-built list, so a reader cannot tell a pulled-in row from one that
+    was never in danger of being cut.
+
+    **Placement.** `HubResults.tsx` positions a whole family at its PRIMARY
+    member's index in the response list, and deletes every other member from
+    the drawn order — so where a NON-primary pulled-in row lands barely
+    matters, but where a pulled-in BASE lands matters a great deal, since
+    D685 makes it the primary the instant it is present. A base is therefore
+    reinserted immediately BEFORE the kept variant that named it, and every
+    other pulled-in row immediately AFTER the kept row it matched — both
+    keep the family at essentially the rank its strongest kept member already
+    earned, rather than sinking the whole family to wherever a flat append
+    would land.
+
+    **Ranking within the pull-in.** `remaining` arrives already in the same
+    rank order `kept` was truncated from, so scanning it in order and
+    stopping at each cap keeps the highest-ranked overflow members and drops
+    the rest — the cap bites on the weakest candidates, never the strongest.
+    """
+    kept_ids = {row["id"] for row in kept}
+    total_added = 0
+    result: list[dict] = []
+    for row in kept:
+        before: list[dict] = []
+        after: list[dict] = []
+        added_here = 0
+        row_base = row.get("baseModel")
+        row_mirror = _mirror_key(row)
+        for cand in remaining:
+            if added_here >= _FAMILY_PULL_IN_PER_FAMILY_CAP:
+                break
+            if total_added + added_here >= _FAMILY_PULL_IN_TOTAL_CAP:
+                break
+            cand_id = cand.get("id")
+            if cand_id is None or cand_id in kept_ids:
+                continue
+            if row_base is not None and row_base == cand_id:
+                # (c) — this candidate IS the kept row's declared base.
+                before.append(cand)
+            elif cand.get("baseModel") == row["id"] or (
+                row_mirror is not None and _mirror_key(cand) == row_mirror
+            ):
+                # (a) — the candidate declares this kept row as its base.
+                # (b) — the candidate mirrors this kept row's untagged triple.
+                after.append(cand)
+            else:
+                continue
+            kept_ids.add(cand_id)
+            added_here += 1
+        total_added += added_here
+        result.extend(before)
+        result.append(row)
+        result.extend(after)
+    return result
+
+
 @router.post("/api/ai-models/hub/search")
 def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
     """Hub models matching a query, each told apart from the local cache.
@@ -1663,7 +1769,11 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         models = [row for row in models
                   if (row.get("fit") or {}).get("verdict") != "no" or _on_disk(row)]
 
-    models = models[:count]
+    # `limit` means "this many MODELS", not "this many rows the Hub sent" —
+    # see `_pull_in_family_members`'s own docstring for the full reasoning.
+    # Reordering the response over rows already fetched, so this costs
+    # nothing beyond the loop itself: no second Hub call, no extra join.
+    models = _pull_in_family_members(models[:count], models[count:])
     return {
         "models": models,
         "query": {"q": query, "task": task_filter, "sort": sort, "limit": count},

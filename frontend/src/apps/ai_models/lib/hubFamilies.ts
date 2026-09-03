@@ -22,14 +22,30 @@
 // **A row with no `base_model:` tag at all still folds into a family when it
 // is a plain re-upload of another untagged row** — the same weights pushed
 // to a second namespace, with no relation for either copy to declare. The
-// signal for that is a mirror key: the trailing segment of the repo id
-// (everything after the last `/`), the measured `params`, and the measured
-// `quant`, all three matching exactly. Each piece alone is common — a
-// filename convention, a rounded size class, a widely-shared encoding — and
-// says nothing about shared identity; together, with `params` compared as
-// the server's raw integer rather than a rounded display figure, they do.
-// A missing `params` or `quant` drops a row back to keying on its own id,
-// since a null is not a value two rows can agree on.
+// signal for that is a mirror set: every untagged row sharing a trailing
+// repo-id segment (everything after the last `/`), a measured `params`, and
+// a measured `quant`, all three matching exactly. Each piece alone is
+// common — a filename convention, a rounded size class, a widely-shared
+// encoding — and says nothing about shared identity; together, with
+// `params` compared as the server's raw integer rather than a rounded
+// display figure, they do. A row with a missing `params` or `quant` is
+// never a mirror candidate — a null is not a value two rows can agree on —
+// and keeps its own id as its identity.
+//
+// **Mirror identity resolves to one canonical id before any bucketing key
+// is built, rather than being folded into the key computation per row.**
+// Each mirror set elects the member with the highest `downloads` (a null
+// counts lower than any real count) as canonical, and every key —
+// including a tagged variant's, built from the `baseModel` it declares —
+// is expressed in terms of that canonical id via a `canonical(id)` lookup.
+// Deriving a key straight from each row's own fields cannot put a base and
+// its tagged variant in one bucket: the base's fields are its own
+// `params`/`quant`, while a variant reports only the id its tag names,
+// never that repo's measurements, so keying each independently produces two
+// different strings for what is one family. Resolving canonical identity
+// first, before any key is built, closes that gap — a base, any untagged
+// mirrors of it, and any variant declaring one of them as `baseModel` all
+// key on the same canonical id.
 import type { HubModel } from "@platform/lib/api";
 import type { ResultSort } from "./hubSearchView";
 
@@ -52,10 +68,13 @@ import type { ResultSort } from "./hubSearchView";
 // not that: it decides which runner can open the repo at all. So `format`
 // (the server's own field, read off the Hub) joins `baseModel` in the key.
 export interface HubFamily {
-  /** `baseModel` + `format` when a base model is known, else a mirror key
-   *  (trailing name segment + `params` + `quant`) when that trio is fully
-   *  measured, else the lone member's own id — stable across re-renders of
-   *  the SAME result set, which is what a React `key` needs.
+  /** The CANONICAL `baseModel` + `format` when a base model is known, else
+   *  the row's own canonical id — stable across re-renders of the SAME
+   *  result set, which is what a React `key` needs. Canonicalization (see
+   *  `groupIntoFamilies`) is what a mirror key resolves through: a member of
+   *  a mirror set keys on its set's canonical id, not the trailing-segment
+   *  triple directly, so an unmeasured row (missing `params` or `quant`,
+   *  never a mirror candidate) keys on its own id unchanged.
    *
    *  Opaque: a composite whose parts are joined by a separator no Hub repo
    *  id contains. Nothing reads it back apart as an id, and nothing should. */
@@ -72,8 +91,11 @@ export interface HubFamily {
    *  standing alone under its own id. NOT necessarily a repo present in
    *  `models`: see the module header. */
   baseModel: string | null;
-  /** The member that IS the base model (`member.id === baseModel`), when the
-   *  base repo itself is among the results, else null. */
+  /** The member that IS the base model — resolved by comparing each
+   *  member's canonical id against `canonical(baseModel)`, not by raw id
+   *  equality, since a variant may declare a mirror rather than the
+   *  canonical repo itself as its base — when the base repo (or one of its
+   *  mirrors) is among the results, else null. */
   base: HubModel | null;
 }
 
@@ -165,6 +187,32 @@ export function groupIntoFamilies(
   models: readonly HubModel[],
   sort: ResultSort = "fit",
 ): HubFamily[] {
+  // Mirror sets first, canonical ids second, bucket keys only after that —
+  // see the module header for why identity has to resolve before any key is
+  // built. A row is a mirror candidate only when it declares no `baseModel`
+  // and carries both a measured `params` and a measured `quant`; the set's
+  // canonical id is its highest-`downloads` member, a null counting lower
+  // than any real count, so a lone candidate canonicalizes to its own id.
+  const mirrorSets = new Map<string, HubModel[]>();
+  for (const model of models) {
+    if (model.baseModel != null || model.params == null || model.quant == null) continue;
+    const mirrorKey = `${model.id.slice(model.id.lastIndexOf("/") + 1)} ${model.params} ${model.quant}`;
+    let set = mirrorSets.get(mirrorKey);
+    if (!set) {
+      set = [];
+      mirrorSets.set(mirrorKey, set);
+    }
+    set.push(model);
+  }
+  const canonicalId = new Map<string, string>();
+  for (const set of mirrorSets.values()) {
+    const elected = set.reduce((best, m) =>
+      (m.downloads ?? -1) > (best.downloads ?? -1) ? m : best,
+    );
+    for (const m of set) canonicalId.set(m.id, elected.id);
+  }
+  const canonical = (id: string): string => canonicalId.get(id) ?? id;
+
   const buckets = new Map<string, HubModel[]>();
   const indexOf = new Map<HubModel, number>();
 
@@ -174,34 +222,15 @@ export function groupIntoFamilies(
     // distinct (base, format) pairs flatten to the same string, a property a
     // `-` or `/` join would not have. A row with no format contributes
     // nothing rather than an empty suffix, so the common case's key stays
-    // the bare base id it always was.
+    // the bare base id.
     //
-    // **An untagged row falls back to a MIRROR key — trailing name segment,
-    // `params`, `quant` — not straight to its own id.** A plain re-upload of
-    // an untagged root repo (a second account pushing the exact same weights
-    // under a new namespace) carries no `base_model:` tag for either copy to
-    // point at — the Hub has no `duplicated_from` field either — so the
-    // `baseModel` key above cannot see it, and without this fallback two
-    // uploads of the same weights would sit in the results as if they were
-    // different models. Three components, all required, is what makes the
-    // fold trustworthy rather than cosmetic: the trailing segment alone is
-    // just a filename convention two unrelated projects can share by
-    // coincidence; `params` alone is a rounded, coarse figure shared by
-    // whole families of unrelated models at a given size class; `quant`
-    // alone just names an encoding every repo at that precision also
-    // carries. None of the three is individually rare enough to mean
-    // "same weights" — together, on an exact (not rounded) `params` match,
-    // they are: two repos that agree on all three have never been observed
-    // to be different weights in practice, which is the same evidentiary
-    // bar `baseModel` itself clears by being a Hub-published claim rather
-    // than a guess.
-    const mirrorKey =
-      model.params != null && model.quant != null
-        ? `${model.id.slice(model.id.lastIndexOf("/") + 1)} ${model.params} ${model.quant}`
-        : model.id;
+    // Both branches key on the CANONICAL id, never the row's own or its raw
+    // declared `baseModel` — that's what folds an untagged base, its
+    // untagged mirrors, and a variant declaring any one of them as its base
+    // into one string, per the canonicalization pass above.
     const key = model.baseModel
-      ? (model.format ? `${model.baseModel} ${model.format}` : model.baseModel)
-      : mirrorKey;
+      ? (model.format ? `${canonical(model.baseModel)} ${model.format}` : canonical(model.baseModel))
+      : canonical(model.id);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -221,15 +250,22 @@ export function groupIntoFamilies(
     // (`key` is the row's own id, not a base tag), so there's no base
     // identity to report.
     const baseModel = group.find((m) => m.baseModel)?.baseModel ?? null;
-    const base = baseModel ? (group.find((m) => m.id === baseModel) ?? null) : null;
+    // Matched against `canonical(baseModel)`, not the raw declared id: a
+    // variant may legitimately declare a MIRROR as its `baseModel` rather
+    // than the canonical repo itself, and the family still has to be headed
+    // by the canonical member — the one every other key in this bucket was
+    // built from — not by whichever mirror that one variant happened to
+    // name.
+    const base = baseModel
+      ? (group.find((m) => m.id === canonical(baseModel)) ?? null)
+      : null;
     // **The base model heads its own family whenever it is in the results,
-    // regardless of score (D685).**
     // regardless of score.** A family's first row is its IDENTITY, and a
     // score is the wrong thing to decide identity with: a 4-bit republish
     // that happens to fit this machine better than the model it was made
     // from is still a republish OF it, and drawing it as the family's own
     // name says the opposite. `compare` still orders everything else, so
-    // `variants` is ranked exactly as before and the best-ranked member is
+    // `variants` is ranked by it and the best-ranked member is
     // simply the first one behind the disclosure when it is not the base.
     //
     // **A mirror family (no member declares a `baseModel` at all) heads on

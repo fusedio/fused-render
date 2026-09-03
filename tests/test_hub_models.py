@@ -993,6 +993,90 @@ def test_a_row_with_no_tags_at_all_carries_nulls_not_a_500(client, hub_cache, mo
     assert row["relation"] is None
 
 
+# -- D687: a family is not left straddling the `limit` boundary -------------
+#
+# `sort=downloads` throughout: with no explicit sort the composite "best"
+# score reorders `models` itself, which would make the fixtures' own list
+# order say nothing about what survives truncation. Under `downloads`
+# nothing here re-sorts (see `api_hub_search`), so the row order below IS
+# the rank order, and `limit` cuts the array at exactly the index it names.
+
+
+def test_a_below_boundary_variant_is_pulled_in_with_its_kept_base(
+        client, hub_cache, monkeypatch):
+    rows = [
+        _hit("org/base", downloads=100),
+        _hit("org/base-4bit", downloads=1, tags=["base_model:quantized:org/base"]),
+    ]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"sort": "downloads", "limit": 1}).json()
+    assert body["query"]["limit"] == 1
+    assert [m["id"] for m in body["models"]] == ["org/base", "org/base-4bit"]
+
+
+def test_a_below_boundary_base_is_pulled_up_by_its_kept_variant(
+        client, hub_cache, monkeypatch):
+    # The reverse direction (c): the higher-ranked row is the REPUBLISH, and
+    # its base sits below the cut. The base still has to surface — D685 makes
+    # it the family's primary the moment it is present — so it comes back
+    # even though nothing about its own rank would have kept it.
+    rows = [
+        _hit("org/quant", downloads=100, tags=["base_model:quantized:org/original"]),
+        _hit("org/original", downloads=1),
+    ]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"sort": "downloads", "limit": 1}).json()
+    ids = [m["id"] for m in body["models"]]
+    assert set(ids) == {"org/quant", "org/original"}
+    # Reinserted immediately beside the variant that named it, not appended
+    # off in the payload wherever — see `_pull_in_family_members`'s docstring.
+    assert ids == ["org/original", "org/quant"]
+
+
+def test_the_untagged_mirror_signal_pulls_in_a_republish_too(
+        client, hub_cache, monkeypatch):
+    # No `base_model:` tag on either side — the mirror key (trailing name
+    # segment + exact params + quant) is the only signal there is, same as
+    # `hubFamilies.ts`'s own untagged fallback.
+    dtype = {"parameters": {"BF16": 7_000_000_000}, "total": 7_000_000_000}
+    rows = [
+        _hit("first-org/Weights-7B", downloads=100, safetensors=dtype),
+        _hit("second-org/Weights-7B", downloads=1, safetensors=dtype),
+    ]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"sort": "downloads", "limit": 1}).json()
+    ids = {m["id"] for m in body["models"]}
+    assert ids == {"first-org/Weights-7B", "second-org/Weights-7B"}
+
+
+def test_the_per_family_cap_keeps_only_the_highest_ranked_overflow(
+        client, hub_cache, monkeypatch):
+    variants = [_hit(f"org/anchor-v{i}", downloads=100 - i,
+                     tags=["base_model:quantized:org/anchor"])
+               for i in range(15)]
+    rows = [_hit("org/anchor", downloads=1000)] + variants
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"sort": "downloads", "limit": 1}).json()
+    ids = [m["id"] for m in body["models"]]
+    assert ids[0] == "org/anchor"
+    assert len(ids) == 1 + hub._FAMILY_PULL_IN_PER_FAMILY_CAP
+    kept_variants = ids[1:]
+    assert kept_variants == [f"org/anchor-v{i}" for i in range(hub._FAMILY_PULL_IN_PER_FAMILY_CAP)]
+    for i in range(hub._FAMILY_PULL_IN_PER_FAMILY_CAP, 15):
+        assert f"org/anchor-v{i}" not in ids
+
+
+def test_a_candidate_matching_nothing_stays_cut(client, hub_cache, monkeypatch):
+    rows = [
+        _hit("org/kept", downloads=100),
+        _hit("someone-else/unrelated-thing", downloads=1),
+    ]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    body = _search(client, {"sort": "downloads", "limit": 1}).json()
+    ids = [m["id"] for m in body["models"]]
+    assert ids == ["org/kept"]
+
+
 # -- ranking by fit, trending, and hiding what cannot run (task 2) ----------
 
 
