@@ -3017,6 +3017,23 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         # life of the file.
         with _private_open(os.path.join(run_dir, "host.json")) as f:
             json.dump(host, f)
+    # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
+    # `pending_echo` handling) will not believe a stale trailing `result` in
+    # `out.jsonl` means the turn is done: at this exact instant the host may
+    # not have drained the inbox yet, let alone gotten the CLI to write the
+    # follow-up's own `--replay-user-messages` echo back — and until that
+    # echo lands, `out.jsonl` still ends exactly where the PREVIOUS turn left
+    # it. The byte offset (not just a flag) is what lets `_poll` tell THIS
+    # message's echo apart from an older turn's own opening echo that may
+    # still be sitting inside its current read window. `_poll` clears this
+    # file itself, the moment it actually sees the echo (or gives up because
+    # the process died).
+    try:
+        pending_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        pending_offset = 0
+    with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
+        f.write(str(pending_offset))
     _write_inbox_entry(run_dir, message)
     return {"sent": True}
 
@@ -3983,6 +4000,59 @@ def _poll(run_id: str, file: str = "") -> dict:
         # Result in, nothing back yet, no `status` row (older CLI): the honest
         # word is still "sending", not "Working" over a tool that has finished.
         phase = "requesting"
+
+    # A `_send` into this run is sitting between "queued" and "echoed" — see
+    # `_send`'s own comment on why that window exists. `idle` was computed off
+    # whatever `out.jsonl` happened to end with, which at this instant can
+    # still be the PREVIOUS turn's own trailing `result`: believing that would
+    # report the send as already finished and hand the page the previous
+    # turn's reply as the answer to the new message (the bug this guards).
+    # Liveness is left alone — a process that died before ever echoing the
+    # follow-up must still end the poll, not hang it waiting for an echo that
+    # is never coming.
+    #
+    # `pending_echo` holds the byte offset `out.jsonl` was at the moment
+    # `_send` queued the message — NOT just "does this poll's rows contain any
+    # `_starts_new_turn` row", which `rows` (from `_read_current_turn`) can
+    # already do on its own: the cursor has not necessarily advanced past an
+    # OLDER turn's own opening echo yet (see `_read_current_turn`'s
+    # `seen_result` rule), so that row would still be in this poll's window
+    # and would falsely look like the new message's own echo. Scanned
+    # directly off the file, seeking straight to the recorded offset, rather
+    # than through the cursor machinery — this is a one-time, bounded read
+    # (only the bytes written since the send) whether or not the cursor
+    # happens to reach that far this poll.
+    pending_echo_path = os.path.join(run_dir, "pending_echo")
+    if os.path.exists(pending_echo_path):
+        try:
+            with open(pending_echo_path, encoding="utf-8") as fh:
+                pending_offset = int(fh.read().strip())
+        except (OSError, ValueError):
+            pending_offset = 0
+        saw_echo_since_send = False
+        try:
+            with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+                fh.seek(pending_offset)
+                tail = fh.read()
+        except OSError:
+            tail = b""
+        for raw_line in tail.split(b"\n"):
+            if not raw_line:
+                continue
+            try:
+                row = json.loads(raw_line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if _starts_new_turn(row):
+                saw_echo_since_send = True
+                break
+        if saw_echo_since_send:
+            try:
+                os.remove(pending_echo_path)
+            except OSError:
+                pass
+        else:
+            idle = False
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
