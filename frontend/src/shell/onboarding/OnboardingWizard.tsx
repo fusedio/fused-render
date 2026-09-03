@@ -208,11 +208,11 @@ export function OnboardingWizard({ config }: { config: Config }) {
           {index + 1} / {steps.length}
         </div>
         {last ? (
-          <Button variant="outline" size="sm" onClick={() => finish("complete")}>
+          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
             I'll explore on my own
           </Button>
         ) : (
-          <Button size="sm" onClick={next} title="⌘/Ctrl + Enter">
+          <Button key="next" size="sm" onClick={next} title="⌘/Ctrl + Enter">
             Next
             <ArrowRight data-icon="inline-end" />
           </Button>
