@@ -15208,7 +15208,14 @@ async function pollLoop(run_id, gen = logGen) {
         } else if (!data.done) typer.update(data.text);
       }
       if (data.done) {
-        fused.params.set("run", "", { history: "replace", default: "" });
+        // OWNERSHIP-GUARDED, same as the `finally` block below: a respawn
+        // (sendFollowUp's attachment/effort-change path) kills this run and
+        // starts a NEW pollLoop while this one is still on its way back from
+        // the poll it already sent — its own `data.done` must not clear the
+        // `run` param the newer loop already set, or a reload can't re-attach.
+        if (loopSeq === seat) {
+          fused.params.set("run", "", { history: "replace", default: "" });
+        }
         w.stop(); w.el.remove();
         // The run this frame sent (or re-attached to) is over: annotations it
         // carried are handled — auto-resolve them. Kept even on error? No: an
@@ -15244,7 +15251,10 @@ async function pollLoop(run_id, gen = logGen) {
           attachCodeCopy(addAssistantTurn(data.text, data.segments));
         }
         if (end.error) addError(end.error);
-        if (end.note) addNote(end.note, null, "⏹");
+        // Same guard: a superseded loop's own "Stopped." note (the respawn's
+        // `_cancel` is what actually stopped it) must not land in the log
+        // while the newer loop's turn is the one actually streaming.
+        if (loopSeq === seat && end.note) addNote(end.note, null, "⏹");
         break;
       }
       await sleep(400);
