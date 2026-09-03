@@ -531,7 +531,12 @@ export function RepoUpdatesCardView({
                   — sweeping both under one button would hide two different
                   promises behind it. Each is omitted entirely when its own
                   row kind has nothing to clear, rather than offering a
-                  button that would do nothing. */}
+                  button that would do nothing. Labelled "Clear updates" and
+                  "Clear finished" rather than sharing the word "Clear": the
+                  two buttons sit adjacent in the same band, and with only a
+                  `title` telling them apart, a pointer user has no on-screen
+                  way to know which one is the irreversible, server-side one
+                  before clicking it. */}
               {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
                   one-row panel: "the notification card size is still not
                   done"). Clear is dismiss-ALL, so at exactly one row it is
@@ -555,7 +560,7 @@ export function RepoUpdatesCardView({
                       onClick={() => onDismissAll(visible)}
                       title="Dismiss every visible update"
                     >
-                      Clear
+                      Clear updates
                     </button>
                   )}
                   {/* D657 keeps every terminal job until it is dismissed, and
@@ -581,7 +586,7 @@ export function RepoUpdatesCardView({
                       }}
                       title="Dismiss every finished job"
                     >
-                      Clear
+                      Clear finished
                     </button>
                   )}
                 </div>
