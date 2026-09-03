@@ -1,0 +1,208 @@
+"""A session host owns the CLAUDE CLI's stdin for the life of a chat session.
+
+`_start` (agent.py) used to Popen the CLI directly, once, for a single turn:
+argv in, one message on stdin, EOF, `-p` exits. That made every follow-up a
+NEW process — no way for the CLI to keep background work running between
+turns, and no way for a mid-turn message to reach a turn already in flight.
+
+This module is the process that changes that. `_start` detaches ONE of these
+per session (not per turn) and hands it a JSON request on stdin (never argv —
+the request may carry the user's own text-bearing paths, and argv is visible
+to every local user via `ps`). This host then:
+
+  1. Spawns the CLAUDE CLI itself, using the SAME argv `_start` used to build
+     inline (now `agent._claude_argv`), with its OWN stdin held open as a
+     pipe — so the CLI is never told to expect EOF after one message.
+  2. Overwrites `run_dir/pid` with the CLI's own pid (not this host's) —
+     `_cancel`'s `killpg` needs the CLI's process-group root, not this
+     wrapper's, to reach the whole tree it may spawn.
+  3. Drains `run_dir/inbox/*.json` into the CLI's stdin pipe in name order,
+     moving each to `inbox/done/` once written — the first entry is the
+     turn's own opening message (written by `_start`), every later one a
+     follow-up (written by `_send`, a later task in this plan).
+  4. Watches `agent._turn_state(run_dir)` — the SAME read `_live_run` and
+     `_poll` use, off `out.jsonl` alone — and reaps (closes the CLI's stdin,
+     lets both processes exit) once that has read `(turn_open=False,
+     tasks_pending=False)` continuously for `_IDLE_REAP_SECONDS`. Nothing
+     here re-derives that answer differently; a second implementation of
+     "is this session still doing something" is a second answer.
+
+Like every other file in this package (D-whatever governs
+`templates/claude/`), this module is stdlib-only and never imports
+`fused_render` — it is loaded by file path (`importlib.util
+.spec_from_file_location`), the same way `claude_spawn.load_agent` loads
+`agent.py` itself, and it must keep working if this whole directory is
+copied out and run standalone.
+
+Fork-safety (see `claude_spawn.py`'s own comment on this): this process is
+ALREADY a bare Python interpreter with no `libproj` ever loaded — it exists
+BECAUSE the server process cannot safely `fork()` (PROJ's atfork handler
+SIGSEGVs on a post-fork sqlite handle). `_start` reaches this file only from
+inside that same already-isolated subprocess (the `python -c` helper spawned
+by `claude_spawn.spawn_helper`), so every `fork()` this module's own Popen
+calls trigger (detaching, or spawning the CLI with a `cwd`) is happening in a
+process that was never going to load `libproj` in the first place.
+"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+
+# Both overridable by environment variable — not by editing this file at
+# import time — so a test can shrink them to run fast without needing to
+# monkeypatch a constant across a process boundary this module always runs
+# in as a real subprocess (that's the whole point of it).
+_IDLE_REAP_SECONDS = float(
+    os.environ.get("FUSED_CLAUDE_HOST_IDLE_REAP_SECONDS", "30"))
+_DRAIN_INTERVAL_SECONDS = float(
+    os.environ.get("FUSED_CLAUDE_HOST_DRAIN_INTERVAL_SECONDS", "0.2"))
+
+
+def _load_agent(path: str):
+    """Load agent.py by file path — mirrors `claude_spawn.load_agent`
+    exactly (same pattern, different caller): this host is spawned from a
+    request that names the agent module's own path, not an import the
+    Python path is guaranteed to resolve (this file may be running from a
+    copy of the template directory, not the installed package)."""
+    spec = importlib.util.spec_from_file_location("claude_agent_host", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _append_private(path: str):
+    """Open `path` for binary append, creating it 0600 if new. Not
+    `agent._private_open` — that one opens text-mode `"w"` (truncate), which
+    is right for the one-shot files `_start` writes but wrong here: the
+    CLI's own stdout/stderr must APPEND across the whole session, and
+    `subprocess.Popen(stdout=...)` wants a file object it can write raw
+    bytes to directly."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "ab")
+
+
+def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
+    """Write every queued `run_dir/inbox/*.json` entry to the CLI's stdin
+    pipe, oldest name first, moving each to `inbox/done/` once written.
+    Entries appear here from two callers that never coordinate directly with
+    each other: `_start` (the turn's opening message) and `_send` (every
+    later follow-up) — this loop is the only thing that knows the order
+    they should reach the CLI in, which is exactly filename order."""
+    inbox = os.path.join(run_dir, "inbox")
+    done = os.path.join(inbox, "done")
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except FileNotFoundError:
+        return
+    if names and not os.path.isdir(done):
+        # `_private_dir`'s leaf create is exclusive — right for the first
+        # entry this session ever drains, wrong for every one after: this
+        # loop calls in here every `_DRAIN_INTERVAL_SECONDS`, and `done`
+        # already existing from the first pass is the ordinary case, not a
+        # collision.
+        agent._private_dir(done)
+    for name in names:
+        src = os.path.join(inbox, name)
+        try:
+            with open(src, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            continue  # raced with something else draining it; not our job
+        cli_stdin.write(data)
+        cli_stdin.flush()
+        os.replace(src, os.path.join(done, name))
+
+
+def main() -> None:
+    req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    agent = _load_agent(req["agent"])
+    run_dir = req["run_dir"]
+
+    argv = agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+    out_fh = _append_private(os.path.join(run_dir, "out.jsonl"))
+    err_fh = _append_private(os.path.join(run_dir, "err.log"))
+    try:
+        # Same _DETACH discipline as the CLI spawn this replaces: the CLI
+        # becomes its own session leader (POSIX) / process-group root
+        # (Windows), independent of THIS host's own detachment from
+        # `_start`'s caller. Nested detachment is fine — each process is its
+        # own leader, and `_cancel`'s killpg only ever needs the CLI's.
+        cli = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=out_fh, stderr=err_fh,
+            cwd=req["cwd"], env=agent._spawn_env(), **agent._DETACH)
+    except Exception as exc:
+        # No CLI process ever existed — write the failure where `_poll`'s
+        # abnormal-exit fallback already knows to look (the tail of
+        # err.log), same file `_start` pre-created empty for exactly this
+        # case. One extra poll cycle of latency versus the old synchronous
+        # failure, in exchange for `_start` no longer having to wait on a
+        # second interpreter before it can answer the caller.
+        err_fh.write(str(exc).encode("utf-8", "replace"))
+        return
+    finally:
+        out_fh.close()
+        err_fh.close()
+
+    # Overwrite the transient host-pid `_start` left behind: `_cancel`'s
+    # killpg must reach the CLI's own process group, not this wrapper's.
+    with agent._private_open(os.path.join(run_dir, "pid")) as f:
+        f.write(str(cli.pid))
+
+    host_json = os.path.join(run_dir, "host.json")
+    with agent._private_open(host_json) as f:
+        json.dump({
+            "pid": os.getpid(), "session_id": req["session_id"],
+            "file": req["file"], "mode": req["cli_mode"],
+            "model": req["model"], "effort": req["effort"],
+            "read_dirs": req["extra_read_dirs"],
+        }, f)
+
+    idle_since = None
+    try:
+        while cli.poll() is None:
+            _drain_inbox(agent, run_dir, cli.stdin)
+            turn_open, tasks_pending = agent._turn_state(run_dir)
+            if turn_open or tasks_pending:
+                idle_since = None
+            else:
+                if idle_since is None:
+                    idle_since = time.monotonic()
+                elif time.monotonic() - idle_since >= _IDLE_REAP_SECONDS:
+                    break
+            time.sleep(_DRAIN_INTERVAL_SECONDS)
+    except Exception as exc:
+        # Any read failure inside this loop favors REAPING, not hanging —
+        # a host stuck alive forever because one `os.listdir` raised is
+        # worse than a session that ends a poll cycle early. Nothing here
+        # is worth crashing over; the CLI's own exit code (if any) is what
+        # `_poll` reports. Logged (not silent) so a real bug here is still
+        # findable — appended, since out.jsonl/err.log already exist and a
+        # `_private_open` truncate would erase the CLI's own transcript.
+        try:
+            with _append_private(os.path.join(run_dir, "err.log")) as f:
+                f.write(("\nsession_host: %r\n" % (exc,)).encode("utf-8"))
+        except OSError:
+            pass
+    finally:
+        try:
+            cli.stdin.close()
+        except Exception:
+            pass
+        try:
+            os.remove(host_json)
+        except OSError:
+            pass
+        if cli.poll() is None:
+            try:
+                cli.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+if __name__ == "__main__":
+    main()

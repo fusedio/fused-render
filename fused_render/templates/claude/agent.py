@@ -2061,66 +2061,28 @@ _DETACH = (
 )
 
 
-def _start(file: str, message: str, session_id: str, model: str,
-           effort: str, permission_mode: str = "",
-           message_via_stdin: bool = False,
-           has_pane: bool | None = None,
-           extra_read_dirs: list | None = None) -> dict:
-    file = os.path.abspath(file)
-    # A directory is a valid target too: this template's app-folder role opens
-    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
-    if not os.path.exists(file):
-        return {"error": f"target not found: {file}"}
+def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                 session_id: str, model: str, effort: str,
+                 extra_read_dirs: list | None, file: str) -> list:
+    """The CLAUDE CLI's own argv — everything from the binary down to the
+    last `--effort` flag. Pulled out of `_start` so the session host, which
+    spawns this SAME process (just kept open on a stdin pipe instead of a
+    one-shot file), builds an identical command rather than a hand-rolled
+    second copy that silently drifts from what `_start` used to build inline.
 
-    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
-    run_dir = os.path.join(RUNS, run_id)
-    _private_dir(run_dir)
-    _private_dir(_perm_dir(run_dir))
-    # Whether this target has a page beside the chat at all: ONE value, read by
-    # all three things that depend on it — the app-state channel's directory, the
-    # tool's pre-allowance, and the prompt (`_split_system_prompt` takes it rather
-    # than asking again; a second resolution is a second answer).
-    #
-    # THE PAGE'S ANSWER WINS. It decides at boot and cannot change (`paneURL` runs
-    # once, `enterNoPane` is permanent), so it is the only thing that knows what is
-    # actually on screen — and a roster that disagrees with the screen hands the
-    # model a tool nothing can answer. Re-resolving from disk per turn is what made
-    # a mid-session kind flip do that; see `_has_pane`. `None` means the caller has
-    # no page (the apps API), and only then does disk decide.
-    pane = _has_pane(file) if has_pane is None else has_pane
-    # No pane, no channel, and no empty directory pretending there could be one:
-    # the directory's absence is what removes the tool from the roster
-    # (_write_mcp_config).
-    if pane:
-        _private_dir(_state_dir(run_dir))
-
-    # An unknown mode falls back to the strictest of the three rather than
-    # erroring: a mangled param must not quietly buy more auto-approval than
-    # the user picked.
-    mode = permission_mode if permission_mode in PERMISSION_MODES \
-        else DEFAULT_PERMISSION_MODE
-    cli_mode = PERMISSION_MODES[mode]
-
-    # `message_via_stdin` keeps the user's text out of argv entirely: the
-    # message is written to a file in the run dir as one stream-json user
-    # line, and the detached process reads it as its stdin (EOF after the one
-    # message, so -p still exits after the turn). The apps API uses this — it
-    # runs inside the server process, where argv is visible to every local
-    # user via `ps`, unlike the template path where the message came from the
-    # page's own runPython call.
-    if message_via_stdin:
-        with _private_open(os.path.join(run_dir, "stdin.jsonl")) as f:
-            json.dump({"type": "user", "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": message}]}}, f)
-            f.write("\n")
-        message_argv = ["-p", "--input-format", "stream-json"]
-    else:
-        message_argv = ["-p", message]
-
-    cmd = [_claude_bin(), *message_argv,
+    Always `-p --input-format stream-json` on stdin, unconditionally: a
+    session host is the only thing that ever calls this now, and it always
+    holds the pipe open for the life of the process — there is no longer an
+    argv-embedded-message form to choose between (the retired
+    `message_via_stdin=False` branch)."""
+    cmd = [_claude_bin(), "-p", "--input-format", "stream-json",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
+           # Every accepted line on stdin is echoed back on stdout as its own
+           # row — the host's inbox drain has no other way to confirm a
+           # follow-up sent mid-turn actually reached the CLI's own queue
+           # rather than landing on a pipe nobody was reading from anymore.
+           "--replay-user-messages",
            "--mcp-config", _write_mcp_config(run_dir, pane),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -2164,7 +2126,10 @@ def _start(file: str, message: str, session_id: str, model: str,
            #     shape as SHOTS and for the same reason: the scheduler names
            #     its task-shots dir here, whose images the user attached
            #     deliberately in the New task form, and a headless run has
-           #     nobody at the screen to answer a card.
+           #     nobody at the screen to answer a card. Now granted for the
+           #     life of the SESSION, not the turn — --allowed-tools is fixed
+           #     at spawn, so a later attachment from a NEW directory forces a
+           #     respawn rather than silently arriving ungranted (_send).
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
@@ -2198,6 +2163,120 @@ def _start(file: str, message: str, session_id: str, model: str,
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    return cmd
+
+
+def _spawn_env() -> dict:
+    """`os.environ`, adjusted the same way for every `claude` spawn — the
+    session host's own CLI Popen and (nothing else now, but kept as its own
+    function so the two never drift again the way _start's inline copy could
+    have).
+
+    The session must not inherit an ambient FUSED_ENV from the server's own
+    process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
+    FUSED_ENV when unset, so a value already present here — say the server
+    itself was launched from a shell that exports FUSED_ENV for unrelated
+    reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
+    from the model and skip the workbench default, silently diverging from
+    canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
+    ambient or not). Popping it here is what makes "unset" in the wrapper
+    mean what the model actually typed on that command line.
+
+    File-history checkpoints are OFF by default in a non-interactive session,
+    and every run here is non-interactive (`-p`). Without this the snapshots
+    panel (SPEC §34) can only ever show versions written by a TERMINAL claude
+    in that folder, and reports "no recorded versions" for every file this
+    chat itself edited — the panel's own reason to exist. D394.
+
+    An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
+    branch when `isInteractive()` is false, and that branch reads only these
+    two variables — the `fileCheckpointingEnabled` config that governs the
+    interactive case is not consulted, so `--settings` cannot reach it. Named
+    for the SDK and absent from the public settings docs, so it may move; what
+    to re-check if snapshots go quiet again is that branch.
+
+    setdefault, because a user who exported it themselves means it: the CLI
+    coerces the value properly (`1/true/yes/on`, everything else false), so a
+    deliberate `=0` is an opt-out rather than a truthy string. Their
+    CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
+    way — it is ANDed into the same branch — so this cannot override it."""
+    env = os.environ.copy()
+    env.pop("FUSED_ENV", None)
+    env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    return env
+
+
+def _inbox_dir(run_dir: str) -> str:
+    return os.path.join(run_dir, "inbox")
+
+
+def _write_inbox_entry(run_dir: str, message: str) -> None:
+    """Queue one user-turn line for the session host to drain into the CLI's
+    stdin, in `run_dir/inbox/`. Filenames sort in write order (a zero-padded
+    nanosecond timestamp plus a few random hex digits — entropy against two
+    entries landing in the same nanosecond, not a real id), which is the only
+    order that matters: the host drains oldest-first and this is the one
+    place both `_start` (the turn's first message) and `_send` (every
+    follow-up) write from."""
+    inbox = _inbox_dir(run_dir)
+    if not os.path.isdir(inbox):
+        # `_private_dir`'s leaf create is exclusive (a run-id collision must
+        # not silently adopt someone else's directory), which is right for
+        # the FIRST write (inside `_start`) and wrong for every later one
+        # (`_send`) — the inbox is written to repeatedly for the life of the
+        # session, not created once and never touched again.
+        _private_dir(inbox)
+    name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
+    with _private_open(os.path.join(_inbox_dir(run_dir), name)) as f:
+        json.dump({"type": "user", "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": message}]}}, f)
+        f.write("\n")
+
+
+_SESSION_HOST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "session_host.py")
+
+
+def _start(file: str, message: str, session_id: str, model: str,
+           effort: str, permission_mode: str = "",
+           message_via_stdin: bool = False,
+           has_pane: bool | None = None,
+           extra_read_dirs: list | None = None) -> dict:
+    file = os.path.abspath(file)
+    # A directory is a valid target too: this template's app-folder role opens
+    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
+    if not os.path.exists(file):
+        return {"error": f"target not found: {file}"}
+
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
+    run_dir = os.path.join(RUNS, run_id)
+    _private_dir(run_dir)
+    _private_dir(_perm_dir(run_dir))
+    # Whether this target has a page beside the chat at all: ONE value, read by
+    # all three things that depend on it — the app-state channel's directory, the
+    # tool's pre-allowance, and the prompt (`_split_system_prompt` takes it rather
+    # than asking again; a second resolution is a second answer).
+    #
+    # THE PAGE'S ANSWER WINS. It decides at boot and cannot change (`paneURL` runs
+    # once, `enterNoPane` is permanent), so it is the only thing that knows what is
+    # actually on screen — and a roster that disagrees with the screen hands the
+    # model a tool nothing can answer. Re-resolving from disk per turn is what made
+    # a mid-session kind flip do that; see `_has_pane`. `None` means the caller has
+    # no page (the apps API), and only then does disk decide.
+    pane = _has_pane(file) if has_pane is None else has_pane
+    # No pane, no channel, and no empty directory pretending there could be one:
+    # the directory's absence is what removes the tool from the roster
+    # (_write_mcp_config).
+    if pane:
+        _private_dir(_state_dir(run_dir))
+
+    # An unknown mode falls back to the strictest of the three rather than
+    # erroring: a mangled param must not quietly buy more auto-approval than
+    # the user picked.
+    mode = permission_mode if permission_mode in PERMISSION_MODES \
+        else DEFAULT_PERMISSION_MODE
+    cli_mode = PERMISSION_MODES[mode]
 
     # poll() records the session id with the run once claude reports it;
     # it needs the file + first message, so keep them with the run.
@@ -2215,53 +2294,44 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": _strip_app_state(message),
                    "resumed_from": session_id, "mode": mode}, f)
 
-    stdin_path = os.path.join(run_dir, "stdin.jsonl")
-    stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
-    # The session must not inherit an ambient FUSED_ENV from the server's own
-    # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
-    # FUSED_ENV when unset, so a value already present here — say the server
-    # itself was launched from a shell that exports FUSED_ENV for unrelated
-    # reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
-    # from the model and skip the workbench default, silently diverging from
-    # canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
-    # ambient or not). Popping it here is what makes "unset" in the wrapper
-    # mean what the model actually typed on that command line.
-    spawn_env = os.environ.copy()
-    spawn_env.pop("FUSED_ENV", None)
-    # File-history checkpoints are OFF by default in a non-interactive session,
-    # and this run is always non-interactive (`-p`). Without this the snapshots
-    # panel (SPEC §34) can only ever show versions written by a TERMINAL claude
-    # in that folder, and reports "no recorded versions" for every file this
-    # chat itself edited — the panel's own reason to exist. D394.
-    #
-    # An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
-    # branch when `isInteractive()` is false, and that branch reads only these
-    # two variables — the `fileCheckpointingEnabled` config that governs the
-    # interactive case is not consulted, so `--settings` cannot reach it. Named
-    # for the SDK and absent from the public settings docs, so it may move; what
-    # to re-check if snapshots go quiet again is that branch.
-    #
-    # setdefault, because a user who exported it themselves means it: the CLI
-    # coerces the value properly (`1/true/yes/on`, everything else false), so a
-    # deliberate `=0` is an opt-out rather than a truthy string. Their
-    # CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
-    # way — it is ANDed into the same branch — so this cannot override it.
-    spawn_env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    # `err.log` exists from the very first instant, empty — `_poll`'s
+    # abnormal-exit fallback reads its tail, and a host that dies before it
+    # ever gets around to opening the file itself (a crash between spawn and
+    # the CLI's own Popen) must still have something there to report from.
+    _private_open(os.path.join(run_dir, "err.log")).close()
+
+    # The turn's own first message is just the first inbox entry — `_send`
+    # (a later follow-up) writes the exact same shape into the exact same
+    # directory, and the host does not know or care which one started the
+    # session versus which one rode in on the CLI's own queue mid-turn.
+    _write_inbox_entry(run_dir, message)
+
+    # The session host owns the CLI's stdin pipe for the life of the session
+    # — see session_host.py's own module docstring for the fork-safety and
+    # process-group reasoning this mirrors from claude_spawn.SESSION_HELPER.
+    # `message_via_stdin` is accepted and ignored: every caller's message now
+    # rides the inbox instead, so there is no longer an argv-message form for
+    # it to choose between.
+    del message_via_stdin
+    req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
+           "file": file, "cwd": _workdir(file), "pane": pane,
+           "cli_mode": cli_mode, "session_id": session_id, "model": model,
+           "effort": effort, "extra_read_dirs": list(extra_read_dirs or [])}
+    proc = subprocess.Popen(
+        [sys.executable, _SESSION_HOST],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, env=_spawn_env(),
+        **_DETACH)
     try:
-        with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-             _private_open(os.path.join(run_dir, "err.log")) as err:
-            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
-            # _claude_argv), never git — checked by hand. The git spawn in this
-            # file is the `git()` helper above, which resolves an absolute
-            # argv[0] and passes close_fds=False like every other one.
-            proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                    cwd=_workdir(file),
-                                    stdin=stdin_fh or subprocess.DEVNULL,
-                                    env=spawn_env,
-                                    **_DETACH)
+        proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
-        if stdin_fh is not None:
-            stdin_fh.close()
+        proc.stdin.close()
+    # Transient: overwritten by the host with the CLI's OWN pid the moment it
+    # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
+    # the host's, to reach the CLI's whole process group. Written here, to the
+    # HOST's pid, only so `_alive` (and therefore `_poll`'s `done`) answers
+    # True from the instant `_start` returns rather than during the gap while
+    # a second interpreter is still starting up.
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
