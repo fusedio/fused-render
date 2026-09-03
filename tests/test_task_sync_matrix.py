@@ -568,11 +568,11 @@ def test_done_schedule_job_row_ages_out_after_read_not_kept_forever(target, spaw
     """No dock draws a schedule row at all: `isScheduleJob`/`jobRows` excludes
     every `sys:schedule:*` id from what Activity draws, and `ActivityDock.tsx`
     applies `jobRows` before `terminalJobs`, so a schedule row never reaches
-    Notifications either. D657's "every terminal state kept until dismissed"
+    Notifications either. D663's "every terminal state kept until dismissed"
     exemption only makes sense for a row some surface can show and let the
     user dismiss — a schedule row is neither, so it does not get that
     exemption: it ages out on the same read-gated `FINISHED_TTL_S` clock every
-    terminal row used before D657, the readers of it being `fused.watchJob`
+    terminal row used before D663, the readers of it being `fused.watchJob`
     and the Scheduled page's own poll, not a dock. Immediately after the
     first read the row is still there (the read is what starts the clock);
     `FINISHED_TTL_S` later it is gone."""
@@ -593,7 +593,7 @@ def test_error_schedule_job_row_ages_out_after_read_not_kept_forever(target, spa
     """Same rule as the `done` case above, for `error`: a schedule row's
     terminal state does not change whether some surface can show or dismiss
     it, so `error` gets no special exemption here either — only a
-    page-reachable job's `error` row (D657) keeps the unconditional one."""
+    page-reachable job's `error` row (D663) keeps the unconditional one."""
     entry = schedule.create(str(target), "fails loudly", _in(-5))
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
@@ -609,7 +609,7 @@ def test_error_schedule_job_row_ages_out_after_read_not_kept_forever(target, spa
 def test_unread_schedule_job_row_has_the_longer_backstop(target, spawned):
     """A schedule row nobody has read yet is bounded by
     `FINISHED_UNREAD_DROP_S`, not the short `FINISHED_TTL_S` — the same
-    unread-backstop rule every terminal row followed before D657, since
+    unread-backstop rule every terminal row followed before D663, since
     nothing about a schedule row being excluded from every dock changes
     whether it might simply not have been read yet."""
     entry = schedule.create(str(target), "nobody reads me", _in(-5))

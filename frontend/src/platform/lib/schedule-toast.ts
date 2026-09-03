@@ -20,7 +20,7 @@ export function eventLabel(e: ScheduleEvent): string {
 // Tasks page is where task results live, and a plain success was never
 // something the user asked to be interrupted about. Both remaining outcomes
 // are surprises nothing else surfaces — tasks are gone from the Activity chip
-// (D655) and excluded from Notifications routing on this branch — so both are
+// (D661) and excluded from Notifications routing on this branch — so both are
 // errors that persist until acted on; there is no longer a lesser, self-
 // dismissing tone to choose between.
 export interface ScheduleToast {

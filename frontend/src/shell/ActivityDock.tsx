@@ -10,7 +10,7 @@
 // filled/outlined dot needed to answer a question this chip's shared "is
 // there work right now" dot could not.)
 //
-// A SCHEDULED MESSAGE'S OWN RUN DRAWS NO ROW HERE AT ALL (D655, user: "a task
+// A SCHEDULED MESSAGE'S OWN RUN DRAWS NO ROW HERE AT ALL (D661, user: "a task
 // is not something I even want in the activity. that was added
 // unintentionally"). This file used to poll `/api/schedule-queue` itself and
 // hand `DownloadManager` a `queue` slot of scheduled-message rows merged in
@@ -54,7 +54,7 @@ const ENGINES_POLL_MS = 10_000;
 // snapshot that dropped the id, so a rejected `stopEngine()` call, or an
 // engine a `main =` app's `restart()` revives, left the marker standing with
 // nothing to consume it — and the id's eventual GENUINE idle retirement,
-// possibly minutes later, silently ate the D658 toast that retirement earned.
+// possibly minutes later, silently ate the D664 toast that retirement earned.
 // Expiring the marker bounds the suppression to the window the user's own
 // click could plausibly still be resolving in, so a later real retirement is
 // never mistaken for an echo of that one click.
@@ -62,8 +62,8 @@ const STOPPING_GRACE_MS = 30_000;
 
 /**
  * Which engines from `prev` disappeared in `next` and were NOT a user-
- * initiated stop — the set D658's toast fires for. Pure and exported so C9's
- * gap (D658 shipped with no test at all) can be closed without mounting the
+ * initiated stop — the set D664's toast fires for. Pure and exported so C9's
+ * gap (D664 shipped with no test at all) can be closed without mounting the
  * whole poll effect: `stopping` is mutated in place exactly as the poll loop
  * mutates its own ref, consuming a marker the moment its window is checked
  * (whether or not it still suppressed anything) so a stale one never lingers
@@ -128,7 +128,7 @@ function useRunningEngines(): {
         const data = await getRunningEngines();
         if (!disposed && mine === generation) {
           const next = data.engines || [];
-          // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D658): the only way to
+          // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D664): the only way to
           // learn a background daemon/worker went away idle is to notice it
           // missing from consecutive snapshots — nothing calls this out as an
           // event server-side. Skipped on the very FIRST snapshot (nothing to
@@ -170,7 +170,7 @@ export default function ActivityDock({
   const { engines, refresh: refreshEngines, markStopping } = useRunningEngines();
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
-  // broadened by D656 to every terminal state, not only `error`).
+  // broadened by D662 to every terminal state, not only `error`).
   // `DownloadManager` already hands this the FULL, unfiltered snapshot on
   // every poll (`onJobsReported`); this only needs to re-derive the terminal
   // subset and call up when the id SET actually changes, so a poll that finds
@@ -178,7 +178,7 @@ export default function ActivityDock({
   //
   // `terminalNotifications` (jobs.ts) is `mergedRows` then `jobRows` then
   // `terminalJobs` — see its own doc for why that order matters (a scheduled
-  // run's own job draws no row in Activity in any state, D655/`isScheduleJob`,
+  // run's own job draws no row in Activity in any state, D661/`isScheduleJob`,
   // and a render merged with a shared model load must not surface the
   // load's completion as a second Notifications entry, SPEC §36).
   const onTerminalRef = useRef(onTerminalJobs);

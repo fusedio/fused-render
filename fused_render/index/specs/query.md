@@ -1,9 +1,8 @@
 # Query
 
-> **Status — shipped.** This file owns the **read path**: the query actions, the
-> search-pattern grammar, and partition pruning. Implementing module: `query.py`
-> (`stats`, `lookup`, `pattern_for`, `prune`, `SORTS`). The files being read are
-> `index-store.md`; the routes that expose these are `server-api.md`.
+> **Status — shipped.** This file owns the **read path**: the query actions and
+> partition pruning. Implementing module: `query.py` (`stats`, `prune`). The files
+> being read are `index-store.md`; the routes that expose these are `server-api.md`.
 
 ## 1. Contract
 
@@ -14,11 +13,19 @@ not an error.
 
 | Function | Params | Returns |
 |---|---|---|
-| `stats` | `root` | totals + per-extension breakdown + manifest |
-| `lookup` | `query`, `limit`, `offset`, `sort` | matching rows + pruning telemetry |
+| `stats` | `root`, `breakdown`, `token` | totals + manifest; per-extension breakdown when `breakdown` is truthy |
+| `search_under` | `root`, `q`, `limit`, `include_dirs`, `token` | the explorer's in-folder corpus (§6) |
 
 duckdb is imported inside each function, not at module top, so a call on a missing
 index stays cheap — and so importing the server's router does not pull duckdb in.
+
+`token` (`index/cancel.CancelToken`), when given, is bound to the connection the
+moment it exists, checked before each real query, and turns a
+`duckdb.InterruptException` this token's own `cancel()` caused into `Cancelled` —
+anything else keeps surfacing as itself. `server-api.md`'s `cancellable(request)`
+is what supplies one per HTTP request; every route the token reaches
+(`stats`, `search`, `query`, `ask`, `rank`) answers an abandoned request with a
+quiet 499 rather than finishing work nobody is waiting on.
 
 ## 2. `stats`
 
@@ -26,44 +33,22 @@ Totals are scoped to **one subtree** — the explicit `root` param, else
 `partitions.json`'s `last_root` — not the whole index, which may hold several roots
 (`index-store.md §4`). Scoping is `dir = root OR dir LIKE root || '/%'`.
 
-Returns `rows`, `dirs`, `total_size`, `updated`, `last_root`, `location`, `partitions`,
-and `types`: per-extension `{ext, n, size}` ordered by size, **top 50** with the
-remainder folded into a single `other` bucket. Empty extensions are reported as
-`no ext`.
-
-## 3. `lookup` — pattern grammar
-
-`pattern_for` turns a user query into a SQL `ILIKE` pattern plus a pruning prefix:
-
-| Query | Behaviour |
-|---|---|
-| `app` | substring, anywhere in the path — `%app%` |
-| `*.parquet` | `*` is the wildcard → `%%.parquet%` |
-| `/Users/me/code` | starts with `/` → **anchored** at the path start |
-| `C:/Users/me/code` | a drive prefix anchors too; backslashes are normalized (`platform.md §1`) |
-| `~/Documents` | `~` is expanded, and anchors too |
-
-LIKE metacharacters in the literal text (`\`, `%`, `_`) are escaped and the query runs
-with `ESCAPE '\'`, so a path containing `_` doesn't silently match any character.
-Single quotes are doubled. A trailing `/` is stripped; an empty query matches
-everything.
-
-**Sorting** is a fixed allowlist (`SORTS`): `path` ASC, `size` DESC, `mtime` DESC,
-`name` ASC — anything else falls back to `mtime`. Only these four strings ever reach
-the SQL; `limit` is int-cast and clamped to `MAX_LIMIT` (5 000) and `offset` is int-cast
-and floored at 0.
+The **default** response is `rows`, `dirs`, `total_size`, `updated`, `last_root`,
+`location`, `partitions` — a `count`/`sum` over the scoped rows, no grouping. `types`
+(per-extension `{ext, n, size}` ordered by size, **top 50** with the remainder folded
+into a single `other` bucket; empty extensions reported as `no ext`) is computed only
+when the caller passes `breakdown=True` — the `GROUP BY ext` pass costs the same table
+scan again for a shape most callers never read.
 
 ## 4. Partition pruning
 
 Partitions are globally sorted by path and the manifest records each one's `min`/`max`
-(`index-store.md §4`), so an **anchored** query needs only partitions whose range can
-contain the prefix — `prune` keeps those where `max >= prefix AND min <= prefix + "￿"`.
-The range test is exact, not a heuristic, because the ordering is total.
-
-The pruning prefix is the literal lead-in up to the first `*`, and only for anchored
-queries; an unanchored substring query can match anywhere and therefore scans every
-partition. Each response reports `scanned_partitions` / `of_partitions` plus the
-partition filenames.
+(`index-store.md §4`), so a caller that can name a literal path prefix — a folder root
+(§6), an anchored path — needs only partitions whose range can contain it: `prune`
+keeps those where `max >= prefix AND min <= prefix + "￿"`. The range test is exact,
+not a heuristic, because the ordering is total. A caller with no prefix to offer (an
+unanchored substring, or the empty prefix) scans every partition. Each response
+reports `scanned_partitions` / `of_partitions` plus the partition filenames.
 
 ## 5. Guarded user SQL
 
@@ -83,7 +68,7 @@ executes arbitrary local Python for the same caller, so confined read-only SQL a
 capability. What the guard buys is that a mistyped — or model-written — statement cannot
 write to the index or read a file outside it.
 
-`run_guarded(cfg, sql, limit)` returns `{columns, rows, truncated}` over two views,
+`run_guarded(cfg, sql, limit, token)` returns `{columns, rows, truncated}` over two views,
 `files` and `dirs`, whose columns are exactly the stored schemas (`index-store.md §2`).
 Two independent guards, and **both** are necessary:
 
@@ -129,7 +114,11 @@ whole-index query is never materialized just to be trimmed), clamped server-side
 A PRAGMA is not a subquery-able expression, so a wrap that fails to parse falls back to
 the bare statement and a fetch cap — those answer in tens of rows by nature. And
 `TIMEOUT_S` (10 s) arms a `con.interrupt()`: a cross join is trivial to type and
-impossible to bound by inspection, and the caller is a text box.
+impossible to bound by inspection, and the caller is a text box. `token`, when
+given, arms a second `con.interrupt()` on the same connection — whichever fires
+first wins, and only an interrupt this token's own `cancel()` caused comes back
+as `Cancelled`; a real `TIMEOUT_S` timeout keeps surfacing as
+`duckdb.InterruptException`, mapped to the caller's usual 400.
 
 **Natural language** (`POST /api/index/ask`) is a thin hop on top: the question goes to
 the existing AI relay with a system prompt carrying the two schemas and the units, the
@@ -232,11 +221,11 @@ the feature — the endpoint refuses one rather than answering it with modificat
 
 ## Open questions
 
-- `stats` reads every partition to group by extension; there is no cached rollup, so it
-  costs a full index scan on a large index.
+- `stats` with `breakdown=True` still groups by extension over every pruned partition;
+  there is no cached rollup, so a wide root costs a full scan of its slice of the index.
 
 ## See also
 
 - `index-store.md` — schemas and the manifest this spec reads.
-- `server-api.md` — the routes that expose §2 and §3.
-- `platform.md` — path canonical form; anchoring in §3 depends on it.
+- `server-api.md` — the routes that expose §2, §5 and §6.
+- `platform.md` — path canonical form; anchoring in §6 depends on it.

@@ -108,7 +108,7 @@ export function isRunning(job: Job): boolean {
  * Whether a terminal job is specifically a FAILURE, as opposed to a `done` or
  * `cancelled` one — the one thing `isTerminal` does not distinguish. All
  * three terminal states route to Notifications and leave Jobs the same tick
- * (D657, broadened from D586's original `error`-only route: "running
+ * (D663, broadened from D586's original `error`-only route: "running
  * activities are shown in jobs and after done, a completed message goes to
  * notifications" never meant only failures). What this narrower question is
  * still used for is `.is-failure`'s red tint in Notifications — a `done` or
@@ -117,7 +117,7 @@ export function isRunning(job: Job): boolean {
  *
  * (C7: this doc used to describe D586's original error-only routing —
  * "only `error` moves", `done`/`cancelled` "aging out" via `FINISHED_TTL_S`
- * — none of which has been true since D657 stopped sweeping any terminal
+ * — none of which has been true since D663 stopped sweeping any terminal
  * row until dismissed and started routing all three states the same way.)
  */
 export function isFailure(job: Job): boolean {
@@ -158,7 +158,7 @@ export function inFlightJobs(jobs: Job[]): Job[] {
  *  card never re-derives it) — for a card to ask "is there a job for me" and
  *  get back an ANSWER, not just a fact about history.
  *
- *  D657 keeps a finished job's row until it is dismissed rather than
+ *  D663 keeps a finished job's row until it is dismissed rather than
  *  sweeping it a few seconds after its first read, so a map built from every
  *  `server` row regardless of state stayed non-null for a model for the rest
  *  of the session once its pull or load finished — every consumer that
@@ -376,7 +376,7 @@ export function engineDuration(seconds: number): string {
 const JOB_KIND_TEXT: Record<JobKind, string> = { download: "Download", task: "Task" };
 
 /**
- * `jobStatusLine`'s last resort (D659) — no card may render a single line of
+ * `jobStatusLine`'s last resort (D665) — no card may render a single line of
  * text (title alone, no status line beneath it). Engine rows already
  * guarantee a `.dl-status` line (`engineDetail`); a `running` job with no
  * server detail, no byte/step amount and no local action failure fell

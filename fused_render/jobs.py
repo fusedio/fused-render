@@ -717,13 +717,13 @@ def _sweep(now: float) -> None:
     every age-out path funnels through.
 
     **Every terminal state a surface can actually show and let the user
-    dismiss is kept until dismissed, same as `WAITING` (D657, scoped by the
+    dismiss is kept until dismissed, same as `WAITING` (D663, scoped by the
     schedule carve-out below).** This used to read `job.state in ("error",
     WAITING)` — a `done` or `cancelled` row instead aged out `FINISHED_TTL_S`
     after its first READ (`job.first_read_at`), on the theory that the
     download manager only needed to answer "is my work done right now", not
     hold a log. THE FINDING: once EVERY finished job (D586, broadened by
-    D656) routes to the shell's Notifications list instead of just failures,
+    D662) routes to the shell's Notifications list instead of just failures,
     that list *is* meant to hold a log — a `done` row expiring 3s after its
     first read was deleting the very entry Notifications exists to keep, out
     from under a user who had not yet looked. THE FIX: `done` and
@@ -742,7 +742,7 @@ def _sweep(now: float) -> None:
     pressure to shed it). A schedule run already gets `schedule-toast.ts`'s
     own toast and its own row on the Scheduled page, so nothing is lost by
     letting the registry row age out on the ORIGINAL read-gated
-    `FINISHED_TTL_S` clock every terminal row had before D657 — the readers
+    `FINISHED_TTL_S` clock every terminal row had before D663 — the readers
     that clock exists for (`fused.watchJob`, the Scheduled page's own poll)
     are exactly the ones still reading this row.
 
@@ -779,7 +779,7 @@ def _sweep(now: float) -> None:
                 # No surface shows this row or lets it be dismissed — see
                 # this function's own docstring — so it ages out on the
                 # ORIGINAL read-gated clock every terminal row had before
-                # D657, instead of the keep-until-dismissed rule below.
+                # D663, instead of the keep-until-dismissed rule below.
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)

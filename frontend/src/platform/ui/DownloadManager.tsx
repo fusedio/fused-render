@@ -1,6 +1,6 @@
 // The activity card — ONE card at the foot of the notification stack for every
 // piece of work in progress: the long-running operations any page reported
-// (SPEC §36, D244). A scheduled message's own run is NOT among them (D655,
+// (SPEC §36, D244). A scheduled message's own run is NOT among them (D661,
 // user: "a task is not something I even want in the activity. that was added
 // unintentionally") — it gets its own toast on finish/fail
 // (platform/lib/schedule-toast.ts), never a row here.
@@ -32,7 +32,7 @@
 // reported by a page in a different browser tab, or by a detached Python worker
 // posting to /api/jobs itself.
 //
-// A JOB LEAVES THIS CARD THE MOMENT IT IS TERMINAL (D656, broadening D586):
+// A JOB LEAVES THIS CARD THE MOMENT IT IS TERMINAL (D662, broadening D586):
 // "running activities are shown in jobs and after done, a completed message
 // goes to notifications" — the whole sentence, not only its failure half.
 // `inFlightJobs` (jobs.ts) is what this card draws; `RepoUpdatesDock.tsx`
@@ -517,7 +517,7 @@ export function JobRow({
   // list, so a second `??` would be dead — the `&&` at the render site is what
   // handles the all-absent case.
   // No card may render a single line of text (title alone, nothing beneath
-  // it) (D659): a running job with no server detail and no progress amount
+  // it) (D665): a running job with no server detail and no progress amount
   // falls through to `jobDetail`'s always-present facts (kind, started-when,
   // stalled) rather than leaving the row silent.
   const statusLine =
@@ -580,7 +580,7 @@ export function JobRow({
   // cancelled alike — in Notifications, and a `done` job returning null left
   // that panel counting it (`total`, the filled circle, `alsoDrawn`
   // occupancy) while drawing nothing for it: a phantom entry with no row and
-  // no ✕, permanent once D657 stopped sweeping it. Keeping a terminal job out
+  // no ✕, permanent once D663 stopped sweeping it. Keeping a terminal job out
   // of THIS file's own Jobs section is `DownloadManagerView`'s job — it only
   // ever hands `JobRow` `inFlightJobs`, so a "done" row never reaches this
   // component from there at all.

@@ -115,7 +115,7 @@ test("a done job draws a row with a working dismiss control (C1)", () => {
   // returning null for "done" left `RepoUpdatesDock.tsx`'s reuse of this same
   // component silently unable to draw the very rows Notifications exists to
   // hold (C1) — a done job filled the chip's circle and the panel's count
-  // but drew no row and no ✕, permanently once D657 stopped sweeping it.
+  // but drew no row and no ✕, permanently once D663 stopped sweeping it.
   const root = renderRow({ ...BASE, state: "done" });
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
   expect(findAll(root, "dl-x")).toHaveLength(1);
@@ -226,7 +226,7 @@ test("a successful Cancel shows no failure line", async () => {
 
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
   // No status text (no `detail`, no `message`) and no amount (`unit: ""`,
-  // both `done`/`total` null): this is D659's fallback case, `jobDetail`,
+  // both `done`/`total` null): this is D665's fallback case, `jobDetail`,
   // which must read `now` off the `now` prop threaded from `useJobs`'s own
   // server-clock read, not off the browser's `Date.now()`.
   const now = 1_000_000;

@@ -2,7 +2,7 @@
 with any one section's content — placement, persistence, and always-present-ness.
 
 These used to sit inside `tests/test_queue_dock.py` alongside checks against a
-now-deleted queue card; they outlived that file's split (D655's queue removal)
+now-deleted queue card; they outlived that file's split (D661's queue removal)
 because they were never about the queue at all. They read source text, like the
 template suites, rather than rendering anything — the real BEHAVIOUR the bar's
 composition produces is `frontend/src/platform/ui/StatusBar.test.tsx`'s job

@@ -1527,34 +1527,31 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** Machine-noise pruning is **gitignore-driven inside git
-  repositories** (D100): entries the containing repo's own gitignore rules
-  ignore are never emitted **nor descended** — the generic answer to `dist/`,
-  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
-  repo's own file as the authority (negations like `!keep.log` honored).
-  Verdicts come from one streaming `git check-ignore --stdin` co-process per
-  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
-  closed when the walk ends); each directory inherits its repo root through
-  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
-  a walk rooted *below* a repo root resolves it via one `git rev-parse
-  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
-  scope (an un-inited project, an Obsidian vault) prunes the same way: the
-  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
-  check-ignore honors standalone `.gitignore` files too (cascading into
-  subdirs, negations included). Pruning is an optimization, never a
-  dependency: git missing or failing degrades to no gitignore pruning.
-  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
-  upward for nothing (no work-tree boundary to find), so an ancestor's
-  standalone `.gitignore` doesn't apply there.
+- **SR-2** Machine-noise pruning is **name-based**: `WALK_IGNORE_DIRS`
+  segments are never emitted **nor descended**, checked by bare name
+  everywhere in the tree — no per-repo gitignore parsing, no git co-process,
+  no repo-root resolution. This is a deliberately smaller floor than the
+  index's own scan-time exclusions (`DEFAULT_IGNORE_NAMES`,
+  `fused_render/index/ignore.py`), which additionally prune generic
+  build-output names (`dist`, `build`, `target`, …) and are user-editable.
+  The two are allowed to diverge — a live directory listing and a maintained
+  corpus answer different questions — everywhere except `WALK_IGNORE_DIRS`
+  itself, which both sides share (`SHARED_IGNORE_DIRS` in
+  `fused_render/index/ignore.py`) so a folder's presence never flips between
+  the walk and the index-backed search that answers from the same corpus.
 - **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
-  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
-  by bare name everywhere: it covers junk outside any repo (a stray
-  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
-  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
-  apply in hidden mode too — those trees are machine noise, not "hidden
-  data" (a `.py` extension search must not drown in `.git` object files).
-  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
-- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  `.venv`, `site-packages`) is the **universal floor**, checked by bare name
+  everywhere: it covers junk outside any repo (a stray `node_modules` in
+  `~/Downloads`, `Library/Python/*/site-packages`). `.git` is **not** in this
+  set — it is a leaf-name entry instead (`WALK_LEAF_DIR_NAMES`, alongside the
+  macOS package suffixes in SR-3): emitted as one entry but never descended,
+  which keeps it in lockstep with the index's own `.git` dirs row
+  (`/api/git-repos` reads that row instead of stat-ing every directory).
+  Both SR-2 and SR-2a apply in hidden mode too — those trees are machine
+  noise, not "hidden data" (a `.py` extension search must not drown in
+  `.git` object files). `.git` *files* (worktree/submodule pointers) are
+  ordinary files and do show.
+- **SR-2b** Because `WALK_IGNORE_DIRS` pruning excludes junk outright, walk
   entries carry **no `ignored` dimming flag** — dimming remains a
   `/api/fs/list` (plain listing) concern, where ignored entries are still
   shown. Search excludes; the listing dims. (VS Code's split: explorer shows
@@ -5502,7 +5499,7 @@ stop it short of quitting the app.
   lagging behind on its idle (5s) cadence. An
   **error is exempt** and stays
   until dismissed (the persistent-error toast's rule, §3). **SUPERSEDED for
-  `done`/`cancelled` by D657**: every terminal state now gets the same
+  `done`/`cancelled` by D663**: every terminal state now gets the same
   unconditional exemption `error` already had, not only after a first read —
   see BG-17. `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
@@ -5758,7 +5755,7 @@ stop it short of quitting the app.
   reason — is what clears it.
 
 - **BG-17** **The queue slot, and a scheduled/task run's own row, are gone
-  from Activity entirely (D655, user: "a task is not something I even want
+  from Activity entirely (D661, user: "a task is not something I even want
   in the activity. that was added unintentionally").** `DownloadManager`'s
   `QueueSlot`/`queue` prop, `ActivityDock`'s `QueueRowView`/`useQueue()`, and
   `shell/queue-dock-lib.ts` (with its test) are deleted outright rather than
@@ -5783,7 +5780,7 @@ stop it short of quitting the app.
   latency for that case.
 
 - **BG-18** **Every terminal job — not only a failure — now reaches
-  Notifications, not only `error` (D656, broadening D586).** `jobs.ts` gains
+  Notifications, not only `error` (D662, broadening D586).** `jobs.ts` gains
   `isTerminal(job)`/`terminalJobs(jobs)`; `inFlightJobs` narrows to
   running/waiting only (non-terminal), and `isFailure`/`failedJobs` stay
   scoped to real errors for `RepoUpdatesDock`'s `.is-failure` tint, so a
@@ -5792,7 +5789,7 @@ stop it short of quitting the app.
   now also covers `done`/`cancelled`, not only `error`). Server-side,
   `fused_render/jobs.py`'s `_sweep()` exemption (BG-6) is extended from
   `("error", WAITING)` to `TERMINAL_STATES` (`done`/`error`/`cancelled`) plus
-  `WAITING` (D657): once every finished job routes to a list meant to hold a
+  `WAITING` (D663): once every finished job routes to a list meant to hold a
   log, the old per-row `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S` clock (BG-6)
   was deleting the very entry that list exists to keep, before anyone had
   looked. Those constants and `Job.first_read_at` stay in `jobs.py` — other
@@ -5800,13 +5797,13 @@ stop it short of quitting the app.
   `capture/__init__.py`) have their own reasons independent of this branch —
   but no reachable job state exercises the read-gated clock any more.
   `ActivityDock` also now toasts when a background engine retires on its own
-  (D658), by diffing successive `useRunningEngines()` snapshots and excluding
+  (D664), by diffing successive `useRunningEngines()` snapshots and excluding
   a user-initiated stop — the only way to learn a background daemon went idle
   is to notice it missing between two polls, since nothing server-side calls
   it out as an event.
 
 - **BG-19** **No card may render a single line of text — title alone, with
-  nothing beneath it (D659).** `jobs.ts` gains `jobDetail(job, nowS)`, a
+  nothing beneath it (D665).** `jobs.ts` gains `jobDetail(job, nowS)`, a
   last-resort fallback built only from facts every job always carries (kind,
   `started_at`, `stalled`) — `"Download · started 2m ago"`, or with
   `· not reporting` folded in once stalled. `engineDuration` (previously
@@ -5825,11 +5822,11 @@ stop it short of quitting the app.
   (the server's clock), threaded down from `useJobs` through
   `DownloadManagerView` and `JobRow` — never the browser's `Date.now()`, which
   drifts from `job.started_at`'s server timestamp after a tab throttle or a
-  sleep (D660).
+  sleep (D666).
 
-- **BG-20** **A follow-up review of BG-17/BG-18 closes three gaps D657's
+- **BG-20** **A follow-up review of BG-17/BG-18 closes three gaps D663's
   keep-until-dismissed policy opened, and confirms one thing it left
-  implicit (D661).** A card that reads a job's mere PRESENCE in the registry
+  implicit (D667).** A card that reads a job's mere PRESENCE in the registry
   as "still busy" — `useCacheScan.ts`/`PlaygroundTab.tsx`'s `jobByModel` maps,
   `RepoCard.tsx`'s button gates — now stays stuck on a model whose pull or
   load finished minutes ago, since the row no longer disappears on its own;
@@ -5856,7 +5853,7 @@ stop it short of quitting the app.
   `RepoUpdatesDock.tsx` started calling `isFailure` directly, is deleted.
 
 - **BG-21** **Two more code-review fixes on BG-17/BG-18's rework, plus its
-  one previously untested piece (D662).** `retiredEngines`'s stopping-marker
+  one previously untested piece (D668).** `retiredEngines`'s stopping-marker
   used to be consumed by the very next poll regardless of what it saw, so a
   rejected Stop or an engine a `restart()` revived left the marker spent for
   nothing while the engine was still there — its actual later idle
@@ -5870,16 +5867,16 @@ stop it short of quitting the app.
   a Stop within and past its grace window, a revived engine, and the
   late-retirement-after-rejected-Stop case above.
 
-- **BG-22** **D657's keep-until-dismissed exemption is scoped to a row some
+- **BG-22** **D663's keep-until-dismissed exemption is scoped to a row some
   surface can show and let the user dismiss, not to every terminal state
-  unconditionally (D663).** A `sys:schedule:*` row is never drawn by any
+  unconditionally (D669).** A `sys:schedule:*` row is never drawn by any
   frontend surface — `jobRows` drops it from Activity, and `terminalJobs`
   runs after `jobRows` in `ActivityDock.tsx`, so it never reaches
   Notifications either — so the exemption bought it nothing but unbounded
   accumulation, one invisible row per scheduled turn. `_sweep` now ages a
   schedule row out on the original read-gated `FINISHED_TTL_S`/
   `FINISHED_UNREAD_DROP_S` clock (BG-6); every other terminal row keeps
-  D657's keep-until-dismissed behavior. Separately, `MAX_JOBS`'s eviction
+  D663's keep-until-dismissed behavior. Separately, `MAX_JOBS`'s eviction
   order (BG-6/BG-20) excluded `WAITING` from `evictable` entirely: a
   `WAITING` row's reporter has already exited, so its `updated_at` never
   advances, and ordering evictable rows oldest-`updated_at`-first made a
@@ -5891,7 +5888,7 @@ stop it short of quitting the app.
   showed or counted a `WAITING` row, but its old filter took one anyway.
 
 - **BG-23** **`ActivityDock.tsx`'s `onJobsReported` applies `mergedRows`
-  before `jobRows`/`terminalJobs` (D664), and the two "Clear" buttons
+  before `jobRows`/`terminalJobs` (D670), and the two "Clear" buttons
   (BG-15/BG-20) get distinct visible labels.** `jobs.ts` gains
   `terminalNotifications(jobs)` — `mergedRows` then `jobRows` then
   `terminalJobs`, the same order `DownloadManagerView` already uses for
@@ -5913,7 +5910,7 @@ stop it short of quitting the app.
   `RepoRowView`'s own buttons.
 
 - **BG-24** **A task/scheduled message that finishes successfully speaks no
-  toast at all (D665, user: "why does task completion still show toast
+  toast at all (D671, user: "why does task completion still show toast
   messages?" / "remove that too").** `schedule-toast.ts`'s `toastForEvent`
   returns `ScheduleToast | null`, `null` for `kind === "done"` — a plain
   success is not news, and the Tasks page is where its result lives.

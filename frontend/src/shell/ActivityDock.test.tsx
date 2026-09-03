@@ -1,5 +1,5 @@
-// D658's retire-toast diffing — `retiredEngines`, exported from
-// ActivityDock.tsx purely so this suite can exercise it directly (C9: D658
+// D664's retire-toast diffing — `retiredEngines`, exported from
+// ActivityDock.tsx purely so this suite can exercise it directly (C9: D664
 // shipped on this branch with no test at all, and C5 is exactly the defect
 // that gap let through). No render, no poll, no `window`/`document`: this
 // is the same pure-function-with-a-test split `jobs.ts`/`repo-updates-lib.ts`

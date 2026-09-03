@@ -327,7 +327,7 @@ export default function PlaygroundTab() {
     !!selected && runtime.downloading.some((d) => d.model === selected.model.id);
   // Rows by MODEL, for the sidebar's own size cells and for `jobForSelected`
   // below — `activeJobByModel` (Part A item 1 / C3 fix) is what keeps
-  // presence here meaning "active": D657 keeps a finished job's row until
+  // presence here meaning "active": D663 keeps a finished job's row until
   // dismissed, so without that filter a model's card stayed "busy" for the
   // session's remainder once its pull or load finished, active again the
   // moment anything else on the page was.

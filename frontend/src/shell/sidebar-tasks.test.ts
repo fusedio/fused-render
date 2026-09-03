@@ -486,12 +486,12 @@ describe("one nav dot, worn by two rows", () => {
 // fetches over a feeder, and every remaining producer of "a run just ended"
 // actually calls it.
 //
-// D655 removed one such producer: the queue card (ActivityDock.tsx, née
+// D661 removed one such producer: the queue card (ActivityDock.tsx, née
 // QueueDock.tsx) used to diff successive job snapshots itself
 // (scheduleRunsEnded/scheduleRunsStarted) and poke on a start/end edge,
 // giving the Tasks page/sidebar a faster nudge than the schedule-event poll
 // alone while a scheduled run's OWN queue row was on screen. That row is
-// gone (D655: "a task is not something I even want in the activity"), and
+// gone (D661: "a task is not something I even want in the activity"), and
 // with it this fast path — a scheduled run's unread status now waits on
 // the schedule-event poll's own cadence like any other producer, a
 // documented latency trade-off rather than an oversight.
@@ -529,7 +529,7 @@ describe("pokeTasks", () => {
     expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
   });
 
-  it("the queue card no longer pokes on a job edge — that producer is gone (D655)", () => {
+  it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {
     // ActivityDock.tsx (the queue card's successor) carries no
     // scheduleRunsEnded/scheduleRunsStarted diffing and no pokeTasks call at
     // all: the row that fast path existed to keep in sync with is deleted,

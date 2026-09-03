@@ -185,7 +185,7 @@
 
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
-   (.dl-row). A scheduled message's own run draws no row here at all (D655) —
+   (.dl-row). A scheduled message's own run draws no row here at all (D661) —
    the queue card that used to sit beside these rows, and its `.q-row` family,
    is gone; `.q-all` (further down) is the one class from that card still
    drawn, repurposed by RepoUpdatesDock.tsx's repo rows.
@@ -618,7 +618,7 @@
   color: var(--error);
 }
 
-/* `.dl-jobs-clear` (Part A item 2, D657) is the terminal-jobs sibling of
+/* `.dl-jobs-clear` (Part A item 2, D663) is the terminal-jobs sibling of
    `.dl-clear` — a separate class, not a shared one, because the two buttons
    can render side by side in the same `.dl-head` band (a repo row and a
    terminal job can both be present at once) and each needs its own click
@@ -1121,7 +1121,7 @@
    button — since the scheduled-message queue card this class was named for
    (a "Cancel all" beside the header, and the `.q-row`/`.q-row-head`/
    `.q-title`/`.q-open`/`.q-x`/`.q-spin`/`.q-status`/`.q-note` row family
-   below it) is gone: D655 removed the queue poll and its rows from
+   below it) is gone: D661 removed the queue poll and its rows from
    ActivityDock entirely, and `.dl-row-cancel` is reserved for a different
    verb family (Unload/Stop/Cancel), so it was not a fit for Update/Switch. */
 .q-all {

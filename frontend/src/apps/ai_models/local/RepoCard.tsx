@@ -701,7 +701,7 @@ export function RepoCard({
                `DownloadManager.tsx`'s `JobRow` keeps its own second guard —
                the state is what this button actually means to ask, and
                testing existence instead is what let a `done` row that
-               outlives dismissal (D657) wedge this button open for the rest
+               outlives dismissal (D663) wedge this button open for the rest
                of the session. */
             <button
               type="button"

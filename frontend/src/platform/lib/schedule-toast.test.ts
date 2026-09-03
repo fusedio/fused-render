@@ -22,7 +22,7 @@ describe("toastForEvent", () => {
   it("says nothing for a run that finished successfully", () => {
     // A task or scheduled message that just worked is not news — it is the
     // Tasks page's job to carry the result, not a toast's. Nothing else
-    // narrates `done`: tasks are gone from Activity (D655) and excluded from
+    // narrates `done`: tasks are gone from Activity (D661) and excluded from
     // Notifications routing, but that is fine, because a toast for a plain
     // success was never anyone asking to be told something went wrong.
     expect(toastForEvent(ev({ kind: "done" }))).toBeNull();

@@ -16,7 +16,7 @@ scheduled for later today is not queued, it is scheduled ("show me the queued
 that are like in the current time or past time, not future time"). The former
 "component" half — source-text assertions against the deleted card — went with
 the card; the row-level pure-function rules those tests also pinned
-(`queue-dock-lib.ts`) were deleted the same way (D655). The general
+(`queue-dock-lib.ts`) were deleted the same way (D661). The general
 structural/placement checks that used to sit in this same file (the fold is
 never persisted, the bar's placement inside `#main`, always-present-not-gone)
 outlived the card because they were never about the queue specifically — they

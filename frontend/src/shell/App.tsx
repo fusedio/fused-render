@@ -463,7 +463,7 @@ export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
-  // broadened by D656 to every terminal state — done/error/cancelled, not
+  // broadened by D662 to every terminal state — done/error/cancelled, not
   // only error). `ActivityDock` already receives `DownloadManager`'s full
   // jobs snapshot on every poll and forwards the terminal subset here;
   // `RepoUpdatesDock` draws them beside its repo rows. This lives in `App`
@@ -1008,7 +1008,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
-            /* D586/D656: every terminal job is re-routed from Activity to
+            /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in
                scope. Plain prop wiring on purpose — the alternative was a
                shared store, which would be a new subsystem for a list that

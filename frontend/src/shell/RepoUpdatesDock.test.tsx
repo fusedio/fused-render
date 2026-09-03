@@ -104,7 +104,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   ...over,
 });
 
-// A DONE job — the routing D656 broadened past `error` alone. Every terminal
+// A DONE job — the routing D662 broadened past `error` alone. Every terminal
 // state reaches this section now (jobs.ts `isTerminal`/`terminalJobs`), not
 // only a failure.
 const doneJob = (over: Partial<Job> = {}): Job => ({
@@ -338,10 +338,10 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   }
 });
 
-// ------------------------------------- Part A item 2: a jobs Clear (D657)
+// ------------------------------------- Part A item 2: a jobs Clear (D663)
 //
-// D657 keeps every terminal job until dismissed, and Activity's own `Clear`
-// button was deleted in the same PR (D655) — so once a job's own ✕ has been
+// D663 keeps every terminal job until dismissed, and Activity's own `Clear`
+// button was deleted in the same PR (D661) — so once a job's own ✕ has been
 // missed, `POST /api/jobs/clear` was reachable by no UI at all. "Until
 // dismissed" is only a defensible lifetime if dismissing is possible, so
 // this section gets its own bulk clear, scoped to the terminal jobs it
@@ -653,11 +653,11 @@ test("a failure colours the chip — the tint moved here from Jobs (D586)", () =
 });
 
 test("a done job draws a visible, dismissable row here too (C1)", () => {
-  // D656 routes every terminal state, not only `error`, to this section.
+  // D662 routes every terminal state, not only `error`, to this section.
   // `JobRow` used to return null for `state: "done"` — a leftover from when
   // only failures ever reached this component — which left a done job
   // filling this chip's circle and its panel's total while drawing nothing:
-  // no row, no ✕, unclearable once D657 stopped sweeping it.
+  // no row, no ✕, unclearable once D663 stopped sweeping it.
   const tree = renderView({ rows: [], terminal: [doneJob()] });
   expect(circleFilled(tree)).toBe(true);
   expect(findAll(tree, "dl-row").length).toBeGreaterThan(0);
