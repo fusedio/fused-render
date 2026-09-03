@@ -12475,7 +12475,14 @@ function addUser(text, uuid) {
   b.className = "bubble";
   b.textContent = text;
   d.appendChild(b);
-  log.appendChild(d);
+  // A follow-up sent while a turn is live must land ABOVE the "✻ working…"
+  // status line (addWorking always appends it last), or the transcript stops
+  // reading top-to-bottom: the reply that streams in next is itself inserted
+  // before that line, so a bubble appended after it would sit permanently
+  // below every reply that follows. At most one status line exists at a time.
+  const working = log.querySelector(".turn.working");
+  if (working) log.insertBefore(d, working);
+  else log.appendChild(d);
   // Sending is the reader asking for the tail again: it re-arms the follow that
   // scrolling up turned off, so the answer to what they just asked streams in
   // front of them without their having to chase it back down.
@@ -14989,9 +14996,13 @@ async function sendFollowUp(text) {
     addUser(text);
   } else if (pending.length || pics.length) {
     // annotation- or screenshot-only follow-up: no words, but still a turn.
+    // Same ordering discipline as addUser above — insert before the live
+    // status line rather than appending after it.
     const bare = document.createElement("div");
     bare.className = "turn user";
-    log.appendChild(bare);
+    const working = log.querySelector(".turn.working");
+    if (working) log.insertBefore(bare, working);
+    else log.appendChild(bare);
   }
   scrollBottom();
   pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
