@@ -124,7 +124,9 @@ export type ListingState =
   // "no more can be fetched" — the banner then just states the listing is
   // partial without a Load more button.
   | { status: "ok"; entries: FsEntry[]; truncated: boolean; cursor: string | null }
-  | { status: "error"; message: string };
+  // `httpStatus`: the response code when the failure was an HTTP error, so
+  // the view can tell a refused read (403 → AccessDenied) from the rest.
+  | { status: "error"; message: string; httpStatus?: number };
 
 // Streamed walk state. `entries` is one append-only array shared across the
 // streaming updates (each batch pushes into it); every update still creates a

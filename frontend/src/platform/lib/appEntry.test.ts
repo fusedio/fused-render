@@ -5,35 +5,21 @@
 import { expect, test } from "bun:test";
 
 import type { AppInfo } from "./api";
+import { installDomShim } from "./testDomShim";
 
 // appEntry pulls `navigate`/`urlForFsPath` from router.ts, which reads
 // `location` at MODULE scope (IS_EMBED) — and bun's test runtime has no DOM. A
-// static import is hoisted above any shim, so `location` is stubbed first and
-// the module comes in dynamically after it. The stub is on globalThis, which
-// every file shares — hence `??=`, and hence a shape real enough for router to
-// read rather than an empty object.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/",
-  search: "",
-  href: "http://localhost/",
-};
-// `openApp` really does call navigate(), which pushes history and fires the nav
-// event. Stubbed rather than avoided: the assertion below is about whether the
-// shell CLAIMED the click, and swapping in a fake openApp would test the fake.
-// Where navigate() then lands is router.ts's business, not this module's.
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-// The stub leaks to every other suite in the run (bun shares globals), so it
-// must carry what those suites' modules read off `window` — toast.ts calls
-// window.setTimeout, and a bare {dispatchEvent} broke its whole file.
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent() {},
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-};
+// static import is hoisted above any shim, so the shim has to run before the
+// module comes in, hence the dynamic import below. See testDomShim.ts for why
+// this is the one shared stub every suite in the run installs, rather than a
+// stub hand-rolled per file.
+//
+// `openApp` really does call navigate(), which pushes history and fires the
+// nav event. Stubbed rather than avoided: the assertion below is about
+// whether the shell CLAIMED the click, and swapping in a fake openApp would
+// test the fake. Where navigate() then lands is router.ts's business, not
+// this module's.
+installDomShim();
 
 const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor, sortApps } =
   await import("./appEntry");

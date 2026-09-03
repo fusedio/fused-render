@@ -57,12 +57,12 @@ from fused_render.index.config import load_config
 from fused_render.index.query import dirs_src, files_src
 from fused_render.index.store import depth_expr, like_literal, read_manifest
 from fused_render.server.common import _error
-from fused_render.server.gitignore import _IgnoreOracle
 # The one screening standard for rows that did not come out of the walk itself;
 # it lives next to WALK_IGNORE_DIRS so the two sources cannot disagree. Bound to
 # the pre-existing private name here because this module's callers (and its
 # tests) already know it as that.
 from fused_render.server.walk import junk_path as _junk_path
+from fused_render.server.walk import WALK_IGNORE_DIRS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,14 +82,6 @@ SEARCH_MAX_RESULTS = 400
 # a rule for SHARING the cap, not a ceiling on folders, so a search with no files
 # in it (kind "dir", or an index with no file partitions yet) gets the whole cap.
 SEARCH_DIRS_RESERVE = 100
-# Pages a branch may read while filling its budget. Gitignored rows can only be
-# recognised OUTSIDE SQL, so a page that screens down to nothing has to be
-# followed by another or a gitignored build directory answers the whole query;
-# each extra page costs one duckdb query plus its check-ignore batch, and the
-# common case (few ignored hits) is one page. A bound rather than "until the cap
-# is full" because a query can match more ignored rows than any budget.
-SEARCH_MAX_PAGES = 5
-
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
 # Date-range spec fields: (key, is_range_end). Modified only — see the module
@@ -186,54 +178,6 @@ def _parse_spec(body: dict):
     return spec
 
 
-def _nearest_repo(dirpath: str, memo: dict) -> str | None:
-    """The closest ancestor (including `dirpath`) containing a `.git` marker,
-    or None. Pure filesystem probes with memoization — a `git rev-parse` per
-    unique hit directory would cost a subprocess each."""
-    probe = dirpath
-    chain = []
-    result = None
-    while True:
-        if probe in memo:
-            result = memo[probe]
-            break
-        chain.append(probe)
-        if os.path.exists(os.path.join(probe, ".git")):
-            result = probe
-            break
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            break
-        probe = parent
-    for p in chain:
-        memo[p] = result
-    return result
-
-
-def _drop_gitignored(entries):
-    """Filter out entries a containing repo's own gitignore rules ignore,
-    batched through one check-ignore co-process per repo (_IgnoreOracle)."""
-    repo_memo: dict = {}
-    by_repo: dict = {}
-    for i, e in enumerate(entries):
-        repo = _nearest_repo(os.path.dirname(e["path"]), repo_memo)
-        if repo is not None:
-            by_repo.setdefault(repo, []).append(i)
-    dropped = set()
-    for repo, indices in by_repo.items():
-        oracle = _IgnoreOracle(repo)
-        try:
-            rels = [os.path.relpath(entries[i]["path"], repo).replace(os.sep, "/")
-                    for i in indices]
-            ignored = oracle.ignored(rels)
-            for i, rel in zip(indices, rels):
-                if rel in ignored:
-                    dropped.add(i)
-        finally:
-            oracle.close()
-    return [e for i, e in enumerate(entries) if i not in dropped]
-
-
 # ------------------------------------------------------------ the index engine
 
 # Spec fields that NARROW a query. `kind` is deliberately absent: "folders"
@@ -278,6 +222,15 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr,
     # spent on rows from ~/.cache that would be dropped a moment later;
     # _junk_path stays the single standard, this is only a budget prefilter.
     pieces = [f"{path_expr} NOT LIKE '%/.%'"]
+    # Same reasoning for WALK_IGNORE_DIRS segments: a node_modules (etc.) row
+    # must never occupy a LIMIT slot that _screen only throws away afterward,
+    # stranding a real match past the page. Checked as both a middle segment
+    # (.../name/...) and the path's own final segment (.../name), since a dirs
+    # row's path IS the directory and carries no trailing separator.
+    for _name in WALK_IGNORE_DIRS:
+        _lit = like_literal(_name)
+        pieces.append(f"{path_expr} NOT LIKE '%/{_lit}/%' ESCAPE '\\'")
+        pieces.append(f"{path_expr} NOT LIKE '%/{_lit}' ESCAPE '\\'")
     if spec["name_terms"]:
         # Substring, case-insensitive, OR'd across terms: the model lists
         # synonyms, and requiring all of them would over-filter. Recall matters
@@ -371,37 +324,25 @@ def _row_entry(row) -> dict:
 def _screen(rows) -> list:
     """Response entries for `rows`, minus the hits no search may surface.
 
-    The index's own ignore rules are a user-editable name list; git is a server
-    concern (server/index_gitignore.py makes the same move for the in-folder
-    corpus, for the same reason: a gitignored build directory's 100k generated
-    files must not flood a search)."""
-    return _drop_gitignored([_row_entry(r) for r in rows if not _junk_path(r[0])])
+    `_junk_path` is the one screening standard: dot-segments and
+    WALK_IGNORE_DIRS names. Both halves are also pushed into `_index_where`, so
+    by the time rows reach here they should already be clean — this call is a
+    parity backstop against the walk's own rules (and against any index built
+    before that predicate existed), not the mechanism doing the excluding."""
+    return [_row_entry(r) for r in rows if not _junk_path(r[0])]
 
 
 def _collect(con, sql, budget: int):
     """Up to `budget` screened entries for one branch, plus whether the branch
     had more rows than it was allowed to contribute.
 
-    Paged, because the cap is a budget for hits the user can SEE and screening
-    happens outside SQL: taking `budget` rows once and screening afterwards let
-    a page of gitignored rows answer the query with an empty list while real
-    matches sat one row past the cap. Each page asks for exactly the shortfall
-    plus one probe row, so the common case is a single query."""
-    kept: list = []
-    offset = 0
-    more = False
-    for _page in range(SEARCH_MAX_PAGES):
-        want = budget - len(kept)
-        if want <= 0:
-            break
-        rows = con.execute(
-            f"{sql} LIMIT {want + 1} OFFSET {offset}").fetchall()
-        more = len(rows) > want
-        page = rows[:want]
-        offset += len(page)
-        kept.extend(_screen(page))
-        if not more:
-            break
+    One page, `budget + 1` rows: `_index_where` already excludes dot-segment
+    and WALK_IGNORE_DIRS rows before the LIMIT is applied, so `_screen` here
+    has nothing left to drop in the common case and a second page buys nothing
+    worth the extra duckdb round trip."""
+    rows = con.execute(f"{sql} LIMIT {budget + 1}").fetchall()
+    more = len(rows) > budget
+    kept = _screen(rows[:budget])
     return kept[:budget], more
 
 

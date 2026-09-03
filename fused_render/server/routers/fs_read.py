@@ -273,6 +273,11 @@ def api_fs_list(path: str, cursor: str | None = None):
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
+        # 403, matching stat (mount.py) and read below, so the explorer can
+        # tell "refused" from "not a directory" by status and show the
+        # Full Disk Access card instead of the raw errno text.
+        if isinstance(e, PermissionError):
+            return _error(f"cannot read {path}: {e}", status=403)
         return _error(f"cannot read directory {path}: {e}", status=400)
     truncated = len(dents) > _server_walk.LIST_MAX_ENTRIES
     if truncated:
@@ -325,12 +330,12 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # the ones a search almost always targets — are all emitted before any
     # deep subtree can exhaust the WALK_MAX_ENTRIES cap (the old
     # depth-first walk let one big sibling starve every later one). Prunes
-    # WALK_IGNORE_DIRS entirely, prunes gitignored entries inside git
-    # repositories (see _walk_bfs — which is why walk entries carry no
-    # `ignored` dimming flag: nothing ignored survives to be dimmed),
-    # emits WALK_LEAF_DIR_SUFFIXES packages without descending, never
-    # follows symlinks, and skips unreadable entries silently (matches
-    # /api/fs/list). `rel` is posix-relative to `path`.
+    # WALK_IGNORE_DIRS entirely (see _walk_bfs — which is why walk entries
+    # carry no `ignored` dimming flag: the walk never consults .gitignore at
+    # all, so there is no verdict to carry), emits WALK_LEAF_DIR_SUFFIXES
+    # packages without descending, never follows symlinks, and skips
+    # unreadable entries silently (matches /api/fs/list). `rel` is
+    # posix-relative to `path`.
     #
     # The walk is bounded on three axes so a search-as-you-type over a big
     # (esp. mount) root can't kick off an unbounded enumeration: entry count
@@ -341,9 +346,9 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # disconnect without stalling the event loop.
     #
     # `hidden=1` (explicit intent: the user typed a dot-leading query)
-    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS,
-    # the leaf rules and gitignore pruning apply regardless — those trees are
-    # noise, not "hidden data", and letting hidden=1 descend into
+    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS and
+    # the leaf rules apply regardless — those trees are noise, not "hidden
+    # data", and letting hidden=1 descend into
     # node_modules or a repo's .git would flood the results with
     # machine-managed junk. `.git` is emitted as ONE undescended entry (it is a
     # leaf name, so the index has a row for it and the two corpora agree);

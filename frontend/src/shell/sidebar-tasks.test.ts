@@ -519,11 +519,21 @@ describe("one nav dot, worn by two rows", () => {
 });
 
 // -- the poke: finished in one surface, finished in the other -------------------
-// The queue card and the schedule's event poll both learn a run ended seconds
-// after it does; this store's own cadence is 10–30s and the Tasks page's 20s.
-// pokeTasks is the bridge, and these tests pin the two rules that make it safe:
-// it never fetches over a feeder, and every producer of "a run just ended"
+// The schedule's event poll learns a run ended seconds after it does; this
+// store's own cadence is 10–30s and the Tasks page's 20s. pokeTasks is the
+// bridge, and these tests pin the two rules that make it safe: it never
+// fetches over a feeder, and every remaining producer of "a run just ended"
 // actually calls it.
+//
+// D661 removed one such producer: the queue card (ActivityDock.tsx, née
+// QueueDock.tsx) used to diff successive job snapshots itself
+// (scheduleRunsEnded/scheduleRunsStarted) and poke on a start/end edge,
+// giving the Tasks page/sidebar a faster nudge than the schedule-event poll
+// alone while a scheduled run's OWN queue row was on screen. That row is
+// gone (D661: "a task is not something I even want in the activity"), and
+// with it this fast path — a scheduled run's unread status now waits on
+// the schedule-event poll's own cadence like any other producer, a
+// documented latency trade-off rather than an oversight.
 
 const QUEUE_DOCK = readFileSync(join(SHELL, "ActivityDock.tsx"), "utf8");
 const EVENTS = readFileSync(
@@ -558,14 +568,14 @@ describe("pokeTasks", () => {
     expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
   });
 
-  it("the queue card pokes when a scheduled run's job starts or goes terminal", () => {
-    // Compared snapshot-to-snapshot (scheduleRunsEnded / scheduleRunsStarted)
-    // so mounting onto a registry full of old rows fires nothing — including
-    // the slot's initial [] echo, which must not become the baseline.
-    expect(QUEUE_DOCK).toMatch(/scheduleRunsEnded\(prevJobs\.current, next\)/);
-    expect(QUEUE_DOCK).toMatch(/scheduleRunsStarted\(prevJobs\.current, next\)/);
-    expect(QUEUE_DOCK).toMatch(/if \(news\) pokeTasks\(\);/);
-    expect(QUEUE_DOCK).toMatch(/sawEcho\.current = true;/);
+  it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {
+    // ActivityDock.tsx (the queue card's successor) carries no
+    // scheduleRunsEnded/scheduleRunsStarted diffing and no pokeTasks call at
+    // all: the row that fast path existed to keep in sync with is deleted,
+    // so there is nothing left here to poke over.
+    expect(QUEUE_DOCK).not.toContain("scheduleRunsEnded");
+    expect(QUEUE_DOCK).not.toContain("scheduleRunsStarted");
+    expect(QUEUE_DOCK).not.toContain("pokeTasks");
   });
 
   it("a done/failed schedule event pokes too — handed down from the shell", () => {

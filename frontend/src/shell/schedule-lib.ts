@@ -543,6 +543,49 @@ export function folderHref(task: Task): string | null {
   return target ? explorerUrl(target, "") : null;
 }
 
+/**
+ * The same conversation as an IFRAME — one card on the Tasks page's Cards view
+ * (shell/TaskCards.tsx), showing the run as it happens.
+ *
+ * Deliberately NOT `/explorer/embed/<dir>?_side=claude`, which is the shape the
+ * two hrefs above build and the obvious thing to reach for. An embed is the
+ * whole React shell: a breadcrumb, a listing or a file preview, and the chat as
+ * a SIDE pane of it — so a 420px card would spend most of itself on a folder
+ * listing and show the conversation in the strip beside it, twelve times over.
+ * The chat template is framed DIRECTLY instead, which is what the explorer's own
+ * sidebar does (apps/explorer/Preview.tsx `sideSrcFor`) and what the canvas
+ * workspace does (apps/canvases/CanvasWorkspace.tsx) — same three
+ * params, same reasons:
+ *
+ *   `path`       the claude template itself, resolved per FOLDER through
+ *                /api/fs/stat rather than hardcoded, so a user's own override
+ *                (§16) is honoured here exactly as it is in the sidebar.
+ *   `_file`      the folder the run is against. Underscore-prefixed, hence
+ *                reserved, hence read off the frame's own URL — the template's
+ *                own note above `CHAT_ONLY` has the argument.
+ *   `chat_only`  the host is not showing the file, but a 420px tile has no room
+ *                for the template's own preview column either, and the no-pane
+ *                teardown is what that param buys.
+ *   `compact`    and this one is new for this view: no top bar, no composer —
+ *                the card's head says what the bar would, and a card is read
+ *                rather than typed into (template.html, `COMPACT`).
+ *
+ * `session_id` rides the URL too, which only works because the HOST marks itself
+ * a param boundary while the grid is up (TaskCards.tsx, static/runtime.js
+ * `findTarget`): without that, every card's runtime would climb past its own
+ * frame to the Tasks page and twelve documents would share — and fight over —
+ * one `session_id` on `/tasks`. With it, each frame is its own param target and
+ * each card reads the one session it was given.
+ */
+export function cardFrameSrc(template: string, target: string, sessionId: string): string {
+  return (
+    `/render?path=${encodeURIComponent(template)}` +
+    `&_file=${encodeURIComponent(target)}` +
+    `&chat_only=1&compact=1` +
+    `&session_id=${encodeURIComponent(sessionId)}`
+  );
+}
+
 // ---- Calendar: the task chip grid ---------------------------------------------
 // The calendar shows the same unit the List and the Board show — a TASK — and
 // what the time axis adds is placement:

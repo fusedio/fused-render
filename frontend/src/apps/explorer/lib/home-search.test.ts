@@ -3,11 +3,13 @@ import {
   HOME_RESULT_CAP,
   activeRow,
   answerFrom,
+  formatElapsed,
   homeCountNote,
   isAiRow,
   isOpenRow,
   nameStart,
   narrowAnswer,
+  noteAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -59,6 +61,7 @@ function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
     total: 0,
     covered: true,
     reason: "",
+    elapsedMs: 0,
     ...over,
   };
 }
@@ -127,7 +130,7 @@ describe("pathShortcut", () => {
 describe("answerFrom", () => {
   it("absolutizes rel paths against home and carries the row's facts", () => {
     const res = rankResult({ hits: [rankHit("Downloads/a.csv", { size: 42 })] });
-    expect(answerFrom(res, "a.csv", HOME).hits).toEqual([
+    expect(answerFrom(res, "a.csv", HOME, 0).hits).toEqual([
       {
         path: `${HOME}/Downloads/a.csv`,
         rel: "Downloads/a.csv",
@@ -142,25 +145,25 @@ describe("answerFrom", () => {
   it("re-runs the matcher for highlights rather than trusting the wire", () => {
     // fuzzy.ts is the single source of truth for what highlights; the server
     // deliberately does not send positions (index/rank.py's docstring).
-    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME).hits;
+    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME, 0).hits;
     expect(row.positions!.map((i) => "docs/README.md"[i]).join("")).toBe("README");
   });
 
   it("caps the rendered rows but keeps the server's true total", () => {
     const many = Array.from({ length: HOME_RESULT_CAP + 25 }, (_, i) => rankHit(`f${i}.txt`));
-    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME);
+    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME, 0);
     expect(out.hits).toHaveLength(HOME_RESULT_CAP);
     expect(out.total).toBe(HOME_RESULT_CAP + 25);
   });
 
   it("carries the query it answers, which is what stops the list blanking", () => {
-    expect(answerFrom(rankResult(), "down", HOME).query).toBe("down");
+    expect(answerFrom(rankResult(), "down", HOME, 0).query).toBe("down");
   });
 
   it("reports an uncovered root as such, never as zero matches", () => {
     // The honest answer is "still building": the home page has no live walk to
     // fall back on, so a miss here is the app's state, not the user's files.
-    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME);
+    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME, 0);
     expect(out.covered).toBe(false);
     expect(out.hits).toEqual([]);
   });
@@ -170,8 +173,13 @@ describe("answerFrom", () => {
       rankResult({ covered: false, reason: "disabled", hits: [], total: 0 }),
       "x",
       HOME,
+      0,
     );
     expect(out.reason).toBe("disabled");
+  });
+
+  it("carries the measured elapsed time through", () => {
+    expect(answerFrom(rankResult(), "down", HOME, 123).elapsedMs).toBe(123);
   });
 });
 
@@ -248,6 +256,46 @@ describe("homeCountNote", () => {
     expect(homeCountNote(4690, false)).toBe(`Showing top ${HOME_RESULT_CAP} of 4,690`);
     // A truncated corpus is a second, independent "there was more than this".
     expect(homeCountNote(3, true)).toBe("3+ matches");
+  });
+});
+
+describe("formatElapsed", () => {
+  it("renders sub-second durations as rounded milliseconds", () => {
+    expect(formatElapsed(0)).toBe("0 ms");
+    expect(formatElapsed(42)).toBe("42 ms");
+    expect(formatElapsed(42.6)).toBe("43 ms");
+    expect(formatElapsed(999)).toBe("999 ms");
+  });
+
+  it("switches to one-decimal seconds at the 1000ms boundary", () => {
+    expect(formatElapsed(1000)).toBe("1.0 s");
+    expect(formatElapsed(1234)).toBe("1.2 s");
+    expect(formatElapsed(12_345)).toBe("12.3 s");
+  });
+});
+
+describe("noteAnswer", () => {
+  const settledAnswer = answer({ query: "a", total: 3 });
+  const heldAnswer = answer({ query: "prev", total: 9 });
+
+  it("reads the live answer once ranking has settled", () => {
+    expect(noteAnswer(settledAnswer, true, heldAnswer)).toBe(settledAnswer);
+  });
+
+  it("holds the last settled answer while not settled, ignoring the live one", () => {
+    expect(noteAnswer(settledAnswer, false, heldAnswer)).toBe(heldAnswer);
+  });
+
+  it("is null when nothing has ever settled", () => {
+    expect(noteAnswer(settledAnswer, false, null)).toBeNull();
+  });
+
+  it("holds the last settled answer when a settled render's live answer is null", () => {
+    // Reachable via a failed request for a LATER query than the held answer,
+    // combined with the stale-clear effect nulling `answer` out from under a
+    // query that has since moved on (see FilesHome.tsx). The note must not
+    // flash "Searching…" over a result it already showed.
+    expect(noteAnswer(null, true, heldAnswer)).toBe(heldAnswer);
   });
 });
 

@@ -303,39 +303,45 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     box.unmount();
   });
 
-  test("an unrelated query narrows to nothing: the note says so immediately, and the deadline only clears the stale-rows dimming", async () => {
+  test("an unrelated query narrows to nothing: the note holds the last settled count instead of flashing \"Searching…\"", async () => {
     const box = mount();
     await type(box, "form");
     await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
     expect(noteText(box)).not.toContain("Searching");
+    expect(noteText(box)).toContain("2 matches");
 
-    // A paste-over: nothing held matches this at all.
+    // A paste-over: nothing held matches this at all, so `hits` narrows to
+    // empty — but the note reads from the last SETTLED answer (`noteAnswer`,
+    // home-search.ts), not from `hits`, so it keeps reading the held count
+    // (now with a "+", since `behind` says more could be out there for this
+    // query than the held answer ever had a chance to include) rather than
+    // reverting to "Searching…" for a query that has not actually failed to
+    // find anything yet.
     await flush(() => box.input().props.onChange({ target: { value: "zzzqqq" } }));
     await flush(() => clock.advance(200));
     expect(rankCalls).toHaveLength(2);
 
-    // Before the deadline: the note already reads the RENDERED (narrowed,
-    // now-empty) rows, not the previous request's non-zero count — it used
-    // to keep reporting that stale count until the deadline dropped `answer`
-    // to null, over a list that had already narrowed to nothing.
-    expect(noteText(box)).toBe("Searching…");
+    // Before the deadline: the held note is unchanged but for that "+".
+    expect(noteText(box)).toContain("2+ matches");
     // The rows themselves are still `behind` (dimmed): the held answer is
     // for "form", not yet given up on.
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .toContain("is-stale");
 
     await flush(() => clock.advance(STALE_CLEAR_MS + 50));
-    // Past the deadline `answer` itself drops to null: the note still reads
-    // "Searching…" (nothing changed about what's on screen), but the rows
-    // are no longer flagged stale — there is nothing stale left to dim.
-    expect(noteText(box)).toBe("Searching…");
+    // Past the deadline `answer` itself drops to null, so `behind` (which
+    // reads `answer`, not the held note) goes false along with the dimming —
+    // the "+" drops with it — but the count keeps reading the held total:
+    // `noteAnswer` only ever changes when a query actually settles, and
+    // nothing has for "zzzqqq" yet.
+    expect(noteText(box)).toContain("2 matches");
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .not.toContain("is-stale");
     box.unmount();
   });
 
-  test("the count note narrows together with the rows, not left describing the held answer", async () => {
+  test("the count note holds the last settled total while rows narrow underneath it", async () => {
     const box = mount();
     await type(box, "form");
     // A broad first answer: the note claims 137 matches.
@@ -355,12 +361,59 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     await flush(() => clock.advance(200));
     // Only the file row with an href is a FILE hit — the AI row also carries
     // `.fh-result-name` (its "Search with AI" label), so counting that class
-    // alone would double-count it.
+    // alone would double-count it. The rows on screen DO narrow with the
+    // query (`narrowAnswer`) — it is only the count note that holds still.
     expect(box.renderer.root.findAll((n) => typeof n.props?.href === "string")).toHaveLength(1);
-    // The note used to keep reporting the OLD request's total (137) over the
-    // now-narrowed 1-row list — describing a search that was never sent for
-    // "formu" at all. It must track what's actually on screen.
-    expect(noteText(box)).not.toContain("137");
+    // The note reads the last SETTLED answer (`noteAnswer`), not the
+    // narrowed row count, so it keeps reporting 137 rather than rewriting
+    // itself to a number that describes a search that was never sent for
+    // "formu" at all — the dimmed rows already say this is stale.
+    expect(noteText(box)).toContain("137");
+    box.unmount();
+  });
+
+  test("typing a second query never flips the note to \"Searching…\" once a count has been shown", async () => {
+    const box = mount();
+    await type(box, "form");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
+    expect(noteText(box)).toContain("2 matches");
+
+    // Every keystroke of a second query, with the round trip left hanging —
+    // at no point should the note revert to "Searching…": that number is
+    // the last thing settled, and it stays on screen until a new one lands.
+    for (const value of ["forma", "formal", "formal "]) {
+      await flush(() => box.input().props.onChange({ target: { value } }));
+      await flush(() => clock.advance(200));
+      expect(noteText(box)).not.toBe("Searching…");
+    }
+    box.unmount();
+  });
+});
+
+describe("the latency readout", () => {
+  test("reports the round-trip time next to the count", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(87);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(noteText(box)).toContain("87 ms");
+    box.unmount();
+  });
+
+  test("a memoised answer (backspace) keeps the elapsed time it was measured with", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(120);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(noteText(box)).toContain("120 ms");
+
+    // Extend, then backspace back to the memoised query — no new round trip,
+    // so the readout must still read the original measurement, not ~0ms.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => box.input().props.onChange({ target: { value: "readme" } }));
+    expect(rankCalls.filter((c) => c.q === "readme")).toHaveLength(1); // no re-ask
+    expect(noteText(box)).toContain("120 ms");
     box.unmount();
   });
 });

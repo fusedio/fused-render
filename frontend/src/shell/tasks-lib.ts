@@ -1005,11 +1005,17 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // second spelling of `/tasks` that would show up in every share and every
 // bookmark while saying nothing at all.
 
-/** Which of the page's three views is up. */
-export type TaskView = "list" | "board" | "calendar";
+/** Which of the page's four views is up. */
+export type TaskView = "list" | "board" | "calendar" | "cards";
 
 /** The query key that carries it. */
 export const VIEW_PARAM = "view";
+
+/** Every value `?view=` accepts, in the order the switcher draws them. ONE list,
+ * read by the parser below and by the test that holds the switcher's buttons to
+ * it — a view that exists in the union and not here is a view a link cannot
+ * reach, which is exactly the bug a second hand-written list invites. */
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -1021,7 +1027,7 @@ export const VIEW_PARAM = "view";
 export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
   const raw = search.startsWith("?") ? search.slice(1) : search;
   const v = new URLSearchParams(raw).get(VIEW_PARAM);
-  return v === "list" || v === "board" || v === "calendar" ? v : fallback;
+  return (TASK_VIEWS as string[]).includes(v ?? "") ? (v as TaskView) : fallback;
 }
 
 /**
@@ -2802,6 +2808,105 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
   return LIST_ORDER.flatMap((key) => sortRank(buckets.get(key) ?? [], key, now));
+}
+
+// ---- the Cards view's set ----------------------------------------------------
+// The fourth view (Akshil, 2026-09-03: "a eagle eye view of all chats streaming
+// in at the same time"). It is not another arrangement of the same rows — it is
+// a DIFFERENT SET: every task whose work is happening right now, each one
+// showing its live conversation rather than a title and a time.
+//
+// So the only three decisions it makes are here, out of the component, because
+// they are the ones worth testing and a grid of iframes is the last place to
+// test anything.
+//
+// WHICH LANES COUNT AS RUNNING is read off BOARD_COLUMNS rather than written out
+// a second time. Today that is exactly one lane — In Progress, which is the
+// server's own word for "a turn is in flight or queued" (api.ts `Task.status`)
+// — but the set is a NAME LIST intersected with the board's columns, so a lane
+// added there under one of these names (a `needs_attention` triage lane has been
+// discussed) joins this view by existing, and a lane renamed out from under us
+// drops out of it instead of silently filtering to nothing. A hardcoded
+// `status === "in_progress"` would have to be found and edited on that day, and
+// the symptom of missing it is an empty page rather than an error.
+const LIVE_LANE_NAMES: ReadonlySet<string> = new Set([
+  "in_progress",
+  "needs_attention",
+]);
+
+/** The lanes a Cards view draws, in BOARD_COLUMNS' own order. */
+export const CARD_LANES: BoardColumn[] = BOARD_COLUMNS
+  .map((c) => c.key)
+  .filter((k) => LIVE_LANE_NAMES.has(k));
+
+/**
+ * HOW MANY LIVE CHATS AT ONCE. Each card is an iframe running the chat template,
+ * and that template polls its run every 400ms — so the cap is not a layout
+ * choice, it is the budget: twelve documents polling four times what one does is
+ * already the most a laptop should be asked for to answer "what is running".
+ *
+ * Twelve rather than a rounder eight because the grid is 1-4 columns wide
+ * (task-cards.css), and twelve is the number that fills every one of those
+ * widths flush — a cap that leaves a ragged final row of one looks like a bug in
+ * the grid rather than a limit that was chosen.
+ */
+export const CARD_CAP = 12;
+
+/** What the Cards view draws: the live tasks it can afford, and how many it had
+ * to leave out. `hidden` is 0 whenever nothing was dropped, so the trailing
+ * "+N more running" card is drawn on a truthy number and never on a zero. */
+export interface TaskCardSet {
+  cards: Task[];
+  hidden: number;
+}
+
+/**
+ * The Cards view's rows: the running tasks, newest activity first, capped.
+ *
+ * NEWEST ACTIVITY FIRST, and `last_active` is what that means — the session's own
+ * clock (server routers/tasks.py), which is the field the server already sorts
+ * the whole listing by. Deliberately NOT `taskWhen`/`laneTime`: those answer
+ * "which run does this row print", a question with three fallbacks in it, and on
+ * a view whose whole claim is "this is happening now" the honest key is the one
+ * that ticks while the turn runs.
+ *
+ * TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly rather
+ * than trusting the sort to be stable — sortLane's rule 1, and it matters more
+ * here than it does on a lane: every card is a live iframe keyed by task, so two
+ * cards trading places between polls is not a row moving, it is two conversations
+ * swapping seats in front of somebody reading one of them.
+ *
+ * A TASK WITH NO CLOCK AT ALL goes last (rule 2, same reason: 0 is 1970, and a
+ * run that has not reported a timestamp yet must not be allowed to claim either
+ * end of the order by accident). A just-claimed run is exactly that task, and it
+ * is also the one whose card has no session to embed — so it lands at the end,
+ * where a "Starting…" placeholder belongs.
+ *
+ * A new array; the input is never mutated (it is the polled list, which React is
+ * still holding).
+ */
+export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSet {
+  const lanes = new Set<BoardColumn>(CARD_LANES);
+  const rows = tasks
+    .filter((t) => lanes.has(taskColumn(t)))
+    // `|| null` for laneTime's reason: `last_active` is a float that is 0.0 for
+    // "never", and 0 must be "no clock" rather than an instant in 1970.
+    .map((task, index) => ({ task, index, at: task.last_active || null }));
+  rows.sort((a, b) => {
+    if (a.at === null || b.at === null) {
+      // Exactly one of them has a clock: the one that does comes first.
+      if (a.at !== b.at) return a.at === null ? 1 : -1;
+    } else if (a.at !== b.at) {
+      return b.at - a.at;
+    }
+    return a.index - b.index;
+  });
+  const all = rows.map((r) => r.task);
+  // A cap of 0 or less is "no cap" rather than an empty page: the argument
+  // exists so a test can shrink the budget, and the failure mode of a bad number
+  // reaching it should not be a view that shows nothing.
+  if (cap <= 0 || all.length <= cap) return { cards: all, hidden: 0 };
+  return { cards: all.slice(0, cap), hidden: all.length - cap };
 }
 
 // ---- "and it runs again on Tuesday" ------------------------------------------

@@ -259,6 +259,17 @@ export const ICON_VIEW_CALENDAR = icon(
     <line x1="3" y1="10" x2="21" y2="10" /><line x1="8" y1="2" x2="8" y2="6" />
     <line x1="16" y1="2" x2="16" y2="6" /></>,
 );
+// Cards: lucide `layout-grid` — four panes, which is the shape the view is, and
+// the one mark in the switcher that reads as "several things at once" rather
+// than as an arrangement of one thing. Deliberately NOT another take on the
+// board's columns: those two views are neighbours in the row and a reader has to
+// tell them apart at a glance, not by counting lines.
+export const ICON_VIEW_CARDS = icon(
+  <><rect x="3" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="14" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" /></>,
+);
 
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
 // Run now, and the word for doing it AGAIN. Two glyphs rather than one, for the

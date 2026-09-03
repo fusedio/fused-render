@@ -398,20 +398,24 @@ def config_dir() -> str:
             or os.path.expanduser("~/.claude"))
 
 
-def _auth_status(path: str) -> Optional[bool]:
+def _auth_status(path: str) -> Optional[dict]:
     """`claude auth status`'s own answer, or None when it did not give one.
 
     THE CLI IS THE ONLY THING THAT ACTUALLY KNOWS. It prints JSON:
 
-        {"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}
+        {"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty",
+         "email": "…", "orgName": "…", "subscriptionType": "team", …}
 
     Parsed rather than trusted by exit code, and the parse is the compatibility
     check too: a CLI too old for the subcommand exits 1 with
     `error: unknown command 'status'` on stderr and NOTHING on stdout, so
     "stdout is JSON carrying a boolean loggedIn" cleanly separates a real answer
-    from every way of not getting one. Any other shape is None, not False —
+    from every way of not getting one. Any other shape is None, not a dict —
     guessing "signed out" from output we could not read is how a signed-in user
     gets told to go and sign in.
+
+    Returns the whole object (one spawn answers both `signed_in` and `account`),
+    and only when `loggedIn` is a real boolean.
     """
     try:
         res = _run_probe(path, "auth", "status", timeout=_AUTH_TIMEOUT_S)
@@ -421,8 +425,40 @@ def _auth_status(path: str) -> Optional[bool]:
         data = json.loads(res.stdout or "")
     except ValueError:
         return None
-    value = data.get("loggedIn") if isinstance(data, dict) else None
-    return value if isinstance(value, bool) else None
+    if not isinstance(data, dict) or not isinstance(data.get("loggedIn"), bool):
+        return None
+    return data
+
+
+def account(status: Optional[dict]) -> Optional[dict]:
+    """WHO is signed in, for the setup wizard's "Signed in" row — from the
+    `claude auth status` object, or from the environment when the CLI could
+    not be asked. None when there is nothing to say.
+
+        {"method": "claude.ai" | "console" | "apiKey" | …,
+         "email": str | None, "org": str | None, "plan": str | None}
+
+    `method` is the CLI's own `authMethod` string, passed through rather than
+    mapped: the UI knows the two it cares about (a claude.ai login with an
+    email; an API key) and shows anything else as a plain "signed in". An env
+    token with no CLI answer is reported as an API key with no email — which
+    is what it is.
+    """
+    if status and status.get("loggedIn") is True:
+        def _s(key: str) -> Optional[str]:
+            v = status.get(key)
+            return v.strip() if isinstance(v, str) and v.strip() else None
+        return {
+            "method": _s("authMethod"),
+            "email": _s("email"),
+            "org": _s("orgName"),
+            "plan": _s("subscriptionType"),
+        }
+    if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return {"method": "apiKey", "email": None, "org": None, "plan": None}
+    if (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip():
+        return {"method": "oauthToken", "email": None, "org": None, "plan": None}
+    return None
 
 
 def signed_in(path: Optional[str] = None) -> Optional[bool]:
@@ -460,7 +496,7 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
     if path:
         answer = _auth_status(path)
         if answer is not None:
-            return answer
+            return answer["loggedIn"]
     # A token in the environment is a credential on every platform, and it is
     # what a headless/CI run uses.
     for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
@@ -1077,6 +1113,13 @@ def _measure(allow_shell: bool = True) -> dict:
             on_shell_path = _shell_probe() is not None
     fix = path_fix(path) if (usable and on_shell_path is False) else None
 
+    # ONE `claude auth status` spawn answers both "signed in?" and "as whom?".
+    # The resolved path only when it is RUNNABLE: asking a binary that isn't
+    # there wastes a spawn on a certain failure; signed_in(None) is the
+    # positive-evidence fallback (env token, credentials file).
+    auth = _auth_status(path) if usable else None
+    signed = auth["loggedIn"] if auth is not None else signed_in(None)
+
     return {
         "found": usable,
         "path": path,
@@ -1087,10 +1130,10 @@ def _measure(allow_shell: bool = True) -> dict:
         # floor — see is_outdated.
         "outdated": outdated,
         "broken": broken,
-        # The resolved path only when it is RUNNABLE: asking a binary that
-        # isn't there for its auth state wastes a spawn on a certain failure,
-        # and the fallback below still answers True on positive evidence.
-        "signed_in": signed_in(path if usable else None),
+        "signed_in": signed,
+        # Who: {method, email, org, plan} or None. The wizard's "Signed in" row
+        # says "as <email>" or "using an API key" from it; nothing else reads it.
+        "account": account(auth),
         "config_dir": config_dir(),
         # Which platform this is, so the UI never has to guess which install
         # line to show. It used to guess, and it guessed wrong on Windows.

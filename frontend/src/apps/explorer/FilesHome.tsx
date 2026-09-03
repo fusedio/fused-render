@@ -40,11 +40,13 @@ import {
   RANK_FETCH_LIMIT,
   activeRow,
   answerFrom,
+  formatElapsed,
   homeCountNote,
   isAiRow,
   isOpenRow,
   nameStart,
   narrowAnswer,
+  noteAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -469,6 +471,9 @@ export function FilesSearch({
   const memo = useRef(new QueryMemo<HomeAnswer>());
   const inflight = useRef<AbortController | null>(null);
   const issuedAt = useRef(0);
+  // The last answer the result note settled on — see `noteAnswer` and where
+  // it is read, below.
+  const heldAnswerRef = useRef<HomeAnswer | null>(null);
   // Bumped by a real gesture (typing) to re-run a failed request. Without it a
   // failure was terminal: none of the other deps is something a user can move,
   // so search stayed dead until a reload.
@@ -552,7 +557,7 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, home);
+          const next = answerFrom(res, q, home, Date.now() - issuedAt.current);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
@@ -752,6 +757,18 @@ export function FilesSearch({
   // anything, so there is nothing for it to be settled ON, and a model call on
   // "a" is never the intent.
   const settled = searchable && rankingSettled(answer, q, pending, failure !== "");
+  // The result note's own source of truth — see `noteAnswer`. Mutated during
+  // render (not in an effect) so the note that renders THIS frame, the one
+  // settled turns true on, already reads from it: an effect would apply one
+  // render late, which is exactly the kind of one-beat lag that reads as
+  // flicker.
+  const displayAnswer = noteAnswer(answer, settled, heldAnswerRef.current);
+  // A settled `answer` of null (a later query's request failed while an
+  // earlier, unrelated held answer got cleared by the stale-clear effect —
+  // see `noteAnswer`, home-search.ts) is never something to hold: writing it
+  // would clobber a real held value for every render after this one, not
+  // just this one — the guard above only protects THIS frame's note.
+  if (settled && answer !== null) heldAnswerRef.current = answer;
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as
@@ -914,11 +931,13 @@ export function FilesSearch({
               "Keep typing…"
             ) : suppressRank ? (
               "Checking…"
-            ) : answer === null && failure !== "" ? (
+            ) : displayAnswer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
-            ) : answer === null ? (
+            ) : displayAnswer === null ? (
+              // Never settled once for this typing run yet — nothing held to
+              // fall back on, so there is nothing else honest to say.
               "Searching…"
-            ) : !answer.covered && answer.reason === "disabled" ? (
+            ) : !displayAnswer.covered && displayAnswer.reason === "disabled" ? (
               // Distinct from "still building": nothing is coming, because
               // nothing is scanning, because the user turned it off. Saying
               // "still building" here would be a lie the user has no way to
@@ -934,7 +953,7 @@ export function FilesSearch({
                 </button>
                 .
               </>
-            ) : !answer.covered ? (
+            ) : !displayAnswer.covered ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
@@ -952,25 +971,25 @@ export function FilesSearch({
               // 7e). Offering AI search here would point at a row that is not
               // being rendered.
               `No file name matched “${q}”.`
-            ) : hits.length === 0 ? (
-              // Reads `hits`, the narrowed set, not `answer.hits`: while
-              // `behind`, the previous answer can hold plenty of hits that
-              // narrowed to none for THIS query — "Searching…" (a new answer
-              // may yet fill the list) is the honest note there, not silence
-              // followed by whatever the old answer's non-zero count would
-              // have said below.
+            ) : displayAnswer === null ? (
+              // Never settled once for this typing run yet — nothing to hold.
               "Searching…"
             ) : (
               <>
-                {/* `behind` (narrowed, no round trip landed for `q` yet) means
-                    `answer.total`/`answer.truncated` describe the PREVIOUS
-                    query, not this one — the only honest total for the
-                    current query is a LOWER bound, `hits.length` (narrowing
-                    can only ever remove rows, never add — see `narrowAnswer`),
-                    and `truncated` must read as true unconditionally: more
-                    could still be out there for `q` that the held answer
-                    never had a chance to include. */}
-                {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
+                {/* `displayAnswer` (`noteAnswer`, home-search.ts) is the LAST
+                    SETTLED answer, not necessarily this one: while `behind`,
+                    it is deliberately one query stale rather than recomputed
+                    from `hits`/`narrowAnswer` on every keystroke — that used
+                    to rewrite this line 2-3 times per keystroke (a lower
+                    bound that shrinks toward zero, then a swap back to the
+                    real total). Staleness is still honestly communicated —
+                    the rows dim while `behind`, and the `slow`-gated
+                    "· Searching…" below covers the in-flight case — so this
+                    text is free to just hold still until a new answer
+                    settles. */}
+                {homeCountNote(displayAnswer.total, behind || displayAnswer.truncated)}
+                {" · "}
+                {formatElapsed(displayAnswer.elapsedMs)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
@@ -979,8 +998,11 @@ export function FilesSearch({
             {/* Only once the wait is long enough to be worth mentioning: under
                 PENDING_INDICATOR_MS the answer beats the words onto the screen,
                 and a note that appears and vanishes reads as slower than one
-                that never appeared. */}
-            {searchable && !showOpenRow && slow && hits.length > 0 && (
+                that never appeared. Gated on `displayAnswer`, not `hits`: the
+                held count note renders even when narrowing has emptied `hits`
+                (see `displayAnswer`, above), and this suffix is what tells the
+                user a fresh answer for `q` is still on the way. */}
+            {searchable && !showOpenRow && slow && displayAnswer !== null && (
               <span className="fh-searching-note"> · Searching…</span>
             )}
             {caveat && (

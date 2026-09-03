@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS, BOARD_LANES, laneOf } from "./schedule-lib";
+import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
@@ -20,6 +20,10 @@ import {
   filingIntent,
   basename,
   canCancel,
+  CARD_CAP,
+  CARD_LANES,
+  cardsForTasks,
+  TASK_VIEWS,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -5729,9 +5733,10 @@ describe("string helpers", () => {
 // ---- which view is up --------------------------------------------------------
 
 describe("the view in the URL", () => {
-  it("reads the three views and ignores anything else", () => {
+  it("reads every view and ignores anything else", () => {
     expect(viewFromSearch("?view=board")).toBe("board");
     expect(viewFromSearch("view=calendar")).toBe("calendar");
+    expect(viewFromSearch("?view=cards")).toBe("cards");
     expect(viewFromSearch("?view=list")).toBe("list");
     // A typo or a stale link lands on the default rather than on an error.
     expect(viewFromSearch("?view=gantt")).toBe("list");
@@ -5759,8 +5764,17 @@ describe("the view in the URL", () => {
     expect(viewUrl("/tasks", "?view=calendar&new=1", "list")).toBe("/tasks?new=1");
   });
 
+  it("accepts exactly the views TASK_VIEWS names", () => {
+    // The switcher's buttons, the remembered value and the parser all read this
+    // one list; a view in the union but missing from it is a view no link can
+    // reach. Asked of the list itself, so a fifth view added to the union
+    // cannot pass here while leaving `?view=` unable to say its name.
+    for (const v of TASK_VIEWS) expect(viewFromSearch(`?view=${v}`)).toBe(v);
+    expect(TASK_VIEWS).toContain("cards");
+  });
+
   it("round-trips: what viewUrl writes, viewFromSearch reads", () => {
-    for (const v of ["list", "board", "calendar"] as const) {
+    for (const v of TASK_VIEWS) {
       const url = viewUrl("/tasks", "", v);
       const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
       expect(viewFromSearch(q)).toBe(v);
@@ -6523,6 +6537,154 @@ describe("sortByLane", () => {
     // And the rows are drawn straight off the sorted list.
     expect(VIEWS).toContain("const rows = useMemo(() => sortByLane(tasks), [tasks]);");
     expect(VIEWS).toContain("{rows.map((task) => (");
+  });
+});
+
+// ---- the Cards view's set ----------------------------------------------------
+// The fourth view is a DIFFERENT SET, not another arrangement of the same rows:
+// what is running, live, capped. Those three decisions are `cardsForTasks`, and
+// they are tested here because a grid of iframes cannot be asked about any of
+// them.
+
+const CARDS = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
+
+/** A task in a lane, with a clock. `key` distinguishes them, since that is what
+ *  the view keys a card's iframe on. */
+function running(key: string, at: number, over: Partial<Task> = {}): Task {
+  return task({ key, session_id: key, status: "in_progress", last_active: at, ...over });
+}
+
+describe("cardsForTasks", () => {
+  it("draws the lanes BOARD_COLUMNS calls running, and nothing else", () => {
+    // Today that is exactly In Progress. Asserted through CARD_LANES rather than
+    // by naming the string, so the day a `needs_attention` lane is added to
+    // BOARD_COLUMNS this test says what changed instead of what broke.
+    expect(CARD_LANES).toEqual(["in_progress", "needs_attention"]);
+    for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
+    const rows = [
+      running("a", 100),
+      task({ key: "b", status: "done" }),
+      task({ key: "c", status: "upcoming" }),
+      task({ key: "d", status: "blocked" }),
+      task({ key: "e", status: "archived" }),
+      task({ key: "f", status: "needs_attention", last_active: 50 }),
+    ];
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["a", "f"]);
+  });
+
+  it("orders by last activity, newest first", () => {
+    const rows = [running("old", 100), running("new", 300), running("mid", 200)];
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
+  });
+
+  it("keeps the server's order on a tie — a card must not move on a poll", () => {
+    // Two runs in the same second is ordinary, and this view is re-rendered every
+    // 20 seconds with a fresh array. Two cards trading places is two live
+    // conversations swapping seats in front of the person reading one of them.
+    const rows = [running("first", 200), running("second", 200), running("third", 200)];
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+  });
+
+  it("sends a task with no clock to the end, never to 1970", () => {
+    // `last_active` is 0.0 for "never" — a run claimed a second ago is exactly
+    // that task, and it is also the one with no session to embed. It belongs at
+    // the end, by decision rather than by what 0 coerces to.
+    const rows = [running("none", 0), running("has", 100)];
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["has", "none"]);
+  });
+
+  it("caps the wall and counts what it left out", () => {
+    const rows = Array.from({ length: CARD_CAP + 3 }, (_, i) =>
+      running(`t${i}`, 1000 - i),
+    );
+    const set = cardsForTasks(rows);
+    expect(set.cards).toHaveLength(CARD_CAP);
+    expect(set.hidden).toBe(3);
+    // The cap keeps the TOP of the order, not an arbitrary slice.
+    expect(set.cards[0].key).toBe("t0");
+    // Exactly at the cap nothing is hidden, so no trailing card is drawn.
+    expect(cardsForTasks(rows.slice(0, CARD_CAP)).hidden).toBe(0);
+  });
+
+  it("never mutates the list React is still holding", () => {
+    const rows = [running("a", 100), running("b", 300)];
+    const before = rows.map((t) => t.key);
+    cardsForTasks(rows);
+    expect(rows.map((t) => t.key)).toEqual(before);
+  });
+});
+
+describe("the Cards view's frame", () => {
+  it("frames the chat DIRECTLY, compact, with the session on the src", () => {
+    // Not `/explorer/embed/<dir>?_side=claude`: that is a whole shell, and a
+    // 420px tile would spend itself on a folder listing with the chat in the
+    // strip beside it. The template is framed the way the explorer's own
+    // sidebar frames it, plus the param that takes the chrome away.
+    expect(cardFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
+      "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj" +
+        "&chat_only=1&compact=1&session_id=sess-9",
+    );
+  });
+
+  it("marks the host a param boundary while the grid is up", () => {
+    // Without it every card's runtime climbs past its own frame to `/tasks` and
+    // twelve documents share one `session_id` (static/runtime.js findTarget).
+    // Set on mount and REMOVED on unmount — the flag is a fact about a window
+    // that is currently hosting param-owning frames, not about the app.
+    expect(CARDS).toContain("window._fusedParamBoundary = true;");
+    expect(CARDS).toContain("delete window._fusedParamBoundary;");
+  });
+
+  it("keys a card on the task, so a poll is a re-render and not a reload", () => {
+    // The one line that decides whether this view streams at all: any other key
+    // — the index, the src — remounts a live iframe every 20 seconds.
+    expect(CARDS).toContain("key={task.key}");
+  });
+
+  it("says the empty state in the Board's own words and styling", () => {
+    expect(CARDS).toContain('"Nothing running right now."');
+    expect(CARDS).toContain('className="schedule-tv-empty"');
+  });
+
+  it("lays the wall out two across, two down, and scrolls the rest — never sideways", () => {
+    // Four in view, then scroll (Akshil, 2026-09-03). The wall is the scroll
+    // container, in the List's own shape, and the rows are sized from it so two
+    // rows fill the height the toolbar leaves on ANY monitor.
+    expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
+    // ...and the page grows to the fold for THIS view only — every other view is
+    // content-sized, and the rows here are sized from the page.
+    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
+    expect(CARDS_CSS).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(CARDS_CSS).not.toContain("repeat(3,");
+    expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
+    // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
+    // the window grows by a card's worth.
+    expect(CARDS_CSS).not.toMatch(/repeat\(auto-/);
+    // The card takes the row's height — no pixel height of its own any more.
+    expect(block(CARDS_CSS, ".task-card")).not.toMatch(/\bheight: \d+px/);
+    // A grid item's default `min-width: auto` lets a wide child push its track
+    // past `1fr`, and the overflow lands on the PAGE.
+    expect(CARDS_CSS).toContain(".task-cards > * {\n  min-width: 0;\n}");
+  });
+
+  it("is the fourth segment of the switcher, and the page renders it", () => {
+    expect(SCHEDULED).toContain('data-view="cards"');
+    // Cards sits BEFORE the calendar, in the switcher and in TASK_VIEWS alike
+    // (Akshil, 2026-09-03).
+    expect(SCHEDULED.indexOf('data-view="cards"')).toBeLessThan(SCHEDULED.indexOf('data-view="calendar"'));
+    expect(TASK_VIEWS).toEqual(["list", "board", "cards", "calendar"]);
+    // Open is a BUTTON — the app's own small secondary skin on a real link.
+    expect(CARDS).toContain('className="btn btn-secondary task-card-open"');
+    expect(CARDS_CSS).toContain(".schedule-main .task-card-head .task-card-open {");
+    expect(SCHEDULED).toContain('pickView("cards")');
+    expect(SCHEDULED).toContain('view === "cards" ? (');
+    // The same filtered set every other view is handed.
+    expect(SCHEDULED).toContain("<TaskCards");
   });
 });
 
