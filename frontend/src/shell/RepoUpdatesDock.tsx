@@ -47,16 +47,14 @@ import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
-import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import StatusDot from "@platform/ui/StatusDot";
+import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
+import StatusChip from "@platform/ui/StatusChip";
 // `JobRow` reused verbatim for a failed job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
 import type { Job } from "@platform/lib/jobs";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -368,7 +366,8 @@ export function RepoUpdatesCardView({
   dismissed,
   collapsed,
   onToggle,
-  onClose,
+  pinned = false,
+  hostProps,
   onDismiss,
   onDismissAll,
   onDone,
@@ -391,9 +390,11 @@ export function RepoUpdatesCardView({
   onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
   onToggle: () => void;
-  /** Background the panel — an outside pointer-down or Escape (D574).
-   *  Optional: a caller that mounts this view directly need not dismiss. */
-  onClose?: () => void;
+  /** Held open by a click (statusbar redesign) — styles the chip as engaged. */
+  pinned?: boolean;
+  /** Hover intent + outside-dismiss wiring for the `.dl-host` wrapper, from
+   *  `useStatusChip`. Optional: a test that mounts the view bare needs none. */
+  hostProps?: StatusChipState["hostProps"];
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
@@ -407,60 +408,28 @@ export function RepoUpdatesCardView({
   const total = visible.length + failed.length + pairings.length;
   const idle = total === 0;
   // The failure tint MOVED HERE from the Jobs chip (D586): this is the section
-  // that holds failures now, so it is the one worth colouring. Unconditional on
-  // there being a failure at all, rather than Jobs' old "everything terminal
-  // and something failed" — an `error` row in here is always terminal, so the
-  // extra clause had nothing left to say.
   const hasFailure = failed.length > 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
+  // THE CHIP READS (statusbar redesign): "Notifications" with a count pill
+  // whenever anything waits — a repo update, a pairing, a failed job — and the
+  // red failure tint when one of those is a failure. Muted at zero.
+  const tone = hasFailure ? "failure" : total > 0 ? "on" : "idle";
+  const ariaLabel =
+    total === 0
+      ? "Notifications, none"
+      : `Notifications, ${total}${hasFailure ? ", including a failure" : ""}`;
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME and one circle, and
-          the idle sentence moves into the panel below; see
-          `DownloadManagerView`'s own header comment for the fuller
-          reasoning, identical here). `repoUpdatesSummary`, which used to
-          render the richer "N updates available" phrasing here, is DELETED —
-          nothing rendered it after D573 and its docstring had gone stale
-          claiming this card does not draw with zero rows (finding 8, code
-          review 2026-08-27). */}
-      <button
-        className={
-          "dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")
-        }
-        onClick={onToggle}
-        aria-expanded={!collapsed}
+    <div className="dl-host" {...hostProps}>
+      <StatusChip
+        label="Notifications"
+        count={total}
+        tone={tone}
+        open={!collapsed}
+        pinned={pinned}
         title={collapsed ? "Show notifications" : "Hide notifications"}
-      >
-        {/* `Notifications`, NOT `Updates` (D579, user: "git updates does not
-            make sense out of an app. it belongs to 'notifications'") — a repo
-            being behind upstream is ONE KIND of notification, not a top-level
-            category beside Models and Activity, and `Updates` also collided
-            with `Activity` (both read as "stuff that changed", neither says
-            whose). ONLY THE LABEL CHANGED — the chip carried a count when this
-            rename landed and carries none since D588/D590, but that is a
-            separate decision and not part of the renaming. Nothing else was
-            renamed either: this
-            file, its `.dl-*`/`.q-*` classes and `repoRows`/`visibleRepoRows`
-            all still say "repo updates", which is exactly what they hold —
-            `Notifications` is the extensible CATEGORY, so an alert that is
-            not a repo update gets a home here without a fourth section. */}
-        {/* The label and the shared indicator (D590). Filled when this section
-            holds anything — a repo update, a failed job, or both. It is also
-            the QUIET SIGNAL for an error-sourced notification (D586): a
-            background failure fills it and opens no panel, since failures are
-            absent from the ids the auto-open hook is given. */}
-        <span className="dl-summary">Notifications</span>
-        <StatusDot
-          on={total > 0}
-          label={total > 0 ? "notifications waiting" : "no notifications"}
-        />
-      </button>
+        ariaLabel={ariaLabel}
+        onClick={onToggle}
+      />
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
           exists only while expanded. Collapsed shows no panel at all — see
           this component's own doc comment on why the fold takes every row,
@@ -605,7 +574,7 @@ export function RepoUpdatesDockView({
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
+  /** Has the upstream read answered once (kept for callers; the chip no longer auto-opens on it)? Optional
    *  so a caller that mounts this with a fixed list keeps the old behaviour. */
   ready?: boolean;
   /** FAILED JOBS (D586) — `state: "error"` rows re-routed out of the Jobs
@@ -635,77 +604,12 @@ export function RepoUpdatesDockView({
    *  suites here before. */
   initialCollapsed?: boolean;
 }) {
-  const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
+  // Hover previews, click pins, NOTHING auto-opens any more — a repo update
+  // or a failure is announced by the chip's amber count (and red tint), not by
+  // a panel appearing over the page. `lib/statusChip.ts` owns the rules;
+  // `initialCollapsed` is a test seam (false mounts the panel already pinned).
+  const chip = useStatusChip("notifications", !(initialCollapsed ?? true));
 
-  const visible = visibleRepoRows(rows, dismissed);
-  // A transient auto-open of this section's own panel for a repo that fell
-  // behind while the chip was collapsed (D574). `autoOpen` is never persisted —
-  // autoExpand.ts's header on why that write, not the opening itself, was
-  // D567's real defect.
-  //
-  // TWO ROW SOURCES, ONE OF THEM SILENT (code review 2026-08-28, finding 1).
-  // The repo rows announce; the failures only ever hold the panel open. Passing
-  // the repo roots alone meant the drain gate could not see the failures at
-  // all, so pressing Update on the LAST repo row force-closed this panel over
-  // failure rows the user was reading. `alsoDrawn` is the fix, and it keeps
-  // D586's promise structural rather than configured: a failure is not in
-  // `ids`, so there is no path from a failure to `setOverride("open")` — the
-  // same guarantee the deleted second hook's `neverOpen`/`neverClose` pair used
-  // to buy with two flags, now bought by feeding the hook what the panel
-  // actually draws.
-  //
-  // PREFIXED PER SOURCE so a repo root and a job id can never collide inside
-  // the hook's one seen set (a collision would put an unseen row in `prev` and
-  // swallow its arrival). They are different namespaces today; the prefix means
-  // nobody has to keep checking that.
-  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    [
-      ...visible.map((row) => `repo:${row.repo.root}`),
-      // Announceable, unlike the failures below: a pairing is the one event
-      // here the user is usually WAITING on (they just scanned the QR).
-      ...pairings.map((p) => `pair:${p.id}`),
-    ],
-    collapsed,
-    ready,
-    { alsoDrawn: failed.map((job) => `job:${job.id}`) },
-  );
-  // The saved preference, overridden in EITHER direction by whichever
-  // transient flag is standing (D580 adds the closing half; the two are
-  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
-  // not two independent booleans). `autoClose` is tested first because a
-  // drained list beats a stale auto-open that the same drain is retiring.
-  const open = autoClose ? false : !collapsed || autoOpen;
-
-  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
-  // section, and only transiently — see `exclusiveSection.ts` on why the
-  // arbiter must not touch the saved preference.
-  useExclusiveSection("notifications", open, forceClose);
-
-  // ONE unified toggle for a chip whose visible state may be the SAVED
-  // preference or either transient override (D580). It acts on what the user
-  // SEES — `wantOpen = !open` — then writes the preference only if the
-  // preference is what disagrees. That is what keeps D574's rule intact
-  // without a special case for it: dismissing an auto-OPENED panel (or
-  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
-  // the outcome, so clearing the override is the whole of the work and
-  // nothing is persisted. A click on a chip whose state came from the
-  // preference itself still flips and saves it, exactly as before.
-  const toggle = () => {
-    const wantOpen = !open;
-    acknowledge();
-    if (collapsed === wantOpen) setCollapsed(!wantOpen);
-  };
-
-  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
-  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
-  // click on a SIBLING CHIP is outside it, so the persisting version turned
-  // "the user opened Models" into `jobs-collapsed = "1"` plus
-  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
-  // preference became write-only — the exact "the app decided, not the user"
-  // failure the D567 guard exists to prevent, arriving through the dismiss
-  // path instead of through `forceClose`. So this now IS `forceClose`: the
-  // panel goes away, and what the user last chose is left alone.
-  const close = forceClose;
 
   return (
     <RepoUpdatesCardView
@@ -714,9 +618,10 @@ export function RepoUpdatesDockView({
       failed={failed}
       pairings={pairings}
       onPairingGone={onPairingGone}
-      collapsed={!open}
-      onToggle={toggle}
-      onClose={close}
+      collapsed={!chip.open}
+      onToggle={chip.toggle}
+      pinned={chip.pinned}
+      hostProps={chip.hostProps}
       onJobsChanged={onJobsChanged}
       onFailedPatch={onFailedPatch}
       onDismiss={onDismiss}

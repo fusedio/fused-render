@@ -5754,6 +5754,25 @@ stop it short of quitting the app.
   unacknowledged; opening the panel — the user's own click, for any
   reason — is what clears it.
 
+  **Status bar chips, statusbar redesign (D655, 2026-09-02) — SUPERSEDES the
+  "one circle" rule of D588/D590 above and RETIRES `lib/autoExpand.ts`.** Every
+  chip is `platform/ui/StatusChip.tsx`: a label, a numeral from two things
+  (Notifications from one), and a 2px progress line along the chip's bottom
+  edge while work runs. Models reads `Models` (muted) / the one loaded model's
+  short name / `Models 2`; Activity reads `Activity` (muted) / the one job's
+  own verb (`Erasing`, `Downloading`, `jobTypeLabel`) over its progress / 
+  `Activity 2` over the mean fraction (`aggregateProgress`); Notifications
+  reads `Notifications` with a numeral, red-tinted when one of them is a failed
+  job. The numeral is one grey pill on every chip (`.sidebar-count-chip`'s
+  style) and the progress line runs along the chip's TOP edge. Panels open on HOVER (120 ms in / 200 ms out) as a
+  preview and PIN on click until a second click, Escape or an outside click
+  (`platform/lib/statusChip.ts`); one panel at a time (D582). Nothing opens on
+  arrival any more — the chip's own readout is the announcement — which is
+  what stops a panel landing on the Claude composer's send button uninvited.
+  Every `.dl-panel` anchors to the BAR's right gutter (`--status-bar-gutter`,
+  12px), not to its own chip, so the three panels open at one edge and the
+  chips end where the header controls above them do.
+
 ---
 
 ## 37. AI Models — What the Hugging Face Cache Holds (D249)

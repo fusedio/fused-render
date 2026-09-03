@@ -116,14 +116,15 @@ const status = (over: Partial<RepoStatus> = {}): RepoStatus => ({
 });
 
 
-/** D588: each chip carries ONE circle — outlined when the section holds
- *  nothing, filled (`.is-on`) when it holds something. Asserted through this
- *  helper so the two states are always checked as one element's two forms,
- *  never as two elements that could drift apart. */
-function circleFilled(tree: ReactTestRendererJSON | null): boolean {
-  const dots = findAll(tree, "dl-dot");
-  expect(dots).toHaveLength(1);
-  return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
+/** Statusbar redesign: `.dl-dot` is gone — every chip is a `StatusChip`
+ *  (`.dl-toggle.sc`) whose tone lives directly on its own class
+ *  (`is-idle`/`is-failure`). Reads the toggle's class list
+ *  once so tone assertions below stay honest about which single element
+ *  they are on. */
+function toggleClasses(tree: ReactTestRendererJSON | null): string[] {
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  return ((toggles[0].props.className as string) ?? "").split(" ");
 }
 
 function renderInstance(
@@ -168,10 +169,10 @@ test("renders a real, clickable chip when there are no rows — the idle sentenc
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
-  // D588: one circle, outlined because this section holds nothing. No count
-  // element survives anywhere in the bar.
+  // No legacy count element anywhere, and the chip reads idle.
   expect(findAll(tree, "dl-count")).toHaveLength(0);
-  expect(circleFilled(tree)).toBe(false);
+  expect(toggleClasses(tree)).toContain("is-idle");
+  expect(findAll(tree, "sc-num")).toHaveLength(0);
 });
 
 test("renders the IDLE chip and panel sentence when every row is dismissed", () => {
@@ -180,19 +181,26 @@ test("renders the IDLE chip and panel sentence when every row is dismissed", () 
   expect(tree).not.toBeNull();
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
-  expect(circleFilled(tree)).toBe(false);
+  expect(toggleClasses(tree)).toContain("is-idle");
 });
 
-// D588 (user: "jobs and notifications can have a empty/filled circle - no need
-// for count"): the label is the whole text, and the circle is the whole state.
-// Two rows and twelve rows look identical from the bar — the user's explicit
-// trade, with the rows themselves in the panel.
-test("the chip is the label plus a filled circle — no digits at all", () => {
-  const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
-  const tree = renderView({ rows });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
-  expect(circleFilled(tree)).toBe(true);
-  expect(findAll(tree, "dl-count")).toHaveLength(0);
+// Notifications is the one chip whose numeral shows from 1, not 2 — a
+// single repo update still carries `.sc-num` "1", no `is-idle`, no `is-failure`
+// (something waits, nothing has failed).
+test("the chip is the label plus a numeral from ONE row — unlike Models/Activity, which start their numeral at two", () => {
+  const one = renderView({ rows: repoRows([status({ root: "/a/one" })]) });
+  expect(text(findAll(one, "dl-summary")[0])).toBe("Notifications");
+  expect(text(findAll(one, "sc-num")[0])).toBe("1");
+  expect(toggleClasses(one)).not.toContain("is-idle");
+  expect(toggleClasses(one)).not.toContain("is-failure");
+  expect(findAll(one, "dl-count")).toHaveLength(0);
+
+  const two = renderView({
+    rows: repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]),
+  });
+  expect(text(findAll(two, "sc-num")[0])).toBe("2");
+  expect(toggleClasses(two)).not.toContain("is-idle");
+  expect(toggleClasses(two)).not.toContain("is-failure");
 });
 
 test("a row on the default branch offers Update as the only button, plus dismiss", () => {
@@ -325,20 +333,18 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   }
 });
 
-// ------------------------------------- a quiet dot on a new arrival (D567)
+// ------------------------------------- nothing opens or closes on its own
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D562
-// follow-up) USED TO force the panel open — code review finding #4 caught
-// that this recreates the complaint the whole status-bar redesign exists to
-// fix (a background arrival popping a floating panel over the page,
-// uninvited, and persisting the expansion). `useAutoExpandOnNew` no longer
-// touches `collapsed` (its own doc has the reasoning); these pin
-// `RepoUpdatesDockView` — the stateful half that owns collapse for this
-// card — wiring the DOT in instead. Assertions are on the rendered rows
-// (`q-row`) themselves, never a class name alone: a className-only check is
-// exactly how an earlier fold bug on this same card shipped green while the
-// rows kept rendering underneath it (see the "collapsed hides every row"
-// test above).
+// STATUSBAR REDESIGN: auto-open-on-arrival ("we can make the notifications
+// 'un collapse' when a new one comes", D562 follow-up) is gone entirely,
+// along with the `.dl-new-dot` arrival mark that used to stand in once
+// auto-open itself was retired (D567/D574/D584/D586). `useStatusChip`
+// (lib/statusChip.ts) opens this panel only for hover-preview or a
+// click-pin — a repo row or a failure arriving never touches `open`.
+// Assertions are on the rendered rows (`dl-row`) themselves, never a class
+// name alone: a className-only check is exactly how an earlier fold bug on
+// this same card shipped green while the rows kept rendering underneath it
+// (see the "collapsed hides every row" test above).
 
 // BOTH DOCK HARNESSES PASS `initialCollapsed={false}`: the default is
 // COLLAPSED (D595, unconditional since D603), and these tests are about the
@@ -408,11 +414,6 @@ function clickDockToggle(renderer: ReactTestRenderer) {
   });
 }
 
-// D574 REVERSES D567 (user: "when we have something new, always show the
-// notification. don't keep no activity displayed") — a new row arriving into
-// a collapsed section OPENS that section's panel, and the dot is suppressed
-// while it is open, because a dot pointing at a panel the user is already
-// looking at announces nothing.
 // THE DEFAULT ITSELF (D595, made unconditional in D603 — user: "on page reload
 // the models popover auto opens for some reason", which was a stored `"0"`
 // being faithfully restored). With no `initialCollapsed` there is nothing to
@@ -426,65 +427,55 @@ test("a section always starts collapsed, with nothing persisted to say otherwise
   expect(findAll(tree, "dl-panel")).toHaveLength(0); // ...and nothing is open
 });
 
-test("a genuinely new repo row arriving OPENS the collapsed panel, and shows no dot beside it", () => {
+test("a new repo row arriving into a collapsed section does NOT open the panel", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
   const renderer = renderDockInstance([one]);
   clickDockToggle(renderer); // collapse
 
   const collapsed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(collapsed, "dl-row")).toHaveLength(0);
-  expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0); // deleted app-wide (D588)
+  expect(findAll(collapsed, "dl-panel")).toHaveLength(0);
+  expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0); // the mark itself is retired
 
   const two = repoRows([status({ root: "/a/two" })])[0];
   updateDockInstance(renderer, [one, two]);
 
+  // Still collapsed: the arrival changed nothing about visibility.
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(2);
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
-test("the chip's own click dismisses an auto-opened panel, leaving no dot behind", () => {
+test("the chip's own click is the only thing that opens or closes the panel", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
-  const renderer = renderDockInstance([one]);
-  clickDockToggle(renderer); // collapse
+  const renderer = renderDockInstance([one]); // pinned open (initialCollapsed={false})
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
   const two = repoRows([status({ root: "/a/two" })])[0];
-  updateDockInstance(renderer, [one, two]);
+  updateDockInstance(renderer, [one, two]); // arrival: still open, unaffected
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(2);
 
-  clickDockToggle(renderer); // dismiss the auto-opened panel
+  clickDockToggle(renderer); // the chip's own click — this is what closes it
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(0);
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
-test("collapsing, then an EXISTING row merely changing (behind count ticking), sets no dot", () => {
-  const one = repoRows([status({ root: "/a/one", behind: 1 })])[0];
-  const renderer = renderDockInstance([one]);
-  clickDockToggle(renderer); // collapse
-
-  const changed = repoRows([status({ root: "/a/one", behind: 5 })])[0];
-  updateDockInstance(renderer, [changed]);
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(0); // deleted app-wide (D588)
-});
-
-test("a dismissed row that goes FURTHER behind counts as new again", () => {
+// The DISMISSAL/resurrection logic (`repoDismissSignature`) is independent of
+// the chip's open state — these keep the panel pinned open throughout, since
+// nothing auto-opens it any more, and check only which rows a dismissal
+// signature currently covers.
+test("a dismissed row that goes FURTHER behind counts as new again and reappears", () => {
   const first = repoRows([status({ root: "/a/one", branch: "main", behind: 3 })])[0];
-  const renderer = renderDockInstance([first]);
-  clickDockToggle(renderer); // collapse
+  const renderer = renderDockInstance([first]); // pinned open
 
   // Dismiss it — visible drops to zero even though `rows` still holds it.
-  // The card is idle now (no rows), so there is no toggle/dot to inspect —
-  // only that it stays idle.
   updateDockInstance(renderer, [first], { "/a/one": "main@3" });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(dismissed, "dl-row")).toHaveLength(0);
 
   // Upstream actually MOVED (behind 3 -> 9), so the dismissal's signature no
-  // longer covers this row. Since it had fallen out of the seen set on
-  // dismissal, its return is a genuine re-arrival and auto-opens the panel
-  // exactly like any other new row (D574).
+  // longer covers this row — it renders again, panel already open.
   const again = repoRows([status({ root: "/a/one", branch: "main", behind: 9 })])[0];
   updateDockInstance(renderer, [again], { "/a/one": "main@3" });
 
@@ -493,14 +484,10 @@ test("a dismissed row that goes FURTHER behind counts as new again", () => {
 });
 
 // D584 finding 3 at the dock level: the throttled re-check that moved nothing
-// must not resurrect the row, and so must not pop the panel open either. This
-// is the user-visible half of the bug — a dismissed repo reappearing over
-// whatever they were doing every five minutes, forever, on a branch that is
-// permanently behind.
-test("a re-check that moved NOTHING leaves a dismissed row dismissed and the panel shut", () => {
+// must not resurrect the row.
+test("a re-check that moved NOTHING leaves a dismissed row dismissed", () => {
   const row = repoRows([status({ root: "/a/one", branch: "main", behind: 3 })])[0];
-  const renderer = renderDockInstance([row]);
-  clickDockToggle(renderer); // collapse
+  const renderer = renderDockInstance([row]); // pinned open
   updateDockInstance(renderer, [row], { "/a/one": "main@3" });
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(0);
 
@@ -513,7 +500,6 @@ test("a re-check that moved NOTHING leaves a dismissed row dismissed and the pan
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
 
@@ -534,33 +520,30 @@ test("a failed job draws as a row here, with its failure message", () => {
   expect(text(rows[0])).toContain("GDAL ran out of memory");
 });
 
-// The circle answers "is there anything here" across BOTH sources, which is
-// what the combined count used to assert (D586). Each source alone must fill
-// it, or one of them would be invisible from the bar.
-test("either source fills the circle, and neither alone leaves it empty", () => {
+// The tone answers "is there anything here" across BOTH sources, which is
+// what the combined count used to assert (D586). Each source alone must
+// un-mute it, or one of them would be invisible from the bar.
+test("either source un-mutes the chip, and neither alone leaves it idle", () => {
   const repoOnly = renderView({ rows: repoRows([status()]), failed: [] });
-  expect(circleFilled(repoOnly)).toBe(true);
+  expect(toggleClasses(repoOnly)).not.toContain("is-idle");
 
   const failureOnly = renderView({ rows: [], failed: [failedJob()] });
-  expect(circleFilled(failureOnly)).toBe(true);
+  expect(toggleClasses(failureOnly)).not.toContain("is-idle");
 
   const both = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
-  expect(circleFilled(both)).toBe(true);
+  expect(toggleClasses(both)).not.toContain("is-idle");
 });
 
 test("failures alone still make the section non-idle", () => {
   const tree = renderView({ rows: [], failed: [failedJob()] });
   expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
-  expect(circleFilled(tree)).toBe(true);
-  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
-    "is-idle",
-  );
+  expect(toggleClasses(tree)).not.toContain("is-idle");
 });
 
 test("both sources empty is what draws the one empty sentence", () => {
   const tree = renderView({ rows: [], failed: [] });
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
-  expect(circleFilled(tree)).toBe(false);
+  expect(toggleClasses(tree)).toContain("is-idle");
 });
 
 test("a failure colours the chip — the tint moved here from Jobs (D586)", () => {
@@ -629,10 +612,10 @@ test("repo rows come before failures — the actionable rows first", () => {
   expect(findAll(rows[1], "q-all")).toHaveLength(0);
 });
 
-// THE ONE PLACE D574 IS WRONG (D586): a background build failing must set the
-// dot, not throw a panel over the page the user is working in. Repo arrivals
-// keep their auto-open; failures are announce-only.
-test("a failure arriving does NOT auto-open the panel — it only fills the circle", () => {
+// STATUSBAR REDESIGN: AUTO-OPEN IS REMOVED ENTIRELY — a failure, a repo row,
+// arriving into a collapsed section opens nothing; only the chip's own click
+// does. The tint/tone is the only quiet signal a background failure gets.
+test("a failure arriving does NOT open the panel — it only sets the tint", () => {
   const renderer = renderDockInstance([]);
   clickDockToggle(renderer); // collapse
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
@@ -652,27 +635,23 @@ test("a failure arriving does NOT auto-open the panel — it only fills the circ
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(0);
-  // The filled circle IS the quiet signal now (D588) — the only mark the user
-  // gets for a background failure, since nothing opens.
-  expect(circleFilled(after)).toBe(true);
+  expect(toggleClasses(after)).toContain("is-failure");
 });
 
-test("a repo row arriving still DOES auto-open — the suppression is failures only", () => {
+test("a repo row arriving into a collapsed section also does NOT open the panel — no exemption", () => {
   const renderer = renderDockInstance([]);
   clickDockToggle(renderer); // collapse
   updateDockInstance(renderer, repoRows([status({ root: "/a/one" })]));
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });
 
-// CODE REVIEW 2026-08-28, FINDING 1 — the other half of "failures are not in
-// the announce set". They were not in the OCCUPANCY set either, so the drain
-// gate could not see them: pressing Update on the last repo row emptied the
-// only list the hook had, and the panel slammed shut over failure rows the user
-// was reading. Failures now go in as `alsoDrawn` — they hold the panel, they
-// still never open it (the test above stays green as the proof of that half).
-test("the last repo row going does NOT close the panel over a failure row", () => {
+// Nothing closes a pinned-open panel automatically either — a failure or a
+// repo row draining, together or separately, leaves the panel exactly as
+// open (or closed) as the user last left it; it only ever shows the idle
+// sentence once both sources are empty.
+test("a pinned-open panel survives both sources draining — it shows the idle sentence, never auto-closes", () => {
   const failure = failedJob();
   const renderer = renderDockInstance(
     repoRows([status({ root: "/a/one" })]),
@@ -681,28 +660,13 @@ test("the last repo row going does NOT close the panel over a failure row", () =
   );
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
 
-  // The repo row is gone (Updated, or dismissed) — the failure is not.
-  updateDockInstance(renderer, [], {}, [failure]);
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "dl-row")).toHaveLength(1);
-});
-
-// The mirror, so the fix above cannot be "never close again": with both sources
-// empty the panel is genuinely showing nothing, and D580's close applies.
-test("the panel closes once the failure rows drain as well", () => {
-  const failure = failedJob();
-  const renderer = renderDockInstance(
-    repoRows([status({ root: "/a/one" })]),
-    {},
-    [failure],
-  );
-  updateDockInstance(renderer, [], {}, [failure]); // repo row goes, panel stays
+  updateDockInstance(renderer, [], {}, [failure]); // the repo row goes
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(1);
 
   updateDockInstance(renderer, [], {}, []); // and the failure is dismissed too
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(0);
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(text(findAll(after, "dl-panel-empty")[0])).toBe("No notifications");
 });

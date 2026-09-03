@@ -72,13 +72,15 @@ const BASE: Job = {
 };
 
 
-/** D588: one circle per chip — outlined when the section holds nothing, filled
- *  (`.is-on`) when it holds something. Through a helper so both states are
- *  always checked as one element's two forms. */
-function circleFilled(tree: ReactTestRendererJSON | null): boolean {
-  const dots = findAll(tree, "dl-dot");
-  expect(dots).toHaveLength(1);
-  return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
+/** Statusbar redesign: `.dl-dot` is gone — every chip is a `StatusChip`
+ *  (`.dl-toggle.sc`) whose tone lives directly on its own class
+ *  (`is-idle`/`is-failure`). Reads the toggle's class list
+ *  once so tone assertions below stay honest about which single element
+ *  they are on. */
+function toggleClasses(tree: ReactTestRendererJSON | null): string[] {
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  return ((toggles[0].props.className as string) ?? "").split(" ");
 }
 
 // EVERY HARNESS BELOW PASSES `initialCollapsed={false}`: the default is
@@ -165,10 +167,9 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   // longer names everything it shows.
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
-  // D588: one circle, outlined because this section holds nothing. No count
-  // element survives anywhere in the bar.
+  // No legacy count element anywhere, and the chip reads idle.
   expect(findAll(tree, "dl-count")).toHaveLength(0);
-  expect(circleFilled(tree)).toBe(false);
+  expect(toggleClasses(tree)).toContain("is-idle");
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {
@@ -308,21 +309,45 @@ test("a failed job is drawn NOWHERE in this section — not a row, not the count
   const tree = renderCard([errored]);
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-row")).toHaveLength(0);
-  // The circle answers what this section actually holds, so a lone failure
-  // leaves it OUTLINED. A circle that still filled for a failure would be the
-  // same bug the count version had.
-  expect(circleFilled(tree)).toBe(false);
+  // The chip's tone answers what this section actually holds, so a lone
+  // failure leaves it idle/muted. A tone that still read "on" for a failure
+  // would be the same bug the count version had.
+  expect(toggleClasses(tree)).toContain("is-idle");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
   const toggle = findAll(tree, "dl-toggle")[0];
   expect((toggle.props.className as string).split(" ")).not.toContain("is-failure");
 });
 
-test("a failure beside live work leaves only the live row and a count of one", () => {
+// One running job, no queue: the chip shows the job's OWN verb, not the bare
+// "Activity" label, and no numeral — see jobTypeLabel/aggregateProgress.
+test("a failure beside live work leaves only the live row, and the chip shows the job's own verb", () => {
   const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
   const errored: Job = { ...BASE, id: "sys:ai-image:errored", state: "error", message: "boom" };
   const tree = renderCard([running, errored]);
   expect(findAll(tree, "dl-row")).toHaveLength(1);
-  expect(circleFilled(tree)).toBe(true);
+  expect(toggleClasses(tree)).not.toContain("is-idle");
+  expect(findAll(tree, "sc-num")).toHaveLength(0);
+});
+
+// Spec: "2+ (jobs + queued) -> 'Activity' + numeral, line = the mean of the
+// running fractions" — two running jobs is the plain case.
+test("two running jobs show the bare 'Activity' label with a numeral, and the mean of their fractions", () => {
+  const a: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false, done: 2, total: 10 };
+  const b: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false, done: 6, total: 10 };
+  const tree = renderCard([a, b]);
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
+  expect(text(findAll(tree, "sc-num")[0])).toBe("2");
+  const fill = findAll(tree, "sc-progress-fill")[0];
+  expect(fill.props.style).toEqual({ width: "40%" }); // mean of 20% and 60%
+});
+
+// A queued entry counts toward the 2+ threshold exactly like a second job —
+// one running job plus one queued is already "2+", not the lone-job case.
+test("one running job plus one queued counts as 2+, not the lone-job label", () => {
+  const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
+  const tree = renderCardWithQueue([running], { waiting: 1 });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
+  expect(text(findAll(tree, "sc-num")[0])).toBe("2");
 });
 
 test("cancelled and done rows do NOT move — only failures did", () => {
@@ -472,12 +497,14 @@ test("the header still names the hidden work once collapsed", () => {
   expect(after.length).toBeGreaterThan(0);
 });
 
-// D581 REMOVES the aggregate percentage from the chip (it appeared and
-// disappeared in place, shifting the whole bar, and reserving ~4ch for it
-// permanently would leave obvious dead space in a 22px bar). It was already
-// the third telling of the same fact: the panel draws a percentage AND a
-// progress bar on every row, which is where per-job progress belongs.
-test("the collapsed chip carries NO aggregate percentage — per-row progress lives in the panel", () => {
+// D581 REMOVED an earlier aggregate-percentage element from the chip; the
+// statusbar redesign replaces it with `sc-progress`/`sc-progress-fill` — a
+// single running job's own fraction, drawn as a fill line along the chip's
+// own bottom edge (`aggregateProgress`, jobs.ts) rather than a `%` numeral.
+// The row itself still carries its own `dl-pct` text and `dl-bar` — those
+// are unrelated, per-row elements the collapse simply hides along with the
+// rest of the panel.
+test("a single running job's fraction draws as the chip's own progress fill, not an aggregate percentage", () => {
   const running: Job = {
     ...BASE,
     id: "sys:ai-image:running",
@@ -493,16 +520,20 @@ test("the collapsed chip carries NO aggregate percentage — per-row progress li
   const row = findAll(expanded, "dl-row")[0];
   expect(text(findAll(row, "dl-pct")[0])).toBe("50%");
   expect(findAll(row, "dl-bar")).toHaveLength(1);
+  // ...and the chip already carries its own progress fill while expanded.
+  const fillBefore = findAll(expanded, "sc-progress-fill")[0];
+  expect(fillBefore.props.style).toEqual({ width: "50%" });
 
   clickToggle(renderer); // collapse
 
-  // Collapsed: the chip is all that is left, and it holds neither. Its one
-  // circle is the same element and the same width in both states (D588), so
-  // there is nothing left in this chip that can change width at all.
+  // Collapsed: no aggregate `%` numeral and no per-row bar survive — only
+  // the chip's own fill line, same as while expanded.
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-bar")).toHaveLength(0);
   expect(findAll(after, "dl-pct")).toHaveLength(0);
-  expect(circleFilled(after)).toBe(true);
+  expect(toggleClasses(after)).not.toContain("is-idle");
+  const fillAfter = findAll(after, "sc-progress-fill")[0];
+  expect(fillAfter.props.style).toEqual({ width: "50%" });
 });
 
 test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D563)", () => {
@@ -524,19 +555,19 @@ test("Cancel queued renders only inside the expanded panel — the collapsed chi
   expect(findAll(after, "q-all")).toHaveLength(0);
 });
 
-// ------------------------------------- a quiet dot on a new arrival (D567)
+// ------------------------------------- nothing opens or closes on its own
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D562
-// follow-up) USED TO force the panel open here — code review finding #4
-// caught that this recreates the exact complaint the whole status-bar
-// redesign exists to fix: a background job popping a floating panel over
-// whatever page the user is looking at, uninvited, and PERSISTING the
-// expansion to localStorage so it survives a reload. `useAutoExpandOnNew`
-// no longer touches `collapsed` at all (its own doc has the full
-// reasoning) — it only answers whether something arrived unacknowledged,
-// drawn here as `.dl-new-dot`. The shared decision (`trackSeenIds`) is
-// tested on its own in jobs.test.ts; these pin the CARD actually wiring it
-// in.
+// STATUSBAR REDESIGN: auto-open-on-arrival ("we can make the notifications
+// 'un collapse' when a new one comes", D562 follow-up) and auto-close-on-drain
+// (D580) are BOTH gone, along with the `.dl-new-dot` arrival mark that used to
+// stand in once auto-open itself was retired (D567/D574/D584). The whole
+// class of bug that history describes — a background job popping a floating
+// panel over whatever page the user is looking at, uninvited — is closed by
+// removing the mechanism outright rather than re-tuning when it fires:
+// `useStatusChip` (lib/statusChip.ts) opens a panel only for hover-preview or
+// a click-pin, never for a job or a row simply existing. These tests pin that
+// arrivals and drains are silent, and that the chip's own click is the only
+// thing that ever changes `open`.
 
 function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Partial<QueueSlot>) {
   act(() => {
@@ -544,6 +575,7 @@ function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Pa
       <DownloadManagerView
         reported={reported}
         queue={queue ? fullQueue(queue) : undefined}
+        initialCollapsed={false}
         refresh={() => {}}
         patch={() => {}}
       />,
@@ -551,48 +583,25 @@ function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Pa
   });
 }
 
-// D574 REVERSES D567 (user: "when we have something new, always show the
-// notification. don't keep no activity displayed") — a new job arriving into
-// a collapsed section OPENS that section's panel, and the dot is suppressed
-// while it is open, since a dot pointing at a panel the user is already
-// looking at announces nothing.
-test("a genuinely new job id arriving OPENS the collapsed panel, and shows no dot beside it", () => {
+test("a new job arriving into a collapsed section does NOT open the panel", () => {
   const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([first]);
   clickToggle(renderer); // collapse
 
   const collapsed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(collapsed, "dl-row")).toHaveLength(0);
-  expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0);
+  expect(findAll(collapsed, "dl-panel")).toHaveLength(0);
 
   const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
   updateInstance(renderer, [first, second]);
 
+  // Still collapsed: the arrival changed nothing about visibility.
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(2);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0); // the mark itself is retired
 });
 
-test("the chip's own click dismisses an auto-opened panel, leaving no dot behind", () => {
-  const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const renderer = renderInstance([first]);
-  clickToggle(renderer); // collapse
-  const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
-  updateInstance(renderer, [first, second]);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(2);
-
-  clickToggle(renderer); // dismiss the auto-opened panel
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
-});
-
-// D580, the mirror of the above (user: "after a job finishes, ensure we close
-// the jobs popover if no jobs left"): the list draining to empty closes the
-// panel, so an auto-opened section cannot be left sitting on screen showing
-// `No activity`. Fires only on the non-empty -> empty EDGE.
-test("the list draining to empty closes the panel instead of leaving it showing 'No activity'", () => {
+test("the list draining to empty does NOT close a pinned-open panel — it shows the idle sentence instead", () => {
   const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([job]);
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
@@ -600,137 +609,32 @@ test("the list draining to empty closes the panel instead of leaving it showing 
   updateInstance(renderer, []); // the job finished and was cleared
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(0);
-  // The chip itself stays — the bar's sections are always present (D565) —
-  // and reads its idle label.
+  // Pinned open, so the panel survives the drain and shows the idle sentence.
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(text(findAll(after, "dl-panel-empty")[0])).toBe("No activity");
   expect(text(findAll(after, "dl-summary")[0])).toBe("Activity");
-  expect(circleFilled(after)).toBe(false);
+  expect(toggleClasses(after)).toContain("is-idle");
 });
 
-// D584 REVIEW FINDING 1, the regression this branch shipped and this test
-// exists to keep out: the arrival branch used to gate on the PERSISTED
-// `collapsed` rather than on effective visibility. On a default install there
-// is no stored key, so `collapsed === false` — and once a drain had set the
-// transient `"closed"` override, the next arrival matched neither `collapsed`
-// nor anything that clears the override. The section went permanently deaf:
-// no panel and no dot for the rest of the session. The previous test stopped
-// at the drain, which is exactly why this went unnoticed, so this one polls a
-// NEW job in afterwards.
-test("a new job AFTER a drain re-opens the panel — a closed section never goes deaf", () => {
-  const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const renderer = renderInstance([first]);
-  updateInstance(renderer, []); // drains -> auto-closes
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
-
-  const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
-  updateInstance(renderer, [second]);
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "dl-row")).toHaveLength(1);
-});
-
-// The same defect's other reachable shape: a section force-closed by D582's
-// one-panel-at-a-time arbiter (not by a drain) must also still hear the next
-// arrival. Both paths set the identical `"closed"` override, so this pins that
-// the fix is in the override handling rather than special-cased to draining.
-test("a section closed while EMPTY still auto-opens on its first arrival", () => {
-  const renderer = renderInstance([]); // starts idle, panel open by default
-  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  updateInstance(renderer, [job]);
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "dl-row")).toHaveLength(1);
-});
-
-// CODE REVIEW 2026-08-28, FINDING 1 — the drain gate was fed the JOB ids only,
-// but this panel draws the scheduled queue's rows above them. So one live
-// scheduled message plus one download meant the download finishing took the
-// hook's list to `[]` and slammed the panel shut over the queue rows still
-// rendered inside it — including that live turn's only ✕, the one control the
-// user needs at exactly that moment. `queue.drawn` now goes in as `alsoDrawn`,
-// so "empty" means the panel is empty rather than one of its two sources being.
-test("a job draining does NOT close the panel while the queue is still drawing rows", () => {
-  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const queue = {
-    waiting: 0,
-    running: 1,
-    drawn: ["entry-1"],
-    rows: <div className="q-row">a live turn</div>,
-  };
-  const renderer = renderInstance([job], queue);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(1);
-
-  updateInstance(renderer, [], queue); // the download finished; the turn has not
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "q-row")).toHaveLength(1);
-});
-
-// The mirror, so the fix above cannot be "never close again": once the queue
-// half lets go too, the panel does close — whichever of the two sources emptied
-// last.
-test("the panel closes once the queue rows drain as well", () => {
-  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const queue = {
-    waiting: 0,
-    running: 1,
-    drawn: ["entry-1"],
-    rows: <div className="q-row">a live turn</div>,
-  };
-  const renderer = renderInstance([job], queue);
-  updateInstance(renderer, [], queue); // ids drain, panel stays (above)
+test("the chip's own click is the only thing that opens or closes the panel — arrivals and drains never touch it", () => {
+  const renderer = renderInstance([]); // starts idle, pinned open (initialCollapsed={false})
   expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
 
-  updateInstance(renderer, [], { waiting: 0, running: 0, drawn: [], rows: null });
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(0);
-});
-
-test("one job finishing while another still runs closes nothing", () => {
-  const a: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const b: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
-  const renderer = renderInstance([a, b]);
-  updateInstance(renderer, [b]);
-
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-panel")).toHaveLength(1);
-  expect(findAll(after, "dl-row")).toHaveLength(1);
-});
-
-test("collapsing, then an EXISTING job merely changing, sets no dot", () => {
-  const job: Job = {
-    ...BASE,
-    id: "sys:ai-image:a",
-    state: "running",
-    done: 1,
-    total: 10,
-    stalled: false,
-  };
-  const renderer = renderInstance([job]);
-  clickToggle(renderer); // collapse
-
-  // Same id, progress ticking (and even finishing) — not a new arrival.
-  updateInstance(renderer, [{ ...job, done: 9, state: "running" }]);
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
-});
-
-test("re-collapsing while the same ids are still present sets no dot either", () => {
-  // Rule: an id already in the seen set never re-triggers.
   const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
-  const renderer = renderInstance([job]);
-  updateInstance(renderer, [job]); // a poll re-reports the same id
-  clickToggle(renderer); // collapse
+  updateInstance(renderer, [job]); // arrival: still open, unaffected
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
 
-  updateInstance(renderer, [job]); // another poll, still the same id
-  const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
+  updateInstance(renderer, []); // drain: still open, unaffected
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
+  clickToggle(renderer); // the chip's own click — this is what closes it
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
+
+  updateInstance(renderer, [job]); // an arrival while closed still does not reopen it
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
+
+  clickToggle(renderer); // and only another click reopens it
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
 });
 
 // ---- a running row's Cancel must never be pushed out of the panel --------------
@@ -972,12 +876,15 @@ function renderActivity(props: {
 }
 
 describe("the Background tasks section (moved off EnginesDock's own chip)", () => {
-  test("a running engine keeps the chip un-muted but its dot unfilled", () => {
+  // Spec: "a running engine alone: chip not idle, no numeral, no progress
+  // line" — it is persistent STATE, not work in progress, so it un-mutes the
+  // chip (the panel has something to show) without counting toward
+  // `runningCount` at all.
+  test("a running engine alone un-mutes the chip but carries no numeral and no progress line", () => {
     const tree = renderActivity({ engines: { engines: [runningEngine()], onStop: async () => {} } });
-    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
-      "is-idle",
-    );
-    expect(circleFilled(tree)).toBe(false);
+    expect(toggleClasses(tree)).not.toContain("is-idle");
+    expect(findAll(tree, "sc-num")).toHaveLength(0);
+    expect(findAll(tree, "sc-progress")).toHaveLength(0);
   });
 
   test("draws the engine's label, with a Stop button", () => {
@@ -1058,9 +965,7 @@ describe("two sections sharing one Activity panel", () => {
     );
   });
 
-  test("an engine arriving does not open the panel — only a job arrival does", () => {
-    // Mirrors the (deleted) Models/Engines chips' own `neverOpen` contract,
-    // now expressed through Activity's `alsoDrawn` wiring.
+  test("an engine arriving does not open the panel — nothing ever opens it but the chip's own click", () => {
     const renderer = create(
       <DownloadManagerView
         reported={[]}
