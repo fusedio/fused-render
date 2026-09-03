@@ -18,6 +18,18 @@
 // under that id (rather than its own) is what lets a second variant of the
 // SAME base, arriving on a later page or a different sort, land in the same
 // family rather than starting a new one.
+//
+// **A row with no `base_model:` tag at all still folds into a family when it
+// is a plain re-upload of another untagged row** — the same weights pushed
+// to a second namespace, with no relation for either copy to declare. The
+// signal for that is a mirror key: the trailing segment of the repo id
+// (everything after the last `/`), the measured `params`, and the measured
+// `quant`, all three matching exactly. Each piece alone is common — a
+// filename convention, a rounded size class, a widely-shared encoding — and
+// says nothing about shared identity; together, with `params` compared as
+// the server's raw integer rather than a rounded display figure, they do.
+// A missing `params` or `quant` drops a row back to keying on its own id,
+// since a null is not a value two rows can agree on.
 import type { HubModel } from "@platform/lib/api";
 import type { ResultSort } from "./hubSearchView";
 
@@ -40,15 +52,18 @@ import type { ResultSort } from "./hubSearchView";
 // not that: it decides which runner can open the repo at all. So `format`
 // (the server's own field, read off the Hub) joins `baseModel` in the key.
 export interface HubFamily {
-  /** `baseModel` + `format` when a base model is known, else the lone
-   *  member's own id — stable across re-renders of the SAME result set,
-   *  which is what a React `key` needs.
+  /** `baseModel` + `format` when a base model is known, else a mirror key
+   *  (trailing name segment + `params` + `quant`) when that trio is fully
+   *  measured, else the lone member's own id — stable across re-renders of
+   *  the SAME result set, which is what a React `key` needs.
    *
    *  Opaque: a composite whose parts are joined by a separator no Hub repo
    *  id contains. Nothing reads it back apart as an id, and nothing should. */
   key: string;
   /** The member that ranks first under the ACTIVE sort (see `groupIntoFamilies`'s
-   *  `sort` parameter) — the row a family's single line draws. */
+   *  `sort` parameter) — the row a family's single line draws. A mirror
+   *  family (no declared base model) instead heads on `downloads`; see
+   *  `groupIntoFamilies`. */
   primary: HubModel;
   /** Every other member, same ordering rule, for the "N variants" affordance. */
   variants: HubModel[];
@@ -110,10 +125,14 @@ function primaryComparator(sort: ResultSort): (a: HubModel, b: HubModel) => numb
 }
 
 /** Every result, collapsed to one family per model — headed by its base
- *  model when that repo is among the results, else by the member
- *  `primaryComparator(sort)` ranks first, with the rest ordered by that same
- *  comparator and an untagged row standing alone. `sort` defaults to `"fit"`
- *  for a caller with no sort context of its own.
+ *  model when that repo is among the results, else, for a bucket built from
+ *  a declared `baseModel` whose repo just isn't in this page of results, by
+ *  the member `primaryComparator(sort)` ranks first, else, for a mirror
+ *  bucket with no declared base at all, by whichever member has the most
+ *  `downloads` (null lowest). The rest are ordered by
+ *  `primaryComparator(sort)` regardless, and an untagged, unmirrored row
+ *  stands alone. `sort` defaults to `"fit"` for a caller with no sort
+ *  context of its own.
  *
  *  **Families are positioned at their PRIMARY's index in `models`, not at
  *  whichever member first appeared.** A family draws its primary's row —
@@ -156,9 +175,33 @@ export function groupIntoFamilies(
     // `-` or `/` join would not have. A row with no format contributes
     // nothing rather than an empty suffix, so the common case's key stays
     // the bare base id it always was.
+    //
+    // **An untagged row falls back to a MIRROR key — trailing name segment,
+    // `params`, `quant` — not straight to its own id.** A plain re-upload of
+    // an untagged root repo (a second account pushing the exact same weights
+    // under a new namespace) carries no `base_model:` tag for either copy to
+    // point at — the Hub has no `duplicated_from` field either — so the
+    // `baseModel` key above cannot see it, and without this fallback two
+    // uploads of the same weights would sit in the results as if they were
+    // different models. Three components, all required, is what makes the
+    // fold trustworthy rather than cosmetic: the trailing segment alone is
+    // just a filename convention two unrelated projects can share by
+    // coincidence; `params` alone is a rounded, coarse figure shared by
+    // whole families of unrelated models at a given size class; `quant`
+    // alone just names an encoding every repo at that precision also
+    // carries. None of the three is individually rare enough to mean
+    // "same weights" — together, on an exact (not rounded) `params` match,
+    // they are: two repos that agree on all three have never been observed
+    // to be different weights in practice, which is the same evidentiary
+    // bar `baseModel` itself clears by being a Hub-published claim rather
+    // than a guess.
+    const mirrorKey =
+      model.params != null && model.quant != null
+        ? `${model.id.slice(model.id.lastIndexOf("/") + 1)} ${model.params} ${model.quant}`
+        : model.id;
     const key = model.baseModel
       ? (model.format ? `${model.baseModel} ${model.format}` : model.baseModel)
-      : model.id;
+      : mirrorKey;
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -188,7 +231,26 @@ export function groupIntoFamilies(
     // name says the opposite. `compare` still orders everything else, so
     // `variants` is ranked exactly as before and the best-ranked member is
     // simply the first one behind the disclosure when it is not the base.
-    const primary = base ?? sorted[0];
+    //
+    // **A mirror family (no member declares a `baseModel` at all) heads on
+    // `downloads` instead, highest first, a null treated as lower than any
+    // real count.** `base ?? sorted[0]` doesn't apply here — there IS no
+    // declared base to defer to, by construction: `baseModel` is null for
+    // the whole group, which is exactly the condition under which the key
+    // itself came from the mirror fallback above rather than a `base_model:`
+    // tag. Where a declared base exists this rule never runs, so the two
+    // compose instead of competing: `base` wins whenever the Hub names one,
+    // and only a bucket with no such claim falls through to downloads.
+    // Downloads, not `compare`'s fit/match score, is the right tiebreak
+    // because it is the one honest, publisher-blind signal available: it
+    // doesn't require the page to know or guess which upload is
+    // "canonical," it just reflects which one the rest of the Hub already
+    // treats as canonical by using it.
+    const primary =
+      base ??
+      (baseModel
+        ? sorted[0]
+        : group.reduce((most, m) => ((m.downloads ?? -1) > (most.downloads ?? -1) ? m : most)));
     return { key, primary, variants: sorted.filter((m) => m !== primary), baseModel, base };
   });
   families.sort((a, b) => indexOf.get(a.primary)! - indexOf.get(b.primary)!);

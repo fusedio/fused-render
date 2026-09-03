@@ -321,4 +321,82 @@ describe("groupIntoFamilies", () => {
     // no base member.
     expect(families.every((f) => f.base === null)).toBe(true);
   });
+
+  it("folds two untagged mirrors sharing a name, params and quant into one family", () => {
+    // Neither repo publishes a `base_model:` tag — they're plain re-uploads
+    // of the same untagged weights, which the tag-based rule cannot see.
+    const rows = [
+      model("unsloth/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 3000 }),
+      model("black-forest-labs/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 530000 }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(1);
+    expect(families[0].variants.map((m) => m.id)).toEqual(["unsloth/FLUX.2-klein-4B"]);
+  });
+
+  it("heads a mirror family with the higher-download mirror", () => {
+    const rows = [
+      model("unsloth/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 3000 }),
+      model("black-forest-labs/FLUX.2-klein-4B", { params: 3875544576, quant: "BF16", downloads: 530000 }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families[0].primary.id).toBe("black-forest-labs/FLUX.2-klein-4B");
+  });
+
+  it("does not let a null downloads win the head position over a real count", () => {
+    const rows = [
+      model("mirror-a/klein-4B", { params: 3875544576, quant: "BF16", downloads: null }),
+      model("mirror-b/klein-4B", { params: 3875544576, quant: "BF16", downloads: 1 }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families[0].primary.id).toBe("mirror-b/klein-4B");
+  });
+
+  it("keeps two same-named repos with different params apart", () => {
+    const rows = [
+      model("org-a/klein-4B", { params: 3875544576, quant: "BF16" }),
+      model("org-b/klein-4B", { params: 9100000000, quant: "BF16" }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(2);
+  });
+
+  it("keeps two same-named, same-params repos with different quant apart", () => {
+    const rows = [
+      model("org-a/klein-4B", { params: 3875544576, quant: "BF16" }),
+      model("org-b/klein-4B", { params: 3875544576, quant: "FP8" }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(2);
+  });
+
+  it("keeps a row with null params on its own id rather than colliding with another unmeasured row", () => {
+    const rows = [
+      model("org-a/klein-4B", { params: null, quant: "BF16" }),
+      model("org-b/klein-4B", { params: null, quant: "BF16" }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(2);
+  });
+
+  it("keeps a row with null quant on its own id rather than colliding with another unmeasured row", () => {
+    const rows = [
+      model("org-a/klein-4B", { params: 3875544576, quant: null }),
+      model("org-b/klein-4B", { params: 3875544576, quant: null }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families).toHaveLength(2);
+  });
+
+  it("still heads a family with its declared base even when a higher-download mirror is present", () => {
+    const rows = [
+      model("org/base", { downloads: 10, fit: fitScore(0) }),
+      model("org/mirror", {
+        baseModel: "org/base", relation: "quantized",
+        downloads: 999999, fit: fitScore(100),
+      }),
+    ];
+    const families = groupIntoFamilies(rows);
+    expect(families[0].primary.id).toBe("org/base");
+  });
 });
