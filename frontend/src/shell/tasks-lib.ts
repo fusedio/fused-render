@@ -1013,7 +1013,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "calendar", "cards"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page

@@ -535,20 +535,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 {ICON_VIEW_BOARD}
                 Board
               </button>
-              <button type="button"
-                      data-view="calendar"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
-                      aria-pressed={view === "calendar"}
-                      onClick={() => pickView("calendar")}>
-                {ICON_VIEW_CALENDAR}
-                Calendar
-              </button>
-              {/* LAST in the row, and that is a claim about how often it is
-                  wanted rather than about how new it is: the first three answer
-                  "what is there", which is the page's standing question, and
-                  this one answers "what is happening right now", which is a
-                  thing you go and look at (serial-position — the ends of a row
-                  are the seats that get read, and the near end is spoken for). */}
+              {/* Before the calendar (Akshil, 2026-09-03): the first three
+                  answer "what is there" and "what is happening right now",
+                  and the calendar is the drill-down for the scheduled subset —
+                  the same argument that made List the default. */}
               <button type="button"
                       data-view="cards"
                       className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
@@ -556,6 +546,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                       onClick={() => pickView("cards")}>
                 {ICON_VIEW_CARDS}
                 Cards
+              </button>
+              <button type="button"
+                      data-view="calendar"
+                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
+                      aria-pressed={view === "calendar"}
+                      onClick={() => pickView("calendar")}>
+                {ICON_VIEW_CALENDAR}
+                Calendar
               </button>
             </div>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They

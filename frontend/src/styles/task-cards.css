@@ -128,17 +128,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Open, as a real link. It is a text button rather than one of the page's filled
-   ones because it repeats on every card, and twelve filled buttons on one screen
-   is twelve things asking to be pressed. */
-.task-card-open {
+/* Open wears the app's `.btn btn-secondary` skin and only its SIZE is overridden
+   here: a 32px button in a 33px header is a header that is all button. The
+   selector carries `.schedule-main` so it outranks the `.prefs-section .btn`
+   grouping in buttons-modal.css (0,2,x) whatever the stylesheet order. */
+.schedule-main .task-card-head .task-card-open {
   flex: none;
-  padding: 2px 6px;
-  border-radius: 4px;
+  height: 22px;
+  padding: 0 8px;
   font-size: 11px;
-  color: var(--accent);
+  border-radius: 4px;
   text-decoration: none;
-  white-space: nowrap;
 }
 
 .task-card-open:hover {

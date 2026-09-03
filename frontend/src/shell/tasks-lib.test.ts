@@ -6558,6 +6558,13 @@ describe("the Cards view's frame", () => {
 
   it("is the fourth segment of the switcher, and the page renders it", () => {
     expect(SCHEDULED).toContain('data-view="cards"');
+    // Cards sits BEFORE the calendar, in the switcher and in TASK_VIEWS alike
+    // (Akshil, 2026-09-03).
+    expect(SCHEDULED.indexOf('data-view="cards"')).toBeLessThan(SCHEDULED.indexOf('data-view="calendar"'));
+    expect(TASK_VIEWS).toEqual(["list", "board", "cards", "calendar"]);
+    // Open is a BUTTON — the app's own small secondary skin on a real link.
+    expect(CARDS).toContain('className="btn btn-secondary task-card-open"');
+    expect(CARDS_CSS).toContain(".schedule-main .task-card-head .task-card-open {");
     expect(SCHEDULED).toContain('pickView("cards")');
     expect(SCHEDULED).toContain('view === "cards" ? (');
     // The same filtered set every other view is handed.
