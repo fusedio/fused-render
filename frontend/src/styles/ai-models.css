@@ -3706,6 +3706,28 @@ button.am-bench-model:focus-visible {
   font-weight: 600;
   color: var(--fg);
   text-decoration: none;
+  /* `nowrap`, not the column's default `normal`: the owner prefix below sits
+     right up against the name with a bare "/" and no space between them,
+     and CSS treats "/" as a soft break opportunity on its own — without
+     this the owner and name could split across lines exactly where a
+     reader most needs them read as one unit. The surrounding row (gate
+     pill, curated mark, state tag) is unaffected: they are siblings outside
+     this `<a>`, not text this rule touches. */
+  white-space: nowrap;
+}
+
+/* The owner prefix ("black-forest-labs/") ahead of the bold repo name — a
+   search table's mirrors and community re-uploads share a repo NAME across
+   different owners (see `splitRepoId`'s own doc for why a curated card can
+   drop this and a search row cannot), so the owner has to stay readable
+   without competing with the name it precedes: muted to the table's
+   existing "secondary fact" ink level, a step smaller, and never wrapped
+   onto its own line from the name it identifies. */
+.am-hubtable-owner {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-size: 0.9em;
+  white-space: nowrap;
 }
 
 .am-hubtable-name-inner > a:hover {

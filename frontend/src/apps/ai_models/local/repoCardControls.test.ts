@@ -454,7 +454,10 @@ describe("the Hub results table keeps a search result's own facts", () => {
     expect(TABLE).toContain("{PARTIAL_TAG}");
   });
 
-  it("still shows the model half of the id, like every other row on the page", () => {
-    expect(TABLE).toContain("modelName(display.name)");
+  it("shows the owner too, muted, ahead of the model half of the id — mirrors and", () => {
+    // re-uploads are the normal case in search results, unlike a curated card
+    // (`RepoCard.tsx`'s `modelName`, which still drops it there on purpose).
+    expect(TABLE).toContain("splitRepoId(display.name)");
+    expect(TABLE).toContain("am-hubtable-owner");
   });
 });

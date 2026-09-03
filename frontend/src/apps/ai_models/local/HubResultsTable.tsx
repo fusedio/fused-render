@@ -44,7 +44,7 @@
 // prevent — more rows on screen makes the gate MORE load-bearing, not less.
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { hubModelUrl } from "./hub";
-import { modelName, CuratedMark } from "./RepoCard";
+import { CuratedMark } from "./RepoCard";
 import { SwitchEngines } from "./RecommendedCard";
 import {
   PARTIAL_TAG,
@@ -75,6 +75,7 @@ import {
   resolveSpeed,
   speedLabel,
   speedTitle,
+  splitRepoId,
   variantLabel,
 } from "@apps/ai_models/lib/hubTableView";
 import {
@@ -156,6 +157,7 @@ function HubVariantRow({
   const loadable = !runner || runner.available;
   const arriving = jobFraction(job);
   const size = hubSizeLabel(model, null);
+  const split = splitRepoId(model.id);
   return (
     <TableRow
       className={
@@ -187,7 +189,8 @@ function HubVariantRow({
             rel="noopener noreferrer"
             data-hint={`Open ${model.id} on the Hub`}
           >
-            {model.id}
+            {split.owner && <span className="am-hubtable-owner">{split.owner}/</span>}
+            {split.name}
           </a>
           {disk.state === "partial" && (
             <span className="am-hubtable-partial" data-hint={`${model.id} is a download that did not finish.`}>
@@ -369,6 +372,7 @@ function HubResultRow({
   const matchScoreStale = isMatchScoreStale(model.fit, fitOverride);
 
   const display = familyDisplay(family);
+  const splitOwner = splitRepoId(display.name);
   const match = matchCell(effectiveFit, model.matchScore, matchScoreStale);
   const size = hubSizeLabel(model, total);
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
@@ -445,7 +449,8 @@ function HubResultRow({
               rel="noopener noreferrer"
               data-hint={`Open ${model.id} on the Hub`}
             >
-              {modelName(display.name)}
+              {splitOwner.owner && <span className="am-hubtable-owner">{splitOwner.owner}/</span>}
+              {splitOwner.name}
             </a>
             {curatedFlag && <CuratedMark />}
             {/* The gate, named, with the whole of what to do about it on hover —

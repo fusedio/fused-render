@@ -20,6 +20,7 @@ import {
   resolveSpeed,
   speedLabel,
   speedTitle,
+  splitRepoId,
   variantLabel,
 } from "./hubTableView";
 import type { AiFitVerdict, AiSpeedEstimate, HubModel } from "@platform/lib/api";
@@ -405,6 +406,26 @@ describe("variantLabel", () => {
 
   it("is a dash for a family that is just the one repo — never a bare 0", () => {
     expect(variantLabel(0)).toBe("—");
+  });
+});
+
+describe("splitRepoId", () => {
+  it("splits an owned id into owner and name", () => {
+    expect(splitRepoId("black-forest-labs/FLUX.2-klein-4B")).toEqual({
+      owner: "black-forest-labs",
+      name: "FLUX.2-klein-4B",
+    });
+  });
+
+  it("has no owner for a bare id with no slash", () => {
+    expect(splitRepoId("gpt2")).toEqual({ owner: null, name: "gpt2" });
+  });
+
+  it("splits on the LAST slash when an id has more than one", () => {
+    expect(splitRepoId("mlx-community/nested/Qwen3-8B")).toEqual({
+      owner: "mlx-community/nested",
+      name: "Qwen3-8B",
+    });
   });
 });
 

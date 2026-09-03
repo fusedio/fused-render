@@ -505,6 +505,24 @@ export function variantLabel(variantCount: number): string {
   return variantCount > 0 ? String(variantCount) : DASH;
 }
 
+/** Splits a Hub repo id into its owner and its own name — the owner is
+ *  everything before the last `/` (`null` when the id has none, the Hub's
+ *  legacy canonical models like `gpt2`), and the name is the remainder.
+ *
+ *  A curated card can drop the owner (`RepoCard.tsx`'s `modelName`) because
+ *  each card names ONE model a reader already trusts is genuine — the owner
+ *  is a fact its subtitle states once, not something two cards ever need to
+ *  be told apart by. A search table has no such guarantee: the same repo
+ *  NAME can be uploaded by many different owners — a publisher's own
+ *  weights alongside every mirror and re-upload of them — and those rows
+ *  land side by side, often with identical params/quant/size. The owner is
+ *  frequently the ONLY fact that tells a genuine upload from a mirror
+ *  apart, so this table can never discard it the way a card does. */
+export function splitRepoId(id: string): { owner: string | null; name: string } {
+  const cut = id.lastIndexOf("/");
+  return cut === -1 ? { owner: null, name: id } : { owner: id.slice(0, cut), name: id.slice(cut + 1) };
+}
+
 /** The Model column's two lines: the repo a Download button on this row would
  *  actually act on, and — only where the row is standing in for a base model
  *  that is not itself among the results — which base that is.
