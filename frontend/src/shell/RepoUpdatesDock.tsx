@@ -484,15 +484,20 @@ export function RepoUpdatesCardView({
   // host, not just the panel, is what counts as "inside".
   // THE CHIP READS (D673): "Notifications" with a count pill whenever anything
   // waits — a repo update, a pairing, a finished/failed job, a task asking a
-  // question — and the pill turns red when one of those is a failure. Muted at
-  // zero. A waiting task deliberately does NOT tint the chip: the sidebar's
-  // Tasks dot is already red for exactly that state, and two reds in one window
-  // for one fact is how a colour stops meaning anything.
-  const tone = hasFailure ? "failure" : total > 0 ? "on" : "idle";
+  // question — and the pill turns red when one of those is a failure OR a task
+  // is waiting on the person (Akshil, 2026-09-03: a plain count was "not
+  // prominent enough to let user know it needs attention"). Muted at zero. The
+  // sidebar's Tasks dot is red for the same state; the two agree rather than
+  // one of them staying quiet — this corner is where the reader looks for
+  // what wants them, and a neutral pill there read as "nothing urgent".
+  const asking = attention.length > 0;
+  const tone = hasFailure || asking ? "failure" : total > 0 ? "on" : "idle";
   const ariaLabel =
     total === 0
       ? "Notifications, none"
-      : `Notifications, ${total}${hasFailure ? ", including a failure" : ""}`;
+      : `Notifications, ${total}${
+          asking ? ", including a task waiting on you" : hasFailure ? ", including a failure" : ""
+        }`;
 
   return (
     <div className="dl-host" {...hostProps}>

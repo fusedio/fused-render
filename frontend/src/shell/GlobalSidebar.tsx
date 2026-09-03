@@ -564,7 +564,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
         {pulse.attention > 0 ? (
-          <span className="sidebar-running" title={tasksTip}>
+          // Red, like the dot beside it: one state, one colour, on the mark and
+          // on the words (Akshil, 2026-09-03: "this should be red as well").
+          <span className="sidebar-running is-attention" title={tasksTip}>
             {attentionLabel(pulse.attention)}
           </span>
         ) : pulse.running > 0 && (

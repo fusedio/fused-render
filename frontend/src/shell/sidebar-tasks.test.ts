@@ -435,6 +435,10 @@ describe("one nav dot, worn by two rows", () => {
     expect(SIDEBAR_CSS).toContain("background: var(--status-progress)");
     expect(SIDEBAR_CSS).toContain("background: var(--status-done)");
     expect(SIDEBAR_CSS).toMatch(/\.sidebar-running \{[^}]*color: var\(--status-progress\)/);
+    // ...and the WAITING count is red — the dot's own token, so the words and
+    // the mark beside them say one thing (Akshil, 2026-09-03).
+    expect(SIDEBAR_CSS).toMatch(/\.sidebar-running\.is-attention \{[^}]*color: var\(--status-failed\)/);
+    expect(SIDEBAR).toContain('className="sidebar-running is-attention"');
   });
 
   it("wears the bookmark folder's count chip rather than a lookalike", () => {

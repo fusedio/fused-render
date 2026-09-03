@@ -418,6 +418,19 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
+/* The waiting count wears the Blocked red instead of the running yellow — the
+   same token as the dot beside it and the ring on the row it points at. Same
+   shimmer, different ink; nothing else about the label changes. */
+.sidebar-running.is-attention {
+  color: var(--status-failed);
+  background-image: linear-gradient(
+    100deg,
+    var(--status-failed) 30%,
+    color-mix(in srgb, var(--status-failed) 65%, var(--fg)) 50%,
+    var(--status-failed) 70%
+  );
+}
+
 /* ONE property animates, and it is the position of the highlight — never
    opacity, never the fill, never anything that could take a letter away. The
    range is 100% → 0%: with a background 300% the width of the box, both ends (and

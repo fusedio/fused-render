@@ -847,11 +847,15 @@ test("waiting tasks fill the numeral like every other source, and end the idle s
   expect(numeral(withOthers)).toBe("3");
 });
 
-test("a waiting task does NOT tint the chip red — the sidebar already says that", () => {
-  // Two reds in one window for one fact is how a colour stops meaning anything.
-  // The tint stays scoped to a real job failure (D586).
+test("a waiting task tints the chip red, like a failure does", () => {
+  // The first cut left the pill neutral on the argument that the sidebar's dot
+  // was already red; the user did not see it (Akshil, 2026-09-03: "not
+  // prominent enough"). This corner is where a reader looks for what wants
+  // them, so the two surfaces now agree.
   const tree = renderView({ rows: [], attention: [asking()] });
-  expect(toggleClasses(tree)).not.toContain("is-failure");
+  expect(toggleClasses(tree)).toContain("is-failure");
+  const quiet = renderView({ rows: repoRows([status()]) });
+  expect(toggleClasses(quiet)).not.toContain("is-failure");
 });
 
 test("the waiting row goes above every other kind", () => {
