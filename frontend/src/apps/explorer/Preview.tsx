@@ -41,6 +41,7 @@ import {
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { crumbMenu, fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { PREVIEW_IMAGE_NAME, PREVIEW_IMAGE_NAMES } from "@apps/explorer/lib/folder-peek";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -318,6 +319,32 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
   );
 }
 
+// The folder's authored still, if it has one: the FIRST of the thumbnail names
+// that exists, in the server's own precedence order (app_listing's
+// PREVIEW_IMAGE_NAMES — a folder holding both shows its PNG).
+//
+// Probed name by name rather than by listing the folder, which is what the two
+// callers below need: one wants the path to hand the exporter, the other wants
+// the stat so it can tell "already has a preview" from "that name is a folder".
+// `is_dir` counts as PRESENT here — a `preview.png` directory is not a
+// thumbnail, but it is very much in the way of writing one.
+//
+// An unreadable stat reads as absent, which is the safe answer for both: a
+// pointless capture at worst, never a silently skipped export.
+async function authoredPreview(
+  dir: string,
+): Promise<{ path: string; stat: StatResult } | null> {
+  for (const name of PREVIEW_IMAGE_NAMES) {
+    const path = join(dir, name);
+    const st = await statPath(path).then(
+      (s) => s,
+      () => null,
+    );
+    if (st) return { path, stat: st };
+  }
+  return null;
+}
+
 // Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
 // the previewed page IS its folder's app entry — asked of the server (the one
 // shared entry rule, /api/apps/entry) rather than guessed from the filename.
@@ -355,23 +382,21 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // Same capture-on-export as the /apps card (appShot, D396): the shown
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
-      // folder carries an authored preview.png; the probe below is only so a
-      // pointless native shot (and, on a Mac that has not granted Screen
-      // Recording, its permission dialog) isn't taken for a capture the
-      // server would discard anyway (stat failure reads as "no authored
-      // still" — worst case is that redundant shot, never a lost export).
+      // folder carries an authored still (under either thumbnail name); the
+      // probe below is only so a pointless native shot (and, on a Mac that has
+      // not granted Screen Recording, its permission dialog) isn't taken for a
+      // capture the server would discard anyway (stat failure reads as "no
+      // authored still" — worst case is that redundant shot, never a lost
+      // export).
       //
       // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
       // the app, not a box it may fill): the class rides `shown`, which the
       // frame swap only sets once that frame paints — the same guarantee
       // `data-fused-annotate-target` below relies on.
-      const authored = await statPath(dir + "/preview.png").then(
-        (s) => !s.is_dir,
-        () => false,
-      );
+      const authored = await authoredPreview(dir);
       await exportAppFile(
         { path: dir, name, entry_html: fsPath,
-          preview_image: authored ? dir + "/preview.png" : null },
+          preview_image: authored && !authored.stat.is_dir ? authored.path : null },
         document.querySelector(".preview-frame.is-shown"),
       );
     } catch (e) {
@@ -612,7 +637,7 @@ function usePreviewFileMenu(
   //
   // ORDER: the share prompt needs the click's own transient activation, which
   // Chrome expires a few seconds out. The one thing awaited before it is a stat
-  // of preview.png (milliseconds) — and when that says a still already exists,
+  // per thumbnail name (milliseconds) — and when that says a still exists,
   // the capture moves to the CONFIRM's click instead (Akshil: confirm before
   // overwriting), which is a fresh activation of its own. Nothing is written
   // until a frame is in hand: a dismissed prompt leaves the old file alone.
@@ -647,22 +672,35 @@ function usePreviewFileMenu(
     }
   };
   const doSetPreview = () => {
-    statPath(join(parent, "preview.png")).then(
-      (s) => {
-        if (s.is_dir) {
-          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
-          return;
-        }
-        setDialog({
-          kind: "confirm",
-          title: "Replace preview?",
-          message: `"${basename(parent)}" already has a preview.png. Replace it with what the app shows now?`,
-          confirmLabel: "Replace",
-          onConfirm: () => void shootPreview(true),
-        });
-      },
-      () => void shootPreview(false),
-    );
+    // Probes BOTH thumbnail names, not just the one this writes: a folder whose
+    // still is a `preview.webp` would otherwise get no confirm at all, and the
+    // capture would land on top of it — invisibly, since the PNG outranks it.
+    void authoredPreview(parent).then((found) => {
+      if (!found) {
+        void shootPreview(false);
+        return;
+      }
+      const name = basename(found.path);
+      if (found.stat.is_dir) {
+        pushToast({ msg: name + " here is a folder — move it first", tone: "error" });
+        return;
+      }
+      // Naming the file it found matters when the names differ: replacing a
+      // `preview.webp` writes a `preview.png`, which OUTRANKS it — the webp
+      // stays in the folder, unused — so the dialog says that rather than
+      // implying the file is overwritten.
+      setDialog({
+        kind: "confirm",
+        title: "Replace preview?",
+        message:
+          name === PREVIEW_IMAGE_NAME
+            ? `"${basename(parent)}" already has a ${name}. Replace it with what the app shows now?`
+            : `"${basename(parent)}" already has a ${name}. Save what the app shows now as ` +
+              `${PREVIEW_IMAGE_NAME}? It takes precedence; the ${name} stays in the folder.`,
+        confirmLabel: "Replace",
+        onConfirm: () => void shootPreview(true),
+      });
+    });
   };
 
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see

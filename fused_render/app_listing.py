@@ -8,9 +8,9 @@ declare nothing (D301 removed the name rules; a one-time migration stamped the
 existing workspace apps, and the managed pipelines stamp what they write). The
 walk that finds them (`workspace_apps`, which is where the per-level rules are
 written down), and the facts reported about each one — a title read out of the
-entry, an authored `preview.png` thumbnail if there is one, and when the folder
-was last touched — live here rather than inside the route handler, so they can
-be tested and reused without a `TestClient`.
+entry, an authored `preview.png`/`preview.webp` thumbnail if there is one, and
+when the folder was last touched — live here rather than inside the route
+handler, so they can be tested and reused without a `TestClient`.
 
 Nothing in this module raises for a directory it cannot read: a listing degrades
 to what it could see. The one deliberate exception is `app_entry`, which lets
@@ -105,48 +105,96 @@ def app_entry(dir_path: str) -> str | None:
     return None
 
 
-# The one authored thumbnail name. A card's picture of an app is otherwise the
-# entry page rendered live in a scaled iframe, which is honest but is also a
-# whole page load per card and shows whatever the app looks like with no data in
-# it; dropping a `preview.png` in the folder is how an author overrides that.
+# The authored thumbnail names, BEST FIRST. A card's picture of an app is
+# otherwise the entry page rendered live in a scaled iframe, which is honest but
+# is also a whole page load per card and shows whatever the app looks like with
+# no data in it; dropping a `preview.png` — or a `preview.webp` — in the folder
+# is how an author overrides that.
 #
-# Exactly one name, not a search over `preview.*` or `screenshot.*`: a user
-# adding a thumbnail should never have to work out which of several candidates
-# wins. Matched EXACTLY, case included — see `app_preview_image` for why that
-# costs a listdir rather than a stat.
-PREVIEW_IMAGE_NAME = "preview.png"
+# Two names, still not a search over `preview.*` or `screenshot.*`: PNG because
+# every capture path in the product produces exactly that (`canvas.toBlob(…,
+# "image/png")`), WebP because an authored still is usually a screenshot the
+# author already has, and webp is a quarter of the bytes at the same look. The
+# ORDER is the precedence rule, so a folder holding both is not ambiguous and
+# every folder authored before webp existed still answers with its PNG.
+#
+# Matched EXACTLY, case included — see `app_preview_image` for why that costs a
+# listdir rather than a stat.
+PREVIEW_IMAGE_NAMES = ("preview.png", "preview.webp")
+
+# The name a CAPTURE is written under (routers/apps.api_app_set_preview, and the
+# still the .fused export injects): one name, because one encoder produces those
+# bytes. Reads go through PREVIEW_IMAGE_NAMES; writes go through this.
+PREVIEW_IMAGE_NAME = PREVIEW_IMAGE_NAMES[0]
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def preview_media_type(raw: bytes) -> str | None:
+    """The image type of authored-still bytes: `"image/png"`, `"image/webp"`, or
+    None for anything else.
+
+    Sniffed from the SIGNATURE, never from a name or an upload's claimed
+    content-type: both callers (the set-preview upload, a `.fused` member) hold
+    bytes some other process wrote, and each thumbnail name means exactly one
+    encoding — a `preview.webp` full of PNG bytes is a picture no browser
+    renders under the type its name implies, so it is not a thumbnail."""
+    if raw.startswith(_PNG_MAGIC):
+        return "image/png"
+    # A WebP file is a RIFF container whose form type is "WEBP" (bytes 8..12);
+    # bytes 4..8 in between are the chunk length, which says nothing about type.
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def preview_name_for(media_type: str) -> str:
+    """The thumbnail file name that carries `media_type` bytes (the inverse of
+    :func:`preview_media_type`); PNG's name for anything unrecognised, since
+    that is the one every capture produces."""
+    return "preview.webp" if media_type == "image/webp" else PREVIEW_IMAGE_NAME
 
 
 def app_preview_image(dir_path: str) -> str | None:
-    """The app folder's authored thumbnail (`preview.png` at its root), or None.
+    """The app folder's authored thumbnail at its root — `preview.png`, else
+    `preview.webp` — or None when it has neither.
 
-    Resolved by LISTING the directory rather than probing the path, and the
+    Resolved by LISTING the directory rather than probing the paths, and the
     reason is case: `os.path.isfile` inherits the filesystem's own case-folding,
     so a `Preview.png` would be a thumbnail on macOS/Windows and not on ext4 —
     the same folder answering differently per machine, and disagreeing with the
     explorer's peek rule (apps/explorer/lib/folder-peek.ts), which compares the
     name exactly. An exact membership test is the only rule both sides can hold.
+    One listing covers both names, so the second one costs nothing.
 
     Zero-length is treated as absent. A truncated or interrupted write leaves a
     file `isfile` is perfectly happy with, and a non-null answer here is
     load-bearing in a way the entry rule's is not: the card's fallbacks (the
     live render, the monogram) are only reachable while this is None, so a
     wrongly-confident path is a permanently broken image rather than a
-    degraded one. It is not a validity check and does not pretend to be — a
-    corrupt non-empty PNG still gets through, which is why both card surfaces
-    also carry an onError fallback.
+    degraded one. A zero-length PNG therefore does not shadow a good webp — the
+    scan CONTINUES rather than returning None on the better name. It is not a
+    validity check and does not pretend to be — corrupt non-empty bytes still
+    get through, which is why both card surfaces also carry an onError fallback.
 
     Never raises: an unreadable or vanished directory is "no picture", which is
     exactly what the caller renders.
     """
     try:
-        if PREVIEW_IMAGE_NAME not in os.listdir(dir_path):
-            return None
-        p = os.path.join(dir_path, PREVIEW_IMAGE_NAME)
-        st = os.stat(p)
+        present = set(os.listdir(dir_path))
     except OSError:
         return None
-    return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
+    for name in PREVIEW_IMAGE_NAMES:
+        if name not in present:
+            continue
+        p = os.path.join(dir_path, name)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+            return os.path.abspath(p)
+    return None
 
 
 def app_category(dir_path: str) -> str | None:
@@ -200,8 +248,8 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
         "entry": entry_html,
         "entry_html": entry_html,
         # The card's thumbnail when the author supplied one: absolute path to
-        # `preview.png` at the folder's root, else None and the card falls back
-        # to rendering `entry_html` live.
+        # the folder's root `preview.png` (or `preview.webp`), else None and the
+        # card falls back to rendering `entry_html` live.
         "preview_image": app_preview_image(path),
         # The authored category from `metadata.json`, or None. Drives the apps
         # page's category filter; None means "All only".

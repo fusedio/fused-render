@@ -75,11 +75,13 @@ MAX_OPEN_TOTAL_BYTES = 1024 * 1024 * 1024
 # runs). A real manifest is a few hundred bytes; 256 KiB is generous.
 _MANIFEST_CAP_BYTES = 256 * 1024
 
-# Cap on the payload's preview.png, both directions (a capture injected at
+# Cap on the payload's authored still, both directions (a capture injected at
 # export time and the member `read_preview` streams to a card). A card
-# thumbnail is ~1280x800; 8 MiB is generous for any real screenshot.
+# thumbnail is ~1280x800; 8 MiB is generous for any real screenshot. The name
+# and the accepted encodings are `app_listing`'s (PNG or WebP,
+# `app_listing.preview_media_type`) — the payload's thumbnail is the same file
+# under the same rules as the folder's, only zipped.
 MAX_PREVIEW_BYTES = 8 * 1024 * 1024
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 # Directory/file names never exported. Dotted names (`.git`, `.claude`,
 # `.venv`, `.DS_Store`, `.env` — which may hold secrets) are dropped by the
@@ -281,10 +283,12 @@ def export_app_file(app_dir: str, out_path: str,
     Non-destructive: refuses an existing ``out_path``.
 
     ``preview_bytes`` is an optional caller-captured card screenshot (D396):
-    it becomes the payload's ``preview.png`` ONLY when the folder has no
-    authored one — an author's chosen still always wins over a capture. It
-    must be a real PNG under the preview cap; anything else raises rather
-    than baking a broken thumbnail into the artifact forever. That strictness
+    it becomes the payload's authored still (``preview.png``, or
+    ``preview.webp`` when the bytes are one) ONLY when the folder has no
+    authored one under EITHER name — an author's chosen still always wins over
+    a capture. It must be a real PNG or WebP under the preview cap; anything
+    else raises rather than baking a broken thumbnail into the artifact
+    forever. That strictness
     is for a caller that MEANT to supply a still: the export ROUTE, whose
     bytes come off a best-effort screen grab, drops an over-cap capture before
     it gets here, because a failed grab must cost the thumbnail and not the
@@ -328,15 +332,22 @@ def export_app_file(app_dir: str, out_path: str,
             f"app folder is too large to export ({total} bytes > {MAX_EXPORT_TOTAL_BYTES})"
         )
 
+    preview_name = app_listing.PREVIEW_IMAGE_NAME
     if preview_bytes is not None:
         if len(preview_bytes) > MAX_PREVIEW_BYTES:
             raise AppFileError(
                 f"preview image is too large ({len(preview_bytes)} bytes > "
                 f"{MAX_PREVIEW_BYTES})")
-        if not preview_bytes.startswith(_PNG_MAGIC):
-            raise AppFileError("preview image is not a PNG")
-        if any(rel == app_listing.PREVIEW_IMAGE_NAME for _, rel in members):
-            preview_bytes = None  # the authored still wins
+        media_type = app_listing.preview_media_type(preview_bytes)
+        if media_type is None:
+            raise AppFileError("preview image is not a PNG or WebP")
+        # The member is named for what the bytes ARE, not for what the capture
+        # usually is: `read_preview` and the folder's own thumbnail rule both
+        # take the name as the encoding, so a webp under the .png name would
+        # serve as `image/png` and render nowhere.
+        preview_name = app_listing.preview_name_for(media_type)
+        if any(rel in app_listing.PREVIEW_IMAGE_NAMES for _, rel in members):
+            preview_bytes = None  # the authored still wins — either name of it
 
     manifest = {
         "fused_app_file": 1,
@@ -354,8 +365,7 @@ def export_app_file(app_dir: str, out_path: str,
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
             if preview_bytes is not None:
-                zf.writestr(
-                    f"{PAYLOAD_DIR}/{app_listing.PREVIEW_IMAGE_NAME}", preview_bytes)
+                zf.writestr(f"{PAYLOAD_DIR}/{preview_name}", preview_bytes)
             for full, rel in members:
                 zf.write(full, arcname=f"{PAYLOAD_DIR}/{rel}")
         os.replace(tmp, out_path)
@@ -403,32 +413,44 @@ def read_manifest(fused_path: str) -> dict:
     return manifest
 
 
-def read_preview(fused_path: str) -> bytes | None:
-    """The payload's ``preview.png`` bytes, or None when the file ships
-    without one — read-only, single member, nothing extracted (the same
-    posture as :func:`read_manifest`; a card thumbnail must never trigger
-    extraction). Raises :class:`AppFileError` for an unreadable/invalid
-    ``.fused``; a member that is over the cap or not a PNG answers None —
-    for a THUMBNAIL, "broken still" and "no still" earn the same fallback."""
+def read_preview(fused_path: str) -> tuple[bytes, str] | None:
+    """The payload's authored still as ``(bytes, media_type)``, or None when the
+    file ships without one — read-only, one or two member opens, nothing
+    extracted (the same posture as :func:`read_manifest`; a card thumbnail must
+    never trigger extraction).
+
+    The names are tried in `app_listing.PREVIEW_IMAGE_NAMES` order, so a payload
+    carrying both answers with the PNG exactly as the folder it came from would.
+    The media type is returned rather than assumed because the caller serves
+    these bytes with no path to guess from (routers/appfile) — and it is
+    SNIFFED, not taken from the member name, since the name is whatever the
+    zip's author typed.
+
+    Raises :class:`AppFileError` for an unreadable/invalid ``.fused``; a member
+    that is over the cap or not a PNG/WebP is skipped like an absent one — for a
+    THUMBNAIL, "broken still" and "no still" earn the same fallback."""
     manifest = read_manifest(fused_path)
     root = manifest.get("root") or PAYLOAD_DIR
     if not isinstance(root, str) or "\\" in root or ".." in root.split("/"):
         raise AppFileError(f"invalid root path in manifest: {root!r}")
-    member = f"{root}/{app_listing.PREVIEW_IMAGE_NAME}"
     try:
         with zipfile.ZipFile(fused_path) as zf:
-            try:
-                with zf.open(member) as f:
-                    # Bounded read, like the manifest's: declared sizes in an
-                    # archive are attacker-controlled.
-                    raw = f.read(MAX_PREVIEW_BYTES + 1)
-            except KeyError:
-                return None
+            for name in app_listing.PREVIEW_IMAGE_NAMES:
+                try:
+                    with zf.open(f"{root}/{name}") as f:
+                        # Bounded read, like the manifest's: declared sizes in
+                        # an archive are attacker-controlled.
+                        raw = f.read(MAX_PREVIEW_BYTES + 1)
+                except KeyError:
+                    continue
+                if len(raw) > MAX_PREVIEW_BYTES:
+                    continue
+                media_type = app_listing.preview_media_type(raw)
+                if media_type is not None:
+                    return raw, media_type
     except (OSError, zipfile.BadZipFile) as exc:
         raise AppFileError(f"not a readable .fused file: {exc}")
-    if len(raw) > MAX_PREVIEW_BYTES or not raw.startswith(_PNG_MAGIC):
-        return None
-    return raw
+    return None
 
 
 def _slug(name: str, fallback: str = "app") -> str:

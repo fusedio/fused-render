@@ -1,8 +1,9 @@
 // Big preview card for the /apps hub. Its thumbnail has three shapes, in
 // precedence order:
 //
-//   1. `preview.png` at the app folder's root — an AUTHORED still, served as
-//      bytes through /api/fs/raw. First because it is the only one the author
+//   1. `preview.png` (or `preview.webp`) at the app folder's root — an
+//      AUTHORED still, served as bytes through /api/fs/raw, which types it
+//      from the name. First because it is the only one the author
 //      chose: a live render shows the page in whatever state it comes up in
 //      (empty, mid-load, asking for a file), and a screenshot shows the app
 //      making its point. It is also by far the cheapest of the three.

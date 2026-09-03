@@ -84,8 +84,8 @@ async def api_appfile_export_with_preview(
     x_fused: str | None = Header(default=None),
 ):
     """The card's export path (D396): same download as the GET, plus an
-    optional caller-captured screenshot that becomes the payload's
-    ``preview.png`` when the folder has no authored one. A POST because it
+    optional caller-captured screenshot that becomes the payload's authored
+    still when the folder has no authored one. A POST because it
     carries a body; X-Fused-guarded because — unlike the GET — its caller is
     always our own fetch, never bare browser navigation.
 
@@ -96,8 +96,9 @@ async def api_appfile_export_with_preview(
     its strict answer for a caller that passes a preview deliberately; this
     route, which knows its bytes came off a best-effort screen grab, screens
     the size first. Read one byte past the cap so "exactly at the cap" ships.
-    A non-PNG still raises: `canvas.toBlob(…, "image/png")` cannot produce one,
-    so those bytes are a client bug worth reporting, not a failed grab.
+    Bytes that are neither PNG nor WebP still raise: `canvas.toBlob(…,
+    "image/png")` cannot produce them, so they are a client bug worth
+    reporting, not a failed grab.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -129,20 +130,25 @@ async def api_appfile_export_with_preview(
 
 @router.get("/api/appfile/preview")
 def api_appfile_preview(path: str = ""):
-    """The ``preview.png`` inside the ``.fused`` at ``path``, as bytes — the
-    exported card's thumbnail (D396). Read-only single-member zip read, no
-    extraction (a grid of thumbnails must never populate the extract cache).
-    404 when the file ships without one, so the card's ordinary onError
-    fallback shows the empty thumb."""
+    """The authored still inside the ``.fused`` at ``path`` (``preview.png``,
+    else ``preview.webp``), as bytes — the exported card's thumbnail (D396).
+    Read-only single-member zip read, no extraction (a grid of thumbnails must
+    never populate the extract cache). 404 when the file ships without one, so
+    the card's ordinary onError fallback shows the empty thumb.
+
+    The content type comes from `read_preview`, which sniffed the bytes: this
+    route has no file name to guess from, and a webp served as ``image/png``
+    renders nowhere."""
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute .fused file path")
     try:
-        raw = appfile.read_preview(path)
+        found = appfile.read_preview(path)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-    if raw is None:
+    if found is None:
         return _error("this app file has no preview image", status=404)
-    return Response(raw, media_type="image/png",
+    raw, media_type = found
+    return Response(raw, media_type=media_type,
                     headers={"Cache-Control": "no-cache"})
 
 
