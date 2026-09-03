@@ -17,11 +17,12 @@ a real background task ever running.
 import importlib.util
 import json
 import os
-import stat
 import sys
 import time
 
 import pytest
+
+from _claude_stub_cli import write_stub_cli
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 
@@ -78,11 +79,7 @@ for line in sys.stdin:
 
 @pytest.fixture()
 def stub_cli(tmp_path):
-    path = tmp_path / "bin" / "claude"
-    path.parent.mkdir()
-    path.write_text(_STUB.format(python=sys.executable))
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return str(path)
+    return write_stub_cli(tmp_path / "bin", _STUB.format(python=sys.executable))
 
 
 @pytest.fixture()
