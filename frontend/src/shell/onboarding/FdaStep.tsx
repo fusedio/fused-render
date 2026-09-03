@@ -25,7 +25,7 @@ import { StepHeader } from "./StepHeader";
 //: answers granted and this still-open tab converges.
 const GRANT_POLL_MS = 3000;
 
-export function FdaStep({ config }: { config: Config }) {
+export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }) {
   const [fda, setFda] = useState(config.fda);
   const [opened, setOpened] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export function FdaStep({ config }: { config: Config }) {
   return (
     <div className="flex flex-col gap-6">
       <StepHeader
-        eyebrow="Step 3 of 4"
+        eyebrow={eyebrow}
         title="Let FusedRender read your files"
         lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them and survives upgrades."
       />

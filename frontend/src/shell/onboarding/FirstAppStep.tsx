@@ -4,8 +4,9 @@
 // writes anything, so an abandoned wizard leaves no junk.
 //
 // `onComplete` writes the flag ONLY — it does not close the overlay. The
-// wizard closes on the route change the action causes, so a composer
-// `task_error` (folder made, Claude didn't start) stays readable in place.
+// wizard completes and closes on the route change an action causes, so a
+// composer `task_error` (folder made, Claude didn't start) stays readable in
+// place, and a click on a card's export icon (no navigation) completes nothing.
 //
 // The showcase clone is fire-and-forget at startup and may not have landed
 // yet — the same catalog→refresh dance Apps.tsx does forces it, with a
@@ -56,9 +57,13 @@ function useLocalAiShowcase(): AppInfo[] | null {
 
 export function FirstAppStep({
   health,
+  eyebrow,
   onComplete,
 }: {
   health: ClaudeHealth | null;
+  eyebrow: string;
+  /** The composer created a folder — real progress, flag it. Showcase cards
+      need no hook: the navigation they perform is what the wizard reads. */
   onComplete: () => void;
 }) {
   const showcase = useLocalAiShowcase();
@@ -67,7 +72,7 @@ export function FirstAppStep({
   return (
     <div className="flex flex-col gap-8">
       <StepHeader
-        eyebrow="Step 4 of 4"
+        eyebrow={eyebrow}
         title="Build your first app"
         lead="Describe what you want. Claude Code names it, scaffolds a folder under ~/Fused/local and starts building — you land on the app with the session streaming beside it."
       />
@@ -104,9 +109,7 @@ export function FirstAppStep({
             The showcase is still downloading — it appears under Apps once it lands.
           </p>
         ) : (
-          // Opening a card is the wizard's completion too — flag only; the
-          // navigation the card performs is what closes the overlay.
-          <div className="grid gap-4 sm:grid-cols-2" onClickCapture={onComplete}>
+          <div className="grid gap-4 sm:grid-cols-2">
             {showcase.slice(0, 4).map((app) => (
               <AppPreviewCard key={app.path} app={app} />
             ))}

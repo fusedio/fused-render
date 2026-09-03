@@ -68,6 +68,8 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
   const steps = STEPS.filter((s) => s.id !== "fda" || isMac(health?.platform));
   const step = steps[Math.min(index, steps.length - 1)];
   const last = index >= steps.length - 1;
+  // Counted over the steps this machine actually has (no FDA off macOS).
+  const eyebrow = `Step ${index + 1} of ${steps.length}`;
 
   // Fire-and-forget: the flag is a courtesy to the NEXT launch, and a failed
   // write must not hold the overlay over the app the user is trying to reach.
@@ -88,9 +90,16 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
   // composer's own `task_error` ("folder created, Claude didn't start") lands
   // in a composer that is still on screen, where the user can read it, instead
   // of dying with an overlay that closed on `onCreated`.
+  //
+  // A navigation off the last step IS completion (a showcase card opened, or
+  // the composer landed on the new app) — so cards need no click hook, and a
+  // click that does not navigate (a card's export icon) completes nothing.
   const firstPath = useRef(pathname);
   useEffect(() => {
-    if (pathname !== firstPath.current) closeOnboarding();
+    if (pathname === firstPath.current) return;
+    if (last) markComplete();
+    closeOnboarding();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to the route only
   }, [pathname]);
 
   const next = useCallback(() => {
@@ -183,10 +192,10 @@ function Wizard({ config, pathname }: { config: Config; pathname: string }) {
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={cn("mx-auto w-full px-6 py-10", step.id === "app" ? "max-w-4xl" : "max-w-2xl")}>
-          {step.id === "about" && <AboutStep />}
-          {step.id === "claude" && <ClaudeStep setup={setup} />}
-          {step.id === "fda" && <FdaStep config={config} />}
-          {step.id === "app" && <FirstAppStep health={health} onComplete={markComplete} />}
+          {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
+          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} />}
+          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} />}
+          {step.id === "app" && <FirstAppStep health={health} eyebrow={eyebrow} onComplete={markComplete} />}
         </div>
       </div>
 

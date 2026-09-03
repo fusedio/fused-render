@@ -33,12 +33,12 @@ const FEATURES = [
   },
 ];
 
-export function AboutStep() {
+export function AboutStep({ eyebrow }: { eyebrow: string }) {
   const [videoOk, setVideoOk] = useState(true);
   return (
     <div className="flex flex-col gap-6">
       <StepHeader
-        eyebrow="Step 1 of 4"
+        eyebrow={eyebrow}
         title="Your files, your AI, your apps."
         lead="FusedRender turns any folder on this machine into an app: a web page you see, a Python file that does the work, and Claude Code to write both. Everything runs here — no account, no cloud."
       />

@@ -60,7 +60,8 @@ function rowsFor(h: ClaudeHealth): Row[] {
       label: "Available in your terminal",
       hint: "Optional. The app works either way; this is for typing `claude` yourself.",
       optional: true,
-      state: !runnable ? "open" : h.on_shell_path === false ? "open" : "done",
+      // `null` is "could not tell" (Windows, an override) — never a green check.
+      state: !runnable ? "open" : h.on_shell_path === false ? "open" : h.on_shell_path === true ? "done" : "unknown",
       issueIds: ["not-on-path"],
     },
   ];
@@ -88,7 +89,7 @@ function StateIcon({ state, optional }: { state: RowState; optional?: boolean })
 
 // `setup` is the wizard's single machine (OnboardingWizard owns it, so what
 // gets fixed here is what step 4 reads).
-export function ClaudeStep({ setup }: { setup: ClaudeSetup }) {
+export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: string }) {
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;
@@ -98,7 +99,7 @@ export function ClaudeStep({ setup }: { setup: ClaudeSetup }) {
   return (
     <div className="flex flex-col gap-6">
       <StepHeader
-        eyebrow="Step 2 of 4"
+        eyebrow={eyebrow}
         title="Connect Claude Code"
         lead={
           <>
