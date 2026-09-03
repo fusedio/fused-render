@@ -995,7 +995,7 @@ export function FilesSearch({
               </span>
               <button
                 type="button"
-                className="btn btn-primary fh-index-cta-btn"
+                className="btn btn-secondary fh-index-cta-btn"
                 disabled={starting}
                 onClick={startBuild}
               >

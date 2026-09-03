@@ -298,9 +298,11 @@
   color: var(--fg);
 }
 
-/* Position only — the size, weight and hover come from `.btn.btn-primary`
-   untouched, so this reads as the same button as every other primary action
-   in the app rather than a one-off small variant of it. */
+/* Position only — chassis and hover come from `.btn.btn-secondary` untouched.
+   Secondary, not primary: `.fh-panel` has no surface of its own, so a filled
+   `var(--fg)` primary is a near-white block sitting on the bare page, louder
+   than anything else on it. The bordered button inside the callout is already
+   unmissable next to the 12px muted note it replaced. */
 .fh-index-cta-btn {
   margin-left: auto;
 }
