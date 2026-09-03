@@ -2383,6 +2383,53 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _turn_state(run_dir: str) -> tuple:
+    """(turn_open, tasks_pending), read off `out.jsonl` alone — no pid touched.
+
+    `turn_open` lifts the exact D415 rule `_poll` already applies (see its
+    `idle` there): a trailing `result` row means the turn that produced it is
+    over, and ANYTHING after it — a hook firing, a fresh `system/init`, more
+    text — reopens it, because that is the CLI waking itself for another turn
+    on the same held-open stdin. A run with no rows yet (freshly spawned,
+    `out.jsonl` not created or still empty) is open, same as `_poll` reads it:
+    only `FileNotFoundError` degrades to an empty read, matching its own try.
+
+    `tasks_pending` is the newest `background_tasks_changed` row's `tasks`
+    array, non-empty. That is the CLI's own authoritative list — `_poll` also
+    folds in the incremental `task_started`/`task_notification`/`task_updated`
+    rows for its live activity line, but a caller here only needs the same
+    yes/no a full `_poll` would eventually converge on, not the running
+    description text.
+
+    Both answers ignore the pid entirely, on purpose: a session host can hold
+    a `claude` process alive long past its last turn, so "the process exists"
+    and "a turn is open" stopped being the same fact the day the host shipped.
+    A caller that still wants the raw process check has `_alive`.
+    """
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+
+    idle = False
+    tasks = {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # half-written last line; next read gets it
+        t = row.get("type")
+        idle = t == "result"
+        if t == "system" and row.get("subtype") == "background_tasks_changed":
+            arr = row.get("tasks")
+            if isinstance(arr, list):
+                tasks = {str(x.get("task_id")): True
+                         for x in arr if isinstance(x, dict) and x.get("task_id")}
+    return not idle, bool(tasks)
+
+
 def _session_from_out(run_dir: str) -> str:
     """The session id the CLI announced in its first system row, or "".
 
@@ -2433,8 +2480,25 @@ def _registry_running(workdir: str) -> set:
     `busy`/`shell` is running; `idle`/`waiting` is not; a row with NO status is
     a headless `claude -p` that is alive, which is running for as long as the
     file exists. A dead pid (a crash left the file behind) counts for nothing.
-    Best-effort throughout: an unreadable registry is an empty answer."""
+    Best-effort throughout: an unreadable registry is an empty answer.
+
+    A headless row whose pid is OURS — one of this app's own run dirs — is
+    skipped rather than counted by file existence: since the session host
+    shipped, that pid can sit alive well past its last turn, and `_turn_state`
+    (off that run's own `out.jsonl`) already answers precisely whether a turn
+    is actually open. Only a FOREIGN headless session (started at a terminal,
+    invisible to RUNS) still needs this coarser heuristic."""
     want = os.path.abspath(workdir)
+    own_pids = set()
+    try:
+        for name in os.listdir(RUNS):
+            try:
+                with open(os.path.join(RUNS, name, "pid"), encoding="utf-8") as fh:
+                    own_pids.add(fh.read().strip())
+            except OSError:
+                continue
+    except OSError:
+        pass
     try:
         names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
     except OSError:
@@ -2458,6 +2522,8 @@ def _registry_running(workdir: str) -> set:
             continue
         status = row.get("status")
         if isinstance(status, str) and status and status not in ("busy", "shell"):
+            continue
+        if not status and str(row.get("pid") or "") in own_pids:
             continue
         if not _pid_alive(str(row.get("pid") or "")):
             continue
@@ -2536,10 +2602,16 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 own = _session_from_out(run_dir)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
-        # Liveness LAST: it is the only check that touches a pid, and the two
-        # above have already thrown out everything that is not this chat.
+        # Liveness LAST: the pid check alone used to be enough, because the
+        # process exited the moment its one turn did. A session host now
+        # holds `claude` open well past that, so "the process exists" is
+        # necessary but no longer sufficient — the transcript also has to
+        # say a turn is actually open (_turn_state) before this counts as
+        # "still streaming".
         if _alive(run_dir):
-            return {"run_id": name}
+            turn_open, _tasks_pending = _turn_state(run_dir)
+            if turn_open:
+                return {"run_id": name}
     return {"run_id": ""}
 
 
@@ -2557,8 +2629,9 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
     the CLI minted for it (the `session` file, or the head of out.jsonl before
     the first poll has written one), and either can be the id a row carries.
 
-    Liveness is checked LAST and only for runs this folder owns — it is the one
-    test that touches a pid.
+    Liveness is checked LAST and only for runs this folder owns — a pid check
+    (_alive) plus a turn-open check (_turn_state), since a session host can
+    hold the pid alive well past its last turn.
     """
     workdir = os.path.abspath(_workdir(file))
     try:
@@ -2578,7 +2651,11 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
         target = meta.get("file", "")
         if not target or os.path.abspath(_workdir(target)) != workdir:
             continue
+        # Alive AND turn-open — see _live_run's matching comment.
         if not _alive(run_dir):
+            continue
+        turn_open, _tasks_pending = _turn_state(run_dir)
+        if not turn_open:
             continue
         own = ""
         try:
@@ -3488,6 +3565,12 @@ def _poll(run_id: str, file: str = "") -> dict:
             # schedule.py) left this page reporting the kill as a crash. See
             # `_cancel`, which writes the marker.
             "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            # Same array `activity.tasks` renders from, collapsed to the
+            # yes/no a session host's reap loop wants: background work still
+            # running is what holds a host open past an otherwise-idle turn
+            # (see _turn_state, which computes this same fact off out.jsonl
+            # alone for a caller with no reason to parse the whole file).
+            "tasks_pending": bool(bg_tasks),
             "activity": {
                 "tool": next(reversed(tools_open.values())) if tools_open else None,
                 "tools_open": len(tools_open),
