@@ -9,7 +9,13 @@ import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/li
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
-import { getClaudeSessionFolders, getGitRepos, indexRank, statPath } from "@platform/lib/api";
+import {
+  getClaudeSessionFolders,
+  getGitRepos,
+  indexRank,
+  startIndexScan,
+  statPath,
+} from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -42,6 +48,7 @@ import {
   answerFrom,
   formatElapsed,
   homeCountNote,
+  indexGap,
   isAiRow,
   isOpenRow,
   nameStart,
@@ -789,6 +796,41 @@ export function FilesSearch({
       ? searchCaveat(indexScan, { behind, pending, rescanPending: indexRescanPending() })
       : null;
 
+  // Why an uncovered answer is uncovered, and — for the one value of that the
+  // user can act on — the action itself (lib/home-search's `indexGap`).
+  //
+  // `indexScan?.scanning` is fed in alongside the answer's own `reason` so a
+  // scan started since the last keystroke counts: the button below flips the
+  // note to "building" off the poll, a second later, rather than sitting on
+  // "not indexed" until something else re-ranks.
+  const gap =
+    displayAnswer !== null && !displayAnswer.covered
+      ? indexGap(displayAnswer.reason, indexScan?.scanning === true)
+      : null;
+  const [building, setBuilding] = useState(false);
+  const [buildError, setBuildError] = useState("");
+  // POST /api/index/scan with no root — every configured root, and NOT
+  // `requestFolderScan`, whose 15-minute debounce is right for a keystroke and
+  // wrong for a button: the whole reason the user is looking at this button is
+  // that a scan started minutes ago and left nothing behind, which is exactly
+  // what that debounce would refuse.
+  //
+  // `building` only covers the request. Once it returns, the status poll owns
+  // the state — it is what `gap` reads, and it is what survives this component
+  // remounting mid-scan.
+  const startBuild = () => {
+    if (building) return;
+    setBuilding(true);
+    setBuildError("");
+    startIndexScan().then(
+      () => setBuilding(false),
+      (err: Error) => {
+        setBuilding(false);
+        setBuildError(err.message);
+      },
+    );
+  };
+
   // The row-model descriptor (lib/home-search): at most one leading "Open"
   // row, then files, then at most one AI row. `showOpenRow` forces the other
   // two off — the request that would have produced file hits was never sent
@@ -937,7 +979,7 @@ export function FilesSearch({
               // Never settled once for this typing run yet — nothing held to
               // fall back on, so there is nothing else honest to say.
               "Searching…"
-            ) : !displayAnswer.covered && displayAnswer.reason === "disabled" ? (
+            ) : gap === "disabled" ? (
               // Distinct from "still building": nothing is coming, because
               // nothing is scanning, because the user turned it off. Saying
               // "still building" here would be a lie the user has no way to
@@ -953,10 +995,44 @@ export function FilesSearch({
                 </button>
                 .
               </>
-            ) : !displayAnswer.covered ? (
+            ) : gap === "scanning" ? (
               // Never "no matches" for an index that has not been built: that
-              // would blame the user's files for the app's state.
-              "The file index is still building — AI search can answer in the meantime."
+              // would blame the user's files for the app's state. The file
+              // count is the listing's chip in words — a claim that something
+              // is coming should be able to show its progress, or it is
+              // indistinguishable from the wedged case below.
+              `The file index is still building${
+                indexScan && indexScan.files > 0
+                  ? ` (${indexScan.files.toLocaleString()} files so far)`
+                  : ""
+              } — AI search can answer in the meantime.`
+            ) : gap === "buildable" ? (
+              // Nothing is scanning and nothing will start on its own: the
+              // startup scheduler ran once at boot (and may have been
+              // refused, debounce-skipped, or lost its worker), and this page
+              // — unlike the in-folder box — never asks for a scan. Telling
+              // the user to wait here is a promise the app cannot keep, so
+              // say what is true and offer the scan instead.
+              <>
+                {buildError !== ""
+                  ? `The index scan could not be started: ${buildError} `
+                  : "Your files aren’t indexed yet. "}
+                <button
+                  type="button"
+                  className="fh-link-button"
+                  disabled={building}
+                  onClick={startBuild}
+                >
+                  {building ? "Starting…" : "Index them now"}
+                </button>
+                {" — AI search can answer in the meantime."}
+              </>
+            ) : gap === "unavailable" ? (
+              // mount / package / ignored: no scan will ever cover this root,
+              // so offering one would be a button that cannot work. There is
+              // no live walk on this page to fall back to either (that is the
+              // listing's), which leaves AI search as the honest offer.
+              "This location can’t be indexed — AI search can still answer."
             ) : hits.length === 0 && settled && rowModel.aiRow ? (
               // `hits`, not `answer.hits`: `settled` already rules out
               // `behind` (see `hits`'s own comment — `rankingSettled` is

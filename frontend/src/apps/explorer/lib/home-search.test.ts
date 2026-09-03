@@ -5,6 +5,7 @@ import {
   answerFrom,
   formatElapsed,
   homeCountNote,
+  indexGap,
   isAiRow,
   isOpenRow,
   nameStart,
@@ -571,5 +572,44 @@ describe("redirectsToSearch", () => {
     // Not merely redundant: focusing on every keystroke would reset the caret
     // to the end, so editing the middle of a query would be impossible.
     expect(redirectsToSearch(key({ tagName: "INPUT", isSearchInput: true }))).toBe(false);
+  });
+});
+
+describe("indexGap", () => {
+  it("separates a scan that is running from one that is not", () => {
+    // The distinction the page did not make, and the whole of the
+    // sit-on-"indexing"-for-20-minutes report: `uncovered` with nothing
+    // running is not a build in progress, it is a build that has to be asked
+    // for.
+    expect(indexGap("scanning", false)).toBe("scanning");
+    expect(indexGap("uncovered", false)).toBe("buildable");
+  });
+
+  it("takes the live poll's word for a scan the answer predates", () => {
+    // `reason` was fixed when the answer was ranked, so the scan the user
+    // just started is only visible in the status poll until the next query.
+    expect(indexGap("uncovered", true)).toBe("scanning");
+  });
+
+  it("never claims a scan while indexing is off", () => {
+    // Nothing can be in flight with the pref off — every trigger is gated and
+    // a running scan is cancelled at toggle-off — so a lagging `scanning`
+    // from the poll must not out-vote it, or the note promises a build that
+    // cannot start.
+    expect(indexGap("disabled", true)).toBe("disabled");
+    expect(indexGap("disabled", false)).toBe("disabled");
+  });
+
+  it("calls the permanently uncoverable reasons what they are", () => {
+    // Offering "index it now" for these would be a button that cannot work.
+    for (const r of ["mount", "package", "ignored"] as const)
+      expect(indexGap(r, false)).toBe("unavailable");
+  });
+
+  it("treats an unnamed miss as buildable", () => {
+    // `""` only reaches here if a not-covered answer arrived without a
+    // reason; a scan is the one thing that could fix it, so offer that
+    // rather than a dead end.
+    expect(indexGap("", false)).toBe("buildable");
   });
 });

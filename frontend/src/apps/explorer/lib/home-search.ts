@@ -510,3 +510,49 @@ export function submitRow(
 ): number | null {
   return activeRow(highlight, m, settled);
 }
+
+// -- why there is no index answer --------------------------------------------
+
+/**
+ * The four states a not-covered answer can be in. They differ in what the
+ * user can do about it, which is the only reason to tell them apart.
+ *
+ *  * `scanning` — a scan is running, so waiting really is the advice.
+ *  * `buildable` — the root is not in the index and NOTHING is running.
+ *    Waiting fixes nothing; only a scan does.
+ *  * `disabled` — the indexing pref is off, so no scan can start until it is
+ *    back on.
+ *  * `unavailable` — mount-backed, inside a package, or pruned by the ignore
+ *    rules: no scan will ever cover it (see `RankReason`).
+ */
+export type IndexGap = "scanning" | "buildable" | "disabled" | "unavailable";
+
+/**
+ * Which of those an uncovered root is in.
+ *
+ * The page used to render one message — "the file index is still building" —
+ * for every `reason`, and that message is a promise that something is coming.
+ * For `uncovered` nothing is: this page never asks for a scan (that is the
+ * in-folder box's `requestFolderScan`) and the startup scheduler runs once per
+ * boot, so a first scan that was refused, debounce-skipped, or died with its
+ * worker leaves the page promising a build that no longer exists — for as long
+ * as the user is willing to stare at it. `buildable` is that case as its own
+ * state, so the page can offer the scan instead of describing one.
+ *
+ * `scanning` is read from the LIVE status poll as well as from `reason`:
+ * `reason` was fixed when the answer was ranked, so a scan started since the
+ * last keystroke (by the user's own button, or by anything else) shows up in
+ * the poll a second later and in `reason` only on the next query.
+ *
+ * `disabled` outranks the poll because nothing can be in flight while the pref
+ * is off — every trigger is gated on it, and a scan running at the moment of
+ * toggle-off is cancelled outright (routers/index.cancel_all_scans).
+ */
+export function indexGap(reason: RankReason, scanning: boolean): IndexGap {
+  if (reason === "disabled") return "disabled";
+  if (scanning || reason === "scanning") return "scanning";
+  if (reason === "mount" || reason === "package" || reason === "ignored") {
+    return "unavailable";
+  }
+  return "buildable";
+}

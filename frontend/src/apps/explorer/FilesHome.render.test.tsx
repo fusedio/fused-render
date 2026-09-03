@@ -27,7 +27,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
-import type { IndexRankResult, StatResult } from "@platform/lib/api";
+import type { IndexRankResult, IndexStatus, StatResult } from "@platform/lib/api";
 import { Clock } from "@apps/explorer/listing/hook-harness";
 import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
 import { resetFsMutations } from "@platform/lib/index-freshness";
@@ -48,6 +48,9 @@ interface StatCall {
 }
 const rankCalls: RankCall[] = [];
 const statCalls: StatCall[] = [];
+/** Every POST /api/index/scan, by URL — the observable trace of the note's
+ * "index them now" button actually asking for a scan. */
+const scanCalls: string[] = [];
 /** Every `history.pushState(..., url)` the router's `navigate()` makes — the
  * observable trace of a navigation, since `navigate` itself is a frozen ES
  * module export this file cannot spy on (see the file-header comment on why
@@ -84,6 +87,18 @@ function fakeFetch(url: string | URL): Promise<Response> {
       });
     });
   }
+  // The "index them now" button's POST. Answered immediately rather than
+  // deferred like the two above: the test's interest is that the scan was
+  // ASKED FOR, and the note's state after it comes from the status poll
+  // (`indexScan`, a prop here), not from this reply.
+  if (u.startsWith("/api/index/scan")) {
+    scanCalls.push(u);
+    return Promise.resolve(
+      new Response(JSON.stringify({ ok: true, run_id: "r1", root: HOME, runs: [] }), {
+        status: 200,
+      }),
+    );
+  }
   throw new Error("FilesHome.render.test.tsx: unexpected fetch " + u);
 }
 
@@ -116,6 +131,7 @@ const mounted: ReactTestRenderer[] = [];
 beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
+  scanCalls.length = 0;
   navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
   // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
@@ -170,14 +186,36 @@ async function flush(fn: () => void = () => {}): Promise<void> {
   });
 }
 
-function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () => void } {
+/** The shared status poll's reading, as the page's own `useIndexStatus` would
+ * hand it down. Null (the default) is "no poll answer yet", which is what
+ * every test that does not care about scan state wants. */
+function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
+  return {
+    scanning: false,
+    has_index: false,
+    files_indexed: 0,
+    last_completed_at: null,
+    running: false,
+    run_id: null,
+    root: HOME,
+    phase: "",
+    dirs: 0,
+    files: 0,
+    error: null,
+    ...over,
+  };
+}
+
+function mount(
+  indexScan: IndexStatus | null = null,
+): { renderer: ReactTestRenderer; input: () => any; unmount: () => void } {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
       createElement(FilesSearch, {
         home: HOME,
         initialQuery: "",
-        indexScan: null,
+        indexScan,
         onActiveChange: () => {},
       }),
     );
@@ -634,6 +672,87 @@ describe("the AI row's sticky positioning is on the LIST ITEM, not the button in
     );
     expect(carriers.length).toBeGreaterThan(0);
     for (const n of carriers) expect(n.type).toBe("li");
+    box.unmount();
+  });
+});
+
+// An uncovered root with nothing scanning used to render the same "still
+// building" note as a live scan. Nothing on this page ever asks for a scan
+// (that is the in-folder box's `requestFolderScan`) and the startup scheduler
+// runs once per boot, so that note promised a build that had already failed,
+// been refused, or been debounce-skipped — for as long as the user was
+// willing to wait, which in the report that prompted this was twenty minutes.
+describe("an uncovered index with no scan running offers the scan", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  test("says the files are not indexed rather than that something is coming", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("aren’t indexed yet");
+    expect(note).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("the button asks for a whole-index scan, not a folder one", async () => {
+    // POST /api/index/scan (every configured root, no debounce) — NOT
+    // /api/index/scan-folder, whose 15-minute floor would refuse exactly the
+    // case this button exists for.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(noteText(box)).toContain("Index them now");
+    const button = findByClass(box, "fh-link-button") as { props: { onClick: () => void } }[];
+    expect(button).toHaveLength(1);
+    await flush(() => button[0].props.onClick());
+    expect(scanCalls).toEqual(["/api/index/scan"]);
+    box.unmount();
+  });
+
+  test("a live scan still says building, with its progress", async () => {
+    // The other half of the same distinction: when a scan really is running,
+    // waiting IS the advice — and the count is what tells the user that
+    // "building" is a live claim rather than the wedged one above.
+    const box = mount(scanStatus({ scanning: true, files: 12345 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("still building");
+    expect(note).toContain("12,345 files so far");
+    box.unmount();
+  });
+
+  test("a scan started since the answer was ranked flips the note off the poll", async () => {
+    // `reason` was fixed when the answer was ranked, so the status poll is
+    // the only thing that can report the scan the button just started. Same
+    // uncovered answer, `scanning: true` from the poll.
+    const box = mount(scanStatus({ scanning: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(noteText(box)).toContain("still building");
+    box.unmount();
+  });
+
+  test("indexing turned off keeps its own message and offers no scan", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "disabled" })));
+    const note = noteText(box);
+    expect(note).toContain("File indexing is off");
+    expect(note).not.toContain("Index them now");
+    box.unmount();
+  });
+
+  test("a permanently uncoverable root offers no scan either", async () => {
+    // A button that cannot work is worse than none: no scan will ever cover a
+    // mount-backed root.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "mount" })));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).not.toContain("Index them now");
     box.unmount();
   });
 });
