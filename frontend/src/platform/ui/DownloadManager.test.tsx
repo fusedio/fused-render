@@ -875,6 +875,20 @@ function renderActivity(props: {
   ).toJSON() as ReactTestRendererJSON | null;
 }
 
+// Bugbot on D655 (medium): a lone TERMINAL row — a cancelled job, or a
+// scheduled run's done stand-in, both of which stay in the list — is not live
+// work, so the chip must not borrow `jobTypeLabel`'s in-progress verb for it.
+test("a lone cancelled or finished row keeps the chip at 'Activity' — no live verb, no line", () => {
+  for (const state of ["cancelled", "done"] as const) {
+    const tree = renderCard([
+      { ...BASE, id: "sys:schedule:x1", title: "Erasing text", detail: "Denoising", state, stalled: false },
+    ]);
+    const chip = findAll(tree, "dl-toggle")[0];
+    expect(text(findAll(chip, "dl-summary")[0])).toBe("Activity");
+    expect(findAll(chip, "sc-progress")).toHaveLength(0);
+  }
+});
+
 describe("the Background tasks section (moved off EnginesDock's own chip)", () => {
   // Spec: "a running engine alone: chip not idle, no numeral, no progress
   // line" — it is persistent STATE, not work in progress, so it un-mutes the
@@ -885,6 +899,13 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
     expect(toggleClasses(tree)).not.toContain("is-idle");
     expect(findAll(tree, "sc-num")).toHaveLength(0);
     expect(findAll(tree, "sc-progress")).toHaveLength(0);
+  });
+
+  // Bugbot on D655 (low): the accessible name used to fall through to
+  // "Activity, 0 running" here, contradicting the un-muted chip.
+  test("a running engine alone is named as a background task, not as zero running", () => {
+    const tree = renderActivity({ engines: { engines: [runningEngine()], onStop: async () => {} } });
+    expect(findAll(tree, "dl-toggle")[0].props["aria-label"]).toBe("Activity, 1 background task");
   });
 
   test("draws the engine's label, with a Stop button", () => {

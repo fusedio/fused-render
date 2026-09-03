@@ -839,7 +839,12 @@ export function DownloadManagerView({
   // A running engine — persistent STATE, not work — keeps the chip un-muted
   // (`idle`) but is not counted and draws no line, same rule the old dot had.
   const runningCount = jobs.length + queued;
-  const only = jobs.length === 1 && queued === 0 ? jobs[0] : null;
+  // `only` must be LIVE work: a lone cancelled row, or a scheduled run's done
+  // stand-in (which survives success, see `isVanishedOnSuccess`), is still a
+  // row here but is not "what the machine is doing" — its chip stays
+  // "Activity" (Bugbot on D655, medium).
+  const live = (j: Job) => isRunning(j) || j.state === "waiting";
+  const only = jobs.length === 1 && queued === 0 && live(jobs[0]) ? jobs[0] : null;
   const label = only ? jobTypeLabel(only) : "Activity";
   const chipCount = runningCount >= 2 ? runningCount : 0;
   const progress = aggregateProgress(jobs);
@@ -847,7 +852,9 @@ export function DownloadManagerView({
     ? "Activity, nothing running"
     : only
       ? `Activity: ${only.title}`
-      : `Activity, ${runningCount} running`;
+      : runningCount === 0
+        ? `Activity, ${engineCount} background task${engineCount === 1 ? "" : "s"}`
+        : `Activity, ${runningCount} running`;
 
   return (
     <div className="dl-host" {...chip.hostProps}>
