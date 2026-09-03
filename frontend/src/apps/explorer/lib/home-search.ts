@@ -116,10 +116,25 @@ export interface HomeAnswer {
    * same not-covered message it always has.
    */
   reason: RankReason;
+  /**
+   * Wall-clock cost of the request this answer came from, `Date.now()` at
+   * issue to `Date.now()` when the response was applied — the true
+   * end-to-end latency the user felt, not just server time. A memoised
+   * answer (the backspace path, `QueryMemo`) keeps the value it was
+   * measured with: it is a real measurement of a real request, and
+   * re-timing a cache hit would report ~0ms for a query that actually cost
+   * a full round trip moments earlier.
+   */
+  elapsedMs: number;
 }
 
 /** A ranked response as an answer: absolutized, capped, and highlighted. */
-export function answerFrom(res: IndexRankResult, query: string, home: string): HomeAnswer {
+export function answerFrom(
+  res: IndexRankResult,
+  query: string,
+  home: string,
+  elapsedMs: number,
+): HomeAnswer {
   return {
     query,
     hits: res.hits.slice(0, HOME_RESULT_CAP).map((h) => ({
@@ -137,6 +152,7 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
     total: res.total,
     covered: res.covered,
     reason: res.reason,
+    elapsedMs,
   };
 }
 
@@ -255,6 +271,38 @@ export function homeCountNote(total: number, corpusTruncated: boolean): string {
   const n = total.toLocaleString();
   if (total <= HOME_RESULT_CAP) return `${n}${suffix} match${total === 1 ? "" : "es"}`;
   return `Showing top ${HOME_RESULT_CAP} of ${n}${suffix}`;
+}
+
+/**
+ * `elapsedMs` as a short latency readout next to the count note: `"42 ms"`
+ * under a second (rounded — the readout is a feel, not a profiler), one
+ * decimal place in seconds at or above it (`"1.2 s"`, never `"1234 ms"`).
+ */
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/**
+ * Which answer the result note should read from: the live one once ranking
+ * has settled for the current query, otherwise whatever the LAST settled
+ * answer was — never a value recomputed from the narrowed hits in between.
+ *
+ * This is the fix for the note rewriting itself 2-3 times per keystroke: the
+ * caller renders `held`'s total/truncated/elapsedMs verbatim rather than
+ * reaching for `answer.total` (the previous query's number, wrong the
+ * instant `q` changes) or `hits.length` (a shrinking lower bound that hits
+ * zero the moment narrowing empties the held hits, which used to force a
+ * "Searching…" flash). Staleness is still communicated — the rows dim while
+ * behind, and the `slow`-gated "· Searching…" suffix covers the in-flight
+ * case — so the note itself is free to just hold still.
+ */
+export function noteAnswer(
+  answer: HomeAnswer | null,
+  settled: boolean,
+  held: HomeAnswer | null,
+): HomeAnswer | null {
+  return settled ? answer : held;
 }
 
 // -- typing anywhere is typing here ------------------------------------------

@@ -203,6 +203,8 @@
 .fh-result-note {
   margin: 0 0 8px;
   font-size: 12px;
+  line-height: 16px;
+  min-height: 16px;
   color: var(--fg-muted);
 }
 
