@@ -3,7 +3,13 @@
 // it does not understand. A wrong-but-confident English reading would be worse
 // than showing the expression.
 import { describe, expect, it } from "bun:test";
-import { describeRepeats } from "./schedule-lib";
+import {
+  TASK_EFFORTS,
+  TASK_MODELS,
+  describeRepeats,
+  taskRunLabel,
+  taskRunOptions,
+} from "./schedule-lib";
 
 describe("describeRepeats", () => {
   it("reads the form's own presets", () => {
@@ -2350,5 +2356,55 @@ describe("the popover's header rail (Akshil, 2026-08-19)", () => {
 
   it("the pill is solid in every state — the dashed pill rule is gone from the sheet", () => {
     expect(SCHEDULE_CSS).not.toContain(".schedule-state.is-projected {");
+  });
+});
+
+// The two lists behind the New task card's Model / Thinking fields, and the one
+// rule that is not obvious about them: an unrecognised stored value stays
+// selectable instead of collapsing onto "Default".
+describe("what a task can be run with", () => {
+  it("offers Default first, then the pinned model ahead of its floating alias", () => {
+    // "" leads because it is the answer for almost every task — no flag, let
+    // the run detect the project's own config — and it has to be reachable
+    // again after someone picks a model.
+    expect(TASK_MODELS[0]).toEqual({ key: "", label: "Default" });
+    // Both shapes `--model` accepts are on the menu, pinned id first: someone
+    // who opens this menu at all is usually after a specific model, and a
+    // scheduled task is exactly the thing that should not move under its owner
+    // when the alias advances.
+    expect(TASK_MODELS.map((o) => o.key)).toEqual([
+      "", "claude-fable-5-1", "fable", "opus", "sonnet", "haiku",
+    ]);
+    expect(taskRunLabel(TASK_MODELS, "claude-fable-5-1")).toBe("Fable 5.1");
+  });
+
+  it("offers the five --effort levels, cheapest first, said in English", () => {
+    expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
+      "", "low", "medium", "high", "xhigh", "max",
+    ]);
+    // The flag's word is "xhigh"; the card's word is "Extra high". The key is
+    // what goes on the wire, so the label is free to be readable.
+    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("Extra high");
+  });
+
+  it("keeps a value it has never heard of, rather than resetting the task to the default", () => {
+    // A task written by a newer build, or typed at the API. Editing is cancel +
+    // re-create, so a dropdown that silently dropped this would SHOW the task as
+    // running on the default and then make that true on Save.
+    const opts = taskRunOptions(TASK_MODELS, "claude-something-7");
+    expect(opts).toHaveLength(TASK_MODELS.length + 1);
+    expect(opts[opts.length - 1]).toEqual({
+      key: "claude-something-7",
+      // Shown as its raw id — there is no label to give it, and the id is at
+      // least the honest reading of what the task is set to.
+      label: "claude-something-7",
+    });
+    expect(taskRunLabel(TASK_MODELS, "claude-something-7")).toBe("claude-something-7");
+  });
+
+  it("adds nothing for a value the list already holds — including the empty default", () => {
+    expect(taskRunOptions(TASK_MODELS, "opus")).toHaveLength(TASK_MODELS.length);
+    expect(taskRunOptions(TASK_MODELS, "")).toHaveLength(TASK_MODELS.length);
+    expect(taskRunOptions(TASK_EFFORTS, "max")).toHaveLength(TASK_EFFORTS.length);
   });
 });
