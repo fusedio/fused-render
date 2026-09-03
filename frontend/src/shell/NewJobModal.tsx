@@ -34,7 +34,15 @@ import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
-import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
+import {
+  TASK_EFFORTS,
+  TASK_MODELS,
+  describeRepeats,
+  describeRule,
+  repeatChoicesFor,
+  taskRunLabel,
+  taskRunOptions,
+} from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
@@ -1976,6 +1984,18 @@ export function buildSchedulePayload(form: {
   repeat: string;
   legacyCron: string;
   permission: string;
+  // WHICH Claude the unattended run uses and how hard it thinks — the More
+  // options row's two dropdowns (TASK_MODELS / TASK_EFFORTS in schedule-lib).
+  //
+  // "" is the default for both, and it means "don't send the key at all": the
+  // server stores "" for "pass no flag" and the session then detects its own
+  // defaults from the project, which is what every task did before these were
+  // askable. Omitting rather than sending "" keeps the body the same shape it
+  // has always had for the overwhelming majority of tasks, which is also what
+  // makes the two easy to read in a stored entry — a `model` on the row means
+  // somebody chose one.
+  model: string;
+  effort: string;
   // A CHAT HANDOFF's session: the conversation the composer was in when it
   // deep-linked here (?new=1&session_id=…). A one-off continues it; a repeat
   // refuses it, because a task that runs every day must not hijack the user's
@@ -2051,6 +2071,11 @@ export function buildSchedulePayload(form: {
         ? { repeats: form.legacyCron }
         : { due: form.when }),
     permission_mode: form.permission,
+    // Sent only when chosen — see `model`/`effort` on the form type above. An
+    // edit re-states whatever the entry held, so a task's model survives the
+    // cancel + re-create instead of quietly reverting to the default.
+    ...(form.model ? { model: form.model } : {}),
+    ...(form.effort ? { effort: form.effort } : {}),
     // An edit keeps what it cannot re-ask for — see `continued` above.
     ...(continued ? { session_id: continued } : {}),
     // …and re-states WHERE that id came from, so the re-created entry is still
@@ -2522,6 +2547,13 @@ export default function NewJobModal({
   const [recurOpen, setRecurOpen] = useState(false);
   const repeatBefore = useRef(repeat);
   const [permission, setPermission] = useState(editing?.permission_mode || "auto");
+  // The run's model and thinking budget. "" — "Default", the leading option —
+  // and NOT a hardcoded name, unlike `permission` above: permissions is a policy
+  // this form has an opinion about (a task runs unattended, so "auto"), while a
+  // model is one the CLI is better placed to pick per project than we are from
+  // here. An edit prefills from the entry, so a task keeps what it was set to.
+  const [model, setModel] = useState(editing?.model || "");
+  const [effort, setEffort] = useState(editing?.effort || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -2799,6 +2831,8 @@ export default function NewJobModal({
     newTaskEachRun,
     customRule: JSON.stringify(customRule),
     permission,
+    model,
+    effort,
     // Paths only: a fresh attach reads as dirty from the moment it lands
     // (its path is "" until the upload answers, then a path — both differ
     // from this baseline), which is exactly right — the user added something.
@@ -2817,6 +2851,8 @@ export default function NewJobModal({
     newTaskEachRun !== initial.newTaskEachRun ||
     JSON.stringify(customRule) !== initial.customRule ||
     permission !== initial.permission ||
+    model !== initial.model ||
+    effort !== initial.effort ||
     images.map((i) => i.path || "pending").join("\n") !== initial.images;
 
   const picked = useMemo(() => new Date(when), [when]);
@@ -3059,6 +3095,8 @@ export default function NewJobModal({
           repeat,
           legacyCron,
           permission,
+          model,
+          effort,
           // The two sources are kept APART here, because the payload treats
           // them oppositely: the task's OWN thread (learned, on the entry)
           // survives a repeat, a CHAT's does not. A one-off entry's stored id
@@ -3962,6 +4000,59 @@ export default function NewJobModal({
             <span className="field-hint">
               The task runs unattended. Auto approves safe actions and holds the rest.
             </span>
+          </div>
+          {/* WHICH Claude, and HOW HARD — the same two things the chat's
+              composer row asks with pills, asked here as fields because this
+              card is a form and the row is a toolbar.
+
+              They live at the BOTTOM of More options, under Permissions, and
+              that is the whole reason they are askable at all rather than
+              prominent: a model is the rarest thing anyone changes about a
+              task, and both default to "Default", which sends nothing and lets
+              the session detect the project's own config. Nothing about them
+              appears on the task row or the calendar chip (design: the card
+              asks, the list stays quiet) — the only other place they surface is
+              this same card reopened on an edit, prefilled.
+
+              ONE ROW, two equal columns (Akshil, 2026-09-03). They are one
+              decision read together — "Fable 5.1, thinking high" is the
+              sentence — and stacking them spent two full rows of the card's
+              least-used section saying half of it each. Permissions stays on
+              its own line above: it is a policy with a consequence to explain,
+              and these two are a pair of names.
+
+              Neither carries a hint any more. Model's ("Default lets the run
+              use whatever this project already uses") restated what the word
+              Default already says, and one hint under one of a pair of side-by-
+              side fields lands as a note about the pair. */}
+          <div className="schedule-form-sub new-task-run-pair">
+            <div className="field">
+              <span className="field-label">Model</span>
+              <Dropdown
+                ariaLabel="Model"
+                value={taskRunLabel(TASK_MODELS, model)}
+                // Same contract as Permissions above: the KEY is submitted, the
+                // label is only how it is said. `taskRunOptions` is what keeps
+                // an unrecognised stored value selectable instead of silently
+                // resetting the task to the default on the next edit.
+                options={taskRunOptions(TASK_MODELS, model)}
+                onPick={setModel}
+              />
+            </div>
+            <div className="field">
+              {/* "Thinking", not "Effort" (the CLI's word for the flag): the
+                  flag is `--effort`, but what the user is choosing is how long
+                  Claude gets to think before it acts, and the chat's own pill
+                  says the same thing. The wire is untouched — this is the
+                  label. */}
+              <span className="field-label">Thinking</span>
+              <Dropdown
+                ariaLabel="Thinking"
+                value={taskRunLabel(TASK_EFFORTS, effort)}
+                options={taskRunOptions(TASK_EFFORTS, effort)}
+                onPick={setEffort}
+              />
+            </div>
           </div>
         </details>
 

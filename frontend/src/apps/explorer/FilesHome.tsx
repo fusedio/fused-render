@@ -9,7 +9,13 @@ import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/li
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
-import { getClaudeSessionFolders, getGitRepos, indexRank, statPath } from "@platform/lib/api";
+import {
+  getClaudeSessionFolders,
+  getGitRepos,
+  indexRank,
+  startIndexScan,
+  statPath,
+} from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -39,20 +45,26 @@ import {
   MIN_QUERY_CHARS,
   RANK_FETCH_LIMIT,
   activeRow,
+  aiSearchUsable,
   answerFrom,
+  formatElapsed,
   homeCountNote,
+  indexGap,
   isAiRow,
   isOpenRow,
   nameStart,
   narrowAnswer,
+  noteAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  scanStarting,
   stepHighlight,
   submitRow,
   type HomeAnswer,
   type HomeHit,
+  type PendingScan,
   type RowModel,
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight } from "@apps/explorer/listing/bits";
@@ -330,12 +342,21 @@ export function FilesSearch({
   initialQuery,
   indexScan,
   onActiveChange,
+  onScanRequested,
 }: {
   home: string;
   initialQuery: string;
   /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
   indexScan: IndexStatus | null;
   onActiveChange: (active: boolean) => void;
+  /**
+   * A scan was just started from in here, so the shared poll should look
+   * again NOW. Owning the poll is the parent's job (one poller, several
+   * consumers), which also means only the parent can shorten its beat: while
+   * idle it is on a ten-second timer, and a run that this box asked for should
+   * not have to wait that out to be admitted to exist.
+   */
+  onScanRequested: () => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
@@ -469,6 +490,9 @@ export function FilesSearch({
   const memo = useRef(new QueryMemo<HomeAnswer>());
   const inflight = useRef<AbortController | null>(null);
   const issuedAt = useRef(0);
+  // The last answer the result note settled on — see `noteAnswer` and where
+  // it is read, below.
+  const heldAnswerRef = useRef<HomeAnswer | null>(null);
   // Bumped by a real gesture (typing) to re-run a failed request. Without it a
   // failure was terminal: none of the other deps is something a user can move,
   // so search stayed dead until a reload.
@@ -552,7 +576,7 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, home);
+          const next = answerFrom(res, q, home, Date.now() - issuedAt.current);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
@@ -752,6 +776,18 @@ export function FilesSearch({
   // anything, so there is nothing for it to be settled ON, and a model call on
   // "a" is never the intent.
   const settled = searchable && rankingSettled(answer, q, pending, failure !== "");
+  // The result note's own source of truth — see `noteAnswer`. Mutated during
+  // render (not in an effect) so the note that renders THIS frame, the one
+  // settled turns true on, already reads from it: an effect would apply one
+  // render late, which is exactly the kind of one-beat lag that reads as
+  // flicker.
+  const displayAnswer = noteAnswer(answer, settled, heldAnswerRef.current);
+  // A settled `answer` of null (a later query's request failed while an
+  // earlier, unrelated held answer got cleared by the stale-clear effect —
+  // see `noteAnswer`, home-search.ts) is never something to hold: writing it
+  // would clobber a real held value for every render after this one, not
+  // just this one — the guard above only protects THIS frame's note.
+  if (settled && answer !== null) heldAnswerRef.current = answer;
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as
@@ -772,15 +808,106 @@ export function FilesSearch({
       ? searchCaveat(indexScan, { behind, pending, rescanPending: indexRescanPending() })
       : null;
 
+  // Why an uncovered answer is uncovered, and — for the one value of that the
+  // user can act on — the action itself (lib/home-search's `indexGap`).
+  //
+  // The poll's scan state is fed in alongside the answer's own `reason`, as a
+  // TRI-STATE: `null` while the poll has not answered, so that a definite
+  // "nothing is running" can contradict a `reason` frozen at rank time in
+  // either direction (see `indexGap`). `indexScan?.scanning === true` would
+  // collapse "no answer yet" into "idle" and lose half of that.
+  const liveScanning = indexScan === null ? null : indexScan.scanning;
+  // Two renderers read `gap` — the note's ternary cascade below and the
+  // `.fh-index-cta` callout — so the guards deciding whether this screen is
+  // reporting on an uncovered answer AT ALL belong in the value, not repeated
+  // at each reader where they would drift apart. They are the cascade's own
+  // earlier branches: `showOpenRow`, `!searchable` and `suppressRank` each
+  // short-circuit it before any `gap === …` case, because a held answer must
+  // not describe a search that was never sent (see `hits` and `suppressRank`).
+  // Without them here, a stale uncovered `displayAnswer` puts "Index my files"
+  // on screen underneath "Keep typing…" or an "Open this path" row — two
+  // claims about what the screen means, only one of them true.
+  const gap =
+    displayAnswer !== null &&
+    !displayAnswer.covered &&
+    !showOpenRow &&
+    searchable &&
+    !suppressRank
+      ? indexGap(displayAnswer.reason, liveScanning)
+      : null;
+  // The `buildable` branch yields nothing — the `.fh-index-cta` callout is the
+  // message for that state — so the note paragraph is empty and the suffix's
+  // leading "·" would separate nothing.
+  const noteEmpty = gap === "buildable";
+  // Whether AI search has anything to answer WITH. It executes its spec
+  // against the same file index (`routers/search._search_index`), so with no
+  // index built it fails the same way the instant search did — see
+  // `aiSearchUsable`'s doc comment.
+  const aiUsable = aiSearchUsable(indexScan);
+  const [pendingBuild, setPendingBuild] = useState<PendingScan | null>(null);
+  // Scoped to the query it was raised on. The note is per-query real estate,
+  // and this message REPLACES the "your files aren't indexed yet" diagnosis:
+  // held across keystrokes, one failed click (a 409 from the pref being
+  // flipped in another window, say) would prefix every later uncovered query
+  // with a stale complaint and hide the actual state. Typing is the retry
+  // gesture here, the same as `retryNonce`.
+  const [buildError, setBuildError] = useState<{ query: string; message: string } | null>(
+    null,
+  );
+  const buildFailure =
+    buildError !== null && buildError.query === q ? buildError.message : "";
+  const starting = scanStarting(
+    pendingBuild,
+    liveScanning,
+    indexScan?.last_completed_at ?? null,
+    Date.now(),
+  );
+  // POST /api/index/scan with no root — every configured root, and NOT
+  // `requestFolderScan`, whose 15-minute debounce is right for a keystroke and
+  // wrong for a button: the whole reason the user is looking at this button is
+  // that a scan started minutes ago and left nothing behind, which is exactly
+  // what that debounce would refuse.
+  //
+  // `pendingBuild` covers the request AND the wait for the poll to see the run
+  // it started (`scanStarting`); after that the poll owns the state, because
+  // the poll is what `gap` reads and what survives this component remounting
+  // mid-scan. `onScanRequested` re-fires that poll immediately rather than
+  // leaving the run unseen until the next idle beat — the latch is the honest
+  // bridge across the round trip, not a substitute for asking.
+  const startBuild = () => {
+    if (starting) return;
+    setPendingBuild({ at: Date.now(), completedAt: indexScan?.last_completed_at ?? null });
+    setBuildError(null);
+    startIndexScan().then(
+      () => onScanRequested(),
+      (err: Error) => {
+        setPendingBuild(null);
+        setBuildError({ query: q, message: err.message });
+      },
+    );
+  };
+
+  // The latch bridges ONE round trip: the POST returning before the poll can
+  // see the run it started. Once the poll reports a run, that job is done and
+  // the poll owns the state — holding the latch any longer means a run that
+  // starts and then dies inside the grace window re-arms it, putting
+  // "Starting the scan…" back on screen for a scan that is already gone and
+  // disabling the retry.
+  useEffect(() => {
+    if (liveScanning === true) setPendingBuild(null);
+  }, [liveScanning]);
+
   // The row-model descriptor (lib/home-search): at most one leading "Open"
   // row, then files, then at most one AI row. `showOpenRow` forces the other
   // two off — the request that would have produced file hits was never sent
   // (7c), and a paid model call is never the intent for something shaped like
-  // a path (7e, independent of whether it actually resolved).
+  // a path (7e, independent of whether it actually resolved). `aiUsable`
+  // gates it too: offering a paid model call that will fail on the same
+  // missing index is a dead end, not an offer.
   const rowModel: RowModel = {
     openRow: showOpenRow,
     fileCount: showOpenRow ? 0 : hits.length,
-    aiRow: searchable && !showOpenRow && address === null,
+    aiRow: searchable && !showOpenRow && address === null && aiUsable,
   };
   const current = activeRow(highlight, rowModel, settled);
 
@@ -882,6 +1009,28 @@ export function FilesSearch({
         <AiResults home={home} query={ai.query} result={ai.result} />
       ) : (
         <div className="fh-panel">
+          {/* The one action this screen asks of the user, promoted out of the
+              muted footnote and into a real CTA — a link-button buried mid-
+              sentence at 12px was invisible in testing. The note chain below
+              still has a `gap === "buildable"` case, but it renders nothing:
+              this block is the whole message for that state. */}
+          {gap === "buildable" && (
+            <div className="fh-index-cta">
+              <span className="fh-index-cta-text">
+                {buildFailure !== ""
+                  ? `The scan could not be started: ${buildFailure}`
+                  : "Your files aren’t indexed yet — one scan is all it takes."}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary fh-index-cta-btn"
+                disabled={starting}
+                onClick={startBuild}
+              >
+                {starting ? "Starting the scan…" : "Index my files"}
+              </button>
+            </div>
+          )}
           <p className="fh-result-note">
             {/* Branch on the ANSWER IN HAND, not on the request state: while a
                 new query is in flight the previous answer is what is on screen,
@@ -914,11 +1063,13 @@ export function FilesSearch({
               "Keep typing…"
             ) : suppressRank ? (
               "Checking…"
-            ) : answer === null && failure !== "" ? (
+            ) : displayAnswer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
-            ) : answer === null ? (
+            ) : displayAnswer === null ? (
+              // Never settled once for this typing run yet — nothing held to
+              // fall back on, so there is nothing else honest to say.
               "Searching…"
-            ) : !answer.covered && answer.reason === "disabled" ? (
+            ) : gap === "disabled" ? (
               // Distinct from "still building": nothing is coming, because
               // nothing is scanning, because the user turned it off. Saying
               // "still building" here would be a lie the user has no way to
@@ -934,10 +1085,32 @@ export function FilesSearch({
                 </button>
                 .
               </>
-            ) : !answer.covered ? (
+            ) : gap === "scanning" ? (
               // Never "no matches" for an index that has not been built: that
-              // would blame the user's files for the app's state.
-              "The file index is still building — AI search can answer in the meantime."
+              // would blame the user's files for the app's state. The file
+              // count is the listing's chip in words — a claim that something
+              // is coming should be able to show its progress, or it is
+              // indistinguishable from the wedged case below.
+              `The file index is still building${
+                indexScan && indexScan.files > 0
+                  ? ` (${indexScan.files.toLocaleString()} files so far)`
+                  : ""
+              }${aiUsable ? " — AI search can answer in the meantime." : ""}`
+            ) : gap === "buildable" ? (
+              // Owned by the `.fh-index-cta` block above, not this note — a
+              // paragraph AND a callout saying the same thing would say it
+              // twice. Kept as its own branch so the chain still accounts
+              // for every `IndexGap` value.
+              null
+            ) : gap === "unavailable" ? (
+              // mount / package / ignored: no scan will ever cover this root,
+              // so offering one would be a button that cannot work. There is
+              // no live walk on this page to fall back to either (that is the
+              // listing's), which leaves AI search as the honest offer —
+              // when the index backing it actually exists.
+              aiUsable
+                ? "This location can’t be indexed — AI search can still answer."
+                : "This location can’t be indexed."
             ) : hits.length === 0 && settled && rowModel.aiRow ? (
               // `hits`, not `answer.hits`: `settled` already rules out
               // `behind` (see `hits`'s own comment — `rankingSettled` is
@@ -952,25 +1125,25 @@ export function FilesSearch({
               // 7e). Offering AI search here would point at a row that is not
               // being rendered.
               `No file name matched “${q}”.`
-            ) : hits.length === 0 ? (
-              // Reads `hits`, the narrowed set, not `answer.hits`: while
-              // `behind`, the previous answer can hold plenty of hits that
-              // narrowed to none for THIS query — "Searching…" (a new answer
-              // may yet fill the list) is the honest note there, not silence
-              // followed by whatever the old answer's non-zero count would
-              // have said below.
+            ) : displayAnswer === null ? (
+              // Never settled once for this typing run yet — nothing to hold.
               "Searching…"
             ) : (
               <>
-                {/* `behind` (narrowed, no round trip landed for `q` yet) means
-                    `answer.total`/`answer.truncated` describe the PREVIOUS
-                    query, not this one — the only honest total for the
-                    current query is a LOWER bound, `hits.length` (narrowing
-                    can only ever remove rows, never add — see `narrowAnswer`),
-                    and `truncated` must read as true unconditionally: more
-                    could still be out there for `q` that the held answer
-                    never had a chance to include. */}
-                {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
+                {/* `displayAnswer` (`noteAnswer`, home-search.ts) is the LAST
+                    SETTLED answer, not necessarily this one: while `behind`,
+                    it is deliberately one query stale rather than recomputed
+                    from `hits`/`narrowAnswer` on every keystroke — that used
+                    to rewrite this line 2-3 times per keystroke (a lower
+                    bound that shrinks toward zero, then a swap back to the
+                    real total). Staleness is still honestly communicated —
+                    the rows dim while `behind`, and the `slow`-gated
+                    "· Searching…" below covers the in-flight case — so this
+                    text is free to just hold still until a new answer
+                    settles. */}
+                {homeCountNote(displayAnswer.total, behind || displayAnswer.truncated)}
+                {" · "}
+                {formatElapsed(displayAnswer.elapsedMs)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
@@ -979,9 +1152,14 @@ export function FilesSearch({
             {/* Only once the wait is long enough to be worth mentioning: under
                 PENDING_INDICATOR_MS the answer beats the words onto the screen,
                 and a note that appears and vanishes reads as slower than one
-                that never appeared. */}
-            {searchable && !showOpenRow && slow && hits.length > 0 && (
-              <span className="fh-searching-note"> · Searching…</span>
+                that never appeared. Gated on `displayAnswer`, not `hits`: the
+                held count note renders even when narrowing has emptied `hits`
+                (see `displayAnswer`, above), and this suffix is what tells the
+                user a fresh answer for `q` is still on the way. */}
+            {searchable && !showOpenRow && slow && displayAnswer !== null && (
+              <span className="fh-searching-note">
+                {noteEmpty ? "Searching…" : " · Searching…"}
+              </span>
             )}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
@@ -1151,7 +1329,10 @@ export default function FilesHome({ config }: { config: Config }) {
   // starting mid-session would otherwise go unnoticed by the box. One poller,
   // two consumers, the listing's rule (poll only while a search is open) still
   // honoured for the search half.
-  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching);
+  // Bumped when the search box starts a scan: `useIndexStatus` restarts on a
+  // new nonce, which turns the idle ten-second beat into an immediate look.
+  const [indexNonce, setIndexNonce] = useState(0);
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching, indexNonce);
   // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
   // "completes". Completion was the previous trigger and it was subtly wrong:
   // `last_completed_at` is read off the manifest, and a cancelled, failed or
@@ -1239,6 +1420,7 @@ export default function FilesHome({ config }: { config: Config }) {
             initialQuery={initialQuery}
             indexScan={indexScan}
             onActiveChange={setSearching}
+            onScanRequested={() => setIndexNonce((n) => n + 1)}
           />
         </header>
 

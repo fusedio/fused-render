@@ -8,8 +8,8 @@ neither alone is enough:
 
   * `check()` — a flag the query thread polls at cheap, frequent points
     between phases (query.py's `pass_over`: before the `execute`, after the
-    `fetchall`, before `rank_entries`, before the gitignore filter). This is
-    what makes the thread actually RETURN.
+    `fetchall`, before `rank_entries`). This is what makes the thread
+    actually RETURN.
   * `cancel()` also calls `con.interrupt()` on the bound duckdb connection —
     the same mechanism `guarded_query.py` already arms from a
     `threading.Timer` for the SQL panel's timeout. This is what unblocks a
@@ -27,7 +27,9 @@ racing the very end of the query (the disconnect watcher firing just as the
 query thread is already returning) finds no connection to `interrupt()`
 rather than one that is closed, or about to be.
 """
+import asyncio
 import threading
+from contextlib import asynccontextmanager
 
 
 class Cancelled(Exception):
@@ -100,3 +102,49 @@ class CancelToken:
     @property
     def cancelled(self) -> bool:
         return self._cancelled
+
+
+# How often the disconnect watcher polls `request.is_disconnected()` while a
+# cancellable request is in flight on a worker thread. `is_disconnected()` is
+# the only signal an async route that is ALSO doing real work off the event
+# loop has for "the client gave up" — the same tradeoff `api_fs_walk` already
+# makes (server/routers/fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a
+# `receive`-driven variant is not worth the added complexity here.
+DISCONNECT_POLL_S = 0.1
+
+
+async def _watch_disconnect(request, token: "CancelToken") -> None:
+    """Cancel `token` the moment `request` disconnects; otherwise run forever
+    until the caller cancels THIS task (`cancellable`'s `finally`, once the
+    work finished on its own)."""
+    while True:
+        if await request.is_disconnected():
+            token.cancel()
+            return
+        await asyncio.sleep(DISCONNECT_POLL_S)
+
+
+@asynccontextmanager
+async def cancellable(request):
+    """`async with cancellable(request) as token:` — a `CancelToken` bound to
+    `request`'s lifetime for the duration of the block.
+
+    Wraps the `CancelToken()` / disconnect-watcher-task boilerplate every
+    cancellable route otherwise repeats: a fast typist fires and abandons a
+    request on every keystroke, and without this the abandoned ones ran to
+    completion on a worker thread nothing was still waiting on. The route
+    still does its own `await` on that worker thread either way —
+    cancellation makes the wait take milliseconds instead of seconds, it does
+    not make the `await` itself skippable — and still catches `Cancelled`
+    itself, because only the route knows what to log and what response an
+    abandoned request gets.
+
+    The watch task is cancelled when the block exits, whether normally or via
+    an exception — a `token` outliving its route would poll
+    `is_disconnected()` forever on a request nobody is waiting on."""
+    token = CancelToken()
+    watch = asyncio.create_task(_watch_disconnect(request, token))
+    try:
+        yield token
+    finally:
+        watch.cancel()

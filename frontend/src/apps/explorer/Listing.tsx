@@ -50,6 +50,7 @@ import ContextMenu from "@platform/ui/ContextMenu";
 import { EllipsisIcon } from "@apps/explorer/BarMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
@@ -1534,8 +1535,18 @@ export default function Listing({
     // error and show the neutral loading skeleton — stat is still resolving and
     // will replace this scaffold with the correct file view. Post-stat
     // (committed render), a genuine list failure surfaces normally.
+    //
+    // A REFUSED read (403 — macOS TCC, mode bits) is not a failure of ours to
+    // report in red: it gets the plain access card with the Full Disk Access
+    // strip, so the fix sits where the error is (AccessDenied.tsx).
     body = provisional ? (
       skeletonRows(8)
+    ) : isAccessDenied({ status: state.httpStatus, message: state.message }) ? (
+      <tr>
+        <td colSpan={cols} className="status-message">
+          <AccessDenied path={fsPath} />
+        </td>
+      </tr>
     ) : (
       <tr>
         <td colSpan={cols} className="status-message error">

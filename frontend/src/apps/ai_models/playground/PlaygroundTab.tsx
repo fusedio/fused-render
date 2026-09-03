@@ -43,7 +43,7 @@ import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
+import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -325,18 +325,14 @@ export default function PlaygroundTab() {
   const selectedResident = residentRow?.model === selected?.model.id ? residentRow : undefined;
   const selectedDownloading =
     !!selected && runtime.downloading.some((d) => d.model === selected.model.id);
-  const jobForSelected = selected
-    ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
-    : undefined;
-  // Rows by MODEL, for the sidebar's own size cells — the same title match
-  // `jobForSelected` uses one line up, and for the same reason: the job id
-  // derivation sanitises characters and a second copy of that rule in
-  // TypeScript would drift from the Python one. What a running pull's total does
-  // to the size shown is `shared/modelSize`'s rule, not this file's.
-  const jobByModel = useMemo(
-    () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
-    [jobs],
-  );
+  // Rows by MODEL, for the sidebar's own size cells and for `jobForSelected`
+  // below — `activeJobByModel` (Part A item 1 / C3 fix) is what keeps
+  // presence here meaning "active": D663 keeps a finished job's row until
+  // dismissed, so without that filter a model's card stayed "busy" for the
+  // session's remainder once its pull or load finished, active again the
+  // moment anything else on the page was.
+  const jobByModel = useMemo(() => activeJobByModel(jobs), [jobs]);
+  const jobForSelected = selected ? jobByModel.get(selected.model.id) : undefined;
 
   // The sidebar cards and the stage header share this: same call, same error
   // surface (the stage's banner — the card has no room for a sentence).

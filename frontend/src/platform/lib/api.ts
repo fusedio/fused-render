@@ -35,6 +35,11 @@ export interface Config {
   // session hits a PermissionError on an fs route — the moment the warning
   // is worth showing; dismissing clears it server-side until the next one.
   fda?: { granted: boolean; denied: boolean };
+  // First-run wizard flag (fused_render/shell/onboarding.py). The shell
+  // auto-shows the wizard while BOTH timestamps are null; `complete` and
+  // `dismiss` are distinct writes (reached the end vs "skip for now").
+  // Server-side, not localStorage: a port drift is a new origin.
+  onboarding?: OnboardingState;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -69,8 +74,8 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // No `ignored` flag here (unlike FsEntry): the walk PRUNES gitignored
-  // entries server-side, so nothing ignored ever reaches search results.
+  // No `ignored` flag here (unlike FsEntry): the walk does not consult
+  // .gitignore at all, so there is no verdict to carry.
 }
 
 export interface WalkResult {
@@ -176,6 +181,25 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
 }
 
+// -- First-run wizard flag (fused_render/shell/onboarding.py) ----------------
+export interface OnboardingState {
+  completed_at: number | null;
+  dismissed_at: number | null;
+  version: number;
+}
+
+export function getOnboarding(): Promise<OnboardingState> {
+  return getJson<OnboardingState>("/api/onboarding");
+}
+
+export function completeOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/complete", {});
+}
+
+export function dismissOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
 //
 // The proactive counterpart to the TroubleCard's reactive classification: these
@@ -205,6 +229,16 @@ export interface ClaudeHealth {
       asked (no runnable CLI, or one predating the subcommand), NOT that it said
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
+  /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
+      "apiKey", …) plus the claude.ai account's email / org / plan when it has
+      one. An env token with no CLI answer reports as an API key. null when
+      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+  account: {
+    method: string | null;
+    email: string | null;
+    org: string | null;
+    plan: string | null;
+  } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show —
       it used to, and it guessed wrong on Windows. */
@@ -551,8 +585,10 @@ export interface IndexRankHit {
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other three never (see listing/index-source, which is the only place that
-// switches on this). `disabled` is the one of those three that can become
+// other three never. Two places switch on this: listing/index-source picks the
+// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
+// turns it into what the home box tells the user. `disabled` is the one of
+// those three that can become
 // fixable again — turning the indexing preference back on — but the client
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the
@@ -2188,6 +2224,21 @@ export interface RunningEngine {
   /** The module a `main =` daemon serves — "" for a `daemon =` app or a
    *  template daemon. */
   module: string;
+  /** Seconds since this child's bring-up began. */
+  uptime_s: number;
+  /** The manifest's idle-retire policy in seconds; `0` means resident — a
+   *  written `daemon =` and every template daemon. */
+  idle_timeout_s: number;
+  /** Seconds since the last call finished (stamped at completion, not at
+   *  routing — and at bring-up for a child that has never served one). Only
+   *  meaningful against a non-zero `idle_timeout_s`. */
+  idle_for_s: number;
+  /** Idle-retire is currently skipping this child. NOT "a call is in flight
+   *  right now": `mark_busy` only runs for a bounded child (`idle_timeout_s
+   *  > 0`), so a resident `daemon =` app serving a request always reports
+   *  `busy: false` here — this field structurally cannot answer "is this
+   *  engine in use". */
+  busy: boolean;
 }
 
 /** Every engine daemon running right now — the status bar's Engines section.
@@ -2615,24 +2666,50 @@ export interface Task {
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
-  // `failed` is a status of its own and not a kind of `done`: a run that
+  // `blocked` is a status of its own and not a kind of `done`: a run that
   // started and broke is news, and filing it under done meant a view had to
   // remember to read the boolean below to say so — which is how a failed task
-  // could simply not be shown.
+  // could simply not be shown. It was called `failed` until 2026-09-03; the
+  // wider word is what lets ONE lane hold both ways a task stops moving (see
+  // schedule-lib.BOARD_COLUMNS), and `blocked_reason` says which.
   //
-  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // `needs_attention` sits ABOVE `in_progress`: the run is in flight and is
+  // waiting on a permission or question card nobody has answered, which is the
+  // one kind of in-flight that never ends on its own.
+  //
+  // A SKIPPED occurrence is `archived`, not `blocked`. It was filed away and
   // never attempted (the coalescer dropped it, or the user cancelled it), which
   // is a different thing from a run that tried and broke; only something that
   // actually ran can fail.
-  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
+    | "archived";
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose
   // session is live again, reads a different status while this stays true.
   // Anything asking "which column" should read `status`.
   failed: boolean;
+  // WHY it is not moving, for the two statuses that need a reason. "permission"
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
+  // `blocked`, and "" to every other task — which is most of them. It is what
+  // decides the row's button: Retry on a run that broke, Open on one somebody is
+  // being waited on. Absent on an older server; read as "".
+  blocked_reason?: "permission" | "question" | "failed" | "";
+  // The one line under a needs-attention row's title: which tool, and what it
+  // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
+  // whenever nothing is waiting.
+  attention?: { tool: string; summary: string } | null;
   live: boolean;
   unread: number;
+  // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
+  // it: the scheduled entry's `created`, else the transcript's first record
+  // (routers/tasks.py `_place`, which says why it is the earliest and not
+  // whichever one exists). The one time on this row that never moves, which is
+  // why the Cards wall orders by it (tasks-lib.cardsForTasks) instead of by
+  // `last_active`, a number that climbs every time a run says anything. 0 when
+  // the task has neither a transcript nor an entry yet; absent on an older
+  // server, which reads the same way.
+  started?: number;
   last_active: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
@@ -2663,13 +2740,30 @@ export interface Task {
   messages: TaskMessage[];
 }
 
-// The global sidebar needs task state, not the Tasks page's titles, paths,
-// descriptions, and message previews. Keep this structural subset compatible
-// with Task so the Tasks page can still publish its full rows into the shared
-// pulse store while every other route polls the compact endpoint.
+// The global sidebar needs task state, not the Tasks page's paths, descriptions
+// and message previews — which is where a task listing's weight actually is.
+// Keep this structural subset compatible with Task so the Tasks page can still
+// publish its full rows into the shared pulse store while every other route
+// polls the compact endpoint.
 // `project` is here for the sidebar's Current apps section (D487), which groups
-// live tasks by the workspace app they belong to off this same poll.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
+// live tasks by the workspace app they belong to off this same poll; `task_id`,
+// `title`, `target` and `session_id` for the Notifications section's
+// needs-attention rows (2026-09-03), which have to NAME the task and then open
+// its conversation (tasks-lib `attentionRows`/`taskHref`) — see
+// routers/tasks.py `_PULSE_FIELDS` for why four short strings beat the second
+// /api/tasks poll the alternative would have cost.
+export type TaskPulseTask = Pick<
+  Task,
+  | "key"
+  | "status"
+  | "unread"
+  | "last_active"
+  | "project"
+  | "task_id"
+  | "title"
+  | "target"
+  | "session_id"
+>;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
@@ -4019,6 +4113,17 @@ export interface ScheduledMessage {
   // continue the chat it was scheduled from.
   session_learned?: boolean;
   permission_mode: string;
+  // WHICH Claude the run is launched with (`--model`, an alias or a full id)
+  // and how hard it thinks (`--effort`). "" on both means "pass no flag": the
+  // session detects its own defaults, which is what every task did before these
+  // were askable. Optional in the type because an entry stored before the
+  // fields existed simply has neither.
+  //
+  // Read back for one reason: editing a task is cancel + re-create, so the New
+  // task form has to prefill from here and send them again or the choice dies
+  // on the first edit.
+  model?: string;
+  effort?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -4116,6 +4221,17 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
+  // The run's model (`--model`: an alias like "fable", or a pinned full id like
+  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // rather than sent empty, like everything else optional here — the server
+  // stores "" for "pass no flag", so an absent key and a blank one already mean
+  // the same thing and the shorter body is the honest one.
+  //
+  // Neither is validated client-side. The CLI is the authority on what it
+  // accepts, and a list duplicated here would go stale the day it learns a new
+  // model; see the note at the create endpoint.
+  model?: string;
+  effort?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;
@@ -4219,6 +4335,11 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // Append-only with monotonically increasing ids, so a poller both dedups and
 // orders by tracking a high-water mark. Bounded server-side: it is a narration,
 // not history — the schedule store holds every outcome durably.
+//
+// NOTHING IS NARRATED FOR A RUN PARKED ON A CARD, deliberately (Akshil,
+// 2026-09-03): the Tasks page says it on its own — the row wears the Needs
+// attention ring and sorts to the top — and a toast for it would interrupt the
+// reader for a run that has not finished doing anything yet.
 export type ScheduleEventKind = "done" | "failed" | "missed";
 
 export interface ScheduleEvent {

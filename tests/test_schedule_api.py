@@ -88,6 +88,54 @@ def test_schedule_then_list_then_cancel(client, target):
     assert cancelled.json()["entry"]["state"] == schedule.CANCELLED
 
 
+def test_the_model_and_the_thinking_budget_are_stored_on_the_entry(client, target):
+    """WHICH Claude the unattended run uses (`--model`) and how hard it thinks
+    (`--effort`) — the New task card's More options row.
+
+    This is a body-dict endpoint, which silently ignores every key it does not
+    name: the fields existed on `schedule.create` and on the spawn long before
+    the form could ask for them, so a request carrying them was accepted, stored
+    without them, and ran on the defaults with nothing anywhere saying why. The
+    passthrough is the whole change, so what is asserted is that the values reach
+    the STORE and come back on a read.
+
+    Both shapes of `--model` go through untouched — an alias and a pinned full
+    id — because this layer does not hold a copy of the CLI's vocabulary."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "hi",
+                            "delay_seconds": 60,
+                            "model": "claude-fable-5-1", "effort": "high"})
+    assert res.status_code == 200
+    entry = res.json()["entry"]
+    assert entry["model"] == "claude-fable-5-1"
+    assert entry["effort"] == "high"
+    # …and off a fresh read of the store, which is what an EDIT prefills from:
+    # editing is cancel + re-create, so a field the list does not carry is a
+    # choice the next save resets to the default.
+    assert client.get("/api/schedule").json()["entries"][0]["model"] == "claude-fable-5-1"
+
+    # The alias shape too. Nothing here validates the name — the CLI is the
+    # authority on what `--model` takes, and a list in this file would go stale
+    # the day Claude Code learns a new one.
+    alias = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "hi",
+                              "delay_seconds": 60, "model": "fable"})
+    assert alias.json()["entry"]["model"] == "fable"
+
+
+def test_a_task_with_no_opinion_stores_neither(client, target):
+    """"Default" on both pickers, which is the overwhelming majority of tasks:
+    the form omits the keys rather than sending "", and the stored entry holds ""
+    for "pass no flag" — so the run detects the project's own config, exactly as
+    every task did before these were askable."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "hi",
+                            "delay_seconds": 60})
+    assert res.status_code == 200
+    assert res.json()["entry"]["model"] == ""
+    assert res.json()["entry"]["effort"] == ""
+
+
 def test_due_and_delay_are_exclusive(client, target):
     """Both, or neither, and the request cannot half-mean each."""
     both = client.post("/api/schedule", headers=WRITE,

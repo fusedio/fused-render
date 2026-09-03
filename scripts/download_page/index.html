@@ -20,7 +20,7 @@
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231e1e22'/><path d='M16 5Q17.6 14.4 27 16 17.6 17.6 16 27 14.4 17.6 5 16 14.4 14.4 16 5z' fill='%23E5FF44'/></svg>">
 <script type="application/fused-bundle">
 { "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png", "assets/showcase/*.mp4"] }
 </script>
@@ -48,6 +48,9 @@
     --rule-hi:   #46443f;
     --shot-bg:   #0f0f0e;
     --accent-fill: #e5ff44;
+    --warn:        #f2b544;
+    --warn-edge:   rgba(242, 181, 68, 0.45);
+    --warn-wash:   rgba(242, 181, 68, 0.10);
     --accent-on:   #14150a;
     --accent-text: #dcf24a;
     --accent-edge: #6e7a1f;
@@ -86,6 +89,9 @@
     --rule-hi:   #c9c6bb;
     --shot-bg:   #f0efe9;
     --accent-fill: #e5ff44;
+    --warn:        #b86e00;
+    --warn-edge:   #e9b96a;
+    --warn-wash:   #fff4e3;
     --accent-on:   #14150a;
     --accent-text: #55650a;
     --accent-edge: #b3c92c;
@@ -167,8 +173,8 @@
     margin-top: 12px;
     display: flex; flex-direction: column; gap: 7px;
   }
-  /* Section subtitles + bullet lists hidden for now; drop this rule to bring them back. */
-  .deck, .deck-list { display: none; }
+  /* The bullet lists under the subtitles stay hidden; drop this rule to bring them back. */
+  .deck-list { display: none; }
   .deck-list li {
     position: relative; padding-left: 18px;
     font-size: var(--t-base); color: var(--ink-2); line-height: 1.5;
@@ -321,56 +327,46 @@
     letter-spacing: -0.018em; line-height: 1.3;
   }
 
-  /* ---------- §1 : the finder panel ---------- */
-  .field {
-    display: flex; align-items: center; gap: 12px;
-    padding: 18px clamp(18px, 2.4vw, 26px);
-    border-bottom: 1px solid var(--rule-2);
+  /* ===== §views · one file, its views float above it; the real view beside ===== */
+  .views-wrap { display: grid; grid-template-columns: minmax(0, 11fr) minmax(0, 9fr); gap: clamp(16px, 2.4vw, 32px); align-items: center; }
+  @media (max-width: 860px) { .views-wrap { grid-template-columns: 1fr; } }
+  .stack-svg { width: 100%; height: auto; display: block; }
+  .stack-svg .ground path { stroke: rgba(243, 242, 237, 0.05); stroke-width: 1; fill: none; }
+  .stack-svg .pad-t { fill: #191917; stroke: rgba(243, 242, 237, 0.12); stroke-width: 1; }
+  .stack-svg .pad-l { fill: #0c0c0b; } .stack-svg .pad-r { fill: #121211; }
+  .stack-svg .others .pad-t { fill: #141412; stroke: rgba(243, 242, 237, 0.08); }
+  .stack-svg .fname { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--ink-2); }
+  .stack-svg .others .fname { fill: var(--ink-4); }
+  .stack-svg .tag {
+    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase;
+    fill: var(--ink-3);
   }
-  .field svg { width: 18px; height: 18px; color: var(--ink-3); flex: none; }
-  .field .q { font-size: var(--t-md); font-weight: 600; letter-spacing: -0.01em; }
-  .caret {
-    display: inline-block; width: 1.5px; height: 1.1em;
-    background: var(--ink); vertical-align: -0.16em;
-  }
-  .hits { padding: 6px 0 10px; }
-  .hit {
-    display: flex; align-items: center; gap: 12px;
-    padding: 10px clamp(18px, 2.4vw, 26px);
-    font: var(--t-sm)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--ink-3);
-  }
-  .hit .fico { width: 16px; height: 16px; flex: none; color: var(--ink-4); }
-  .hit b { color: var(--ink); font-weight: 620; }
-  .hit em {
-    font-style: normal; font-weight: 620;
-    box-shadow: inset 0 -0.14em 0 var(--rule-hi);
-  }
-  /* The view switcher. The lit pill is this section's single accent. */
-  .modes {
-    display: flex; align-items: center; gap: clamp(10px, 2vw, 20px);
-    flex-wrap: wrap;
-    padding: 14px clamp(18px, 2.4vw, 26px);
-    border-top: 1px solid var(--rule-2);
-    background: var(--tile-2);
-  }
-  .modes .fname {
-    font: var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--ink-3);
-  }
-  .modes .pills { display: flex; gap: 7px; flex-wrap: wrap; }
-  .modes .pill {
-    padding: 6px 12px; border-radius: 99px;
-    border: 1px solid var(--rule);
-    font-size: var(--t-xs); color: var(--ink-3);
-    white-space: nowrap;
-  }
-  .modes .pill.on {
-    border-color: var(--accent-edge);
-    background: var(--accent-wash);
-    color: var(--accent-text);
-    font-weight: 620;
-  }
+  .stack-svg .guide { stroke: rgba(243, 242, 237, 0.14); stroke-width: 1; stroke-dasharray: 3 5; fill: none; }
+  /* the wheel: four plates orbit in the iso plane; the front one sits over the file at full size */
+  .stack-svg .plate { fill: rgba(26, 26, 24, 0.96); stroke: rgba(243, 242, 237, 0.16); stroke-width: 1; transition: fill 0.4s var(--ease), stroke 0.4s var(--ease); }
+  .stack-svg .layer.top .plate { fill: rgba(229, 255, 68, 0.08); stroke: rgba(229, 255, 68, 0.55); }
+  .stack-svg .glyph { fill: none; stroke: var(--ink-3); stroke-width: 1.4; stroke-linecap: round; transition: stroke 0.4s var(--ease); }
+  .stack-svg .layer.top .glyph { stroke: var(--ink); }
+  .stack-svg .spark { fill: var(--ink-3); transition: fill 0.4s var(--ease); }
+  .stack-svg .layer.top .spark { fill: var(--accent-fill); }
+  .stack-svg .glow { fill: rgba(229, 255, 68, 0.35); opacity: 0; transition: opacity 0.4s var(--ease); }
+  .stack-svg .layer.top .glow { opacity: 1; }
+  .stack-svg .vtag { fill: var(--accent-text); transition: opacity 0.25s linear; text-anchor: middle; }
+  /* the deck under the file: more kinds of file, peeking out and fading away */
+  .stack-svg .grid .pad-t { fill: #1a1a18; stroke: rgba(243, 242, 237, 0.16); }
+  .stack-svg .grid .ic { fill: none; stroke: var(--ink-3); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .stack-svg .file-ic { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .views-wrap { position: relative; }
+  .proj { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  .proj line { stroke: rgba(229, 255, 68, 0.45); stroke-width: 1; stroke-dasharray: 3 6; stroke-linecap: round; }
+  @media (max-width: 860px) { .proj { display: none; } }
+
+  .shots { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r); overflow: hidden;
+    background: var(--shot-bg); border: 1px solid var(--rule); }
+  .shots img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top left;
+    opacity: 0; transition: opacity 0.6s var(--ease); }
+  .shots img.on { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .shots img { transition: none; } }
 
   /* --- formats: a slow marquee band of extensions --- */
   .fmt-band {
@@ -541,10 +537,18 @@
   .dl-others[open] summary::after { transform: rotate(225deg) translateY(-1px); }
   .dl-others summary:hover { color: var(--ink-2); }
   .dl-note {
-    margin: 0; max-width: 34ch; text-align: center;
-    font: 500 var(--t-xs)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
-    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
+    display: flex; align-items: flex-start; gap: 10px;
+    margin: 0; max-width: 46ch; text-align: left;
+    padding: 12px 16px; border-radius: var(--r-sm);
+    border: 1px solid var(--warn-edge); background: var(--warn-wash);
+    font-size: var(--t-sm); line-height: 1.5; color: var(--ink-2);
+    text-wrap: pretty;
   }
+  .dl-note[hidden] { display: none; }
+  .dl-note svg { width: 18px; height: 18px; flex: none; color: var(--warn); margin-top: 0.15em; }
+  .dl-note b { color: var(--ink); font-weight: 640; }
+  .dl-note a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule-hi); }
+  .dl-note a:hover { text-decoration-color: var(--ink); }
   .dl-brew {
     display: inline-flex; align-items: center; gap: 10px; max-width: 100%;
     height: 34px; padding: 0 14px; border-radius: 99px;
@@ -559,8 +563,13 @@
   .dl-brew.copied { border-color: var(--accent-edge); color: var(--accent); }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .dl-list-note {
-    margin: 6px 4px 2px; font-size: var(--t-xs); line-height: 1.5; color: var(--ink-4);
+    display: flex; align-items: flex-start; gap: 8px;
+    margin: 6px 4px 2px; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid var(--warn-edge); background: var(--warn-wash);
+    font-size: var(--t-xs); line-height: 1.5; color: var(--ink-2);
   }
+  .dl-list-note svg { width: 14px; height: 14px; flex: none; color: var(--warn); margin-top: 0.2em; }
+  .dl-list-note b { color: var(--ink); font-weight: 620; }
   .dl-others { position: relative; }
   .dl-list {
     position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
@@ -758,30 +767,31 @@
     z-index: 60; pointer-events: none;
   }
 
-  /* ---------- ecosystem: isometric pipeline board, scroll-scrubbed ---------- */
+  /* ---------- ecosystem: isometric pipeline board, scroll-snapped chapters ---------- */
   /* Resting CSS is the finished page: without JS (or reduced motion) this is
-     a static isometric diagram with all four captions listed beside it. */
+     a static isometric diagram with the first caption under it. */
+  .eco-scroll { position: relative; }
   .eco-stage { display: flex; flex-direction: column; }
-  .eco-stage .sec-head { padding-bottom: clamp(18px, 2.4vw, 30px); }
-  .eco-row {
-    display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
-    gap: clamp(20px, 3vw, 44px); align-items: center;
-    flex: 1; min-height: 0;
+  .eco-stage .sec-head { padding-bottom: clamp(14px, 2vw, 24px); }
+  .eco-board { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .eco-svg { display: block; width: 100%; max-width: 1100px; height: auto; flex: 1; min-height: 0; }
+  .eco-cap { text-align: center; max-width: 52ch; margin: 0 auto; padding: 6px 0 0; }
+  .eco-cap h3 { margin: 0 0 6px; font-size: var(--t-lg); font-weight: 660; letter-spacing: -0.03em; line-height: 1.1; }
+  .eco-cap p { margin: 0; font-size: var(--t-md); color: var(--ink-2); line-height: 1.5; }
+  .eco-cap.swap h3, .eco-cap.swap p { opacity: 0; transform: translateY(8px); }
+  .eco-cap h3, .eco-cap p { transition: opacity 0.35s var(--ease), transform 0.35s var(--ease); }
+  .eco-prog { display: none; justify-content: center; gap: 6px; margin-top: 16px; }
+  .eco-prog i { width: 28px; height: 2px; border-radius: 1px; background: var(--rule-hi); transition: background 0.35s var(--ease); }
+  .eco-prog i.on { background: var(--accent-fill); }
+  .eco-hint {
+    display: none; align-items: center; justify-content: center; gap: 4px; margin-top: 12px;
+    font: 600 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+    transition: opacity 0.4s var(--ease);
   }
-  .eco-copy { display: flex; flex-direction: column; gap: 12px; }
-  .eco-step {
-    padding: 4px 0 16px;
-    border-bottom: 2px solid var(--rule);
-    cursor: pointer;
-    transition: border-color 0.4s var(--ease), opacity 0.4s var(--ease);
-  }
-  .eco-step:hover { border-bottom-color: var(--rule-hi); }
-  .eco-step h3 {
-    margin: 0 0 4px; font-size: var(--t-md); font-weight: 640;
-    letter-spacing: -0.018em;
-  }
-  .eco-step p { margin: 0; font-size: var(--t-sm); color: var(--ink-2); line-height: 1.5; }
-  .eco-svg { width: 100%; height: auto; display: block; }
+  .eco-hint svg { width: 14px; height: 14px; animation: eco-nudge 1.4s var(--ease) infinite; }
+  .eco-hint.off { opacity: 0; }
+  @keyframes eco-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(4px); } }
+  html.anim .eco-prog, html.anim .eco-hint { display: flex; }
   .eco-groundg path { stroke: rgba(243, 242, 237, 0.05); stroke-width: 1; fill: none; }
   /* 3D pipeline: a sunken channel in the ground plane */
   .eco-pipe-bed { fill: #131312; }
@@ -804,28 +814,25 @@
   .eco-flat use { color: var(--ink-2); }
   .eco-node { cursor: pointer; outline: none; }
   .eco-node:hover .pad-t, .eco-node:focus-visible .pad-t { stroke: rgba(243, 242, 237, 0.24); }
+  .eco-node .pad-t { transition: fill 0.35s var(--ease), stroke 0.35s var(--ease); }
   .eco-node.live .pad-t { fill: var(--accent-wash); stroke: rgba(229, 255, 68, 0.45); }
   .eco-node.live .eco-flat use { color: var(--ink); }
-  .eco-livelbl {
-    font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 0.08em; fill: var(--ink-2);
-  }
-  /* Motion opts in under html.anim only. */
-  html.anim .eco-scroll { height: 400vh; }
+  /* Motion opts in under html.anim only: four 50vh chapters, each a snap point. */
+  html.anim .eco-scroll { height: 300vh; }
   html.anim .eco-stage {
     position: sticky; top: 0; height: 100vh;
-    box-sizing: border-box; padding: 4vh 0 3vh;
+    box-sizing: border-box; padding: 4vh 0 4vh;
   }
-  html.anim .eco-step { opacity: 0.35; }
-  html.anim .eco-step.on {
-    opacity: 1;
-    border-bottom-color: var(--accent-fill);
-  }
+  .eco-snap { position: absolute; left: 0; width: 1px; height: 1px; pointer-events: none; }
+  html.anim .eco-snap[data-ci="0"] { top: 0; }
+  html.anim .eco-snap[data-ci="1"] { top: 50vh; }
+  html.anim .eco-snap[data-ci="2"] { top: 100vh; }
+  html.anim .eco-snap[data-ci="3"] { top: 150vh; }
   @media (max-width: 860px) {
-    .eco-row { grid-template-columns: minmax(0, 1fr); }
     html.anim .eco-scroll { height: auto; }
     html.anim .eco-stage { position: static; height: auto; padding: 0; }
-    html.anim .eco-step { opacity: 1; }
+    html.anim .eco-snap { display: none; }
+    html.anim .eco-prog, html.anim .eco-hint { display: none; }
   }
 
   /* ---------- §claude : the sessions list ---------- */
@@ -1270,29 +1277,9 @@
       <div class="eco-stage">
         <div class="sec-head rule-top">
           <h2>Local Ecosystem</h2>
-          <p class="deck">Connects with Python, Claude Code, local AI models and your
-          machine&rsquo;s own APIs.</p>
+          <p class="deck">Connects Python, Claude Code, local AI models and your native APIs.</p>
         </div>
-        <div class="eco-row">
-        <div class="eco-copy">
-          <div class="eco-step" data-step="0">
-            <h3>Use frontier AI models</h3>
-            <p>Claude Code, on your existing subscription.</p>
-          </div>
-          <div class="eco-step" data-step="1">
-            <h3>Run AI models on device</h3>
-            <p>Text, image and video generation, all local.</p>
-          </div>
-          <div class="eco-step" data-step="2">
-            <h3>Run code locally</h3>
-            <p>Python execution by the Fused engine.</p>
-          </div>
-          <div class="eco-step" data-step="3">
-            <h3>Access native APIs</h3>
-            <p>Microphone, screen and camera.</p>
-          </div>
-        </div>
-
+        <div class="eco-board">
         <svg class="eco-svg" viewBox="0 0 900 560" role="img" aria-label="Fused Render at the center of an isometric board, piping data to Claude Code, local AI models, Python and your Mac.">
           <defs><filter id="f-soft" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="10"/></filter><radialGradient id="g-fade" cx="50%" cy="50%" r="52%"><stop offset="0%" stop-color="#fff"/><stop offset="72%" stop-color="#fff" stop-opacity="0.5"/><stop offset="100%" stop-color="#000"/></radialGradient><mask id="m-fade"><rect x="0" y="0" width="900" height="560" fill="url(#g-fade)"/></mask></defs>
           <g class="eco-groundg" mask="url(#m-fade)"><path d="M -427.0 572.0 L 543.0 12.0"/><path d="M 543.0 572.0 L -427.0 12.0"/><path d="M -371.0 572.0 L 599.0 12.0"/><path d="M 599.0 572.0 L -371.0 12.0"/><path d="M -315.0 572.0 L 655.0 12.0"/><path d="M 655.0 572.0 L -315.0 12.0"/><path d="M -259.0 572.0 L 711.0 12.0"/><path d="M 711.0 572.0 L -259.0 12.0"/><path d="M -203.0 572.0 L 767.0 12.0"/><path d="M 767.0 572.0 L -203.0 12.0"/><path d="M -147.0 572.0 L 823.0 12.0"/><path d="M 823.0 572.0 L -147.0 12.0"/><path d="M -91.0 572.0 L 879.0 12.0"/><path d="M 879.0 572.0 L -91.0 12.0"/><path d="M -35.0 572.0 L 935.0 12.0"/><path d="M 935.0 572.0 L -35.0 12.0"/><path d="M 21.0 572.0 L 991.0 12.0"/><path d="M 991.0 572.0 L 21.0 12.0"/><path d="M 77.0 572.0 L 1047.0 12.0"/><path d="M 1047.0 572.0 L 77.0 12.0"/><path d="M 133.0 572.0 L 1103.0 12.0"/><path d="M 1103.0 572.0 L 133.0 12.0"/><path d="M 189.0 572.0 L 1159.0 12.0"/><path d="M 1159.0 572.0 L 189.0 12.0"/><path d="M 245.0 572.0 L 1215.0 12.0"/><path d="M 1215.0 572.0 L 245.0 12.0"/><path d="M 301.0 572.0 L 1271.0 12.0"/><path d="M 1271.0 572.0 L 301.0 12.0"/><path d="M 357.0 572.0 L 1327.0 12.0"/><path d="M 1327.0 572.0 L 357.0 12.0"/></g>
@@ -1310,10 +1297,19 @@
           <g class="eco-node" data-node="mac" tabindex="0"><polygon class="pad-l" points="687.2,292.0 765.2,331.0 765.2,344.0 687.2,305.0"/><polygon class="pad-r" points="765.2,331.0 843.2,292.0 843.2,305.0 765.2,344.0"/><polygon class="pad-t" points="765.2,253.0 843.2,292.0 765.2,331.0 687.2,292.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 765.2 291.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-apple"/></g></g></g>
           <g class="eco-node" data-node="python" tabindex="0"><polygon class="pad-l" points="372.0,474.0 450.0,513.0 450.0,526.0 372.0,487.0"/><polygon class="pad-r" points="450.0,513.0 528.0,474.0 528.0,487.0 450.0,526.0"/><polygon class="pad-t" points="450.0,435.0 528.0,474.0 450.0,513.0 372.0,474.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 450.0 473.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-python-mark"/></g></g></g>
           <g class="eco-node" data-node="brain" tabindex="0"><polygon class="pad-l" points="56.8,292.0 134.8,331.0 134.8,344.0 56.8,305.0"/><polygon class="pad-r" points="134.8,331.0 212.8,292.0 212.8,305.0 134.8,344.0"/><polygon class="pad-t" points="134.8,253.0 212.8,292.0 134.8,331.0 56.8,292.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 134.8 291.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-brain"/></g></g></g>
-          <text class="eco-livelbl" id="eco-live" x="450" y="548" text-anchor="middle"></text>
           </svg>
+          <div class="eco-cap" id="eco-cap" aria-live="polite">
+            <h3 id="eco-cap-h">Hand work to Claude</h3>
+            <p id="eco-cap-p">Use Claude Code on your existing plan.</p>
+            <div class="eco-prog" id="eco-prog" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i></div>
+            <div class="eco-hint" id="eco-hint" aria-hidden="true">Scroll<svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
         </div>
       </div>
+      <div class="eco-snap" data-ci="0" aria-hidden="true"></div>
+      <div class="eco-snap" data-ci="1" aria-hidden="true"></div>
+      <div class="eco-snap" data-ci="2" aria-hidden="true"></div>
+      <div class="eco-snap" data-ci="3" aria-hidden="true"></div>
     </div>
   </section>
 
@@ -1348,7 +1344,7 @@
   <section id="models-alt">
     <div class="sec-head rule-top">
       <h2>AI models run on your local machine.</h2>
-      <p class="deck">No account, no API key, no per-token bill.</p>
+      <p class="deck">Generates text, images and video without an API key or a token bill.</p>
     </div>
 
     <div class="bento">
@@ -1375,8 +1371,7 @@
   <section id="claude">
     <div class="sec-head rule-top">
       <h2>Claude Code, without the terminal.</h2>
-      <p class="deck">Every task on your machine, in one list. Start one, pick one up
-      where it stopped, or schedule one for later.</p>
+      <p class="deck">View all Claude tasks in one list. Schedule one or start one from here.</p>
     </div>
 
     <div class="bento">
@@ -1428,66 +1423,97 @@
   </section>
 
   <section id="views">
-    <div class="sec-head rule-top">
-      <h2>One window for 100+ kinds of file.</h2>
-      <p class="deck">Stop hunting for the app that opens it.</p>
-      <ul class="deck-list">
-        <li>Query a table.</li>
-        <li>Map a dataset.</li>
-        <li>Ask Claude about the file beside it.</li>
+  <div class="sec-head rule-top">
+    <h2>One window for 100+ kinds of file.</h2>
+    <p class="deck">Opens any file, with Claude one tab away.</p>
+  </div>
+  <div class="views-wrap">
+    <svg class="stack-svg" id="stack" viewBox="200 130 500 400" role="img"
+         aria-label="A PDF on an isometric pad among tiles of other file kinds. Its views orbit above it like a wheel: PDF, PDF Studio, Reader, Ask Claude.">
+      <defs>
+        <filter id="s-soft" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="8"/></filter>
+        <radialGradient id="s-fade" cx="50%" cy="50%" r="52%"><stop offset="0%" stop-color="#fff"/><stop offset="72%" stop-color="#fff" stop-opacity="0.5"/><stop offset="100%" stop-color="#000"/></radialGradient>
+        <mask id="s-mask"><rect x="200" y="130" width="500" height="400" fill="url(#s-fade)"/></mask>
+        <linearGradient id="s-deck" x1="0" y1="390" x2="0" y2="522" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.75"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+        <mask id="s-deckmask"><rect x="100" y="330" width="700" height="300" fill="url(#s-deck)"/></mask>
+      </defs>
+      <g class="ground" mask="url(#s-mask)">
+        <path d="M-427 572L543 12"/><path d="M543 572L-427 12"/><path d="M-371 572L599 12"/><path d="M599 572L-371 12"/><path d="M-315 572L655 12"/><path d="M655 572L-315 12"/><path d="M-259 572L711 12"/><path d="M711 572L-259 12"/><path d="M-203 572L767 12"/><path d="M767 572L-203 12"/><path d="M-147 572L823 12"/><path d="M823 572L-147 12"/><path d="M-91 572L879 12"/><path d="M879 572L-91 12"/><path d="M-35 572L935 12"/><path d="M935 572L-35 12"/><path d="M21 572L991 12"/><path d="M991 572L21 12"/><path d="M77 572L1047 12"/><path d="M1047 572L77 12"/><path d="M133 572L1103 12"/><path d="M1103 572L133 12"/><path d="M189 572L1159 12"/><path d="M1159 572L189 12"/><path d="M245 572L1215 12"/><path d="M1215 572L245 12"/>
+      </g>
+
+      <!-- the floor: more kinds of file tiled around the PDF, fading out downward -->
+      <g mask="url(#s-mask)"><g class="grid" mask="url(#s-deckmask)">
+        <g transform="translate(-156 0)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-4 -6l10 6-10 6z"/></g></g>
+        <g transform="translate(156 0)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-11 -16h16l6 6v26h-22zM-5 -2h10M-5 6h10M-5 14h6"/></g></g>
+        <g transform="translate(-78 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-16 -4h32M-16 4h32M-5 -12v24M5 -12v24"/></g></g>
+        <g transform="translate(78 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-12 8l8-10 6 7 4-4 6 7"/><circle class="ic" cx="8" cy="-5" r="2"/></g></g>
+        <g transform="translate(-234 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-18 0h4l4-10 5 20 5-14 4 8 4-4h10"/></g></g>
+        <g transform="translate(234 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-12 -16h24v32h-24zM-2 -16v6M-2 -6v6M-2 4v6M-6 10h8v6h-8z"/></g></g>
+        <g transform="translate(0 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M0 -18l16 8v18l-16 8-16-8v-18zM-16 -10l16 8 16-8M0 -2v18"/></g></g>
+        <g transform="translate(-156 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-10 -8l-8 8 8 8M10 -8l8 8-8 8M3 -14l-6 28"/></g></g>
+        <g transform="translate(156 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -8l10-6 12 6 10-6v22l-10 6-12-6-10 6zM-6 -14v22M6 -8v22"/></g></g>
+        <g transform="translate(-78 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-16 -4h32M-5 -12v24"/></g></g>
+        <g transform="translate(78 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-4 -6l10 6-10 6z"/></g></g>
+        <g transform="translate(-234 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-11 -16h16l6 6v26h-22zM-5 -2h10M-5 6h10M-5 14h6"/></g></g>
+        <g transform="translate(234 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-12 8l8-10 6 7 4-4 6 7"/><circle class="ic" cx="8" cy="-5" r="2"/></g></g>
+      </g></g>
+
+      <!-- the file pad -->
+      <g>
+        <polygon class="pad-l" points="372,410 450,449 450,462 372,423"/><polygon class="pad-r" points="450,449 528,410 528,423 450,462"/><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/>
+        <g transform="matrix(1 0 0 .5 450 410)"><path class="file-ic" d="M-14 -22h20l10 10v34h-30zM6 -22v10h10M-7 0h16M-7 9h16M-7 18h10"/></g>
+      </g>
+      <path class="guide" d="M372 410V300M528 410V300M450 449V339"/>
+
+      <!-- the wheel: JS places these on an ellipse; the one in front lands over the pad -->
+      <g id="wheel">
+        <g class="layer" data-k="0">
+          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
+          <g transform="matrix(1 0 0 .5 450 410)"><rect class="glyph" x="-22" y="-30" width="44" height="60" rx="3"/><path class="glyph" d="M-12 -14h24M-12 -2h24M-12 10h16"/></g>
+        </g>
+        <g class="layer" data-k="1">
+          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
+          <g transform="matrix(1 0 0 .5 450 410)"><rect class="glyph" x="-22" y="-30" width="44" height="60" rx="3"/><path class="glyph" d="M-12 -14h24M-12 -2h24"/><path class="glyph" d="M-14 14c8-14 14 8 22-6s10 4 16-2" style="stroke:var(--accent-fill)"/></g>
+        </g>
+        <g class="layer" data-k="2">
+          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
+          <g transform="matrix(1 0 0 .5 450 410)"><path class="glyph" d="M-26 -18h52M-26 -6h52M-26 6h52M-26 18h34"/></g>
+        </g>
+        <g class="layer" data-k="3">
+          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
+          <ellipse class="glow" cx="450" cy="404" rx="34" ry="13" filter="url(#s-soft)"/>
+          <text class="spark" transform="matrix(1 0 0 .5 450 404)" y="20" text-anchor="middle" font-size="60">&#10022;</text>
+        </g>
+      </g>
+      <text class="tag vtag" id="vtag" x="450" y="246">PDF</text>
+    </svg>
+
+    <div class="shots" id="shots" role="img" aria-label="Screenshots of report.pdf in Fused Render: the PDF view, PDF Studio, the Reader, and the Claude chat about the file.">
+      <img class="on" data-k="0" src="assets/showcase/view-pdf.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
+      <img data-k="1" src="assets/showcase/view-pdf-studio.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
+      <img data-k="2" src="assets/showcase/view-reader.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
+      <img data-k="3" src="assets/showcase/view-claude.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
+    </div>
+    <svg class="proj" id="proj" aria-hidden="true"><line id="proj-a"/><line id="proj-b"/></svg>
+  </div>
+
+  <!-- Marquee: doubled in markup so the loop is seamless with no JS. The
+       second copy is hidden from assistive tech. -->
+  <div class="fmt-band" role="group" aria-label="Some of the file types Fused Render previews">
+    <div class="fmt-track">
+      <ul>
+        <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+        <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+        <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
+      </ul>
+      <ul aria-hidden="true">
+        <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+        <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+        <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
       </ul>
     </div>
-
-    <div class="bento">
-      <div class="tile w12 hoverable">
-        <div class="field">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="q mono">invoice<span class="caret" aria-hidden="true"></span></span>
-        </div>
-        <div class="hits">
-          <div class="hit">
-            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
-            <span>Documents / Freelance / <b><em>invoice</em>-2026-04.pdf</b></span>
-          </div>
-          <div class="hit">
-            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
-            <span>Desktop / <b>old-<em>invoice</em>s.zip</b></span>
-          </div>
-          <div class="hit">
-            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
-            <span>Projects / billing / templates / <b><em>invoice</em>.html</b></span>
-          </div>
-        </div>
-        <div class="modes" role="img"
-             aria-label="The open file offers several views: table, structure, map, and a Claude chat, with the Claude view selected.">
-          <span class="fname">sales.parquet</span>
-          <span class="pills">
-            <span class="pill">Table</span>
-            <span class="pill">Structure</span>
-            <span class="pill">Map</span>
-            <span class="pill on">Ask Claude</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Marquee: doubled in markup so the loop is seamless with no JS. The
-         second copy is hidden from assistive tech. -->
-    <div class="fmt-band" role="group" aria-label="Some of the file types Fused Render previews">
-      <div class="fmt-track">
-        <ul>
-          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
-          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
-          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
-        </ul>
-        <ul aria-hidden="true">
-          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
-          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
-          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
-        </ul>
-      </div>
-    </div>
-  </section>
+  </div>
+</section>
 
   <section id="apps" hidden>
     <div class="sec-head rule-top">
@@ -1559,13 +1585,13 @@
         </div>
         <div class="getbody" id="getbody">
           <h2>Open source, and it stays on your machine.</h2>
-          <p class="deck">Free. No account, no key, no card.</p>
+          <p class="deck">Free. No account required, no card.</p>
           <div class="dl">
             <a class="dl-btn" id="dl-primary" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
               <svg viewBox="0 0 20 20" aria-hidden="true"><use id="dl-primary-icon" href="#i-apple"/></svg>
               <span id="dl-primary-label">Download for macOS</span>
             </a>
-            <p class="dl-note" id="dl-note" hidden></p>
+            <p class="dl-note" id="dl-note" role="note" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span id="dl-note-text"></span></p>
             <button class="dl-brew" id="dl-brew" type="button" hidden title="Copy the Homebrew install command">
               <code>brew install --cask fusedio/tap/fused-render</code>
               <svg viewBox="0 0 20 20" aria-hidden="true"><use class="brew-ic" href="#i-copy"/></svg>
@@ -1590,8 +1616,8 @@
                   <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-term"/></svg>Homebrew</span>
                   <span class="sub">macOS &middot; copy command</span>
                 </button>
-                <p class="dl-list-note">Native support on macOS; limited support on
-                Windows &amp; Linux.</p>
+                <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
+                there may be missing features and rough edges.</span></p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1779,7 +1805,9 @@
     if (note) {
       if (visitorOS === "mac") { note.hidden = true; }
       else {
-        note.textContent = "Limited support on " + osLabel + " \u00b7 native on macOS";
+        document.getElementById("dl-note-text").innerHTML =
+          "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
+          "features and rough edges. <a href=\"#troubleshooting\">Troubleshooting</a>";
         note.hidden = false;
       }
     }
@@ -1936,123 +1964,124 @@
     up();
   })();
 
-  // Ecosystem board: scroll scrubs four chapters. A short lime stream runs
-  // through the pipeline to a pad, the pad's surface lights while it works,
-  // the stream runs home. Narration sits on one line under the board.
-  // Clicking a pad or a caption card scrubs to that chapter.
+  // Ecosystem board: four chapters, one per 50vh of scroll, each a snap
+  // point. Landing on a chapter plays its story once (2 s): a lime stream
+  // runs down the pipe to a pad, the pad lights while it works, the stream
+  // runs home. Nothing scrubs with the scrollbar; the caption under the
+  // board names the chapter. Clicking a pad scrolls to its chapter.
   (function () {
     var scroller = document.getElementById("eco-scroll");
     if (!scroller || !document.documentElement.classList.contains("anim")) return;
     if (matchMedia("(max-width: 860px)").matches) return;
     var ORDER = ["claude", "brain", "python", "mac"];
-    var CH = {
-      claude: { out: "\u201cnew task \u2014 summarise my invoices\u201d", work: "claude is working\u2026", done: "task done \u2713" },
-      python: { out: "\u201crun the code\u201d", work: "python is running\u2026", done: "here\u2019s the result \u2713" },
-      brain:  { out: "\u201ctranscribe this recording\u201d", work: "local ai is transcribing\u2026", done: "transcript ready \u2713" },
-      mac:    { out: "\u201cuse the microphone\u201d", work: "recording\u2026", done: "recording saved \u2713" }
-    };
-    var STREAM = 52;
-    var stream = {}, lens = {};
+    var CAP = [
+      ["Hand work to Claude", "Use Claude Code on your existing plan."],
+      ["Keep AI on your machine", "Text, images and speech, generated offline."],
+      ["Build apps with Python", "The Fused engine runs your code locally."],
+      ["Leverage the hardware", "Microphone, screen and camera, one call away."]
+    ];
+    var STREAM = 52, DUR = 2000;
+    var stream = {}, lens = {}, nodes = {};
     ORDER.forEach(function (k) {
       var el = document.getElementById("st-" + k);
-      stream[k] = el;
-      lens[k] = el.getTotalLength();
+      stream[k] = el; lens[k] = el.getTotalLength();
       el.style.strokeDasharray = STREAM + " " + Math.ceil(lens[k] + STREAM * 2);
     });
-    var live = document.getElementById("eco-live");
-    var nodes = {};
-    Array.prototype.slice.call(scroller.querySelectorAll(".eco-node")).forEach(function (n) {
-      nodes[n.dataset.node] = n;
-    });
-    var steps = Array.prototype.slice.call(scroller.querySelectorAll(".eco-step"));
+    Array.prototype.slice.call(scroller.querySelectorAll(".eco-node")).forEach(function (n) { nodes[n.dataset.node] = n; });
+    var cap = document.getElementById("eco-cap"), capH = document.getElementById("eco-cap-h"), capP = document.getElementById("eco-cap-p");
+    var html = document.documentElement;
 
-    var target = 0, cur = 0, shown = -1;
-    function measure() {
+    var shown = -1, anim = null;
+    function chapterHeight() { return innerHeight / 2; }
+    function chapterTop(ci) { return scroller.getBoundingClientRect().top + scrollY + ci * chapterHeight(); }
+    function nearest() {
       var r = scroller.getBoundingClientRect();
-      var span = r.height - innerHeight;
-      target = span > 0 ? Math.max(0, Math.min(1, -r.top / span)) : 0;
+      var ci = Math.round(-r.top / chapterHeight());
+      return Math.max(0, Math.min(3, ci));
     }
-    addEventListener("scroll", measure, { passive: true });
-    addEventListener("resize", measure, { passive: true });
-    measure();
-    var forced = /[?&]eco=([0-9.]+)/.exec(location.search);
-
-    function render(p) {
-      var ci = Math.min(3, Math.floor(p * 4));
-      var local = (p * 4) - ci;
-      var key = ORDER[ci];
-      var ch = CH[key];
-
-      if (shown !== ci) {
-        shown = ci;
-        steps.forEach(function (el, i) { el.classList.toggle("on", i === ci); });
-        ORDER.forEach(function (k) { if (k !== key) stream[k].style.opacity = 0; });
-      }
-      ORDER.forEach(function (k) {
-        nodes[k].classList.toggle("live", k === key && local >= 0.28 && local < 0.92);
-      });
-
-      // phases: 0-.3 stream out, .3-.6 working, .6-.9 stream home, .9-1 rest
-      var el = stream[key], len = lens[key];
+    function inView() {
+      var r = scroller.getBoundingClientRect();
+      return r.top < innerHeight && r.bottom > 0;
+    }
+    var capT = 0;
+    function setCaption(ci) {
+      cap.classList.add("swap");
+      clearTimeout(capT);
+      capT = setTimeout(function () { capH.textContent = CAP[ci][0]; capP.textContent = CAP[ci][1]; cap.classList.remove("swap"); }, 360);
+    }
+    function play(ci) {
+      var key = ORDER[ci], el = stream[key], len = lens[key];
+      ORDER.forEach(function (k) { stream[k].style.opacity = 0; nodes[k].classList.remove("live"); });
+      if (anim) cancelAnimationFrame(anim.raf);
+      var t0 = performance.now();
       function sweep(t) { el.style.strokeDashoffset = STREAM - t * (len + STREAM * 2); }
-      if (local < 0.3) {
-        el.style.opacity = 1; sweep(local / 0.3);
-        live.textContent = ch.out;
-      } else if (local < 0.6) {
-        el.style.opacity = 0;
-        live.textContent = ch.work;
-      } else if (local < 0.9) {
-        el.style.opacity = 1; sweep(1 - (local - 0.6) / 0.3);
-        live.textContent = ch.done;
-      } else {
-        el.style.opacity = 0;
-        live.textContent = ch.done;
+      function frame(now) {
+        var local = Math.min(1, (now - t0) / DUR);
+        // phases: 0-.3 stream out, .3-.6 working, .6-.9 stream home, .9-1 rest
+        nodes[key].classList.toggle("live", local >= 0.28 && local < 0.92);
+        if (local < 0.3) { el.style.opacity = 1; sweep(local / 0.3); }
+        else if (local < 0.6) { el.style.opacity = 0; }
+        else if (local < 0.9) { el.style.opacity = 1; sweep(1 - (local - 0.6) / 0.3); }
+        else { el.style.opacity = 0; }
+        if (local < 1) anim.raf = requestAnimationFrame(frame); else anim = null;
+      }
+      anim = { raf: requestAnimationFrame(frame) };
+    }
+    // Chapter tracking. The story and the caption change together the moment
+    // the nearest chapter changes, even mid-swipe. When scrolling settles inside
+    // the section, the page eases onto that chapter's top.
+    var prog = Array.prototype.slice.call(document.querySelectorAll("#eco-prog i")), hint = document.getElementById("eco-hint");
+    var settle = 0, snapping = false;
+    // Idle replay: while the visitor rests on a chapter, its story runs again
+    // every 5 s so the board never looks stuck. Restarts on each chapter change.
+    var loop = 0;
+    function replay() {
+      clearTimeout(loop);
+      loop = setTimeout(function () {
+        if (inView() && shown >= 0 && !anim && document.visibilityState === "visible") play(shown);
+        replay();
+      }, 5000);
+    }
+    function show(ci) {
+      shown = ci;
+      setCaption(ci);
+      prog.forEach(function (el, i) { el.classList.toggle("on", i === ci); });
+      if (ci > 0) hint.classList.add("off");
+      play(ci);
+      replay();
+    }
+    function follow() {
+      if (!inView()) return;
+      var r = scroller.getBoundingClientRect();
+      if (r.top > chapterHeight() * 0.5) return;            // not yet at the first chapter
+      var ci = nearest();
+      if (ci !== shown) show(ci);
+    }
+    function land() {
+      if (!inView() || snapping) return;
+      var r = scroller.getBoundingClientRect();
+      if (r.top > chapterHeight() * 0.5) return;
+      if (-r.top > chapterHeight() * 3.5) return;           // past the last chapter: leaving the section
+      var ci = nearest(), off = -r.top - ci * chapterHeight();
+      if (Math.abs(off) > 2) {
+        snapping = true;
+        scrollTo({ top: scrollY - off, behavior: "smooth" });
+        setTimeout(function () { snapping = false; }, 700);
       }
     }
+    addEventListener("scroll", function () {
+      follow();
+      clearTimeout(settle); settle = setTimeout(land, 140);
+    }, { passive: true });
+    addEventListener("resize", function () { clearTimeout(settle); settle = setTimeout(land, 140); });
+    capH.textContent = CAP[0][0]; capP.textContent = CAP[0][1];
+    follow(); land();
 
-    function tick() {
-      if (forced) { render(parseFloat(forced[1])); return; }
-      if (play) {
-        var pt = (performance.now() - play.t0) / play.dur;
-        var eased = pt <= 0 ? 0 : (pt < 0.5 ? 2*pt*pt : 1 - Math.pow(-2*pt + 2, 2) / 2);
-        cur = (play.ci + 0.93 * Math.min(1, eased)) / 4;
-        render(cur);
-        if (pt >= 1) {
-          // park the page where the playhead ended, so scrolling resumes seamlessly
-          scrollTo({ top: play.end, behavior: "instant" });
-          play = null; measure(); cur = target;
-        }
-        requestAnimationFrame(tick);
-        return;
-      }
-      cur += (target - cur) * 0.14;
-      if (Math.abs(target - cur) < 0.0005) cur = target;
-      render(cur);
-      requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
-
-    var play = null;
-    ["wheel", "touchstart", "keydown"].forEach(function (ev) {
-      addEventListener(ev, function () { play = null; }, { passive: true });
-    });
-    function goTo(ci) {
-      var top = scroller.getBoundingClientRect().top + scrollY;
-      var span = scroller.offsetHeight - innerHeight;
-      // park instantly at the chapter opening — one animation only: the story
-      // (behavior:"instant" beats the page's global scroll-behavior:smooth)
-      scrollTo({ top: top + span * (ci / 4 + 0.005), behavior: "instant" });
-      measure();
-      play = { ci: ci, t0: performance.now() + 250, dur: 3400,
-               end: top + span * (ci / 4 + 0.93 / 4) };
-    }
+    function goTo(ci) { scrollTo({ top: chapterTop(ci), behavior: "smooth" }); }
     Object.keys(nodes).forEach(function (k) {
       var n = nodes[k];
       n.addEventListener("click", function () { goTo(ORDER.indexOf(k)); });
       n.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goTo(ORDER.indexOf(k)); } });
-    });
-    steps.forEach(function (el, i) {
-      el.addEventListener("click", function () { goTo(i); });
     });
   })();
 
@@ -2214,6 +2243,69 @@
     window.addEventListener("hashchange", honorHash);
     honorHash();
   })();
+</script>
+<script>
+(function () {
+  var rm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var stack = document.getElementById("stack"), shots = document.getElementById("shots");
+  if (!stack || !shots) return;
+  var NAMES = ["PDF", "PDF Studio", "Reader", "Ask Claude"];
+  var wheel = document.getElementById("wheel"), layers = Array.prototype.slice.call(wheel.querySelectorAll(".layer"));
+  var imgs = shots.querySelectorAll("img"), vtag = document.getElementById("vtag");
+  // Orbit in the iso plane: front slot is straight above the pad (450,300), the back slot small and far.
+  var CX = 450, CY = 235, RX = 150, RY = 65, N = layers.length, STEP = Math.PI * 2 / N;
+  var k = 0;            // which plate is in front
+  function place(theta) {
+    var order = [];
+    layers.forEach(function (g, i) {
+      var a = theta + i * STEP, d = (Math.sin(a) + 1) / 2;        // d: 1 = front, 0 = back
+      var x = CX + RX * Math.cos(a), y = CY + RY * Math.sin(a), s = 0.48 + 0.52 * d;
+      g.setAttribute("transform", "translate(" + x + " " + y + ") scale(" + s + ") translate(-450 -410)");
+      g.style.opacity = 0.35 + 0.65 * d;
+      g.classList.toggle("top", d > 0.985);
+      order.push([d, g]);
+    });
+    order.sort(function (p, q) { return p[0] - q[0]; }).forEach(function (p) { wheel.appendChild(p[1]); });
+  }
+  function front(n) { return Math.PI / 2 - n * STEP; }   // theta that puts plate n in front
+  function show(n) {
+    imgs.forEach(function (im, i) { im.classList.toggle("on", i === n); });
+    vtag.textContent = NAMES[n];
+  }
+  place(front(k)); show(k);
+  if (rm) { k = 3; place(front(k)); show(k); return; }
+  var raf = window.requestAnimationFrame || function (f) { return setTimeout(function () { f(performance.now()); }, 16); };
+  var paused = false, busy = false; // paused stays false: the wheel keeps turning under the cursor
+  function ease(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+  function turn() {
+    if (paused || busy) return;
+    busy = true;
+    var from = front(k), to = from - STEP, t0 = performance.now(), D = 1100;
+    vtag.style.opacity = 0;
+    (function tick(now) {
+      var t = Math.min(1, (now - t0) / D), e = ease(t);
+      place(from + (to - from) * e);
+      if (t < 1) raf(tick);
+      else { k = (k + 1) % N; place(front(k)); show(k); vtag.style.opacity = 1; busy = false; }
+    })(t0);
+  }
+  setInterval(turn, 3400);
+})();
+// Dotted projection from the front plate to the screenshot beside it.
+(function () {
+  var stack = document.getElementById("stack"), shots = document.getElementById("shots"), proj = document.getElementById("proj");
+  if (!stack || !shots || !proj) return;
+  var la = document.getElementById("proj-a"), lb = document.getElementById("proj-b");
+  function pt(x, y, ctm, box) { var p = stack.createSVGPoint(); p.x = x; p.y = y; p = p.matrixTransform(ctm); return [p.x - box.left, p.y - box.top]; }
+  function draw() {
+    var box = proj.getBoundingClientRect(), sb = shots.getBoundingClientRect(), ctm = stack.getScreenCTM();
+    if (!ctm || sb.left < box.left + box.width * 0.4) { la.removeAttribute("x1"); lb.removeAttribute("x1"); return; }
+    var a = pt(450, 261, ctm, box), c = pt(450, 339, ctm, box);   // front plate: top and bottom vertex
+    la.setAttribute("x1", a[0]); la.setAttribute("y1", a[1]); la.setAttribute("x2", sb.left - box.left); la.setAttribute("y2", sb.top - box.top);
+    lb.setAttribute("x1", c[0]); lb.setAttribute("y1", c[1]); lb.setAttribute("x2", sb.left - box.left); lb.setAttribute("y2", sb.bottom - box.top);
+  }
+  draw(); window.addEventListener("resize", draw); window.addEventListener("load", draw);
+})();
 </script>
 </body>
 </html>

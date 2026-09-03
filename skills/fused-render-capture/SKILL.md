@@ -1,101 +1,38 @@
 ---
 name: fused-render-capture
-description: Record the screen, record the microphone, or grab a screenshot natively from a fused-render page — fused.capture.screen/audio/screenshot/sources. Use when a page records or captures anything, or a capture option is refused on this platform.
+description: Use when page records screen/mic or grabs screenshot — fused.capture — or capture option refused on a platform.
 ---
 
-# Native capture (`fused.capture`)
+# fused.capture
 
-Three verbs: `screen()`, `audio()`, `screenshot()`. All three write a file this
-machine owns, which is the whole reason to use them over `getDisplayMedia` /
-`MediaRecorder`: the path is known before the recording ends, so it feeds
-`fused.ai.transcribe({path})` directly, and the recording survives your page
-being navigated away from (it is a download-manager job row).
+Native capture → result = FILE on this machine: path known before recording ends, file written live — `rec.path`/`rec.url` usable mid-recording (tail it, feed `fused.ai.transcribe({path})` after). Survives navigation (it's a download-manager job row). Local only — no `fused.capture` on exported pages.
 
-Local only — a hosted/exported page has no `fused.capture`.
+**Draw UI off `await fused.capture.sources()`** (never prompts — the permission dialog rides the first real capture) — `{video, audio, systemAudio, screenshot}`, EACH `{available, granted, reason}`, plus `displays` and `microphones`. Gate every control off its own key (mic button off `audio`, `audio: "system"`/`"both"` off `systemAudio`) — `available: false` always carries a `reason`, and a start rejects `unavailable` with that same sentence. `displays` empty on Linux/Wayland by design. Don't sniff platform; read refusals + `reason`s.
 
-## Ask first, and it never prompts
-
-What is possible differs per machine and per browser, so draw your UI off the
-answer rather than off a try/catch:
-
-```js
-const src = await fused.capture.sources();
-if (!src.video.available) { hideRecordButton(src.video.reason); return; }
-// src.displays -> [{id, width, height, main}], src.microphones -> [{id, name, default}]
-// `displays` is empty on Linux and on Wayland by design — nothing to name there.
-```
-
-## Three platforms, one API, and deliberately no field telling you which you got
-
-Read the refusals and the `reason`s instead of sniffing the platform.
+Platform matrix:
 
 | | macOS | Windows | Linux |
 |---|---|---|---|
 | screen recording | native, no picker | browser share picker | browser share picker |
-| survives a page reload | yes | no (file is kept) | no (file is kept) |
-| `display` / `rect` / `cursor` on `screen()` | honoured | refused | refused |
-| `display` / `rect` / `cursor` on `screenshot()` | honoured | honoured | `rect` only |
-| `device` on `audio()` | refused | honoured | honoured |
-| container | `.mov` / `.m4a` | `.mp4` or `.webm` | `.mp4` or `.webm` |
+| survives page reload | yes | no (file kept) | no (file kept) |
+| `display`/`rect`/`cursor` on screen() | yes | refused | refused |
+| same on screenshot() | yes | yes | rect only |
+| `device` on audio() | refused (system input; use screen's `audio:"mic"`) | yes | yes |
+| container | .mov/.m4a | .mp4/.webm | .mp4/.webm |
 
-So: do not hardcode an extension when you pass `path` — let the default name the
-file, or read `rec.path`. And if the recording matters, keep the page that
-started it open on Windows and Linux; a reload ends it (the file is kept and the
-row says so, but it is shorter than the user expected).
+So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings that matter: keep page open on Windows/Linux.
 
-## Recording is a handle, not a promise that resolves at the end
+## API
 
-```js
-const rec = await fused.capture.screen({
-  audio: "both",              // false | "mic" | "system" | "both" — "system" is
-                              // the one a browser cannot do on macOS at all
-  rect: [0, 0, 1200, 800],    // macOS only — refused where the browser's own
-                              // share picker chooses the region
-  path: "walkthrough.mov",    // optional; relative = beside THIS page. Omit it
-                              // unless you know the container (see the table)
-  maxSeconds: 600,            // default 30 min; hitting it STOPS (keeps the file)
-});
-// elapsed seconds come off the recording's job row — there is no onTick:
-fused.watchJob(rec.jobId).watch((row) => (label.textContent = row.done + "s"));
-// rec.path / rec.url are already usable here — the file is being written to them
-const out = await rec.stop();          // {path, url, mime, seconds, bytes}
-const words = await fused.ai.transcribe({ path: out.path, words: true });
-```
+`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}`. `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
 
-`screen()` and `audio()` resolve **when the recording is running**, with a handle
-`{id, jobId, path, url, state, stop(), cancel()}`. `stop()` resolves with the
-finished file; `cancel()` deletes it.
+`screenshot({display, rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
 
-- `rec.cancel()` stops **and deletes**. So does the ✕ on its download-manager
-  row — that is the one control left once your page is gone, so treat a cancel
-  as "the user does not want this recording", not as "stop".
-- `fused.capture.audio()` records the microphone alone. On macOS it uses the
-  system's current input and **refuses** a `device` (the error names the
-  alternative: a screen recording's `audio: "mic"` takes one); on Windows and
-  Linux a `device` from `sources().microphones` works. Those names are empty
-  until the browser's microphone permission has been granted once.
-- `fused.capture.list()` finds live recordings — including one your page started
-  before a reload — and `attach(id)` gives the handle back. Check it on load
-  instead of starting a second recording.
-- `screenshot({rect, cursor, path})` has no handle and no job row. The output
-  **filename** picks png or jpeg — there is no `format`, so a path and a format
-  cannot disagree about what was written. Native on **every** platform, so it
-  needs no readable document and raises no share prompt — which is what makes a
-  cross-origin pane shootable.
-- Rejections carry `.type`: `"unavailable"` (this machine cannot — show
-  `.message`, it names the reason), `"bad_request"` (your arguments).
+`fused.capture.list()` finds live recordings (incl. pre-reload); `attach(id)` returns handle. Check on load before starting second recording. Microphone names empty until browser mic permission granted once.
 
-## Two rules that catch most capture bugs
+Rejections: `.type` `"unavailable"` (machine can't — show `.message`), `"bad_request"` (your args), or — on `stop()`/`cancel()` only — `"capture_error"`: the call went through but the file failed to write, so there is no playable recording. Handle all three; a two-branch `switch` swallows a lost take.
 
-- **A preview must not record.** A page rendered as a card thumbnail or listing
-  peek is stamped `_preview=1`; starting a capture there records the machine of
-  someone who was merely browsing. Gate boot on the flag — see "Reserved params
-  and preview mode" in **`fused-render-authoring`**.
-- **The recording outlives the page, so the job row is the real UI.** Progress
-  and cancellation live on the download-manager row, not in your DOM. For how
-  those rows work, and for reporting your own long work into them, see
-  **`fused-render-jobs`**.
+## Two rules
 
-Related: **`fused-render-authoring`** (the rest of `window.fused`),
-**`fused-render-ai`** (`fused.ai.transcribe`, the usual next call after a
-recording).
+- **Previews must not record** — gate boot on `_preview` (`fused-render-authoring`).
+- Recording outlives page: job row IS the real UI → `fused-render-jobs`.

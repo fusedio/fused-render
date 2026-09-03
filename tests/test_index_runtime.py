@@ -114,10 +114,11 @@ def test_the_contract_comment_documents_the_two_methods():
 
 def test_only_search_and_query_are_wrapped():
     """The narrowing, pinned. `query` is read-only SQL over the same
-    `files`/`dirs` views /api/index/stats and /lookup read, so wrapping those was
-    a second spelling of one capability; readiness rides on every response, so
-    `status` was surface without capability. The rest manage the index, which is
-    a shell action — still reachable by raw fetch with `X-Fused: 1`.
+    `files`/`dirs` views /api/index/stats reads, so wrapping stats too would
+    have been a second spelling of one capability; readiness rides on every
+    response, so `status` was surface without capability. The rest manage the
+    index, which is a shell action — still reachable by raw fetch with
+    `X-Fused: 1`.
     """
     # Code only: the comments name the dropped routes to explain WHY they went.
     code = "\n".join(line for line in BLOCK.splitlines()
@@ -127,7 +128,7 @@ def test_only_search_and_query_are_wrapped():
     # The probe survives as a probe, not as a method.
     assert "/api/index/status" in code
     assert "fileIndex = { search:" in code
-    for route in ("/api/index/stats", "/api/index/lookup", "/api/index/scan",
+    for route in ("/api/index/stats", "/api/index/scan",
                   "/api/index/cancel", "/api/index/config", "/api/index/delete",
                   "/api/index/ask", "/api/git-repos"):
         assert route not in code, route

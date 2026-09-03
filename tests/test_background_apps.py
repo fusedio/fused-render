@@ -126,6 +126,24 @@ def test_load_manifest_main_app_honors_explicit_idle_timeout_s(tmp_path):
     assert manifest.idle_timeout_s == 30
 
 
+def test_load_manifest_rejects_a_non_finite_idle_timeout_s(tmp_path):
+    """TOML admits `inf`/`nan` for a float key, and `isinstance(x, (int,
+    float))` is true for both — so an app whose `pyproject.toml` says
+    `idle_timeout_s = inf` used to sail an unbounded value all the way to the
+    wire, where Starlette's `allow_nan=False` JSON encoder turns the very next
+    `GET /api/engines/running` into a 500 (routers/engines.py). A non-finite
+    value is exactly as unusable as a wrong-typed one, so it falls back to the
+    protocol's own default instead of being trusted."""
+    folder = tmp_path / "infinite_idle"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nmain = "compute.py"\nidle_timeout_s = inf\n')
+    (folder / "compute.py").write_text("def main(**p):\n    return {}\n")
+    manifest = background_apps.load_manifest(str(folder))
+    assert manifest is not None
+    assert manifest.idle_timeout_s == background_apps.DEFAULT_MAIN_IDLE_TIMEOUT_S
+
+
 def test_load_manifest_rejects_missing_table(tmp_path):
     folder = _make_app(tmp_path, table=False)
     assert background_apps.load_manifest(str(folder)) is None

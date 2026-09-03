@@ -288,9 +288,18 @@
    trouble card uses for it, so "here is a line to run" looks identical wherever
    the app offers one. It needs to wrap here: this strip can be narrow (a single
    card column on Home at a small window) and `curl … | bash` is long. */
-.claude-health .update-badge-command {
+.claude-health .update-badge-command,
+.onboarding-issue .update-badge-command {
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+/* The first-run wizard's Claude step reuses IssueRow (shell/onboarding); the
+   list normally sits inside `.claude-health`'s padding, here it sits inside a
+   checklist row. */
+.onboarding-issue {
+  padding: 0;
+  margin: 0;
 }
 
 /* -- Claude Code setup: the repair actions ---------------------------------

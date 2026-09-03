@@ -223,6 +223,13 @@ _EVENTS_MAX = 100
 
 # What the shell narrates. `done` is an info toast (your message ran), the other
 # two are errors that need a person — which is the gap this log exists to close.
+#
+# THERE IS NO EVENT FOR A RUN PARKED ON A CARD (Akshil, 2026-09-03). One was
+# added on this branch and taken straight back out: a toast for it interrupted
+# the reader for something the Tasks page already says on its own — the row
+# wears the Needs attention ring and sorts to the top of the list, which is
+# where somebody goes to act on it anyway. This log is for what happened while
+# nobody was looking, and a run that is still going has not happened yet.
 EVENT_DONE = "done"
 EVENT_FAILED = "failed"
 EVENT_MISSED = "missed"
@@ -1002,12 +1009,18 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # provenance for nothing is a claim the form would have to second-guess.
         "session_learned": _flag(session_learned) and bool(session_id or ""),
         "permission_mode": mode,
-        # WHICH Claude runs the turn, and how hard: the new-app composer's two
-        # pickers (routers/apps.py), handed to `spawn_helper` by `_send` exactly
-        # as the direct spawn used to hand them. "" is "no flag" — the session
-        # detects its own defaults — and is what every other creator stores.
-        # Not carried through an edit (the Tasks form does not know them), so a
-        # re-created entry falls back to the defaults; stated, not fixed.
+        # WHICH Claude runs the turn, and how hard: handed to `spawn_helper` by
+        # `_send` exactly as the direct spawn used to hand them. "" is "no flag"
+        # — the session detects its own defaults — and stays the answer for
+        # every creator with no opinion.
+        #
+        # TWO creators now supply them. The new-app composer's pickers
+        # (routers/apps.py) always did; the Tasks form's More options row does
+        # as of 2026-09-03, which also closes the hole the old note here
+        # described: editing a task is cancel + re-create, so a form that could
+        # not re-state these silently reset them to the defaults on every edit.
+        # The form prefills both off the entry and sends them back, so an edit
+        # now carries the choice across instead of quietly dropping it.
         "model": str(model or ""),
         "effort": str(effort or ""),
         # The user's own words, both optional and both "" by default. Read
@@ -1773,7 +1786,12 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             _emit(EVENT_DONE, entry)
         return False
 
-    parked = data.get("permissions") or []
+    # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
+    # answered ones included, so that a re-attaching frame can rebuild the cards
+    # it never saw (agent.py `_permissions`) — reading the whole list as "parked"
+    # would call a run that was carded once and allowed twenty minutes ago
+    # blocked for the rest of its life.
+    parked = [p for p in (data.get("permissions") or []) if not p.get("decision")]
     detail = "waiting for permission" if parked else str(data.get("phase") or "working")
     tokens = data.get("tokens") or 0
     if tokens and not parked:
@@ -2404,6 +2422,12 @@ def _materialize(now: datetime) -> None:
                                    else _flag(entry.get("session_learned")),
                 "permission_mode": entry.get("permission_mode")
                                    or _SCHEDULED_PERMISSION_MODE,
+                # The model and effort the user picked travel with every run
+                # too: `_send` reads them off the occurrence it fires, so a
+                # template that kept them to itself would run every repeat on
+                # the default (bugbot, PR #968).
+                "model": str(entry.get("model") or ""),
+                "effort": str(entry.get("effort") or ""),
                 # The user's words travel with every run, like the message and
                 # the target: an occurrence is that template's run, so a list
                 # showing occurrences must be able to name it without going back

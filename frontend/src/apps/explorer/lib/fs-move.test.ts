@@ -8,10 +8,14 @@
 // import, the same trade fs-actions.test.ts makes rather than carrying a DOM.
 import { expect, test } from "bun:test";
 
-(globalThis as { location?: unknown }).location = new URL("http://x/");
+import { installDomShim } from "@platform/lib/testDomShim";
+
 // A failed move toasts, and the toast store schedules its own dismissal off
-// `window` — the one DOM thing this file needs, so it gets the one method.
-(globalThis as { window?: unknown }).window = { setTimeout: () => 0, clearTimeout: () => {} };
+// `window`. See testDomShim.ts for why this is the one shared stub every
+// suite in the run installs, rather than a stub hand-rolled per file — an
+// unconditional overwrite here used to be able to strip `addEventListener`
+// out from under whichever suite happened to run next.
+installDomShim();
 
 // A filesystem for the report tests below: `takenIn` decides which names each
 // target folder already holds (so freePastePath's dedupe can be driven), and

@@ -5,11 +5,17 @@ section, and rewrites the doc/default/minVersion half of settings_catalog.json
 — keyed by each entry's `docKey` (falling back to `key`). The curated overlay
 fields (label/group/control/options/docKey/unsetLabel) are preserved untouched.
 
-READ from lib.catalog_read_path() (override if the user has refreshed before,
-else the packaged copy), WRITE only to lib.catalog_override_path(). It used to
-rewrite the file in place; it cannot any more, because the shipped copy now lives
-in site-packages / inside a signed .app — see lib.py's catalog section for why
-the split exists rather than a single mutable path.
+READ from lib.load_catalog() — the merge, not a single file: PACKAGED curated
+fields (current as of this install) with whatever doc/default/minVersion a
+PRIOR refresh already wrote to the override, per key. Starting from the merge
+rather than from whichever raw file catalog_read_path() names matters here
+specifically: an entry the packaged copy added or changed since the last
+refresh (a new `select` option, say) would otherwise get baked into the new
+override snapshot with its STALE curated half, the same staleness this module
+exists to avoid on the doc half. WRITE only to lib.catalog_override_path(). It
+used to rewrite the file in place; it cannot any more, because the shipped
+copy now lives in site-packages / inside a signed .app — see lib.py's catalog
+section for why the split exists rather than a single mutable path.
 
 `default` comes ONLY from the `**Default**: X` bullet — never invented, never
 read off the worked example (§1 honesty rule). Undocumented surfaced keys keep
@@ -187,8 +193,7 @@ def main() -> dict:
                      "error": f"parsed only {len(entries)} keys (expected ~215); "
                               "docs shape changed"}
 
-        with open(lib.catalog_read_path(), "r", encoding="utf-8") as f:
-            catalog = json.load(f)
+        catalog = lib.load_catalog()
 
         updated, undocumented = 0, []
         for d in catalog:

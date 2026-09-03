@@ -83,14 +83,15 @@ const model = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
 });
 
 
-/** D590: every chip carries the SAME circle (`StatusDot`) — outlined when the
- *  section holds nothing, filled (`.is-on`) when it holds something. Asserted
- *  through a helper so both states are always checked as one element's two
- *  forms, never as two elements that could drift apart. */
-function circleFilled(tree: ReactTestRendererJSON | null): boolean {
-  const dots = findAll(tree, "dl-dot");
-  expect(dots).toHaveLength(1);
-  return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
+/** Statusbar redesign: `StatusDot`/`.dl-dot` is gone — every chip is a
+ *  `StatusChip` (`.dl-toggle.sc`) whose tone lives in its own class
+ *  (`is-idle`/`is-failure`) and whose count, when it has one,
+ *  is a `.sc-num` numeral. This reads the toggle's class list once so tone
+ *  assertions below stay honest about which single element they are on. */
+function toggleClasses(tree: ReactTestRendererJSON | null): string[] {
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  return ((toggles[0].props.className as string) ?? "").split(" ");
 }
 
 function renderInstance(
@@ -129,32 +130,76 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
   // The idle sentence now lives in the panel, not the chip.
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
-  // D590 (user: "lets just stick to a circle for all items") reverses D588's
-  // removal of the indicator from this chip alone: Models carries the same
-  // circle as every other chip, outlined here because nothing is resident.
-  expect(circleFilled(tree)).toBe(false);
+  // No numeral at zero — `StatusChip` only draws `.sc-num` for count > 0.
+  expect(findAll(tree, "sc-num")).toHaveLength(0);
   // The retired marks stay retired.
   expect(findAll(tree, "dl-zero")).toHaveLength(0);
   expect(findAll(tree, "dl-new-dot")).toHaveLength(0);
+  expect(findAll(tree, "dl-dot")).toHaveLength(0);
   expect(findAll(tree, "dl-count")).toHaveLength(0);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
-// D589 (user: "the memory gb next to the models isn't even accurate"): the
-// chip is the bare label, full stop. The aggregate was a sum of
+// D589 (user: "the memory gb next to the models isn't even accurate"): no
+// byte figure ever reaches the chip's label — the aggregate was a sum of
 // `residentBytes` — "RSS of the worker process. Not the model's size", per
 // api.ts's own comment on the field — so it under-reported MLX's allocator
 // pool and over-reported shared pages. It is gone rather than corrected,
 // because no arithmetic fixes a number measuring the wrong thing.
-test("the chip is the bare label — no size, no count, whatever is resident", () => {
-  for (const models of [
-    [] as AiLoadedModel[],
-    [model({ residentBytes: 4 * 1024 ** 3 })],
-    [model(), model({ model: "org/other", residentBytes: 9 * 1024 ** 3 })],
-    [model({ state: "loading", residentBytes: null })],
-  ]) {
-    const tree = renderView({ models });
-    expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+//
+// STATUSBAR REDESIGN: the label itself now depends on the count. Zero and
+// 2+ models both say the bare "Models" (2+ gets a numeral alongside it,
+// covered below); exactly one model swaps the label for that model's own
+// short name — the bar has room for it and it's what you actually want to
+// know — never a byte figure in any case.
+test("the chip label is the bare category name at 0 and 2+, and the model's short name at exactly 1", () => {
+  expect(text(findAll(renderView({ models: [] }), "dl-summary")[0])).toBe("Models");
+  expect(
+    text(findAll(renderView({ models: [model({ residentBytes: 4 * 1024 ** 3 })] }), "dl-summary")[0]),
+  ).toBe("Qwen3-8B-MLX-4bit"); // repoName() of the fixture's model id
+  expect(
+    text(
+      findAll(
+        renderView({
+          models: [model(), model({ model: "org/other", residentBytes: 9 * 1024 ** 3 })],
+        }),
+        "dl-summary",
+      )[0],
+    ),
+  ).toBe("Models");
+  expect(
+    text(
+      findAll(renderView({ models: [model({ state: "loading", residentBytes: null })] }), "dl-summary")[0],
+    ),
+  ).toBe("Qwen3-8B-MLX-4bit");
+});
+
+// 2+ models: the bare "Models" label plus a `.sc-num` numeral of the count.
+test("2+ models carries a numeral beside the bare label", () => {
+  const tree = renderView({
+    models: [model(), model({ model: "org/b" }), model({ model: "org/c" })],
+  });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+  expect(text(findAll(tree, "sc-num")[0])).toBe("3");
+});
+
+// Exactly one model shows no numeral at all — its name IS the count.
+test("exactly one model shows no numeral", () => {
+  const tree = renderView({ models: [model()] });
+  expect(findAll(tree, "sc-num")).toHaveLength(0);
+});
+
+// A single model still mid-bring-up carries the indeterminate progress
+// sweep under its own name; a single ready (or errored) model carries none.
+test("a lone model not yet ready draws the indeterminate progress line; ready/error do not", () => {
+  const loading = renderView({ models: [model({ state: "loading", residentBytes: null })] });
+  const fills = findAll(loading, "sc-progress-fill");
+  expect(fills).toHaveLength(1);
+  expect((fills[0].props.className as string).split(" ")).toContain("is-indeterminate");
+
+  for (const state of ["ready", "error"] as const) {
+    const tree = renderView({ models: [model({ state })] });
+    expect(findAll(tree, "sc-progress")).toHaveLength(0);
   }
 });
 
@@ -477,18 +522,18 @@ test("a failed unload says so in the panel — it does not fail silently", async
   expect(text(findAll(after, "dl-row-cancel")[0])).toBe("Unload");
 });
 
-// D590: ONE circle, and it tracks "is there anything here" — never newness.
-// `hasNew` is deleted from the hook app-wide, so no chip has an arrival mark
-// any more; asserted as an absence so a future edit cannot reintroduce one
-// alongside the circle, which is the ambiguity D588 removed.
-test("the circle tracks whether anything is resident, and is the only indicator", () => {
-  expect(circleFilled(renderView({ models: [] }))).toBe(false);
-  expect(circleFilled(renderView({ models: [model()] }))).toBe(true);
-  // A bring-up counts as "something here" — D589 keys this off the row list,
-  // so there is no third state for a model without a reported size.
+// Tone tracks "is there anything here" — `is-idle` at zero, plain `on`
+// (no `is-idle` class) whenever the panel has any row at all, whether that
+// row is a resident model or one still mid-bring-up (D589 keys this off the
+// row list, so there is no third state for a model without a reported size).
+// No `.dl-new-dot`/`.dl-count` survive anywhere — those marks are retired
+// app-wide by the statusbar redesign.
+test("tone tracks whether anything is resident, with no arrival mark or legacy count anywhere", () => {
+  expect(toggleClasses(renderView({ models: [] }))).toContain("is-idle");
+  expect(toggleClasses(renderView({ models: [model()] }))).not.toContain("is-idle");
   expect(
-    circleFilled(renderView({ models: [model({ state: "loading", residentBytes: null })] })),
-  ).toBe(true);
+    toggleClasses(renderView({ models: [model({ state: "loading", residentBytes: null })] })),
+  ).not.toContain("is-idle");
 
   for (const models of [[], [model()], [model({ state: "loading", residentBytes: null })]]) {
     const tree = renderView({ models });
@@ -497,19 +542,17 @@ test("the circle tracks whether anything is resident, and is the only indicator"
   }
 });
 
-// The user's rule, verbatim: "no count. just a circle outlined or filled".
-// Pinned as a property of the whole chip rather than of one state: nothing in
-// the collapsed summary may render a digit, in any of the reachable cases.
-test("no chip state renders a digit anywhere in the summary", () => {
+// The bare "Models" label — the 0 and 2+ cases — never itself carries a
+// digit; the count for 2+ lives entirely in its own `.sc-num` numeral. (A
+// single model's own name can of course contain digits, e.g. "Qwen3-8B" —
+// that is the model's name, not a count, so it is out of scope here.)
+test("the bare 'Models' label never carries a digit — the count lives only in sc-num", () => {
   for (const models of [
     [] as AiLoadedModel[],
-    [model()],
     [model(), model({ model: "org/b" }), model({ model: "org/c" })],
-    [model({ state: "loading", residentBytes: null })],
   ]) {
     const tree = renderView({ models });
     expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
-    expect(text(findAll(tree, "dl-toggle")[0])).not.toMatch(/[0-9]/);
   }
 });
 

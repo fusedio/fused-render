@@ -418,6 +418,19 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
+/* The waiting count wears the Blocked red instead of the running yellow — the
+   same token as the dot beside it and the ring on the row it points at. Same
+   shimmer, different ink; nothing else about the label changes. */
+.sidebar-running.is-attention {
+  color: var(--status-failed);
+  background-image: linear-gradient(
+    100deg,
+    var(--status-failed) 30%,
+    color-mix(in srgb, var(--status-failed) 65%, var(--fg)) 50%,
+    var(--status-failed) 70%
+  );
+}
+
 /* ONE property animates, and it is the position of the highlight — never
    opacity, never the fill, never anything that could take a letter away. The
    range is 100% → 0%: with a background 300% the width of the box, both ends (and
@@ -442,6 +455,17 @@ a.sidebar-rail-btn {
     animation: none;
     background-image: none;
     -webkit-text-fill-color: var(--status-progress);
+  }
+
+  /* AND THE WAITING LABEL KEEPS ITS OWN HUE HERE TOO (bugbot, PR #984). The rule
+     above names `-webkit-text-fill-color`, which OUTRANKS `color` on the text it
+     paints — so `.sidebar-running.is-attention`'s red `color` was overruled by a
+     yellow fill and the one label that says somebody is being waited on came out
+     the same colour as "3 running". A reader who has asked for less motion is
+     not asking for less meaning; both variants have to state their hue in the
+     property that actually paints. */
+  .sidebar-running.is-attention {
+    -webkit-text-fill-color: var(--status-failed);
   }
 }
 
@@ -485,10 +509,20 @@ a.sidebar-rail-btn {
   border-color: var(--bg-alt);
 }
 
-/* The Tasks states, in the status ring's own hues (schedule.css): yellow while
-   anything is in flight, green for work that finished and has not been read.
-   Yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
-   dots in one corner is not a state this can draw. */
+/* The Tasks states, in the status ring's own hues (schedule.css): red for a run
+   that has stopped to ask the reader something, yellow while anything else is in
+   flight, green for work that finished and has not been read. Red outranks
+   yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
+   dots in one corner is not a state this can draw.
+
+   Red is `--status-failed` because that is the Blocked ring's own token and
+   `needs_attention` is DRAWN in Blocked (schedule-lib.laneOf) — the same status
+   wearing the same colour on every surface that names it, rather than a second
+   red minted for the rail. */
+.sidebar-rail-dot.is-attention {
+  background: var(--status-failed);
+}
+
 .sidebar-rail-dot.is-running {
   background: var(--status-progress);
 }

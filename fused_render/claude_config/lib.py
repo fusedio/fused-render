@@ -141,11 +141,34 @@ def config_lock() -> Generator[None, None, None]:
 # isn't an editable checkout — a refresh there would either fail with EACCES or,
 # worse, succeed and silently disappear on the next upgrade.
 #
-# So the two directions are split. READS prefer a user-writable override and fall
-# back to the packaged copy; WRITES only ever go to the override. Deleting the
-# override is therefore a clean "reset to what shipped", and an upgrade that
-# ships a better catalog is visible to everyone who never pressed Refresh.
+# So the two directions are split, and — this is the part that used to be
+# missed — split BY FIELD, not by file. `load_catalog()` is the merge:
+# curated-overlay fields (label/group/control/options/optionLabels/docKey/
+# unsetLabel) always come from the PACKAGED copy, and doc/default/minVersion
+# come from the override when a refresh has ever written one for that key.
+#
+# Anything less field-grained goes stale the moment someone refreshes. A
+# refresh's own writer (refresh_catalog.py) reads the catalog, edits only
+# doc/default/minVersion, and writes the WHOLE entry back out — so an override
+# file is a full snapshot, frozen at whatever the packaged curated fields
+# looked like the day it was written. Read that snapshot wholesale afterwards
+# and every later upgrade to the packaged copy — a new option added to a
+# `select` (`claude-fable-5-1` landing in `model`'s options, 2026-09), a
+# relabelled entry, a whole new catalog row — is invisible to anyone who ever
+# pressed "Refresh catalog", forever: the override shadows the packaged file
+# on every read and nothing ever regenerates it (bugbot: reported live on
+# PR #968 — the catalog edit "did not take effect" on a server with a stale
+# override, even though the packaged file was correct). Curated fields are
+# THIS APP'S code, current as of whatever shipped; an override predates that
+# by definition, so it is never a better answer for them. doc/default/
+# minVersion are the opposite — Anthropic's docs, fetched by the user, and the
+# override is the only place a fetch result lives at all.
 CATALOG_FILENAME = "settings_catalog.json"
+
+# The doc-half fields a refresh owns and an override may carry per key. Used
+# both by the read-time merge (load_catalog) and to describe what a refresh is
+# allowed to touch — the curated overlay is never in this list.
+_DOC_FIELDS = ("doc", "default", "minVersion")
 
 
 def packaged_catalog_path() -> str:
@@ -161,10 +184,47 @@ def catalog_override_path() -> str:
 
 
 def catalog_read_path() -> str:
-    """Where to READ the catalog from: the override when it exists, else the
-    packaged copy."""
+    """Which FILE a refresh's doc data currently lives in: the override when
+    it exists, else the packaged copy. This is refresh_catalog.py's own
+    starting point (it edits and rewrites a full snapshot) and a path for
+    diagnostics/tests — it is deliberately NOT what preferences.py serves to
+    the UI any more. See `load_catalog()` for that: a whole file, override or
+    packaged, is never the right answer once the two can each be stale in a
+    different way."""
     override = catalog_override_path()
     return override if os.path.isfile(override) else packaged_catalog_path()
+
+
+def load_catalog() -> list:
+    """The catalog preferences.py actually serves: every entry from the
+    PACKAGED copy — current curated fields, current set of keys, current
+    order — with doc/default/minVersion overlaid from the override, per key,
+    when the override still has that key. A key the packaged copy dropped
+    disappears even if the override still lists it; a key the packaged copy
+    added appears immediately even if no one has refreshed since. Only the
+    three doc-half fields ever cross from the override — see the module
+    comment above `CATALOG_FILENAME` for why the split is this granular."""
+    with open(packaged_catalog_path(), "r", encoding="utf-8") as f:
+        packaged = json.load(f)
+
+    override_path = catalog_override_path()
+    if not os.path.isfile(override_path):
+        return packaged
+
+    with open(override_path, "r", encoding="utf-8") as f:
+        override = json.load(f)
+    by_key = {d["key"]: d for d in override if "key" in d}
+
+    merged = []
+    for entry in packaged:
+        entry = dict(entry)
+        refreshed = by_key.get(entry["key"])
+        if refreshed:
+            for field in _DOC_FIELDS:
+                if field in refreshed:
+                    entry[field] = refreshed[field]
+        merged.append(entry)
+    return merged
 
 
 # --- config-store.md §3-5: read / write / merge -----------------------------

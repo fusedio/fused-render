@@ -41,7 +41,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { isDoneUnread, opensElsewhere } from "@shell/tasks-lib";
+import { inFlight, isDoneUnread, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   appPageTabFromSearch,
@@ -361,7 +361,7 @@ export default function CurrentAppsSection() {
     [rows],
   );
   const runningProjects = useMemo(
-    () => rows.filter((r) => r.status === "in_progress").map((r) => r.project || ""),
+    () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
     [rows],
   );
   // The projects with a finished-and-unread task — the raw doneUnread state

@@ -1,5 +1,5 @@
-"""Reading the index: the lookup pattern grammar, partition pruning, and
-stats. See fused_render/index/specs/query.md.
+"""Reading the index: partition pruning and stats. See
+fused_render/index/specs/query.md.
 
 The raw `sql` action OpenIndex exposed is deliberately absent from THIS module —
 arbitrary duckdb from a client is an arbitrary read/write surface. The confined
@@ -13,9 +13,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from fused_render.index import query as index_query
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import norm
-from fused_render.index.query import lookup, pattern_for, prune, stats
+from fused_render.index.query import prune, stats
 from fused_render.index.store import Sink, compact
 
 
@@ -41,37 +41,6 @@ def _index(tmp_path, root, paths, sizes=None, mtimes=None):
     sink.close()
     compact(cfg, root, shards, pa, pq)
     return cfg
-
-
-# -- the pattern grammar -------------------------------------------------------
-
-@pytest.mark.parametrize("q,expected_like,expected_prefix", [
-    ("app", "%app%", ""),                       # substring anywhere
-    # `*` is the wildcard; unanchored queries also get the leading `%`
-    ("*.parquet", "%%.parquet%", ""),
-    ("/Users/me/code", "/Users/me/code%", "/Users/me/code"),   # anchored
-    ("/Users/me/*.py", "/Users/me/%.py%", "/Users/me/"),       # prune to the literal lead-in
-])
-def test_pattern_translation(q, expected_like, expected_prefix):
-    like, prefix = pattern_for(q)
-    assert (like, prefix) == (expected_like, expected_prefix)
-
-
-def test_pattern_escapes_like_metacharacters():
-    like, _ = pattern_for("a_b%c")
-    assert like == "%a\\_b\\%c%"
-
-
-def test_pattern_expands_and_anchors_a_tilde():
-    # `pattern_for` re-normalizes after expanding `~` (platform.md §1), so on
-    # Windows the prefix comes back forward-slashed even though
-    # `os.path.expanduser` itself hands back `C:\Users\...`. The expected
-    # value has to go through the same `norm` to stay honest on every
-    # platform instead of assuming POSIX's `expanduser` is already canonical.
-    like, prefix = pattern_for("~/Doc")
-    expected = norm(os.path.expanduser("~/Doc"))
-    assert prefix == expected
-    assert like.startswith(expected)
 
 
 # -- partition pruning ---------------------------------------------------------
@@ -112,76 +81,24 @@ def test_prune_falls_back_to_the_byte_test_without_folded_bounds():
     assert prune(parts, "/zzz") == []
 
 
-# -- lookup --------------------------------------------------------------------
-
-def test_lookup_matches_a_substring_anywhere_in_the_path(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/sub/beta.md"])
-    out = lookup(cfg, "beta")
-    assert [r["path"] for r in out["rows"]] == ["/r/sub/beta.md"]
-    assert out["total"] == 1
-
-
-def test_lookup_with_no_query_returns_everything(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt"])
-    assert lookup(cfg, "")["total"] == 2
-
-
-def test_lookup_honours_limit_and_offset(tmp_path):
-    cfg = _index(tmp_path, "/r", [f"/r/f{i}.txt" for i in range(5)])
-    out = lookup(cfg, "", limit=2, offset=1, sort="path")
-    assert [r["name"] for r in out["rows"]] == ["f1.txt", "f2.txt"]
-    assert out["total"] == 5
-
-
-def test_lookup_sort_is_an_allowlist(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/b.txt", "/r/a.txt"])
-    assert [r["name"] for r in lookup(cfg, "", sort="path")["rows"]] == ["a.txt", "b.txt"]
-    # anything unknown falls back to mtime rather than reaching the SQL
-    assert lookup(cfg, "", sort="; DROP TABLE files")["rows"]
-
-
-def test_lookup_reports_pruning_telemetry(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
-    out = lookup(cfg, "/r/a")
-    assert out["scanned_partitions"] == 1
-    assert out["of_partitions"] == 1
-
-
-def test_lookup_prunes_partitions_an_anchored_query_cannot_hit(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
-    out = lookup(cfg, "/zzz")
-    assert out["rows"] == [] and out["scanned_partitions"] == 0
-
-
-def test_lookup_finds_a_mixed_case_tree_from_a_lowercase_anchored_query(tmp_path):
-    """End to end: typing the path in the wrong case found nothing at all,
-    because pruning removed the only partition before ILIKE ever ran."""
-    cfg = _index(tmp_path, "/Users", ["/Users/Me/Alpha.txt"])
-    assert [r["path"] for r in lookup(cfg, "/users/me")["rows"]] == [
-        "/Users/Me/Alpha.txt"]
-    assert lookup(cfg, "/users/me")["scanned_partitions"] == 1
-
-
-def test_lookup_escapes_quotes_in_the_query(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/it's.txt"])
-    assert lookup(cfg, "it's")["total"] == 1
-
-
-def test_lookup_on_an_empty_index_is_not_an_error(tmp_path):
-    out = lookup(_cfg(tmp_path), "anything")
-    assert out["empty"] is True
-    assert out["rows"] == []
-
-
 # -- stats ---------------------------------------------------------------------
 
-def test_stats_totals_and_extension_breakdown(tmp_path):
+def test_stats_totals_without_breakdown_by_default(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt", "/r/c.bin"],
                  sizes={"/r/a.txt": 1, "/r/b.txt": 2, "/r/c.bin": 100})
     out = stats(cfg)
     assert out["rows"] == 3
     assert out["total_size"] == 103
     assert out["last_root"] == "/r"
+    assert out["types"] == []
+
+
+def test_stats_extension_breakdown_when_asked(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt", "/r/c.bin"],
+                 sizes={"/r/a.txt": 1, "/r/b.txt": 2, "/r/c.bin": 100})
+    out = stats(cfg, breakdown=True)
+    assert out["rows"] == 3
+    assert out["total_size"] == 103
     assert out["types"][0] == {"ext": "bin", "n": 1, "size": 100}
 
 
@@ -215,32 +132,85 @@ def test_stats_does_not_count_a_lookalike_underscore_sibling(tmp_path):
     assert stats(cfg, root="/x/my_dir")["rows"] == 1
 
 
-def test_the_ignore_root_cache_cannot_grow_without_limit(tmp_path):
-    """It used to be "bounded by the roots ever searched in one process", which
-    was true when only the home page used this route. The in-folder search
-    makes EVERY browsed folder a root, so the bound has to be a real one."""
-    from fused_render.index import query as q
+# -- cancellation: a `token` handed to stats -----------------------------------
+#
+# `stats` follows `search_ranked`'s contract exactly (see
+# tests/test_index_search.py's "cancellation: a `token` handed to
+# search_ranked" section for the full case list against the reference
+# implementation) — bind right after connect, `token.check()` before each
+# real query, an InterruptException attributed to this token becomes
+# `Cancelled`. These are scoped to stats's own wrinkle: two possible query
+# sites (`n_dirs`, and `by_ext` only when `breakdown=True`).
 
-    q._ORACLE_RELS.clear()
-    for i in range(q.ORACLE_CACHE_MAX * 3):
-        q._remember_oracle_rels((f"/ix", f"/root{i}"), (1.0, []))
-    assert len(q._ORACLE_RELS) <= q.ORACLE_CACHE_MAX
-    # the most recent survive; the oldest are the ones dropped
-    assert ("/ix", f"/root{q.ORACLE_CACHE_MAX * 3 - 1}") in q._ORACLE_RELS
-    assert ("/ix", "/root0") not in q._ORACLE_RELS
+def test_stats_an_uncancelled_token_changes_nothing(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"],
+                sizes={"/r/a.txt": 1, "/r/b.bin": 2})
+    token = CancelToken()
+    assert stats(cfg, breakdown=True, token=token) == stats(cfg, breakdown=True)
 
 
-def test_the_ignore_root_cache_evicts_the_least_recently_USED(tmp_path):
-    """Refreshing recency only on write is FIFO with an LRU's name on it: the
-    folder somebody searches all day gets evicted by the ones they opened
-    once."""
-    from fused_render.index import query as q
+def test_stats_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        stats(cfg, token=token)
 
-    q._ORACLE_RELS.clear()
-    for i in range(q.ORACLE_CACHE_MAX):
-        q._remember_oracle_rels(("/ix", f"/root{i}"), (1.0, []))
-    hot = ("/ix", "/root0")
-    assert q._recall_oracle_rels(hot) is not None      # used again...
-    q._remember_oracle_rels(("/ix", "/newcomer"), (1.0, []))
-    assert hot in q._ORACLE_RELS                        # ...so it survives
-    assert ("/ix", "/root1") not in q._ORACLE_RELS      # the truly oldest went
+
+def test_stats_an_interrupt_during_the_breakdown_becomes_cancelled(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "GROUP BY" in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        stats(cfg, breakdown=True, token=token)
+
+
+def test_stats_an_interrupt_with_no_token_is_not_swallowed(tmp_path, monkeypatch):
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.bin"])
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "GROUP BY" in sql:
+                raise duckdb_module.InterruptException("simulated, not this token's doing")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(duckdb_module.InterruptException):
+        stats(cfg, breakdown=True)
+
+
+def test_stats_a_cancel_after_return_does_not_touch_the_closed_connection(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
+    token = CancelToken()
+    stats(cfg, token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True

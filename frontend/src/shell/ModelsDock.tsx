@@ -51,18 +51,13 @@
 // RepoUpdatesCardView use, for the identical reason: no polling, no network,
 // no `window`/`document`, so ModelsDock.test.tsx can render the view
 // directly with a fixed model list rather than mocking `useAiRuntime`.
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
-import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import { useExclusiveSection } from "@platform/lib/exclusiveSection";
-import StatusDot from "@platform/ui/StatusDot";
-import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
+import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
+import StatusChip from "@platform/ui/StatusChip";
 
-/** For a caller that mounts the view without an `onClose` — the pure view's
- *  outside-pointer-down handler needs a function, not a branch. */
-const NOOP = () => {};
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
 // plus `loadCollapsed`/`saveCollapsed`; all three stay deleted — a key that is
@@ -305,7 +300,8 @@ export function ModelsCardView({
   ceilingBytes = null,
   collapsed,
   onToggle,
-  onClose,
+  pinned = false,
+  hostProps,
   onUnload,
 }: {
   models: AiLoadedModel[];
@@ -315,62 +311,47 @@ export function ModelsCardView({
   ceilingBytes?: number | null;
   collapsed: boolean;
   onToggle: () => void;
-  /** Background the panel — an outside pointer-down or Escape (D574).
-   *  Optional: a caller that mounts this view directly need not dismiss. */
-  onClose?: () => void;
+  /** Held open by a click (statusbar redesign) — styles the chip as engaged. */
+  pinned?: boolean;
+  /** Hover intent + outside-dismiss wiring for the `.dl-host` wrapper, from
+   *  `useStatusChip`. Optional: a test that mounts the view bare needs none. */
+  hostProps?: StatusChipState["hostProps"];
   onUnload: (model: string) => Promise<void>;
 }) {
   // NO AGGREGATE MEMORY ON THE CHIP (D589, user: "the memory gb next to the
-  // models isn't even accurate"). It was a sum of `residentBytes`, which
-  // `api.ts`'s own comment on that field says is "RSS of the worker process.
-  // Not the model's size" — so it under-reports MLX's allocator pool and
-  // over-reports pages shared between workers. Summing it and labelling the
-  // result as the models' memory was dishonest, and no arithmetic here could
-  // fix a number that is measuring the wrong thing.
+  // models isn't even accurate"): `residentBytes` is worker RSS, not model
+  // size, so no sum of it is honest. The per-row `.dl-amount` keeps its figure.
   //
-  // `idle` therefore keys off the ROW LIST — is there anything to show — not
-  // off a byte sum. The per-row `.dl-amount` KEEPS its figure: per worker it
-  // is at least a real, comparable number, and it is the panel's only cost
-  // signal. `models.length > 0` is also this chip's `StatusDot` fill rule —
-  // the whole reason this section is its own chip again: the dot must fill
-  // whenever ANY model is resident, whether or not any job or engine is also
-  // running, and folding this into a shared "is there work right now" dot
-  // (as the merged Activity chip's did) answers a different question than
-  // the one the user relies on this dot for.
+  // THE CHIP READS (statusbar redesign):
+  //   0 models  "Models", muted
+  //   1 model   the model's own short name — the bar has room for it, and the
+  //             name is what you actually want to know; a model still loading
+  //             carries the indeterminate sweep under it
+  //   2+ models "Models 2"
   const idle = models.length === 0;
-  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
-  // host, not just the panel, is what counts as "inside".
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
+  const only = models.length === 1 ? models[0] : null;
+  const label = only ? repoName(only.model) : "Models";
+  const count = models.length >= 2 ? models.length : 0;
+  const progress = only && only.state !== "ready" && only.state !== "error" ? null : undefined;
+  const ariaLabel = idle
+    ? "Models, none loaded"
+    : only
+      ? `Model loaded: ${repoName(only.model)}`
+      : `Models, ${models.length} loaded`;
 
   return (
-    <div className="dl-host" ref={hostRef}>
-      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
-          doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME and nothing that
-          varies in width, and the idle sentence moves into the panel; see
-          `DownloadManagerView`'s own header for why a resident model or a
-          running engine alone leaves ITS dot unfilled — that rule does not
-          apply here). The label is "Models" whether or not anything is
-          resident — the ONLY difference between idle and active is whether the
-          circle beside it is outlined or filled, plus `.is-idle`'s muting. */}
-      <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
-        onClick={onToggle}
-        aria-expanded={!collapsed}
+    <div className="dl-host" {...hostProps}>
+      <StatusChip
+        label={label}
+        count={count}
+        tone={idle ? "idle" : "on"}
+        progress={progress}
+        open={!collapsed}
+        pinned={pinned}
         title={collapsed ? "Show loaded models" : "Hide loaded models"}
-      >
-        {/* THE SAME CIRCLE AS EVERY OTHER CHIP (D590, user: "lets just stick
-            to a circle for all items"). Filled whenever ANY model is
-            resident — the one signal the user calls out by name as the
-            reason this chip must stand apart from Activity's own dot (which
-            answers "is there work right now", not "is memory held"). */}
-        <span className="dl-summary">Models</span>
-        <StatusDot
-          on={models.length > 0}
-          label={models.length > 0 ? "models loaded" : "no models loaded"}
-        />
-      </button>
+        ariaLabel={ariaLabel}
+        onClick={onToggle}
+      />
       {!collapsed && (
         <div className="dl-panel">
           {idle ? (
@@ -393,76 +374,15 @@ export function ModelsCardView({
   );
 }
 
+// NEVER AUTO-OPENS (D587, and now the rule for every chip — statusbar
+// redesign): a model finishing its load is announced by the chip's own label
+// and the sweep ending, not by a panel appearing over the page. Hover to
+// preview, click to pin; `lib/statusChip.ts` owns those rules.
 export default function ModelsDock() {
   const runtime = useAiRuntime();
-  const [collapsed, setCollapsed] = useState(true);
-
-  // Same wiring DownloadManagerView/RepoUpdatesCardView use, with `ids`
-  // deliberately fed nothing (D587, user: "the models popover should never
-  // auto open. that is user only") — a model becoming resident is a
-  // CONSEQUENCE of something the user already did, or of an app quietly
-  // loading one — a state readout, not an event worth covering the page for.
-  // `autoExpand.ts` deleted the dedicated `neverOpen` flag the pre-merge
-  // version of this file used to pass here (nothing outside the status-bar
-  // merge's now-deleted standalone Models/Engines chips ever wanted it, so
-  // the merge removed it along with them); the identical effect is available
-  // through the hook's general shape instead — an empty `ids` array can never
-  // contain an "arrival", so `autoOpen` can never become true, structurally,
-  // with no separate flag needed. Every resident model still rides in as
-  // `alsoDrawn`, which is what lets D580's "close when the last model
-  // unloads" behaviour keep working: `autoClose` reacts to the DRAWN set
-  // going from non-empty to empty, and `alsoDrawn` is exactly that set here.
-  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    [],
-    collapsed,
-    // Not `runtime.loaded.length > 0` — an idle machine must still announce
-    // its first real load (autoExpand.ts's `ready`), which matters for
-    // `autoClose` even though `autoOpen` can never fire here.
-    aiRuntimeSettled(),
-    { alsoDrawn: runtime.loaded.map((m) => `model:${m.model}`) },
-  );
-  // The saved preference, overridden in EITHER direction by whichever
-  // transient flag is standing (D580 adds the closing half; the two are
-  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
-  // not two independent booleans). `autoClose` is tested first because a
-  // drained list beats a stale auto-open that the same drain is retiring.
-  const open = autoClose ? false : !collapsed || autoOpen;
-
-  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
-  // section, and only transiently — see `exclusiveSection.ts` on why the
-  // arbiter must not touch the saved preference.
-  useExclusiveSection("models", open, forceClose);
-
-  // ONE unified toggle for a chip whose visible state may be the SAVED
-  // preference or either transient override (D580). It acts on what the user
-  // SEES — `wantOpen = !open` — then writes the preference only if the
-  // preference is what disagrees. That is what keeps D574's rule intact
-  // without a special case for it: dismissing an auto-OPENED panel (or
-  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
-  // the outcome, so clearing the override is the whole of the work and
-  // nothing is persisted. A click on a chip whose state came from the
-  // preference itself still flips and saves it, exactly as before.
-  const toggle = () => {
-    const wantOpen = !open;
-    acknowledge();
-    if (collapsed === wantOpen) setCollapsed(!wantOpen);
-  };
-
-  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
-  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
-  // click on a SIBLING CHIP is outside it, so a persisting version would turn
-  // "the user opened Models" into a write on every OTHER section's own key —
-  // the exact "the app decided, not the user" failure the D567 guard exists
-  // to prevent, arriving through the dismiss path instead of through
-  // `forceClose`. So this now IS `forceClose`: the panel goes away, and what
-  // the user last chose is left alone.
-  const close = forceClose;
+  const chip = useStatusChip("models");
 
   const onUnload = async (model: string) => {
-    // The response IS a fresh runtime snapshot (`{stopped, ...describe()}`,
-    // ai_runtime.py's own route) — publishing it updates every reader (this
-    // panel, the sidebar dot) on the click itself, rather than waiting out
-    // the next poll tick.
     const result = await unloadAiModel(model);
     publishAiRuntime(result);
   };
@@ -471,9 +391,10 @@ export default function ModelsDock() {
     <ModelsCardView
       models={runtime.loaded}
       ceilingBytes={runtime.memoryCeilingBytes}
-      collapsed={!open}
-      onToggle={toggle}
-      onClose={close}
+      collapsed={!chip.open}
+      onToggle={chip.toggle}
+      pinned={chip.pinned}
+      hostProps={chip.hostProps}
       onUnload={onUnload}
     />
   );

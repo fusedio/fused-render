@@ -84,17 +84,14 @@ def test_the_page_sends_the_cancel_action_the_backend_dispatches(agent, template
     assert "unknown action" in str(agent.main(action="stop"))
 
 
-def test_stopping_is_offered_both_as_a_button_and_as_escape(template):
-    """Two affordances, one path: the click target is discoverable, the key is
-    what a terminal user reaches for. Both must call the same stopRun()."""
+def test_stopping_is_offered_as_a_button(template):
+    """The click target is discoverable and calls stopRun(). Escape no longer
+    stops a live run (see escapeAction), so the button must not teach a key
+    that does not do anything."""
     html = _html(template)
     assert "function stopRun(" in html
-    # the working line's button, whose label is also where the key is taught
-    # (the hint row below is space-between around the selectors, and a left item
-    # long enough to say it wrapped that row onto a second line mid-turn)
     assert 'id="stopbtn"' in html, "no stop control on the page"
-    assert "stop · esc" in html, "the button does not teach the key"
-    assert '"Escape"' in html, "Escape is not bound"
+    assert "stop · esc" not in html, "the button still teaches a key that does not stop the run"
 
 
 # ------------------------------------------- the backend contract runEnding sits on

@@ -208,3 +208,21 @@ describe("app page codec", () => {
     expect(appPageTabFromSearch("")).toBe("overview");
   });
 });
+
+// bugbot, PR #969: Current Apps read a project as live off `status ===
+// "in_progress"` alone, while tasksPulse already counts a needs_attention row
+// (a run parked on a card) as running too — the Tasks rail could say work was
+// in flight while the same project's Current Apps row sat idle. Source-text
+// checked, like the saved-order describe above, since the reading lives
+// inline in the component rather than in a pure export.
+describe("CurrentAppsSection's running projects", () => {
+  const SECTION = readFileSync(
+    new URL("./CurrentAppsSection.tsx", import.meta.url),
+    "utf8",
+  );
+
+  it("counts needs_attention as live, via the same inFlight helper tasks-lib uses", () => {
+    expect(SECTION).toContain("inFlight(statusColumn(r.status))");
+    expect(SECTION).not.toContain('r.status === "in_progress"');
+  });
+});

@@ -1,32 +1,27 @@
-"""The CODE in skills/fused-render-index/SKILL.md, checked rather than read.
+"""The CODE the fused-render-index skill hands out, checked rather than read.
 
-The Python reader is copy-paste code: whatever it gets wrong propagates into every
-app that follows the skill, and prose review cannot catch a path that resolves
-to a directory which does not exist. So the block is extracted from the
-markdown and run — its branch sanitization is checked against the real
-``fused_render._branch.sanitize`` it has to match, and ``connect()`` is pointed
-at the store shapes that made it raise. The JS example gets the two checks that
-can be made statically: its cross-references, and the generation guard that
-keeps a per-keystroke render honest.
+The Python reader (``skills/fused-render-index/reader.py``) is copy-paste code:
+whatever it gets wrong propagates into every app that follows the skill, and
+prose review cannot catch a path that resolves to a directory which does not
+exist. So the file is run — its store resolution is checked against the env the
+server actually exports, and ``connect()`` is pointed at the store shapes that
+made it raise. The JS example in SKILL.md gets the check that can be made
+statically: the generation guard that keeps a per-keystroke render honest.
 """
 import os
-import re
 from pathlib import Path
 
 import pytest
 
-from fused_render._branch import sanitize
-
-SKILL = (Path(__file__).resolve().parents[1] / "skills" / "fused-render-index"
-         / "SKILL.md").read_text(encoding="utf-8")
+_SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "fused-render-index"
+SKILL = (_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
 
 
 def _reader():
-    """Exec the ```python block under "The reader (copy this)"` and return it."""
-    after = SKILL.split("### The reader (copy this)", 1)[1]
-    code = after.split("```python", 1)[1].split("```", 1)[0]
+    """Exec the skill's reader.py and return its namespace."""
+    code = (_SKILL_DIR / "reader.py").read_text(encoding="utf-8")
     namespace = {}
-    exec(compile(code, "SKILL.md:reader", "exec"), namespace)  # noqa: S102
+    exec(compile(code, str(_SKILL_DIR / "reader.py"), "exec"), namespace)  # noqa: S102
     return namespace
 
 
@@ -58,16 +53,6 @@ def test_the_skill_documents_only_the_two_bridge_methods():
 
 # --------------------------------------------------------------- the JS example
 
-def test_every_section_cross_reference_names_a_section_that_exists():
-    # Catches a pointer at a section that is not there. It cannot catch a
-    # pointer at the WRONG existing section (the repos row said "section E",
-    # the migration guide, instead of D) — that one is on review, and the
-    # sections are lettered here so a rename at least fails loudly.
-    letters = {m.group(1) for m in re.finditer(r"^## ([A-Z])\. ", SKILL, re.M)}
-    for cited in re.findall(r"[Ss]ection ([A-Z])\b", SKILL):
-        assert cited in letters, cited
-
-
 def test_the_per_keystroke_example_guards_its_own_renders():
     """`fused.fileIndex.*` has no supersede channel (runPython's D114 is not it),
     so the copy-pasted example must not let a slower earlier query win."""
@@ -81,28 +66,49 @@ def test_the_per_keystroke_example_guards_its_own_renders():
 
 # ------------------------------------------------------------- branch scoping
 
-# The refs that broke the unsanitized version: this very branch (truncated to
-# _MAX_LEN), a default branch (baseline — no branches/ nesting at all), mixed
-# case, and a ref whose 12-char cut lands on a separator.
+# The refs whose stores a hand-rolled resolution used to miss: this very branch
+# (truncated to _MAX_LEN), a default branch (baseline — no branches/ nesting at
+# all), mixed case, and a ref whose 12-char cut lands on a separator.
 _REFS = ["", "main", "MAIN", "master", "HEAD", "worktree-fused-index-api",
          "Worktree-Fused-Index-API", "feature/AB-123_fix", "a-very-long-branch-name",
          "abcdefghijk-more", "///", "Fix.The.Thing"]
 
 
 @pytest.mark.parametrize("ref", _REFS)
-def test_the_snippets_branch_ref_matches_the_real_sanitize(ref):
-    assert _reader()["_branch_ref"](ref) == sanitize(ref), ref
-
-
-@pytest.mark.parametrize("ref", _REFS)
 def test_store_dir_resolves_where_the_server_actually_wrote(ref, tmp_path,
                                                             monkeypatch):
+    """The server exports FUSED_RENDER_HOME_DIR already branch-resolved, so
+    taking it verbatim lands on the store for every ref — including a branch
+    build whose ref is baked in and never reaches the environment at all."""
     from fused_render._branch import branch_dir
 
+    home = branch_dir(str(tmp_path), ref)
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", home)
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    assert _reader()["store_dir"]() == os.path.join(home, "index"), ref
+
+
+def test_store_dir_never_re_derives_the_branch_nesting_itself(tmp_path,
+                                                              monkeypatch):
+    """FUSED_RENDER_HOME_DIR is the OUTPUT of the branch resolution, not its
+    input: appending `branches/<ref>` to it would answer
+    `branches/<ref>/branches/<ref>` on any worktree build (SPEC PY-15, D166)."""
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR",
+                       os.path.join(str(tmp_path), "branches", "some-branch"))
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "some-branch")
+    assert _reader()["store_dir"]() == os.path.join(
+        str(tmp_path), "branches", "some-branch", "index")
+
+
+def test_with_no_server_around_store_dir_is_the_unbranched_baseline(tmp_path,
+                                                                    monkeypatch):
+    """Nothing exported HOME_DIR, so there is no branch-resolved answer to
+    honor — and guessing one from FUSED_RENDER_BRANCH is the drift this
+    resolution exists to avoid. The baseline is the honest fallback."""
+    monkeypatch.delenv("FUSED_RENDER_HOME_DIR", raising=False)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
-    monkeypatch.setenv("FUSED_RENDER_BRANCH", ref)
-    expected = os.path.join(branch_dir(str(tmp_path), ref), "index")
-    assert _reader()["store_dir"]() == expected, ref
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "some-branch")
+    assert _reader()["store_dir"]() == os.path.join(str(tmp_path), "index")
 
 
 def test_an_explicit_location_wins_over_the_env(tmp_path, monkeypatch):

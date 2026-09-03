@@ -4,9 +4,12 @@
 // snapping. Both dismiss routes — the TTL timer and a manual ✕ — go through it.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-// toast.ts schedules through `window` (browser code); bun's test runtime has no
-// DOM, so point window at the global timers.
-(globalThis as { window?: unknown }).window ??= globalThis;
+import { installDomShim } from "@platform/lib/testDomShim";
+
+// toast.ts schedules through `window` (browser code); bun's test runtime has
+// no DOM. See testDomShim.ts for why this is the one shared stub every suite
+// in the run installs, rather than a stub hand-rolled per file.
+installDomShim();
 
 import { TOAST_EXIT_MS, dismissToast, getToasts, pushToast } from "@platform/lib/toast";
 

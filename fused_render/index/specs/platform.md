@@ -2,8 +2,8 @@
 
 > **Status — partial.** This file owns **path canonical form** and **per-platform
 > behaviour**. Implementing modules: `ignore.py` (`WINDOWS`, `norm`, `SKIP_DIRS`),
-> `runner.py` (`_detach_kwargs`), `scan.py` (`scan_dir_once`), `query.py` (`_DRIVE`,
-> `pattern_for`). macOS is the only platform verified end to end (§4).
+> `runner.py` (`_detach_kwargs`), `scan.py` (`scan_dir_once`), `query.py`
+> (`_BARE_DRIVE`, `stats`). macOS is the only platform verified end to end (§4).
 
 ## 1. Canonical path form
 
@@ -18,7 +18,7 @@ Normalization happens at the **edges**, never in the middle:
 | the scan root | `runner.start` | `expanduser` → `abspath` → `norm`, before `spec.json` is written |
 | every discovered path | `scan_dir_once` | each `e.path` leaves through `norm`; this is where all index paths are born |
 | ignore patterns | `IgnoreRules.__init__` | normalized **before** the `"/" in p` test, so `C:\Users\me\x` is recognized as a path, not a folder name |
-| a user query | `query.pattern_for` | accepts either form; `~` expansion is re-normalized |
+| a `stats` root | `query.stats` | accepts either form; `~` expansion is re-normalized |
 
 Because the form is canonical, the rest of the system may — and does — assume `/`:
 `path.split("/")` in ignore matching (`scan-ignore.md §2`), `root + "/"` prefix tests

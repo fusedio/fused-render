@@ -6,25 +6,12 @@
 import { expect, test } from "bun:test";
 
 import type { AppInfo } from "./api";
+import { installDomShim } from "./testDomShim";
 
-// Same shim dance as appEntry.test.ts: router.ts reads `location`/`history` at
-// MODULE scope, and bun's test runtime has no DOM. `??=` because the stubs are
-// shared with every other suite in the run.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/",
-  search: "",
-  href: "http://localhost/",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent() {},
-  setTimeout: globalThis.setTimeout.bind(globalThis),
-  clearTimeout: globalThis.clearTimeout.bind(globalThis),
-};
+// router.ts reads `location`/`history` at MODULE scope, and bun's test
+// runtime has no DOM. See testDomShim.ts for why this has to be the one
+// shared stub rather than a stub hand-rolled per file.
+installDomShim();
 
 const { appCardMenu } = await import("./appCardMenu");
 const { hrefFor } = await import("./appEntry");
