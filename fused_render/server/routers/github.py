@@ -78,3 +78,59 @@ async def api_github_install(x_fused: str | None = Header(default=None)):
 async def api_github_install_status():
     """The current install record. A read — no guard, no spawn."""
     return github_setup.install_status()
+
+
+# --- signing in through `gh`'s own browser flow -------------------------------
+#
+# Mirrors claude_health.py's `/api/claude/login` trio almost verbatim: a
+# guarded POST to start (it spawns a process AND opens a browser window on the
+# user's desktop), an unguarded GET to poll (a read of module state, no
+# spawn), and a guarded POST to cancel (it signals a process). See
+# fused_render/github_login.py for why this waits on a person rather than
+# being a third `/api/github/install` action.
+#
+# The signup detour needs no endpoint of its own: opening github.com/signup is
+# a plain browser tab the template opens directly, and the status poll above
+# is what notices the user came back signed in.
+
+
+@router.post("/api/github/login")
+async def api_github_login(x_fused: str | None = Header(default=None)):
+    """Start a browser sign-in, and return the opening record.
+
+    The X-Fused guard, like its neighbours: this spawns a process AND opens a
+    browser window on the user's desktop, which is not something a blind
+    cross-origin POST may do.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import github_login
+
+    try:
+        return await run_in_threadpool(github_login.start)
+    except github_login.LoginError as e:
+        # A refusal with a sentence the strip shows as-is — "a sign-in is
+        # already waiting in your browser" is the whole value of the 409,
+        # since the window the user needs is already open behind the app.
+        return _error(str(e), status=409)
+
+
+@router.get("/api/github/login")
+async def api_github_login_status():
+    """The current sign-in record. A read — no guard, no spawn."""
+    from fused_render import github_login
+
+    return github_login.status()
+
+
+@router.post("/api/github/login/cancel")
+async def api_github_login_cancel(x_fused: str | None = Header(default=None)):
+    """Stop a sign-in the user gave up on. Idempotent, and guarded because it
+    signals a process."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import github_login
+
+    return await run_in_threadpool(github_login.cancel)
