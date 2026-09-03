@@ -223,6 +223,13 @@ _EVENTS_MAX = 100
 
 # What the shell narrates. `done` is an info toast (your message ran), the other
 # two are errors that need a person — which is the gap this log exists to close.
+#
+# THERE IS NO EVENT FOR A RUN PARKED ON A CARD (Akshil, 2026-09-03). One was
+# added on this branch and taken straight back out: a toast for it interrupted
+# the reader for something the Tasks page already says on its own — the row
+# wears the Needs attention ring and sorts to the top of the list, which is
+# where somebody goes to act on it anyway. This log is for what happened while
+# nobody was looking, and a run that is still going has not happened yet.
 EVENT_DONE = "done"
 EVENT_FAILED = "failed"
 EVENT_MISSED = "missed"
@@ -1779,7 +1786,12 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             _emit(EVENT_DONE, entry)
         return False
 
-    parked = data.get("permissions") or []
+    # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
+    # answered ones included, so that a re-attaching frame can rebuild the cards
+    # it never saw (agent.py `_permissions`) — reading the whole list as "parked"
+    # would call a run that was carded once and allowed twenty minutes ago
+    # blocked for the rest of its life.
+    parked = [p for p in (data.get("permissions") or []) if not p.get("decision")]
     detail = "waiting for permission" if parked else str(data.get("phase") or "working")
     tokens = data.get("tokens") or 0
     if tokens and not parked:
