@@ -17,7 +17,7 @@ from fastapi import APIRouter, Header
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render import github_setup
-from fused_render.server.common import _require_fused
+from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
@@ -47,3 +47,34 @@ async def api_github_status_refresh(x_fused: str | None = Header(default=None)):
     if guard is not None:
         return guard
     return await run_in_threadpool(github_setup.summary_refreshed)
+
+
+# --- installing `gh` without a package manager -------------------------------
+#
+# Mirrors claude_health.py's `/api/claude/install` pair almost verbatim: a
+# guarded POST to start (it downloads and writes an executable into the
+# user's home, the last thing a blind cross-origin POST may be allowed to
+# start) and an unguarded GET to poll (a read of module state, no spawn).
+
+
+@router.post("/api/github/install")
+async def api_github_install(x_fused: str | None = Header(default=None)):
+    """Download and install `gh` into ~/.fused-render/bin, in the background.
+
+    The X-Fused guard is not a formality here: this writes an executable into
+    the user's home, same as `/api/claude/install`.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        return await run_in_threadpool(github_setup.install_start)
+    except github_setup.InstallError as e:
+        # A refusal with a sentence the strip can show as-is.
+        return _error(str(e), status=409)
+
+
+@router.get("/api/github/install")
+async def api_github_install_status():
+    """The current install record. A read — no guard, no spawn."""
+    return github_setup.install_status()

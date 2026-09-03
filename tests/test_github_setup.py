@@ -16,10 +16,17 @@ facts the parser reads.
 import json
 import os
 import sys
+import threading
 
 import pytest
 
 from fused_render import github_setup
+
+# Captured before any test can monkeypatch `github_setup.threading.Thread` —
+# that attribute lives on the SAME module object this file drives its own
+# concurrency tests with, so a fake installed there would swallow the test's
+# own driver threads too (see test_claude_install.py's identical capture).
+_RealThread = threading.Thread
 
 
 @pytest.fixture(autouse=True)
@@ -382,3 +389,286 @@ def test_refresh_requires_the_fused_header(monkeypatch):
     assert called == []
     ok = client.post("/api/github/status/refresh", headers={"X-Fused": "1"})
     assert ok.status_code == 200 and called == [1]
+
+
+# -- installing `gh` ----------------------------------------------------------
+#
+# Ported from tests/test_claude_install.py's shape: nothing below spawns a
+# real download. `github_setup._download` is faked at the module boundary and
+# the health re-probe is stubbed, so what is under test is the state machine
+# and the URL/asset-name arithmetic, not the network.
+
+
+@pytest.fixture(autouse=True)
+def _clean_install(monkeypatch):
+    github_setup.install_reset()
+    monkeypatch.setattr(github_setup.jobs, "upsert", lambda *a, **k: {})
+    yield
+    github_setup.install_reset()
+
+
+# -- the asset-name / URL arithmetic, pure and offline ------------------------
+
+
+@pytest.mark.parametrize("os_kind,arch,ext", [
+    ("macOS", "amd64", "zip"),
+    ("macOS", "arm64", "zip"),
+    ("linux", "amd64", "tar.gz"),
+    ("linux", "arm64", "tar.gz"),
+    ("windows", "amd64", "zip"),
+    ("windows", "arm64", "zip"),
+])
+def test_asset_name_matches_the_current_release_shape(os_kind, arch, ext):
+    """Checked live against api.github.com/repos/cli/cli/releases/latest on
+    2.100.0: every one of these six names is a real asset on that release."""
+    name = github_setup._asset_name(os_kind, arch, "2.100.0")
+    assert name == f"gh_2.100.0_{os_kind}_{arch}.{ext}"
+
+
+@pytest.mark.parametrize("os_kind,arch", [
+    ("macOS", "amd64"), ("macOS", "arm64"),
+    ("linux", "amd64"), ("linux", "arm64"),
+    ("windows", "amd64"), ("windows", "arm64"),
+])
+def test_release_url_points_at_the_tagged_release(os_kind, arch):
+    """NOT `/releases/latest/download/...`: that redirect only works when the
+    requested filename already exists among the latest release's assets, and
+    every `gh` asset name embeds its version — a filename built without
+    knowing the version 404s (checked live: a `gh_1.0.0_...` name against
+    `/latest/download/` on the real repo comes back 404, not a redirect).
+    So the version is resolved first (`_fetch_latest_version`) and the URL is
+    built against the tag it names.
+    """
+    asset = github_setup._asset_name(os_kind, arch, "2.100.0")
+    url = github_setup._release_url("2.100.0", asset)
+    assert url == f"https://github.com/cli/cli/releases/download/v2.100.0/{asset}"
+
+
+def test_target_os_reads_sys_platform_and_os_name(monkeypatch):
+    monkeypatch.setattr(github_setup.sys, "platform", "darwin")
+    assert github_setup._target_os() == "macOS"
+    monkeypatch.setattr(github_setup.sys, "platform", "linux")
+    monkeypatch.setattr(github_setup.os, "name", "nt")
+    assert github_setup._target_os() == "windows"
+    monkeypatch.setattr(github_setup.os, "name", "posix")
+    assert github_setup._target_os() == "linux"
+
+
+@pytest.mark.parametrize("machine,want", [
+    ("x86_64", "amd64"), ("AMD64", "amd64"),
+    ("arm64", "arm64"), ("aarch64", "arm64"),
+])
+def test_target_arch_normalizes_platform_machine(machine, want):
+    assert github_setup._target_arch(machine) == want
+
+
+def test_target_arch_refuses_an_unpublished_architecture():
+    with pytest.raises(github_setup.InstallError, match="architecture"):
+        github_setup._target_arch("i386")
+
+
+def test_member_for_names_the_binary_inside_the_archive():
+    assert (github_setup._member_for("linux", "amd64", "2.100.0")
+            == "gh_2.100.0_linux_amd64/bin/gh")
+    assert (github_setup._member_for("windows", "amd64", "2.100.0")
+            == "gh_2.100.0_windows_amd64/bin/gh.exe")
+
+
+# -- the install worker --------------------------------------------------------
+
+
+def _run_install(monkeypatch, *, version="2.100.0", download_error=None,
+                 health=None):
+    """Drive one install to completion synchronously, returning the record."""
+    monkeypatch.setattr(github_setup, "_fetch_latest_version", lambda: version)
+
+    def fake_download(url, dest_path):
+        if download_error is not None:
+            raise download_error
+        os_kind = github_setup._target_os()
+        arch = github_setup._target_arch(github_setup.platform.machine())
+        member = github_setup._member_for(os_kind, arch, version)
+        # Build a tiny real archive of the right shape so `_unpack` (not
+        # faked) has something genuine to extract from.
+        root = member.rsplit("/", 2)[0]
+        if dest_path.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(dest_path, "w") as zf:
+                zf.writestr(member, "#!/bin/sh\necho fake gh\n")
+                zf.writestr(f"{root}/LICENSE", "MIT")
+        else:
+            import io
+            import tarfile
+            with tarfile.open(dest_path, "w:gz") as tf:
+                data = b"#!/bin/sh\necho fake gh\n"
+                info = tarfile.TarInfo(name=member)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+    monkeypatch.setattr(github_setup, "_download", fake_download)
+    monkeypatch.setattr(github_setup, "summary_refreshed",
+                        lambda: health if health is not None
+                        else {"found": True, "version": version})
+    github_setup._run_install()
+    return github_setup.install_status()
+
+
+def test_a_clean_install_finishes_and_installs_the_binary(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    rec = _run_install(monkeypatch)
+    assert rec["state"] == "done"
+    assert rec["error"] is None
+    dest = os.path.join(github_setup.install_dir(), github_setup._binary_name())
+    assert os.path.isfile(dest)
+    if os.name != "nt":
+        assert os.access(dest, os.X_OK)
+
+
+def test_a_failing_download_surfaces_its_real_error(tmp_path, monkeypatch):
+    """A 403 from GitHub and a proxy eating the TLS handshake are different
+    documented problems with different fixes — a reworded "install failed"
+    would throw both away."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    rec = _run_install(monkeypatch,
+                       download_error=OSError("[Errno 403] Forbidden"))
+    assert rec["state"] == "error"
+    assert "403" in rec["error"]
+
+
+def test_success_re_probes_and_the_snapshot_flips_to_found(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    probed = []
+
+    def fake_refreshed():
+        probed.append(1)
+        return {"found": True, "version": "2.100.0"}
+
+    monkeypatch.setattr(github_setup, "summary_refreshed", fake_refreshed)
+    monkeypatch.setattr(github_setup, "_fetch_latest_version", lambda: "2.100.0")
+
+    def fake_download(url, dest_path):
+        os_kind = github_setup._target_os()
+        arch = github_setup._target_arch(github_setup.platform.machine())
+        member = github_setup._member_for(os_kind, arch, "2.100.0")
+        import io
+        import tarfile
+        with tarfile.open(dest_path, "w:gz") as tf:
+            data = b"#!/bin/sh\necho fake gh\n"
+            info = tarfile.TarInfo(name=member)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    monkeypatch.setattr(github_setup, "_target_os", lambda: "linux")
+    monkeypatch.setattr(github_setup, "_download", fake_download)
+    github_setup._run_install()
+    rec = github_setup.install_status()
+    assert rec["state"] == "done"
+    assert probed == [1]
+
+
+def test_an_install_that_leaves_nothing_runnable_is_a_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    rec = _run_install(monkeypatch, health={"found": False, "version": None})
+    assert rec["state"] == "error"
+    assert "still cannot be found" in rec["error"]
+
+
+def test_a_second_install_is_refused_rather_than_queued(monkeypatch):
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda self: None})())
+    github_setup.install_start()
+    with pytest.raises(github_setup.InstallError, match="already running"):
+        github_setup.install_start()
+
+
+def test_two_concurrent_starts_only_ever_launch_one_worker(monkeypatch):
+    spawned = []
+    at_the_gate = threading.Barrier(2, timeout=30)
+
+    def _slow_fetch_version():
+        at_the_gate.wait()
+        return "2.100.0"
+
+    monkeypatch.setattr(github_setup, "_fetch_latest_version", _slow_fetch_version)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: spawned.append(kw)})())
+
+    refused = []
+
+    def _go():
+        try:
+            github_setup.install_start()
+        except github_setup.InstallError:
+            refused.append(1)
+
+    threads = [_RealThread(target=_go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert len(spawned) == 1
+    assert len(refused) == 1
+
+
+def test_a_worker_that_dies_unexpectedly_frees_the_slot(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: captured.setdefault(
+                                "target", kw["target"])})())
+
+    def _explode():
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(github_setup, "_run_install", _explode)
+    github_setup.install_start()
+    assert github_setup.install_running() is True  # claimed
+    captured["target"]()                            # the worker body dies
+    rec = github_setup.install_status()
+    assert rec["state"] == "error"
+    assert "stopped unexpectedly" in rec["error"]
+    assert github_setup.install_running() is False
+
+
+# -- the install endpoints -----------------------------------------------------
+
+
+def test_install_endpoint_refuses_a_blind_cross_origin_post():
+    resp = _client().post("/api/github/install")
+    assert resp.status_code in (400, 403)
+
+
+def test_install_status_endpoint_is_a_read_and_needs_no_guard():
+    resp = _client().get("/api/github/install")
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "idle"
+
+
+def test_install_endpoint_starts_the_worker(monkeypatch):
+    # `_run_install` is stubbed rather than `threading.Thread` itself: the
+    # TestClient's own transport spins up a real anyio worker thread to run
+    # this request, and replacing the process-wide `Thread` class out from
+    # under it (not just this module's work) would break that transport too
+    # — a real thread still gets spawned here, it just does nothing.
+    monkeypatch.setattr(github_setup, "_run_install", lambda: None)
+    resp = _client().post("/api/github/install", headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "running"
+
+
+def test_a_second_install_via_the_endpoint_comes_back_as_409(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_run():
+        started.set()
+        release.wait(10)
+
+    monkeypatch.setattr(github_setup, "_run_install", _slow_run)
+    client = _client()
+    client.post("/api/github/install", headers={"X-Fused": "1"})
+    assert started.wait(10), "the worker never started"
+    resp = client.post("/api/github/install", headers={"X-Fused": "1"})
+    release.set()
+    assert resp.status_code == 409
