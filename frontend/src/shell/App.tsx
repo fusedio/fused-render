@@ -31,9 +31,11 @@ import {
   getMounts,
   reconnectMount,
   type Config,
+  type HttpError,
   type Mount,
   type StatResult,
 } from "@platform/lib/api";
+import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import {
   useNavEpoch,
   useDocumentTitle,
@@ -113,7 +115,9 @@ const CanvasWorkspace = lazy(() =>
 type StatState =
   | { status: "loading" }
   | { status: "ok"; stat: StatResult }
-  | { status: "error"; message: string };
+  // `httpStatus`: the response code, so StatErrorView can tell a refused
+  // read (403 → the Full Disk Access card) from missing/broken.
+  | { status: "error"; message: string; httpStatus?: number };
 
 // `reloadKey` re-runs the stat without a navigation — used to recover after a
 // disconnected mount is reconnected in place (StatErrorView), where fsPath and
@@ -133,8 +137,9 @@ function useStat(
     setState({ status: "loading" });
     statPath(fsPath).then(
       (stat) => alive && setState({ status: "ok", stat }),
-      (err: Error) =>
-        alive && setState({ status: "error", message: err.message }),
+      (err: HttpError) =>
+        alive &&
+        setState({ status: "error", message: err.message, httpStatus: err.status }),
     );
     return () => {
       alive = false;
@@ -152,10 +157,12 @@ function useStat(
 function StatErrorView({
   fsPath,
   message,
+  httpStatus,
   onReload,
 }: {
   fsPath: string;
   message: string;
+  httpStatus?: number;
   onReload: () => void;
 }) {
   // undefined = still checking; null = not under any mount.
@@ -217,6 +224,18 @@ function StatErrorView({
           {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
         </button>
         {mountErr && <div className="deploy-error">{mountErr}</div>}
+      </div>
+    );
+  }
+  // A refused stat (403 — a file or folder macOS/TCC or mode bits won't let us
+  // read) gets the access card with the Full Disk Access strip in place of
+  // the raw errno plate (explorer/AccessDenied.tsx). Checked after the mount
+  // branch: a dead mount can surface as EPERM too, and reconnecting is the
+  // right offer there.
+  if (isAccessDenied({ status: httpStatus, message })) {
+    return (
+      <div className="status-message">
+        <AccessDenied path={fsPath} />
       </div>
     );
   }
@@ -385,6 +404,7 @@ function StatView({
       <StatErrorView
         fsPath={fsPath}
         message={stat.message}
+        httpStatus={stat.httpStatus}
         onReload={() => setReloadKey((k) => k + 1)}
       />
     );
