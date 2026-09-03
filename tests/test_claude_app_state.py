@@ -320,22 +320,50 @@ def test_a_finished_run_releases_a_parked_app_state_request(agent, run_dir):
 
 # ------------------------------------------------- the spawn line & the prompt
 
-def _spawn(agent, monkeypatch, target, message="hi"):
-    """Run `_start` against a fake Popen and return the argv it built."""
-    seen = {}
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
 
-    class _Proc:
-        pid = 4242
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
+def _spawn(agent, monkeypatch, target, message="hi"):
+    """Run `_start` against a fake Popen and return the argv `_claude_argv`
+    builds from the request it hands the session host."""
+    seen = {}
 
     # The argv is what's under test, not where claude lives. CI runners have no
     # claude on PATH, so resolving the real one would fail there and pass only
     # on a developer machine that happens to have it installed.
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
+                        lambda cmd, **kw: _HostProc(seen))
     out = agent._start(str(target), message, "", "", "")
     assert "error" not in out, out
-    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    return _argv_from_req(agent, seen["req"], run_dir), run_dir
 
 
 def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
@@ -569,17 +597,20 @@ def test_a_file_target_is_not_told_it_is_a_fused_render_project(
 def test_the_state_block_reaches_the_cli_but_not_the_users_transcript(
         agent, tmp_path, monkeypatch):
     """The user typed the message, not the block. So the model gets the whole
-    thing on the command line, while everything replayed back to the page —
-    the re-attach match, the session-list preview, the commit subject — gets the
-    message the user actually typed."""
+    thing in the turn queued for the CLI, while everything replayed back to
+    the page — the re-attach match, the session-list preview, the commit
+    subject — gets the message the user actually typed."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
     sent = ('<live-app-state>\nsnapshot of the app the user is looking at\n'
             '{"console": [{"level": "error", "text": "boom"}]}\n'
             '</live-app-state>\n\nwhy is the map blank?')
-    cmd, run_dir = _spawn(agent, monkeypatch, project, sent)
-    assert sent in cmd
+    _cmd, run_dir = _spawn(agent, monkeypatch, project, sent)
+    inbox_dir = os.path.join(run_dir, "inbox")
+    entry = json.load(open(
+        os.path.join(inbox_dir, os.listdir(inbox_dir)[0]), encoding="utf-8"))
+    assert entry["message"]["content"][0]["text"] == sent
     meta = json.load(open(os.path.join(run_dir, "meta.json"), encoding="utf-8"))
     assert meta["message"] == "why is the map blank?"
 
@@ -1666,15 +1697,13 @@ def _spawn_with(agent, monkeypatch, target, **kw):
     "0" that means a real no cannot be mistaken for the "" that means absence."""
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kwargs: (seen.__setitem__("cmd", cmd), _Proc())[1])
+                        lambda cmd, **kwargs: _HostProc(seen))
     out = agent.main(action="start", file=str(target), message="hi", **kw)
     assert "error" not in out, out
-    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    return _argv_from_req(agent, seen["req"], run_dir), run_dir
 
 
 def _pane_facts(agent, cmd, run_dir):
