@@ -19,6 +19,7 @@ import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
+import { openOnboarding } from "@shell/onboarding/state";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -603,15 +604,24 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // help — the walkthroughs are what the row holds, not what it is named.
     label: "Help",
     icon: TOURS_ICON,
-    submenu: TOURS.map((tour) => ({
-      href: `/preferences#tour-${tour.id}`,
-      label: tour.title,
-      // Next frame, not now: driver.js measures its highlight the moment it is
-      // told to drive, and closing the menu only queues the unmount — it is
-      // still over the sidebar rows some tours point at until React has painted
-      // without it.
-      onPick: () => requestAnimationFrame(() => startTour(tour)),
-    })),
+    submenu: [
+      // The first-run wizard, on demand. Reopening touches neither flag — it
+      // is a replay, like the tours below it.
+      {
+        href: "/preferences#setup",
+        label: "Setup wizard",
+        onPick: () => openOnboarding(),
+      },
+      ...TOURS.map((tour) => ({
+        href: `/preferences#tour-${tour.id}`,
+        label: tour.title,
+        // Next frame, not now: driver.js measures its highlight the moment it is
+        // told to drive, and closing the menu only queues the unmount — it is
+        // still over the sidebar rows some tours point at until React has painted
+        // without it.
+        onPick: () => requestAnimationFrame(() => startTour(tour)),
+      })),
+    ],
   });
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show

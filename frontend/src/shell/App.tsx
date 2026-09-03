@@ -49,6 +49,8 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
+import { useOnboardingOpen } from "@shell/onboarding/state";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -750,9 +752,15 @@ export default function App({ config }: { config: Config }) {
   // version of the old single `tourPending` — it stops the retries for a tour
   // that has run, so a browser refusing the "seen" write can't restart it on
   // every navigation, while leaving the other tours still armed.
+  //
+  // Held while the first-run wizard is up (shell/onboarding): two first-run
+  // moments must not fire on top of each other, and the 10-try budget would
+  // otherwise burn out under the overlay. The effect re-runs when it closes,
+  // so the tour for the route the user landed on fires then.
+  const onboardingOpen = useOnboardingOpen();
   const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED) return;
+    if (IS_EMBED || onboardingOpen) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
     // Retries IN PLACE, not only on the next route change: a tour can be held
@@ -768,7 +776,7 @@ export default function App({ config }: { config: Config }) {
     };
     id = setTimeout(attempt, 600);
     return () => clearTimeout(id);
-  }, [pathname]);
+  }, [pathname, onboardingOpen]);
 
   // Route fade (A5). Every route hard-remounts on the nav epoch, so a cross-fade
   // between old and new content is impossible — instead #content plays a short
@@ -1020,6 +1028,9 @@ export default function App({ config }: { config: Config }) {
         )}
       </div>
       <NotificationHost />
+      {/* First-run wizard (shell/onboarding): above every route, never in a
+          pane. Renders nothing once completed or dismissed. */}
+      {!IS_EMBED && <OnboardingWizard config={config} />}
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

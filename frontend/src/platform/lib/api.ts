@@ -35,6 +35,11 @@ export interface Config {
   // session hits a PermissionError on an fs route — the moment the warning
   // is worth showing; dismissing clears it server-side until the next one.
   fda?: { granted: boolean; denied: boolean };
+  // First-run wizard flag (fused_render/shell/onboarding.py). The shell
+  // auto-shows the wizard while BOTH timestamps are null; `complete` and
+  // `dismiss` are distinct writes (reached the end vs "skip for now").
+  // Server-side, not localStorage: a port drift is a new origin.
+  onboarding?: OnboardingState;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -174,6 +179,25 @@ export function openFdaSettings(): Promise<{ ok: boolean }> {
 
 export function dismissFdaNudge(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
+}
+
+// -- First-run wizard flag (fused_render/shell/onboarding.py) ----------------
+export interface OnboardingState {
+  completed_at: number | null;
+  dismissed_at: number | null;
+  version: number;
+}
+
+export function getOnboarding(): Promise<OnboardingState> {
+  return getJson<OnboardingState>("/api/onboarding");
+}
+
+export function completeOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/complete", {});
+}
+
+export function dismissOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/dismiss", {});
 }
 
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
