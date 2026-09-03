@@ -904,6 +904,18 @@ def _spawn_gh_repo_create(cmd: list):
     `_git_run`, a different function, so the two can never be confused for
     each other the way patching the shared `subprocess.run` name would
     confuse them."""
+    # posix-spawn-exempt: cmd is an argv list assembled by the one caller,
+    # `_run_publish`, as `[path, "repo", "create", name, "--source", root,
+    # "--remote", "origin", "--push", _VISIBILITY_FLAGS[visibility]]` — a
+    # literal list of strings, never a shell string, and it is `path`
+    # (resolved from `github_setup.resolve()`) rather than a bare `"gh"`, so
+    # it carries a directory and cannot fork. `SUBPROCESS_KWARGS` above
+    # supplies `close_fds=False` unconditionally, and no `cwd=` is passed
+    # anywhere in this module — `--source root` tells `gh` where to work
+    # instead. The static sweep cannot see through this function boundary to
+    # the caller's literal, which is the whole reason this indirection
+    # exists (see the docstring above); this comment is the manual check
+    # that boundary asks for.
     return subprocess.run(
         cmd, capture_output=True, timeout=_PUBLISH_TIMEOUT_S, **SUBPROCESS_KWARGS,
     )
