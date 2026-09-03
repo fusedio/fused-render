@@ -326,14 +326,15 @@ def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
     at (queue-dock-lib.ts's own doc has the current rule)."""
     assert "rowsShown" not in card, "the two-field queue/jobs split is gone"
     assert "foldedJobRows" not in card, "no row is exempt from the fold any more"
-    # D574/D580: the gate is no longer `collapsed` alone — it is `open`, which
-    # is the saved preference overridden in either direction by a transient
-    # auto-open (a new job arrived) or auto-close (the list drained). Still ONE
-    # gate over the whole panel, which is what this test is really about.
+    # D655 (statusbar redesign): the gate is `open`, read off ONE hook —
+    # `useStatusChip` (hover preview or pinned) — not a stored fold and not
+    # D574/D580's arrival-driven overrides, which are deleted with
+    # `autoExpand.ts`. Still ONE gate over the whole panel, which is what this
+    # test is really about.
     assert "{open && (" in card, "the whole rows block is gated on one `open` flag"
-    assert (
-        "const open = autoClose ? false : !collapsed || autoOpen;" in card
-    ), "and `open` is the override-aware derivation, not a second stored flag"
+    assert "const open = chip.open;" in card, "and `open` comes from the chip hook, not a second stored flag"
+    assert 'useStatusChip("activity"' in card, "the Activity chip is one of the three sharing that hook"
+    assert '@platform/lib/autoExpand"' not in card, "nothing opens the panel on a job's arrival any more (D655)"
     assert "{queue?.rows}" in card, "the queue's rows still render, just not exempt"
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
     assert "export function rowsShown" not in jobs_ts
@@ -444,7 +445,8 @@ def test_the_fold_is_never_persisted_at_all(card, dock):
         assert "saveCollapsed" not in stripped, f"{label} must not write the fold"
         assert "loadCollapsed" not in stripped, f"{label} must not read a stored fold"
 
-    for module in ("autoExpand.ts", "exclusiveSection.ts"):
+    # `autoExpand.ts` is gone (D655); `statusChip.ts` is what replaced it.
+    for module in ("statusChip.ts", "exclusiveSection.ts"):
         stripped = code_only(_read(os.path.join(_FRONT, "platform", "lib", module)))
         assert "localStorage" not in stripped, f"{module} must not persist anything"
 
@@ -459,9 +461,11 @@ def test_the_fold_is_never_persisted_at_all(card, dock):
         assert "localStorage" not in stripped, f"{rel[-1]} must not persist the fold"
         assert "-collapsed" not in stripped, f"{rel[-1]} must not keep a fold key"
 
-    # The one remaining setter is the chip's own click. `close` is `forceClose`
-    # (transient only), which is what D585 finding 2 fixed and D603 does not undo.
-    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
+    # No fold state lives in the card at all any more (D655): the chip hook owns
+    # `pinned`/`hovered` in memory, and the card only reads `chip.open`.
+    assert "setCollapsed(" not in card, "the card keeps no fold state of its own"
+    chip_hook = code_only(_read(os.path.join(_FRONT, "platform", "lib", "statusChip.ts")))
+    assert "useState(initialPinned)" in chip_hook, "pinned starts from the seam, never from storage"
 
 
 def test_the_column_owns_where_it_sits(dock, card):
