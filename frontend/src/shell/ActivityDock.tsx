@@ -10,7 +10,7 @@
 // filled/outlined dot needed to answer a question this chip's shared "is
 // there work right now" dot could not.)
 //
-// A SCHEDULED MESSAGE'S OWN RUN DRAWS NO ROW HERE AT ALL (D634, user: "a task
+// A SCHEDULED MESSAGE'S OWN RUN DRAWS NO ROW HERE AT ALL (D655, user: "a task
 // is not something I even want in the activity. that was added
 // unintentionally"). This file used to poll `/api/schedule-queue` itself and
 // hand `DownloadManager` a `queue` slot of scheduled-message rows merged in
@@ -87,7 +87,7 @@ function useRunningEngines(): {
         if (!disposed && mine === generation) {
           const next = data.engines || [];
           const nextIds = new Set(next.map((e) => e.engine_id));
-          // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D635): the only way to
+          // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D658): the only way to
           // learn a background daemon/worker went away idle is to notice it
           // missing from consecutive snapshots — nothing calls this out as an
           // event server-side. Skipped on the very FIRST snapshot (nothing to
@@ -131,7 +131,7 @@ export default function ActivityDock({
   const { engines, refresh: refreshEngines, markStopping } = useRunningEngines();
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
-  // broadened by D635 to every terminal state, not only `error`).
+  // broadened by D656 to every terminal state, not only `error`).
   // `DownloadManager` already hands this the FULL, unfiltered snapshot on
   // every poll (`onJobsReported`); this only needs to re-derive the terminal
   // subset and call up when the id SET actually changes, so a poll that finds

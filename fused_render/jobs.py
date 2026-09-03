@@ -692,12 +692,12 @@ def _sweep(now: float) -> None:
     every age-out path funnels through.
 
     **Every terminal state is now kept until dismissed, same as `WAITING`
-    and the same as `error` already was.** This used to read `job.state in
+    and the same as `error` already was (D657).** This used to read `job.state in
     ("error", WAITING)` — a `done` or `cancelled` row instead aged out
     `FINISHED_TTL_S` after its first READ (`job.first_read_at`), on the
     theory that the download manager only needed to answer "is my work done
     right now", not hold a log. THE FINDING: once EVERY finished job (D586,
-    broadened by D635) routes to the shell's Notifications list instead of
+    broadened by D656) routes to the shell's Notifications list instead of
     just failures, that list *is* meant to hold a log — a `done` row expiring
     3s after its first read was deleting the very entry Notifications exists
     to keep, out from under a user who had not yet looked. THE FIX: `done`

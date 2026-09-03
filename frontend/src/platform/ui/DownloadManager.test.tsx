@@ -184,8 +184,8 @@ test("a done job and a failed job together leave this section with nothing to dr
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
 });
 
-test("a scheduled run's own job never draws a row here, in any state (D634)", () => {
-  // D634 (user: "a task is not something I even want in the activity. that
+test("a scheduled run's own job never draws a row here, in any state (D655)", () => {
+  // D655 (user: "a task is not something I even want in the activity. that
   // was added unintentionally"): `jobRows` now excludes every `sys:schedule:*`
   // job unconditionally, so a scheduled run's own row cannot appear here no
   // matter what state it is in — there is no more "exempt only while running"
@@ -303,7 +303,7 @@ test("a waiter and the load it is blocked on render as ONE row, carrying the loa
 });
 
 test("once the waiter goes terminal, only the load's row is left — the waiter moved to Notifications", () => {
-  // D586, broadened by D635: EVERY terminal state (done/error/cancelled), not
+  // D586, broadened by D656: EVERY terminal state (done/error/cancelled), not
   // only `error`, leaves this card for Notifications. So a waiter that goes
   // `cancelled` does not linger here with a stale `waiting_for` pointed at a
   // still-running load — it is simply gone, and the load's own row is all
@@ -351,7 +351,7 @@ function clickToggle(renderer: ReactTestRenderer) {
 }
 
 test("the toggle is a real button even with a lone job to fold, a scheduled run beside it drawing nothing", () => {
-  // D634: a scheduled run's own row never draws here, in any state — this
+  // D655: a scheduled run's own row never draws here, in any state — this
   // pins that its ABSENCE does not also take the toggle down with it, as
   // long as a real job row is still present.
   const liveSchedule: Job = {

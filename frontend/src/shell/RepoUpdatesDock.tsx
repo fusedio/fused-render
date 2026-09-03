@@ -407,7 +407,7 @@ export function RepoUpdatesCardView({
   // in this change.
   const total = visible.length + terminal.length + pairings.length;
   const idle = total === 0;
-  // The failure tint MOVED HERE from the Jobs chip (D586), and D635 broadened
+  // The failure tint MOVED HERE from the Jobs chip (D586), and D656 broadened
   // `terminal` to hold every finished job — done and cancelled as well as
   // error — none of which need the tint. So this stays scoped to `isFailure`
   // (jobs.ts), a real `error`, rather than to "this section holds anything
@@ -455,7 +455,7 @@ export function RepoUpdatesCardView({
         {/* The label and the shared indicator (D590). Filled when this section
             holds anything — a repo update, a terminal job, or both. It is also
             the QUIET SIGNAL for a background-finished notification (D586,
-            broadened by D635 to every terminal state): a terminal job fills
+            broadened by D656 to every terminal state): a terminal job fills
             it and opens no panel, since terminal jobs are absent from the ids
             the auto-open hook is given. */}
         <span className="dl-summary">Notifications</span>
@@ -585,7 +585,7 @@ export function RepoUpdatesCardView({
  * 3), never a refreshed `checked_at` — a throttled re-check that moved
  * nothing used to resurrect the row every five minutes.
  *
- * TERMINAL JOBS CANNOT OPEN THIS PANEL (D586/D588, broadened by D635): they
+ * TERMINAL JOBS CANNOT OPEN THIS PANEL (D586/D588, broadened by D656): they
  * reach this section as a prop and fill the circle, but they go to the hook
  * as `alsoDrawn`, never as announceable ids — which is what makes "a
  * background job finishing never throws a panel over the page" structural
@@ -612,7 +612,7 @@ export function RepoUpdatesDockView({
   /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
    *  so a caller that mounts this with a fixed list keeps the old behaviour. */
   ready?: boolean;
-  /** TERMINAL JOBS (D586, broadened by D635 to done/error/cancelled — not only
+  /** TERMINAL JOBS (D586, broadened by D656 to done/error/cancelled — not only
    *  `state: "error"`) re-routed out of the Jobs section, drawn beside the
    *  repo rows. Optional and defaulted so every existing caller and test
    *  keeps working unchanged. */
@@ -653,7 +653,7 @@ export function RepoUpdatesDockView({
   // Passing the repo roots alone meant the drain gate could not see the
   // terminal jobs at all, so pressing Update on the LAST repo row
   // force-closed this panel over terminal rows the user was reading.
-  // `alsoDrawn` is the fix, and it keeps D586/D635's promise structural
+  // `alsoDrawn` is the fix, and it keeps D586/D656's promise structural
   // rather than configured: a terminal job is not in `ids`, so there is no
   // path from one to `setOverride("open")` — the same guarantee the deleted
   // second hook's `neverOpen`/`neverClose` pair used to buy with two flags,

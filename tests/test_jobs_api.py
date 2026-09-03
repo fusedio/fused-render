@@ -403,7 +403,7 @@ def test_dismiss_still_takes_one_stalled_row_at_a_time():
 
 
 def test_a_done_row_now_stays_until_dismissed_same_as_an_error(client):
-    """D586, broadened by D635: every terminal job — not only `error` — now
+    """D586, broadened by D656: every terminal job — not only `error` — now
     routes to the shell's Notifications list, which is meant to hold a log,
     not a "what's happening right now" snapshot. A `done`/`cancelled` row
     used to age out `FINISHED_TTL_S` after its first read; that would delete
@@ -489,7 +489,7 @@ def test_a_waiting_row_can_be_dismissed_like_a_finished_one(client):
 
 
 # `test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock` is
-# deleted rather than rewritten (D635): its whole premise was that a `done`
+# deleted rather than rewritten (D656): its whole premise was that a `done`
 # row's retention clock (`first_read_at` / `FINISHED_TTL_S`) must not be
 # started by an internal, non-`mark_read` `list_jobs()` poll — but a `done`
 # row no longer runs that clock at all (`_sweep` keeps every terminal state
@@ -522,7 +522,7 @@ def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
     every tick after that: a finished download blinking back onto the screen
     every few seconds for as long as the worker kept posting.
 
-    A `done` row no longer ages out at all (D635: every terminal state is kept
+    A `done` row no longer ages out at all (D656: every terminal state is kept
     until dismissed), so the still-reachable age-out this exercises is a
     RUNNING row going stale (`STALE_DROP_S`, its reporter gone silent) — the
     dismissal protection it proves (`_forget` / `_dismissed`, in `upsert`) is

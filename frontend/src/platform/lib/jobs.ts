@@ -366,11 +366,11 @@ export function engineDuration(seconds: number): string {
 const JOB_KIND_TEXT: Record<JobKind, string> = { download: "Download", task: "Task" };
 
 /**
- * `jobStatusLine`'s last resort — no card may render a single line of text
- * (title alone, no status line beneath it). Engine rows already guarantee a
- * `.dl-status` line (`engineDetail`); a `running` job with no server detail,
- * no byte/step amount and no local action failure fell through to a bare
- * title, which is the gap this closes.
+ * `jobStatusLine`'s last resort (D659) — no card may render a single line of
+ * text (title alone, no status line beneath it). Engine rows already
+ * guarantee a `.dl-status` line (`engineDetail`); a `running` job with no
+ * server detail, no byte/step amount and no local action failure fell
+ * through to a bare title, which is the gap this closes.
  *
  * Built only from facts every job always carries, so it can never itself be
  * empty: what kind of work this is, and how long it has been going. `stalled`
