@@ -46,7 +46,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
-import { navigate } from "@platform/lib/router";
+import { navigate, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 // `JobRow` reused verbatim for a terminal job (D586) — shell may import
@@ -56,6 +56,8 @@ import StatusChip from "@platform/ui/StatusChip";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { clearFinishedJobs, isFailure, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
+import { attentionRows, type AttentionRow } from "@shell/tasks-lib";
+import { useTasksPulseRows } from "@shell/tasksPulse";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -192,6 +194,65 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
       </div>
       <div className="dl-status">It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</div>
     </div>
+  );
+}
+
+// A run that has STOPPED TO ASK SOMETHING (Akshil, 2026-09-03: "when the task
+// was blocked I did not see any notifications in there"). The fourth row kind,
+// and the only one whose subject is still happening: `tasks-lib.attentionRows`
+// decides what it says and where it goes, off the pulse poll the shell already
+// runs — no endpoint and no second loop of this card's own.
+//
+// THE WHOLE ROW IS THE BUTTON, rather than a `<div>` with an "Open" control in
+// its corner. Every other row here has something to do BESIDES being read (fix
+// the repo, dismiss the failure), so its controls have to be aimed at
+// individually; this row has exactly one thing to do, and a row with one action
+// should not make a person aim at a 60px target inside a 320px one. A real
+// `<button>` and not a clickable div, so it is reachable by keyboard and
+// announced as an action — notifications.css strips the UA chrome back to
+// `.dl-row`'s own box.
+//
+// AND IT HAS NO ✕. Every other row here can be dismissed because its subject
+// has already happened — a repo is behind, a job failed — so "I have seen this"
+// is the whole of what dismissing means. This row's subject has NOT happened
+// yet: the run is still parked, waiting. A ✕ would take the notification away
+// and leave the task exactly as stuck as it was, which is a lie about what the
+// click did. The row leaves on its own, on the next pulse, when the question is
+// answered.
+function AttentionRowView({ row }: { row: AttentionRow }) {
+  const title = `${row.taskId} needs your input`;
+  // Nowhere to go — a task naming no folder at all — is drawn as a plain row
+  // rather than dropped: the news is still true, and a button that navigates
+  // nowhere is worse than text (`attentionRows` on why `href` can be null).
+  if (!row.href) {
+    return (
+      <div className="dl-row">
+        <div className="dl-row-head">
+          <span className="dl-title">{title}</span>
+        </div>
+        <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
+      </div>
+    );
+  }
+  const href = row.href;
+  return (
+    <button
+      type="button"
+      className="dl-row dl-row-open"
+      // `navigateUrl`, not `navigate`: these hrefs are whole /explorer urls with
+      // the `_side=claude` handoff and the session id on the query string, and
+      // `navigate` takes an fs path and builds its own. No `isDir` hint, for
+      // the same reason the calendar popover's thread button — the identical
+      // call on the identical value — gives none: a task's target is a folder
+      // OR the file the chat was on, and this row cannot tell which.
+      onClick={() => navigateUrl(href)}
+      title={`Open ${row.taskId}`}
+    >
+      <div className="dl-row-head">
+        <span className="dl-title">{title}</span>
+      </div>
+      <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
+    </button>
   );
 }
 
@@ -374,6 +435,7 @@ export function RepoUpdatesCardView({
   onDone,
   terminal = [],
   pairings = [],
+  attention = [],
   onPairingGone,
   onJobsChanged,
   onTerminalPatch,
@@ -384,6 +446,8 @@ export function RepoUpdatesCardView({
   terminal?: Job[];
   /** Devices that paired over the LAN — the third row kind. */
   pairings?: LanPairingEvent[];
+  /** Tasks parked on a question — the fourth row kind (2026-09-03). */
+  attention?: AttentionRow[];
   onPairingGone?: (id: string) => void;
   /** A terminal row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
@@ -406,7 +470,8 @@ export function RepoUpdatesCardView({
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change.
-  const total = visible.length + terminal.length + pairings.length;
+  const total =
+    visible.length + terminal.length + pairings.length + attention.length;
   const idle = total === 0;
   // The failure tint MOVED HERE from the Jobs chip (D586), and D662 broadened
   // `terminal` to hold every finished job — done and cancelled as well as
@@ -418,13 +483,21 @@ export function RepoUpdatesCardView({
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   // THE CHIP READS (D673): "Notifications" with a count pill whenever anything
-  // waits — a repo update, a pairing, a finished/failed job — and the pill turns
-  // red when one of those is a failure. Muted at zero.
-  const tone = hasFailure ? "failure" : total > 0 ? "on" : "idle";
+  // waits — a repo update, a pairing, a finished/failed job, a task asking a
+  // question — and the pill turns red when one of those is a failure OR a task
+  // is waiting on the person (Akshil, 2026-09-03: a plain count was "not
+  // prominent enough to let user know it needs attention"). Muted at zero. The
+  // sidebar's Tasks dot is red for the same state; the two agree rather than
+  // one of them staying quiet — this corner is where the reader looks for
+  // what wants them, and a neutral pill there read as "nothing urgent".
+  const asking = attention.length > 0;
+  const tone = hasFailure || asking ? "failure" : total > 0 ? "on" : "idle";
   const ariaLabel =
     total === 0
       ? "Notifications, none"
-      : `Notifications, ${total}${hasFailure ? ", including a failure" : ""}`;
+      : `Notifications, ${total}${
+          asking ? ", including a task waiting on you" : hasFailure ? ", including a failure" : ""
+        }`;
 
   return (
     <div className="dl-host" {...hostProps}>
@@ -451,16 +524,27 @@ export function RepoUpdatesCardView({
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
-              {/* ONE list, TWO row kinds (D586). Repo updates first, then
-                  failures: the repo rows are the actionable ones (Update /
-                  Switch), and a failure is a record of something that already
+              {/* ONE list, FOUR row kinds now — D586's two, plus pairings, plus
+                  2026-09-03's waiting tasks — ordered by how much of each fact
+                  is still ahead of the reader: a parked run is waiting on THEM,
+                  a repo row is actionable (Update / Switch), a pairing is news
+                  to read, and a failure is a record of something that already
                   ended. `JobRow` is reused verbatim rather than a new row shape
                   being invented for this — it already draws the title, the
                   failure sentence and the ✕, and it already carries D572's
                   rejected-request surfacing, which is the behaviour a dismiss
                   here most needs to keep. */}
               <div className="dl-rows">
-                {/* Pairings first: the newest kind of news, and the only one
+                {/* A WAITING TASK GOES ABOVE EVERYTHING (2026-09-03). It is the
+                    only row in this panel whose subject has not finished
+                    happening: a repo is behind, a device paired, a job ended —
+                    all facts about the past, which will still be true in ten
+                    minutes. A parked run is a person being waited on, and the
+                    thing being waited on goes first. */}
+                {attention.map((row) => (
+                  <AttentionRowView key={row.key} row={row} />
+                ))}
+                {/* Then pairings: the newest kind of news, and the only one
                     with nothing to act on beyond reading it. */}
                 {pairings.map((event) => (
                   <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
@@ -609,6 +693,7 @@ export function RepoUpdatesDockView({
   ready,
   terminal = [],
   pairings = [],
+  attention = [],
   onPairingGone,
   onDismiss,
   onDismissAll,
@@ -630,6 +715,11 @@ export function RepoUpdatesDockView({
   /** LAN pairings — announceable rows: a pairing while the chip is collapsed
    *  auto-opens the panel, which is the whole point of announcing one. */
   pairings?: LanPairingEvent[];
+  /** Tasks parked on a question (2026-09-03). NOT announceable, for D673's
+   *  reason and one of its own: the sidebar's red Tasks dot already says this
+   *  is happening, and a panel that threw itself over the page every time a run
+   *  asked a permission question would cover the very chat holding the answer. */
+  attention?: AttentionRow[];
   onPairingGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
@@ -661,6 +751,7 @@ export function RepoUpdatesDockView({
       dismissed={dismissed}
       terminal={terminal}
       pairings={pairings}
+      attention={attention}
       onPairingGone={onPairingGone}
       collapsed={!chip.open}
       onToggle={chip.toggle}
@@ -685,6 +776,13 @@ export default function RepoUpdatesDock({
   const { repos, pairings, setPairings, settled, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
+  // THE SHELL'S EXISTING TASKS POLL, subscribed to — not a fifth timer in this
+  // file. `tasksPulse.ts` is one store with one poll behind it (and none at all
+  // while the Tasks page is feeding it), which is the whole reason it exists;
+  // taking a row subscription here costs this card nothing but a re-render when
+  // the answer changes, and it means the notification and the sidebar's red dot
+  // can never disagree — they are reading the same array.
+  const attention = attentionRows(useTasksPulseRows());
   const pairingGone = useCallback(
     (id: string) => setPairings((list) => list.filter((p) => p.id !== id)),
     [setPairings],
@@ -697,6 +795,7 @@ export default function RepoUpdatesDock({
       ready={settled}
       terminal={terminal}
       pairings={pairings}
+      attention={attention}
       onPairingGone={pairingGone}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}

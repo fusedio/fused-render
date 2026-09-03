@@ -538,7 +538,12 @@ export function explorerUrl(target: string, sessionId: string): string {
 // the chat's own composer makes when there is no session yet. It lands on that
 // folder's sessions — where the run in question shows up the moment it reports
 // one — instead of on nothing.
-export function folderHref(task: Task): string | null {
+//
+// Takes the two fields it reads rather than a whole `Task`, for tasks-lib
+// `taskHref`'s reason: the pulse's compact row (api.TaskPulseTask) is the other
+// caller now, and this fallback is exactly what a run with no session yet needs
+// — a state the Notifications section's rows meet as often as the popover does.
+export function folderHref(task: Pick<Task, "target" | "project">): string | null {
   const target = task.target || task.project;
   return target ? explorerUrl(target, "") : null;
 }

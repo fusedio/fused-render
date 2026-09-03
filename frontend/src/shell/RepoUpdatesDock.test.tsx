@@ -51,6 +51,7 @@ installDomShim();
 const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
+import type { AttentionRow } from "@shell/tasks-lib";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -141,6 +142,8 @@ function renderInstance(
       rows={rows}
       dismissed={props.dismissed ?? {}}
       terminal={props.terminal ?? []}
+      pairings={props.pairings ?? []}
+      attention={props.attention ?? []}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
@@ -770,4 +773,104 @@ test("a pinned panel outlives every row draining, showing the idle sentence at t
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(1); // still open — no auto-close
   expect(text(findAll(after, "dl-panel-empty")[0])).toBe("No notifications");
+});
+
+// ------------------------------------------- 2026-09-03: the waiting-task row
+//
+// Akshil: "in bottom right we have notifications. When the task was blocked I
+// did not see any notifications in there … there should be notifications with
+// blocked tasks as well." The row's CONTENT and destination are decided in
+// `tasks-lib.attentionRows` and tested there; what is asserted here is what the
+// panel does with them.
+
+const asking = (over: Partial<AttentionRow> = {}): AttentionRow => ({
+  key: "sess-7",
+  taskId: "TASK-097",
+  title: "Pull today's news",
+  href: "/explorer/view/Users/me/proj?_side=claude&session_id=sess-7",
+  ...over,
+});
+
+test("a waiting task draws a row that names the task and says what it wants", () => {
+  const tree = renderView({ rows: [], attention: [asking()] });
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(rows[0])).toContain("TASK-097 needs your input");
+  expect(text(rows[0])).toContain("Pull today's news");
+});
+
+test("the whole row is the button, and it has no dismiss", () => {
+  // One action, so the row IS the control rather than a small target inside a
+  // large one — and a real <button>, so it is reachable by keyboard.
+  const tree = renderView({ rows: [], attention: [asking()] });
+  const row = findAll(tree, "dl-row")[0];
+  expect(row.type).toBe("button");
+  expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+  // NO ✕. Every other row here can be dismissed because its subject already
+  // happened; this one's has not — the run is still parked. Dismissing it would
+  // take the notification away and leave the task exactly as stuck.
+  expect(findAll(tree, "dl-x")).toHaveLength(0);
+});
+
+test("a task with nowhere to go still draws, as a row that is not a button", () => {
+  // The news is true whether or not there is a door; an inert row beats
+  // dropping it, and beats a button that navigates nowhere.
+  const tree = renderView({ rows: [], attention: [asking({ href: null })] });
+  const row = findAll(tree, "dl-row")[0];
+  expect(row.type).toBe("div");
+  expect(text(row)).toContain("TASK-097 needs your input");
+  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+});
+
+test("waiting tasks fill the numeral like every other source, and end the idle state", () => {
+  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER: the count, the idle predicate and
+  // the empty sentence all read one total, so a new row kind that forgot to join
+  // it would be invisible from the bar.
+  const alone = renderView({ rows: [], attention: [asking()] });
+  expect(numeral(alone)).toBe("1");
+  expect(findAll(alone, "dl-panel-empty")).toHaveLength(0);
+  expect(toggleClasses(alone)).not.toContain("is-idle");
+
+  const withOthers = renderView({
+    rows: repoRows([status()]),
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  expect(numeral(withOthers)).toBe("3");
+});
+
+test("a waiting task tints the chip red, like a failure does", () => {
+  // The first cut left the pill neutral on the argument that the sidebar's dot
+  // was already red; the user did not see it (Akshil, 2026-09-03: "not
+  // prominent enough"). This corner is where a reader looks for what wants
+  // them, so the two surfaces now agree.
+  const tree = renderView({ rows: [], attention: [asking()] });
+  expect(toggleClasses(tree)).toContain("is-failure");
+  const quiet = renderView({ rows: repoRows([status()]) });
+  expect(toggleClasses(quiet)).not.toContain("is-failure");
+});
+
+test("the waiting row goes above every other kind", () => {
+  // It is the only row here whose subject has not finished happening: a repo is
+  // behind, a device paired, a job ended — all still true in ten minutes. A
+  // parked run is a person being waited on.
+  const tree = renderView({
+    rows: repoRows([status()]),
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  const rows = findAll(tree, "dl-row");
+  expect(text(rows[0])).toContain("TASK-097 needs your input");
+});
+
+test("Clear never counts a waiting row — there is nothing there to clear", () => {
+  // The footer's two buttons act on repo rows and on finished jobs, and D604
+  // asks for a PLURALITY of the kind a button actually clears. One repo row plus
+  // two waiting tasks is still one repo row.
+  const tree = renderView({
+    rows: repoRows([status()]),
+    attention: [asking(), asking({ key: "sess-8", taskId: "TASK-098" })],
+  });
+  expect(findAll(tree, "dl-head")).toHaveLength(0);
+  expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
