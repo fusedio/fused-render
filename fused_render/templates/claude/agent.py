@@ -2425,8 +2425,23 @@ def _start(file: str, message: str, session_id: str, model: str,
     # HOST's pid, only so `_alive` (and therefore `_poll`'s `done`) answers
     # True from the instant `_start` returns rather than during the gap while
     # a second interpreter is still starting up.
-    with _private_open(os.path.join(run_dir, "pid")) as f:
-        f.write(str(proc.pid))
+    #
+    # O_EXCL, not `_private_open`'s truncate: the host (already running,
+    # racing this write with no ordering guaranteed between the two
+    # processes) does its own overwrite unconditionally, so if IT wins this
+    # write must be a no-op rather than clobbering the CLI's real pid back to
+    # the host's — `_cancel`'s killpg would then reach only the host's
+    # process group and orphan the CLI it was supposed to kill. If this
+    # write wins instead, the host's later unconditional overwrite still
+    # lands on top of it, same as before.
+    try:
+        fd = os.open(os.path.join(run_dir, "pid"),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass  # the host already wrote the CLI's own pid here — leave it
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
     return {"run_id": run_id}
 
 

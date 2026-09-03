@@ -237,3 +237,46 @@ def test_turn_state_is_not_reread_while_out_jsonl_is_unchanged(tmp_path):
     assert fourth == fifth == (True, False)
     assert len(calls) == 2, \
         "growth must trigger exactly one re-derive, not one per tick after it"
+
+
+# ---------------------------------------------- B8: the pid-file write race
+
+def test_start_never_clobbers_a_pid_the_host_already_wrote(agent, monkeypatch,
+                                                            target):
+    """`_start` used to write the host's OWN pid to run_dir/pid
+    unconditionally, right after spawning session_host.py — which begins
+    overwriting that same file with the CLI's own pid the moment IT spawns
+    the CLI. If the host won that race, `_start`'s later write clobbered the
+    CLI's pid back to the host's, and `_cancel`'s killpg (which only ever
+    targets whatever pid this file holds) then reached just the host's
+    process group, orphaning the very CLI it was supposed to kill."""
+
+    class _FakeStdin:
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeProc:
+        pid = 424242  # the HOST's own pid, distinct from the "CLI" pid below
+        stdin = _FakeStdin()
+
+    def fake_popen(cmd, **kwargs):
+        # `_start` has already created run_dir (via _private_dir) by the time
+        # it Popens the host, so it is the one new entry under RUNS.
+        run_dir = os.path.join(agent.RUNS, os.listdir(agent.RUNS)[0])
+        # Simulate the host WINNING the race: by the time _start gets around
+        # to writing its own placeholder pid below, the real host has already
+        # spawned the CLI and overwritten run_dir/pid with the CLI's pid.
+        with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
+            f.write("999999")
+        return _FakeProc()
+
+    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
+    res = agent._start(target, "hi", "", "", "", has_pane=False)
+    run_dir = os.path.join(agent.RUNS, res["run_id"])
+    with open(os.path.join(run_dir, "pid"), encoding="utf-8") as f:
+        pid = f.read().strip()
+    assert pid == "999999", \
+        "the host's own write must survive _start's later placeholder write"
