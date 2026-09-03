@@ -29,6 +29,11 @@ REAL_CLAUDE_FOUND = selffix_routes._claude_found
 # Same idea for the stamp watcher, which `_no_detached_watcher` stubs out for
 # every test: the two that are ABOUT it call this and get the real thing.
 REAL_WATCH_FIX = selffix_routes._watch_fix
+# Same escape hatch, one layer up: conftest's `_no_selffix_resume_thread` stubs
+# the resume for every test in the suite (it would otherwise hash the
+# DEVELOPER'S real package from a startup thread), and the tests that are ABOUT
+# the resume are the ones that must still reach the real function.
+REAL_RESUME = selffix_routes.resume
 
 
 @pytest.fixture()
@@ -1904,7 +1909,7 @@ def test_a_fix_whose_watcher_died_with_the_server_is_still_stamped(
     monkeypatch.setattr(selffix_routes, "_load_agent",
                         lambda: _FakeAgent(live="", alive=set()))
 
-    selffix_routes.resume()
+    REAL_RESUME()
 
     state = selffix.status()
     assert state is not None, "the fix was never stamped — the badge would not appear"
@@ -1932,7 +1937,7 @@ def test_resume_re_attaches_the_watcher_while_the_session_is_still_running(
         selffix_routes, "_watch_fix",
         lambda run_id, incident, report, title, seen: watched.append((run_id, seen)))
 
-    selffix_routes.resume()
+    REAL_RESUME()
     _join_watchers()
 
     assert watched == [("r-live", before)], (
@@ -1951,7 +1956,7 @@ def test_resume_does_not_re_attach_to_a_session_that_has_finished(
     monkeypatch.setattr(selffix_routes, "_watch_fix",
                         lambda *a, **k: pytest.fail("must not follow a dead run"))
 
-    selffix_routes.resume()
+    REAL_RESUME()
     _join_watchers()
 
 
@@ -1964,7 +1969,7 @@ def test_resume_stamps_nothing_when_the_tree_never_moved(install, monkeypatch):
     monkeypatch.setattr(selffix_routes, "_load_agent",
                         lambda: _FakeAgent(live="", alive=set()))
 
-    selffix_routes.resume()
+    REAL_RESUME()
 
     assert selffix.status() is None
 
@@ -1985,7 +1990,7 @@ def test_a_pointer_written_before_this_existed_resumes_nothing(install, monkeypa
     monkeypatch.setattr(selffix_routes, "_load_agent",
                         lambda: _FakeAgent(live="", alive=set()))
 
-    selffix_routes.resume()
+    REAL_RESUME()
 
     assert selffix.status() is None
     assert selffix.active_run() == "r-old", "the pointer still names its run"
@@ -2060,7 +2065,7 @@ def test_a_same_version_reinstall_under_a_leftover_pointer_stays_clean(
     monkeypatch.setattr(selffix_routes, "_load_agent",
                         lambda: _FakeAgent(live="", alive=set()))
 
-    selffix_routes.resume()
+    REAL_RESUME()
 
     assert selffix.status() is None, (
         "a clean reinstall was stamped as modified — the badge would point at a "
@@ -2079,7 +2084,7 @@ def test_a_finished_session_stops_costing_a_tree_walk_on_every_start(
     monkeypatch.setattr(selffix_routes, "_load_agent",
                         lambda: _FakeAgent(live="", alive=set()))
 
-    selffix_routes.resume()
+    REAL_RESUME()
 
     assert selffix.session_record().get("before") == ""
     assert selffix.active_run() == "r-finished", (
@@ -2089,7 +2094,7 @@ def test_a_finished_session_stops_costing_a_tree_walk_on_every_start(
     real_digest = selffix.tree_digest
     monkeypatch.setattr(selffix, "tree_digest",
                         lambda *a, **k: walks.append(1) or real_digest(*a, **k))
-    selffix_routes.resume()
+    REAL_RESUME()
     assert walks == [], "a later start re-walked the tree for a finished session"
 
 
@@ -2102,7 +2107,7 @@ def test_a_live_session_keeps_its_digest_across_the_resume(install, monkeypatch)
                         lambda: _FakeAgent(live="", alive={"r-still-going"}))
     monkeypatch.setattr(selffix_routes, "_watch_fix", lambda *a, **k: None)
 
-    selffix_routes.resume()
+    REAL_RESUME()
     _join_watchers()
 
     assert selffix.session_record().get("before") == before
