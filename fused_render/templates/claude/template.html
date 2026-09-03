@@ -13698,8 +13698,8 @@ function retryVerb(retry) {
 // `opts.stoppable: false` drops the stop button, and `opts.verb` fixes the word
 // instead of drawing one from the phase. Both exist for the same caller — the
 // line that reports a turn running OUTSIDE this app (D415's transcript-follow),
-// which has no process to kill and no phase to read, and where a "stop · esc"
-// that quietly does nothing would be the worst control on the page.
+// which has no process to kill and no phase to read, and where a "stop"
+// button that quietly does nothing would be the worst control on the page.
 // The verb for a run this page owns, from the poll's phase and `activity`. ONE
 // PLAIN SENTENCE a person who has never heard of tokens can read: what Claude
 // is doing right now, in everyday words. The specifics (which command, which
@@ -13778,7 +13778,7 @@ function addWorking(opts) {
     // claude template — a separate hint line grows and shrinks the chrome every
     // time a turn starts and ends, and the pane here is narrower still.
     + (stoppable
-       ? '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>'
+       ? '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop</button>'
        : "");
   const verbEl = d.querySelector(".verb");
   const meta = d.querySelector(".meta");
