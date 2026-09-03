@@ -700,6 +700,27 @@ def test_a_dead_reporter_cannot_wedge_the_list_for_the_session():
     assert read_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
 
 
+def test_a_long_open_waiting_row_is_not_the_first_thing_evicted():
+    """`evictable`'s sort key, `(state == RUNNING, updated_at)`, puts every
+    non-running row first and orders each group oldest-`updated_at`-first. A
+    `WAITING` row's reporter has already exited (the worker that raised the
+    question is gone), so its `updated_at` never advances again — under that
+    key alone it becomes the single OLDEST-updated evictable row, the very
+    first thing the cap drops once the registry fills. That is exactly the
+    outcome the `WAITING` sweep exemption exists to prevent: a long-open
+    "Install anyway" prompt disappearing under capacity pressure from an
+    unrelated queue of downloads. `WAITING` must be excluded from `evictable`
+    entirely, not merely favoured by the sort."""
+    jobs.upsert({"id": "prompt", "title": "compile foolib", "state": jobs.WAITING,
+                 "message": "waiting for your approval to compile foolib"}, now=900.0)
+    for i in range(jobs.MAX_JOBS):
+        jobs.upsert({"id": f"j{i}", "title": "x", "state": "done"}, now=1000.0 + i * 0.01)
+    at = 1000.0 + jobs.MAX_JOBS * 0.01
+
+    ids = {r["id"] for r in read_jobs(now=at)}
+    assert "prompt" in ids, "the open prompt was evicted ahead of finished downloads"
+
+
 def test_over_the_cap_the_live_work_is_what_survives():
     # Finished rows go first, then the least recently updated — a running
     # download is the last thing evicted. All stamped inside one FINISHED_TTL_S

@@ -564,37 +564,66 @@ def test_busy_poisoning_by_an_orphan_holds_the_board(client, target, spawned,
     assert _board_status(client, "sess-p") == "in_progress"
 
 
-def test_done_job_row_stays_until_dismissed_same_as_error(target, spawned):
-    """Named for "the dock" originally, back when a schedule job row's only
-    reader was the queue card polling `/api/jobs` on a short budget it needed
-    the row to outlive. Neither half of that is still true: no dock draws a
-    schedule row at all now (`isScheduleJob`/`jobRows` excludes every
-    `sys:schedule:*` id from what the Activity/Notifications cards render,
-    since a schedule run already gets its own toast and its own row on the
-    Scheduled page), and D657 stopped sweeping ANY terminal state on a clock —
-    `done` is kept exactly as long as `error` already was, until something
-    reads and dismisses it. What is left worth pinning is the job REGISTRY's
-    own contract, which other consumers (`fused.watchJob`, the Scheduled
-    page's own poll) still rely on: a `done` row is not a `error`-only
-    exemption, and nothing about its age evicts it on its own."""
+def test_done_schedule_job_row_ages_out_after_read_not_kept_forever(target, spawned):
+    """No dock draws a schedule row at all: `isScheduleJob`/`jobRows` excludes
+    every `sys:schedule:*` id from what Activity draws, and `ActivityDock.tsx`
+    applies `jobRows` before `terminalJobs`, so a schedule row never reaches
+    Notifications either. D657's "every terminal state kept until dismissed"
+    exemption only makes sense for a row some surface can show and let the
+    user dismiss — a schedule row is neither, so it does not get that
+    exemption: it ages out on the same read-gated `FINISHED_TTL_S` clock every
+    terminal row used before D657, the readers of it being `fused.watchJob`
+    and the Scheduled page's own poll, not a dock. Immediately after the
+    first read the row is still there (the read is what starts the clock);
+    `FINISHED_TTL_S` later it is gone."""
     entry = schedule.create(str(target), "watch me finish", _in(-5))
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
                         {"session_id": "s", "done": True})
     assert _job(entry["id"])["state"] == "done"
-    rows = jobs.list_jobs(now=time.time() + 3600, mark_read=True)
+    now = time.time()
+    rows = jobs.list_jobs(now=now, mark_read=True)
     assert any(j["id"] == "sys:schedule:" + entry["id"]
                and j["state"] == "done" for j in rows)
+    rows = jobs.list_jobs(now=now + jobs.FINISHED_TTL_S + 1)
+    assert not any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
 
 
-def test_error_job_row_stays_until_dismissed(target, spawned):
+def test_error_schedule_job_row_ages_out_after_read_not_kept_forever(target, spawned):
+    """Same rule as the `done` case above, for `error`: a schedule row's
+    terminal state does not change whether some surface can show or dismiss
+    it, so `error` gets no special exemption here either — only a
+    page-reachable job's `error` row (D657) keeps the unconditional one."""
     entry = schedule.create(str(target), "fails loudly", _in(-5))
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
                         {"session_id": "s", "done": True, "error": "boom"})
-    rows = jobs.list_jobs(now=time.time() + 3600, mark_read=True)
+    now = time.time()
+    rows = jobs.list_jobs(now=now, mark_read=True)
     assert any(j["id"] == "sys:schedule:" + entry["id"]
                and j["state"] == "error" for j in rows)
+    rows = jobs.list_jobs(now=now + jobs.FINISHED_TTL_S + 1)
+    assert not any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
+
+
+def test_unread_schedule_job_row_has_the_longer_backstop(target, spawned):
+    """A schedule row nobody has read yet is bounded by
+    `FINISHED_UNREAD_DROP_S`, not the short `FINISHED_TTL_S` — the same
+    unread-backstop rule every terminal row followed before D657, since
+    nothing about a schedule row being excluded from every dock changes
+    whether it might simply not have been read yet."""
+    entry = schedule.create(str(target), "nobody reads me", _in(-5))
+    _tick()
+    schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
+                        {"session_id": "s", "done": True})
+    # Read the raw record rather than `_job` (above), which itself calls
+    # `list_jobs(mark_read=True)` and would start the very read-gated clock
+    # this test means to leave un-started.
+    finished = jobs._jobs["sys:schedule:" + entry["id"]].finished_at
+    rows = jobs.list_jobs(now=finished + jobs.FINISHED_TTL_S + 1)
+    assert any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
+    rows = jobs.list_jobs(now=finished + jobs.FINISHED_UNREAD_DROP_S + 1)
+    assert not any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
 
 
 def test_parked_permission_is_named_on_the_job_row(target, spawned):
