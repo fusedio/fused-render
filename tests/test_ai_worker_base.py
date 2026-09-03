@@ -920,6 +920,123 @@ def test_a_raising_release_does_not_crash_the_timer_or_break_the_next_execution(
         server.shutdown()
 
 
+class _FakeLibc:
+    """Stands in for `ctypes.CDLL(None)` so `_trim_malloc_arenas` can be
+    exercised without depending on the real glibc symbol being present (or
+    absent, on whatever platform runs this suite)."""
+
+    def __init__(self, calls, trim=None):
+        self._calls = calls
+        self._trim = trim if trim is not None else (lambda n: calls.append(("trim", n)))
+
+    @property
+    def malloc_trim(self):
+        return self._trim
+
+
+def test_idle_release_calls_malloc_trim_after_the_runners_release_returns(base, manual_timers, monkeypatch):
+    """The whole point of this mechanism: glibc never returns a per-thread
+    arena's freed memory to the OS on its own, so the idle-release path has
+    to ask for it explicitly, and only once the runner's own release (which
+    is what actually frees the arena memory in the first place) has
+    finished."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _FakeLibc(calls))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert calls == ["released", ("trim", 0)]
+    finally:
+        server.shutdown()
+
+
+def test_a_missing_malloc_trim_symbol_does_not_break_the_release(base, manual_timers, monkeypatch):
+    """musl has no `malloc_trim` at all — `ctypes.CDLL(None).malloc_trim`
+    raises `AttributeError` rather than returning a callable, and that must
+    not take the release down with it."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+
+    class _NoTrimLibc:
+        @property
+        def malloc_trim(self):
+            raise AttributeError("malloc_trim")
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _NoTrimLibc())
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert calls == ["released"]
+        assert base._release_timer is None
+    finally:
+        server.shutdown()
+
+
+def test_a_raising_malloc_trim_does_not_break_the_release(base, manual_timers, monkeypatch):
+    """A `malloc_trim` call that itself raises (`OSError`, in principle —
+    it is a bare libc call reached through `ctypes`) must be swallowed just
+    like a raising `release` hook already is."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "linux")
+
+    def boom(n):
+        raise OSError("nope")
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: _FakeLibc(calls, trim=boom))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert calls == ["released"]
+        assert base._release_timer is None
+    finally:
+        server.shutdown()
+
+
+def test_malloc_trim_is_skipped_off_linux(base, manual_timers, monkeypatch):
+    """The trim is a glibc/Linux mechanism only — on any other platform
+    `_trim_malloc_arenas` must not even try to load `ctypes.CDLL`, since
+    macOS/Windows have no `malloc_trim` equivalent to reach for."""
+    import ctypes
+
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    monkeypatch.setattr(base.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda spec: (_ for _ in ()).throw(
+        AssertionError("must not be called off Linux")))
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
 def test_release_runs_on_the_generate_thread_not_the_connection_thread(base, manual_timers):
     """Routed through `run_on_generate_thread` like `generate` itself: the
     hook this exists for is `mx.clear_cache()`, an MLX call, and that
@@ -1103,6 +1220,115 @@ def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base,
     # is feeding must not go backwards with it.
     assert base.resident_bytes() == 2_000
     assert base._rss_peak == 5_000
+
+
+# -- RAM vs VRAM (D670) ----------------------------------------------------------
+
+
+def test_host_resident_bytes_is_plain_rss_never_maxed_with_the_runner_probe(
+        base, monkeypatch):
+    """`resident_bytes()` takes `max(RSS, a runner's own memory() hook)`, and on
+    a GPU-resident model that hook answers in DEVICE bytes — which is exactly
+    the conflation this field exists to undo. `host_resident_bytes()` must
+    report the bare RSS reading regardless of what `_measure` (the `memory=`
+    hook) says, even when that probe is far larger."""
+    import types
+
+    base._measure = lambda: 99_000_000_000  # a device-memory figure, huge
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=lambda pid: types.SimpleNamespace(
+            memory_info=lambda: types.SimpleNamespace(rss=2_500_000_000))))
+    assert base.host_resident_bytes() == 2_500_000_000
+
+
+def test_host_resident_bytes_is_none_when_psutil_cannot_answer(base, monkeypatch):
+    import types
+
+    def _boom(pid):
+        raise RuntimeError("no such process")
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=_boom))
+    assert base.host_resident_bytes() is None
+
+
+def test_device_memory_bytes_is_none_none_when_no_hook_was_supplied(base):
+    """The default for every runner that never calls `serve(device_memory=...)`
+    — an older runner, or a unified-memory one (MLX/mflux, torch on MPS) that
+    must never fake a device split (D670)."""
+    assert base._device_memory is None
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_device_memory_bytes_reports_the_runners_allocated_and_reserved_pair(base):
+    base._device_memory = lambda: (5_200_000_000, 8_100_000_000)
+    assert base.device_memory_bytes() == (5_200_000_000, 8_100_000_000)
+
+
+def test_device_memory_bytes_swallows_a_raising_probe(base):
+    def boom():
+        raise RuntimeError("no CUDA device")
+
+    base._device_memory = boom
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_device_memory_bytes_drops_a_non_positive_or_malformed_reading(base):
+    """A malformed hook answer (wrong shape, zero, negative) must not become a
+    figure the supervisor charges real budget arithmetic against."""
+    base._device_memory = lambda: (0, -1)
+    assert base.device_memory_bytes() == (None, None)
+
+    base._device_memory = lambda: "not a tuple"
+    assert base.device_memory_bytes() == (None, None)
+
+
+def test_health_reports_host_and_device_memory_only_once_ready(base):
+    """Same rule `peak_resident_bytes` already follows: a loading model has no
+    settled reading to report."""
+    base.TOKEN = "secret"
+    base.set_state(state="loading")
+    base._device_memory = lambda: (5_200_000_000, 8_100_000_000)
+    server = _serve(base, lambda body: {})
+    try:
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "host_resident_bytes" not in health
+        assert "device_allocated_bytes" not in health
+        assert "device_reserved_bytes" not in health
+
+        base.set_state(state="ready")
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        # psutil is absent from the server venv (AI-2), so this legitimately
+        # resolves to null here; where psutil IS present it must be a real RSS.
+        assert "host_resident_bytes" in health
+        assert health["host_resident_bytes"] is None or health["host_resident_bytes"] > 0
+        assert health["device_allocated_bytes"] == 5_200_000_000
+        assert health["device_reserved_bytes"] == 8_100_000_000
+    finally:
+        server.shutdown()
+
+
+def test_serve_wires_device_memory_into_the_module_global(base, monkeypatch, tmp_path):
+    """`serve(device_memory=...)` has to actually reach the module global that
+    `device_memory_bytes()` reads — the same wiring `memory=`/`peak_memory=`/
+    `release=`/`footprint=` already get."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    sentinel = lambda: None  # noqa: E731 - identity is what's under test
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, device_memory=sentinel,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._device_memory is sentinel
 
 
 def test_serve_moves_into_the_directory_the_supervisor_names(base, monkeypatch, tmp_path):

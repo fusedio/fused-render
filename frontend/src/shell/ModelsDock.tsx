@@ -53,7 +53,7 @@
 // directly with a fixed model list rather than mocking `useAiRuntime`.
 import { useRef, useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
-import { formatSize, repoName } from "@platform/lib/format";
+import { formatSize, hasKnownMemorySplit, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
@@ -128,6 +128,14 @@ function MemoryCell({
   model: AiLoadedModel;
   ceilingBytes: number | null;
 }) {
+  // A host reading with no device figure is the common case (CPU, mmap'd
+  // GGUF/llama.cpp, unified-memory MLX/mflux and torch-on-MPS) and is not a
+  // split at all — there is nothing to hold apart, and the unsplit rendering
+  // below is exactly correct for it.
+  if (hasKnownMemorySplit(model)) {
+    return <SplitMemoryCell model={model} ceilingBytes={ceilingBytes} />;
+  }
+
   // THE HELD FIGURE, `max`ed against the resident one — this docstring's own
   // section on why. `null` stays `null`: no counter means we do not know, and
   // the row must not invent a held figure out of RSS alone.
@@ -189,6 +197,82 @@ function MemoryCell({
     <span className="dl-amount" title={title}>
       {`${now} now`}
       {heldAddsSomething ? <> ({heldCell})</> : null}
+    </span>
+  );
+}
+
+/** THE SPLIT ROW (D670): a discrete GPU's own pool reported apart from host
+ *  RAM — `worker_base.host_resident_bytes`/`device_memory_bytes` on the
+ *  worker side, `Worker.hostResidentBytes`/`deviceAllocatedBytes`/
+ *  `deviceReservedBytes` here. `MemoryCell` routes here only once BOTH a host
+ *  and a device reading are in hand; see its own docstring for why the two
+ *  gates differ.
+ *
+ *  RAM leads, unparenthesized, mirroring `MemoryCell`'s own "now"/"held"
+ *  pair one level up: `2.5 GB RAM · 5.2 GB VRAM (8.1 GB held)`. VRAM gets the
+ *  same now/held pairing `MemoryCell` gives RSS/footprint — allocated is
+ *  what the model is using now, reserved is what the driver is holding for
+ *  it, `max` keeps "held" never less than "now", and the parenthetical is
+ *  dropped when the two agree, same rule as above.
+ *
+ *  BANDED ON RAM ONLY: `supervisor._worker_footprint_bytes` charges the host
+ *  figure against the RAM budget once the split is known — banding VRAM
+ *  against a RAM ceiling would reintroduce, in the chip, the exact
+ *  conflation this split exists to remove from the gate. */
+function SplitMemoryCell({
+  model,
+  ceilingBytes,
+}: {
+  model: AiLoadedModel;
+  ceilingBytes: number | null;
+}) {
+  const ram = formatSize(model.hostResidentBytes);
+  const vramNowBytes = model.deviceAllocatedBytes;
+  const vramHeldBytes =
+    model.deviceReservedBytes === null
+      ? null
+      : Math.max(model.deviceReservedBytes, model.deviceAllocatedBytes ?? 0);
+  const vramNow = formatSize(vramNowBytes);
+  const vramHeld = formatSize(vramHeldBytes);
+  const vramHeldAddsSomething =
+    vramHeldBytes !== null && vramHeldBytes > (vramNowBytes ?? 0);
+
+  const band = memoryBand(model.hostResidentBytes, ceilingBytes);
+  const bandClass = band ? ` is-mem-${band}` : "";
+
+  const basisWord =
+    model.footprintBasis === "measured"
+      ? "measured on this machine"
+      : model.footprintBasis === "declared"
+        ? "estimated from the model's declared size"
+        : "estimated from the download size";
+  const cost = formatSize(model.footprintBytes);
+  const title =
+    [
+      ram ? `${ram} host RAM resident right now` : null,
+      vramNow ? `${vramNow} allocated on the GPU` : null,
+      vramHeldAddsSomething ? `at least ${vramHeld} reserved on the GPU` : null,
+      cost ? `Measured cost ${cost}, ${basisWord}` : null,
+      ceilingBytes ? `Machine ceiling ${formatSize(ceilingBytes)}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined;
+
+  // NO VRAM READING, NO CLAUSE — `deviceAllocatedBytes` can be null while
+  // `deviceReservedBytes` alone is known (or vice versa); the row shows
+  // whichever half it has rather than a stranded "0 B".
+  const vramClause = vramNow ? (
+    <>
+      {" · "}
+      {vramNow} VRAM
+      {vramHeldAddsSomething ? <> ({vramHeld} held)</> : null}
+    </>
+  ) : null;
+
+  return (
+    <span className="dl-amount" title={title}>
+      <span className={"dl-mem-live" + bandClass}>{ram} RAM</span>
+      {vramClause}
     </span>
   );
 }

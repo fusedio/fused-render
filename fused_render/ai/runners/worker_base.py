@@ -269,6 +269,59 @@ def _arm_release_timer():
     timer.start()
 
 
+def _trim_malloc_arenas():
+    """Return glibc's per-thread arena memory to the OS, called at the tail
+    of `_fire_release` once the runner's own `_release` hook has returned —
+    i.e. after torch's caching allocator / MLX's pool has already handed back
+    whatever IT was holding, so this is asking the OS-facing layer underneath
+    those allocators for the rest.
+
+    glibc gives each thread its own heap arena (capped by `HEAP_MAX_SIZE`, in
+    practice at most a few dozen MB) the moment that thread mallocs while the
+    main arena is contended — and a `free()` back into a per-thread arena
+    shrinks the arena's OWN accounting but never returns the pages to the OS
+    on its own; only an explicit `malloc_trim()` call against that arena does,
+    and nothing in the process calls one unless told to. Torch runs many
+    threads (its own pool, MIOpen/comgr's), each with its own arena, so an
+    idle worker whose runner has already freed every tensor it knows about
+    can still sit on hundreds of MB of RSS that is provably unused.
+
+    Measured on a live FLUX worker on Linux/ROCm, all-GPU placement, 2.47 GB
+    RSS: 1.57 GB of that was anonymous, and splitting it by mapping shape
+    found 0.62 GB across 15 mappings that are 64 MB-aligned reservations of
+    <=64 MB apiece — the signature of these per-thread arenas (`[heap]`
+    itself was only 24 MB, which is why the main arena alone looked
+    innocent). This function targets exactly those 15 mappings. It does NOT
+    touch, and cannot reclaim, the OTHER 0.84 GB of anonymous RSS (138
+    mappings, unaligned, odd sizes — direct `mmap`, not arena-shaped): those
+    are live HIP host arenas and pinned staging buffers that stay mapped for
+    as long as the HIP context itself lives, not idle allocator slack.
+
+    Linux/glibc only, and best-effort throughout: musl has no `malloc_trim`
+    symbol at all, so its absence is discovered by catching the
+    `AttributeError` `ctypes.CDLL(None).malloc_trim` raises rather than
+    assumed present — there is no portable equivalent to fall back to on
+    macOS/Windows either, hence the platform check up front. `ctypes` is
+    imported function-locally, matching this module's convention for an
+    optional, platform-specific import (see the darwin branch of
+    `os_footprint_bytes`). Any failure here — to load the symbol, or to call
+    it — is caught and swallowed: a release must never fail, or take the
+    idle timer down, because trimming afterward didn't work.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return
+    try:
+        malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _fire_release(token):
     """The idle timer's callback: reclaim the allocator pool, but only if
     nothing has run since `token` was handed out.
@@ -300,6 +353,14 @@ def _fire_release(token):
     where the MPS branch always raised and quietly took the CUDA branch down
     with it — see `torch_image.release`). The worker's own stderr lands in
     `$TMPDIR/fused-render-<pid>.log`, where a broken reclaim is now visible.
+
+    `_trim_malloc_arenas()` runs AFTER `_release` regardless of whether it
+    raised — the runner's own allocator freeing memory is what makes an
+    arena trimmable in the first place, so the trim has to come second, and
+    it must run even on a raising `release` since a partial free still
+    leaves something worth trimming. See its own docstring for why a runner
+    freeing memory back to its allocator is not the same as the OS getting
+    it back.
     """
     global _release_timer
     with GENERATE_LOCK:
@@ -313,6 +374,11 @@ def _fire_release(token):
             run_on_generate_thread(_release)
         except Exception:  # noqa: BLE001 - logged below, then swallowed: see docstring
             traceback.print_exc(file=sys.stderr)
+        # After `_release` — whether it ran clean or raised — has freed
+        # whatever it was going to. See `_trim_malloc_arenas` for why this
+        # is still needed on top of that: glibc doesn't return per-thread
+        # arena memory to the OS on `free()` alone.
+        _trim_malloc_arenas()
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 
@@ -767,6 +833,82 @@ _release = None
 #: allocated()` — see that call site for why reserved is the number that
 #: actually moves when `release()`'s `empty_cache()` fires.
 _footprint = None
+
+#: `serve(device_memory=...)`'s hook — the FIFTH optional hook beside
+#: `_measure`/`_measure_peak`/`_release`/`_footprint` above, set by a runner
+#: that can tell RAM and VRAM apart. Returns `(allocated, reserved)` in
+#: bytes, or `None`.
+#:
+#: Why this exists (D670): every reading above this point answers "what is
+#: this worker costing", not "which POOL is it costing" — `resident_bytes()`
+#: takes the LARGER of RSS and a runner's `memory=` hook, which for a
+#: GPU-resident `torch_image` worker reports DEVICE bytes as though they were
+#: host RAM, and `_footprint` folds a discrete GPU's reserved pool additively
+#: into `os_footprint_bytes()`. Both are deliberately left exactly as they
+#: are (see `resident_bytes`'s own docstring on why redefining it would
+#: re-verdict every model ever run). This hook is the new, separate answer:
+#: a runner that HAS a genuinely disjoint device pool (CUDA/ROCm) supplies
+#: it, and `device_memory_bytes()`/`host_resident_bytes()` below let
+#: `/health` publish RAM and VRAM as two honest, independent figures instead
+#: of the one conflated number.
+#:
+#: **Never wired for a UNIFIED-MEMORY runner.** On Apple Silicon (MLX/mflux,
+#: torch on MPS) the "GPU pool" IS system memory — there is no second pool to
+#: report, and a runner that supplied one anyway would have the page double-
+#: count the same bytes as both RAM and VRAM. `torch_image._device_memory`
+#: is CUDA-only for the identical reason `_gpu_footprint` above is.
+_device_memory = None
+
+
+def host_resident_bytes():
+    """The bare host RSS reading, with no runner probe folded in — or None.
+
+    `resident_bytes()` answers `max(RSS, a runner's own memory() hook)` on
+    purpose (see its own docstring), and that hook answers in DEVICE bytes
+    for a GPU-resident `torch_image` worker — so the max is frequently NOT
+    a RAM figure at all. This function is the un-conflated one: the same
+    `psutil` RSS read `resident_bytes()` takes internally, exposed on its
+    own so `/health` (and, downstream, the supervisor's RAM budget gate) can
+    tell host memory apart from a device allocator's pool (D670).
+
+    Deliberately does NOT feed `_rss_peak` — that high-water mark already has
+    exactly one writer (`resident_bytes()`, called on every poll already), and
+    a second writer sampling the same counter would just be redundant, not
+    more accurate.
+    """
+    try:
+        import psutil
+
+        rss = int(psutil.Process(os.getpid()).memory_info().rss)
+    except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
+        return None
+    return rss if rss > 0 else None
+
+
+def device_memory_bytes():
+    """`(allocated, reserved)` bytes in a DISCRETE GPU's own pool, or
+    `(None, None)` — the runner-supplied halves of the RAM/VRAM split (D670).
+
+    `(None, None)` whenever `_device_memory` is unset (an older runner, or a
+    unified-memory one that must never fake a split — see that global's own
+    docstring), the hook raises, or it answers something that is not a
+    `(int, int)` pair of positive readings. A malformed or partial answer is
+    treated exactly like no answer at all, never patched up with a guess:
+    this figure ends up in the supervisor's budget arithmetic, where a wrong
+    number is worse than a missing one.
+    """
+    if _device_memory is None:
+        return (None, None)
+    try:
+        probed = _device_memory()
+    except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+        probed = None
+    if not isinstance(probed, tuple) or len(probed) != 2:
+        return (None, None)
+    allocated, reserved = probed
+    allocated = allocated if isinstance(allocated, int) and allocated > 0 else None
+    reserved = reserved if isinstance(reserved, int) and reserved > 0 else None
+    return (allocated, reserved)
 
 
 def resident_bytes():
@@ -4621,6 +4763,13 @@ def _handler(generate, streaming):
                     # The OS's own "right now" figure (D597), additive beside
                     # the two above — see `os_footprint_bytes`.
                     health["os_footprint_bytes"] = os_footprint_bytes()
+                    # RAM and VRAM, un-conflated (D670) — see `host_resident_
+                    # bytes`/`device_memory_bytes`'s own docstrings for why
+                    # neither of the three fields above can answer this.
+                    health["host_resident_bytes"] = host_resident_bytes()
+                    allocated, reserved = device_memory_bytes()
+                    health["device_allocated_bytes"] = allocated
+                    health["device_reserved_bytes"] = reserved
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -4784,7 +4933,7 @@ def _adopt_spawn_shape():
 
 
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
-         release=None, footprint=None, argv=None):
+         release=None, footprint=None, device_memory=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
@@ -4807,14 +4956,22 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     footprint_bytes()` adds it to the platform figure it already computes; see
     that function's and `_footprint`'s own docstrings for why addition, not
     `max`, and why `torch_image.main()` is the only caller that supplies one.
+
+    `device_memory` is a fifth, independent optional hook (D670): a runner
+    with a genuinely disjoint device pool (CUDA/ROCm) reports
+    `(allocated, reserved)` bytes through it, which is how `/health` tells
+    RAM and VRAM apart without touching `memory`/`footprint` above — see
+    `_device_memory`'s own docstring for why a unified-memory runner must
+    never supply one.
     """
-    global JOB_ID, _measure, _measure_peak, _release, _footprint
+    global JOB_ID, _measure, _measure_peak, _release, _footprint, _device_memory
 
     _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
     _release = release
     _footprint = footprint
+    _device_memory = device_memory
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

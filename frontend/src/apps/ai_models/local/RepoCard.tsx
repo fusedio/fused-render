@@ -35,7 +35,7 @@ import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgre
 import { unloadCountdown } from "@apps/ai_models/lib/engines";
 import { type AiLoadedModel, type AiModelRepo } from "@platform/lib/api";
 import { isRunning, type Job } from "@platform/lib/jobs";
-import { formatSize, formatMtimeFull, timeAgo } from "@platform/lib/format";
+import { formatSize, formatMtimeFull, hasKnownMemorySplit, timeAgo } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
 import {
   PARTIAL_TAG,
@@ -134,12 +134,20 @@ export function CuratedMark() {
 // the sidebar's live dot, because "this is running" should be one colour in
 // this app rather than one per surface.
 function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
+  // RAM/VRAM (D670): once a runner has reported a device figure alongside a
+  // host one, `residentBytes` is not a safe stand-in any more — for a
+  // GPU-resident model it is `max(RSS, the runner's own device probe)`, so
+  // it would print VRAM here labelled "resident", which is the exact
+  // conflation this split exists to undo. `hostResidentBytes` is the one
+  // figure genuinely of the process, whether or not a split is known.
+  const residentHint =
+    loaded.hostResidentBytes ?? loaded.residentBytes;
   return (
     <span
       className="am-loaded-badge"
       data-hint={
         `${loaded.model} is loaded in memory` +
-        (loaded.residentBytes ? ` — ${formatSize(loaded.residentBytes)} resident` : "")
+        (residentHint ? ` — ${formatSize(residentHint)} resident` : "")
       }
     >
       Loaded
@@ -217,9 +225,32 @@ function RuntimeChip({
     // running — and the page has no reason to tell those apart, since none
     // of them counts down.
     const countdown = unloadCountdown(loaded.unloadsInSeconds);
+    // Without a known split (the common case: CPU, mmap'd runners,
+    // unified-memory MLX/mflux and torch-on-MPS) this renders exactly as
+    // before — one "in memory" figure.
+    const hasKnownSplit = hasKnownMemorySplit(loaded);
     return (
       <div className="am-card-runtime am-card-runtime-ready">
-        {loaded.residentBytes ? (
+        {hasKnownSplit ? (
+          <>
+            <span
+              className="am-runtime-mem am-runtime-mem-lead"
+              data-hint={
+                "Host RAM resident right now — the graphics card keeps its own " +
+                "memory pool separately, shown alongside this."
+              }
+            >
+              {formatSize(loaded.hostResidentBytes)} RAM
+              {countdown ? ` — ${countdown}` : ""}
+            </span>
+            <span
+              className="am-runtime-mem"
+              data-hint="What the graphics card's own memory pool is holding for this model."
+            >
+              {formatSize(loaded.deviceAllocatedBytes ?? loaded.deviceReservedBytes)} VRAM
+            </span>
+          </>
+        ) : loaded.residentBytes ? (
           <span
             className="am-runtime-mem am-runtime-mem-lead"
             data-hint={

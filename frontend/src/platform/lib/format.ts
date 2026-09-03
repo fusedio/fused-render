@@ -1,5 +1,7 @@
 // Pure formatting helpers. No DOM, no fetch. (The vanilla module also carried
 // escapeHtml — dropped: JSX escapes text content itself.)
+import type { AiLoadedModel } from "@platform/lib/api";
+
 export function formatSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -11,6 +13,19 @@ export function formatSize(bytes: number | null | undefined): string {
     u++;
   } while (v >= 1024 && u < units.length - 1);
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
+}
+
+/** Whether `model` reported a full RAM/VRAM split (D670) — a host RSS reading
+ *  AND at least one device-allocator reading, both in hand. A device figure
+ *  with no host reading is not a split at all (mirrors
+ *  supervisor._worker_footprint_bytes's own fallback: unknown must never
+ *  look like zero), and callers fall through to an unsplit rendering rather
+ *  than inventing one side of the split from the other. */
+export function hasKnownMemorySplit(model: AiLoadedModel): boolean {
+  return (
+    model.hostResidentBytes !== null &&
+    (model.deviceAllocatedBytes !== null || model.deviceReservedBytes !== null)
+  );
 }
 
 // Parameter counts, the unit models are compared in — "7.2B", "465M". Distinct

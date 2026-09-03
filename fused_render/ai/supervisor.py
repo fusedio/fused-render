@@ -15,7 +15,13 @@ unloads the first before the new one starts. This is not a policy choice so much
 as arithmetic: an 8GB model and another 8GB model on a 16GB machine is a swap
 storm, and a swap storm reads to the user as "the app hung". A text model and an
 image model coexist because they are different capabilities and the user asked
-for both.
+for both — coexistence stays the DEFAULT, and `_start_resident`'s pre-spawn
+budget gate only evicts an idle worker of ANOTHER capability when the two
+genuinely will not both fit (`_select_budget_victims`, checked whether the
+incoming model is a fresh capability spawn or a same-capability replace, since
+a bigger replacement can just as easily blow the budget the OTHER capabilities'
+warm workers already committed). It is an estimate, not a live reading — see
+that function's own docstring for the honest limits.
 
 **Load is asynchronous and reported, never awaited on the request path.** A cold
 load is a multi-GB download followed by a minutes-long weight load. `load()`
@@ -55,7 +61,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
+from fused_render.ai import catalog, fit, footprints, hsa_preload, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +260,23 @@ class Worker:
     #: this into `footprints.py` on every poll that grows it, which is what
     #: `fit.py` (AI-16) reads back as the "measured" basis.
     peak_resident_bytes: int | None = None
+    #: The bare host RSS reading, un-conflated with a runner's own device
+    #: probe (D670, `worker_base.host_resident_bytes`) — what `resident_bytes`
+    #: above CANNOT answer, since that field is deliberately left as `max(RSS,
+    #: the runner's memory() hook)` and a GPU-resident model's hook answers in
+    #: DEVICE bytes. This is the true RAM cost, used by `_worker_footprint_
+    #: bytes` to charge the RAM budget gate correctly once it is known.
+    host_resident_bytes: int | None = None
+    #: A DISCRETE GPU's own pool, as the worker's `device_memory` hook
+    #: reported it (D670, `worker_base.device_memory_bytes`) — `allocated` is
+    #: `torch.cuda.memory_allocated()`'s figure, `reserved` is `memory_
+    #: reserved()`'s. Both null together on any worker that never supplied
+    #: the hook: an older runner, a probe that failed, or (deliberately) a
+    #: UNIFIED-MEMORY runner — MLX/mflux, torch on MPS — where there is no
+    #: second pool to report at all. Their presence (not merely their value)
+    #: is what `_worker_footprint_bytes` reads as "the split is known".
+    device_allocated_bytes: int | None = None
+    device_reserved_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
     #: whether the RUNNER IT ACTUALLY RESOLVED is the one whose torch was built
@@ -266,6 +289,16 @@ class Worker:
     #: AI-8 makes about resident bytes: only the process holding the weights
     #: knows.
     device: str = ""
+    #: Which rung of `torch_image._place()`'s ladder the worker actually
+    #: landed on — "all-gpu" | "offload", as the WORKER
+    #: reported it via `set_state(placement=...)`, never inferred here. None
+    #: from a runner that never calls `_place` (the CPU/MPS branches report
+    #: nothing, and non-diffusers runners have no placement decision to make
+    #: at all). Reaches `describe()`'s `"placement"` key the same way `device`
+    #: above does, but unlike `device` nothing in `frontend/` reads it yet —
+    #: `AiLoadedModel` has no `placement` field — so the value currently
+    #: rides the API and stops there.
+    placement: str | None = None
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
     #: `time.monotonic()` of the last thing this worker did, and how many turns
@@ -395,6 +428,31 @@ def _health(worker: Worker) -> dict | None:
             return json.loads(response.read().decode() or "{}")
     except (OSError, ValueError):
         return None
+
+
+def _apply_health_memory_fields(worker: Worker, health: dict) -> None:
+    """Copy the OS-footprint, RAM/VRAM split (D670) and placement fields
+    from one `/health` poll onto `worker`.
+
+    Each field is re-read on every poll rather than trusted from an earlier
+    one: a runner sets these inside `load()`, and a caller here is what is
+    watching when that happens. Each is coerced to `None` when the worker's
+    answer doesn't carry it (missing, or the wrong type) rather than left
+    holding a stale reading — these are display/gate-input fields describing
+    the worker right now, not a durable measurement.
+    """
+    footprint = health.get("os_footprint_bytes")
+    worker.os_footprint_bytes = footprint if isinstance(footprint, int) else None
+    host = health.get("host_resident_bytes")
+    worker.host_resident_bytes = host if isinstance(host, int) else None
+    allocated = health.get("device_allocated_bytes")
+    worker.device_allocated_bytes = (
+        allocated if isinstance(allocated, int) else None)
+    reserved = health.get("device_reserved_bytes")
+    worker.device_reserved_bytes = (
+        reserved if isinstance(reserved, int) else None)
+    placement = health.get("placement")
+    worker.placement = placement if isinstance(placement, str) else None
 
 
 def _touch(worker: Worker) -> None:
@@ -738,7 +796,7 @@ def _mirror_ok(model: str) -> str:
         return ""
 
 
-def _child_env(token: str, model: str = "", capability: str = "") -> dict:
+def _child_env(token: str, model: str = "", capability: str = "", preload: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -783,6 +841,15 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     "this environment is a copy of the server's" reason `FUSED_MODEL_
     MIRROR_OK` is: a stale or operator-set value must not silently outlive
     the fresh computation that is supposed to produce it.
+
+    **`preload`, when given, is PREPENDED onto `LD_PRELOAD`** rather than
+    setting it outright — an operator's own `LD_PRELOAD` (say, a malloc
+    profiler, or their own ROCr override) survives untouched after whatever
+    this process adds, colon-joined the same way the loader itself parses the
+    variable. The caller decides WHETHER to preload anything at all
+    (`hsa_preload.resolve_preload`, computed from the venv `python` `_spawn`
+    already has); this function only knows how to place a path onto the
+    variable without clobbering what was there.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -800,6 +867,9 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
     else:
         env.pop("FUSED_AI_MEMORY_BUDGET_BYTES", None)
+    if preload:
+        inherited = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = f"{preload}:{inherited}" if inherited else preload
     return env
 
 
@@ -841,7 +911,39 @@ def _tail(path: str, limit: int = 2000) -> str:
 
 
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
-    """Start worker.py and wait for it to publish its port.
+    """Start worker.py and wait for it to publish its port, retrying ONCE
+    without the ROCm HSA preload (see `hsa_preload.py`) if a preloaded
+    attempt fails to come up.
+
+    `hsa_preload.resolve_preload` already checked that the system ROCm
+    runtime is a newer-or-equal minor of torch's bundled one before this
+    function ever runs — but "checked the version files agree" is not the
+    same guarantee as "actually links and runs", and a bring-up failure is
+    exactly the shape of evidence that would be missing if it didn't: a
+    worker that can't `dlopen` the substituted runtime, or one that starts
+    and immediately dies. Retrying WITHOUT the preload is the fallback that
+    keeps a mismeasured or unusual system runtime from bricking every ROCm
+    worker on the machine, at the cost of the CPU-pinning bug this whole
+    module exists to avoid — which is why the retry is logged, not silent.
+    """
+    preload = hsa_preload.resolve_preload(python)
+    try:
+        _spawn_once(runner, worker, python, preload)
+    except SupervisorError as e:
+        if not preload or str(e) == "cancelled":
+            raise
+        logger.warning(
+            "ROCm worker %s failed to start with LD_PRELOAD=%s (%s); "
+            "retrying once without it. Set FUSED_AI_HSA_PRELOAD=0 to stop "
+            "this preload being attempted at all.",
+            worker.capability, preload, e,
+        )
+        _spawn_once(runner, worker, python, None)
+
+
+def _spawn_once(runner: registry.Runner, worker: Worker, python: str, preload: str | None) -> None:
+    """One spawn attempt: start `worker.py` and wait for it to publish its
+    port.
 
     The worker writes `{port, pid}` to a status file rather than being handed a
     port: binding :0 in the child and reporting back is the only version with no
@@ -856,7 +958,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
-    env = _child_env(worker.token, worker.model, worker.capability)
+    env = _child_env(worker.token, worker.model, worker.capability, preload or "")
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
@@ -1167,9 +1269,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
-                footprint = health.get("os_footprint_bytes")
-                worker.os_footprint_bytes = (
-                    footprint if isinstance(footprint, int) else None)
+                _apply_health_memory_fields(worker, health)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
@@ -1334,6 +1434,315 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     return runner
 
 
+#: Disables the pre-spawn budget gate below (SPEC AI-16/AI-19's fit
+#: arithmetic, reused rather than re-derived — see `_predicted_footprint`).
+#: Same "set AND sane" precedence `torch_image._vram_headroom_bytes` uses:
+#: unset, unparsable, or anything other than a recognised on/off spelling all
+#: degrade to the documented default, which is the GATE ON. Nobody
+#: overriding this has any way to be "a little wrong" about it — either the
+#: knob plainly says off, or the machine keeps the protection.
+_MEMORY_GATE_ENV = "FUSED_RENDER_AI_MEMORY_GATE"
+_MEMORY_GATE_FALSE = {"0", "false", "no", "off"}
+_MEMORY_GATE_TRUE = {"1", "true", "yes", "on"}
+
+
+def _memory_gate_enabled() -> bool:
+    """Whether `_start_resident` runs its pre-spawn budget check at all.
+
+    Read fresh on every call, the same live-re-read discipline `idle_workers`
+    already uses for `prefs.effective_ai_idle_unload_minutes` — an operator
+    flipping this mid-session takes effect on the very next load, not the
+    next restart.
+    """
+    raw = os.environ.get(_MEMORY_GATE_ENV)
+    if not raw:
+        return True
+    normalized = raw.strip().lower()
+    if normalized in _MEMORY_GATE_FALSE:
+        return False
+    if normalized in _MEMORY_GATE_TRUE:
+        return True
+    return True
+
+
+#: Runner codes whose loader caches K/V at q8_0 rather than fp16 — mirrors
+#: `ai_runtime._KV_DTYPE_RUNNERS` exactly (same loader, same claim: the
+#: `llamacpp-text`/`llamacpp-text-vulkan` pair is the complete set). Kept as
+#: its own copy rather than imported from `server.routers.ai_runtime`: that
+#: module imports `supervisor` already (it drives loads through it), so the
+#: reverse import would be circular.
+_KV_DTYPE_RUNNERS = {"llamacpp-text", "llamacpp-text-vulkan"}
+
+#: `hub_metadata.cached()`'s camelCase field names -> `fit.footprint_bytes`'s
+#: snake_case kwargs, mirroring `ai_runtime._KV_GEOMETRY_FIELDS` field for
+#: field so the two never name the KV-cache term differently.
+_KV_GEOMETRY_FIELDS = {
+    "numHiddenLayers": "num_hidden_layers",
+    "numKeyValueHeads": "num_key_value_heads",
+    "numAttentionHeads": "num_attention_heads",
+    "headDim": "head_dim",
+    "hiddenSize": "hidden_size",
+    "layerTypes": "layer_types",
+}
+
+
+def _kv_geometry_kwargs(model: str, runner_code: str | None) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`kv_dtype` kwargs for
+    `model`, loaded on `runner_code` — the gate's own copy of
+    `ai_runtime._kv_geometry_kwargs`, over the same `hub_metadata.cached()`
+    (no network call) and the same q8_0-KV-cache rule. Kept in sync by
+    mirroring, not by sharing code, because the router already imports this
+    module (see `_KV_DTYPE_RUNNERS`'s own comment on why the reverse import
+    is not available).
+    """
+    meta = hub_metadata.cached(model)
+    kwargs = {
+        snake: meta[camel]
+        for camel, snake in _KV_GEOMETRY_FIELDS.items()
+        if meta.get(camel) is not None
+    } if meta else {}
+    if runner_code in _KV_DTYPE_RUNNERS:
+        kwargs["kv_dtype"] = "q8_0"
+    return kwargs
+
+
+def _predicted_footprint(capability: str, model: str, store: dict | None,
+                         runner_code: str | None = None) -> tuple[float | None, str | None]:
+    """The ONE footprint expression `describe()` and the pre-spawn budget gate
+    both call, so a model's cost can never read differently on the AI Models
+    page than it did to the code that decided whether to evict something for
+    it (see `_start_resident`'s docstring on the same point).
+
+    Threads the curated entry's `size_gb`/`resident_gb`/`params`/
+    `quantization` into `fit.footprint_bytes` when `catalog.entry_for` finds
+    one — an uncurated (self-downloaded) model has none of these and falls
+    through to whatever `footprint_bytes` answers off measured data alone,
+    same as before this helper existed. `runner_code` (when the caller has
+    one — `_start_resident` always does, `describe()`'s loaded rows always
+    do, only an uncurated `_worker_footprint_bytes` call with no cached
+    metadata answers nothing) also threads the KV-cache geometry through
+    `_kv_geometry_kwargs`, the SAME term `ai_runtime._fit_verdict` includes
+    in the AI Models page's fit badge — omitting it here was the gap where a
+    text model's badge and its gate footprint could name different numbers
+    for the identical model; this closes it rather than leaving a comment
+    that only claimed it was already closed.
+
+    **This is an ESTIMATE, not a live reading.** `footprint_bytes`'s own
+    precedence — measured (this model, this machine, a past run) > declared
+    (a curator's `resident_gb`) > download (a guess built from `size_gb` or
+    `params`) — means a model nobody has run here yet is judged on a GUESS,
+    and nothing on this side of the process boundary reads live available
+    RAM to sanity-check it (no psutil, no `/proc/meminfo` — see `fit.py`'s
+    own note on why not). A model whose only footprint is a download-size
+    guess can still be admitted wrong.
+    """
+    entry = catalog.entry_for(capability, model) or {}
+    return fit.footprint_bytes(
+        capability, model,
+        size_gb=entry.get("size_gb"), resident_gb=entry.get("resident_gb"),
+        footprint_store=store, quantization=entry.get("quantization"),
+        params=entry.get("params"), **_kv_geometry_kwargs(model, runner_code))
+
+
+def _worker_footprint_bytes(worker: Worker, store: dict | None) -> float:
+    """What `worker` counts as, for the budget gate's arithmetic.
+
+    **A `ready` worker with a live `resident_bytes` reading is charged THAT
+    figure, not its predicted footprint.** `_predicted_footprint` answers off
+    `footprints.py`'s PEAK-resident rung when one exists — the high-water
+    mark a load-time spike left behind — which is honest for judging an
+    INCOMING model (nothing else is known yet) but wrong for a worker
+    already up: `refresh_memory()` polls `resident_bytes` continuously, so a
+    worker that peaked at load and has since settled is sitting on a real,
+    current number the estimate has no reason to override. Counting the peak
+    instead systematically over-charges every warm worker, which is exactly
+    the over-counting that blocked loads a steady-state machine had room
+    for.
+
+    A non-`ready` worker (still downloading/loading its own weights) has no
+    settled RSS to trust yet, so it falls through to the predicted footprint
+    like before. Below that, `resident_bytes` is the last resort for a
+    worker with no predicted footprint at all — real RSS is a real floor even
+    when nothing measured/declared/download could answer, and treating an
+    unknown footprint as ZERO would let the gate admit a load it should have
+    refused.
+
+    **A `ready` worker with a KNOWN host/device split (D670) is charged its
+    HOST figure, not `resident_bytes`.** This gate protects the system-RAM
+    budget, and `resident_bytes` is `max(RSS, a runner's own memory() hook)`
+    — for a GPU-resident worker that hook answers in DEVICE bytes, so the
+    max routinely reports VRAM as though it were RAM the machine does not
+    have to spare (a ROCm FLUX worker: 5.2 GB of VRAM charged against a RAM
+    budget it never touched). The split is "known" when the worker reported
+    a genuinely separate device pool — `device_allocated_bytes` or `device_
+    reserved_bytes` is not `None` — never inferred from silence: an older
+    runner, a unified-memory one (MLX/mflux, torch on MPS), or a probe that
+    failed all leave both `None`, and this function then falls through to
+    the `resident_bytes` behaviour above exactly as it always has. A known
+    split whose `host_resident_bytes` itself came back `None` (a partial
+    probe failure) also falls through rather than charging zero, for the
+    same reason the caller above never charges zero.
+    """
+    if worker.state == "ready":
+        split_known = (worker.device_allocated_bytes is not None
+                       or worker.device_reserved_bytes is not None)
+        if split_known and worker.host_resident_bytes:
+            return float(worker.host_resident_bytes)
+        if worker.resident_bytes:
+            return float(worker.resident_bytes)
+    footprint, _basis = _predicted_footprint(worker.capability, worker.model, store,
+                                             worker.runner_code)
+    if footprint is not None:
+        return footprint
+    return float(worker.resident_bytes or 0)
+
+
+def _select_budget_victims(capability: str, model: str, footprint: float | None,
+                           budget: float | None, store: dict | None, *,
+                           exclude_capability: str | None = None) -> list[Worker]:
+    """Which IDLE workers to evict, LRU-first, to make room for `model` — or a
+    SupervisorError if evicting every eligible one still would not be enough,
+    or the empty list (no eviction, load proceeds) when there is nothing this
+    gate could improve by refusing.
+
+    Called from inside `_start_resident`'s `_lock` hold, over the CURRENT
+    `_workers` table — on BOTH the same-capability replace path and the
+    cross-capability spawn path, BEFORE either one has mutated `_workers` at
+    all. `exclude_capability` is `capability` itself on a replace (there is
+    always at most one worker per capability, so this excludes exactly the
+    outgoing worker, never accidentally a bystander) and `None` on a fresh
+    cross-capability spawn where there is nothing occupying the slot to
+    exclude. Excluding it from `committed` is how its bytes are credited —
+    they are being freed unconditionally by the caller regardless of what
+    this function decides, so counting them against the incoming model would
+    double them against a slot that is not going to hold both at once — while
+    the INCOMING model, if bigger than what it replaces, still has to clear
+    everything ELSE that is resident.
+
+    **Deciding before mutating, not after, is what keeps a raise here leaving
+    `_workers` untouched.** If the caller popped the outgoing worker first
+    and this function then raised, the outgoing worker would already be
+    gone from `_workers` and stranded in `_draining` with nothing left to
+    terminate it — a leak, and a capability slot refused into having NOTHING
+    resident, which is a worse outcome than the overcommit this exists to
+    prevent. `exclude_capability` lets this be evaluated as a pure query
+    over `_workers` exactly as it stands, so the caller's own pop (and any
+    victims' pops) can wait until this returns successfully.
+
+    **`in_flight > 0` is never a candidate — mirrors `_is_idle`'s own
+    exemption rather than reusing it, because the two protect against
+    different mistakes.** `_is_idle`'s in-flight exemption is about the
+    REAPER not mistaking a slow answer for staleness; this one is about not
+    killing a worker a request is BLOCKED on to make room for a load that
+    request never asked for. Either way, an automatic eviction that tears
+    down a worker mid-render is the regression this function exists to never
+    cause — so a busy worker is filtered out before ranking even starts, not
+    merely ranked last.
+
+    **The idle window (`prefs.effective_ai_idle_unload_minutes()`) ranks
+    candidates, it does not filter them.** Every `ready`, not-in-flight
+    worker is eligible; the ones past
+    `now - last_activity >= idle_window` are simply preferred victims,
+    walked first in LRU order, before any worker that answered a request
+    more recently is even considered. A request being served right now
+    beats a warm model that is not serving anything — so a recently-used
+    worker is only evicted when the past-window ones do not cover the
+    shortfall on their own. This is deliberately NOT a hard floor: a user
+    who renders an image and thirty seconds later asks a chat model a
+    question is not going to wait out a multi-minute idle window for that
+    to work, and refusing the load outright when eviction would have made
+    it fit is exactly as unacceptable as the OOM this whole gate exists to
+    prevent. When the idle-unload preference itself is disabled
+    (`minutes <= 0`), nothing is ever past-window, which only affects
+    ordering — the full candidate set (recency floor aside) is still
+    eligible.
+
+    **All-or-nothing: if the FULL candidate list would not free enough
+    room, nothing is evicted at all.** Silently evicting a pile of idle
+    models for a load that gets refused anyway would be pure loss — other
+    capabilities go cold and the new model still does not spawn. The
+    refusal is the honest answer when the gate (an ESTIMATE — see
+    `_predicted_footprint`) says this machine cannot hold both; unloading
+    something on purpose, or trying again once room is free, is the caller's
+    to decide.
+
+    **Stepping aside is not the same as fitting.** When evicting everything
+    idle still would not cover the shortfall, refusing is only the right
+    call if refusing could plausibly help — if there is SOMETHING this
+    machine's operator could unload, or something already committed that
+    made the difference. A `_workers` table that is empty, or holds nothing
+    this gate counts as committed, is cross-capability contention with
+    nothing on the other side of it: the runner's own oversized-model paths
+    (`llama_text`'s mmap + `_offload_schedule`, diffusers group offload) were
+    already the answer for a model bigger than steady-state RAM before this
+    gate existed, and a gate that refuses a load it cannot improve by
+    refusing is pure regression, not protection.
+    """
+    if footprint is None or budget is None:
+        # Nothing to compare — see `_predicted_footprint`'s own docstring on
+        # why an unmeasured, uncurated model has no rung left to answer from.
+        # The gate cannot judge a footprint it does not have, so it steps
+        # aside rather than guessing; this is the SAME "unknown is a dash,
+        # never a guess" rule AI-11a already applies everywhere else.
+        return []
+    others = [w for w in _workers.values() if w.capability != exclude_capability]
+    committed = sum(_worker_footprint_bytes(w, store) for w in others)
+    shortfall = footprint - (budget - committed)
+    if shortfall <= 0:
+        return []
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    idle_window = minutes * 60 if minutes > 0 else float("inf")
+    now = time.monotonic()
+    evictable = [w for w in others if w.state == "ready" and w.in_flight == 0]
+    past_window = sorted(
+        (w for w in evictable if now - w.last_activity >= idle_window),
+        key=lambda w: w.last_activity)
+    recent = sorted(
+        (w for w in evictable if now - w.last_activity < idle_window),
+        key=lambda w: w.last_activity)
+    candidates = past_window + recent
+    victims: list[Worker] = []
+    freed = 0.0
+    for worker in candidates:
+        if freed >= shortfall:
+            break
+        victims.append(worker)
+        freed += _worker_footprint_bytes(worker, store)
+    if freed < shortfall:
+        if not candidates and committed <= 0:
+            # Nothing evictable and nothing already committed: there is no
+            # contention here for the gate to referee, only an incoming
+            # model the ESTIMATE says might not fit on its own. That is
+            # exactly the case the runner's own oversized-model paths exist
+            # for (see the docstring above) — step aside and let the load
+            # attempt run, rather than refuse a load this gate cannot make
+            # any better by refusing it.
+            return []
+        need_gb = footprint / fit.GB_BYTES
+        free_gb = max(0.0, budget - committed) / fit.GB_BYTES
+        pending = next((w for w in others if w.state != "ready"), None)
+        if pending:
+            # A `downloading`/`loading` worker counts toward `committed`
+            # (it sums every worker in the table) but can never be a
+            # candidate above (only `ready` ones are) — so "unload
+            # something" names a blocker the caller has no unload button
+            # for. The honest ask is to wait for that load to finish, since
+            # its own bytes free up (or its footprint firms up) the moment
+            # it either lands or fails.
+            raise SupervisorError(
+                f"{model} needs about {need_gb:.1f}GB and only {free_gb:.1f}GB is "
+                f"free even after unloading every idle model — {pending.model} is "
+                "still loading and holding room; try again once it finishes, or "
+                "set FUSED_RENDER_AI_MEMORY_GATE=0 to load anyway")
+        raise SupervisorError(
+            f"{model} needs about {need_gb:.1f}GB and only {free_gb:.1f}GB is "
+            "free even after unloading every idle model — unload something "
+            "first, or set FUSED_RENDER_AI_MEMORY_GATE=0 to load anyway")
+    return victims
+
+
 def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     """`load`'s residency path, handing back the WORKER RECORD beside the reply.
 
@@ -1350,6 +1759,19 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     _require_build_tools()
 
     job = job_id_for(model)
+    # Computed OUTSIDE `_lock`, same discipline `_terminate`'s teardown
+    # follows below: `footprints.load_store()` is a disk read, and
+    # `fit.available_budget_bytes()` can touch `hw_detect.cached_hardware()`
+    # — neither belongs inside the hold that every other supervisor call
+    # queues behind. `gate_footprint`/`gate_budget` are None outright when
+    # the gate is off, which is what routes `_select_budget_victims` to its
+    # own "nothing to compare" no-op below without a second on/off check.
+    store = footprints.load_store()
+    gate_on = _memory_gate_enabled()
+    gate_footprint, _gate_basis = (
+        _predicted_footprint(capability, model, store, runner.code) if gate_on
+        else (None, None))
+    gate_budget = fit.available_budget_bytes() if gate_on else None
     with _lock:
         current = _workers.get(capability)
         if (current is not None and current.model == model
@@ -1368,6 +1790,27 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
         evicting = current is not None
+        # Budget check runs on BOTH paths now — a same-capability replace as
+        # well as a cross-capability spawn — and runs BEFORE anything below
+        # mutates `_workers`, `current` included: `exclude_capability`
+        # credits the outgoing worker's bytes (it is being freed
+        # unconditionally, whatever this decides) without this function ever
+        # popping it, so a `SupervisorError` here still leaves `_workers`
+        # completely untouched. Popping `current` FIRST and letting this
+        # raise afterward was tried and rejected — it stranded the outgoing
+        # worker in `_draining` with no `_terminate` call left to reach it
+        # (that call is below, reached only once this returns) and left the
+        # capability with NOTHING resident, which is worse than the
+        # overcommit this whole gate exists to prevent. Skipping this check
+        # entirely on the replace path (as if freeing one capability's own
+        # slot were always enough) was the gap a bigger incoming model on
+        # that same slot walked straight through — a 1GB image model
+        # swapped for a 9GB one runs face-first into exactly the memory
+        # storm this gate exists to catch, unless the OTHER capabilities'
+        # resident models are checked too.
+        lru_victims = _select_budget_victims(
+            capability, model, gate_footprint, gate_budget, store,
+            exclude_capability=capability if evicting else None)
         if evicting:
             # Eviction: the weights of the old model must be released BEFORE the
             # new one's process is spawned, or the machine holds both at once —
@@ -1394,6 +1837,10 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # it from `_workers` — so there is no instant where the old worker
             # exists in neither table (see `_draining`'s own comment).
             _draining[current.token] = current
+        for victim in lru_victims:
+            victim.stopping = True
+            _workers.pop(victim.capability, None)
+            _draining[victim.token] = victim
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
@@ -1423,6 +1870,35 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
         finally:
             with _lock:
                 _draining.pop(current.token, None)
+
+    if lru_victims:
+        # Same shape as the `evicting` teardown above — the I/O runs OUTSIDE
+        # `_lock`, one victim at a time, best-effort per victim so a raise on
+        # one does not strand the rest still marked `_draining`.
+        reason = f"Unloaded to make room for {model}"
+        for victim in lru_victims:
+            try:
+                _terminate(victim)
+            except Exception:  # noqa: BLE001 - best-effort; see `evicting` above
+                logger.exception("failed to terminate budget-evicted worker %r",
+                                victim.model)
+            finally:
+                with _lock:
+                    _draining.pop(victim.token, None)
+            # `title=victim.model`: the victim's own job row, from whenever
+            # IT loaded, is long since terminal (or pruned) by the time it
+            # gets evicted here — `jobs.upsert` requires a `title` on the
+            # FIRST report for an id (see its own docstring), and `_report`
+            # swallows that `JobError` as best-effort, so without this the
+            # download manager silently got no row at all for an eviction
+            # that just happened. Passing the title makes the very report
+            # this branch exists to send actually land, and land
+            # identifiable, rather than fail invisibly the same way the
+            # same-capability `evicting` path above deliberately does not
+            # even attempt (that path already has nothing to report against
+            # a model the user is actively replacing).
+            _report(job_id_for(victim.model), title=victim.model, state="done",
+                   detail=reason)
 
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, detail="Preparing…", done=None, total=None)
@@ -2750,18 +3226,17 @@ def refresh_memory() -> None:
         # here or it is never read again.
         #
         # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
-        # the two `isinstance`-gated fields around it. Those two feed
-        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
-        # holding the last known number through a failed poll is right. This
-        # one is display-only and describes RIGHT NOW, so a worker that
-        # answers "I have no such counter" (the non-Darwin fallback) must
-        # clear the cell rather than leave a stale number standing next to a
-        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
-        # the previous value alone, which is the transient case.
+        # `resident_bytes` just above and `peak_resident_bytes` below, which
+        # feed `footprints.record` -> `fit.py`'s durable "measured" rung,
+        # where holding the last known number through a failed poll is
+        # right. `_apply_health_memory_fields` sets display/gate-input
+        # fields that describe the worker RIGHT NOW, so a worker that stops
+        # reporting one (or never had it) must clear the cell rather than
+        # leave a stale figure standing. A poll that FAILED OUTRIGHT
+        # (`health` falsy) still leaves the previous values alone, which is
+        # the transient case.
         if health:
-            footprint_now = health.get("os_footprint_bytes")
-            worker.os_footprint_bytes = (
-                footprint_now if isinstance(footprint_now, int) else None)
+            _apply_health_memory_fields(worker, health)
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this
@@ -2832,11 +3307,28 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # Which rung of `torch_image._place()`'s ladder the weights
+                # actually landed on — "all-gpu" | "offload". None from a
+                # runner that never calls `_place`. Rides through the API the
+                # same way `device` below does, but `AiLoadedModel`
+                # (`frontend/src/platform/lib/api.ts`) has no `placement`
+                # field yet, so no page reads this key.
+                "placement": w.placement,
                 # The OS's "right now" figure (D597) — what a user's system
                 # monitor shows, which `residentBytes` does NOT on Apple
                 # Silicon (Metal buffers are charged to `phys_footprint`, not
                 # RSS). Null where no counter could be read; never coerced.
                 "osFootprintBytes": w.os_footprint_bytes,
+                # RAM and VRAM as two separate figures (D670), additive
+                # beside `residentBytes`/`osFootprintBytes` above rather than
+                # replacing either — those two stay exactly as they were
+                # (see their own comments and `Worker.resident_bytes`'s
+                # docstring on why). Null together on any worker that never
+                # reported a genuine host/device split — an older runner, a
+                # unified-memory one, or a probe that failed.
+                "hostResidentBytes": w.host_resident_bytes,
+                "deviceAllocatedBytes": w.device_allocated_bytes,
+                "deviceReservedBytes": w.device_reserved_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.
@@ -2874,10 +3366,10 @@ def describe() -> dict:
     # (D594). `residentBytes` above is the worker process's RSS — real, but
     # "not the model's size" (its own field comment says so), which is why the
     # summed version was removed from the status-bar chip. The honest per-model
-    # figure is `fit.footprint_bytes`, which already owns the whole precedence
-    # ladder (measured > declared > download) and reports WHICH rung answered.
-    # Reused rather than re-derived: a second ladder here would drift from the
-    # AI Models page's fit badge, which speaks this exact vocabulary.
+    # figure is `_predicted_footprint`, the SAME expression `_start_resident`'s
+    # pre-spawn budget gate calls — reused rather than re-derived so a model's
+    # cost here and the number the gate weighed it against can never drift
+    # apart (see that function's own docstring).
     #
     # ONE `load_store()` for the whole response, passed into every call — the
     # store is a disk read plus a machine-identity check, and doing it per row
@@ -2885,8 +3377,8 @@ def describe() -> dict:
     # avoid (SPEC AI-16).
     store = footprints.load_store()
     for row in loaded:
-        footprint, basis = fit.footprint_bytes(
-            row["capability"], row["model"], footprint_store=store)
+        footprint, basis = _predicted_footprint(row["capability"], row["model"], store,
+                                                row["runner"])
         # NULL IS NOT ZERO: a model with nothing measured and nothing declared
         # has NO cost figure, and the page must fall back to RSS alone rather
         # than colour a guess or print 0.

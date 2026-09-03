@@ -61,6 +61,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import engine_options  # noqa: E402 - refuse `image` on arrival; see its docstring
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import mmap_spill  # noqa: E402 - file-backed mmap residency; see its own docstring
 import preview  # noqa: E402 - the ONE live-thumbnail writer; see preview.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
@@ -132,7 +133,12 @@ _loaded = {}
 #: fetched and then quantized in this process, so `keep` is unchanged and the
 #: bytes on disk are what they were — see `catalog.py`'s SDNQ entry for the
 #: other route, which is smaller to fetch and faster per render but arrives as
-#: a whole separate repo.
+#: a whole separate repo (`recommended`, and measured strictly better than
+#: this GGUF-transformer recipe on the same RX 9060 XT — smaller download,
+#: lower `memory_allocated`, faster warm render). This recipe is what a user
+#: gets who downloads `black-forest-labs/FLUX.2-klein-4B` itself rather than
+#: the SDNQ repo the AI Models page recommends; it is not the path the
+#: maintainer runs.
 #:
 #: A recipe WITHOUT this key quantizes nothing, which is why it is a list of
 #: component names rather than a boolean: the next recipe may want its VAE left
@@ -355,20 +361,20 @@ def _vram_headroom_bytes():
 
 def _component_bytes(module):
     """Bytes a loaded `torch.nn.Module` component will cost on a device —
-    parameters AND buffers, because a component can hold real weight-sized
-    tensors in either bucket (a GGUF-quantized transformer's scale/zero-point
-    tensors are commonly registered as buffers, not parameters, and skipping
-    them would undercount exactly the component this feature was built to
-    place). Measured while the component is still on CPU — `_place` runs
-    before ANY `.to()`/offload call, so this is the true per-component size
-    for any repo, with no catalog lookup and no reliance on a config file
-    agreeing with what actually got loaded.
+    parameters AND buffers, since a buffer (a running-stats tensor, a
+    quantizer's scale/zero-point) occupies VRAM exactly like a parameter
+    does once the module is moved there.
+
+    Measured while the component is still on CPU — `_place` calls this
+    before ANY `.to()`/offload call, so `numel() * element_size()` is the
+    honest per-tensor cost regardless of what device the tensor happens to
+    report right now.
     """
     total = 0
-    for param in module.parameters():
-        total += param.numel() * param.element_size()
-    for buf in module.buffers():
-        total += buf.numel() * buf.element_size()
+    for tensor in module.parameters():
+        total += tensor.numel() * tensor.element_size()
+    for tensor in module.buffers():
+        total += tensor.numel() * tensor.element_size()
     return total
 
 
@@ -387,22 +393,47 @@ def _place(pipe):
     1. **All-GPU** — every component's measured size plus `_vram_headroom_
        bytes()` clears `torch.cuda.mem_get_info()`'s free figure: `pipe.to
        ("cuda")`, nothing streamed per render.
-    2. **Offload** — it does not fit: today's unconditional `enable_model_cpu_
-       offload()`, unchanged.
+    2. **Offload** — the probe ran and said it does not fit, or the probe
+       raised before it could answer whether the model fits: today's
+       unconditional `enable_model_cpu_offload()`. This is where every model
+       in the catalog actually lands, because every model in the catalog is
+       quantized (SDNQ, bitsandbytes, GGUF, torchao) and diffusers'
+       `enable_group_offload`/accelerate's `dispatch_model` both walk only
+       `named_parameters()`/`named_buffers()` — neither one knows about a
+       quantizer's own dequantization state living as a plain attribute
+       (bitsandbytes' `Params4bit.quant_state.absmax`/`.code`/nested
+       `.state2`), and accelerate raises outright for a cpu/disk device_map
+       with `load_in_4bit`. A block-offload rung that cannot see the tensors
+       a quantized model actually carries is dead weight at best and an OOM
+       at worst, so this function does not attempt one; `enable_model_cpu_
+       offload()`'s per-call `.to(device)`/`.to("cpu")` round trip already
+       knows how to move a component wholesale without walking into a
+       quantizer's internals.
+
+       `enable_model_cpu_offload()` parks every offloaded weight in
+       anonymous host RAM for the process's whole life — the kernel cannot
+       reclaim it except via swap. `_spill_idle_weights()`, called once
+       placement is decided (see below), rewrites that residency onto a
+       memory-mapped safetensors file so the same bytes become ordinary,
+       kernel-evictable page cache instead; see that function's and
+       `mmap_spill`'s own docstrings for the mechanism and why it must run
+       again after every render, not just once at load.
 
     A raising `mem_get_info()` or a raising component measurement (an older
     torch, an exotic component type this probe did not anticipate) degrades
-    straight to case 2 — the same "a probe must never break loading" reasoning
-    `release()`'s per-backend try/except documents just below, applied to the
-    measurement instead of the reclaim. That promise covers the MEASUREMENT;
-    the all-gpu case's own `pipe.to("cuda")` gets the identical treatment for
-    the same reason — `_vram_headroom_bytes()`'s margin is explicitly a
-    guess, `free` is sampled once before the move rather than continuously,
-    and a competing process (or a component whose real device cost exceeds
-    `numel * element_size`) can turn a move that looked safe into a raise. A
-    load that would have SUCCEEDED via plain offload must not fail outright
-    just because the faster path was tried first, so a raising `.to("cuda")`
-    falls back to `enable_model_cpu_offload()` exactly like case 2.
+    straight to case 2 — the all-gpu move is only attempted once the probe
+    has actually answered "it fits"; a probe that never got that far treats
+    the model as not fitting. This is the same "a probe must never break
+    loading" reasoning `release()`'s per-backend try/except documents just
+    below, applied to the measurement instead of the reclaim. That promise
+    covers the MEASUREMENT; the all-gpu case's own `pipe.to("cuda")` gets the
+    identical treatment for the same reason — `_vram_headroom_bytes()`'s
+    margin is explicitly a guess, `free` is sampled once before the move
+    rather than continuously, and a competing process (or a component whose
+    real device cost exceeds `numel * element_size`) can turn a move that
+    looked safe into a raise. A load that would have SUCCEEDED via offload
+    must not fail outright just because the faster path was tried first, so
+    a raising `.to("cuda")` falls back to `enable_model_cpu_offload()`.
 
     **A third case — pinning the "hot" set (denoiser + VAE) resident while
     leaving the text encoder to offload's per-call fetch — was built,
@@ -467,16 +498,14 @@ def _place(pipe):
 
     Every case reports which one happened via `set_state(placement=...)`,
     which reaches the WORKER's own `/health` endpoint (`worker_base.snapshot`)
-    — but nothing downstream reads it today. `supervisor._health` only lifts
-    `state`/`detail`/`resident_bytes`/`os_footprint_bytes`/`device` out of
-    that response into the `Worker` it is polling, and `describe()` (what the
-    app's own `/health`-adjacent API and the AI Models page actually see)
-    forwards none of those extra fields either. So `placement` exists,
-    survives one hop, and stops — it is not yet visible outside this
-    process. Forwarding it is a small, separate change (a `Worker.placement`
-    field plus one more key in `describe()`'s dict); this function sets the
-    state on the assumption that whoever wires that up later will find it
-    waiting here, not because the wiring exists yet.
+    and, from there, `Worker.placement` and `describe()`'s `"placement"` key
+    — the app's own `/health`-adjacent API. Both the load loop and
+    `refresh_memory()` lift it out of `/health` the same way `device` is
+    lifted, and `describe()` emits it beside `residentBytes`, so the value
+    rides all the way out to the API response. Nothing in `frontend/` reads
+    it yet — `AiLoadedModel` (`frontend/src/platform/lib/api.ts`) has no
+    `placement` field — so the AI Models page cannot show it; wiring that up
+    is a separate, frontend-only change.
     """
     import torch
 
@@ -505,6 +534,9 @@ def _place(pipe):
             pipe.enable_model_cpu_offload()
             placement = "offload"
 
+        if placement == "offload":
+            _spill_idle_weights(pipe)
+
         worker_base.set_state(placement=placement)
         return "cuda", "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -512,6 +544,82 @@ def _place(pipe):
         return "mps", "cpu"
     pipe.to("cpu")
     return "cpu", "cpu"
+
+
+def _spill_idle_weights(pipe):
+    """Rewrite `pipe`'s CPU-resident weights from anonymous host RAM onto a
+    memory-mapped safetensors file, so idle pages become ordinary,
+    kernel-evictable page cache instead of memory `enable_model_cpu_offload()`
+    parks for the process's whole life. See `mmap_spill.spill`'s own
+    docstring for the mechanism: enumerate every CPU tensor (parameters,
+    buffers, and a quantizer's own untracked state) -> write them to one
+    file -> reload via `safetensors.torch.load_file`'s zero-copy mmap ->
+    rebind each tensor's `.data` to the mmap'd view.
+
+    Called once right after placement decides `"offload"` (`_place`, above)
+    and again after every render (`release()`, below): accelerate's
+    `CpuOffload` hook allocates a BRAND NEW tensor on every
+    `.to(device)`/`.to("cpu")` round trip a render makes, discarding
+    whatever mmap rebind was in place before it started — so "spill once at
+    load" is not enough; it has to happen again every time the weights come
+    back to the CPU.
+
+    Race-free by construction, not by locking here. Load-time: `worker_base.
+    set_state(state="ready", ...)` only happens after `load()` returns, and
+    `/generate` refuses every request until `state == "ready"` — so this call
+    can never overlap the FIRST render. Release-time: `worker_base._fire_
+    release` acquires `GENERATE_LOCK` before calling `release()`, the same
+    lock `generate()` holds for its own duration — so this call can never
+    overlap a LATER render either. A render that arrives while this function
+    is between "enumerate" and "rebind" simply cannot happen; nothing here
+    needs its own lock.
+
+    Never raises: a spill is an optimization on top of a working `"offload"`
+    placement, and neither a load nor a release may fail — or, for release,
+    leave the just-finished render's result undelivered — because this did.
+    `_loaded["spill_path"]` is one path for this process's whole life, so
+    every call after the first overwrites the same file instead of leaking a
+    new one.
+
+    A failure here is swallowed but never silent: it writes a stderr
+    breadcrumb naming the error and its class, the same convention
+    `_register_extra_quantizers` follows, since a spill that fails does so on
+    every load and every idle tick from then on — the only symptom otherwise
+    is that RSS never drops. A successful spill writes `mmap_spill.spill`'s
+    own stats dict to stderr too: it is the only way to tell "spilled 6 GB"
+    from "spilled 400 MB of an 8 GB model", the latter being what
+    `enumerate_spillable` missing most of a component's tensors would look
+    like from the outside. When `stats["skipped"]` is nonzero — some
+    individual tensor `mmap_spill.spill` found but could not reach (a
+    tensor-subclass leaf its generic `__tensor_flatten__` walk could not
+    resolve) — a second breadcrumb line names the count and one
+    representative reason, never one line per tensor; the rest of that
+    spill still ran, so this is a partial win, not the all-or-nothing
+    failure the first breadcrumb above reports.
+    """
+    if pipe is None:
+        return
+    try:
+        path = _loaded.get("spill_path")
+        if path is None:
+            path = mmap_spill.spill_path()
+            _loaded["spill_path"] = path
+        stats = mmap_spill.spill(pipe.components, path)
+    except Exception as error:  # noqa: BLE001 - an optimization must never break load/release
+        sys.stderr.write(
+            "[fused] mmap spill failed, weights stay resident in anonymous "
+            f"RAM: {error.__class__.__name__}: {error}\n")
+        return
+    sys.stderr.write(
+        "[fused] mmap spill: "
+        f"{stats['tensors']} tensors, {stats['bytes']} bytes, "
+        f"{stats['contiguous_copies']} contiguous copies, "
+        f"{stats['dedup_count']} deduped, {stats['write_seconds']:.2f}s\n")
+    if stats.get("skipped"):
+        sys.stderr.write(
+            "[fused] mmap spill: "
+            f"{stats['skipped']} slot(s) could not be spilled and stayed "
+            f"resident, e.g. {stats.get('skipped_reason')}\n")
 
 
 def load(model_id, fetched):
@@ -694,6 +802,12 @@ def release():
             torch.cuda.empty_cache()
         except (RuntimeError, OSError):
             pass
+
+    # Every render's `.to("cpu")` round trip re-allocates anonymous host
+    # tensors for whatever `enable_model_cpu_offload()` is holding — see
+    # `_spill_idle_weights`'s own docstring for why re-spilling here, not
+    # just once at load, is what keeps those pages file-backed while idle.
+    _spill_idle_weights(_loaded.get("pipe"))
 
 
 def _sigma_after(pipeline, step):
@@ -880,6 +994,35 @@ def _gpu_footprint():
     return None
 
 
+def _device_memory():
+    """`worker_base.serve(device_memory=...)`'s hook (D670): this worker's
+    DISCRETE GPU pool, reported as `(allocated, reserved)` bytes rather than
+    the single figure `memory()`/`_gpu_footprint` each already fold into
+    `resident_bytes()`/`os_footprint_bytes()`. Answering here, independently,
+    is what lets `/health` publish RAM and VRAM as two separate figures
+    without changing what either of those two functions returns.
+
+    **CUDA only, never MPS** — the identical boundary `_gpu_footprint` draws,
+    for the identical reason: on darwin the Metal pool a torch-on-MPS build
+    allocates through IS system memory, already counted in `phys_footprint`,
+    so reporting a separate VRAM figure there would double the same bytes
+    into the split. See `worker_base._device_memory`'s own docstring.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    try:
+        allocated = int(torch.cuda.memory_allocated())
+    except (RuntimeError, OSError):
+        allocated = None
+    try:
+        reserved = int(torch.cuda.memory_reserved())
+    except (RuntimeError, OSError):
+        reserved = None
+    return (allocated, reserved)
+
+
 def main():
     """Serve, forever. The entry point each variant's `worker.py` shell calls.
 
@@ -889,4 +1032,4 @@ def main():
     """
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False, memory=memory, release=release,
-                      footprint=_gpu_footprint)
+                      footprint=_gpu_footprint, device_memory=_device_memory)

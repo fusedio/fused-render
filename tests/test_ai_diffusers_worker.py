@@ -74,7 +74,10 @@ REPO_FILES = [
 #: component subfolder it names, and the transformer's CONFIG (the GGUF is a
 #: bare tensor file — `from_single_file(config=…, subfolder="transformer")`
 #: reads this to know what it is building, which is why "skip the subfolder"
-#: was never an option).
+#: was never an option). `text_encoder/` IS allow-listed: `_load_quantization`
+#: quantizes it to NF4 at load time, in this process, but `from_pretrained`
+#: still has to read the bf16 shards off disk first to have anything to
+#: quantize.
 READ_BY_THE_PIPELINE = {
     "model_index.json",
     "transformer/config.json",
@@ -389,6 +392,59 @@ def _request(tmp_path, **over):
             "outPreview": preview.preview_path(out), **over}
 
 
+def test_load_passes_the_quantization_config_and_no_text_encoder_kwarg(
+        monkeypatch, base):
+    """The klein recipe's `load()` branch: the transformer is built via
+    `from_single_file` and handed in as `transformer=`, a built object, but
+    the text encoder is left for the pipeline's own `from_pretrained` to
+    construct from the snapshot on disk — `quantization_config=` is what
+    turns that construction into NF4 rather than bf16. Passing a
+    `text_encoder=` kwarg here would hand the pipeline an already-built,
+    unquantized object and skip `_load_quantization` entirely."""
+    pipe = FakePipe()
+    pipe.to = lambda device: None
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+
+    seen = {}
+
+    class FakeTransformer:
+        @classmethod
+        def from_single_file(cls, *a, **k):
+            return "the-transformer-object"
+
+    class FakeQuantConfig:
+        def __init__(self, **kwargs):
+            seen["quant_kwargs"] = kwargs
+
+    class FakePipelineCls:
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            seen["pipeline_kwargs"] = kwargs
+            seen["pipeline_model_id"] = model_id
+            return pipe
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.GGUFQuantizationConfig = lambda **k: "the-gguf-quant-config"
+    diffusers.PipelineQuantizationConfig = FakeQuantConfig
+    diffusers.Flux2Transformer2DModel = FakeTransformer
+    diffusers.Flux2KleinPipeline = FakePipelineCls
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    fetched = {"snapshot": "/snapshots/x", "gguf": "/blobs/transformer.gguf"}
+    worker.load(MODEL, fetched)
+
+    assert "text_encoder" not in seen["pipeline_kwargs"]
+    assert seen["pipeline_kwargs"]["transformer"] == "the-transformer-object"
+    assert seen["pipeline_kwargs"]["quantization_config"] is not None
+    assert seen["quant_kwargs"]["components_to_quantize"] == ["text_encoder"]
+    assert seen["pipeline_model_id"] == MODEL
+
+
 def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch, base):
     """Captured at load, off the VAE rather than off the repo id or the
     pipeline: the latent space a fitted matrix belongs to is the autoencoder's,
@@ -519,14 +575,29 @@ def test_vram_headroom_absurdly_large_env_is_ignored(monkeypatch, base):
 # `enable_model_cpu_offload()` left `RssAnon` at 11.7 GiB (the weights, parked
 # in system RAM) and the worker's own VRAM (`drm-total-vram`) at 0.59 GiB —
 # HIP context and staging only — on a card that was otherwise 2.0 GiB used out
-# of 15.9. Component sizes on disk: text encoder bf16 8.05 GB, transformer
-# GGUF Q4_K_M 2.60 GB, VAE 0.17 GB.
+# of 15.9. Component sizes ON DISK, not resident: text encoder bf16 8.05 GB
+# (the OLD bf16-then-NF4 route this recipe no longer takes — kept as the
+# `text_encoder_bytes` fixtures' size below since these placement tests exist
+# to exercise the ladder's arithmetic, not to describe today's GGUF-encoder
+# footprint, which has not been measured on hardware), transformer GGUF
+# Q4_K_M 2.60 GB, VAE 0.17 GB.
 #
 # A third placement — pinning transformer+VAE resident while the text encoder
 # offloaded per call — was built, measured, and removed; see `_place`'s own
 # docstring for why (unreachable for this exact pipeline shape, and not
 # actually cheaper than all-gpu once accelerate's offload hook CHAIN is
-# accounted for). What's left below is the two-way decision only.
+# accounted for).
+#
+# What IS left below is a two-way decision: all-gpu, or plain
+# `enable_model_cpu_offload` as the fallback — whether the probe answered
+# "does not fit" or never got far enough to answer at all. There is no
+# group-offload rung between them: every model in the catalog is quantized,
+# and diffusers'/accelerate's group/disk offload both walk only
+# `named_parameters()`/`named_buffers()`, missing a quantizer's own untracked
+# state — see `_place`'s own docstring and `mmap_spill.py`'s module docstring
+# for the full reasoning. `mmap_spill`'s own tests, further down this file,
+# cover what offload placement now does instead: spilling the offloaded
+# weights onto a memory-mapped file so they are kernel-evictable while idle.
 
 
 class _FakeParam:
@@ -595,6 +666,11 @@ class _FakePlacementPipe:
     than collapsed back to a call-counter: `hooked_names`/`placed_names`
     still prove that plain offload actually hooks every component it should,
     the same fidelity bar that caught the original no-op.
+
+    Also stands in for `pipe.components` where `_spill_idle_weights` reads
+    it: a `dict` of the same components this class was built from, so
+    `_place`'s post-offload spill call finds something shaped correctly
+    enough to iterate over without raising.
     """
 
     _exclude_from_cpu_offload = []
@@ -650,6 +726,7 @@ def _fake_torch_for_placement(free_bytes, mem_get_info_raises=False):
                                        mem_get_info=mem_get_info)
     torch.backends = types.SimpleNamespace(
         mps=types.SimpleNamespace(is_available=lambda: False))
+    torch.device = lambda name: name
     return torch, nn
 
 
@@ -688,11 +765,11 @@ def test_place_puts_everything_on_gpu_when_it_all_fits(monkeypatch, base):
     assert {"placement": "all-gpu"} in base.state_calls
 
 
-def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch, base):
-    """Below the all-gpu floor: today's unconditional `enable_model_cpu_
-    offload()`, and every component gets hooked — there is no pin to keep
-    any of them resident (see `_place`'s docstring for why that branch was
-    tried, measured, and removed)."""
+def test_place_falls_straight_to_offload_when_it_does_not_all_fit(monkeypatch, base):
+    """Below the all-gpu floor, `_place` has exactly one other rung: plain
+    `enable_model_cpu_offload()`. There is no group-offload rung in between
+    — see `_place`'s own docstring for why a quantized-only catalog makes
+    that rung dead weight."""
     torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))  # < 3 GiB headroom
     monkeypatch.setitem(sys.modules, "torch", torch)
     worker = load_worker(monkeypatch, base)
@@ -703,12 +780,99 @@ def test_place_falls_back_to_plain_offload_when_it_does_not_all_fit(monkeypatch,
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
-    assert pipe.offload_calls == 1
     assert pipe.to_calls == []
-    assert pipe._exclude_from_cpu_offload == []
-    assert pipe.placed_names == []
+    assert pipe.offload_calls == 1
     assert set(pipe.hooked_names) == {"transformer", "vae", "text_encoder"}
     assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "all-gpu"} not in base.state_calls
+
+
+def test_place_spills_idle_weights_after_landing_on_offload(monkeypatch, base):
+    """`_place` calls `_spill_idle_weights` once placement settles on
+    `"offload"` — proven here by watching the real call reach `mmap_spill.
+    spill`, rather than re-testing `mmap_spill`'s own mechanics (covered in
+    its own section further down)."""
+    torch, nn = _fake_torch_for_placement(free_bytes=int(2 * _GIB))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+    calls = []
+
+    def fake_spill(components, path):
+        calls.append((components, path))
+        return dict(worker.mmap_spill._EMPTY_STATS)
+
+    monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
+    monkeypatch.setattr(worker.mmap_spill, "spill", fake_spill)
+
+    worker._place(pipe)
+
+    assert calls == [(pipe.components, "/fake/spill.safetensors")]
+
+
+def test_place_does_not_spill_when_placement_is_all_gpu(monkeypatch, base):
+    """Nothing is CPU-resident after an all-gpu placement — spilling would
+    have nothing to do, so `_place` must not even ask."""
+    torch, nn = _fake_torch_for_placement(free_bytes=20 * _GIB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    worker = load_worker(monkeypatch, base)
+    pipe = _placement_pipe(nn, transformer_bytes=int(2.6 * _GIB),
+                            vae_bytes=int(0.17 * _GIB),
+                            text_encoder_bytes=int(8.05 * _GIB))
+    calls = []
+    monkeypatch.setattr(worker.mmap_spill, "spill",
+                        lambda components, path: calls.append((components, path)))
+
+    worker._place(pipe)
+
+    assert calls == []
+
+
+def test_spill_idle_weights_writes_a_breadcrumb_when_spill_raises(monkeypatch, base, capsys):
+    """`_spill_idle_weights` swallows every exception `mmap_spill.spill` can
+    raise — an optimization must never break load/release — but a spill that
+    fails does so on every load and every idle tick, forever, with RSS never
+    dropping as the only symptom. The swallow has to leave a breadcrumb
+    naming the error and the consequence (weights stay resident in anonymous
+    RAM), the same convention `_register_extra_quantizers` follows."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
+
+    def raising_spill(components, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(worker.mmap_spill, "spill", raising_spill)
+    pipe = types.SimpleNamespace(components={})
+
+    worker._spill_idle_weights(pipe)  # must not raise
+
+    err = capsys.readouterr().err
+    assert "OSError" in err
+    assert "disk full" in err
+    assert "anonymous" in err
+
+
+def test_spill_idle_weights_surfaces_stats_on_success(monkeypatch, base, capsys):
+    """`mmap_spill.spill`'s stats dict is the only way to tell "spilled 6 GB"
+    from "spilled 400 MB of an 8 GB model" — the latter being what
+    `enumerate_spillable` missing most of a component's tensors would look
+    like. The sole call site must not discard it."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    monkeypatch.setattr(worker.mmap_spill, "spill_path", lambda: "/fake/spill.safetensors")
+    stats = {"tensors": 400, "bytes": 6_000_000_000, "contiguous_copies": 2,
+             "dedup_count": 1, "write_seconds": 1.23}
+    monkeypatch.setattr(worker.mmap_spill, "spill", lambda components, path: dict(stats))
+    pipe = types.SimpleNamespace(components={})
+
+    worker._spill_idle_weights(pipe)
+
+    err = capsys.readouterr().err
+    assert "400" in err
+    assert "6000000000" in err
 
 
 def test_place_falls_back_to_offload_when_mem_get_info_raises(monkeypatch, base):
@@ -862,9 +1026,711 @@ def test_place_unparsable_headroom_env_override_is_ignored(monkeypatch, base):
     device, seed_device = worker._place(pipe)
 
     assert (device, seed_device) == ("cuda", "cuda")
+    # "Offload" here means "not all-gpu" — the probe answered "does not fit".
     assert pipe.offload_calls == 1
     assert pipe.to_calls == []
     assert {"placement": "offload"} in base.state_calls
+    assert {"placement": "all-gpu"} not in base.state_calls
+
+
+# -- mmap_spill.py: file-backed residency for offloaded weights ------------------
+#
+# `mmap_spill.py` has no top-level `torch`/`safetensors` import (see its own
+# module docstring), so it loads fine in this torch-less venv; what needs
+# faking is only what its FUNCTIONS reach for when called — `sys.modules
+# ["torch"]` for `iter_untracked_tensors`, `sys.modules["safetensors.torch"]`
+# for `spill`. A minimal fake `torch.Tensor` stands in: real `Params4bit`
+# untracked state (`quant_state.absmax`, nested `.state2`) is a plain
+# attribute holding a plain tensor, and that shape is all any function here
+# reads.
+
+MMAP_SPILL_PATH = os.path.join(RUNNERS, "mmap_spill.py")
+
+
+def load_mmap_spill():
+    spec = importlib.util.spec_from_file_location(
+        "mmap_spill_under_test", MMAP_SPILL_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _SpillTensor:
+    """Enough of a `torch.Tensor` for every function in `mmap_spill.py`:
+    `.device.type`, `.numel()`/`.element_size()`, `.is_contiguous()`/
+    `.contiguous()`, `.untyped_storage().data_ptr()`/`.storage_offset()`,
+    `.shape`/`.dtype`, `.view()`/`.to()`. Two `_SpillTensor`s built with the
+    same `storage_ptr` share storage — the same shape `spill()`'s dedup has
+    to detect via `untyped_storage().data_ptr()`."""
+
+    def __init__(self, values, device="cpu", contiguous=True, storage_ptr=None,
+                 dtype="float32"):
+        self.values = list(values)
+        self.shape = (len(self.values),)
+        self.dtype = dtype
+        self.device = types.SimpleNamespace(type=device)
+        self._contiguous = contiguous
+        self._storage_ptr = storage_ptr if storage_ptr is not None else id(self)
+        self.data = None  # `_AttrSetter.apply` rebinds this
+
+    def numel(self):
+        return len(self.values)
+
+    def element_size(self):
+        return 4
+
+    def is_contiguous(self):
+        return self._contiguous
+
+    def contiguous(self):
+        return _SpillTensor(self.values, device=self.device.type, contiguous=True,
+                            storage_ptr=self._storage_ptr, dtype=self.dtype)
+
+    def untyped_storage(self):
+        return types.SimpleNamespace(data_ptr=lambda: self._storage_ptr)
+
+    def storage_offset(self):
+        return 0
+
+    def view(self, shape):
+        return self
+
+    def to(self, dtype):
+        return self
+
+    def set_(self, source):
+        """The real `Tensor.set_(source)`: mutates THIS object's own
+        storage/shape/dtype in place from `source`, rather than returning a
+        new object — `_TensorSetter.apply` relies on that in-place mutation
+        to rebind a tensor-subclass's leaf without ever touching the
+        subclass's own attribute dict (see `_TensorSetter`'s docstring in
+        `mmap_spill.py`)."""
+        self.values = list(source.values)
+        self.shape = source.shape
+        self.dtype = source.dtype
+        self._contiguous = source._contiguous
+        self._storage_ptr = source._storage_ptr
+        return self
+
+
+def _fake_torch_for_spill():
+    torch = types.ModuleType("torch")
+    torch.Tensor = _SpillTensor
+    return torch
+
+
+class _SpillComponent:
+    """A `torch.nn.Module` stand-in with real `named_parameters`/
+    `named_buffers` — unlike `_make_component` above (which deliberately
+    lacks them so placement tests skip `mmap_spill` entirely), this one is
+    built for `mmap_spill` itself to walk."""
+
+    def __init__(self, params=None, buffers=None):
+        self._params = list(params or [])
+        self._buffers = list(buffers or [])
+        for name, tensor in self._params + self._buffers:
+            setattr(self, name, tensor)
+
+    def named_parameters(self):
+        return list(self._params)
+
+    def named_buffers(self):
+        return list(self._buffers)
+
+
+def test_iter_untracked_tensors_finds_a_nested_quant_state_tensor(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3])
+    weight.quant_state = types.SimpleNamespace(absmax=_SpillTensor([4, 5]))
+
+    found = list(mmap_spill.iter_untracked_tensors(weight, registered_ids=set()))
+
+    assert len(found) == 1
+    owner, attr_name, tensor = found[0]
+    assert owner is weight.quant_state
+    assert attr_name == "absmax"
+    assert tensor is weight.quant_state.absmax
+
+
+def test_iter_untracked_tensors_ignores_registered_tensors(monkeypatch):
+    """A tensor already named by `named_parameters()`/`named_buffers()` is
+    not "untracked" just because it also happens to be an attribute of the
+    object being walked — `registered_ids` is what tells the two apart."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3])
+    bias = _SpillTensor([9])
+    weight.bias_ref = bias  # already registered elsewhere
+
+    found = list(mmap_spill.iter_untracked_tensors(
+        weight, registered_ids={id(bias)}))
+
+    assert found == []
+
+
+def test_iter_untracked_tensors_does_not_cross_the_depth_bound(monkeypatch):
+    """`state2` (bitsandbytes' double-quantization state) sits three levels
+    down from the owning weight — one level past what `_depth < 1` allows —
+    so its own `absmax` must not surface."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3])
+    weight.quant_state = types.SimpleNamespace(
+        absmax=_SpillTensor([4, 5]),
+        state2=types.SimpleNamespace(absmax=_SpillTensor([6, 7])))
+
+    found = {attr for _, attr, _ in
+             mmap_spill.iter_untracked_tensors(weight, registered_ids=set())}
+
+    assert found == {"absmax"}  # only quant_state.absmax, not state2.absmax
+
+
+def test_has_untracked_tensor_is_a_cheap_boolean(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    plain = _SpillTensor([1])
+    quantized = _SpillTensor([1])
+    quantized.quant_state = types.SimpleNamespace(absmax=_SpillTensor([2]))
+
+    assert mmap_spill.has_untracked_tensor(plain, registered_ids=set()) is False
+    assert mmap_spill.has_untracked_tensor(quantized, registered_ids=set()) is True
+
+
+def test_enumerate_spillable_only_counts_cpu_resident_tensors(monkeypatch):
+    """The device filter is what makes one unconditional `enumerate_spillable`
+    call correct after any placement — proven directly here rather than only
+    through `_place`'s wiring tests above."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    on_cpu = _SpillTensor([1, 2])
+    on_gpu = _SpillTensor([3, 4], device="cuda")
+    component = _SpillComponent(params=[("cpu_w", on_cpu), ("gpu_w", on_gpu)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    assert [slot.key for slot in slots] == ["transformer.param.cpu_w"]
+
+
+def test_enumerate_spillable_skips_components_with_no_named_parameters(monkeypatch):
+    """A tokenizer, a scheduler, `None` for an optional component — none of
+    these are `torch.nn.Module`s, and asking one for `named_parameters()`
+    would raise rather than yield nothing."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    slots = mmap_spill.enumerate_spillable(
+        {"tokenizer": object(), "scheduler": None})
+
+    assert slots == []
+
+
+def test_enumerate_spillable_includes_untracked_tensors(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3])
+    weight.quant_state = types.SimpleNamespace(absmax=_SpillTensor([4, 5]))
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    keys = {slot.key for slot in slots}
+    assert keys == {"transformer.param.weight", "transformer.untracked.weight.absmax"}
+
+
+def test_enumerate_spillable_recurses_through_a_tensor_subclass(monkeypatch):
+    """A parameter that IS a tensor subclass (the torchao shape: the
+    parameter itself, not some nested attribute, is the thing with no
+    plain storage) is invisible as a single tensor — `enumerate_spillable`
+    has to reach through `__tensor_flatten__` to its plain leaves."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    int_data = _SpillTensor([1, 2, 3])
+    scale = _SpillTensor([0.1])
+    weight = _FakeSubclassTensor({"int_data": int_data, "scale": scale})
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    keys = {slot.key for slot in slots}
+    assert keys == {
+        "transformer.param.weight.int_data",
+        "transformer.param.weight.scale",
+    }
+    tensors = {slot.key: slot.tensor for slot in slots}
+    assert tensors["transformer.param.weight.int_data"] is int_data
+    assert tensors["transformer.param.weight.scale"] is scale
+
+
+def test_enumerate_spillable_recurses_through_a_nested_tensor_subclass(monkeypatch):
+    """`AffineQuantizedTensor` -> `tensor_impl` -> `int_data`/`scale`/
+    `zero_point`: two layers of subclass wrapping before a plain leaf. The
+    recursion has to walk through BOTH layers, not just the outer one."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    int_data = _SpillTensor([1, 2])
+    scale = _SpillTensor([9])
+    tensor_impl = _FakeSubclassTensor({"int_data": int_data, "scale": scale})
+    weight = _FakeSubclassTensor({"tensor_impl": tensor_impl})
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    keys = {slot.key for slot in slots}
+    assert keys == {
+        "transformer.param.weight.tensor_impl.int_data",
+        "transformer.param.weight.tensor_impl.scale",
+    }
+
+
+def test_enumerate_spillable_skips_a_subclass_with_no_tensor_flatten(monkeypatch):
+    """A subclass this generic mechanism cannot see through at all (no
+    `__tensor_flatten__`) must be skipped, not raise — it is simply not
+    spillable by this route."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    opaque = _FakeOpaqueSubclass()
+    component = _SpillComponent(params=[("weight", opaque)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    assert slots == []
+
+
+def test_enumerate_spillable_skips_a_non_cpu_tensor_subclass(monkeypatch):
+    """The CPU-resident-only rule holds for a subclass too — a quantized
+    weight already moved to the accelerator is not a spill candidate."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    mmap_spill = load_mmap_spill()
+
+    weight = _FakeSubclassTensor(
+        {"int_data": _SpillTensor([1], device="cuda")}, device="cuda")
+    component = _SpillComponent(params=[("weight", weight)])
+
+    slots = mmap_spill.enumerate_spillable({"transformer": component})
+
+    assert slots == []
+
+
+class _FakeSubclassTensor:
+    """Stands in for a torch tensor SUBCLASS implementing `__tensor_flatten__`
+    — `torchao`'s `AffineQuantizedTensor`, or its own `tensor_impl`, which is
+    itself one of these one level down. `type(self) is not torch.Tensor`
+    (the fake `torch.Tensor` here is `_SpillTensor`, a different class
+    entirely) is what makes `_is_flatten_subclass` treat this the way
+    `enumerate_spillable` needs to: not a leaf, something to recurse
+    through. `inner` maps each flattened attribute name to the tensor (or
+    further `_FakeSubclassTensor`) it holds — real values for a real
+    `__tensor_flatten__()` call, `(names, ctx)`."""
+
+    def __init__(self, inner, device="cpu"):
+        self._inner = dict(inner)
+        for name, value in self._inner.items():
+            setattr(self, name, value)
+        self.device = types.SimpleNamespace(type=device)
+
+    def __tensor_flatten__(self):
+        return list(self._inner.keys()), None
+
+
+class _FakeOpaqueSubclass:
+    """A tensor subclass with NO `__tensor_flatten__` at all — bnb's
+    `Params4bit` shape, or any future quantizer this generic mechanism was
+    never taught about. Not spillable by `iter_subclass_leaves`; the
+    contract is that this is skipped silently, never raises."""
+
+    def __init__(self, device="cpu"):
+        self.device = types.SimpleNamespace(type=device)
+
+
+class _RaisingStorage:
+    """`.untyped_storage()`'s return value for a `_SpillTensor` standing in
+    for a tensor subclass `iter_subclass_leaves`' generic walk still could
+    not fully resolve — `.data_ptr()` raises exactly the error the live
+    worker logged."""
+
+    def data_ptr(self):
+        raise RuntimeError(
+            "Attempted to access the data pointer on an invalid python "
+            "storage.")
+
+
+def _make_unspillable_tensor(values):
+    """A `_SpillTensor` (so `type(t) is torch.Tensor` — this presents as an
+    ordinary, already-a-leaf tensor to `enumerate_spillable`, exactly like a
+    plain resident weight) whose `untyped_storage()` raises the moment
+    `spill()`'s write-prep loop tries to compute a storage key for it — the
+    one-bad-tensor case `spill()` must now survive rather than abandon the
+    whole pass over."""
+    tensor = _SpillTensor(values)
+    tensor.untyped_storage = lambda: _RaisingStorage()
+    return tensor
+
+
+class _FakeSafetensorsTorch:
+    """Stands in for `safetensors.torch`: `save_file` records what it was
+    given (as `spill()` sees it, post-contiguity-fix, pre-mmap), `load_file`
+    hands back the same tensor objects — good enough to prove `spill()`
+    rebinds from whatever `load_file` returns, without a real mmap round
+    trip."""
+
+    def __init__(self):
+        self.saved = {}
+        self.save_calls = []
+
+    def save_file(self, tensors, path):
+        self.save_calls.append(path)
+        # `spill()` calls this with a `<path>.<pid>.tmp` name and then does a
+        # real `os.replace(tmp_path, path)` — stash under the FINAL name so
+        # `load_file(path)` (called with that final name) finds it, and write
+        # a real placeholder file so the real `os.replace` has something to
+        # rename.
+        suffix = f".{os.getpid()}.tmp"
+        final_path = path[: -len(suffix)] if path.endswith(suffix) else path
+        self.saved[final_path] = dict(tensors)
+        with open(path, "wb") as handle:
+            handle.write(b"FAKE-SAFETENSORS")
+
+    def load_file(self, path, device="cpu"):
+        # A real mmap load hands back FRESH tensor objects backed by the
+        # file, never the exact in-memory objects that were written — clone
+        # here so a test can tell `spill()` actually rebound to the reloaded
+        # tensor rather than leaving the original untouched.
+        return {key: _SpillTensor(tensor.values, device=tensor.device.type,
+                                  contiguous=True, dtype=tensor.dtype)
+                for key, tensor in self.saved[path].items()}
+
+
+def _install_fake_safetensors(monkeypatch):
+    fake = _FakeSafetensorsTorch()
+    st_pkg = types.ModuleType("safetensors")
+    st_torch = types.ModuleType("safetensors.torch")
+    st_torch.save_file = fake.save_file
+    st_torch.load_file = fake.load_file
+    st_pkg.torch = st_torch
+    monkeypatch.setitem(sys.modules, "safetensors", st_pkg)
+    monkeypatch.setitem(sys.modules, "safetensors.torch", st_torch)
+    return fake
+
+
+def test_spill_returns_empty_stats_when_nothing_is_cpu_resident(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    stats = mmap_spill.spill({}, "/fake/spill.safetensors")
+
+    assert stats == mmap_spill._EMPTY_STATS
+    # not the SAME dict object — a caller mutating the result must not
+    # corrupt the module-level constant for the next call.
+    assert stats is not mmap_spill._EMPTY_STATS
+
+
+def test_spill_rebinds_every_tensor_to_the_reloaded_object(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3])
+    component = _SpillComponent(params=[("weight", weight)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 1
+    assert stats["dedup_count"] == 0
+    assert stats["contiguous_copies"] == 0
+    # `.data` was reassigned to a DIFFERENT object than the original tensor —
+    # the mmap'd stand-in `load_file` returned, not the original in-place.
+    assert component.weight.data is not weight
+    assert component.weight.data is not None
+
+
+def test_spill_clones_non_contiguous_tensors_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    fake_st = _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    weight = _SpillTensor([1, 2, 3], contiguous=False)
+    component = _SpillComponent(params=[("weight", weight)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["contiguous_copies"] == 1
+    saved_tensor = fake_st.saved[spill_path]["transformer.param.weight"]
+    assert saved_tensor.is_contiguous()
+
+
+def test_spill_deduplicates_shared_storage_tensors(monkeypatch, tmp_path):
+    """Two names pointing at the identical storage (a tied weight, an alias)
+    are written to the file ONCE — `save_file` itself rejects two keys over
+    identical storage — and both rebind from that single write."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    fake_st = _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    shared_ptr = object()
+    weight_a = _SpillTensor([1, 2], storage_ptr=shared_ptr)
+    weight_b = _SpillTensor([1, 2], storage_ptr=shared_ptr)
+    component = _SpillComponent(params=[("weight_a", weight_a), ("weight_b", weight_b)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 2
+    assert stats["dedup_count"] == 1
+    assert len(fake_st.saved[spill_path]) == 1
+    # both attributes rebound, from the same reloaded object
+    assert component.weight_a.data is component.weight_b.data
+
+
+def test_spill_rebind_failure_names_the_offending_key_and_progress(monkeypatch, tmp_path):
+    """A raise from inside the rebind loop (`loaded[source_key]` missing a
+    key, or `_AttrSetter.apply`'s shape mismatch) leaves some tensors rebound
+    and others not — values stay correct either way, since rebinding only
+    swaps `.data` for a byte-identical mmap'd copy, but the error that
+    propagates has to name which slot it was on and how many slots had
+    already been rebound, or the loss is undiagnosable."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    weight_a = _SpillTensor([1, 2])
+    weight_b = _SpillTensor([3, 4])
+    component = _SpillComponent(params=[("a", weight_a), ("b", weight_b)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    st_torch = sys.modules["safetensors.torch"]
+    real_load_file = st_torch.load_file
+
+    def broken_load_file(path, device="cpu"):
+        loaded = real_load_file(path, device=device)
+        del loaded["transformer.param.b"]
+        return loaded
+
+    monkeypatch.setattr(st_torch, "load_file", broken_load_file)
+
+    with pytest.raises(Exception) as excinfo:
+        mmap_spill.spill({"transformer": component}, spill_path)
+
+    message = str(excinfo.value)
+    assert "transformer.param.b" in message
+    assert "1" in message  # "a" was already rebound when "b" failed
+    assert isinstance(excinfo.value.__cause__, KeyError)
+
+
+def test_spill_skips_one_unspillable_slot_and_still_spills_the_rest(
+        monkeypatch, tmp_path):
+    """The observed live failure: one tensor `enumerate_spillable` found but
+    cannot actually be touched (a subclass leaf whose `untyped_storage()`
+    raises) must not abandon the whole pass — it is counted and skipped,
+    every other CPU-resident tensor still spills."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    good = _SpillTensor([1, 2, 3])
+    bad = _make_unspillable_tensor([4, 5])
+    component = _SpillComponent(params=[("good", good), ("bad", bad)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 1
+    assert stats["skipped"] == 1
+    assert "transformer.param.bad" in stats["skipped_reason"]
+    assert "invalid python storage" in stats["skipped_reason"]
+    # the good tensor still rebound to the reloaded mmap'd object
+    assert component.good.data is not good
+    assert component.good.data is not None
+    # the bad slot's owner is untouched — no partial/garbage rebind attempt
+    assert component.bad is bad
+
+
+def test_spill_reports_all_skipped_without_writing_when_every_slot_fails(
+        monkeypatch, tmp_path):
+    """Every slot failing write-prep must not call `save_file` with an
+    empty dict, or crash trying to — it degrades to the same empty-write
+    shape `_EMPTY_STATS` describes, only with `skipped` telling the truth
+    about why nothing was written."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_for_spill())
+    fake_st = _install_fake_safetensors(monkeypatch)
+    mmap_spill = load_mmap_spill()
+
+    bad = _make_unspillable_tensor([1])
+    component = _SpillComponent(params=[("bad", bad)])
+    spill_path = str(tmp_path / "spill.safetensors")
+
+    stats = mmap_spill.spill({"transformer": component}, spill_path)
+
+    assert stats["tensors"] == 0
+    assert stats["skipped"] == 1
+    assert stats["skipped_reason"] is not None
+    assert fake_st.save_calls == []
+
+
+def test_spill_path_is_unique_across_calls(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    mmap_spill = load_mmap_spill()
+
+    first = mmap_spill.spill_path()
+    second = mmap_spill.spill_path()
+
+    assert first != second
+    pid = str(os.getpid())
+    for path in (first, second):
+        name = os.path.basename(path)
+        assert name.startswith(f"{pid}-")
+        assert name.endswith(".safetensors")
+
+
+def test_spill_base_dir_honours_fused_render_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    mmap_spill = load_mmap_spill()
+
+    assert mmap_spill.spill_base_dir() == os.path.join(
+        str(tmp_path), "cache", "mmap-spill")
+
+
+class _FakePsutil:
+    """Stands in for the real `psutil` module `_sweep_stale_spill_files`
+    imports function-locally. `alive_pids` is the set of pids `pid_exists`
+    answers True for; `raises` (when given) is raised instead of returning,
+    for the indeterminate case."""
+
+    def __init__(self, alive_pids=(), raises=None):
+        self._alive_pids = set(alive_pids)
+        self._raises = raises
+
+    def pid_exists(self, pid):
+        if self._raises is not None:
+            raise self._raises
+        return pid in self._alive_pids
+
+
+def test_sweep_stale_spill_files_removes_only_dead_pids(monkeypatch, tmp_path):
+    """A filename whose pid prefix names a process that is no longer alive is
+    removed; one naming a live pid, or one this function cannot parse as
+    `<pid>-<random>.safetensors`, is left alone."""
+    mmap_spill = load_mmap_spill()
+
+    # A pid essentially guaranteed not to be alive (max on 64-bit Linux,
+    # `/proc/sys/kernel/pid_max` never reaches this).
+    dead_pid = 2**31 - 1
+    dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
+    dead_path.write_bytes(b"stale")
+
+    live_pid = os.getpid()
+    live_path = tmp_path / f"{live_pid}-def456.safetensors"
+    live_path.write_bytes(b"live")
+
+    unparsable_path = tmp_path / "not-a-pid-prefixed-name.safetensors"
+    unparsable_path.write_bytes(b"leave me alone")
+
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(alive_pids={live_pid}))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))
+
+    assert not dead_path.exists()
+    assert live_path.exists()
+    assert unparsable_path.exists()
+
+
+def test_sweep_stale_spill_files_keeps_own_pids_file(monkeypatch, tmp_path):
+    """`pid == os.getpid()` is skipped outright, before `psutil` is even
+    asked — this worker's own spill file is never a sweep candidate."""
+    mmap_spill = load_mmap_spill()
+
+    own_path = tmp_path / f"{os.getpid()}-abc123.safetensors"
+    own_path.write_bytes(b"mine")
+
+    # No alive pids registered at all — if the own-pid guard did not fire
+    # first, `psutil.pid_exists(os.getpid())` returning False here would
+    # have this file swept.
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil(alive_pids=()))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))
+
+    assert own_path.exists()
+
+
+def test_sweep_stale_spill_files_never_calls_os_kill(monkeypatch, tmp_path):
+    """Pins the platform contract: `os.kill` is POSIX-safe liveness idiom
+    that Windows routes through `TerminateProcess` for any signal other than
+    `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` — calling it here would kill a live
+    worker rather than merely probe it. The sweep must never reach for it,
+    on any platform."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    (tmp_path / f"{dead_pid}-abc123.safetensors").write_bytes(b"stale")
+    (tmp_path / f"{os.getpid()}-def456.safetensors").write_bytes(b"live")
+
+    def _boom(pid, sig):
+        raise AssertionError(
+            "_sweep_stale_spill_files must not call os.kill")
+
+    monkeypatch.setattr(mmap_spill.os, "kill", _boom)
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(alive_pids={os.getpid()}))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+
+def test_sweep_stale_spill_files_leaves_everything_when_psutil_raises(
+        monkeypatch, tmp_path):
+    """The indeterminate case — the liveness check itself raises (or
+    `psutil` is unavailable, exercised below) — must leave every file
+    alone. Removing a live worker's spill file would pull the mmap out
+    from under a running pipeline, so "when in doubt, keep it" holds even
+    when the probe itself is broken."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
+    dead_path.write_bytes(b"stale")
+
+    monkeypatch.setitem(
+        sys.modules, "psutil", _FakePsutil(raises=RuntimeError("broken")))
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+    assert dead_path.exists()
+
+
+def test_sweep_stale_spill_files_leaves_everything_when_psutil_absent(
+        monkeypatch, tmp_path):
+    """`psutil` is a hard dependency of every runner environment, but if it
+    is somehow missing the safe answer is to sweep nothing rather than fall
+    back to a probe that is lethal on Windows."""
+    mmap_spill = load_mmap_spill()
+
+    dead_pid = 2**31 - 1
+    dead_path = tmp_path / f"{dead_pid}-abc123.safetensors"
+    dead_path.write_bytes(b"stale")
+
+    monkeypatch.setitem(sys.modules, "psutil", None)  # import psutil -> ImportError
+
+    mmap_spill._sweep_stale_spill_files(str(tmp_path))  # must not raise
+
+    assert dead_path.exists()
+
+
+def test_sweep_stale_spill_files_tolerates_a_missing_directory(monkeypatch):
+    mmap_spill = load_mmap_spill()
+
+    mmap_spill._sweep_stale_spill_files("/no/such/directory/at/all")  # must not raise
 
 
 # -- releasing the allocator on an idle timer (D597) -----------------------------
@@ -992,6 +1858,47 @@ def test_the_footprint_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, 
     worker = load_worker(monkeypatch, base)
 
     assert worker._gpu_footprint() is None
+
+
+# -- the RAM/VRAM split hook (`worker_base.serve(device_memory=...)`, D670) -----
+
+
+def test_main_wires_a_device_memory_hook_into_serve(monkeypatch, base):
+    """`main()` is the one caller of `worker_base.serve` in this file — the
+    same wiring `memory=`/`footprint=` already get, plus the new fifth hook."""
+    worker = load_worker(monkeypatch, base)
+    worker.main()
+    assert base.serve_kwargs["device_memory"] is worker._device_memory
+
+
+def test_the_device_memory_hook_reports_allocated_and_reserved(monkeypatch, base):
+    """Both numbers, not just the one `_gpu_footprint` already reports:
+    `resident_bytes()` needs `allocated` (SPEC AI-8c's own basis), and the
+    live-footprint hook needs `reserved` — the RAM/VRAM split has to carry
+    both, independently of the other two hooks."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        memory_allocated=lambda: 5_200_000_000,
+        memory_reserved=lambda: 8_100_000_000)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._device_memory() == (5_200_000_000, 8_100_000_000)
+
+
+def test_the_device_memory_hook_is_silent_when_there_is_no_cuda_device(monkeypatch, base):
+    """CUDA only, never MPS — the same boundary `_gpu_footprint` draws and for
+    the identical reason: on Apple Silicon the GPU pool IS system memory, so a
+    separate VRAM figure would double-count the same bytes as RAM."""
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+
+    assert worker._device_memory() is None
 
 
 def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
@@ -1229,7 +2136,7 @@ def test_the_klein_recipe_quantizes_its_TEXT_ENCODER_and_nothing_else(
     """The transformer is already Q4_K_M and is passed to `from_pretrained` as a
     BUILT object, so asking diffusers to quantize it too would be asking it to
     re-quantize GGUF weights. The text encoder is the 7.5GB bf16 component that
-    made this worth doing — ~70% of what the worker held before."""
+    makes this worth doing — ~70% of what the worker would otherwise hold."""
     torch = fake_torch()
     torch.bfloat16 = "bfloat16"
     seen = {}
