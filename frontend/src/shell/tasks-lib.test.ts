@@ -6535,15 +6535,18 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
-  it("lays the wall out so the page can never scroll sideways", () => {
-    // `auto-fill`, not `auto-fit`: at a width holding three columns with two
-    // cards in it, auto-fit stretches those two across the window. And the
-    // `min()` floor is what gives the narrow window its 1-up layout with no
-    // media query — a track can never be wider than its container.
-    expect(CARDS_CSS).toContain(
-      "grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));",
-    );
-    expect(CARDS_CSS).not.toContain("repeat(auto-fit");
+  it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
+    // Six in view, then scroll (Akshil, 2026-09-03). The wall is the scroll
+    // container, in the List's own shape, and the rows are sized from it so two
+    // rows fill the height the toolbar leaves on ANY monitor.
+    expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
+    expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
+    // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
+    // the window grows by a card's worth.
+    expect(CARDS_CSS).not.toMatch(/repeat\(auto-/);
+    // The card takes the row's height — no pixel height of its own any more.
+    expect(block(CARDS_CSS, ".task-card")).not.toMatch(/\bheight: \d+px/);
     // A grid item's default `min-width: auto` lets a wide child push its track
     // past `1fr`, and the overflow lands on the PAGE.
     expect(CARDS_CSS).toContain(".task-cards > * {\n  min-width: 0;\n}");
