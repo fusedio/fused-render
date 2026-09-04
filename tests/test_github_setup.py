@@ -47,22 +47,40 @@ def _fake_thread_class(run_worker):
     answer to `.join()` once it's done reading. A `Thread` built with no
     `args`/`kwargs` is never the stdlib's — that shape is how the two
     callers are told apart.
+
+    `Popen._communicate` on Windows (`Lib/subprocess.py`) drives a reader
+    thread through exactly this surface, in this order: construct it,
+    set `.daemon = True`, `.start()` it, `.join(timeout)` it, then check
+    `.is_alive()` to decide whether the join timed out. `name` is not read
+    by `_communicate` itself, but `threading.Thread.__init__` accepts it
+    and github_setup's own worker thread is constructed with `name=...`,
+    so it is accepted here too rather than left to fall through to
+    `**_ignored` and silently vanish.
     """
 
     class T:
-        def __init__(self, target=None, args=(), kwargs=None, **_ignored):
+        def __init__(self, target=None, args=(), kwargs=None, name=None,
+                     **_ignored):
             self._target = target
             self._args = args
             self._kwargs = kwargs or {}
+            self.name = name
+            self.daemon = False
+            self._alive = False
 
         def start(self):
+            self._alive = True
             if self._args or self._kwargs:
                 self._target(*self._args, **self._kwargs)
             elif run_worker:
                 self._target()
+            self._alive = False
 
         def join(self, timeout=None):
             pass
+
+        def is_alive(self):
+            return self._alive
 
     return T
 
