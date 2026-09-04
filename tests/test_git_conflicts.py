@@ -398,7 +398,7 @@ def test_failed_operation_toast_offers_fix_with_ai_not_explain():
     assert "async function adviseOnError" not in src
     assert "ADVISE_SYSTEM" not in src
     # The button's click handler is the new function, not the deleted one.
-    toast = src[src.index("if (!flash.ok && resolving === null"):]
+    toast = src[src.index("if (!flash.ok && !flash.noAsk && resolving === null"):]
     toast = toast[:toast.index("\n    }")]
     assert "onClick: () => askClaudeOnError(flash.message)" in toast
 
@@ -410,10 +410,12 @@ def test_the_fix_with_ai_button_stays_gated_on_this_panes_own_ai_state():
     entire git iframe, and an unmount throws away a conflict resolution
     streaming in `resolving`/`streamed` and any `proposal` sitting unreviewed
     with no warning at all — the exact work `resolveButton`'s own gate exists
-    to protect. Restored to the same three-part gate `resolveButton` uses."""
+    to protect. Restored to the same three-part gate `resolveButton` uses,
+    now alongside `!flash.noAsk` (a page-side failure, not the repository's,
+    offers no "Fix with AI" at all — see `aiFailed`'s `noAsk` param)."""
     src = _view_source()
-    assert ("if (!flash.ok && resolving === null && proposal === null "
-            "&& !aiBusy) {") in src
+    assert ("if (!flash.ok && !flash.noAsk && resolving === null "
+            "&& proposal === null && !aiBusy) {") in src
 
 
 def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
@@ -498,7 +500,7 @@ def test_a_confirmed_unavailable_claude_replaces_the_button_not_the_error():
     explanation — `flash.message` (the original op's error) is never
     overwritten by anything in this branch."""
     src = _view_source()
-    toast = src[src.index("if (!flash.ok && resolving === null"):]
+    toast = src[src.index("if (!flash.ok && !flash.noAsk && resolving === null"):]
     toast = toast[:toast.index("\n    }\n    page.append(")]
     assert "if (askUnavailable) {" in toast
     branch = toast[toast.index("if (askUnavailable) {"):]
@@ -524,3 +526,37 @@ def test_resolve_never_stages_or_commits(ops):
     for forbidden in ('"add"', '"commit"', '"checkout"', '"merge"', '"restore"'):
         assert forbidden not in body, forbidden
     assert body.count("_git_ok(") == 1
+
+
+# ------------------------------------------------- "resolved": markers are gone
+
+
+def test_status_says_when_a_conflicted_file_has_no_markers_left(reader, tmp_path):
+    """The row tick and "Select all" are disabled on a conflicted file because
+    `git add` on marked-up text commits the markers. `resolved` is the fact that
+    lets them come back: once the working-tree copy is marker-free (Apply, or an
+    editor, wrote it) the add IS the resolve, and the index — still unmerged
+    until then — cannot say so."""
+    root = conflicted_repo(str(tmp_path / "resolved"))
+
+    def entry():
+        payload = reader.main(file=root)
+        (change,) = [c for c in payload["changes"] if c["path"] == "pkg/mod.py"]
+        return change
+
+    before = entry()
+    assert before["conflicted"] is True
+    assert before["resolved"] is False
+
+    _put(root, "pkg/mod.py", "one\nBOTH\nthree\n")
+    after = entry()
+    assert after["conflicted"] is True          # the index has not been told yet
+    assert after["resolved"] is True
+
+    # A lone `=======` is legal Markdown, not a marker: it must not block staging.
+    _put(root, "pkg/mod.py", "Title\n=======\nbody\n")
+    assert entry()["resolved"] is True
+
+    # The two bracketing markers do.
+    _put(root, "pkg/mod.py", "one\n>>>>>>> other\nthree\n")
+    assert entry()["resolved"] is False
