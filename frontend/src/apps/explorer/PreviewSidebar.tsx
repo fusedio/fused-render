@@ -103,6 +103,7 @@ export default function PreviewSidebar({
   src,
   onSelect,
   onClose,
+  lead,
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -124,6 +125,11 @@ export default function PreviewSidebar({
   // Clears `_side`. The title bar's opener is hidden while this column is up
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
+  // What rides in the header's tail AHEAD of the mode pill — the entry page's
+  // "Open in project" button (Preview.tsx), in the slot the folder pane's
+  // strip gives the same button (ListingPreviewPane). Rendered as given: the
+  // caller gates it, this header only places it.
+  lead?: ReactNode;
 }) {
   // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
   // is what makes the divider hold still while you walk from file to file, since
@@ -313,6 +319,7 @@ export default function PreviewSidebar({
               always a menu to draw and always more in it than the mode you are
               looking at. */}
           <div className="side-header-tail">
+            {lead}
             <ModeMenu entries={entries} active={active} onSelect={onSelect} />
           </div>
         </div>

@@ -1787,8 +1787,12 @@ function TemplatePreview({
       {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* The folder view's "Open in project", offered on the app's entry page
           too (same server-side entry gate), wearing the same bordered look as
-          Export App beside it. */}
-      {!stat.is_dir && <OpenInProjectButton fsPath={fsPath} />}
+          Export App. Its HOME is the sidebar's header, right before the mode
+          pill — exactly where the folder pane's strip puts it — so the two
+          views agree on where the hop lives. This copy is the SHUT-SIDEBAR
+          fallback (`!activeSide`, Listing's `!paneOpen` rule): with the column
+          down there is no strip, and the button must not vanish with it. */}
+      {!stat.is_dir && !activeSide && <OpenInProjectButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -2061,6 +2065,7 @@ function TemplatePreview({
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}
+            lead={<OpenInProjectButton fsPath={fsPath} />}
           />,
           sideSlot
         )}
