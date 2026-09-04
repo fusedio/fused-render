@@ -3777,7 +3777,16 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
             interrupted_offset = int(fh.read().strip())
     except (OSError, ValueError):
         return True
-    if cursor < interrupted_offset:
+    # `cursor == 0` is not a proof of anything: the cursor sits at 0 until
+    # `_read_current_turn` has seen a turn CLOSE (a `result`) and a fresh
+    # user turn open after it, so 0 means "still on the first turn" — the
+    # very turn the interrupt hit. Without this, an interrupt sent before the
+    # CLI had written a byte (`interrupted_offset` 0, the stop button pressed
+    # the instant the host came up) read `0 >= 0` as "a later turn has
+    # started" and retired the marker on the first poll, so the stop showed
+    # as a bare crash (test_claude_stop_marker_retirement, red on main
+    # 2026-09-04).
+    if cursor == 0 or cursor < interrupted_offset:
         return True
     for stale in (cancelled_marker, offset_marker):
         try:
