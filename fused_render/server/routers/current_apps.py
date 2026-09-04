@@ -19,9 +19,13 @@ The row's right-click menu adds three more verbs, all folder-scoped:
 * ``POST /api/current-apps/archive`` — the DELETE's task half without its desk
   half: archive every task under the folder, keep the row.
 
-There is no POST that adds a row: the table is fed by the tasks listing
-(`current_apps.observe`, run inside `tasks._task_rows`) and by nothing else. An
-app arrives on the desk by having work started in it.
+Two ways onto the desk: the tasks listing (`current_apps.observe`, run inside
+`tasks._task_rows`) adds the app of every new task, and
+
+* ``POST /api/current-apps/add`` — the explorer's "Open in project" button
+  puts the folder on the desk by hand before hopping to its app page. Already
+  there is not an error (``added: false``): the sidebar focuses the row it
+  has rather than inserting a second.
 """
 import os
 import time
@@ -92,6 +96,17 @@ def api_current_apps_remove(path: str = Query(...)):
 
 class FolderPatch(BaseModel):
     path: str
+
+
+@router.post("/api/current-apps/add")
+def api_current_apps_add(patch: FolderPatch):
+    """Put a folder on the desk. The client gates the button on the folder
+    having an entry page; here the folder only has to exist — a linked or
+    workspace app alike, the same breadth `list_apps` shows."""
+    folder = _require_folder(patch.path)
+    if not os.path.isdir(folder):
+        raise HTTPException(status_code=404, detail="no such folder")
+    return {"ok": True, "added": current_apps.add(folder), "path": folder}
 
 
 @router.post("/api/current-apps/archive")

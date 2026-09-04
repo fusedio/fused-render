@@ -15,7 +15,9 @@ questions: "what is on my desk" and "what is filed". The owner's redesign
   (`observe`, run inside the tasks listing so it sees every task on the
   machine, however it was started — chat, schedule, CLI).
 * Nothing removes an app automatically. Archive every task under it and the
-  row stays; the table only grows through tasks.
+  row stays; the table grows through tasks — and through the explorer's
+  "Open in project" button (`add`, POST /api/current-apps/add), which puts
+  the folder on the desk before opening its app page.
 * Removing an app (the row's cross, DELETE /api/current-apps) ARCHIVES every
   task under it as a side effect — the one place the coupling still runs, and
   it runs desk → tasks, not the other way.
@@ -166,6 +168,24 @@ def observe(rows: list[dict]) -> None:
     if changed or pruned != set(state["seen"]):
         state["seen"] = sorted(pruned)
         write_state(state)
+
+
+def add(path: str) -> bool:
+    """Put `path` on the desk by hand — the explorer's "Open in project"
+    button. True when it was added, False when it was already there (the
+    row keeps its place and its sequence: the sidebar focuses it rather than
+    re-inserting). The one way onto the desk besides a task; `observe`'s
+    dedupe on `known` means a later task under the folder adds nothing."""
+    folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
+    state = read_state()
+    if any(a["path"] == folder for a in state["apps"]):
+        return False
+    state["apps"].append({
+        "path": folder,
+        "addedAt": datetime.now(timezone.utc).isoformat(),
+    })
+    write_state(state)
+    return True
 
 
 def remove(path: str) -> bool:
