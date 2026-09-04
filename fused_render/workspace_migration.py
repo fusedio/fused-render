@@ -29,14 +29,22 @@ b) **absolute paths written into the app's own state** — bookmark and
    an unattended run), and the menu-bar pin (the one of these that lives
    under Application Support, not ``home_dir()``).
 
-Re-entrant: (b) is attempted on every startup, gated on its own
-"old shape present, new shape absent" check, so a process that died between
-the folder move and the bookkeeping heals on the next start instead of leaving
-orphaned state behind forever.
+Re-entrant: (b) is attempted on every startup until a marker
+(``home_dir()/workspace_migrated.json``) says the question is settled, gated on
+its own "old shape present, new shape absent" check, so a process that died
+between the folder move and the bookkeeping heals on the next start instead of
+leaving orphaned state behind forever.
+
+Never on a fresh install: when ``home_dir()`` does not exist there is no
+pre-D337 user here, and the check returns before touching ``~/Documents`` at
+all. That stat is a macOS TCC folder access, and at this point in boot the app
+is not frontmost, so the prompt would be suppressed and a DENY cached
+(``shell/fda.py``) before the onboarding wizard ever reached its FDA step.
 """
 import logging
 import os
 import re
+import time
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fused_render._branch import branch_dir
@@ -49,6 +57,10 @@ logger = logging.getLogger(__name__)
 # The pre-D337 default. A literal, not a call to anything: this is history, and
 # it must keep naming the old location even as the default moves again.
 LEGACY_FUSED_DIR = "~/Documents/Fused"
+
+# Written under home_dir() once the migration question is settled, so no later
+# start stats inside ~/Documents again.
+_MARKER_NAME = "workspace_migrated.json"
 
 # Shell url prefixes whose remainder is the target's absolute path, mirroring
 # bookmarks._VIEW_PREFIXES / recents._VIEW_PREFIXES.
@@ -76,8 +88,27 @@ def _run() -> None:
     if os.environ.get("FUSED_RENDER_DIR"):
         # The user picked their own workspace. Nothing here applies to them.
         return
+    if not os.path.isdir(storage.base_home_dir()):
+        # A fresh install. Every pre-D337 user has shell state under
+        # ~/.fused-render (bookmarks/prefs/templates, D75/D76), and nothing on
+        # the boot path creates the dir before this runs (logs go to temp, the
+        # pidfile and token to Application Support, ensure_fused_dir is after).
+        # The UNNESTED base, not home_dir(): a branch install's nested dir may
+        # not exist yet on a machine that has plainly run the app before.
+        # No shell state means there is no legacy workspace to move, and the
+        # `isdir(src)` below is a stat INSIDE ~/Documents: on macOS that fires
+        # the TCC folder prompt at launch, before the wizard's FDA step, while
+        # the app is not yet frontmost, which is exactly the suppressed-prompt
+        # cached-DENY failure shell/fda.py documents. So we never look.
+        return
+    marker = os.path.join(storage.home_dir(), _MARKER_NAME)
+    if os.path.exists(marker):
+        # Settled on an earlier start. Without this, every launch paid a stat
+        # inside ~/Documents forever.
+        return
     src, dst = legacy_dir(), fused_dir()
     if src == dst:
+        _write_marker(marker, src, dst, "same-path")
         return
     if os.path.isdir(src):
         if os.path.exists(dst):
@@ -85,6 +116,7 @@ def _run() -> None:
                 "not migrating %s -> %s: the destination already exists. Both are "
                 "left exactly as they are; move the contents by hand if you want "
                 "them merged.", src, dst)
+            _write_marker(marker, src, dst, "destination-exists")
             return
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -100,8 +132,21 @@ def _run() -> None:
         # moved into would be worse than leaving it.
         return
     # Bookkeeping runs even when the folder move was a no-op: it is how a run
-    # interrupted between the two steps heals.
+    # interrupted between the two steps heals. The marker is written only
+    # AFTER it, so a process that dies between the rename and the rewrite
+    # still re-enters on the next start.
     _rewrite_state(src, dst)
+    _write_marker(marker, src, dst, "done")
+
+
+def _write_marker(marker: str, src: str, dst: str, outcome: str) -> None:
+    """Record that the migration question is settled for this home."""
+    try:
+        storage.write_json(marker, {"from": src, "to": dst, "outcome": outcome,
+                                    "at": time.time()})
+    except OSError:
+        logger.warning("could not write %s; the check will run again next start",
+                       marker, exc_info=True)
 
 
 # --------------------------------------------------------------- path remapping
