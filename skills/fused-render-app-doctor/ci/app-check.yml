@@ -2,10 +2,12 @@ name: app-check
 
 # Written for fusedio/fused-render-community-apps and committed there by
 # hand — see skills/fused-render-app-doctor/SKILL.md. This repo is a folder
-# of app folders, not a single app, so `fused-render doctor` is pointed at
-# its root with no path argument: repo mode (fused_render/app_doctor.py)
-# takes it from there, reviewing every top-level app folder and naming which
-# one each finding belongs to.
+# of app folders, not a single app, and `fused-render doctor` (see
+# fused_render/app_doctor.py) only knows how to review ONE app folder — it
+# has no idea the repo it lives in exists. So this workflow does the
+# iteration itself: one pass over every top-level folder that carries a
+# metadata.json, running the doctor and that app's own tests inside the
+# same loop, and failing the job if either step fails for any app.
 
 on:
   push:
@@ -33,30 +35,92 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install fused-render
-        run: pip install fused-render
+      - name: Install fused-render and pytest
+        run: pip install fused-render pytest
 
-      - name: Run the doctor
-        run: fused-render doctor --check .
-
-      - name: Run each app's own tests, where it has any
-        # A workflow that fails an app for having no tests would just teach
-        # people to delete the workflow — this only runs pytest inside an
-        # app folder that already carries a test_*.py/*_test.py of its own,
-        # and leaves every other app alone.
+      - name: Review each app and run its own tests
+        # One loop, two checks per app:
+        #
+        #   1. `fused-render doctor --check "$app"` — the same engine and
+        #      the same severity rule the CLI uses locally, pointed at just
+        #      this one app folder.
+        #   2. That app's own tests, when it has any — gated on an actual
+        #      test_*.py/*_test.py existing somewhere under the app, not
+        #      merely on a `tests/` directory existing (a `tests/fixtures/`
+        #      folder with no test file in it used to run `pytest` anyway,
+        #      which exits 5 for "no tests collected" and fails main for an
+        #      app that never claimed to have any). An app that declares
+        #      `[project].dependencies` in its own pyproject.toml (see
+        #      fused_render/envinstall.py) gets those installed first, so a
+        #      test importing them doesn't fail on the import rather than on
+        #      the thing it's actually testing. A pyproject.toml this can't
+        #      parse, or deps this can't install, skips that app's tests
+        #      with a clear log line rather than failing the whole run on a
+        #      dependency problem the app's own tests were never going to
+        #      catch anyway.
         run: |
           set -e
-          pip install pytest
           status=0
           for app in */; do
             app="${app%/}"
             [ -f "$app/metadata.json" ] || continue
-            if compgen -G "$app/test_*.py" > /dev/null \
-               || compgen -G "$app/*_test.py" > /dev/null \
-               || [ -d "$app/tests" ]; then
-              echo "::group::pytest $app"
-              python -m pytest "$app" -q || status=1
-              echo "::endgroup::"
+
+            echo "::group::doctor $app"
+            fused-render doctor --check "$app" || status=1
+            echo "::endgroup::"
+
+            test_files=$(find "$app" \( -name 'test_*.py' -o -name '*_test.py' \) -type f 2>/dev/null)
+            if [ -z "$test_files" ]; then
+              continue
             fi
+
+            echo "::group::pytest $app"
+            if [ -f "$app/pyproject.toml" ]; then
+              if deps=$(python3 - "$app/pyproject.toml" <<'PY'
+import sys, tomllib
+
+path = sys.argv[1]
+try:
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+except Exception as exc:
+    print(f"warning: {path} does not parse ({exc})", file=sys.stderr)
+    sys.exit(2)
+for dep in data.get("project", {}).get("dependencies", []):
+    print(dep)
+PY
+              ); then
+                parse_rc=0
+              else
+                parse_rc=$?
+              fi
+              if [ "$parse_rc" = 2 ]; then
+                echo "::warning::$app/pyproject.toml does not parse — skipping its tests"
+                echo "::endgroup::"
+                status=1
+                continue
+              fi
+              if [ -n "$deps" ]; then
+                if ! printf '%s\n' "$deps" | xargs pip install; then
+                  echo "::warning::could not install $app's declared dependencies — skipping its tests"
+                  echo "::endgroup::"
+                  status=1
+                  continue
+                fi
+              fi
+            fi
+
+            set +e
+            python -m pytest "$app" -q
+            rc=$?
+            set -e
+            # Exit 5 is pytest's "no tests were collected" — reachable even
+            # after the test_files gate above (every matching file skipped,
+            # or empty), and it means nothing failed, only that there was
+            # nothing to run.
+            if [ "$rc" != 0 ] && [ "$rc" != 5 ]; then
+              status=1
+            fi
+            echo "::endgroup::"
           done
           exit "$status"

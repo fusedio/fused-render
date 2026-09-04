@@ -5,7 +5,7 @@ description: Use when reviewing or sharing an app — checking for secrets, hard
 
 # App Doctor
 
-One command, `fused-render doctor [path] [--json] [--check]`. No path reviews the current directory. A path that is itself an app reviews just it; a path that is a folder of apps (a slug-named directory with its own `metadata.json`, per top-level entry) reviews every one inside and names which app each finding belongs to — this is how it runs unattended against a whole repo, no extra flag. `--check` exits non-zero when a HIGH finding fired; LOW findings are always reported and never fail a run. `--json` gives the same findings as records instead of a printed digest.
+One command, `fused-render doctor [path] [--json] [--check]`, reviewing exactly one app folder — no path reviews the current directory. `--check` exits non-zero when a HIGH finding fired; LOW findings are always reported and never fail a run. `--json` gives the same findings as records instead of a printed digest.
 
 Run it before sharing an app, or whenever asked to review one. A finding's `excerpt` never contains a whole secret — safe to paste into a reply.
 
@@ -15,7 +15,7 @@ Run it before sharing an app, or whenever asked to review one. A finding's `exce
 - `device-path` (HIGH) — swap the absolute path for one relative to the app folder, or for one the runtime hands the app at call time. An app another person opens does not have your home folder.
 - `api-misuse` (HIGH) — the call doesn't exist. Fix the name or drop the call; don't guess a fix from the excerpt alone.
 - `api-version` (LOW) — bump the page's declared `fused-api-version` after confirming the app doesn't rely on removed behavior.
-- `structure` (LOW) — housekeeping: a missing entry page, README, icon, or thumbnail, or one that doesn't parse. Fix what's named.
+- `structure` (LOW) — housekeeping: a missing entry page, README, or thumbnail, or an `icon.svg`/`pyproject.toml` that doesn't parse. Fix what's named. (An icon that's simply absent is not flagged — only one that exists and fails to parse.)
 - `generated` (LOW) — a cache or log file loose in the tree; delete it or add it to `.gitignore`.
 
 ## Judgment pass
@@ -32,4 +32,4 @@ Ground anything else you flag here the same way: open `fused_render/static/runti
 
 ## Setting up checks for a repo of apps
 
-`skills/fused-render-app-doctor/ci/app-check.yml` is the workflow already written for `fusedio/fused-render-community-apps` — copy it into that repo's `.github/workflows/`, nothing to fill in. It runs the doctor with `--check` against the repo root, plus each app's own tests when it has any (`test_*.py`, `*_test.py`, or a `tests/` folder). Do not invent a different workflow shape or a `--init-ci` flag — there isn't one; this file is the setup.
+`skills/fused-render-app-doctor/ci/app-check.yml` is the workflow already written for `fusedio/fused-render-community-apps` — copy it into that repo's `.github/workflows/`, nothing to fill in. The doctor itself only knows how to review one app folder, so the workflow loops the repo's top-level folders itself: for each one that carries a `metadata.json`, it runs `fused-render doctor --check` against that folder, installs the app's own declared dependencies (from its `pyproject.toml`, if it has one) before running its tests, and runs those tests when it has any (`test_*.py`, `*_test.py`, or a `tests/` folder with collectible test files) — one pass per app, a nonzero exit at the end if any app failed either step. Do not invent a different workflow shape or a `--init-ci` flag — there isn't one; this file is the setup.
