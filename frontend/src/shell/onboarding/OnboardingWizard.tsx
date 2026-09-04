@@ -8,20 +8,28 @@
 //   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
 //   4 First app    — the Home composer, or a showcase local-AI app
 //
-// Steps 1–3 write nothing. Step 4's create (or a showcase open) is the only
-// durable action and doubles as "complete". ✕ / Escape record a DISMISS — a
-// different flag, so a later build can tell the two apart. Both stop the
-// auto-show; neither is undone by reopening from Help › Setup wizard.
+// Steps 1–3 write nothing but the resume step (which step is open, so a
+// restart or a reopen lands back on it). Step 4's create (or a showcase open)
+// is the only other durable action and doubles as "complete". ✕ / Escape
+// record a DISMISS — a different flag, so a later build can tell the two
+// apart. Both stop the auto-show; neither is undone by reopening from Help ›
+// Setup wizard, which resumes where the user left off.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
-import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
+import {
+  completeOnboarding,
+  dismissOnboarding,
+  setOnboardingStep,
+  type Config,
+} from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
 
+import { recallStep, rememberStep } from "./state";
 import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
@@ -38,9 +46,11 @@ const STEPS: { id: StepId; label: string }[] = [
 
 // The step id rides in the query so a refresh and a link both land on it.
 const STEP_PARAM = "step";
-function stepFromUrl(): StepId | null {
-  const v = new URLSearchParams(location.search).get(STEP_PARAM);
+function asStepId(v: string | null | undefined): StepId | null {
   return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
+}
+function stepFromUrl(): StepId | null {
+  return asStepId(new URLSearchParams(location.search).get(STEP_PARAM));
 }
 
 // Where the wizard lets go: the front door.
@@ -60,8 +70,24 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // is held, so the FDA step appearing once health answers "darwin" does not
   // shift the page under the user. Mirrored with replaceState: steps are not
   // history entries, Back leaves the wizard.
-  const [stepId, setStepId] = useState<StepId>(() => stepFromUrl() ?? "about");
+  //
+  // Without a step in the URL (Help › Setup wizard is a plain link, a restart
+  // relaunches on /home) the wizard RESUMES: this page load's memory, then the
+  // server's stored step (shell/onboarding/state), then the first step. Every
+  // step change is written back, fire-and-forget — the write is a courtesy to
+  // the next open, and a failed one must not hold this page. Not once the
+  // wizard has settled (complete / dismiss): a completed wizard's resume point
+  // is cleared, and a step change made while it is still mounted afterwards
+  // (Back after a composer `task_error`, a step pill) must not restore one.
+  const [stepId, setStepId] = useState<StepId>(
+    () => stepFromUrl() ?? asStepId(recallStep(config)) ?? "about",
+  );
+  const settled = useRef(false);
   useEffect(() => {
+    if (!settled.current) {
+      rememberStep(stepId);
+      setOnboardingStep(stepId).catch(() => undefined);
+    }
     const url = new URL(location.href);
     if (url.searchParams.get(STEP_PARAM) === stepId) return;
     url.searchParams.set(STEP_PARAM, stepId);
@@ -85,11 +111,14 @@ export function OnboardingWizard({ config }: { config: Config }) {
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
-  // app the user is trying to reach.
-  const settled = useRef(false);
+  // app the user is trying to reach. (`settled` is declared above, by the
+  // step effect that reads it.)
   const markComplete = useCallback(() => {
     if (settled.current) return;
     settled.current = true;
+    // The server clears its resume step on complete; mirror that in this
+    // page load's memory so a reopen starts at the top, not at step 4.
+    rememberStep(null);
     completeOnboarding().catch(() => undefined);
   }, []);
   const finish = useCallback(

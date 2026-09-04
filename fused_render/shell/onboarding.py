@@ -15,6 +15,13 @@ what lets a later "Setup" entry in the sidebar's Help menu reopen the wizard
 without either write being touched, and what a future version bump could key
 a re-show on (a dismissed user is a different audience from a completed one).
 
+`step` is the third field: the id of the wizard step the user last had open,
+written by the shell on every step change. It is what lets the wizard RESUME —
+after a server restart (the auto-show lands on that step, not the first) and
+after a dismiss (Help › Setup wizard reopens where the user left). `complete`
+clears it, so a finished user who reopens the wizard starts from the top;
+`dismiss` keeps it. Server-side for the same reason as the flags.
+
 `seed_for_existing_users` is the upgrade edge: "first time they open the app"
 means a NEW user, and an existing install upgrading into this build has no
 flag either. A workspace that already holds apps under <fused_dir>/local is
@@ -44,6 +51,11 @@ VERSION = 1
 
 _KEY = "onboarding"
 
+#: The wizard's step ids (frontend shell/onboarding/OnboardingWizard STEPS).
+#: A closed set: prefs.json is shared state, and an unknown id is refused
+#: rather than stored.
+STEPS = ("about", "claude", "fda", "app")
+
 #: `FUSED_RENDER_ONBOARDING=1` forces the auto-show (state reads as fresh) so a
 #: dev server can render the wizard without deleting prefs.json; `=0` forces
 #: it off. Read per request: flipping it needs no restart.
@@ -68,12 +80,15 @@ def _write(patch: dict) -> dict:
 
 def snapshot() -> dict:
     """The `onboarding` field of /api/config: `{completed_at, dismissed_at,
-    version}` — each timestamp epoch seconds or None. The shell auto-shows
-    when BOTH are None."""
+    step, version}` — each timestamp epoch seconds or None, `step` the last
+    open step id or None. The shell auto-shows when BOTH timestamps are None."""
     force = os.environ.get(FORCE_ENV)
-    if force == "1":
-        return {"completed_at": None, "dismissed_at": None, "version": VERSION}
     state = _read()
+    step = state.get("step") if state.get("step") in STEPS else None
+    if force == "1":
+        # The override fakes the FLAGS, not the step: a dev server forced into
+        # the wizard still resumes where it was, which is how this is smoked.
+        return {"completed_at": None, "dismissed_at": None, "step": step, "version": VERSION}
     if force == "0" and state.get("dismissed_at") is None:
         # Reads as dismissed without writing anything: the override is for
         # this process, not a decision the user made.
@@ -81,6 +96,7 @@ def snapshot() -> dict:
     return {
         "completed_at": state.get("completed_at"),
         "dismissed_at": state.get("dismissed_at"),
+        "step": step,
         "version": VERSION,
     }
 
@@ -124,7 +140,9 @@ def api_onboarding_complete(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    _write({"completed_at": time.time()})
+    # Completion resets the resume point: reopening a FINISHED wizard from
+    # Help starts at the top, a dismissed one resumes (see module docstring).
+    _write({"completed_at": time.time(), "step": None})
     return snapshot()
 
 
@@ -134,4 +152,18 @@ def api_onboarding_dismiss(x_fused: str | None = Header(default=None)):
     if guard is not None:
         return guard
     _write({"dismissed_at": time.time()})
+    return snapshot()
+
+
+@router.post("/api/onboarding/step")
+def api_onboarding_step(body: dict, x_fused: str | None = Header(default=None)):
+    """Remember the step the user has open, so a restart or a reopen resumes
+    there. Fire-and-forget from the shell; refuses ids it does not know."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    step = body.get("step") if isinstance(body, dict) else None
+    if step not in STEPS:
+        return JSONResponse({"error": f"unknown step {step!r}"}, status_code=400)
+    _write({"step": step})
     return snapshot()

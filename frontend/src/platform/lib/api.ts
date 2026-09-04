@@ -198,6 +198,9 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
 export interface OnboardingState {
   completed_at: number | null;
   dismissed_at: number | null;
+  // The step id the user last had open — the resume point after a server
+  // restart or a dismiss. Optional: an older server does not send it.
+  step?: string | null;
   version: number;
 }
 
@@ -211,6 +214,10 @@ export function completeOnboarding(): Promise<OnboardingState> {
 
 export function dismissOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
+export function setOnboardingStep(step: string): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/step", { step });
 }
 
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
