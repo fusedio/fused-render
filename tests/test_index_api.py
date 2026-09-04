@@ -85,7 +85,7 @@ def test_scan_rejects_a_path_that_is_not_a_directory(home, tmp_path):
 
 
 def test_scan_409s_while_indexing_is_off(home, tmp_path, monkeypatch):
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     resp = _client(tmp_path).post("/api/index/scan", json={"root": str(tmp_path)},
                                   headers={"X-Fused": "1"})
     assert resp.status_code == 409
@@ -659,7 +659,7 @@ def test_startup_scan_skips_every_root_while_indexing_is_off(home, tmp_path,
     started = []
     monkeypatch.setattr(index_router.runner, "start",
                         lambda cfg, root, full=False: started.append(root))
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
@@ -1257,7 +1257,7 @@ def test_note_folder_opened_starts_nothing_while_indexing_is_off(
     threads = []
     monkeypatch.setattr(index_router.threading, "Thread",
                         lambda **kw: threads.append(kw) or _FakeThread())
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     assert _real_note_folder_opened(str(tmp_path)) is False
     assert threads == []
 

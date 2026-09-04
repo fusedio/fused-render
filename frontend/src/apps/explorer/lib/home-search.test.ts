@@ -639,6 +639,15 @@ describe("indexGap", () => {
     expect(indexGap("disabled", false)).toBe("disabled");
   });
 
+  it("never claims a scan without Full Disk Access either", () => {
+    // Every trigger is gated on the grant (shell/index_gate.py), and the
+    // grant applies to the next launch, so nothing this process reports as
+    // scanning can be a scan that finishes.
+    expect(indexGap("fda", true)).toBe("fda");
+    expect(indexGap("fda", false)).toBe("fda");
+    expect(indexGap("fda", null)).toBe("fda");
+  });
+
   it("calls the permanently uncoverable reasons what they are", () => {
     // Offering "index it now" for these would be a button that cannot work.
     for (const r of ["mount", "package", "ignored"] as const)

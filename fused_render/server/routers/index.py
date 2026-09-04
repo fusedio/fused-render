@@ -52,6 +52,7 @@ from fused_render.index.store import (
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
+from fused_render.shell import index_gate
 from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
@@ -110,11 +111,17 @@ def run_startup_scan(start_dir: str | None = None) -> None:
     Records each started run in `_startup_runs` for `run_startup_warm`, which
     warms only after the run covering its root has finished."""
     _startup_runs.clear()
-    if not indexing_enabled():
-        # No scan ever starts while the pref is off (shell/prefs.py). The
-        # warm still runs — it only searches the existing index, never
-        # scans — so search stays as snappy as the stale index allows.
-        logger.info("index: startup scan skipped (indexing is disabled)")
+    blocked = index_gate.indexing_blocked()
+    if blocked:
+        # No scan ever starts while the pref is off (shell/prefs.py) or, on
+        # the packaged mac app, without Full Disk Access (shell/index_gate.py:
+        # the home walk would prompt per protected folder before onboarding
+        # even painted). The warm still runs — it only searches the existing
+        # index, never scans — so search stays as snappy as the stale index
+        # allows.
+        logger.info("index: startup scan skipped (%s)",
+                    "indexing is disabled" if blocked == "disabled"
+                    else "no Full Disk Access yet")
         return
     try:
         cfg = load_config()
@@ -350,8 +357,12 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
         # scan will ever fix an uncovered folder, which is exactly the claim
         # `mount`/`package` make too — it just comes from a toggle rather
         # than from the filesystem's shape.
-        if not indexing_enabled():
-            return "disabled"
+        blocked = index_gate.indexing_blocked()
+        if blocked:
+            # "disabled" or "fda": either way no scan will start until the
+            # user acts (a toggle, or a grant plus relaunch), so the client
+            # must offer THAT rather than a scan.
+            return blocked
         if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
             return "ignored"
     # Never claim a scan is in flight while the pref is off — nothing can be
@@ -611,7 +622,7 @@ def note_folder_opened(path: str) -> bool:
     is the ONE gate for every caller of this function (fs_read.py,
     git_repos.py, exported_apps.py), so a rescan-if-stale check never turns
     into a scan behind the pref's back."""
-    if not indexing_enabled():
+    if not index_gate.indexing_allowed():
         return False
     if not _freshness_slot.acquire(blocking=False):
         return False
@@ -632,8 +643,11 @@ def api_index_scan(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if not indexing_enabled():
-        return JSONResponse({"error": "indexing is disabled in Preferences"},
+    blocked = index_gate.indexing_blocked()
+    if blocked:
+        return JSONResponse({"error": "indexing is disabled in Preferences"
+                             if blocked == "disabled" else index_gate.FDA_MESSAGE,
+                             "reason": blocked},
                             status_code=409)
     cfg = load_config()
     full = bool(body.get("full"))
@@ -701,11 +715,12 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
-    if not indexing_enabled():
+    blocked = index_gate.indexing_blocked()
+    if blocked:
         # A durable "no", same as every other refusal here: the search box
-        # polls this on a retry loop, and "disabled" says as plainly as
-        # `refused` does that asking again will not change the answer.
-        return {"ok": True, "started": False, "why": "disabled",
+        # polls this on a retry loop, and "disabled" / "fda" say as plainly
+        # as `refused` does that asking again will not change the answer.
+        return {"ok": True, "started": False, "why": blocked,
                 "run_id": None, "root": root}
     # THE MOUNT GUARD FIRST, and the order is the point rather than a
     # preference: `blocks` is pure string work against the mount records,

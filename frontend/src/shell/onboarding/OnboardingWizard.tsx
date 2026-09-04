@@ -6,11 +6,15 @@
 //   1 About        — what FusedRender is (download-page copy + video)
 //   2 Claude Code  — installed / new enough / signed in / on PATH, with buttons
 //   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
-//   4 First app    — the Home composer, or a showcase local-AI app
+//   4 Models       — local models that fit this machine, downloaded in the background
+//   5 First app    — the Home composer, or a showcase local-AI app
 //
 // Steps 1–3 write nothing but the resume step (which step is open, so a
-// restart or a reopen lands back on it). Step 4's create (or a showcase open)
-// is the only other durable action and doubles as "complete". ✕ / Escape
+// restart or a reopen lands back on it). Step 4 starts model downloads, which
+// are server-owned jobs that outlive the wizard and block nothing in it — a
+// head start, since a model is fetched on first use anyway. Step 5's create
+// (or a showcase open) is the only other durable action and doubles as
+// "complete". ✕ / Escape
 // record a DISMISS — a different flag, so a later build can tell the two
 // apart. Both stop the auto-show; neither is undone by reopening from Help ›
 // Setup wizard, which resumes where the user left off.
@@ -34,13 +38,15 @@ import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
+import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
 
-type StepId = "about" | "claude" | "fda" | "app";
+type StepId = "about" | "claude" | "fda" | "models" | "app";
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: "about", label: "About" },
   { id: "claude", label: "Claude Code" },
   { id: "fda", label: "Disk Access" },
+  { id: "models", label: "Models" },
   { id: "app", label: "First app" },
 ];
 
@@ -98,7 +104,21 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // hold their own snapshot. Focus re-checks only while the Claude step is up.
   const setup = useClaudeSetup(stepId === "claude");
   const { health } = setup;
-  const steps = STEPS.filter((s) => s.id !== "fda" || isMac(health?.platform));
+  // The catalog, once, for the whole wizard: the Models step's own contents AND
+  // whether it exists at all come from it (a machine no local engine serves has
+  // nothing to offer, so it gets no step).
+  const picks = useModelPicks();
+  const steps = STEPS.filter((s) => {
+    if (s.id === "fda") return isMac(health?.platform);
+    // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
+    // hidden-until-known: this is the only step a `?step=` resume is likely to
+    // name while its own fetch is still in flight, and dropping it for those
+    // few hundred milliseconds would render step 1 under a user who asked for
+    // step 4. A pill that disappears on the rare no-engine machine is the
+    // cheaper wrong.
+    if (s.id === "models") return picks === null || picks.length > 0;
+    return true;
+  });
   // A URL naming a step this machine does not have (`fda` off macOS) lands on
   // the first one rather than nowhere.
   const found = steps.findIndex((s) => s.id === stepId);
@@ -117,8 +137,12 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (settled.current) return;
     settled.current = true;
     // The server clears its resume step on complete; mirror that in this
-    // page load's memory so a reopen starts at the top, not at step 4.
+    // page load's memory so a reopen starts at the top, not at the last step.
     rememberStep(null);
+    // Same reason, for the Models step's own across-mount memory: a wizard
+    // reopened in this page load should offer a fresh selection, not rows
+    // still reporting a download that has since finished.
+    forgetModelsStep();
     completeOnboarding().catch(() => undefined);
   }, []);
   const finish = useCallback(
@@ -180,20 +204,31 @@ export function OnboardingWizard({ config }: { config: Config }) {
       className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
       aria-label="Set up FusedRender"
     >
-      {/* Top bar: brand · steps · close */}
-      <div className="flex items-center gap-4 border-b border-border px-5 py-3">
+      {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
+          `1fr`, so the middle one is centred on the BAR — not on whatever the
+          brand and the ✕ leave over, which is what `mx-auto` in a flex row
+          gives and which reads as pushed-right (the brand is far wider than
+          the ✕). In flow, so a squeeze shrinks the side tracks instead of
+          painting the pills over the wordmark. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b border-border px-5 py-3">
         <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
           </span>
-          <span className="truncate">Fused Render</span>
+          {/* Only where the pills are actually competing for the row: from
+              `sm` (where they appear) up to 760px (measured as the width at
+              which the centred pills stop leaving the side track room for the
+              wordmark) it would truncate to "Fused Rend…", and the mark alone
+              says it better. Under `sm` the pills are hidden, so the wordmark
+              has the row to itself and stays. */}
+          <span className="truncate sm:max-[760px]:hidden">Fused Render</span>
         </div>
 
         {/* Every step is a link, in both directions: nothing before step 4
             gates anything after it, so a user who knows what they want can go
             straight there. */}
         <ol
-          className="mx-auto my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
+          className="my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
           aria-label="Setup steps"
         >
           {steps.map((s, i) => {
@@ -235,7 +270,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           onClick={() => finish("dismiss")}
           aria-label="Close setup"
           title="Skip for now"
-          className="ml-auto grid size-8 cursor-pointer appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:ml-0"
+          className="col-start-3 grid size-8 cursor-pointer justify-self-end appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="size-4" />
         </button>
@@ -247,6 +282,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
           {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} />}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} />}
+          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} />}
           {step.id === "app" && <FirstAppStep health={health} eyebrow={eyebrow} onComplete={markComplete} />}
         </div>
       </div>

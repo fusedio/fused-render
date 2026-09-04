@@ -141,10 +141,15 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     # calls `start` directly without going through one of those — cheap
     # because prefs.json is a small local file, and `shell.prefs` imports
     # nothing from `index` at module scope, so this is not a cycle.
-    from fused_render.shell.prefs import indexing_enabled
+    from fused_render.shell import index_gate
 
-    if not indexing_enabled():
+    blocked = index_gate.indexing_blocked()
+    if blocked == "disabled":
         raise ValueError("indexing is disabled in Preferences")
+    if blocked == index_gate.FDA_REASON:
+        # A home walk without Full Disk Access reads under every TCC-protected
+        # folder and fires (or silently loses) a prompt per folder.
+        raise ValueError(index_gate.FDA_MESSAGE)
     # The guard runs BEFORE any kernel syscall on the caller's path: it is
     # pure string work against the mount records, while os.path.isdir on a
     # path under a wedged NFS mount blocks the request thread indefinitely

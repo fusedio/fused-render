@@ -626,12 +626,17 @@ export interface IndexRankHit {
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the
 // user flipped a switch in Preferences".
+// `fda` is `disabled`'s sibling: the packaged mac app has no Full Disk Access,
+// so no scan may start (shell/index_gate.py — a home walk would prompt per
+// protected folder). Fixable by the user, but only through a grant plus a
+// relaunch, so the client offers THAT and never a scan.
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
   | "disabled"
+  | "fda"
   | "uncovered"
   | "scanning";
 

@@ -817,6 +817,22 @@ describe("an uncovered index with no scan running offers the scan", () => {
     box.unmount();
   });
 
+  test("no Full Disk Access offers the grant, not a scan", async () => {
+    // The packaged mac app without FDA: no scan may start (shell/index_gate.py),
+    // so "Index my files" would be a button that cannot work. The callout asks
+    // for the grant instead, and the note says nothing on top of it.
+    const box = mount(scanStatus({ scanning: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "fda" })));
+    const cta = findByClass(box, "fh-index-cta-text") as { props: { children: unknown } }[];
+    expect(cta.length).toBe(1);
+    expect(String(cta[0].props.children)).toContain("Full Disk Access");
+    expect(findByClass(box, "fh-index-cta-btn").length).toBe(1);
+    expect(scanCalls).toEqual([]);
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
   test("a permanently uncoverable root offers no scan either", async () => {
     // A button that cannot work is worse than none: no scan will ever cover a
     // mount-backed root.
