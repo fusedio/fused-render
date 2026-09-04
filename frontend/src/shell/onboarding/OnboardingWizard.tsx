@@ -38,7 +38,7 @@ import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
-import { ModelsStep, useModelPicks } from "./ModelsStep";
+import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
 
 type StepId = "about" | "claude" | "fda" | "models" | "app";
 
@@ -137,8 +137,12 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (settled.current) return;
     settled.current = true;
     // The server clears its resume step on complete; mirror that in this
-    // page load's memory so a reopen starts at the top, not at step 4.
+    // page load's memory so a reopen starts at the top, not at the last step.
     rememberStep(null);
+    // Same reason, for the Models step's own across-mount memory: a wizard
+    // reopened in this page load should offer a fresh selection, not rows
+    // still reporting a download that has since finished.
+    forgetModelsStep();
     completeOnboarding().catch(() => undefined);
   }, []);
   const finish = useCallback(

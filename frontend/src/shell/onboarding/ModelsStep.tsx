@@ -22,7 +22,7 @@
 // to different conclusions about the same machine. Comfortable ones start
 // checked; a tight or too-big one is shown, unchecked, with the reason — the
 // selection rule lives in `modelPicks.ts`.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Cpu, HardDrive } from "lucide-react";
 
 import { fitNote } from "@apps/ai_models/shared/fitNote";
@@ -48,6 +48,33 @@ import { StepHeader } from "./StepHeader";
 /** `null` while the catalog is still answering — the wizard reads that as
  *  "unknown", not "none", and keeps the step in the list meanwhile. */
 export type ModelPicks = ModelPick[] | null;
+
+// What this step knows, kept at MODULE level for the reason `state.ts` keeps
+// the resume step there: the wizard mounts a step body per navigation, and
+// every step is a link in both directions — so Start, Next, Back would come
+// back to a step that had forgotten it had started anything. The selection
+// would be re-seeded from the fit verdicts (re-checking boxes the user
+// cleared), the jobs poll would not be running, and the button would offer
+// the whole ~9 GB again. A second Download is harmless server-side (a fetch
+// already in flight is JOINED, supervisor.load) but the step's one promise —
+// that progress is visible HERE, since the wizard route renders without the
+// download manager — would not survive a single Back.
+//
+// Deriving `started` from the jobs list instead would be wrong: D663 keeps a
+// finished or failed row until it is dismissed, so last week's error on the
+// same repo would read as this visit's failure.
+let memory: {
+  checked: Set<string> | null;
+  started: Set<string>;
+  errors: Record<string, string>;
+} = { checked: null, started: new Set(), errors: {} };
+
+/** Forget what the Models step started — called when the wizard completes,
+ *  so a reopened wizard in the same page load offers a fresh selection
+ *  rather than rows still claiming to be downloading. */
+export function forgetModelsStep(): void {
+  memory = { checked: null, started: new Set(), errors: {} };
+}
 
 /** The catalog, once, as picks. Lives at the WIZARD level (like
  *  `useClaudeSetup`) because the step list itself depends on the answer: a
@@ -108,14 +135,32 @@ function useStartedJobs(started: boolean): Job[] {
 }
 
 export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: string }) {
-  const [checked, setChecked] = useState<Set<string> | null>(null);
-  const [started, setStarted] = useState<Set<string>>(new Set());
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // Each of the three is React state for THIS mount and module memory across
+  // mounts — the setters below write both, so a remount seeds from what the
+  // last one left rather than from scratch.
+  const [checked, setCheckedState] = useState<Set<string> | null>(memory.checked);
+  const [started, setStartedState] = useState<Set<string>>(memory.started);
+  const [errors, setErrorsState] = useState<Record<string, string>>(memory.errors);
+  const setChecked = (next: Set<string>) => {
+    memory.checked = next;
+    setCheckedState(next);
+  };
+  const setStarted = (next: Set<string>) => {
+    memory.started = next;
+    setStartedState(next);
+  };
+  const setErrors = (next: Record<string, string>) => {
+    memory.errors = next;
+    setErrorsState(next);
+  };
 
-  // The preselection is seeded ONCE, from the first picks that arrive: a
-  // later render must not re-check a box the user has just cleared.
+  // The preselection is seeded ONCE, from the first picks that arrive: neither
+  // a later render nor a return to this step may re-check a box the user has
+  // cleared, which is why `null` (never seeded) and an empty set (seeded, then
+  // emptied) are different states here.
   useEffect(() => {
     if (picks && checked === null) setChecked(new Set(comfortableIds(picks)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `setChecked` is a per-render closure
   }, [picks, checked]);
 
   const jobs = useStartedJobs(started.size > 0);
@@ -135,35 +180,44 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: str
 
   // Driven by the checkbox's own reported value, not by flipping what this
   // render happened to see: the primitive owns the state transition.
-  const setRow = (id: string, on: boolean) =>
-    setChecked((prev) => {
-      const next = new Set(prev ?? []);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
+  const setRow = (id: string, on: boolean) => {
+    const next = new Set(checked ?? []);
+    if (on) next.add(id);
+    else next.delete(id);
+    setChecked(next);
+  };
 
-  const start = useCallback(() => {
+  const start = () => {
     if (!picks) return;
     const wanted = picks.filter((p) => selection.has(p.model.id) && !started.has(p.model.id));
     if (wanted.length === 0) return;
-    setStarted((prev) => new Set([...prev, ...wanted.map((p) => p.model.id)]));
+    setStarted(new Set([...started, ...wanted.map((p) => p.model.id)]));
+    // A retry drops the previous sentence for the rows it retries: an old 409
+    // printed beside a fresh progress bar reads as a failure that just
+    // happened.
+    const cleared = { ...errors };
+    for (const p of wanted) delete cleared[p.model.id];
+    setErrors(cleared);
     // One request per model, each caught on its own: a 409 on one ("needs
     // Apple Silicon", a partly-fetched cache another page is already pulling)
-    // must not take the others down with it. The server does the queueing —
-    // each call starts its own worker thread and returns immediately.
+    // must not take the others down with it. Each call starts its own worker
+    // thread server-side and returns immediately, and a model already being
+    // fetched JOINS that fetch rather than racing it (supervisor.load).
     for (const p of wanted) {
       downloadAiModel(p.model.id, p.capability).catch((e: unknown) => {
+        // Through `memory` rather than the wrappers above: this lands after an
+        // await, so the closure's `errors`/`started` are a snapshot from
+        // before the other requests in this same batch reported.
         const message = e instanceof Error ? e.message : String(e);
-        setErrors((prev) => ({ ...prev, [p.model.id]: message }));
-        setStarted((prev) => {
-          const next = new Set(prev);
-          next.delete(p.model.id);
-          return next;
-        });
+        memory.errors = { ...memory.errors, [p.model.id]: message };
+        setErrorsState(memory.errors);
+        const remaining = new Set(memory.started);
+        remaining.delete(p.model.id);
+        memory.started = remaining;
+        setStartedState(remaining);
       });
     }
-  }, [picks, selection, started]);
+  };
 
   const pending = picks
     ? picks.filter((p) => selection.has(p.model.id) && !started.has(p.model.id))
