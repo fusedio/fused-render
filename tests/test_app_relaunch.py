@@ -187,6 +187,63 @@ def test_begin_relaunch_is_a_noop_when_the_disk_version_is_unknown():
     assert calls == []
 
 
+def test_same_version_relaunch_skips_only_the_staleness_check():
+    # fused-render://relaunch?reason=fda: a Full Disk Access grant applies to
+    # the NEXT process, so respawning the very same version is the point.
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: (on_claim(), calls.append("quit"))[1] or True,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda bundle, pid: calls.append(("spawn", bundle, pid)),
+        running="0.5.0", installed="0.5.0",
+        same_version=True, fda_granted=lambda: False,
+    )
+    assert started is True
+    assert calls == [("spawn", "/Applications/FusedRender.app", os.getpid()), "quit"]
+
+
+def test_same_version_relaunch_is_a_noop_once_this_process_has_the_grant():
+    # The OS may launch a FRESH instance just to deliver the link (a second
+    # click after the old pid died, or a cold start). That instance already
+    # has the grant — quitting it would re-run the pidfile race the version
+    # guard exists to avoid. Inconclusive (None) is also a no-op: nothing a
+    # relaunch would provably change.
+    for verdict in (True, None):
+        calls = []
+        started = app_mod.begin_relaunch(
+            quit_action=lambda on_claim=None: calls.append("quit") or True,
+            bundle="/Applications/FusedRender.app",
+            spawn=lambda *a: calls.append(a),
+            same_version=True, fda_granted=lambda: verdict,
+        )
+        assert started is False
+        assert calls == []
+
+
+def test_same_version_relaunch_still_needs_a_bundle(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: calls.append("quit") or True,
+        spawn=lambda *a: calls.append(a),
+        same_version=True, fda_granted=lambda: False,
+    )
+    assert started is False
+    assert calls == []
+
+
+def test_same_version_relaunch_joins_a_quit_already_in_flight():
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: False,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda *a: calls.append(a),
+        same_version=True, fda_granted=lambda: False,
+    )
+    assert started is False
+    assert calls == []
+
+
 def test_quit_action_reports_whether_it_claimed_the_teardown():
     # begin_relaunch's no-respawn guard rides this bool: the first quit from
     # any surface claims the teardown, every later one joins it.
