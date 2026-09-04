@@ -23,9 +23,12 @@ const EXCLUDED_CAPABILITY = "text-to-video";
 
 export interface ModelPick {
   capability: string;
-  /** What the model DOES, in words — the caption beside its name. */
+  /** What the model DOES, in words — the caption beside its name. The runner
+   *  ("MLX LM", "MLX FLUX") is deliberately NOT carried: a first-run reader
+   *  deciding whether to spend the download is not choosing a backend, and
+   *  naming one only invites a question they cannot act on. It is on the
+   *  /ai-models card, where somebody comparing engines will be. */
   capabilityLabel: string;
-  runnerShortLabel: string | null;
   model: AiCatalogModel;
 }
 
@@ -43,7 +46,6 @@ export function modelPicks(capabilities: AiCatalogCapability[]): ModelPick[] {
     picks.push({
       capability: cap.capability,
       capabilityLabel: capabilityLabel(cap.capability),
-      runnerShortLabel: cap.runnerShortLabel,
       model,
     });
   }

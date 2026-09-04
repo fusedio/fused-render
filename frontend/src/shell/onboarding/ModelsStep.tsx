@@ -23,9 +23,10 @@
 // checked; a tight or too-big one is shown, unchecked, with the reason — the
 // selection rule lives in `modelPicks.ts`.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Cpu, HardDrive } from "lucide-react";
+import { AlertTriangle, Check, HardDrive } from "lucide-react";
 
 import { fitNote } from "@apps/ai_models/shared/fitNote";
+import { modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { downloadAiModel, getAiCatalog } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import {
@@ -313,7 +314,17 @@ function ModelRow({
 }) {
   const { model } = pick;
   const fit = fitNote(model.fit);
-  const size = model.size_gb == null ? null : formatSize(model.size_gb * 1e9);
+  // `modelSizeLabel`, not a local formatting of `size_gb`: it is the same
+  // never-understate reading /ai-models prints (a live download's own total
+  // may raise the catalog's constant, a `phase` total may not lower it), and
+  // the same em-dash for a model that publishes no size.
+  const size = modelSizeLabel(model.size_gb, job);
+  // The NICKNAME is the whole name here (`catalog.py`: "Qwen 3.5", not
+  // "Qwen3.5 4B (OptiQ 4-bit)"), and the parameter count that /ai-models
+  // prints beside it as a chip is left out on purpose — this reader is
+  // deciding whether to spend the download, and "4B" is not an input to that
+  // (owner, 2026-09-04). Same for the engine: "MLX LM" answers a question
+  // only somebody comparing backends is asking.
   const name = model.nickname || model.label;
   // A fresh install builds the runner's environment before any bytes move
   // (`supervisor._env_install_worker`, states `venv` -> `downloading`), so the
@@ -348,29 +359,31 @@ function ModelRow({
             className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium"
           >
             {name}
-            {model.params && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
-                {model.params}
-              </span>
-            )}
             <span className="text-xs font-normal text-muted-foreground">{pick.capabilityLabel}</span>
           </label>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <Cpu className="size-3" />
-              {pick.runnerShortLabel ?? "on this machine"}
-            </span>
-            <span>{finished && !job ? "Already on this machine" : (size ?? "size unknown")}</span>
-            {fit && (
-              <span className="inline-flex items-center gap-1.5" title={fit.title}>
-                <span className={`size-1.5 rounded-full ${fit.dot}`} />
-                {fit.text}
-              </span>
-            )}
-          </div>
+          {fit && (
+            <div
+              className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+              title={fit.title}
+            >
+              <span className={`size-1.5 rounded-full ${fit.dot}`} />
+              {fit.text}
+            </div>
+          )}
           {model.note && !job && (
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{model.note}</p>
           )}
+        </div>
+
+        {/* The size is the number this step is ASKING FOR — disk space and a
+            wait — so it gets the right edge and its own weight rather than
+            third place in a row of captions. Tabular figures so a column of
+            them lines up. */}
+        <div className="shrink-0 text-right">
+          <div className="text-sm font-semibold tabular-nums">{size}</div>
+          <div className="text-xs text-muted-foreground">
+            {finished ? "already here" : "download"}
+          </div>
         </div>
       </div>
 
