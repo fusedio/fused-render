@@ -15056,6 +15056,7 @@ async function sendFollowUp(text) {
   const pending = annPending();
   const pics = shotAttached;
   if (pics.length) { shotAttached = []; renderAnn(); }
+  let bareTurn = null;
   if (text) {
     addUser(text);
   } else if (pending.length || pics.length) {
@@ -15063,6 +15064,7 @@ async function sendFollowUp(text) {
     // Same ordering discipline as addUser above — insert before the live
     // status line rather than appending after it.
     const bare = document.createElement("div");
+    bareTurn = bare;
     bare.className = "turn user";
     const working = log.querySelector(".turn.working");
     if (working) log.insertBefore(bare, working);
@@ -15090,16 +15092,31 @@ async function sendFollowUp(text) {
     annSave();
   }
   // The notes are stamped `sent` above, before the inbox write — and every
-  // failure below is one the claude never saw. Give them back as pending (and
-  // pull the receipt) so the chips return and Done can send them again;
-  // sendMessage does the same for a run that never launched (Bugbot, PR #996).
+  // failure below is one the claude never saw. Give everything back, the way
+  // sendMessage does for a run that never launched (Bugbot, PR #996): the
+  // notes as pending so the chips return and Done can send them again, the
+  // pictures to the composer (the user attached them deliberately and may not
+  // be able to retake them), and the receipt and the wordless ghost row go.
+  //
+  // The notes are put BACK INTO the list, not merely un-marked: the usual way
+  // a follow-up fails is the session having already ended, and pollLoop's
+  // annResolveSent has by then dropped every sent note from `annotations` —
+  // flipping the flag on a snapshot nothing holds would persist a list
+  // without them. Re-appended in order, skipping any that are still there.
   let receipt = null;
   const giveBack = () => {
     if (receipt) receipt.remove();
+    if (bareTurn) bareTurn.remove();
     if (pending.length) {
-      for (const c of pending) c.sent = 0;
+      for (const c of pending) {
+        c.sent = 0;
+        if (!annotations.some((a) => a.id === c.id)) annotations.push(c);
+      }
       annSave();
     }
+    // Prepended, so a picture attached WHILE the send was in flight keeps its
+    // place after the ones that were already waiting.
+    if (pics.length) { shotAttached = pics.concat(shotAttached); renderAnn(); }
   };
   if (pending.length || pics.length) {
     const turns = log.querySelectorAll(".turn.user");

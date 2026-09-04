@@ -266,8 +266,15 @@ def test_a_failed_follow_up_gives_the_notes_back(html):
     does for a run that never launched (Bugbot, PR #996)."""
     body = _block(html, "async function sendFollowUp(text)", "\n}\n")
     assert "const giveBack = () => {" in body
-    assert "for (const c of pending) c.sent = 0;" in body
-    assert "if (receipt) receipt.remove();" in body
+    give = _block(body, "const giveBack = () => {", "\n  };\n")
+    # back INTO the list, not just un-marked: annResolveSent has usually already
+    # dropped a sent note by the time a follow-up fails (session ended)
+    assert "if (!annotations.some((a) => a.id === c.id)) annotations.push(c);" in give
+    assert "c.sent = 0;" in give
+    assert "if (receipt) receipt.remove();" in give
+    assert "if (bareTurn) bareTurn.remove();" in give, "the wordless ghost row goes too"
+    assert "shotAttached = pics.concat(shotAttached); renderAnn();" in give, \
+        "attached pictures come back to the composer, as sendMessage's rollback does"
     assert body.count("giveBack();") == 3, "no run, not sent, and thrown"
     assert body.index("giveBack();") < body.index('"Could not send: no run to attach')
 
