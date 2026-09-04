@@ -1,11 +1,15 @@
 """Command-line entry point.
 
-Two subcommands:
+Three subcommands:
   * ``fused-render serve`` (the default when no subcommand is given, preserving the
     original ``fused-render [--start-dir DIR] [--port N]`` invocation) — the local
     127.0.0.1 file explorer.
   * ``fused-render calls`` — read the app call log (calls.py) from a terminal.
     Reads the store directly off disk, so it works with no server running.
+  * ``fused-render doctor`` — run app_doctor.check() over an app folder (or a
+    folder of them) from a terminal. Needs no server either — it is the same
+    engine the community-apps repo's own CI workflow runs on every push, so a
+    developer reproducing a failing check does it with this exact command.
 
 Packing a renderable page into a portable bundle for hosted serving is a
 ``POST /api/export`` call on the running server (see server.py/export.py), not a
@@ -30,7 +34,7 @@ DEFAULT_PORT = branch_port()
 
 # Subcommand names; anything else as argv[1] falls through to the implicit `serve`
 # so the historical bare `fused-render --port 9000` invocation keeps working.
-_SUBCOMMANDS = ("serve", "calls")
+_SUBCOMMANDS = ("serve", "calls", "doctor")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,6 +83,22 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="wait for new records to appear, then print and exit")
     calls.add_argument("--timeout", type=float, default=60.0,
                        help="seconds --follow waits before giving up (default: 60)")
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="review an app for secrets, device-specific paths, and other issues",
+        description="Run the App Doctor (app_doctor.check()) over an app folder. "
+                    "Given a folder that is not itself an app, reviews every "
+                    "top-level folder that is one (repo mode) — see "
+                    "app_doctor.py for what each check family looks for.",
+    )
+    doctor.add_argument("path", nargs="?", default=".",
+                        help="app folder, or a folder of app folders (default: .)")
+    doctor.add_argument("--json", action="store_true", dest="as_json",
+                        help="machine-readable output")
+    doctor.add_argument("--check", action="store_true",
+                        help="exit non-zero when a HIGH-severity finding fired "
+                             "(a LOW one never fails a run)")
     return parser
 
 
@@ -487,6 +507,48 @@ def _run_calls(args: argparse.Namespace) -> None:
         print(f"\ncursor: {page['cursor']}   (pass to --since-cursor for only what is new)")
 
 
+def _run_doctor(args: argparse.Namespace) -> None:
+    """Run app_doctor.check() over `args.path` and report.
+
+    Grouped-by-family human output, or `--json` for a machine reader — the
+    same two shapes `calls` offers, and for the same reason: a person wants
+    the shape below, a script wants records. `--check` is the only thing
+    that turns a finding into a failed run, and only a HIGH one does that
+    (see app_doctor.severity) — LOW findings are always reported and never
+    exit non-zero, so a housekeeping nag never blocks a push the way a
+    leaked key should.
+    """
+    import json as _json
+
+    from fused_render import app_doctor
+
+    path = os.path.abspath(args.path)
+    findings = app_doctor.check(path)
+    ok = not any(f["severity"] == "high" for f in findings)
+
+    if args.as_json:
+        print(_json.dumps({"ok": ok, "path": path, "findings": findings},
+                          indent=2, default=str))
+    elif not findings:
+        print(f"no findings — {path} looks clean")
+    else:
+        by_family: dict[str, list] = {}
+        for f in findings:
+            by_family.setdefault(f["rule"].split(":", 1)[0], []).append(f)
+        for family in sorted(by_family):
+            group = by_family[family]
+            label = group[0]["severity"].upper()
+            print(f"\n{family} ({label}):")
+            for f in group:
+                where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
+                print(f"  {where}  {f['excerpt']}")
+        print(f"\n{len(findings)} finding(s), "
+              f"{'ok' if ok else 'FAILING'} under --check")
+
+    if args.check and not ok:
+        sys.exit(1)
+
+
 def main() -> None:
     parser = _build_parser()
 
@@ -500,6 +562,9 @@ def main() -> None:
     args = parser.parse_args(argv)
     if args.command == "calls":
         _run_calls(args)
+        return
+    if args.command == "doctor":
+        _run_doctor(args)
         return
     _run_serve(args)
 
