@@ -373,3 +373,90 @@ tab's own catalog scan, a different module doing a different job that was
 never part of this doctor), and a few incidental `["app"]`-shaped string
 matches in unrelated tests that the broad grep pattern happens to also
 match.
+
+## Post-build: the api-misuse family leaves the engine — the skill routes instead
+
+The user's own words: "claude code can use the fused-render-ai, etc skills
+to evaluate the app better." They were right, and a code review had already
+caught the concrete symptom: `api-misuse` fired HIGH on `render.fused.io`
+sitting inside an ordinary link, because the whole check was ever only "does
+this name exist on `window.fused`" — never "is it being called correctly".
+This repo ships nine skills that each own one API surface authoritatively
+and stay current with the runtime independently of this engine; duplicating
+a sliver of that judgment in a regex was always going to rot, and the repo
+review just proved it had.
+
+**Deleted from `fused_render/app_doctor.py`:** `KNOWN_FUSED_MEMBERS`,
+`KNOWN_NAMESPACED_MEMBERS`, `_FUSED_CALL_RE`, `_check_api_usage`, its call
+site in `check()`, and the `"api-misuse"` entry in `_SEVERITY`. The module
+docstring's severity section no longer claims HIGH covers "a call the
+runtime does not expose" — HIGH is now just secrets and device paths.
+Deleted `tests/test_app_doctor_api.py` in full, runtime.js parity test
+included — with the family gone there was nothing left to pin against the
+runtime source.
+
+**`api-version` stays.** Comparing a page's declared `fused-api-version`
+against `CURRENT_API_VERSION` is a version comparison, not a judgment call,
+so it's still mechanical and still belongs in the engine. Only its
+remediation advice moved to the skill, which now routes it to
+`fused-render-api-migration`.
+
+**The engine now has five families**: `secrets` and `device-path` at HIGH,
+`structure`, `api-version`, and `generated` at LOW. `cli.py`'s `--check`
+exit logic (`not any(f["severity"] == "high" for f in findings)`) was
+already keyed off severity, not family name, so it needed no change and
+still fails a run on either remaining HIGH family.
+
+**The skill's mapping, read from each skill's own `description:` line, not
+guessed from its name:**
+
+| App touches | Routes to | Justified by |
+|---|---|---|
+| `fused.ai` (text/image/video/transcribe/embed), model/provider choice | `fused-render-ai` | description literally lists `fused.ai (text/image/video/transcribe/embed)` |
+| `fused.runPython`, `fused.params`, general `.html`/`.py` authoring | `fused-render-authoring` | description names `runPython, params` directly |
+| `fused.trackJob` / `fused.watchJob`, the 60s `runPython` timeout | `fused-render-jobs` | description says "runPython 60 s timeout ... fused.trackJob" |
+| `fused.fileIndex` | `fused-render-index` | description names `fused.fileIndex` directly |
+| `fused.capture` | `fused-render-capture` | description names `fused.capture` directly |
+| `fused.daemon`, `[tool.fused-render.app]` | `fused-render-background-apps` | description names `fused.daemon` and `[tool.fused-render.app]` directly |
+| `api-version:behind` finding | `fused-render-api-migration` | description covers "stale/missing fused-api-version meta" |
+| `structure:bad-icon` finding | `fused-render-app-icon` | description covers "adding/changing/fixing app's icon.svg" |
+
+`fused-render-theming` and `fused-render-usage` were read and left out: their
+descriptions cover light/dark following and opening/running an app, neither
+of which names a `fused.*` call surface a doctor finding routes to.
+`fused-render-custom-templates` was likewise read and left out for the same
+reason — it's about registering preview templates, not a runtime call
+surface.
+
+**Skill rewrite.** `skills/fused-render-app-doctor/SKILL.md`'s "Judgment
+pass" section — the one that hand-wrote advice about unawaited promises,
+`.fused/`-relative cache paths, and per-keystroke `runPython` — is gone
+outright, replaced by "Judging the app's actual `fused.*` calls": a mapping
+table plus one sentence saying outright this pass needs a reader and so is
+not in `app-check.yml`, without restating any routed skill's own guidance.
+The per-family list's `api-misuse` row is gone; the `api-version` and
+`structure` rows now name which skill to load for their remediation instead
+of describing the fix inline. The frontmatter `description:` line dropped
+its now-false "or setting up checks for a repo of apps" clause (repo mode
+was removed in the prior build phase) and otherwise kept its existing
+"Use when reviewing or sharing an app — checking for X, Y, or Z" shape,
+matching the terse, trigger-led style the other eight `fused-render-*`
+skills use.
+
+Checked `skills/fused-render-app-doctor/ci/app-check.yml` for any mention of
+the API check: none found (`grep -n "api-misuse\|window.fused\|unknown-member"`
+came back empty) — the workflow only ever ran `fused-render doctor --check`
+as a black box, so it needed no edit.
+
+**Verification.** Scoped suite:
+`pytest tests/test_app_doctor.py tests/test_app_doctor_cli.py
+tests/test_app_doctor_housekeeping.py tests/test_skill_plugin.py -q` —
+106 passed (113 minus the 7 that lived in `test_app_doctor_api.py`).
+`git grep -n "api-misuse\|KNOWN_FUSED_MEMBERS\|KNOWN_NAMESPACED_MEMBERS\|
+_check_api_usage\|_FUSED_CALL_RE\|test_app_doctor_api"` turns up nothing
+outside this file's own decisions-log history. Ran the CLI engine directly
+against a throwaway fixture app (an `index.html` with a link to
+`https://render.fused.io/docs` and a `<script>` calling
+`fused.summarizeText(...)`, plus a `README.md`) and confirmed neither
+produces a finding — the only finding reported was the unrelated
+`structure:missing-thumbnail` from the fixture having no `preview.png`.
