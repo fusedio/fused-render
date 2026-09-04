@@ -1,0 +1,123 @@
+name: app-check
+
+# Installed by `fused-render-app-doctor` into whatever repo an app lives in,
+# alongside `.github/app_check.py` — see that skill's SKILL.md for the setup
+# procedure. `app_check.py` only knows how to review ONE app folder — it has
+# no idea the repo it lives in exists, or how many apps are in it. So this
+# workflow works out the shape of the repo itself, then loops:
+#
+#   - the repo root IS an app (it carries its own index.html) — check
+#     just that one folder, or
+#   - the repo root is a folder OF apps — check every top-level folder that
+#     carries an index.html.
+#
+# The entry page is the marker because it is the one file every app has:
+# `metadata.json` is optional catalog data that most apps never write, and a
+# repo keyed on it would quietly check nothing and pass.
+#
+# Either way, each app gets the same two checks: `python app_check.py` and,
+# if it has any, its own tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  # Mirrors fused-render's own test.yml: a PR number is unique repo-wide,
+  # unlike head_ref, so two branches that happen to share a name never land
+  # in the same group and cancel each other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Review each app and run its own tests
+        # Find the app folders first (the repo root itself, if it carries an
+        # index.html, otherwise every top-level folder that does), then one
+        # loop, two checks per app:
+        #
+        #   1. `python .github/app_check.py "$app"` — the same script and
+        #      the same severity rule a developer runs locally, pointed at
+        #      just this one app folder. Stdlib only, so it needs nothing
+        #      installed.
+        #   2. That app's own tests, when it has any — gated on an actual
+        #      test_*.py/*_test.py existing somewhere under the app, not
+        #      merely on a `tests/` directory existing. `pytest` is only
+        #      installed once a folder actually needs it. Install that app's
+        #      declared dependencies first if a pyproject.toml exists; pip
+        #      parses and installs them. An app's pyproject is often a
+        #      dependency list rather than a buildable package (`package =
+        #      false` and friends), so an install that fails is a reason to
+        #      skip that app's tests with a warning annotation, not to fail
+        #      the repo — the alternative is a permanently red check that
+        #      says nothing about the app. Exit 5
+        #      from pytest is "no tests collected" — reachable even after
+        #      the test_files gate (every matching file skipped), and means
+        #      nothing failed, only that there was nothing to run.
+        run: |
+          set -e
+          status=0
+
+          if [ -f "index.html" ]; then
+            apps="."
+          else
+            apps=""
+            for d in */; do
+              d="${d%/}"
+              [ -f "$d/index.html" ] || continue
+              apps="$apps $d"
+            done
+          fi
+
+          if [ -z "$apps" ]; then
+            echo "No app folders found (no index.html at the repo root or in any top-level folder) — nothing to check."
+            exit 0
+          fi
+
+          for app in $apps; do
+            echo "::group::doctor $app"
+            python .github/app_check.py "$app" || status=1
+            echo "::endgroup::"
+
+            test_files=$(find "$app" \( -name 'test_*.py' -o -name '*_test.py' \) -type f 2>/dev/null)
+            if [ -z "$test_files" ]; then
+              continue
+            fi
+
+            echo "::group::pytest $app"
+            pip install pytest
+            if [ -f "$app/pyproject.toml" ]; then
+              if ! pip install -e "$app"; then
+                echo "::warning::could not install $app's declared dependencies — skipping its tests"
+                echo "::endgroup::"
+                continue
+              fi
+            fi
+
+            set +e
+            python -m pytest "$app" -q
+            rc=$?
+            set -e
+            # Exit 5 is pytest's "no tests were collected" — reachable even
+            # after the test_files gate above (every matching file skipped,
+            # or empty), and it means nothing failed, only that there was
+            # nothing to run.
+            if [ "$rc" != 0 ] && [ "$rc" != 5 ]; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
