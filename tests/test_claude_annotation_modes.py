@@ -276,6 +276,10 @@ def test_a_failed_follow_up_gives_the_notes_back(html):
     assert "shotAttached = pics.concat(shotAttached); renderAnn();" in give, \
         "attached pictures come back to the composer, as sendMessage's rollback does"
     assert body.count("giveBack();") == 3, "no run, not sent, and thrown"
+    # the stream-split counter bumps only once the inbox took the message — a
+    # rolled-back send must not read to pollLoop as a landed follow-up
+    assert body.count("followupSeq++;") == 1
+    assert body.index("followupSeq++;") > body.index('"Could not send: the session ended')
     assert body.index("giveBack();") < body.index('"Could not send: no run to attach')
 
 

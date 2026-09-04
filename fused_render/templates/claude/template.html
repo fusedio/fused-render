@@ -15070,11 +15070,15 @@ async function sendFollowUp(text) {
     if (working) log.insertBefore(bare, working);
     else log.appendChild(bare);
   }
-  // A follow-up landed as its own bubble above — bump so any pollLoop
-  // streaming into an OLDER assistant bubble (positioned before this one)
-  // knows to start a NEW one after it, rather than keep growing text that
-  // would render above the reader's own just-sent message.
-  followupSeq++;
+  // The follow-up's bubble is above; the `followupSeq` bump that tells a
+  // streaming pollLoop to start a NEW assistant bubble after it happens only
+  // once the inbox has taken the message (below). Bumping here, before the
+  // send was known to land, left a failed send with a counter that pollLoop
+  // read as a landed follow-up: the reply split around the gap where the
+  // rolled-back row had been, and nothing could safely un-bump it (Bugbot,
+  // PR #996). Text that streams during the short wait for the ack belongs to
+  // what the claude was saying before the follow-up reached it, so it stays
+  // in the bubble above.
   scrollBottom();
   pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
   const wireViews = pics.map((s) => {
@@ -15182,7 +15186,14 @@ async function sendFollowUp(text) {
     if (!res || !res.sent) {
       giveBack();
       addError("Could not send: the session ended before this reached it.");
+      return;
     }
+    // A follow-up landed as its own bubble above — bump so any pollLoop
+    // streaming into an OLDER assistant bubble (positioned before this one)
+    // knows to start a NEW one after it, rather than keep growing text that
+    // would render above the reader's own just-sent message. Here, after the
+    // inbox took it, and not at insert time — see the note beside the row.
+    followupSeq++;
   } catch (err) {
     giveBack();
     addError("Could not send: " + err.message);
