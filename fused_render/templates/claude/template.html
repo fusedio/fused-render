@@ -6110,6 +6110,11 @@ annToolElBtn.addEventListener("click", () => annSetTool("element"));
 annToolPtBtn.addEventListener("click", () => annSetTool("point"));
 let annDraft = null;    // anchor of a NEW note being composed
 let annEditing = null;  // id of an existing pending note being edited
+// When the mode was last ARMED. Pins are drawn only for notes saved since
+// (Akshil, 2026-09-04): each arm is a fresh round over a clean app — older
+// notes still pending from an earlier round keep their chips
+// (they still send) but no longer mark the page the reader is now reading.
+let annRoundStart = 0;
 // Pins follow the mode: annotating shows the comment pins over the app, leaving
 // the mode hides them. Chips above the composer are the send payload and stay
 // visible either way.
@@ -6250,6 +6255,14 @@ function renderAnn() {
   // the same box is the target document's own viewport (annSyncTarget).
   const host = annStageEl;
   annotations.forEach((c, i) => {
+    // A SENT note draws no pin (Akshil, 2026-09-04). It used to stay on the app
+    // as a muted ✓ until the run finished and annResolveSent dropped it, which
+    // meant the next round of commenting was done over last round's marks. The
+    // note itself is kept until then — the receipt and a failed send's
+    // un-marking (`c.sent = 0`) still read it — it just stops being a pin.
+    // Likewise a note from an EARLIER round (see annRoundStart): its chip is
+    // the whole of its presence now.
+    if (c.sent || (c.createdAt || 0) < annRoundStart) return;
     let x, y;
     if (c.kind === "point") {
       // No element to resolve — the anchor IS the coordinate, converted back
@@ -6734,10 +6747,16 @@ annDelBtn.addEventListener("click", () => {
 // Nothing here awaits any more: a note's picture is the send-time overview
 // screenshot (annCaptureOverview), taken once for the whole message rather
 // than per note at save time.
+//
+// SAVE ONLY — nothing is sent from here (Akshil, 2026-09-04). A saved note
+// used to go to Claude the moment Enter landed, which turned the FIRST note of
+// a review into a run and left the reader giving feedback to a model already
+// acting on half of it. Notes now pool as pending until ✓ Done (annDone), the
+// same shape a recorded walkthrough already has: many marks, one send when the
+// mode ends. Esc out of the mode leaves them pending for the next message.
 async function annCommit() {
   const content = annTa.value.trim();
-  const isNew = !!(content && annDraft);
-  if (isNew) {
+  if (content && annDraft) {
     annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
     annSave();
   } else if (content && annEditing) {
@@ -6745,12 +6764,6 @@ async function annCommit() {
     if (c && !c.sent) { c.content = content; annSave(); }
   }
   annCloseComposer();
-  // Auto-send fires for NEW notes only — editing an existing pending note must
-  // not send. Skipped while a turn is in flight (the note stays pending and
-  // rides the next message). The message may be EMPTY — an annotation-only
-  // send is the normal case — and whatever the user already typed in the
-  // composer is theirs and rides along as the message's own words.
-  if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
   // stopPropagation, because the document-level Escape binding would otherwise
@@ -6762,6 +6775,46 @@ annTa.addEventListener("keydown", (e) => {
     annCommit();
   }
 });
+// Typing in a PORTALED composer must not reach the app (Akshil, 2026-09-04).
+// Hosted, the textarea is a node of the target's document, so every keystroke
+// bubbles out of the layer's shadow root into that document's own listeners —
+// and an app with a document-level "any key focuses the search box" handler
+// pulled focus mid-keystroke, so the letters landed in ITS input and the note
+// stayed empty. The events stop at the composer's own root; the app hears
+// nothing while the reader is writing to Claude.
+//
+// On #annpop rather than the textarea because the whole card is the composer
+// (the Delete button included), and on the node rather than the layer host
+// because the node is what travels — the parked seat needs none of this (the
+// chat column's own bindings are ours, and gated on their popups), so it is
+// skipped there. Bubble phase, deliberately: a capture listener on the card
+// would stop the event BEFORE it reached the textarea's own keydown handler,
+// and Enter and Escape live there.
+//
+// Two halves. Stopping the bubble is the whole fix for bubble-phase listeners;
+// a CAPTURE-phase listener on the app's document has already run by the time
+// the event reaches the composer, and if it moved focus the character about to
+// be inserted (the default action runs after dispatch) would still land in the
+// app's field. So focus is also taken back, synchronously, on every keydown:
+// the default action then inserts into the textarea after all.
+const ANN_KEY_EVENTS = ["keydown", "keyup", "keypress", "input", "beforeinput",
+  "compositionstart", "compositionupdate", "compositionend"];
+for (const type of ANN_KEY_EVENTS) {
+  annPop.addEventListener(type, (e) => {
+    // Asked of the EVENT, not only the node: Enter's own handler ran first
+    // (target phase) and already brought the composer home — annPortaled() is
+    // false by the time the bubble gets here, while the event is still
+    // walking the app document's path. `view` is the window the key landed in.
+    if (!annPortaled() && !(e.view && e.view !== window)) return;
+    e.stopPropagation();
+    if (type === "keydown" && annPop.style.display === "block") {
+      const doc = annPop.ownerDocument;
+      const host = doc.activeElement;
+      const deep = host && host.shadowRoot ? host.shadowRoot.activeElement : host;
+      if (deep !== annTa && !annPop.contains(deep)) annTa.focus();
+    }
+  });
+}
 
 
 // The idle tooltip, as a function because it has TWO writers — applyPaneNoun sets
@@ -6906,7 +6959,7 @@ function annSetMode(on) {
   // Every ARM gets a number, so a disarm decided long ago (annRecEnd's, after
   // an await) can tell "the mode I armed" from "a mode the user re-armed
   // while I was transcribing" and leave the second one alone (Bugbot, #644).
-  if (on) annArmEpoch += 1;
+  if (on) { annArmEpoch += 1; annRoundStart = Date.now(); }
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
   // this. `annmode` is effectively-off: only an explicit "1" means armed, and
@@ -6996,13 +7049,14 @@ function annSetMode(on) {
 // job now — the seat that used to toggle the mode off IS the Done button.
 annBtn.addEventListener("click",
   () => (annRecOn ? annRecEnd() : annOn ? annDone() : annSetMode(true)));
-// Done: the typed-comment mode's exit that also delivers. A composer still
-// open with words in it is committed FIRST — Done means "send what I said",
-// and the mousedown exemption above is what kept that draft alive this far —
-// through the same annCommit the Enter key uses (save, auto-send). Then any
-// notes the auto-send guard left pending (a turn was in flight) flush with a
-// bare auto-submit — the notes ARE the content, nothing is seeded — and the
-// mode goes away.
+// Done: the typed-comment mode's exit that also delivers — and the ONLY send
+// the typed mode has (annCommit saves, never sends). A composer still open
+// with words in it is committed FIRST — Done means "send what I said", and the
+// mousedown exemption above is what kept that draft alive this far — through
+// the same annCommit the Enter key uses. Then every pending note flushes in
+// ONE bare auto-submit — the notes ARE the content, nothing is seeded — and
+// the mode goes away. A turn already in flight leaves them pending; they ride
+// the next message instead.
 //
 // One at a time (Bugbot, PR #664): annCommit's await could span a second
 // Done click, which would see no open composer, read the just-saved note as
@@ -7017,7 +7071,12 @@ async function annDone() {
       await annCommit();
     }
     const pending = annotations.some((a) => a.content && !a.sent);
-    if (pending && !sending) annAutoSubmit();
+    // A live run is not a reason to hold the notes back (Akshil, 2026-09-04):
+    // submitChat hands an annotation-only send to the running claude as a
+    // follow-up (sendFollowUp), the same way words typed during a run go.
+    // Only the `sending` window before a run has an id — or a loadHistory /
+    // resume probe holding the flag — leaves them pending for the next message.
+    if (pending && (activeRun || !sending)) annAutoSubmit();
     annSetMode(false);
   } finally {
     annDoneBusy = false;
@@ -7503,7 +7562,7 @@ async function annRecEnd() {
     // send, instead of evaporating because the walkthrough ended mid-turn.
     if (spoke || intro) {
       annPrefillComposer(intro);
-      if (!sending) annAutoSubmit();
+      if (activeRun || !sending) annAutoSubmit();  // a live run gets it as a follow-up — see annDone
     }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
@@ -7677,8 +7736,10 @@ function annPollTarget() {
   else { annSetMode(false); renderAnn(); }
 }
 
-// Auto-send: a saved NEW note goes to Claude immediately, always — there is no
-// off switch. The `filled`/`sending` guards below are the only gates.
+// The notes' one door to Claude: ✓ Done (annDone) for typed notes, the stop of
+// a recording (annRecEnd) for spoken ones — both send EVERY pending note in one
+// message. There is no off switch; the callers' `sending` guards are the only
+// gates.
 //
 // This is the one path that starts a run while the transcript may be OFF SCREEN:
 // notes are saved in the narrow layout's Preview view, where #log is collapsed
@@ -7688,7 +7749,10 @@ function annPollTarget() {
 // Deliberately not a gate here: refusing to send from Preview would take away the
 // feature instead of fixing where its output lands.
 function annAutoSubmit() {
-  if (chatEl.classList.contains("home")) document.getElementById("card").requestSubmit();
+  // The home form's submit is Stop while a run is live; an auto-send must
+  // never press it. (Home with a live run should not happen — the first send
+  // leaves home — but a wrong guess here would kill the reader's run.)
+  if (chatEl.classList.contains("home") && !activeRun) document.getElementById("card").requestSubmit();
   else submitChat();
 }
 
@@ -14992,6 +15056,7 @@ async function sendFollowUp(text) {
   const pending = annPending();
   const pics = shotAttached;
   if (pics.length) { shotAttached = []; renderAnn(); }
+  let bareTurn = null;
   if (text) {
     addUser(text);
   } else if (pending.length || pics.length) {
@@ -14999,16 +15064,21 @@ async function sendFollowUp(text) {
     // Same ordering discipline as addUser above — insert before the live
     // status line rather than appending after it.
     const bare = document.createElement("div");
+    bareTurn = bare;
     bare.className = "turn user";
     const working = log.querySelector(".turn.working");
     if (working) log.insertBefore(bare, working);
     else log.appendChild(bare);
   }
-  // A follow-up landed as its own bubble above — bump so any pollLoop
-  // streaming into an OLDER assistant bubble (positioned before this one)
-  // knows to start a NEW one after it, rather than keep growing text that
-  // would render above the reader's own just-sent message.
-  followupSeq++;
+  // The follow-up's bubble is above; the `followupSeq` bump that tells a
+  // streaming pollLoop to start a NEW assistant bubble after it happens only
+  // once the inbox has taken the message (below). Bumping here, before the
+  // send was known to land, left a failed send with a counter that pollLoop
+  // read as a landed follow-up: the reply split around the gap where the
+  // rolled-back row had been, and nothing could safely un-bump it (Bugbot,
+  // PR #996). Text that streams during the short wait for the ack belongs to
+  // what the claude was saying before the follow-up reached it, so it stays
+  // in the bubble above.
   scrollBottom();
   pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
   const wireViews = pics.map((s) => {
@@ -15025,10 +15095,38 @@ async function sendFollowUp(text) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
+  // The notes are stamped `sent` above, before the inbox write — and every
+  // failure below is one the claude never saw. Give everything back, the way
+  // sendMessage does for a run that never launched (Bugbot, PR #996): the
+  // notes as pending so the chips return and Done can send them again, the
+  // pictures to the composer (the user attached them deliberately and may not
+  // be able to retake them), and the receipt and the wordless ghost row go.
+  //
+  // The notes are put BACK INTO the list, not merely un-marked: the usual way
+  // a follow-up fails is the session having already ended, and pollLoop's
+  // annResolveSent has by then dropped every sent note from `annotations` —
+  // flipping the flag on a snapshot nothing holds would persist a list
+  // without them. Re-appended in order, skipping any that are still there.
+  let receipt = null;
+  const giveBack = () => {
+    if (receipt) receipt.remove();
+    if (bareTurn) bareTurn.remove();
+    if (pending.length) {
+      for (const c of pending) {
+        c.sent = 0;
+        if (!annotations.some((a) => a.id === c.id)) annotations.push(c);
+      }
+      annSave();
+    }
+    // Prepended, so a picture attached WHILE the send was in flight keeps its
+    // place after the ones that were already waiting.
+    if (pics.length) { shotAttached = pics.concat(shotAttached); renderAnn(); }
+  };
   if (pending.length || pics.length) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
+    receipt = sum;
     sum.className = "annsum";
     for (const pic of pics) shotReceipt(sum, pic);
     for (const c of pending) sum.appendChild(annReceiptRow(c));
@@ -15045,6 +15143,7 @@ async function sendFollowUp(text) {
     run_id = activeRun;
   }
   if (!run_id) {
+    giveBack();
     addError("Could not send: no run to attach this message to.");
     return;
   }
@@ -15085,9 +15184,18 @@ async function sendFollowUp(text) {
       return;
     }
     if (!res || !res.sent) {
+      giveBack();
       addError("Could not send: the session ended before this reached it.");
+      return;
     }
+    // A follow-up landed as its own bubble above — bump so any pollLoop
+    // streaming into an OLDER assistant bubble (positioned before this one)
+    // knows to start a NEW one after it, rather than keep growing text that
+    // would render above the reader's own just-sent message. Here, after the
+    // inbox took it, and not at insert time — see the note beside the row.
+    followupSeq++;
   } catch (err) {
+    giveBack();
     addError("Could not send: " + err.message);
   }
 }

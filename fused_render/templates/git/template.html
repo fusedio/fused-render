@@ -715,7 +715,8 @@
   }
   .panel-form input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   .panel-form label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
-  .panel-form input[type="checkbox"] { accent-color: var(--accent-dim); }
+  .panel-form input[type="checkbox"],
+  .panel-form input[type="radio"] { accent-color: var(--accent-dim); }
   /* Inside a panel, rows are a SECTION of it and not a card of their own. The
      panel already draws the border, the radius and the background, so a nested
      `.rows` box doubled all three and stood its rows off the panel's own edges —
@@ -1286,6 +1287,88 @@ let drawn = null;
 let busy = null;
 let flash = null;
 
+/* ------------------------------------------------------- publish-to-GitHub
+ *
+ * The modal's own state, kept in memory exactly like `busy`/`flash` above and
+ * for the same reason: none of it can survive a refresh anyway — it is a
+ * live poll of `github_setup`'s cached snapshot plus three single-flight
+ * records (install/login/publish), all of it re-derivable from a GET the
+ * instant the modal reopens.
+ */
+/* The last answer for each of the four `/api/github/*` reads the modal
+ * polls, or null before the first tick lands. */
+let ghStatus = null;
+let ghInstall = null;
+let ghLogin = null;
+let ghPublish = null;
+/* The key of the one `/api/github/*` POST in flight, mirroring `busy`'s
+ * job for the git ops channel — a second click while one is already running
+ * would race the same on-disk record two ways. */
+let ghBusy = null;
+/* The refusal from the POST itself (a 409 "already running") OR from a
+ * settled install/login/publish record's own `error` field — one slot,
+ * because only one of those can be true to show at a time and the modal
+ * shows gh's own words in place rather than losing them to a fresh poll. */
+let ghError = null;
+/* The interval driving the poll while the modal is open, and the guard that
+ * keeps `ghStartPolling` idempotent under the stub `setInterval` the render
+ * probe hands it (which returns the same falsy id every time — see
+ * `ghStartPolling`'s docstring). */
+let ghPollTimer = null;
+let ghPolling = false;
+/* Guards `ghTick`'s own repeat call to `draw(true)`: `draw` cancels any
+ * overview read still in flight (`mine = ++seq`) and starts a fresh one on
+ * every call, so a tick landing while the PREVIOUS tick's `draw(true)` is
+ * still awaiting a slow overview would cancel-and-restart that read forever,
+ * and the panel would never repaint while open. Scoped to `ghTick`'s own
+ * calls only — a click-driven `draw(true)` elsewhere still cancels-and-
+ * restarts as designed, which is correct there. */
+let ghDrawInFlight = false;
+/* Which repository root the currently-held gh state (below, and the four
+ * `/api/github/*` records) belongs to — set once per modal open by
+ * `ghStartPolling`. `github_setup`'s install/login/publish records are
+ * process-wide, not scoped to a repository, so without this a record left
+ * over from an earlier open (a different repo, or this one hours ago) would
+ * render as this open's own result — a stale "done" flashing the modal
+ * straight closed, or an old error banner over a healthy flow. */
+let ghOpenedFor = null;
+/* The `started_at` of each of the three single-flight records at the moment
+ * THIS modal session started polling — see `ghTick`. A record already
+ * sitting in a terminal state when the modal opens keeps this same stamp on
+ * every re-fetch; a genuinely new install/login/publish started during this
+ * session always carries a fresh one. That is what lets `ghTick` tell "still
+ * that old record" apart from "something this session actually did". */
+let ghBaseline = null;
+/* Whether `nameInput` has already been focused once for the "ready" step
+ * this modal session — see the "ready" branch in `publishModal`. Reset by
+ * `ghStartPolling` so a fresh open still seeds focus once. */
+let ghReadyFocusDone = false;
+/* The repository-name field, seeded once from the folder name the first time
+ * the "ready" step is reached and left alone after. */
+let ghName = "";
+/* The "identity" step's name/email fields — module-level for the same
+ * reason `ghName` is: the modal repaints on every poll tick, and a value
+ * living only in the DOM node the last render created would be discarded,
+ * caret and all, the next time `draw()` runs. */
+let ghIdentityName = "";
+let ghIdentityEmail = "";
+/* Whether the identity step's name field has already been focused once this
+ * modal session — see the "ready" step's `ghReadyFocusDone` for the same
+ * pattern. Reset by `ghStartPolling`. */
+let ghIdentityFocusDone = false;
+/* No default: a radio nobody has clicked is not a private repository, and
+ * the Publish button stays disabled until one of "private"/"public" is
+ * chosen on purpose. */
+let ghVisibility = "";
+const GH_POLL_MS = 1500;
+/* Which escape hatch's inline form is open, or `null` for neither — see
+ * `ghHatchesNode`. The URL typed into it is kept here rather than in a local
+ * variable for the same reason `ghName` is module-level: the modal repaints
+ * on every poll tick, and a value living only in the DOM node the last
+ * render created would vanish under that repaint mid-keystroke. */
+let ghHatch = null;
+let ghHatchUrl = "";
+
 /* WHAT THE RIGHT-HAND PANE IS SHOWING: `null`, or ONE of
  *   { kind: "rev", value: <full sha> }        a commit
  *   { kind: "wt",  value: <repo-relative> }   a working-tree change
@@ -1674,11 +1757,18 @@ function toolbar(data) {
   const ahead = repo.upstream ? (repo.ahead || 0) : 0;
   const canPush = remote && !repo.detached;
   if (!remote) {
-    group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Check for updates")], {
-      label: "Check for updates",
-      disabled: true,
-      title: "This repository has no remote to talk to.",
-      onClick: () => {},
+    /* No remote used to be a dead end — a greyed-out button with nothing
+       behind it. `gh repo create --source --push` does the whole job in one
+       command, so the slot offers that instead: the same PUSH glyph the
+       ahead/publish-branch states below already wear, because creating the
+       repository and sending the first commits to it is the same act this
+       button always names elsewhere in this bar. */
+    group.append(action("panel-publish",
+                        [icon(PUSH_GLYPH, 14), btnLabel("Publish to GitHub")], {
+      label: "Publish this repository to GitHub",
+      title: "Create a repository on GitHub from this folder and push to it",
+      expanded: panel === "publish",
+      onClick: () => setParams({ panel: panel === "publish" ? null : "publish" }),
     }));
   } else if (behind) {
     group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
@@ -2020,6 +2110,513 @@ function stashModal(data) {
 
   const wrap = el("div", null, scrim, el("div", { className: "modal" }, panel));
   focusSoon(message);
+  return wrap;
+}
+
+/* ---------------------------------------------------------- publish to GitHub
+ *
+ * One fetch helper for every `/api/github/*` call this modal makes. A GET is
+ * a plain read of module state, matching the router's own split — no guard.
+ * Every POST here spawns a process (an install, a browser sign-in) or writes
+ * to the user's own github.com account (a publish), so it carries the
+ * X-Fused header every other mutating call in this app sends — the same
+ * convention `templates/claude/template.html`'s schedule-cancel POST
+ * follows — a header a foreign page cannot attach without a preflight this
+ * app never answers.
+ */
+async function ghFetch(path, opts) {
+  const settings = opts || {};
+  const init = { method: settings.method || "GET" };
+  if (init.method === "POST") {
+    init.headers = { "Content-Type": "application/json", "X-Fused": "1" };
+    init.body = JSON.stringify(settings.body || {});
+  }
+  const res = await fetch(path, init);
+  return res.json();
+}
+
+/* The single blocker the modal shows right now. Exactly one state renders at
+ * a time, and every action taken from a state loops back through `ghTick`'s
+ * poll rather than advancing locally — the poll, not the click that fired
+ * it, is the only authority on what is true next. A running publish wins
+ * over everything else: by the time one is in flight every earlier
+ * prerequisite already held, and the poll below keeps refreshing `ghStatus`
+ * underneath it for no reason but to redraw the same step. */
+function ghState(repo) {
+  if (ghPublish && ghPublish.state === "running") return "publishing";
+  /* A hatch's `remote_add` can succeed while the `push` right after it
+   * fails (see `ghHatchConnectClick`) — that leaves this repository with a
+   * remote, but the modal open on screen, still one `run()` away from a
+   * `snapshot` that reflects it. Checked before every other prerequisite:
+   * once a remote exists, `gh repo create` is not the right next step no
+   * matter what else about the repo is or isn't ready, and clicking
+   * Publish here would only 409 with "this repository already has a
+   * remote". */
+  if (repo.remote) return "has-remote";
+  if (!ghStatus) return "loading";
+  if (!ghStatus.found) return "missing";
+  if (!ghStatus.signed_in) return "signed-out";
+  const identity = repo.identity || {};
+  if (!identity.name || !identity.email) return "identity";
+  if (!repo.has_commits) return "commits";
+  return "ready";
+}
+
+/* Gh's own words, wherever they last landed: an immediate refusal from a
+ * POST (a 409, "already running") or the `error` field on a settled
+ * install/login/publish record. One slot, because only one of those can be
+ * the reason the current step is stuck. */
+function ghErrorNode() {
+  const message = ghError
+    || (ghInstall && ghInstall.state === "error" && ghInstall.error)
+    || (ghLogin && !ghLogin.in_flight && ghLogin.error)
+    || (ghPublish && ghPublish.state === "error" && ghPublish.error)
+    || "";
+  if (!message) return null;
+  return el("div", { className: "flash bad" }, el("span", { textContent: message }));
+}
+
+async function ghInstallClick() {
+  if (ghBusy) return;
+  ghBusy = "install";
+  ghError = null;
+  void draw(true);
+  let result;
+  try {
+    result = await ghFetch("/api/github/install", { method: "POST" });
+  } catch (err) {
+    result = { error: err && err.message ? err.message : String(err) };
+  }
+  ghBusy = null;
+  if (result && result.error) ghError = result.error;
+  else ghInstall = result;
+  void draw(true);
+}
+
+async function ghLoginClick() {
+  if (ghBusy) return;
+  ghBusy = "login";
+  ghError = null;
+  void draw(true);
+  let result;
+  try {
+    result = await ghFetch("/api/github/login", { method: "POST" });
+  } catch (err) {
+    result = { error: err && err.message ? err.message : String(err) };
+  }
+  ghBusy = null;
+  if (result && result.error) ghError = result.error;
+  else ghLogin = result;
+  void draw(true);
+}
+
+async function ghLoginCancelClick() {
+  if (ghBusy) return;
+  ghBusy = "login-cancel";
+  void draw(true);
+  let result;
+  try {
+    result = await ghFetch("/api/github/login/cancel", { method: "POST" });
+  } catch (err) {
+    result = { error: err && err.message ? err.message : String(err) };
+  }
+  ghBusy = null;
+  if (result && !result.error) ghLogin = result;
+  void draw(true);
+}
+
+async function ghPublishClick(repo) {
+  // Never runs without an explicit visibility — the radios default to
+  // neither checked, so this is the enforcement, not just the disabled
+  // attribute on the button that calls it.
+  if (ghBusy || !ghVisibility) return;
+  ghBusy = "publish";
+  ghError = null;
+  void draw(true);
+  let result;
+  try {
+    result = await ghFetch("/api/github/publish", { method: "POST",
+      body: { root: repo.root, name: ghName.trim(), visibility: ghVisibility } });
+  } catch (err) {
+    result = { error: err && err.message ? err.message : String(err) };
+  }
+  ghBusy = null;
+  if (result && result.error) ghError = result.error;
+  else ghPublish = result;
+  void draw(true);
+}
+
+/* The two escape hatches (see `ghHatchesNode`): a repository someone already
+ * made by hand on github.com, and a remote pointing anywhere that is not
+ * GitHub at all — GitLab, a bare repo on a server, self-hosted Gitea. Both
+ * run the exact two ops the toolbar's own "Publish branch" button already
+ * runs, `remote_add` then `push`, chained through `run` the same way
+ * `gh-first-commit` above chains `stage_all` into `commit`. Neither of these
+ * two touches `ghFetch` or any `/api/github/*` endpoint, which is the whole
+ * point: they are the only path offered once this repository is meant for a
+ * host that isn't GitHub, and they work whether `gh` is signed in, missing,
+ * or was never looked for at all.
+ */
+async function ghHatchConnectClick(url, errorContext) {
+  if (busy !== null || !url.trim()) return;
+  run("remote_add", { op: "remote_add", url: url.trim() }, () => {
+    run("push", { op: "push" }, () => {
+      ghHatch = null;
+      ghHatchUrl = "";
+      setParams({ panel: null }, { history: "replace" });
+      return true;
+    }, "Connected, but the push failed");
+    return true;
+  }, errorContext);
+}
+
+/* The two hatches' own corner of the modal: two plain links when neither is
+ * open, or one inline URL field — same shape as `stashModal`'s message
+ * input, a plain text box with a keydown-Enter shortcut — when one is. This
+ * renders ABOVE `ghState`'s per-step content and does not read it, so it
+ * shows the same regardless of which prerequisite step (or none at all,
+ * with `gh` never found) is on screen below it.
+ */
+function ghHatchesNode() {
+  if (!ghHatch) {
+    return el("div", { className: "panel-form" },
+      action("gh-hatch-existing-open", "I already made the repo on GitHub", {
+        onClick: () => { ghHatch = "existing"; void draw(true); },
+      }),
+      action("gh-hatch-remote-open", "Connect a different remote", {
+        onClick: () => { ghHatch = "remote"; void draw(true); },
+      }));
+  }
+
+  const existing = ghHatch === "existing";
+  const prompt = existing
+    ? "The GitHub repository's own URL, from its Code button."
+    : "Any git remote URL — GitLab, a bare repo, anywhere else.";
+  const input = el("input", { type: "text", value: ghHatchUrl,
+                              placeholder: "https://github.com/you/repo.git",
+                              disabled: busy !== null });
+  input.setAttribute("aria-label", prompt);
+  input.addEventListener("input", () => { ghHatchUrl = input.value; });
+  const connect = () => {
+    void ghHatchConnectClick(ghHatchUrl,
+      existing ? "Could not connect that repository" : "Could not connect that remote");
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); connect(); }
+  });
+  const cancel = () => { ghHatch = null; ghHatchUrl = ""; void draw(true); };
+  focusSoon(input);
+  return el("div", null,
+    el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent: prompt })),
+    el("div", { className: "panel-form" }, input),
+    el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      existing
+        ? action("gh-hatch-existing", "Connect and push", {
+            disabled: !ghHatchUrl.trim(), title: "git remote add, then git push",
+            onClick: connect,
+          })
+        : action("gh-hatch-remote", "Connect and push", {
+            disabled: !ghHatchUrl.trim(), title: "git remote add, then git push",
+            onClick: connect,
+          }),
+      action("gh-hatch-cancel", "Back", { onClick: cancel })));
+}
+
+/* The poll that drives the whole modal. Every tick rereads all four
+ * `/api/github/*` records — cheap, since three of the four are bare reads of
+ * in-memory module state and the fourth (`/api/github/status`) is a
+ * disk-cached snapshot at most 60s stale — and repaints from whatever it
+ * finds. This is also what notices a publish finished, or a sign-in
+ * completed, while the user was away in a browser tab: nothing about those
+ * comes back through this page on its own.
+ */
+/* A record's identity for "did something happen during THIS modal session"
+ * purposes: `started_at` on a fresh install/login/publish is always a new
+ * timestamp, and stays fixed across repeated GETs of the same settled
+ * record. Compared against `ghBaseline` below. */
+function ghStamp(rec) {
+  return (rec && rec.started_at) || null;
+}
+
+/* A record as it should be TREATED for this session: itself while genuinely
+ * `running` (a single-flight record in flight is always relevant, whichever
+ * repo last kicked it off), itself when its stamp has moved past whatever
+ * was already there when this modal opened (something this session did), or
+ * `null` — as good as never having happened, for this open — otherwise. */
+function ghOwnRecord(rec, baselineStamp, running) {
+  if (!rec || running) return rec;
+  return ghStamp(rec) === baselineStamp ? null : rec;
+}
+
+async function ghTick() {
+  if (param("panel") !== "publish") { ghStopPolling(); return; }
+  try {
+    const [status, install, login, pub] = await Promise.all([
+      ghFetch("/api/github/status"),
+      ghFetch("/api/github/install"),
+      ghFetch("/api/github/login"),
+      ghFetch("/api/github/publish"),
+    ]);
+    ghStatus = status;
+    if (ghBaseline === null) {
+      // The first tick of this modal session — see `ghBaseline`'s own
+      // comment above its declaration.
+      ghBaseline = { install: ghStamp(install), login: ghStamp(login),
+                     publish: ghStamp(pub) };
+    }
+    ghInstall = ghOwnRecord(install, ghBaseline.install, install && install.state === "running");
+    ghLogin = ghOwnRecord(login, ghBaseline.login, login && login.in_flight);
+    ghPublish = ghOwnRecord(pub, ghBaseline.publish, pub && pub.state === "running");
+  } catch (err) {
+    // A network hiccup. The next tick tries again; the modal keeps showing
+    // the last good read rather than flashing an error over it.
+  }
+  if (param("panel") !== "publish") return;
+  if (ghPublish && ghPublish.state === "done") {
+    // The repository exists now — the toolbar's four-state group belongs on
+    // screen next, not this modal describing a repository that no longer
+    // needs it. `snapshot = null` is what flips `remote` there: a plain
+    // repaint from the held snapshot would still show the stale `!remote`
+    // branch this whole modal exists to replace.
+    ghStopPolling();
+    setParams({ panel: null });
+    seq += 1;
+    snapshot = null;
+    void draw(true);
+    return;
+  }
+  // Guarded, unlike the draw() above: that one fires once, this one is
+  // called again every GH_POLL_MS, and `draw` cancels-and-restarts any
+  // overview read still in flight on every call — see `ghDrawInFlight`'s
+  // own comment. Skipping a redraw here just means the next tick, 1.5s
+  // later, tries again with whatever `ghStatus`/`ghInstall`/`ghLogin`/
+  // `ghPublish` already hold.
+  if (!ghDrawInFlight) {
+    ghDrawInFlight = true;
+    draw(true).finally(() => { ghDrawInFlight = false; });
+  }
+}
+
+/* Idempotent under a real timer AND under the render probe's `setInterval`
+ * stub, which hands back the same id (0) on every call — a truthiness check
+ * on the id would restart the "loop" on every repaint instead of running
+ * once. `ghPolling` (together with `ghOpenedFor`) is the actual guard; the
+ * id is kept only so a real page has something to clear in
+ * `ghStopPolling`.
+ *
+ * A fresh open — `ghPolling` was off, or `root` names a different repository
+ * than the one currently polled — resets every piece of this modal's own
+ * session state: the four `/api/github/*` echoes (so a record left over from
+ * an earlier open can't paint for even the one frame before the first tick
+ * lands), the baseline that scopes them (`ghBaseline`, see `ghTick`), the
+ * once-per-session focus flag, and the name/visibility/hatch fields a
+ * DIFFERENT repository has no business inheriting. */
+function ghStartPolling(root) {
+  if (ghPolling && ghOpenedFor === root) return;
+  ghPolling = true;
+  ghOpenedFor = root;
+  ghBaseline = null;
+  ghInstall = null;
+  ghLogin = null;
+  ghPublish = null;
+  ghError = null;
+  ghReadyFocusDone = false;
+  ghName = "";
+  ghVisibility = "";
+  ghHatch = null;
+  ghHatchUrl = "";
+  ghIdentityName = "";
+  ghIdentityEmail = "";
+  ghIdentityFocusDone = false;
+  if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
+  ghPollTimer = setInterval(() => { void ghTick(); }, GH_POLL_MS);
+  void ghTick();
+}
+
+function ghStopPolling() {
+  ghPolling = false;
+  if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
+}
+
+/* The dialog itself: "Publish to GitHub", opened from the toolbar's own slot
+ * when there is no remote yet (see `toolbar` above). One panel, one state
+ * machine (`ghState`), each state offering the single action that clears it
+ * — gh missing -> signed out -> no git identity -> no commits -> ready ->
+ * publishing -> done, which closes the modal itself (see `ghTick`). Above all
+ * of that sit the two escape hatches (`ghHatchesNode`), which bypass the
+ * state machine entirely for a repository this modal's own gh-driven flow
+ * was never going to reach.
+ */
+function publishModal(data) {
+  const repo = data.repo;
+  const close = () => setParams({ panel: null });
+
+  const scrim = el("div", { className: "scrim" });
+  scrim.addEventListener("click", close);
+
+  const panel = el("div", { className: "panel" },
+    el("div", { className: "panel-head", textContent: "Publish to GitHub" }));
+
+  const errorNode = ghErrorNode();
+  if (errorNode) panel.append(errorNode);
+
+  const state = ghState(repo);
+  if (state === "has-remote") {
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        "This repository already has a remote — creating a new one on "
+        + "GitHub isn't the right next step. Push from the toolbar instead." })));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-cancel", "Close", { onClick: close })));
+  } else if (state === "loading") {
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%",
+               textContent: "Checking the GitHub CLI…" })));
+  } else if (state === "missing") {
+    const installing = ghInstall && ghInstall.state === "running";
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        "GitHub's own command-line tool isn't on this machine yet. It's "
+        + "what lets this app create the repository and push to it without "
+        + "ever handling your credentials itself." })));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-install", installing ? "Installing…" : "Install GitHub CLI", {
+        className: "primary",
+        disabled: installing || ghBusy !== null,
+        title: "Download GitHub's official gh binary into this app's own folder",
+        onClick: () => { void ghInstallClick(); },
+      }),
+      action("gh-cancel", "Cancel", { onClick: close })));
+  } else if (state === "signed-out") {
+    const signingIn = ghLogin && ghLogin.in_flight;
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        signingIn
+          ? "Finish signing in in the browser window that just opened, then "
+            + "come back here."
+          : "Sign in to GitHub in your browser, or create an account first "
+            + "if you don't have one yet." })));
+    panel.append(el("div", { className: "panel-form" },
+      signingIn
+        ? action("gh-login-cancel", "Cancel sign-in",
+            { disabled: ghBusy !== null, onClick: () => { void ghLoginCancelClick(); } })
+        : action("gh-signup", "Create account", {
+            title: "Open github.com/signup in a new tab",
+            onClick: () => { window.open("https://github.com/signup", "_blank", "noopener"); },
+          }),
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-login", signingIn ? "Signing in…" : "Sign in", {
+        className: "primary",
+        disabled: signingIn || ghBusy !== null,
+        title: "gh auth login — opens GitHub in your browser",
+        onClick: () => { void ghLoginClick(); },
+      }),
+      action("gh-cancel", "Cancel", { onClick: close })));
+  } else if (state === "identity") {
+    // ghIdentityName/ghIdentityEmail live at module scope, not as locals —
+    // ghTick repaints this whole panel every GH_POLL_MS, and a plain local
+    // would be discarded, caret and all, on the next tick. Same pattern as
+    // the "ready" step's ghName below.
+    const name = el("input", { type: "text", placeholder: "Your name",
+                               value: ghIdentityName, disabled: busy !== null });
+    const email = el("input", { type: "text", placeholder: "you@example.com",
+                                value: ghIdentityEmail, disabled: busy !== null });
+    name.setAttribute("aria-label", "Your name, for commits made in this repository");
+    email.setAttribute("aria-label", "Your email, for commits made in this repository");
+    name.addEventListener("input", () => { ghIdentityName = name.value; });
+    email.addEventListener("input", () => { ghIdentityEmail = email.value; });
+    const save = () => {
+      if (!name.value.trim() || !email.value.trim()) return;
+      run("set_identity", { op: "set_identity",
+                            name: name.value.trim(), email: email.value.trim() });
+    };
+    email.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+    });
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        "This repository has no committer identity yet — git needs a name "
+        + "and email before it can record a commit." })));
+    panel.append(el("div", { className: "panel-form" }, name, email));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-identity", "Save", {
+        className: "primary", disabled: busy !== null, onClick: save,
+      }),
+      action("gh-cancel", "Cancel", { onClick: close })));
+    // Seeded once per modal session, like ghReadyFocusDone below — a repaint
+    // from a poll tick must not yank the caret out of a field the user is
+    // mid-typing into.
+    if (!ghIdentityFocusDone) { focusSoon(name); ghIdentityFocusDone = true; }
+  } else if (state === "commits") {
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        "This repository has no commits yet — there's nothing for GitHub "
+        + "to hold until the first one exists." })));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-first-commit", "Make the first commit", {
+        className: "primary",
+        disabled: busy !== null,
+        title: "Stage everything under this repository and commit it",
+        onClick: () => run("stage_all", { op: "stage_all" }, () => {
+          run("commit", { op: "commit", message: "Initial commit" }, null,
+              "Staged everything, but committing failed");
+          return true;
+        }),
+      }),
+      action("gh-cancel", "Cancel", { onClick: close })));
+  } else if (state === "publishing") {
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        (ghPublish && ghPublish.detail) || "Creating the repository and pushing…" })));
+  } else {
+    // "ready" — every prerequisite holds; all that's left is a name and an
+    // explicitly-picked visibility. The name seeds once, from the folder
+    // this repository lives in, and is left alone after — a repaint from a
+    // poll tick must not stomp on something the user is mid-typing.
+    if (!ghName) ghName = repo.name || "";
+    const nameInput = el("input", { type: "text", value: ghName, disabled: ghBusy !== null });
+    nameInput.setAttribute("aria-label", "The repository name on GitHub");
+    const publishBtn = action("gh-publish", "Publish", {
+      className: "primary",
+      disabled: !ghName.trim() || !ghVisibility || ghBusy !== null,
+      title: "gh repo create --source --push",
+      onClick: () => { void ghPublishClick(repo); },
+    });
+    const refresh = () => {
+      publishBtn.disabled = !ghName.trim() || !ghVisibility || ghBusy !== null;
+    };
+    nameInput.addEventListener("input", () => { ghName = nameInput.value; refresh(); });
+    const privateRadio = el("input", { type: "radio", name: "gh-visibility",
+                                       checked: ghVisibility === "private",
+                                       disabled: ghBusy !== null });
+    const publicRadio = el("input", { type: "radio", name: "gh-visibility",
+                                      checked: ghVisibility === "public",
+                                      disabled: ghBusy !== null });
+    privateRadio.addEventListener("change", () => { ghVisibility = "private"; refresh(); });
+    publicRadio.addEventListener("change", () => { ghVisibility = "public"; refresh(); });
+    panel.append(el("div", { className: "panel-form" }, nameInput));
+    panel.append(el("div", { className: "panel-form" },
+      el("label", null, privateRadio, "Private"),
+      el("label", null, publicRadio, "Public")));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      publishBtn,
+      action("gh-cancel", "Cancel", { onClick: close })));
+    if (!ghReadyFocusDone) { focusSoon(nameInput); ghReadyFocusDone = true; }
+  }
+
+  /* The two escape hatches close out the panel, reachable no matter which
+     step above is showing — including "gh missing" — because neither one
+     reads `ghState` or needs `gh` at all. */
+  panel.append(ghHatchesNode());
+
+  const wrap = el("div", null, scrim, el("div", { className: "modal" }, panel));
   return wrap;
 }
 
@@ -3518,6 +4115,15 @@ function render(data, stashes, diff) {
   /* The stash dialog rides the page root: it is a fixed overlay, not a section
      of any list. */
   if (param("panel") === "stash") page.append(stashModal(data));
+  /* The publish dialog drives its own poll while it is open (`ghTick`), and
+     nothing else in this view needs one — starting/stopping it here, next to
+     the one place that mounts the modal, is what keeps it from outliving the
+     panel that owns it. */
+  if (param("panel") === "publish") {
+    ghStartPolling(data.repo.root);
+    page.append(publishModal(data));
+  }
+  else { ghStopPolling(); }
   show(page);
 }
 

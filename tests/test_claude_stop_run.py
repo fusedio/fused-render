@@ -129,6 +129,7 @@ def test_a_cancel_leaves_the_run_saying_its_end_was_asked_for(agent, tmp_path,
     assert agent._poll("run")["cancelled"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="claude session host does not start on Windows yet (#979)")
 def test_a_successful_interrupt_retires_the_marker_once_a_later_turn_proves_it_stale(
         agent, tmp_path, monkeypatch):
     """B2 regression: `cancelled` used to be written unconditionally and never

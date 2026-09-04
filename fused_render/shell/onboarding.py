@@ -54,7 +54,7 @@ _KEY = "onboarding"
 #: The wizard's step ids (frontend shell/onboarding/OnboardingWizard STEPS).
 #: A closed set: prefs.json is shared state, and an unknown id is refused
 #: rather than stored.
-STEPS = ("about", "claude", "fda", "app")
+STEPS = ("about", "claude", "fda", "models", "app")
 
 #: `FUSED_RENDER_ONBOARDING=1` forces the auto-show (state reads as fresh) so a
 #: dev server can render the wizard without deleting prefs.json; `=0` forces

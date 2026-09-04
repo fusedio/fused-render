@@ -503,6 +503,31 @@ def _head(root):
     return branch, branch is None, short, short is not None
 
 
+def _identity(root):
+    """The repository's OWN committer identity — `user.name` / `user.email` as
+    `git config` would answer them for a commit made right now, or null for
+    either that is unset.
+
+    `--get` and not `--get-all` or a full `config --list` dump: this reports
+    the SAME single value `git commit` would actually use (the last one
+    wins on a duplicate key), not every value ever written. Exit 1 is git's own
+    "no such key" answer — not a repository fact worth a refusal, and not
+    something this reader invents a default for: a template offering "Publish
+    to GitHub" needs to know, honestly, whether there is anyone to commit as
+    yet, and a guessed name would hide that.
+
+    Deliberately unscoped by `rel` — an identity is a property of the
+    repository (or, if `--get` ever fell through to a global/system value here,
+    of the machine), never of a folder inside it, so there is no version of
+    this question that a scope could narrow.
+    """
+    name = _git(root, "config", "--get", "user.name",
+               allow=(0, 1)).decode("utf-8", "replace").strip() or None
+    email = _git(root, "config", "--get", "user.email",
+                allow=(0, 1)).decode("utf-8", "replace").strip() or None
+    return {"name": name, "email": email}
+
+
 def _status(root, rel, is_dir):
     """The uncommitted entries under the scope, plus repo-wide dirtiness.
 
@@ -1304,6 +1329,12 @@ def main(
                 "detached": detached,
                 "head": head,
                 "has_commits": has_commits,
+                # The other local prerequisite "Publish to GitHub" needs beside
+                # `has_commits`: whether there is anyone to commit AS. Read
+                # fresh on every `overview` rather than cached anywhere, since
+                # `ops.py`'s `set_identity` can change it between one open of
+                # this view and the next.
+                "identity": _identity(root),
                 "dirty": dirty,
                 "rel": rel,
                 "is_dir": is_dir,
