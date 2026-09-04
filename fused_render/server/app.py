@@ -49,6 +49,7 @@ from fused_render.server.routers.claude_config import router as claude_config_ro
 from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
+from fused_render.server.routers.github import router as github_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.config import router as config_router
@@ -820,6 +821,12 @@ def create_app(start_dir: str) -> FastAPI:
     # warm_in_background), never from here — importing the server in a test must
     # not spawn the user's login shell.
     app.include_router(claude_health_router)
+    # Is the GitHub CLI usable at all (routers/github.py): found / version /
+    # signed-in, so "Publish to GitHub" can be TOLD up front rather than left
+    # to discover it by failing — same doctrine as claude_health just above.
+    # Its own endpoint, not a /api/config field: the facts behind it are
+    # process spawns, and /api/config is read on every page load.
+    app.include_router(github_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

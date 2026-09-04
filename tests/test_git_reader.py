@@ -95,6 +95,38 @@ def test_rel_is_posix_even_on_windows_separators(reader, repo):
     assert "\\" not in got["repo"]["rel"]
 
 
+def test_overview_reports_no_identity_when_unset(reader, repo, monkeypatch):
+    # `build_repo` never runs `git config user.name/user.email` — every commit
+    # it makes borrows an identity from `GIT_AUTHOR_NAME`/`-c user.name=...` for
+    # that one invocation only, which is not the same thing as the repository
+    # HAVING an identity of its own. `git config --get` answers exit 1 for a key
+    # nothing set, which is this module's ordinary "we don't know" — a null,
+    # never a raised error.
+    #
+    # The module deliberately leaves `GIT_CONFIG_GLOBAL` alone (see its own
+    # docstring), so on a machine whose OWN `~/.gitconfig` sets a name and
+    # email, `git config --get` would truthfully report those — the module is
+    # not wrong to say so, but it means this test has to point that fallback
+    # at nowhere to observe the truly-unset case at all.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    got = reader.main(repo)
+    assert got["ok"] is True
+    assert got["repo"]["identity"] == {"name": None, "email": None}
+
+
+def test_overview_reports_identity_when_configured(reader, tmp_path):
+    root = str(tmp_path / "identified")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Jane Doe")
+    git(root, "config", "user.email", "jane@example.com")
+    got = reader.main(root)
+    assert got["ok"] is True
+    assert got["repo"]["identity"] == {
+        "name": "Jane Doe", "email": "jane@example.com"}
+
+
 # ------------------------------------------------------------------ commit log
 
 

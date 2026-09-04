@@ -797,6 +797,115 @@ def test_a_sole_remote_that_is_not_called_origin_is_used(ops, repo, tmp_path):
     assert "elsewhere" in got["detail"]
 
 
+# --------------------------------------------------------- identity / remote
+#
+# The two local prerequisites for "Publish to GitHub": a committer identity
+# (without one `commit` fails with git's own "Please tell me who you are") and
+# an `origin` remote to push the first commit to. Neither is a destructive op —
+# `set_identity` writes one repo-local config file, `remote_add` refuses
+# outright rather than overwrite anything — so both live in `_SAFE_OPS`.
+
+
+def test_set_identity_round_trips_through_git_config(ops, repo):
+    got = ops.main(repo, op="set_identity", name="Jane Doe", email="jane@example.com")
+    assert got["ok"] is True, got
+    assert git(repo, "config", "--local", "--get", "user.name").strip() == "Jane Doe"
+    assert git(repo, "config", "--local", "--get", "user.email").strip() == "jane@example.com"
+
+
+def test_set_identity_is_repo_local_not_global(ops, repo):
+    # `--local` is not a courtesy: this module must never write to a user's own
+    # `~/.gitconfig`, which is exactly what a bare `git config` (no scope flag)
+    # would do when no local value exists yet.
+    seen = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        seen.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(subprocess, "run", spy_run)
+        assert ops.main(repo, op="set_identity", name="Jane Doe",
+                        email="jane@example.com")["ok"] is True
+    configs = [argv for argv in seen if "config" in argv]
+    assert configs, seen
+    for argv in configs:
+        assert "--local" in argv, argv
+        assert "--global" not in argv and "--system" not in argv
+
+
+def test_set_identity_refuses_a_blank_name_or_email(ops, repo):
+    for name, email in (("", "a@b.com"), ("   ", "a@b.com"),
+                        ("Jane", ""), ("Jane", "   ")):
+        got = ops.main(repo, op="set_identity", name=name, email=email)
+        assert got["ok"] is False, (name, email)
+        assert got["reason"] == "bad-identity", (name, email, got)
+
+
+def test_set_identity_refuses_a_leading_dash_name_or_email(ops, repo):
+    # Neither value has a `--` terminator ahead of it in `git config <key>
+    # <value>`, so a dash-leading value is the one thing that cannot be left to
+    # git to reject — same rule, same reason, as a branch name.
+    for name, email in (("--evil", "a@b.com"), ("Jane", "--evil")):
+        got = ops.main(repo, op="set_identity", name=name, email=email)
+        assert got["ok"] is False, (name, email)
+        assert got["reason"] == "bad-identity", (name, email, got)
+
+
+def test_remote_add_creates_the_named_remote(ops, repo):
+    got = ops.main(repo, op="remote_add", name="origin",
+                   url="https://example.com/octo/cat.git")
+    assert got["ok"] is True, got
+    assert git(repo, "remote", "get-url", "origin").strip() == (
+        "https://example.com/octo/cat.git")
+
+
+def test_remote_add_defaults_the_name_to_origin(ops, repo):
+    got = ops.main(repo, op="remote_add", url="https://example.com/octo/cat.git")
+    assert got["ok"] is True, got
+    assert "origin" in git(repo, "remote").split()
+
+
+def test_remote_add_refuses_a_blank_url(ops, repo):
+    for bad in ("", "   "):
+        got = ops.main(repo, op="remote_add", url=bad)
+        assert got["ok"] is False, repr(bad)
+        assert got["reason"] == "bad-remote", (bad, got)
+
+
+def test_remote_add_refuses_a_leading_dash_url_or_name(ops, repo):
+    got = ops.main(repo, op="remote_add", url="--upload-pack=touch /tmp/pwned")
+    assert got["ok"] is False and got["reason"] == "bad-remote", got
+    got = ops.main(repo, op="remote_add", name="--evil",
+                   url="https://example.com/x.git")
+    assert got["ok"] is False and got["reason"] == "bad-remote", got
+    assert "origin" not in git(repo, "remote").split()
+
+
+def test_remote_add_refuses_when_a_remote_already_exists(ops, repo, tmp_path):
+    with_remote(repo, str(tmp_path / "origin.git"))
+    got = ops.main(repo, op="remote_add", name="upstream",
+                   url="https://example.com/octo/cat.git")
+    assert got["ok"] is False, got
+    assert got["reason"] == "remote-exists", got
+    assert git(repo, "remote").split() == ["origin"], "nothing new was added"
+
+
+def test_set_identity_and_remote_add_refused_on_a_mount_backed_repo(
+        ops, repo, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
+    for call in (dict(op="set_identity", name="Jane", email="jane@example.com"),
+                 dict(op="remote_add", url="https://example.com/x.git")):
+        got = ops.main(repo, **call)
+        assert got["ok"] is False, call
+        assert got["reason"] == "mount", (call, got)
+    # `_seed` gave this repo its own identity already — the mount refusal must
+    # leave it untouched, not merely leave it non-empty.
+    assert git(repo, "config", "--local", "--get", "user.name").strip() == "Fixture Author"
+    assert git(repo, "remote").strip() == ""
+
+
 # ------------------------------------------------------------------ refusals
 
 
