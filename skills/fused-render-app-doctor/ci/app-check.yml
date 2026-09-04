@@ -46,18 +46,13 @@ jobs:
         #      this one app folder.
         #   2. That app's own tests, when it has any — gated on an actual
         #      test_*.py/*_test.py existing somewhere under the app, not
-        #      merely on a `tests/` directory existing (a `tests/fixtures/`
-        #      folder with no test file in it used to run `pytest` anyway,
-        #      which exits 5 for "no tests collected" and fails main for an
-        #      app that never claimed to have any). An app that declares
-        #      `[project].dependencies` in its own pyproject.toml (see
-        #      fused_render/envinstall.py) gets those installed first, so a
-        #      test importing them doesn't fail on the import rather than on
-        #      the thing it's actually testing. A pyproject.toml this can't
-        #      parse, or deps this can't install, skips that app's tests
-        #      with a clear log line rather than failing the whole run on a
-        #      dependency problem the app's own tests were never going to
-        #      catch anyway.
+        #      merely on a `tests/` directory existing. Install that app's
+        #      declared dependencies first if a pyproject.toml exists; pip
+        #      parses and installs them. If the install fails, log a warning
+        #      naming the app, skip that app's tests, and continue. Exit 5
+        #      from pytest is "no tests collected" — reachable even after
+        #      the test_files gate (every matching file skipped), and means
+        #      nothing failed, only that there was nothing to run.
         run: |
           set -e
           status=0
@@ -76,37 +71,11 @@ jobs:
 
             echo "::group::pytest $app"
             if [ -f "$app/pyproject.toml" ]; then
-              if deps=$(python3 - "$app/pyproject.toml" <<'PY'
-import sys, tomllib
-
-path = sys.argv[1]
-try:
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-except Exception as exc:
-    print(f"warning: {path} does not parse ({exc})", file=sys.stderr)
-    sys.exit(2)
-for dep in data.get("project", {}).get("dependencies", []):
-    print(dep)
-PY
-              ); then
-                parse_rc=0
-              else
-                parse_rc=$?
-              fi
-              if [ "$parse_rc" = 2 ]; then
-                echo "::warning::$app/pyproject.toml does not parse — skipping its tests"
+              if ! pip install -e "$app"; then
+                echo "::warning::could not install $app's declared dependencies — skipping its tests"
                 echo "::endgroup::"
                 status=1
                 continue
-              fi
-              if [ -n "$deps" ]; then
-                if ! printf '%s\n' "$deps" | xargs pip install; then
-                  echo "::warning::could not install $app's declared dependencies — skipping its tests"
-                  echo "::endgroup::"
-                  status=1
-                  continue
-                fi
               fi
             fi
 

@@ -460,3 +460,44 @@ against a throwaway fixture app (an `index.html` with a link to
 `fused.summarizeText(...)`, plus a `README.md`) and confirmed neither
 produces a finding — the only finding reported was the unrelated
 `structure:missing-thumbnail` from the fixture having no `preview.png`.
+
+## Post-build: cleanup — docs rewrite and CI simplification
+
+Three targeted fixes to SKILL.md and app-check.yml, no code changes to
+`fused_render/app_doctor.py` or test assertions.
+
+**SKILL.md factual error fixed:** The "Judging the app's actual `fused.*`
+calls" section stated "The command only checks the four families above" but
+the "Per family" section above it lists five: `secrets`, `device-path`,
+`api-version`, `structure`, `generated`. Changed to "five".
+
+**SKILL.md history narration removed:** The same opening paragraph justified
+the routing table by narrating what the tool used to do ("That used to be a
+hand-maintained list...  and it once fired HIGH on `render.fused.io`...").
+This project's standing rule is that documentation and comments describe
+code as it is, never as it was. Rewrote to present-tense only, in three
+sentences: the command checks the five mechanical families and forms no
+opinion on correctness; real judgment belongs to each skill's own surface
+(kept current independently); read what the app calls and route accordingly.
+Kept the routing table and the remainder of that section intact.
+
+Scanned the whole file for other past-state narration and found none.
+
+**app-check.yml dependency handling simplified:** Replaced the inline
+Python heredoc (`import sys, tomllib` parsing `[project].dependencies`)
+with `pip install -e "$app"` (run only when `$app/pyproject.toml` exists),
+letting pip do the parsing. Preserved all existing behavior: runs only
+before that app's tests, only when test-file gate found matches; on install
+failure logs a `::warning::` naming the app, skips that app's tests, sets
+`status=1`, and continues; pytest invocation, exit-5-is-success handling,
+`::group::`/`::endgroup::`, and final `exit "$status"` all unchanged.
+Updated the step's comment block to describe pip's single failure path
+instead of the two (parse vs. install) the old heredoc had.
+
+**Verification:** Hand-tested bash loop against a throwaway fixture (three
+apps: one with metadata/test/installable-pyproject, one with
+metadata/test/no-pyproject, one with metadata/no-tests) — first installs
+and tests, second tests without installing, third reviewed-but-not-tested,
+loop exit status correct. Full scoped suite: `pytest tests/test_app_doctor.py
+tests/test_app_doctor_cli.py tests/test_app_doctor_housekeeping.py
+tests/test_skill_plugin.py -q` — 106 passed, no change from before.

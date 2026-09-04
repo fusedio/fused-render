@@ -19,7 +19,7 @@ Run it before sharing an app, or whenever asked to review one. A finding's `exce
 
 ## Judging the app's actual `fused.*` calls
 
-The command only checks the four families above — none of them ask whether a real `fused.*` call is being used *correctly*. That used to be a hand-maintained list of known member names, which could only tell you a name didn't exist, and it once fired HIGH on `render.fused.io` sitting inside an ordinary link. Real judgment on each API surface belongs to the skill that already owns that surface, kept current independently of this one, so read what the app actually calls and route to the skill for each surface it touches instead of re-deriving that judgment here:
+The command checks the five mechanical families above, forming no opinion on whether a real `fused.*` call is being used correctly. Real judgment on each API surface belongs to the skill that already owns that surface, kept current independently of this one. Read what the app actually calls and route to the skill for each surface it touches instead of re-deriving that judgment here:
 
 | App touches | Load |
 |---|---|
