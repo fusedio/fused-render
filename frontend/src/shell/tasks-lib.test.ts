@@ -6777,6 +6777,12 @@ describe("the Cards view's frame", () => {
     // content-sized, and the rows here are sized from the page.
     expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
     expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    // The wheel works in the gutters: the section spans the window on this view
+    // and the 1050px column is re-made as padding on the scroller itself
+    // (Akshil, 2026-09-04).
+    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) > .schedule-main {\n  max-width: none;\n}");
+    expect(block(CARDS_CSS, ".task-cards")).toContain("padding-inline: max(0px, calc((100% - 1050px) / 2));");
+    expect(CARDS_CSS).toContain("> .schedule-main > .schedule-toolbar {\n  width: 100%;\n  max-width: 1050px;\n  margin-inline: auto;");
     // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
     // exactly the body — no clipping, no gap, readable at a third of the width.
     const frame = block(CARDS_CSS, ".task-card-frame");

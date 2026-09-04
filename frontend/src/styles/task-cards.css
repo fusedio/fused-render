@@ -43,6 +43,27 @@
   flex: 1 1 auto;
 }
 
+/* THE WHEEL WORKS IN THE GUTTERS. The page's content column is capped at 1050px
+   and centred (schedule.css), which for a List is right: rows are read, and a
+   line of text wider than that is not. But when the scroller IS that column,
+   the space either side of it is dead — the pointer resting there scrolls
+   nothing (Akshil, 2026-09-04: "i should be able to scroll when my mouse is in
+   left and right space"). So on this view the section spans the window and the
+   wall is the scroller edge to edge, with the 1050px column re-made INSIDE it
+   as padding — the cards sit exactly where they did, the toolbar keeps its
+   column, and the scrollbar moves to the window edge (preferences.css makes
+   the same argument for the settings page). */
+.schedule-page:has(> .schedule-main > .task-cards) > .schedule-main {
+  max-width: none;
+}
+
+.schedule-page:has(> .schedule-main > .task-cards) > .schedule-main > .schedule-toolbar {
+  width: 100%;
+  max-width: 1050px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
 .schedule-page .schedule-main > .task-cards {
   flex: 1 1 auto;
   min-height: 0;
@@ -54,6 +75,11 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-auto-rows: max(260px, calc((100% - 12px) / 2));
   gap: 12px;
+  /* The content column, as padding on the scroller (see the gutter note above):
+     zero until the window is wider than the column, then half the surplus each
+     side. `%` here is the wall's own width, which is the window's. */
+  padding-inline: max(0px, calc((100% - 1050px) / 2));
+  box-sizing: border-box;
   /* Belt and braces against the one failure this view must not have: a page that
      scrolls sideways. A grid item's default `min-width: auto` lets a wide child
      (an iframe with its own layout in it) push its track past `1fr`, and the
