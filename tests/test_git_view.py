@@ -119,6 +119,154 @@ def test_concurrent_reads_are_on_distinct_channels():
             "supersedes the first and the first never settles")
 
 
+def _function_body(source, signature):
+    """The `{ ... }` body of a top-level function, by brace-depth walk — the
+    same technique `_run_python_calls` uses for argument lists, needed here
+    because these bodies span many lines and contain their own nested
+    object literals that a lazy regex would stop inside."""
+    start = source.index(signature) + len(signature)
+    open_brace = source.index("{", start)
+    depth, i = 1, open_brace + 1
+    while i < len(source) and depth:
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+        i += 1
+    return source[open_brace + 1:i - 1]
+
+
+def test_publish_never_runs_without_an_explicit_visibility():
+    """The radios open unchecked (§ toolbar's Publish-to-GitHub dialog) — no
+    default, because a "private" nobody chose is not a decision this app may
+    make for someone's code. The button's own `disabled` mirrors that, but a
+    disabled attribute is a suggestion a synthetic click can still bypass; the
+    real enforcement has to live in the handler that actually calls gh.
+    """
+    body = _function_body(_source(), "async function ghPublishClick(repo)")
+    guard = re.search(r"if\s*\(([^)]*)\)\s*return;", body)
+    assert guard, f"ghPublishClick has no early-return guard at all:\n{body[:200]}"
+    assert "ghVisibility" in guard.group(1), (
+        "ghPublishClick's guard does not mention ghVisibility, so a click "
+        f"with no radio picked could still reach the fetch: {guard.group(1)}")
+    # And the guard has to run BEFORE the network call, not merely exist
+    # somewhere in the function.
+    assert body.index(guard.group(0)) < body.index("/api/github/publish")
+
+
+def test_the_publish_button_only_replaces_the_dead_remote_slot():
+    """The toolbar's remote group is one morphing button choosing among five
+    mutually exclusive states (§ toolbar). Only the `!remote` branch is new
+    here — the four branches for when a remote already exists must still
+    read exactly as they did, so this pins the new branch's shape without
+    touching (or needing to touch) the others.
+    """
+    source = _source()
+    branch = _function_body(source, "if (!remote)")
+    assert "panel-publish" in branch, (
+        "the no-remote branch no longer wires up the publish action key")
+    assert "Publish to GitHub" in branch, branch
+    # The dead end this replaces was a button with nothing behind it; the
+    # live version must not reintroduce that by disabling itself.
+    assert "disabled: true" not in branch, (
+        "the no-remote branch disables its own button — this is the slot "
+        "that used to be a dead end and must render usable: " + branch)
+    assert "disabled:" not in branch, (
+        "the no-remote branch passes a `disabled` option at all, so it is "
+        "either always- or conditionally-disabled rather than a plain "
+        "enabled action: " + branch)
+
+    # The branches for when a remote DOES exist are untouched: still exactly
+    # the four labels this bar already spoke, still switched on the same
+    # `behind`/`ahead`/`canPush` reads `!remote` sits beside.
+    for label in ("Get latest", "Send", "Publish branch", "Check for updates"):
+        assert label in source, (
+            f"the existing remote-exists label {label!r} is gone from the "
+            "toolbar — an unrelated edit touched a branch this task was "
+            "not supposed to change")
+
+
+def test_the_escape_hatches_never_touch_the_github_api():
+    """The two escape hatches (§ publish modal's `ghHatchesNode`) exist for a
+    repository this modal's gh-driven flow was never going to reach — one
+    already created by hand on github.com, one pointing somewhere that is
+    not GitHub at all. Both share one handler, `ghHatchConnectClick(url,
+    errorContext)`, which must run only `remote_add` then `push`, the same
+    two ops the toolbar's own "Publish branch" button already calls, and
+    must never call `ghFetch` or any `/api/github/*` endpoint — that is what
+    lets them work even when the status poll reports `gh` missing.
+    """
+    source = _source()
+    signature = "async function ghHatchConnectClick(url, errorContext)"
+    body = _function_body(source, signature)
+    assert '"remote_add"' in body, (
+        f"{signature} never calls the remote_add op:\n{body}")
+    assert '"push"' in body, (
+        f"{signature} never calls the push op:\n{body}")
+    assert "ghFetch" not in body, (
+        f"{signature} calls ghFetch — an escape hatch must not touch "
+        f"the GitHub API at all:\n{body}")
+    assert "/api/github" not in body, (
+        f"{signature} references a /api/github endpoint directly:\n{body}")
+
+    # Both hatches (the "already made it on github.com" one and the
+    # "connect a different remote" one) must route through this one shared
+    # handler rather than reintroducing a duplicate — each with its own
+    # errorContext string, since that is the only thing that used to tell
+    # the two apart.
+    assert source.count("ghHatchConnectClick(") >= 2, (
+        "expected at least one definition and one call site for "
+        "ghHatchConnectClick, but found fewer — a duplicate hatch handler "
+        "may have crept back in")
+    assert "Could not connect that repository" in source
+    assert "Could not connect that remote" in source
+
+
+def _identity_branch(source):
+    start = source.index('else if (state === "identity") {')
+    end = source.index('else if (state === "commits")', start)
+    return source[start:end]
+
+
+def test_identity_step_survives_a_repaint():
+    """`ghTick` calls `draw(true)` every `GH_POLL_MS`, rebuilding the whole
+    panel from scratch. The "identity" step's name/email fields must read
+    their value from module-level state (the same pattern the "ready" step's
+    `ghName` already uses below), not from a plain local that a fresh render
+    would reset to empty — a local can't survive the rebuild, so a repaint
+    mid-keystroke would silently erase whatever was typed and the step could
+    never be completed.
+    """
+    branch = _identity_branch(_source())
+    assert "value: ghIdentityName" in branch, (
+        "the name field is not seeded from module-level state, so a repaint "
+        f"resets it to empty:\n{branch}")
+    assert "value: ghIdentityEmail" in branch, (
+        "the email field is not seeded from module-level state, so a "
+        f"repaint resets it to empty:\n{branch}")
+    assert "ghIdentityName = name.value" in branch, (
+        "typing into the name field never writes back to the module-level "
+        f"state that survives the next repaint:\n{branch}")
+    assert "ghIdentityEmail = email.value" in branch, (
+        "typing into the email field never writes back to the module-level "
+        f"state that survives the next repaint:\n{branch}")
+
+
+def test_identity_step_focuses_only_once_per_session():
+    """A repaint from a poll tick must not yank the caret out of a field the
+    user is mid-typing into — `focusSoon` may only run gated behind a
+    once-per-session flag, the same pattern the "ready" step's
+    `ghReadyFocusDone` already uses, never unconditionally on every render.
+    """
+    branch = _identity_branch(_source())
+    guarded = re.search(
+        r"if\s*\(!ghIdentityFocusDone\)\s*\{\s*focusSoon\(name\);\s*"
+        r"ghIdentityFocusDone\s*=\s*true;\s*\}", branch)
+    assert guarded, (
+        "focusSoon(name) is not gated behind a once-per-session "
+        f"ghIdentityFocusDone flag:\n{branch}")
+
+
 def test_chan_derives_the_key_from_the_module_and_the_op():
     """`chan` must not collapse to a constant.
 

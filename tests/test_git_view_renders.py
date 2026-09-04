@@ -36,6 +36,7 @@ feature and it takes a different path through `changeLine`/`resolveButton`.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -83,6 +84,15 @@ def clean_repo(root):
     return root
 
 
+def empty_repo(root):
+    """Initialized, but nobody has committed here yet — the "no commits"
+    prerequisite `publishModal` shows AHEAD of the ready state, because
+    `gh repo create --source --push` has nothing to push otherwise."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    return root
+
+
 def conflicted_repo(root):
     os.makedirs(root, exist_ok=True)
     git(root, "init", "-q", root)
@@ -102,8 +112,18 @@ def conflicted_repo(root):
     return root
 
 
-def render(reader, repo, tmp_path, params=None):
-    """Run the template's script against `repo`'s real reader payloads."""
+def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None):
+    """Run the template's script against `repo`'s real reader payloads.
+
+    `repo_patch` overrides fields on the `overview` payload's `repo` dict
+    AFTER it comes back from the real reader — the only way to pin
+    `identity`/`has_commits` to a value a test actually wants rather than
+    whatever this machine's own `~/.gitconfig` happens to answer (`_identity`
+    in log.py deliberately falls through to global config, since that is
+    what `git commit` would really use). `github` overrides one entry at a
+    time in the probe's `/api/github/*` fixture table, the same convention
+    `_git_view_probe.mjs` already documents for it.
+    """
     node = shutil.which("node")
     if not node:  # pragma: no cover - node is present on CI runners
         pytest.skip("node is required to run the git view")
@@ -113,10 +133,13 @@ def render(reader, repo, tmp_path, params=None):
         "conflicts": reader.main(file=repo, op="conflicts"),
     }
     assert payloads["overview"]["ok"] is True, payloads["overview"]
+    if repo_patch:
+        payloads["overview"]["repo"].update(repo_patch)
     fixture = tmp_path / "fixture.json"
     fixture.write_text(json.dumps({
         "params": dict({"_file": repo}, **(params or {})),
         "payloads": payloads,
+        "github": github or {},
     }))
     proc = subprocess.run([node, PROBE, TEMPLATE, str(fixture)],
                           capture_output=True, text=True, timeout=90)
@@ -157,6 +180,99 @@ def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):
     out = render(reader, clean_repo(str(tmp_path / "chan")), tmp_path)
     ops = [c["op"] for c in out["calls"]]
     assert "overview" in ops and "stashes" in ops, ops
+
+
+_PRESENT_IDENTITY = {"name": "Fixture Author", "email": "fixture@example.com"}
+
+
+def test_a_repo_with_no_remote_paints_an_enabled_publish_button(reader, tmp_path):
+    """The old dead end was a `disabled: true` button with a fetch remote it
+    could never reach. `clean_repo` never adds one, so this is the toolbar's
+    default state for a brand-new folder — the exact case the button exists
+    for — and it must render USABLE, not just present."""
+    out = render(reader, clean_repo(str(tmp_path / "nopublish")), tmp_path)
+    _assert_painted(out, "no-remote repo")
+    html = out["viewHTML"]
+    # Bounded to the button's own opening tag through its label, so a
+    # `disabled=""` anywhere else in the toolbar (a busy neighbour, say)
+    # cannot be mistaken for this button's own state.
+    match = re.search(r"<button[^>]*>.*?Publish to GitHub", html)
+    assert match, html
+    assert "disabled" not in match.group(0), match.group(0)
+
+
+def test_publish_modal_paints_for_every_prerequisite_state(reader, tmp_path):
+    """One state at a time, driven straight through `fixture.github` and
+    `repo_patch` rather than clicking through the flow — `ghState` picks the
+    step from exactly these inputs (see template.html), so pinning them is
+    enough to land on each one directly."""
+    open_panel = {"panel": "publish"}
+
+    missing_status = {"found": False, "path": None, "source": None,
+                      "version": None, "signed_in": False, "account": None,
+                      "checked_at": None}
+    out = render(reader, clean_repo(str(tmp_path / "gh-missing")), tmp_path,
+                params=open_panel, github={"/api/github/status": missing_status})
+    _assert_painted(out, "publish modal: gh missing")
+    assert "Install GitHub CLI" in out["viewText"], out["viewText"]
+
+    signed_out_status = {"found": True, "path": "/usr/bin/gh", "source": "path",
+                         "version": "2.50.0", "signed_in": False, "account": None,
+                         "checked_at": 0}
+    out = render(reader, clean_repo(str(tmp_path / "gh-signed-out")), tmp_path,
+                params=open_panel, github={"/api/github/status": signed_out_status})
+    _assert_painted(out, "publish modal: signed out")
+    assert "Sign in" in out["viewText"], out["viewText"]
+
+    out = render(reader, clean_repo(str(tmp_path / "gh-no-identity")), tmp_path,
+                params=open_panel,
+                repo_patch={"identity": {"name": None, "email": None}})
+    _assert_painted(out, "publish modal: no identity")
+    assert "name" in out["viewText"].lower(), out["viewText"]
+
+    out = render(reader, empty_repo(str(tmp_path / "gh-no-commits")), tmp_path,
+                params=open_panel, repo_patch={"identity": _PRESENT_IDENTITY})
+    _assert_painted(out, "publish modal: no commits")
+    assert "commit" in out["viewText"].lower(), out["viewText"]
+
+    out = render(reader, clean_repo(str(tmp_path / "gh-ready")), tmp_path,
+                params=open_panel, repo_patch={"identity": _PRESENT_IDENTITY})
+    _assert_painted(out, "publish modal: ready")
+    assert "Publish" in out["viewText"], out["viewText"]
+
+
+def test_both_escape_hatches_paint_even_with_gh_missing(reader, tmp_path):
+    """The two escape hatches (Task 7) sit above `ghState`'s own content, so
+    they must render — visible and clickable, not hidden or disabled — on
+    the very state that proves they need no `gh` at all: the CLI missing
+    entirely. Neither hatch is gated behind any prerequisite this modal's
+    gh-driven flow would otherwise demand."""
+    missing_status = {"found": False, "path": None, "source": None,
+                      "version": None, "signed_in": False, "account": None,
+                      "checked_at": None}
+    out = render(reader, clean_repo(str(tmp_path / "hatches-gh-missing")), tmp_path,
+                params={"panel": "publish"},
+                github={"/api/github/status": missing_status})
+    _assert_painted(out, "escape hatches: gh missing")
+    # `viewHTML` rather than the 400-char-capped `viewText` (see the probe's
+    # own `.slice(0, 400)`) — the hatches sit at the END of the panel, after
+    # a repo with real pending changes and the whole "gh missing" state's own
+    # copy, comfortably past that cap.
+    html = out["viewHTML"]
+    assert "I already made the repo on GitHub" in html, html
+    assert "Connect a different remote" in html, html
+    for label in ("I already made the repo on GitHub", "Connect a different remote"):
+        # Anchored to the button whose ENTIRE content is this label (`action`
+        # wraps a plain string label in its own `<span>`), not merely the
+        # first `<button>` anywhere earlier in the document that happens to
+        # be followed eventually by this text — a lazy `.*?` across the whole
+        # page would cross other buttons' closing tags and match a
+        # completely unrelated (and possibly disabled) one instead.
+        match = re.search(r"<button([^>]*)><span>" + re.escape(label) + r"</span></button>", html)
+        assert match, f"{label!r} is not rendered as its own button:\n{html}"
+        assert "disabled" not in match.group(1), (
+            f"{label!r} renders disabled even though gh was never found: "
+            + match.group(0))
 
 
 def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
