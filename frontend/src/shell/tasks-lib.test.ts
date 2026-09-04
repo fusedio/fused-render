@@ -6790,6 +6790,10 @@ describe("the Cards view's frame", () => {
     expect(frame).toContain("width: 133.3334%");
     expect(frame).toContain("height: 133.3334%");
     expect(frame).toContain("transform-origin: 0 0");
+    // The full title rides the app's own hint (hints.ts), like a List row's,
+    // not a native `title` that arrives a second later.
+    expect(CARDS).toContain('<span className="task-card-title" data-hint={task.title}>');
+    expect(CARDS).not.toContain('className="task-card-title" title=');
     // The id sits beside the ring in the List row's own chip.
     expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");

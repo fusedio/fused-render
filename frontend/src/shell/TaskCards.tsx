@@ -216,7 +216,11 @@ function TaskCard({
             a card and the row it stands for can be matched by eye across views
             (Akshil, 2026-09-04). The title still carries the full text on hover. */}
         <span className="tasks-id tasks-id--task">{task.task_id}</span>
-        <span className="task-card-title" title={task.title}>
+        {/* `data-hint`, not `title`: the List row shows its full title in the
+            app's own hint the moment the pointer rests (hints.ts), and a native
+            tooltip that arrives a second later read as no tooltip at all
+            (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
+        <span className="task-card-title" data-hint={task.title}>
           {title}
         </span>
         {/* The same relative unit every task row on this page prints, from the
