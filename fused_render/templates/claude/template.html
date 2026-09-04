@@ -16941,9 +16941,13 @@ function submitChat() {
     // at a time — the notes are folded in at SEND time, so a second Done while
     // the first is still queued has nothing new to park.
     if (!message) {
-      // Asked of the queue, not only the pointer: an entry that left the queue
-      // by a path that forgot to clear annQueued must not block the next Done.
-      if (!annPending().length || (annQueued && queuedMsgs.includes(annQueued))) return;
+      // Is the entry the notes ride still ON SCREEN? Asked of its bubble, not
+      // of the array: stopRun detaches the whole queue provisionally while its
+      // cancel is in flight (bubbles untouched, array emptied), and a Done
+      // landing in that gap must not park a second entry that unqueueAll never
+      // sees and drainQueue then sends after Stop (Bugbot, PR #996). A bubble
+      // Back or a remove took out of the document is the stale case.
+      if (!annPending().length || (annQueued && annQueued.el.isConnected)) return;
       // Text already parked ahead: the notes will ride THAT entry — sendMessage
       // folds every pending note into whichever message drains first — so the
       // chips go onto its bubble rather than into a second entry that would

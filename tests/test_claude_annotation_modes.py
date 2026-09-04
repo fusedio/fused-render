@@ -226,8 +226,12 @@ def test_done_during_a_live_run_queues_the_notes(html):
     in the queue like typed words do — one at a time, the notes folding in at
     send time — and the home form's Stop is never pressed by an auto-send."""
     body = _block(html, "function submitChat()", "\n}\n")
-    assert ("if (!annPending().length || (annQueued && queuedMsgs.includes(annQueued)))"
-            " return;") in body, "a stale pointer must not block the next Done (Bugbot, #996)"
+    # liveness is the bubble's presence, not array membership: stopRun's
+    # provisional splice empties the array while the bubbles stay, and a Done
+    # in that gap must not re-park notes that then send after Stop (Bugbot, #996)
+    assert ("if (!annPending().length || (annQueued && annQueued.el.isConnected))"
+            " return;") in body
+    assert "queuedMsgs.includes(annQueued)" not in html
     # Back empties the queue by hand; the pointer goes with it
     back = html[html.index("for (const q of queuedMsgs) q.el.remove();"):]
     back = back[:back.index("\n\n")]
