@@ -1316,8 +1316,35 @@ let ghError = null;
  * `ghStartPolling`'s docstring). */
 let ghPollTimer = null;
 let ghPolling = false;
+/* Guards `ghTick`'s own repeat call to `draw(true)`: `draw` cancels any
+ * overview read still in flight (`mine = ++seq`) and starts a fresh one on
+ * every call, so a tick landing while the PREVIOUS tick's `draw(true)` is
+ * still awaiting a slow overview would cancel-and-restart that read forever,
+ * and the panel would never repaint while open. Scoped to `ghTick`'s own
+ * calls only — a click-driven `draw(true)` elsewhere still cancels-and-
+ * restarts as designed, which is correct there. */
+let ghDrawInFlight = false;
+/* Which repository root the currently-held gh state (below, and the four
+ * `/api/github/*` records) belongs to — set once per modal open by
+ * `ghStartPolling`. `github_setup`'s install/login/publish records are
+ * process-wide, not scoped to a repository, so without this a record left
+ * over from an earlier open (a different repo, or this one hours ago) would
+ * render as this open's own result — a stale "done" flashing the modal
+ * straight closed, or an old error banner over a healthy flow. */
+let ghOpenedFor = null;
+/* The `started_at` of each of the three single-flight records at the moment
+ * THIS modal session started polling — see `ghTick`. A record already
+ * sitting in a terminal state when the modal opens keeps this same stamp on
+ * every re-fetch; a genuinely new install/login/publish started during this
+ * session always carries a fresh one. That is what lets `ghTick` tell "still
+ * that old record" apart from "something this session actually did". */
+let ghBaseline = null;
+/* Whether `nameInput` has already been focused once for the "ready" step
+ * this modal session — see the "ready" branch in `publishModal`. Reset by
+ * `ghStartPolling` so a fresh open still seeds focus once. */
+let ghReadyFocusDone = false;
 /* The repository-name field, seeded once from the folder name the first time
- * the "ready" step is reached and left alone after — see `ghReadyBody`. */
+ * the "ready" step is reached and left alone after. */
 let ghName = "";
 /* No default: a radio nobody has clicked is not a private repository, and
  * the Publish button stays disabled until one of "private"/"public" is
@@ -2107,6 +2134,15 @@ async function ghFetch(path, opts) {
  * underneath it for no reason but to redraw the same step. */
 function ghState(repo) {
   if (ghPublish && ghPublish.state === "running") return "publishing";
+  /* A hatch's `remote_add` can succeed while the `push` right after it
+   * fails (see `ghHatchConnectClick`) — that leaves this repository with a
+   * remote, but the modal open on screen, still one `run()` away from a
+   * `snapshot` that reflects it. Checked before every other prerequisite:
+   * once a remote exists, `gh repo create` is not the right next step no
+   * matter what else about the repo is or isn't ready, and clicking
+   * Publish here would only 409 with "this repository already has a
+   * remote". */
+  if (repo.remote) return "has-remote";
   if (!ghStatus) return "loading";
   if (!ghStatus.found) return "missing";
   if (!ghStatus.signed_in) return "signed-out";
@@ -2211,7 +2247,7 @@ async function ghPublishClick(repo) {
  * host that isn't GitHub, and they work whether `gh` is signed in, missing,
  * or was never looked for at all.
  */
-async function ghHatchExistingClick(url) {
+async function ghHatchConnectClick(url, errorContext) {
   if (busy !== null || !url.trim()) return;
   run("remote_add", { op: "remote_add", url: url.trim() }, () => {
     run("push", { op: "push" }, () => {
@@ -2221,20 +2257,7 @@ async function ghHatchExistingClick(url) {
       return true;
     }, "Connected, but the push failed");
     return true;
-  }, "Could not connect that repository");
-}
-
-async function ghHatchRemoteClick(url) {
-  if (busy !== null || !url.trim()) return;
-  run("remote_add", { op: "remote_add", url: url.trim() }, () => {
-    run("push", { op: "push" }, () => {
-      ghHatch = null;
-      ghHatchUrl = "";
-      setParams({ panel: null }, { history: "replace" });
-      return true;
-    }, "Connected, but the push failed");
-    return true;
-  }, "Could not connect that remote");
+  }, errorContext);
 }
 
 /* The two hatches' own corner of the modal: two plain links when neither is
@@ -2265,8 +2288,8 @@ function ghHatchesNode() {
   input.setAttribute("aria-label", prompt);
   input.addEventListener("input", () => { ghHatchUrl = input.value; });
   const connect = () => {
-    if (existing) void ghHatchExistingClick(ghHatchUrl);
-    else void ghHatchRemoteClick(ghHatchUrl);
+    void ghHatchConnectClick(ghHatchUrl,
+      existing ? "Could not connect that repository" : "Could not connect that remote");
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); connect(); }
@@ -2299,6 +2322,24 @@ function ghHatchesNode() {
  * completed, while the user was away in a browser tab: nothing about those
  * comes back through this page on its own.
  */
+/* A record's identity for "did something happen during THIS modal session"
+ * purposes: `started_at` on a fresh install/login/publish is always a new
+ * timestamp, and stays fixed across repeated GETs of the same settled
+ * record. Compared against `ghBaseline` below. */
+function ghStamp(rec) {
+  return (rec && rec.started_at) || null;
+}
+
+/* A record as it should be TREATED for this session: itself while genuinely
+ * `running` (a single-flight record in flight is always relevant, whichever
+ * repo last kicked it off), itself when its stamp has moved past whatever
+ * was already there when this modal opened (something this session did), or
+ * `null` — as good as never having happened, for this open — otherwise. */
+function ghOwnRecord(rec, baselineStamp, running) {
+  if (!rec || running) return rec;
+  return ghStamp(rec) === baselineStamp ? null : rec;
+}
+
 async function ghTick() {
   if (param("panel") !== "publish") { ghStopPolling(); return; }
   try {
@@ -2309,9 +2350,15 @@ async function ghTick() {
       ghFetch("/api/github/publish"),
     ]);
     ghStatus = status;
-    ghInstall = install;
-    ghLogin = login;
-    ghPublish = pub;
+    if (ghBaseline === null) {
+      // The first tick of this modal session — see `ghBaseline`'s own
+      // comment above its declaration.
+      ghBaseline = { install: ghStamp(install), login: ghStamp(login),
+                     publish: ghStamp(pub) };
+    }
+    ghInstall = ghOwnRecord(install, ghBaseline.install, install && install.state === "running");
+    ghLogin = ghOwnRecord(login, ghBaseline.login, login && login.in_flight);
+    ghPublish = ghOwnRecord(pub, ghBaseline.publish, pub && pub.state === "running");
   } catch (err) {
     // A network hiccup. The next tick tries again; the modal keeps showing
     // the last good read rather than flashing an error over it.
@@ -2330,17 +2377,47 @@ async function ghTick() {
     void draw(true);
     return;
   }
-  void draw(true);
+  // Guarded, unlike the draw() above: that one fires once, this one is
+  // called again every GH_POLL_MS, and `draw` cancels-and-restarts any
+  // overview read still in flight on every call — see `ghDrawInFlight`'s
+  // own comment. Skipping a redraw here just means the next tick, 1.5s
+  // later, tries again with whatever `ghStatus`/`ghInstall`/`ghLogin`/
+  // `ghPublish` already hold.
+  if (!ghDrawInFlight) {
+    ghDrawInFlight = true;
+    draw(true).finally(() => { ghDrawInFlight = false; });
+  }
 }
 
 /* Idempotent under a real timer AND under the render probe's `setInterval`
  * stub, which hands back the same id (0) on every call — a truthiness check
  * on the id would restart the "loop" on every repaint instead of running
- * once. `ghPolling` is the actual guard; the id is kept only so a real page
- * has something to clear in `ghStopPolling`. */
-function ghStartPolling() {
-  if (ghPolling) return;
+ * once. `ghPolling` (together with `ghOpenedFor`) is the actual guard; the
+ * id is kept only so a real page has something to clear in
+ * `ghStopPolling`.
+ *
+ * A fresh open — `ghPolling` was off, or `root` names a different repository
+ * than the one currently polled — resets every piece of this modal's own
+ * session state: the four `/api/github/*` echoes (so a record left over from
+ * an earlier open can't paint for even the one frame before the first tick
+ * lands), the baseline that scopes them (`ghBaseline`, see `ghTick`), the
+ * once-per-session focus flag, and the name/visibility/hatch fields a
+ * DIFFERENT repository has no business inheriting. */
+function ghStartPolling(root) {
+  if (ghPolling && ghOpenedFor === root) return;
   ghPolling = true;
+  ghOpenedFor = root;
+  ghBaseline = null;
+  ghInstall = null;
+  ghLogin = null;
+  ghPublish = null;
+  ghError = null;
+  ghReadyFocusDone = false;
+  ghName = "";
+  ghVisibility = "";
+  ghHatch = null;
+  ghHatchUrl = "";
+  if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
   ghPollTimer = setInterval(() => { void ghTick(); }, GH_POLL_MS);
   void ghTick();
 }
@@ -2373,7 +2450,15 @@ function publishModal(data) {
   if (errorNode) panel.append(errorNode);
 
   const state = ghState(repo);
-  if (state === "loading") {
+  if (state === "has-remote") {
+    panel.append(el("div", { className: "panel-form" },
+      el("p", { className: "note", style: "flex-basis:100%", textContent:
+        "This repository already has a remote — creating a new one on "
+        + "GitHub isn't the right next step. Push from the toolbar instead." })));
+    panel.append(el("div", { className: "panel-form" },
+      el("span", { className: "spacer", style: "flex:1" }),
+      action("gh-cancel", "Close", { onClick: close })));
+  } else if (state === "loading") {
     panel.append(el("div", { className: "panel-form" },
       el("p", { className: "note", style: "flex-basis:100%",
                textContent: "Checking the GitHub CLI…" })));
@@ -2501,7 +2586,7 @@ function publishModal(data) {
       el("span", { className: "spacer", style: "flex:1" }),
       publishBtn,
       action("gh-cancel", "Cancel", { onClick: close })));
-    focusSoon(nameInput);
+    if (!ghReadyFocusDone) { focusSoon(nameInput); ghReadyFocusDone = true; }
   }
 
   /* The two escape hatches close out the panel, reachable no matter which
@@ -4012,7 +4097,10 @@ function render(data, stashes, diff) {
      nothing else in this view needs one — starting/stopping it here, next to
      the one place that mounts the modal, is what keeps it from outliving the
      panel that owns it. */
-  if (param("panel") === "publish") { ghStartPolling(); page.append(publishModal(data)); }
+  if (param("panel") === "publish") {
+    ghStartPolling(data.repo.root);
+    page.append(publishModal(data));
+  }
   else { ghStopPolling(); }
   show(page);
 }
