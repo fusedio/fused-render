@@ -12284,6 +12284,9 @@ document.getElementById("back").onclick = () => {
   // detached from everything (Bugbot, PR #653).
   for (const q of queuedMsgs) q.el.remove();
   queuedMsgs.length = 0;
+  // The entry the notes were riding went with them; a pointer left behind
+  // would tell the next Done the notes are already parked (Bugbot, PR #996).
+  annQueued = null;
   // The abandoned turn's sendMessage/resumeRun still holds `sending` until its
   // loop bails (one poll away) — long enough for the landing composer's submit
   // to hit `if (sending) return` and drop the click (Bugbot, PR #653). The
@@ -16938,7 +16941,9 @@ function submitChat() {
     // at a time — the notes are folded in at SEND time, so a second Done while
     // the first is still queued has nothing new to park.
     if (!message) {
-      if (!annPending().length || annQueued) return;
+      // Asked of the queue, not only the pointer: an entry that left the queue
+      // by a path that forgot to clear annQueued must not block the next Done.
+      if (!annPending().length || (annQueued && queuedMsgs.includes(annQueued))) return;
       // Text already parked ahead: the notes will ride THAT entry — sendMessage
       // folds every pending note into whichever message drains first — so the
       // chips go onto its bubble rather than into a second entry that would

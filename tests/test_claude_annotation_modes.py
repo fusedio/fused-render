@@ -226,7 +226,12 @@ def test_done_during_a_live_run_queues_the_notes(html):
     in the queue like typed words do — one at a time, the notes folding in at
     send time — and the home form's Stop is never pressed by an auto-send."""
     body = _block(html, "function submitChat()", "\n}\n")
-    assert "if (!annPending().length || annQueued) return;" in body
+    assert ("if (!annPending().length || (annQueued && queuedMsgs.includes(annQueued)))"
+            " return;") in body, "a stale pointer must not block the next Done (Bugbot, #996)"
+    # Back empties the queue by hand; the pointer goes with it
+    back = html[html.index("for (const q of queuedMsgs) q.el.remove();"):]
+    back = back[:back.index("\n\n")]
+    assert "queuedMsgs.length = 0;" in back and "annQueued = null;" in back
     # text already parked ahead: the notes ride THAT entry (sendMessage folds
     # every pending note into whichever message drains first), so the chips go
     # on its bubble instead of into a second entry that drains empty (Bugbot, #996)
