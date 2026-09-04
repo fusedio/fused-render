@@ -108,6 +108,63 @@ def start(request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-apple-transcribe", daemon=True).start()
 
 
+#: Containers AVFoundation opens on macOS 26. Anything else — WebM and Ogg
+#: first among them, which is what Chrome's MediaRecorder produces — is
+#: rewritten to WAV first (`_decoded_copy`). Lower-case, with the dot.
+AVFOUNDATION_EXTENSIONS = frozenset({
+    ".m4a", ".mp4", ".mov", ".aac", ".mp3", ".wav", ".wave", ".aif", ".aiff", ".aifc",
+    ".caf", ".flac", ".m4v", ".3gp", ".amr", ".ac3", ".ec3", ".snd", ".au",
+})
+#: The one rate Whisper's front end and Apple's model both accept happily.
+SAMPLE_RATE = 16000
+
+
+def _decoded_copy(source: str, workdir: str) -> str:
+    """`source` as a 16 kHz mono 16-bit WAV beside the transcript, for a
+    container AVFoundation cannot open.
+
+    PyAV in THIS process — the same decode `mlx_whisper/worker.py::_decode_audio`
+    does inside its venv, with the same three rules (planar float, mono
+    mixdown, resampler FLUSHED so the last frame is not lost), then written as
+    int16 for the helper. No system ffmpeg is ever spawned (the app's policy —
+    see the Whisper folders' pyproject.toml). A missing `av` is a build problem
+    and is named as one.
+    """
+    try:
+        import av
+        import numpy as np
+    except ImportError as e:  # pragma: no cover - a build without the [bundled] extra
+        raise host.AppleError(
+            "unavailable",
+            f"{os.path.basename(source)} is not a container Apple's speech model reads "
+            "(mp4/m4a/mov/wav/aiff/mp3/flac), and this build has no decoder to convert "
+            f"it (PyAV missing: {e})") from e
+    import wave
+
+    chunks = []
+    with av.open(source) as container:
+        streams = container.streams.audio
+        if not streams:
+            raise host.AppleError("bad_request",
+                                  f"{os.path.basename(source)} has no audio track to transcribe")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        for frame in container.decode(streams[0]):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        for out in resampler.resample(None):
+            chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise host.AppleError("bad_request", f"{os.path.basename(source)} decoded to no audio")
+    pcm = np.concatenate(chunks).astype(np.int16)
+    target = os.path.join(workdir, os.path.splitext(os.path.basename(source))[0][:60] + ".decoded.wav")
+    with wave.open(target, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(SAMPLE_RATE)
+        handle.writeframes(pcm.tobytes())
+    return target
+
+
 def _run(request: dict, job: str, fields: dict) -> dict:
     source = request["path"]
     out, out_text = request["out"], request["outText"]
@@ -122,11 +179,55 @@ def _run(request: dict, job: str, fields: dict) -> dict:
         supervisor._report(job, **fields, **over)
 
     tick(state="running", done=0, total=None, detail="Decoding audio…")
+    # What the helper is HANDED. The transcript's `path` stays the caller's
+    # file — a decoded copy is a private intermediate, removed at the end.
+    # Two doors into the decode: an extension AVFoundation is known not to
+    # open goes straight there; a native-looking one that AVFoundation still
+    # refuses ("Cannot Open" — a mislabelled file, an odd codec) is retried
+    # through it ONCE rather than failing on a container PyAV reads fine.
+    decoded: str | None = None
+    try:
+        if os.path.splitext(source)[1].lower() not in AVFOUNDATION_EXTENSIONS:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            decoded = _decoded_copy(source, os.path.dirname(out))
+        try:
+            return _run_helper(request, job, fields, decoded or source, started, tick)
+        except host.AppleError as e:
+            if decoded or e.type != "ai_error" or not _looks_undecodable(str(e)):
+                raise
+            tick(state="running", done=0, total=None, detail="Re-decoding audio…")
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            decoded = _decoded_copy(source, os.path.dirname(out))
+            return _run_helper(request, job, fields, decoded, started, tick)
+    finally:
+        if decoded:
+            try:
+                os.remove(decoded)
+            except OSError:
+                pass
+
+
+def _looks_undecodable(message: str) -> bool:
+    """AVFoundation's own words for "I cannot read this file" — the only
+    failures worth a second pass through PyAV."""
+    lowered = message.lower()
+    return any(marker in lowered for marker in
+               ("cannot open", "no audio track", "could not be decoded", "cannot decode",
+                "unsupported", "not supported"))
+
+
+def _run_helper(request: dict, job: str, fields: dict, fed: str, started: float, tick) -> dict:
+    """One pass through the helper over `fed`, writing the transcript files."""
+    source, out, out_text = request["path"], request["out"], request["outText"]
+    locale, words = request["locale"], bool(request.get("words"))
+    segments: list[dict] = []
+    duration = None
+    reported_locale = locale
     with partial.sink(request.get("outPartial")) as progressive:
         # The first frame may be the locale's model downloading, so the bound
         # is the transcription ceiling, not text's; after it the child's own
         # exit is the bound, and this row is what a caller watches.
-        stream = host.frames("speech", {"path": source, "locale": locale, "words": words},
+        stream = host.frames("speech", {"path": fed, "locale": locale, "words": words},
                              first_timeout=supervisor.TRANSCRIBE_TIMEOUT_S)
         for frame in stream:
             if supervisor._cancel_requested(job):

@@ -244,6 +244,16 @@ bundled = [
     # actually read, in `zarr_aoi/tile_server.py`'s DAEMON_DEPS.
 
     "drain3>=0.9.11",
+    # The apple speech tier's decoder (D700), macOS only. Apple's SpeechAnalyzer
+    # is fed through AVFoundation, which opens mp4/m4a/mov/wav/aiff/mp3/flac/caf
+    # and NOT WebM/Ogg/Opus — which is exactly what Chrome's MediaRecorder
+    # produces, so the Playground's own mic recording failed on it. The Whisper
+    # workers already decode everything through PyAV inside their venvs (no
+    # system ffmpeg, by policy); `ai/apple/speech.py` does the same in the
+    # server process for the containers AVFoundation refuses, rewriting them to
+    # a 16 kHz WAV the helper can read. ~35 MB on the arm64 wheel — the price of
+    # "a page cannot tell which engine ran" (AI-10c) holding for the apple tier.
+    "av>=14,<16; sys_platform == 'darwin'",
     # Private-cloud credential chains (the [cloud-auth] extra), folded into the
     # bundled app: DMG users cannot pip install, and the feature's promise —
     # "an authenticated aws/gcloud CLI ⇒ your private buckets just work" — is

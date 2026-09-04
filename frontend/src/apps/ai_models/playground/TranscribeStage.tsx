@@ -246,7 +246,16 @@ export function TranscribeStage({ model }: { model: string }) {
     setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      // `audio/mp4` (AAC) where the browser can mux it — Safari always, Chrome
+      // on recent builds — else the browser's default (WebM/Opus on Chrome).
+      // Not for the engines' sake: every transcribe tier decodes both (the
+      // Whisper workers through PyAV, the apple tier through the same PyAV
+      // rewrite in `ai/apple/speech.py`). An m4a is simply the container the
+      // rest of the machine plays and previews without conversion.
+      const preferred = ["audio/mp4", "audio/mp4;codecs=mp4a.40.2"].find(
+        (m) => typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(m),
+      );
+      const recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       recorder.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
