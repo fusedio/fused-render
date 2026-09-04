@@ -85,7 +85,10 @@
     --destructive: var(--error);
     --sh-border: var(--border);
     --input: var(--border);
-    --ring: var(--accent);
+    /* ring = shadcn's hover/focus halo (slider thumb, inputs). Main's was a
+       mid grey, and hover is a wash, not a signal — lime is reserved for
+       selection and our own controls' focus-visible outline. */
+    --ring: var(--fg-muted);
     --chart-1: var(--series-1);
     --chart-2: var(--series-2);
     --chart-3: var(--series-3);
@@ -98,7 +101,7 @@
     --sidebar-accent: var(--row-bg-hover);
     --sidebar-accent-foreground: var(--fg);
     --sidebar-border: var(--border);
-    --sidebar-ring: var(--accent);
+    --sidebar-ring: var(--fg-muted);
 }
 
 /* ---- Four names Tailwind and this app both claim --------------------------
