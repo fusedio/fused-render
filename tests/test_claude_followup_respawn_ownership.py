@@ -27,13 +27,6 @@ import json
 
 import pytest
 
-# WINDOWS: SKIPPED, NOT FIXED. The persistent session host (#979) never writes
-# `host.json` on the Windows runner - every test below waits for it and times
-# out - and `interrupted_offset` lands one byte off there (CRLF). That is a
-# platform gap in the host itself, not in these tests, and it needs a Windows
-# box to close; marking it here keeps main's Windows job honest about what it
-# does cover instead of red for everything (2026-09-04, red since #979).
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="claude session host does not start on Windows yet (#979)")
 
 
 TEMPLATE = os.path.join(
@@ -116,6 +109,11 @@ def test_an_old_superseded_loop_does_not_add_a_stray_stopped_note(html):
     )
 
 
+# WINDOWS: this one test fails on the runner with a TypeError inside the node
+# harness (the JSON handed back is bytes, not str, on that platform); the other
+# tests in this file run `pollLoop` the same way and pass, so the skip is on the
+# one case and not the module (bugbot, #998; red since #979).
+@pytest.mark.skipif(os.name == "nt", reason="node harness returns bytes for this case on Windows (#979)")
 def test_the_only_loop_still_clears_the_param_and_notes_a_stop(html):
     """Sanity check: the guard must not silence the ordinary (non-respawn)
     case where this loop really is the current one."""
