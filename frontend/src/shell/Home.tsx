@@ -394,8 +394,15 @@ export default function Home({ config }: { config: Config }) {
           if (!alive) return;
           setApps(retry.apps.slice(0, MAX_ROW));
           return;
-        } catch {
-          // Community backend unreachable — fall through to the empty state.
+        } catch (e) {
+          // The clone refused (no usable git, network, a foreign folder at
+          // <workspace>/showcase). On a brand-new install this row is empty
+          // BECAUSE of that, so the reason belongs in the empty state — the
+          // bare "No apps yet" reads as a normal fresh workspace and leaves
+          // the user waiting on a download that will never arrive. The
+          // backend composes the whole sentence; it renders verbatim below.
+          if (!alive) return;
+          setAppsError((e as Error).message);
         }
         setApps([]);
       },

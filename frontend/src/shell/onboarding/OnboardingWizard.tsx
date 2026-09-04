@@ -204,20 +204,31 @@ export function OnboardingWizard({ config }: { config: Config }) {
       className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
       aria-label="Set up FusedRender"
     >
-      {/* Top bar: brand · steps · close */}
-      <div className="flex items-center gap-4 border-b border-border px-5 py-3">
+      {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
+          `1fr`, so the middle one is centred on the BAR — not on whatever the
+          brand and the ✕ leave over, which is what `mx-auto` in a flex row
+          gives and which reads as pushed-right (the brand is far wider than
+          the ✕). In flow, so a squeeze shrinks the side tracks instead of
+          painting the pills over the wordmark. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b border-border px-5 py-3">
         <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
           </span>
-          <span className="truncate">Fused Render</span>
+          {/* Only where the pills are actually competing for the row: from
+              `sm` (where they appear) up to 760px (measured as the width at
+              which the centred pills stop leaving the side track room for the
+              wordmark) it would truncate to "Fused Rend…", and the mark alone
+              says it better. Under `sm` the pills are hidden, so the wordmark
+              has the row to itself and stays. */}
+          <span className="truncate sm:max-[760px]:hidden">Fused Render</span>
         </div>
 
         {/* Every step is a link, in both directions: nothing before step 4
             gates anything after it, so a user who knows what they want can go
             straight there. */}
         <ol
-          className="mx-auto my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
+          className="my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
           aria-label="Setup steps"
         >
           {steps.map((s, i) => {
@@ -259,7 +270,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           onClick={() => finish("dismiss")}
           aria-label="Close setup"
           title="Skip for now"
-          className="ml-auto grid size-8 cursor-pointer appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:ml-0"
+          className="col-start-3 grid size-8 cursor-pointer justify-self-end appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="size-4" />
         </button>
