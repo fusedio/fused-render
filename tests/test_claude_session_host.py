@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from _claude_stub_cli import write_stub_cli
+from _claude_stub_cli import run_dir_report, write_stub_cli
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 
@@ -129,7 +129,8 @@ def test_two_inbox_entries_reach_the_stub_in_order(agent, monkeypatch, stub_cli,
     # A follow-up written straight into the inbox, exactly the shape `_send`
     # (a later task) will write — the host does not care who wrote it.
     assert _wait_for(lambda: any(
-        r.get("type") == "echo" for r in _out_rows(run_dir)))
+        r.get("type") == "echo" for r in _out_rows(run_dir))), \
+        run_dir_report(run_dir)
     agent._write_inbox_entry(run_dir, "second")
 
     def both_echoed():
@@ -148,7 +149,7 @@ def test_host_survives_a_result_row(agent, monkeypatch, stub_cli, target):
     def turn_finished():
         return any(r.get("type") == "result" for r in _out_rows(run_dir))
 
-    assert _wait_for(turn_finished)
+    assert _wait_for(turn_finished), run_dir_report(run_dir)
     with open(os.path.join(run_dir, "pid"), encoding="utf-8") as f:
         pid = int(f.read().strip())
     assert agent._alive(run_dir), "the CLI's pid must still be alive right " \
@@ -180,7 +181,7 @@ def test_pending_tasks_hold_the_reap_off(agent, monkeypatch, stub_cli, target):
         turn_open, tasks_pending = agent._turn_state(run_dir)
         return tasks_pending
 
-    assert _wait_for(tasks_seen)
+    assert _wait_for(tasks_seen), run_dir_report(run_dir)
     # Well past the idle window — still up, because tasks_pending is True.
     time.sleep(0.6)
     assert agent._alive(run_dir), \

@@ -20,6 +20,33 @@ import stat
 import sys
 
 
+def run_dir_report(run_dir):
+    """What a run dir holds, as an assertion message for a host that never
+    came up.
+
+    `session_host.main` writes the CLI-spawn failure into `err.log` and
+    returns without ever creating `host.json` (see its `except Exception`
+    block), so a bare `assert _wait_for(...host.json exists)` reports
+    `assert False` and throws the one line that says WHY away. That is a
+    round-trip to CI per guess on any platform the tests cannot be run on
+    locally, which is exactly the position Windows-only failures put you in.
+    """
+    lines = ["run_dir=%s" % run_dir]
+    try:
+        lines.append("entries=%s" % sorted(os.listdir(run_dir)))
+    except OSError as exc:
+        return "run_dir unreadable: %s" % exc
+    for name in ("err.log", "out.jsonl"):
+        path = os.path.join(run_dir, name)
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()[-2000:].decode("utf-8", "replace")
+        except OSError as exc:
+            body = "<%s>" % exc
+        lines.append("--- %s ---\n%s" % (name, body))
+    return "\n".join(lines)
+
+
 def write_stub_cli(bin_dir, script_body):
     """Write `script_body` (a `#!{python}`-shebang Python script, already
     `.format(python=...)`-filled) as a `claude` stub under `bin_dir` and

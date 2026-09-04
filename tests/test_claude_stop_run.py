@@ -161,7 +161,10 @@ def test_a_successful_interrupt_retires_the_marker_once_a_later_turn_proves_it_s
     # `_cancel` captures `out.jsonl`'s current size as `interrupted_offset`.
     streamed = json.dumps({"type": "assistant", "message": {
         "content": [{"type": "text", "text": "partial"}]}}) + "\n"
-    (run_dir / "out.jsonl").write_text(streamed)
+    # `write_bytes`, not `write_text`: text mode translates "\n" to "\r\n" on
+    # Windows, so the file would be one byte longer than the offset asserted
+    # below — and `_cancel` measures the real `os.path.getsize`, correctly.
+    (run_dir / "out.jsonl").write_bytes(streamed.encode("utf-8"))
 
     result = agent._cancel("run")
     assert result == {"cancelled": "run", "still_queued": []}
