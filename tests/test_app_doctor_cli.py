@@ -102,3 +102,14 @@ def test_json_and_check_together_still_reports_nonzero(tmp_path):
     assert r.returncode != 0
     body = json.loads(r.stdout)
     assert body["ok"] is False
+
+
+def test_a_path_that_does_not_exist_fails_loudly(tmp_path):
+    # check() itself swallows the OSError a missing path raises when it tries
+    # to list it, which used to surface here as two bogus LOW findings and
+    # exit 0 — a silent "clean" verdict for a path that was never reviewed at
+    # all. The CLI has to catch this before it ever reaches check().
+    missing = tmp_path / "does-not-exist"
+    r = _run(str(missing), cwd=tmp_path)
+    assert r.returncode != 0
+    assert "not a directory" in (r.stderr + r.stdout).lower()

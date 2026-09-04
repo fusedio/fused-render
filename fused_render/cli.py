@@ -6,10 +6,11 @@ Three subcommands:
     127.0.0.1 file explorer.
   * ``fused-render calls`` — read the app call log (calls.py) from a terminal.
     Reads the store directly off disk, so it works with no server running.
-  * ``fused-render doctor`` — run app_doctor.check() over an app folder (or a
-    folder of them) from a terminal. Needs no server either — it is the same
-    engine the community-apps repo's own CI workflow runs on every push, so a
-    developer reproducing a failing check does it with this exact command.
+  * ``fused-render doctor`` — run app_doctor.check() over one app folder from
+    a terminal. Needs no server either — it is the same engine the
+    community-apps repo's own CI workflow runs on every push (once per app),
+    so a developer reproducing a failing check does it with this exact
+    command.
 
 Packing a renderable page into a portable bundle for hosted serving is a
 ``POST /api/export`` call on the running server (see server.py/export.py), not a
@@ -87,13 +88,12 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser(
         "doctor",
         help="review an app for secrets, device-specific paths, and other issues",
-        description="Run the App Doctor (app_doctor.check()) over an app folder. "
-                    "Given a folder that is not itself an app, reviews every "
-                    "top-level folder that is one (repo mode) — see "
-                    "app_doctor.py for what each check family looks for.",
+        description="Run the App Doctor (app_doctor.check()) over one app "
+                    "folder — see app_doctor.py for what each check family "
+                    "looks for.",
     )
     doctor.add_argument("path", nargs="?", default=".",
-                        help="app folder, or a folder of app folders (default: .)")
+                        help="the app folder to review (default: .)")
     doctor.add_argument("--json", action="store_true", dest="as_json",
                         help="machine-readable output")
     doctor.add_argument("--check", action="store_true",
@@ -523,6 +523,8 @@ def _run_doctor(args: argparse.Namespace) -> None:
     from fused_render import app_doctor
 
     path = os.path.abspath(args.path)
+    if not os.path.isdir(path):
+        raise SystemExit(f"{path} is not a directory — nothing to review")
     findings = app_doctor.check(path)
     ok = not any(f["severity"] == "high" for f in findings)
 
@@ -541,12 +543,6 @@ def _run_doctor(args: argparse.Namespace) -> None:
             print(f"\n{family} ({label}):")
             for f in group:
                 where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
-                # Repo mode (app_doctor.check() reviewing a folder of apps)
-                # tags each finding with the app it came from — surface that
-                # here, since `where` alone is only unambiguous within one
-                # app's own tree.
-                if "app" in f:
-                    where = f"{f['app']}/{where}"
                 print(f"  {where}  {f['excerpt']}")
         print(f"\n{len(findings)} finding(s), "
               f"{'ok' if ok else 'FAILING'} under --check")
