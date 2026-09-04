@@ -3721,7 +3721,16 @@ def _read_current_turn(run_dir: str) -> tuple:
             line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
-        if row.get("type") == "result":
+        # A subagent's own `result` row is not the main turn's — `_poll` and
+        # `_turn_state` both skip it before deciding anything off `type`, and
+        # this cursor needs to agree: otherwise a follow-up echoed back after
+        # a subagent finishes reads as a genuine turn boundary (the row right
+        # before it looks like the "result closed the previous turn" this
+        # rule requires), and the cursor jumps past text the main turn has
+        # already streamed.
+        if row.get("parent_tool_use_id"):
+            pass
+        elif row.get("type") == "result":
             seen_result = True
         elif seen_result and _starts_new_turn(row):
             advance_to = line_start  # the newest genuine turn's own start

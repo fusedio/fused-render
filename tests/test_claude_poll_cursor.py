@@ -280,3 +280,39 @@ def test_a_followup_echoed_midturn_does_not_advance_the_cursor(agent, run_dir):
     assert third["text"] == second["text"]
     assert len(third["segments"]) == len(second["segments"]), \
         "segments must never shrink between polls of the same open turn"
+
+
+# --------------------------------------------- (f) a subagent's own result row
+
+def _subagent_result_row(id="toolu_1"):
+    """A subagent's own `result` row — `type: "result"` but carrying
+    `parent_tool_use_id`, the mark `_poll`'s own row loop and `_turn_state`
+    both already skip before deciding anything off `type`. Not the main
+    turn's own boundary."""
+    return {"type": "result", "parent_tool_use_id": id, "result": "sub done"}
+
+
+def test_a_subagent_result_row_does_not_advance_the_cursor(agent, run_dir):
+    """A subagent finishing mid-turn writes its own `result` row before the
+    main turn's. That row must not make `_read_current_turn`'s `seen_result`
+    rule believe the PREVIOUS turn closed — otherwise a follow-up echoed
+    right after the subagent's row reads as a genuine new-turn boundary (the
+    row before it looks like "a result closed the turn before it"), and the
+    cursor jumps past text the main turn already streamed, same bug class as
+    (e) above."""
+    _write(run_dir, [_user_row("turn one"),
+                      _text_row("Part one of the answer. "),
+                      _subagent_result_row()])
+    first = _poll(agent, run_dir)
+    assert first["text"] == "Part one of the answer. "
+    assert _cursor(run_dir) in (None, 0), \
+        "a subagent's own result row is not the main turn's own boundary"
+
+    # The follow-up's own echo lands right after the subagent's result row —
+    # still mid-turn, since the MAIN turn's own result has not landed.
+    _append(run_dir, [_user_row("continue"), _text_row("Part two. ")])
+    second = _poll(agent, run_dir)
+    assert second["text"] == "Part one of the answer. Part two. ", \
+        "a subagent's result row must not be mistaken for the main turn " \
+        "closing, or the cursor jumps past text already streamed and the " \
+        "next poll's segments shrink"
