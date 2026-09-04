@@ -5,9 +5,13 @@ description: Use when reviewing or sharing an app — checking for secrets, hard
 
 # App Doctor
 
-A review you carry out yourself over one app folder, using your ordinary tools (grep, read, bash). `fused-render` is a packaged desktop app for end users: the Python package is not installed and not on PATH, so nothing here shells out to it. Judge each hit, don't just report matches.
+A review you carry out yourself over one app folder, using your ordinary tools (grep, read, bash). `fused-render` is a packaged desktop app for end users: the Python package is not installed and not on PATH, so nothing here shells out to it — there is no `fused-render` subcommand to reach for, and an attempt to run one buys a failed round trip and nothing else. Judge each hit, don't just report matches.
 
 Run this before sharing an app, or whenever asked to review one.
+
+## What this review is not
+
+The sections below are the whole of it. This is a share-readiness pass, not a code audit: it does not read an app's logic looking for bugs, and it forms no opinion on cache eviction order, timezone and date math, deduplication, DOM injection, error handling, or performance. Skip that work even when the request says "review for correctness" — say plainly that this skill covers share-readiness and offer the audit as separate work rather than quietly doing both. A run that reads every line of an app's source has gone wrong; the checks here are greps and a handful of targeted reads, and the answer arrives in well under a minute.
 
 ## Leaked credentials
 
@@ -47,7 +51,7 @@ Check for:
 
 ## A stale declared API version
 
-The entry page may declare `<meta name="fused-api-version" content="N">` right after the `fused-app` tag, in the same 4 KiB head. No tag means version 0, the oldest apps predate the tag entirely. Current is the highest `N` among the `docs/v{N}.md` files in the `fused-render-api-migration` skill directory, which sits beside this one. List that directory rather than assuming a number, so the answer stays right as versions land. If the entry page's declared version is behind that, it's a finding, route the fix to `fused-render-api-migration`, don't guess at what changed between versions yourself.
+The entry page may declare `<meta name="fused-api-version" content="N">` right after the `fused-app` tag, in the same 4 KiB head. No tag means version 0, the oldest apps predate the tag entirely. Current is the highest `N` among the `docs/v{N}.md` files in the `fused-render-api-migration` skill directory, which sits beside this one. List that directory rather than assuming a number, so the answer stays right as versions land. If the entry page's declared version is behind that, it's a finding: report the gap and stop. Do not open the intervening `docs/v{N}.md` files, not even to work out whether this particular app is affected — deciding impact is `fused-render-api-migration`'s job, and listing the directory already told you everything you need.
 
 ## Judging the app's actual `fused.*` calls
 
@@ -76,3 +80,13 @@ When asked to set up CI checks for an app, don't tell the user to copy files by 
 4. Tell the user the paths you wrote, that the workflow runs on push to `main` and on every pull request, and that both files still need to be committed.
 
 That workflow is a floor, not a substitute for this review: it runs `app_check.py` — a plain, stdlib-only script, nothing to install — against each app folder in the repo, and only catches what that script catches. It is deliberately a subset of what this skill checks by hand.
+
+## Reporting what you found
+
+One line per finding, in the same shape the CI check prints, sorted by path then line:
+
+```
+path:line: rule: excerpt
+```
+
+Mask the secret itself — first two characters, last two, stars between — so the report is safe to paste into a log or a chat. Use `.` as the path for a finding about the folder rather than a file. Close with a count and nothing else. When the app is clean, say so in one line.
