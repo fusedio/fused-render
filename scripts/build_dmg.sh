@@ -93,23 +93,67 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR"
 #        around.
 #      - Homebrew's `python@3.12` formula: also a genuine framework build
 #        (Homebrew compiles CPython with --enable-framework on macOS) at
-#        /opt/homebrew/opt/python@3.12/Frameworks/Python.framework/..., and
-#        Homebrew itself needs no sudo on this machine (/opt/homebrew is
-#        user-owned). This is the one we use: pinned minor version (3.12,
-#        matching the rest of the [bundled] stack's wheel availability),
-#        no manual/relocatable-framework download needed, and — the actual
-#        ask here — it's a one-command bootstrap (`brew install python@3.12`)
-#        on a machine that doesn't have it yet, verified below by actually
-#        building and running the app on it.
+#        /opt/homebrew/opt/python@3.12/Frameworks/Python.framework/..., no
+#        sudo needed, one-command bootstrap. It was THE interpreter here until
+#        the apple tier (D700) moved the build to a macOS 26 runner, and it is
+#        still the dev fallback below — but it cannot be what a RELEASE ships,
+#        for the reason in the next point.
+#      - A python.org-style framework build at
+#        /Library/Frameworks/Python.framework/Versions/3.12: the same layout,
+#        compiled against an OLD deployment target on purpose (the pkg runs on
+#        every macOS it supports, whatever built it) and with its own libexpat
+#        and OpenSSL rather than the build host's /usr/lib. This is what a
+#        release build uses, and `actions/setup-python` installs exactly this
+#        on a macOS arm64 runner (its 3.12 is a pkg-derived framework, not a
+#        toolcache tarball), so CI needs no extra step to have it.
+#
+#    WHY the release build refuses Homebrew's python: Homebrew ships PREBUILT
+#    PER-OS BOTTLES, and a bottle poured on a newer macOS links that OS's
+#    system libraries. v0.4.49-v0.4.51 were built on macos-15 and shipped a
+#    pyexpat.so referencing XML_SetReparseDeferralEnabled, which macOS 14's
+#    /usr/lib/libexpat.1.dylib does not export, so the app died at launch on
+#    macOS 14 with py2app's generic "Launch error" (D468). The fix then was to
+#    pin the runner to macos-14; the apple helper (step 4e) needs the macOS 26
+#    SDK, so the runner is now macos-26 and the interpreter is the part that
+#    has to carry an old floor instead. Measured on a Tahoe Homebrew python@3.12:
+#    `otool -l pyexpat.so` says `minos 26.0`. MACOSX_DEPLOYMENT_TARGET does NOT
+#    help — it governs code WE compile, never a bottle we copy. Step 4f below
+#    checks the assembled bundle for this whatever interpreter was chosen.
+#
+#    Resolution order: FUSED_RENDER_FRAMEWORK_PYTHON (explicit), then the
+#    /Library/Frameworks install, then Homebrew (installed on demand). Homebrew
+#    is FATAL when a Developer ID identity is configured, i.e. for a release.
 # ---------------------------------------------------------------------------
 
+PORTABLE_FRAMEWORK_PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
 FRAMEWORK_FORMULA="python@3.12"
-FRAMEWORK_PYTHON="/opt/homebrew/opt/${FRAMEWORK_FORMULA}/bin/python3.12"
+HOMEBREW_FRAMEWORK_PYTHON="/opt/homebrew/opt/${FRAMEWORK_FORMULA}/bin/python3.12"
 
-if [[ ! -x "$FRAMEWORK_PYTHON" ]]; then
-  echo "==> $FRAMEWORK_FORMULA not found, installing via Homebrew (no sudo needed)"
-  brew install "$FRAMEWORK_FORMULA"
+if [[ -n "${FUSED_RENDER_FRAMEWORK_PYTHON:-}" ]]; then
+  FRAMEWORK_PYTHON="$FUSED_RENDER_FRAMEWORK_PYTHON"
+  if [[ ! -x "$FRAMEWORK_PYTHON" ]]; then
+    echo "FATAL: FUSED_RENDER_FRAMEWORK_PYTHON=$FRAMEWORK_PYTHON is not executable" >&2
+    exit 1
+  fi
+elif [[ -x "$PORTABLE_FRAMEWORK_PYTHON" ]]; then
+  FRAMEWORK_PYTHON="$PORTABLE_FRAMEWORK_PYTHON"
+else
+  if [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "FATAL: a release build needs a python.org-style framework python at" >&2
+    echo "       $PORTABLE_FRAMEWORK_PYTHON (or FUSED_RENDER_FRAMEWORK_PYTHON pointing at one);" >&2
+    echo "       Homebrew's python@3.12 is a per-OS bottle and ships this host's minos (D468)." >&2
+    exit 1
+  fi
+  if [[ ! -x "$HOMEBREW_FRAMEWORK_PYTHON" ]]; then
+    echo "==> $FRAMEWORK_FORMULA not found, installing via Homebrew (no sudo needed)"
+    brew install "$FRAMEWORK_FORMULA"
+  fi
+  FRAMEWORK_PYTHON="$HOMEBREW_FRAMEWORK_PYTHON"
+  echo "WARNING: using Homebrew's $FRAMEWORK_FORMULA; the bundle will only launch on macOS $(sw_vers -productVersion | cut -d. -f1)+ (dev build only)" >&2
 fi
+# Resolve a toolcache symlink (setup-python's) to the framework it points into,
+# so py2app copies the real Python.framework tree rather than a link farm.
+FRAMEWORK_PYTHON="$("$FRAMEWORK_PYTHON" -c "import os, sys; print(os.path.realpath(sys.executable))")"
 
 FRAMEWORK_TAG="$("$FRAMEWORK_PYTHON" -c "import sysconfig; print(sysconfig.get_config_var('PYTHONFRAMEWORK') or '')")"
 if [[ -z "$FRAMEWORK_TAG" ]]; then
@@ -117,7 +161,7 @@ if [[ -z "$FRAMEWORK_TAG" ]]; then
   echo "       py2app needs a framework python to produce a standalone .app; see the comment above this check." >&2
   exit 1
 fi
-echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG)"
+echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG, $("$FRAMEWORK_PYTHON" -c 'import platform, sysconfig; print(platform.python_version(), "deployment target", sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET"))'))"
 
 # ---------------------------------------------------------------------------
 # 2. Build the wheel (dist/*.whl), then a venv: that wheel[bundled,app,fused]
@@ -896,14 +940,14 @@ echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 #     `sys.frozen == "macosx_app"` — and is a plain Mach-O, so the signing
 #     sweep (step 5) picks it up with no extra rule.
 #
-#     The binary links macOS-26-only frameworks, so it cannot be built on the
-#     macos-14 image this script runs on (see the runs-on comment in the
-#     workflows for why THAT stays old). CI builds it on a macos-26 job and
-#     hands it over as FUSED_RENDER_APPLE_HELPER_SRC; a local run with an Xcode
-#     26 selected builds it in place; anything else ships WITHOUT it and the
-#     tier's probe says so ("this build of the app ships without the Apple
-#     helper"). Missing is fatal only for a release build (a Developer ID
-#     identity configured), so a dev DMG never fails over an optional tier.
+#     The binary links macOS-26-only frameworks, so it needs an Xcode 26
+#     selected — which is why the DMG builds on a macos-26 runner (and why the
+#     interpreter is a python.org-style framework, see step 1). Built in place
+#     when the SDK is there; FUSED_RENDER_APPLE_HELPER_SRC hands in a prebuilt
+#     one instead; anything else ships WITHOUT it and the tier's probe says so
+#     ("this build of the app ships without the Apple helper"). Missing is
+#     fatal only for a release build (a Developer ID identity configured), so
+#     a dev DMG on an older Mac never fails over an optional tier.
 echo "==> bundling the apple tier helper"
 APPLE_HELPER_DEST="$APP_DIR/Contents/MacOS/fused-apple-ai"
 APPLE_HELPER_SRC="${FUSED_RENDER_APPLE_HELPER_SRC:-}"
@@ -919,11 +963,58 @@ if [[ -n "$APPLE_HELPER_SRC" && -f "$APPLE_HELPER_SRC" ]]; then
   chmod +x "$APPLE_HELPER_DEST"
   echo "    $(file -b "$APPLE_HELPER_DEST" | cut -c1-80)"
 elif [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
-  echo "FATAL: a release build needs the apple tier helper; set FUSED_RENDER_APPLE_HELPER_SRC" >&2
-  echo "       to a binary built by scripts/build_apple_helper.sh on macOS 26" >&2
+  echo "FATAL: a release build needs the apple tier helper; select an Xcode 26 (xcode-select -s)" >&2
+  echo "       or set FUSED_RENDER_APPLE_HELPER_SRC to a binary built by scripts/build_apple_helper.sh" >&2
   exit 1
 else
   echo "    skipped: no prebuilt helper and no macOS 26 SDK here (the apple tier will report itself unavailable)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4f. Every Mach-O we ship must run on the OLDEST macOS the bundle claims to
+#     support in practice. Read-only, so it can sit anywhere before signing.
+#
+#     This is the guard D468 asked for before the runner could move forward:
+#     the build host is now NEWER than most users' Macs, and two independent
+#     things pick up the host's OS floor without any flag of ours saying so —
+#       - the interpreter, if it is a Homebrew bottle (step 1 refuses that for
+#         a release; this checks the outcome rather than the intent);
+#       - wheels: pip picks the platform tag from `platform.mac_ver()` of the
+#         HOST, so a package that publishes both `macosx_11_0_arm64` and
+#         `macosx_15_0_arm64` wheels gives us the 15_0 one on a 26 runner.
+#         MACOSX_DEPLOYMENT_TARGET does not steer that choice; do not add it
+#         here expecting it to. When this trips on a wheel, the fix is per
+#         package (pin a version that ships only the old tag, or build it).
+#
+#     Threshold 14.0, not the Info.plist's LSMinimumSystemVersion (11.0):
+#     numpy 2.x's arm64 wheels are `macosx_14_0_arm64` already, so 11.0 would
+#     fail today on a bundle that has shipped for months. 14 is the floor the
+#     macos-14 runner gave us for free and the one D468 restored; this keeps
+#     it. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
+#     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
+#     The apple helper is excluded: minos 26 by design, host.py never spawns it
+#     below that (D700).
+# ---------------------------------------------------------------------------
+MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"
+echo "==> bundle sanity: no Mach-O requires a macOS newer than ${MINOS_FLOOR}"
+MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
+    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" -print0 \
+  | xargs -0 -n 64 sh -c 'for f do
+      case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in
+        cffaedfe|cafebabe|feedfacf) ;;
+        *) continue ;;
+      esac
+      v="$(otool -l "$f" 2>/dev/null | awk "/LC_BUILD_VERSION/{b=1} b&&/minos/{print \$2; exit} /LC_VERSION_MIN_MACOSX/{m=1} m&&/version/{print \$2; exit}")"
+      [ -n "$v" ] && printf "%s %s\n" "$v" "$f"
+    done' _ | sort -t. -k1,1n -k2,2n | tail -5)"
+MINOS_MAX="$(echo "$MINOS_REPORT" | tail -1 | cut -d" " -f1)"
+echo "    highest minos in the bundle: ${MINOS_MAX:-none} (floor ${MINOS_FLOOR})"
+if [[ -n "$MINOS_MAX" ]] && [[ "$(printf '%s\n%s\n' "$MINOS_FLOOR" "$MINOS_MAX" | sort -t. -k1,1n -k2,2n | tail -1)" != "$MINOS_FLOOR" ]]; then
+  echo "FATAL: the bundle carries code that will not load below macOS ${MINOS_MAX}:" >&2
+  echo "$MINOS_REPORT" | sed "s|$APP_DIR/||; s|^|       |" >&2
+  echo "       Either the interpreter is a per-OS bottle (see step 1) or pip picked a newer" >&2
+  echo "       wheel tag on this host (see this step's comment). Fix the source, do not raise the floor." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

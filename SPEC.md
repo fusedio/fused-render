@@ -9358,10 +9358,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   py2app showed only its generic "Launch error", so v0.4.49–v0.4.51 could not
   start at all on macOS 14. **The app's own `MACOSX_DEPLOYMENT_TARGET` was
   correct throughout and did not help** — it governs code WE compile, not
-  bottles we bundle. The macOS build jobs are therefore pinned to `macos-14`,
-  the oldest image GitHub offers, guarded by
-  `tests/test_build_dmg_diagnostics.py`; moving them forward requires first
-  making the build stop bundling a per-OS Homebrew bottle. `ltx-video`
+  bottles we bundle. The macOS build jobs were therefore pinned to `macos-14`,
+  the oldest image GitHub offers, until D700's helper needed the macOS 26 SDK;
+  the build then stopped bundling the per-OS Homebrew bottle (a python.org-style
+  framework instead, plus a minos guard over every bundled Mach-O), which is
+  what D468 named as the precondition for moving the image forward. `ltx-video`
   already served this capability as the default row, so the removal cost the
   high-fidelity option and not the capability. Two traces stay on purpose:
   `formats.loaders` still returns early on a root `FL2VA/` tree while
