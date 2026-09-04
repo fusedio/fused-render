@@ -6767,16 +6767,43 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
-  it("lays the wall out two across, two down, and scrolls the rest — never sideways", () => {
-    // Four in view, then scroll (Akshil, 2026-09-03). The wall is the scroll
+  it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
+    // Six in view, then scroll (Akshil, 2026-09-04) — the frame inside is scaled
+    // so a third column stays readable. The wall is the scroll
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
     expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
     // ...and the page grows to the fold for THIS view only — every other view is
     // content-sized, and the rows here are sized from the page.
     expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
-    expect(CARDS_CSS).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
-    expect(CARDS_CSS).not.toContain("repeat(3,");
+    expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    // The wheel works in the gutters: the section spans the window on this view
+    // and the 1050px column is re-made as padding on the scroller itself
+    // (Akshil, 2026-09-04).
+    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) > .schedule-main {\n  max-width: none;\n}");
+    expect(block(CARDS_CSS, ".task-cards")).toContain("padding-inline: max(0px, calc((100% - 1050px) / 2));");
+    expect(CARDS_CSS).toContain("> .schedule-main > .schedule-toolbar {\n  width: 100%;\n  max-width: 1050px;\n  margin-inline: auto;");
+    // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
+    // exactly the body — no clipping, no gap, readable at a third of the width.
+    const frame = block(CARDS_CSS, ".task-card-frame");
+    expect(frame).toContain("transform: scale(0.75)");
+    expect(frame).toContain("width: 133.3334%");
+    expect(frame).toContain("height: 133.3334%");
+    expect(frame).toContain("transform-origin: 0 0");
+    // The full title rides the app's own hint (hints.ts), like a List row's,
+    // not a native `title` that arrives a second later.
+    expect(CARDS).toContain('<span className="task-card-title" data-hint={task.title}>');
+    expect(CARDS).not.toContain('className="task-card-title" title=');
+    // Two rows: ring then id top-left (the List row's order), time and Open at
+    // the right, the title alone below (Akshil, 2026-09-04).
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    const head = CARDS.slice(CARDS.indexOf('<header className="task-card-head">'), CARDS.indexOf("</header>"));
+    const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
+    expect(row.indexOf("<StatusIcon")).toBeLessThan(row.indexOf("tasks-id--task"));
+    expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
+    expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
+    expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
+    expect(block(CARDS_CSS, ".task-card-head-row > .task-card-when")).toContain("margin-left: auto");
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
