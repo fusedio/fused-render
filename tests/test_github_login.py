@@ -397,6 +397,40 @@ def test_a_cancel_the_child_ignores_is_reported_honestly(monkeypatch):
     proc.finish()
 
 
+def test_a_cancel_after_the_child_already_exited_does_not_skip_the_reprobe(monkeypatch):
+    """The browser confirms and the child exits — `poll()` now returns its
+    code — but `_run` hasn't reached `settled` yet: it's still mid re-probe.
+    A cancel that lands in that window is too late to mean anything, and
+    must not skip `summary_refreshed`/`setup-git` the way a real cancel
+    (child still running) correctly does."""
+    _found(monkeypatch)
+    reprobe_started = threading.Event()
+    proceed = threading.Event()
+    calls = []
+
+    def slow_reprobe():
+        reprobe_started.set()
+        proceed.wait(5)
+        return {"signed_in": True, "account": "octocat"}
+
+    monkeypatch.setattr(github_setup, "summary_refreshed", slow_reprobe)
+    monkeypatch.setattr(github_login.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or
+                        subprocess.CompletedProcess(argv, 0))
+    proc = _FakeProc(text=PROMPT)
+    _spawn(monkeypatch, proc)
+    github_login.start()
+    proc.finish()  # the child exits on its own — the browser confirmed
+    assert reprobe_started.wait(5), "the re-probe never started"
+    record = github_login.cancel()  # arrives while _run is mid re-probe
+    proceed.set()
+    assert _settle(lambda: not github_login.status()["in_flight"])
+    assert record["canceled"] is False
+    assert calls, "setup-git must still run behind the confirmed sign-in"
+    status = github_login.status()
+    assert status["error"] is None
+
+
 def test_cancelling_nothing_is_not_an_error(monkeypatch):
     record = github_login.cancel()
     assert record["canceled"] is False

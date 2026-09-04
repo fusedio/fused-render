@@ -424,10 +424,31 @@ def cancel() -> dict:
     Waits briefly for the child to go, so the record the caller gets back is
     the settled one — a cancel that returned `in_flight: true` would leave the
     strip polling a sign-in the user just abandoned.
+
+    ONLY HONOURS THE CANCEL WHILE THE CHILD IS STILL ACTUALLY RUNNING.
+    `_live()` returns the record from the moment the child is spawned until
+    `_run` sets `settled` — which includes the window, a few hundred ms wide,
+    where the child has already exited (the browser confirmed, `gh` printed
+    "Authentication complete." and returned) but `_run` is still mid re-probe
+    deciding what that exit meant. A cancel landing in that window is too
+    late to mean anything: the sign-in already happened. Honoring it anyway
+    would set `login.canceled`, and `_run`'s `elif login.canceled:` branch
+    runs INSTEAD of the re-probe — skipping both
+    `github_setup.summary_refreshed()` and `_setup_git(login.path)` for a
+    user who is genuinely signed in, leaving git with no credential helper
+    until something else happens to re-run `setup-git`.
     """
     login = _live()
     if login is None:
         return {**status(), "canceled": False}
+    if login.proc.poll() is not None:
+        # Already exited — nothing left to stop. Wait for `_run` to finish
+        # deciding on its own (the re-probe, and `setup-git` if it confirms)
+        # rather than short-circuiting it, and report that no cancel
+        # actually happened.
+        if not login.settled.wait(CANCEL_GRACE_S):
+            logger.warning("the GitHub sign-in child did not stop when asked")
+        return {**_record(login), "canceled": False}
     login.canceled = True
     _stop(login, force=False)
     if not login.settled.wait(CANCEL_GRACE_S):
