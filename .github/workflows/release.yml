@@ -92,7 +92,14 @@ jobs:
 
   build-sign-notarize-release:
     needs: [prepare-release, apple-helper]
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
+    # `!cancelled()` rather than the implicit success(): prepare-release has
+    # already published the GitHub release by the time this runs, so a FAILED
+    # apple-helper must not silently SKIP this job and leave a release with no
+    # DMG and no red check. With a status function the job runs, the artifact
+    # download fails loudly, and the run goes red where somebody sees it.
+    if: >-
+      !cancelled() && needs.prepare-release.result == 'success'
+      && (github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos')
     # macos-14, deliberately the OLDEST macOS image GH offers: build_dmg.sh
     # bundles Homebrew's python@3.12 framework, and Homebrew ships PREBUILT
     # PER-OS BOTTLES. A newer runner therefore stages a Python whose C

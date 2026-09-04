@@ -325,10 +325,14 @@ func transcribe(_ id: String, _ request: [String: Any]) async {
         fail(id, "bad_request", "Apple's speech model has no \(asked.identifier(.bcp47)) — supported: \(supported)")
         return
     }
+    // `.audioTimeRange` is asked for whether or not the caller wants words:
+    // the segment's own `range` is what every transcript line needs, and the
+    // per-word runs only exist when the attribute is on. `words` decides
+    // what is EMITTED below, not what is decoded.
     let transcriber = SpeechTranscriber(
         locale: locale, transcriptionOptions: [],
         reportingOptions: [],
-        attributeOptions: wantsWords ? [.audioTimeRange] : [.audioTimeRange])
+        attributeOptions: [.audioTimeRange])
     do {
         // The locale's model lives in system storage and is fetched on first
         // use. Progress is relayed so the job row shows a download, not a

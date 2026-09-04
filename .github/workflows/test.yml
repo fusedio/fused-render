@@ -743,7 +743,7 @@ jobs:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop, apple-helper]
     if: always()
     steps:
       - name: Check test status
@@ -784,5 +784,14 @@ jobs:
               exit 1
             fi
           done
+          # apple-helper gates on macos_packaging like the DMG smoke, so
+          # "skipped" is a pass — but a FAILED helper build skips
+          # macos-desktop (its `if` has no status function, so the implicit
+          # success() applies), which the loop above would then wave through.
+          # Named here so a broken Swift build cannot paint the run green.
+          if [[ "${{ needs.apple-helper.result }}" != "success" && "${{ needs.apple-helper.result }}" != "skipped" ]]; then
+            echo "apple-helper did not succeed or skip: ${{ needs.apple-helper.result }}"
+            exit 1
+          fi
           echo "Tests passed"
           exit 0
