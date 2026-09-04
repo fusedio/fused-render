@@ -481,7 +481,7 @@
   display: block;
 }
 
-/* THE STRONGEST CONTROL IN A BAR — the "Open app" button in the pane's strip.
+/* THE STRONGEST CONTROL IN A BAR — the "Open in project" button in the pane's strip.
    Filled with --fg on --bg, which is the same idiom `.btn-primary`
    (buttons-modal.css) and the home composer's send button use, so it inherits
    maximal contrast in BOTH themes by construction rather than by a chosen colour:

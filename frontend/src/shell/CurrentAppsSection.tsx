@@ -43,6 +43,7 @@ import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { inFlight, isDoneUnread, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
+import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import {
   appPageTabFromSearch,
   appPageUrl,
@@ -464,6 +465,15 @@ export default function CurrentAppsSection() {
   });
 
   const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
+
+  // The explorer's "Open in project" button adds a row (POST
+  // /api/current-apps/add) and announces it over the window — apps cannot
+  // import this section — so the new row lands on top as its page opens,
+  // rather than on the next task pulse (platform/lib/tasksChanged).
+  useEffect(() => {
+    window.addEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+  }, [refetch]);
 
   // ---- the icon picker -------------------------------------------------------
   // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to

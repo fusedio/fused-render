@@ -73,11 +73,12 @@ export default function ListingPreviewPane({
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
   // The FOLDER's entry page (`index.html`), or null when it has none — the
-  // "Open app" button in the strip.
+  // "Open in project" button in the strip (gates it: an app, not any folder).
   appEntry: string | null;
-  // Opens it. The caller's own `navigate`, for the reason the whole button lives in
-  // Listing: an EMBEDDED pane may not move the host view, and the way that stays
-  // true is that this component never navigates.
+  // Opens the folder as a project (its /apps page). The caller's own
+  // navigation, for the reason the whole button lives in Listing: an EMBEDDED
+  // pane may not move the host view, and the way that stays true is that this
+  // component never navigates.
   onOpenApp: () => void;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
@@ -119,7 +120,7 @@ export default function ListingPreviewPane({
   // It opens with the way OUT of the column and it ends with the mode pill,
   // which is the file sidebar's header exactly (SideChrome, PreviewSidebar) —
   // the two columns are the same column over a folder and over a file, so they
-  // wear the same bar. "Open app" rides in here too, ahead of the pill, in
+  // wear the same bar. "Open in project" rides in here too, ahead of the pill, in
   // every state including the skeleton — the subject (the open folder) is
   // known long before the pane has resolved what to show about it.
   const strip = () => (
@@ -130,10 +131,10 @@ export default function ListingPreviewPane({
           <button
             type="button"
             className="bar-ctl bar-ctl-strong"
-            title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
+            title={"Open " + folder.slice(folder.lastIndexOf("/") + 1) + " as a project"}
             onClick={onOpenApp}
           >
-            Open app
+            Open in project
           </button>
         )}
         {sideMenu}
