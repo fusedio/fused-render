@@ -83,6 +83,13 @@ console.log(JSON.stringify(calls));
 """
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
+    # Not `json.loads(out.stdout)` straight off: on Windows CI this arrives as
+    # None, and a bare `TypeError: the JSON object must be str, bytes or
+    # bytearray, not NoneType` says nothing about which of node, the harness
+    # or the extracted block produced nothing. Report what actually came back.
+    assert out.stdout, (
+        "node printed no stdout: returncode=%r stdout=%r stderr=%r"
+        % (out.returncode, out.stdout, out.stderr))
     return json.loads(out.stdout)
 
 

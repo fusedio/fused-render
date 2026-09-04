@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from _claude_stub_cli import write_stub_cli
+from _claude_stub_cli import run_dir_report, write_stub_cli
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 
@@ -105,7 +105,8 @@ def _start(agent, monkeypatch, stub_cli, target, message="m1", read_dirs=None,
 
 def test_live_host_matches_a_running_session(agent, monkeypatch, stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
     assert agent._live_host(target) == {"run_id": run_id}
 
 
@@ -124,7 +125,8 @@ def test_live_host_ignores_a_dead_session(agent, tmp_path):
 def test_send_writes_an_inbox_entry_the_stub_echoes(agent, monkeypatch, stub_cli,
                                                       target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target, message="first")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     result = agent._send(run_id, "second", "")
     assert result == {"sent": True}
@@ -139,7 +141,8 @@ def test_send_writes_an_inbox_entry_the_stub_echoes(agent, monkeypatch, stub_cli
 def test_send_with_an_ungranted_dir_ends_the_session_and_asks_for_a_respawn(
         agent, monkeypatch, stub_cli, target, tmp_path):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target, message="first")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     new_dir = tmp_path / "attachment"
     new_dir.mkdir()

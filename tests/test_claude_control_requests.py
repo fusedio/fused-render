@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from _claude_stub_cli import write_stub_cli
+from _claude_stub_cli import run_dir_report, write_stub_cli
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 
@@ -120,7 +120,8 @@ def _start(agent, monkeypatch, stub_cli, target, message="m1", **kwargs):
 def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
         agent, monkeypatch, stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     result = agent._cancel(run_id)
     assert result["still_queued"] == []
@@ -166,7 +167,8 @@ def test_model_change_writes_a_set_model_control_request(agent, monkeypatch,
                                                            stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target,
                              model="claude-opus-5")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     result = agent._send(run_id, "follow-up", model="claude-haiku-4-5")
     assert result == {"sent": True}
@@ -197,7 +199,8 @@ def test_a_model_change_is_not_repeated_on_the_next_send(agent, monkeypatch,
     third, for every turn of the session."""
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target,
                              model="claude-opus-5")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     agent._send(run_id, "first follow-up", model="claude-haiku-4-5")
     assert _wait_for(lambda: any(
@@ -225,7 +228,8 @@ def test_unchanged_model_writes_no_control_request(agent, monkeypatch,
                                                      stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target,
                              model="claude-opus-5")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     agent._send(run_id, "follow-up", model="claude-opus-5")
 
@@ -238,7 +242,8 @@ def test_unchanged_model_writes_no_control_request(agent, monkeypatch,
 def test_effort_change_returns_the_respawn_marker(agent, monkeypatch, stub_cli,
                                                     target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target, effort="")
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: os.path.exists(
+        os.path.join(run_dir, "host.json"))), run_dir_report(run_dir)
 
     result = agent._send(run_id, "follow-up", effort="high")
     assert result == {"respawn": True}
