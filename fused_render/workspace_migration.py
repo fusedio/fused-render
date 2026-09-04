@@ -35,9 +35,10 @@ its own "old shape present, new shape absent" check, so a process that died
 between the folder move and the bookkeeping heals on the next start instead of
 leaving orphaned state behind forever.
 
-Never on a fresh install: when ``home_dir()`` does not exist there is no
-pre-D337 user here, and the check returns before touching ``~/Documents`` at
-all. That stat is a macOS TCC folder access, and at this point in boot the app
+Never on a fresh install: when ``~/.fused-render`` does not exist there is no
+pre-D337 user here, and the check writes the marker and returns before touching
+``~/Documents`` at all -- the marker matters, because the first session creates
+that dir and a second launch would otherwise stat ``~/Documents`` after all. That stat is a macOS TCC folder access, and at this point in boot the app
 is not frontmost, so the prompt would be suppressed and a DENY cached
 (``shell/fda.py``) before the onboarding wizard ever reached its FDA step.
 """
@@ -100,6 +101,14 @@ def _run() -> None:
         # the TCC folder prompt at launch, before the wizard's FDA step, while
         # the app is not yet frontmost, which is exactly the suppressed-prompt
         # cached-DENY failure shell/fda.py documents. So we never look.
+        #
+        # Settled right here, not left for next time: the first session
+        # creates ~/.fused-render (server.json, prefs), so a second launch
+        # would pass this gate and stat ~/Documents anyway, still before FDA
+        # was ever granted. Writing the marker creates the home dir, which
+        # is fine now that the gate has been read.
+        _write_marker(os.path.join(storage.home_dir(), _MARKER_NAME),
+                      legacy_dir(), fused_dir(), "fresh-install")
         return
     marker = os.path.join(storage.home_dir(), _MARKER_NAME)
     if os.path.exists(marker):
@@ -133,10 +142,14 @@ def _run() -> None:
         return
     # Bookkeeping runs even when the folder move was a no-op: it is how a run
     # interrupted between the two steps heals. The marker is written only
-    # AFTER it, so a process that dies between the rename and the rewrite
-    # still re-enters on the next start.
-    _rewrite_state(src, dst)
-    _write_marker(marker, src, dst, "done")
+    # AFTER it, and only when every store rewrote cleanly, so a process that
+    # dies between the rename and the rewrite -- or a store that failed to
+    # rewrite -- still re-enters on the next start instead of being recorded
+    # as settled with stale absolute paths left in place.
+    if _rewrite_state(src, dst):
+        _write_marker(marker, src, dst, "done")
+    else:
+        logger.warning("workspace path rewrite incomplete; will retry next start")
 
 
 def _write_marker(marker: str, src: str, dst: str, outcome: str) -> None:
@@ -267,12 +280,15 @@ def rewrite_absolute_paths(src: str, dst: str) -> None:
     _rewrite_state(src, dst)
 
 
-def _rewrite_state(src: str, dst: str) -> None:
+def _rewrite_state(src: str, dst: str) -> bool:
+    """True when every store rewrote (or had nothing to do); False when any
+    raised. A failure is logged and the others still run."""
     # community installs.json is deliberately absent here: the community
     # marketplace no longer produces installed copies (fused_render/
     # community.py), and installs.json from before that change is left on
     # disk untouched — nothing reads or writes it any more, so there is
     # nothing here for a workspace move to keep in step.
+    ok = True
     for label, fn in (("bookmarks", _rewrite_bookmarks),
                       ("recents", _rewrite_recents),
                       ("scheduled messages", _rewrite_schedule),
@@ -280,7 +296,9 @@ def _rewrite_state(src: str, dst: str) -> None:
         try:
             fn(src, dst)
         except Exception:
+            ok = False
             logger.exception("could not rewrite workspace paths in %s", label)
+    return ok
 
 
 def _rewrite_bookmarks(src: str, dst: str) -> None:
