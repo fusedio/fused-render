@@ -181,7 +181,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
       aria-label="Set up FusedRender"
     >
       {/* Top bar: brand · steps · close */}
-      <div className="flex items-center gap-4 border-b border-border px-5 py-3">
+      <div className="relative flex items-center gap-4 border-b border-border px-5 py-3">
         <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
@@ -193,7 +193,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
             gates anything after it, so a user who knows what they want can go
             straight there. */}
         <ol
-          className="mx-auto my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
+          className="absolute top-1/2 left-1/2 my-0 hidden -translate-x-1/2 -translate-y-1/2 list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
           aria-label="Setup steps"
         >
           {steps.map((s, i) => {
@@ -235,7 +235,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           onClick={() => finish("dismiss")}
           aria-label="Close setup"
           title="Skip for now"
-          className="ml-auto grid size-8 cursor-pointer appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:ml-0"
+          className="ml-auto grid size-8 cursor-pointer appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="size-4" />
         </button>
