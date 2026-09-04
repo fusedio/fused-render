@@ -120,10 +120,12 @@ def _cli_popen_command(argv: list):
     unchanged everywhere except when `argv[0]` (`agent._claude_bin()`'s
     resolution) is a Windows `.bat`/`.cmd`.
 
-    CreateProcess's own documented handling of a `.bat`/`.cmd` target reroutes
-    the ENTIRE call through `%ComSpec% /c <original command line>` — cmd.exe,
-    not the batch file, is what actually receives argv, as one command-line
-    string. cmd.exe's `/c` parser then scans that WHOLE string for its own
+    A `.bat`/`.cmd` can only be started through cmd.exe — CreateProcess
+    talks to real executables and cannot launch one at all. Python's own hop
+    to cmd.exe is `shell=True`, which wraps the command line as
+    `%ComSpec% /c "<our string>"` — so cmd.exe, not the batch file, is what
+    actually receives argv, as one command-line string. cmd.exe's `/c`
+    parser then scans that WHOLE string for its own
     operators (`< > & | ^`) wherever they fall, quotes or no — double quotes
     protect a token from being split on whitespace, but do NOT stop cmd.exe
     from reading a `<`/`>` inside one as real redirection. `_claude_argv`'s
@@ -141,22 +143,35 @@ def _cli_popen_command(argv: list):
     fallback rule below its "no special characters between the quotes"
     case): when the argument to `/c` begins and ends with a double quote,
     cmd strips exactly that one outer pair and runs the interior literally,
-    without re-scanning it for redirection. Building the whole line with
-    `subprocess.list2cmdline` (correct Win32 argv quoting, the same
-    encoding `subprocess.Popen(list, ...)` would have produced) and wrapping
-    the result in one more pair of quotes lands exactly in that fallback —
-    the interior text reaches `claude.bat`/`claude.cmd`'s own CreateProcess
-    call untouched, `<live-app-state>` included. `subprocess.Popen` accepts
-    a plain string as `args` and uses it as the literal Win32 command line
-    (no further quoting), which is what makes the wrapped string usable
-    here at all.
+    without re-scanning it for redirection. That outer pair is exactly what
+    `shell=True` adds, so this returns the INTERIOR — every element quoted,
+    joined by spaces — and the caller spawns a `str` with `shell=True`. The
+    interior then reaches `claude.bat`/`claude.cmd`'s own CreateProcess call
+    untouched, `<live-app-state>` included.
+
+    EVERY element is quoted, not just the ones `subprocess.list2cmdline`
+    would quote for having whitespace in them: the outer pair stops cmd
+    re-parsing QUOTES, not metacharacters (`& | > < ^`), and a quoted run is
+    the only place those stay literal. An unquoted `<live-app-state>` inside
+    an otherwise correct line is still read as "redirect stdin from a file
+    named live-app-state". Nothing here can contain a `"` — Windows paths
+    cannot, and the rest is the product's own boilerplate — so a stray one
+    raises rather than silently producing a line that means something else.
+
+    This is the same shape `fused_render/server/ai.py` (`_popen_cmd` /
+    `_spawn_claude_stream`) already runs in production for the same `.cmd`
+    shim, arrived at the same way; the two are deliberately identical.
 
     Left as `argv` (the list form) whenever `argv[0]` is NOT a `.bat`/`.cmd`
     — including every POSIX launch, and a native `.exe` `claude` on Windows
     — since CreateProcess talks directly to a real executable there and
     never involves cmd.exe or its redirection scan."""
     if os.name == "nt" and os.path.splitext(argv[0])[1].lower() in (".bat", ".cmd"):
-        return '"' + subprocess.list2cmdline(argv) + '"'
+        for arg in argv:
+            if '"' in arg:
+                raise ValueError(
+                    "argument may not contain a double quote: %r" % (arg,))
+        return " ".join('"%s"' % arg for arg in argv)
     return argv
 
 
@@ -199,9 +214,19 @@ def main() -> None:
         # (Windows), independent of THIS host's own detachment from
         # `_start`'s caller. Nested detachment is fine — each process is its
         # own leader, and `_cancel`'s killpg only ever needs the CLI's.
+        command = _cli_popen_command(argv)
         cli = subprocess.Popen(
-            _cli_popen_command(argv), stdin=subprocess.PIPE, stdout=out_fh,
+            command, stdin=subprocess.PIPE, stdout=out_fh,
             stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(),
+            # A `str` is the Windows `.bat`/`.cmd` case and ONLY that (see
+            # `_cli_popen_command`): the cmd.exe hop is what can launch a
+            # batch file at all, and `shell=True` is what adds the single
+            # outer quote pair cmd parses deterministically. Not an
+            # injection surface — the payload is ours and fully quoted, and
+            # the user's message never appears in it (it rides the inbox).
+            # `_cancel` already kills with `taskkill /T`, which walks past
+            # the cmd.exe wrapper to the CLI underneath it.
+            shell=isinstance(command, str),
             **agent._DETACH)
     except Exception as exc:
         # No CLI process ever existed — write the failure where `_poll`'s
