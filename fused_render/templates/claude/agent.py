@@ -4188,24 +4188,37 @@ def _poll(run_id: str, file: str = "") -> dict:
     except (OSError, json.JSONDecodeError):
         meta = {}
 
-    # First poll that sees the run finished CLEANLY sweeps anything left
+    # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
     # session record below). This is a FALLBACK: the app's CLAUDE.md tells
     # claude to commit as it works and end every turn with a clean tree, so
     # when it honoured that this add -A finds nothing and no commit happens.
     # Errored turns are skipped — a crash mid-edit is not a state worth
-    # enshrining; the next clean turn's sweep picks the survivors up. The
-    # marker is claimed BEFORE the commit so a racing concurrent poll can't
-    # double-commit.
-    commit_marker = os.path.join(run_dir, "committed")
-    if done and not error and "file" in meta \
-            and not os.path.exists(commit_marker):
-        try:
-            fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-            _commit_turn(meta["file"], meta.get("message", ""))
-        except OSError:
-            pass  # another poll claimed it, or the run dir is going away
+    # enshrining; the next clean turn's sweep picks the survivors up.
+    #
+    # A run is now a whole SESSION behind one held-open `claude` process, not
+    # one turn — so the marker has to be per-TURN, not per-run, or only the
+    # very first clean turn of a session could ever claim it and every later
+    # one (however cleanly it ended with its own uncommitted edits) would
+    # find the marker already there and sweep nothing. `out.jsonl` only ever
+    # grows, and a poll landing twice on the SAME finished turn sees the
+    # SAME size — so the marker is keyed by that size: `committed.<size>`,
+    # claimed BEFORE the commit (still via O_EXCL) so a racing concurrent
+    # poll of the same turn can't double-commit, while a later turn's own
+    # larger size gets its own, unclaimed marker.
+    try:
+        out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_size = None
+    if done and not error and "file" in meta and out_size is not None:
+        commit_marker = os.path.join(run_dir, "committed.%d" % out_size)
+        if not os.path.exists(commit_marker):
+            try:
+                fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                _commit_turn(meta["file"], meta.get("message", ""))
+            except OSError:
+                pass  # another poll claimed it, or the run dir is going away
 
     # First poll that sees the session id records it in the run dir (marker
     # file keeps the write one-shot across the remaining polls).
