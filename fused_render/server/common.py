@@ -80,12 +80,46 @@ HERE = os.path.dirname(os.path.abspath(fused_render.__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 
-#: The tiers an AI call can name, in FIXED order (SPEC RH-11, D631) — shared by
-#: `/api/ai` (server/ai.py) and the four capability routes (routers/ai_runtime.py)
-#: so the two can never disagree about the vocabulary. Local first: the boundary
-#: between the entries is where a prompt leaves the machine, and that is not a
-#: preference a user reorders. A hosted gateway is appended here when it arrives.
-AI_PROVIDERS = ("local", "claude")
+#: The tiers an AI call can name, in FIXED order (SPEC RH-11, D631, D700) —
+#: shared by `/api/ai` (server/ai.py) and the four capability routes
+#: (routers/ai_runtime.py) so the two can never disagree about the vocabulary.
+#: A tier is an ENGINE FAMILY, not a privacy class: `local` (this app's own
+#: runners) and `apple` (the OS's on-device models, macOS 26+) both keep the
+#: prompt on the machine; `claude` is the one that leaves it. The order is
+#: fixed in code, never a user preference. A hosted gateway is appended here
+#: when it arrives.
+AI_PROVIDERS = ("local", "apple", "claude")
+
+#: The apple tier's PINNED model ids -> the capability each serves (D700). The
+#: OS owns the weights and picks the variant (AFM 3 Core vs Core Advanced by
+#: hardware on macOS 27), so there is exactly one id per capability and no
+#: version in it. Because none of these carries a `/` or ends in `.gguf`, the
+#: shape rule (`server/ai.py::_is_local_model`) would route them to Claude —
+#: this table is consulted BEFORE it, and is the one place the id -> provider
+#: inference for this tier is spelled out: `fused.ai.text({model: "afm-text"})`
+#: and `fused.ai.text({provider: "apple"})` mean the same call.
+APPLE_MODELS = {
+    "afm-text": "text-generation",
+    "afm-speech": "automatic-speech-recognition",
+    "afm-embedding": "embeddings",
+}
+
+
+def apple_model_for(capability: str) -> str | None:
+    """The apple tier's one id for `capability`, or None when it has none
+    (image and video: Apple ships no programmatic model for either)."""
+    for model, served in APPLE_MODELS.items():
+        if served == capability:
+            return model
+    return None
+
+
+def provider_of_model(model: str | None) -> str | None:
+    """The tier a PINNED id names, or None when the id is not pinned and the
+    shape rule (or the default) decides. Today only the apple ids are pinned."""
+    if model in APPLE_MODELS:
+        return "apple"
+    return None
 
 
 def ai_result(payload: dict, *, provider: str, model: str, warnings=None,
@@ -98,7 +132,7 @@ def ai_result(payload: dict, *, provider: str, model: str, warnings=None,
     else is the same on all five. The frame is the AI SDK's `generateText`
     return contract, because that is the shape page authors already know:
 
-      provider          which tier answered ("local" | "claude")
+      provider          which tier answered ("local" | "apple" | "claude")
       finishReason      "stop" | "length" | "cancelled"
       warnings          [{type: "unsupported-setting", setting, message}]
       usage             per-verb token/unit counts, camelCase, or null

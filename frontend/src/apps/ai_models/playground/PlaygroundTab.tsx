@@ -47,6 +47,7 @@ import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@pl
 import {
   downloadAiModel,
   getAiCatalog,
+  type AiAppleProvider,
   type AiUnsupportedModel,
   loadAiModel,
   unloadAiModel,
@@ -128,8 +129,80 @@ function DownloadRing({ job }: { job?: Job }) {
 
 type CatalogLoad =
   | { status: "loading" }
-  | { status: "ok"; capabilities: AiCatalogCapability[]; unsupported: AiUnsupportedModel[] }
+  | {
+      status: "ok";
+      capabilities: AiCatalogCapability[];
+      unsupported: AiUnsupportedModel[];
+      apple: AiAppleProvider | null;
+    }
   | { status: "error"; message: string };
+
+/** Fold the apple tier's ids into the capability rows they serve (D700).
+ *
+ *  The server keeps them under `providers.apple` — every other consumer maps
+ *  `capabilities[].models` as "download and load me", and an apple id has
+ *  neither action — so the merge is THIS tab's, and it produces rows the rail
+ *  already knows how to draw and `pickPlaygroundModel` already knows how to
+ *  select: `downloaded: true` (nothing to fetch), `recommended: true` (always
+ *  offered), `source: "apple"` (what the card reads to hide the size and the
+ *  Download glyph, and what the hero reads to hide Load/Unload). A capability
+ *  the local runners cannot serve here still opens when apple can — the row's
+ *  `available` flips and its default becomes the apple id.
+ *
+ *  Text needs Apple Intelligence (`available`); speech needs only the helper
+ *  (`speechAvailable`) — the speech model is a separate system asset that
+ *  works with the text model off. The gate is per id, for that reason.
+ */
+function mergeApple(
+  capabilities: AiCatalogCapability[],
+  apple: AiAppleProvider | null,
+): AiCatalogCapability[] {
+  if (!apple || !apple.relevant) return capabilities;
+  const usable = (capability: string) =>
+    capability === "automatic-speech-recognition"
+      ? apple.speechAvailable ?? apple.available
+      : apple.available;
+  const rows = capabilities.map((row) => ({ ...row, models: [...row.models] }));
+  for (const model of apple.models) {
+    if (!usable(model.capability)) continue;
+    const entry: AiCatalogModel = {
+      id: model.id,
+      label: model.label,
+      nickname: model.nickname,
+      note: model.note,
+      size_gb: null,
+      source: "apple",
+      downloaded: true,
+      loaded: false,
+      recommended: true,
+      acceptsImage: false,
+      acceptsPaths: false,
+    };
+    let row = rows.find((r) => r.capability === model.capability);
+    if (!row) {
+      row = {
+        capability: model.capability,
+        runner: null,
+        runnerLabel: null,
+        runnerShortLabel: null,
+        runnerNote: null,
+        available: true,
+        reason: null,
+        default: model.id,
+        models: [],
+        videoTraits: null,
+      };
+      rows.push(row);
+    }
+    if (!row.available) {
+      row.available = true;
+      row.reason = null;
+      row.default = model.id;
+    }
+    row.models.push(entry);
+  }
+  return rows;
+}
 
 export default function PlaygroundTab() {
   const [catalog, setCatalog] = useState<CatalogLoad>({ status: "loading" });
@@ -165,8 +238,9 @@ export default function PlaygroundTab() {
         alive &&
         setCatalog({
           status: "ok",
-          capabilities: data.capabilities,
+          capabilities: mergeApple(data.capabilities, data.providers?.apple ?? null),
           unsupported: data.unsupported ?? [],
+          apple: data.providers?.apple ?? null,
         }),
       (e: Error) => alive && setCatalog({ status: "error", message: e.message }),
     );
@@ -201,6 +275,17 @@ export default function PlaygroundTab() {
   // sidebar is the only list of what is on the disk that this tab shows, and a
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
+  // The apple tier's own state, for the one sentence the rail says when its
+  // ids are NOT merged in: on a Mac that could run them (`relevant`) but has
+  // Apple Intelligence off or the model still downloading. Quiet elsewhere —
+  // "needs macOS" is not advice a Linux user can take.
+  const apple = catalog.status === "ok" ? catalog.apple : null;
+  const appleNote =
+    apple && apple.relevant && !apple.available
+      ? apple.state === "loading"
+        ? "Apple's on-device model is still downloading — its rows appear when it lands."
+        : `Apple on-device model: ${apple.reason || "unavailable"}`
+      : null;
 
   // The RAIL's reading order — text generation leads now (2026-08-24): it is
   // the capability a reader arrives at this app FOR, the one every other
@@ -445,7 +530,11 @@ export default function PlaygroundTab() {
           // made.
           const offered = playgroundModels(row);
           const curated = offered.filter((m) => m.source === "curated");
-          const cached = offered.filter((m) => m.source !== "curated");
+          // The apple tier's ids (D700) draw AFTER the curation and before the
+          // uncurated downloads: recommended like the curation, but system-
+          // provided rather than chosen, and never a download.
+          const system = offered.filter((m) => m.source === "apple");
+          const cached = offered.filter((m) => m.source !== "curated" && m.source !== "apple");
           const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
@@ -489,16 +578,25 @@ export default function PlaygroundTab() {
                     )}
                     {name}
                   </span>
-                  <span
-                    className="pg-model-size"
-                    title={
-                      size
-                        ? `${size.text} download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
-                    {modelSizeLabel(model.size_gb, job)}
-                  </span>
+                  {model.source === "apple" ? (
+                    // No size cell: the OS owns these weights, and a dash
+                    // where a figure goes reads as "unmeasured", which is
+                    // not the fact. The badge says what IS the fact.
+                    <span className="pg-model-size pg-model-sys" title={model.note ?? undefined}>
+                      system
+                    </span>
+                  ) : (
+                    <span
+                      className="pg-model-size"
+                      title={
+                        size
+                          ? `${size.text} download — judged against this machine's memory`
+                          : undefined
+                      }
+                    >
+                      {modelSizeLabel(model.size_gb, job)}
+                    </span>
+                  )}
                   {/* On disk = nothing to say: the CTA exists only while there
                       is an action to take. Last on the row, RIGHT of the two
                       figures it acts on: the facts read as a block that way
@@ -572,7 +670,17 @@ export default function PlaygroundTab() {
                   is on this disk is legible from the cards themselves, and the
                   heading was a second answer to a question already answered. */}
               {row.available && curated.map(draw)}
+              {row.available && system.map(draw)}
               {row.available && cached.map(draw)}
+              {appleNote &&
+                (row.capability === "text-generation" ||
+                  (row.capability === "automatic-speech-recognition" &&
+                    apple?.speechAvailable === false)) && (
+                  // Where the apple row WOULD be, when it is not: the reason,
+                  // in the group it belongs to, so a reader looking for it
+                  // finds an answer rather than an absence.
+                  <p className="pg-group-off pg-group-apple">{appleNote}</p>
+                )}
             </details>
           );
         })}
@@ -769,7 +877,15 @@ export default function PlaygroundTab() {
                       </span>
                     </div>
                   )}
-                  {selected.model.downloaded && !selectedResident && (
+                  {/* An apple id has no Load/Unload: the OS keeps the model
+                      warm on its own terms and the supervisor never holds it
+                      (D700). The badge stands where the buttons would. */}
+                  {selected.model.source === "apple" && (
+                    <Badge variant="secondary" className="font-normal" title={selected.model.note ?? undefined}>
+                      Apple on-device
+                    </Badge>
+                  )}
+                  {selected.model.source !== "apple" && selected.model.downloaded && !selectedResident && (
                     <Button
                       variant="outline"
                       size="sm"

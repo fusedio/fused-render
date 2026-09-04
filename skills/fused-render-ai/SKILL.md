@@ -28,7 +28,9 @@ Universal rules:
 
 ## Provider / model
 
-Two tiers. `provider: "local" | "claude"` pins; omitted → model shape decides: id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). image/video/transcribe/embed = local-only. **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`.
+Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model decides: pinned apple ids (`afm-text`, `afm-speech`, `afm-embedding`) → apple; id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). `{provider: "apple"}` with no model = the tier's one id for the verb; a pinned id under another provider = `bad_request`. image/video = local-only (apple rejects `unavailable`: no programmatic image model on macOS). transcribe = local or apple. embed = local (apple `unavailable` in this build). **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`; apple ids are the three literals above and never appear in the catalog.
+
+**apple tier** = macOS 26+, Apple Silicon, Apple Intelligence ON (System Settings) — else `ai_unavailable`/`unavailable` with the reason; OS still downloading the model → `model_loading` + `err.jobId` to watch. Nothing to download, nothing leaves the Mac. Small model (~3B on 26), ~4k-token context incl. history/systemPrompt → keep prompts short or `ai_error` on overflow. Guardrails refuse arbitrarily → `finishReason: "content-filter"` with the text so far, not an error; reword and retry. `usage` null on macOS 26. `providerMetadata.apple: {os, modelGeneration, refusal?, restarted?}` (text), `{locale}` (speech, also in the transcript file).
 
 `catalog()` → `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}`. Capabilities: `text-generation`, `text-to-image`, `text-to-video`, `automatic-speech-recognition`, `embeddings`. Model flags: `downloaded, loaded, recommended, size_gb, acceptsImage, acceptsPaths, promptScheme`.
 
@@ -36,7 +38,7 @@ Two tiers. `provider: "local" | "claude"` pins; omitted → model shape decides:
 
 ## Text and cold start
 
-**text** options: `prompt, provider, model, systemPrompt, effort ("low"|"medium"|"high"|"xhigh", Claude only; default "low" = no extended thinking — ask for more explicitly), history, raw, images, temperature/maxTokens/topP, onChunk, abortSignal`. Tier split: `history`/`raw`/`images` local-only, **reject `bad_request` on Claude**; `temperature`/`maxTokens`/`topP` on Claude and `effort` on local dropped with `warnings[]` entry, call succeeds. `history` = `[{role: "user"|"assistant", content}]` — push user+assistant pair after each turn. Feed aggregates, not datasets — compute in Python first. Structured output: demand strict JSON, strip fences, `JSON.parse` in try/catch. Vision: `images` on local model with `acceptsImage`.
+**text** options: `prompt, provider, model, systemPrompt, effort ("low"|"medium"|"high"|"xhigh", Claude only; default "low" = no extended thinking — ask for more explicitly), history, raw, images, temperature/maxTokens/topP, onChunk, abortSignal`. Tier split: `history`/`raw`/`images` local-only, **reject `bad_request` on Claude**; apple honours `history`, rejects `raw`, rejects `images` (until macOS 27 image input). `temperature`/`maxTokens`/`topP` on Claude, `effort` on local, `effort`/`topP` on apple dropped with `warnings[]` entry, call succeeds. `history` = `[{role: "user"|"assistant", content}]` — push user+assistant pair after each turn. Feed aggregates, not datasets — compute in Python first. Structured output: demand strict JSON, strip fences, `JSON.parse` in try/catch. Vision: `images` on local model with `acceptsImage`.
 
 **Cold start**: first text/embed call naming non-resident local model rejects `model_loading` — download already started, `err.jobId` = it. `fused.watchJob(err.jobId)`, then retry. Not a failure. Image/video/transcribe load inside own job instead (`done`/`total` null while weights arrive — guard division).
 
@@ -54,7 +56,7 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 
 ## Transcribe and embed
 
-**transcribe** — `language, task ("transcribe"|"translate"), initialPrompt, vad, diarize, speakers, words, onChunk (per segment), onProgress (seconds)`. Default model = smallest; pass bigger for accuracy. Output persisted under `~/.fused-render/ai/transcripts/` (paths in `providerMetadata.local`). Failed long run keeps `err.outputPartial` (.partial.jsonl) — rows there are RAW `{start, end, text}`, not the resolved `startSecond`/`endSecond` shape. Word timings ±200 ms — don't cut clips on them; `translate` returns no words. One at a time, second queues.
+**transcribe** — `language, task ("transcribe"|"translate"), initialPrompt, vad, diarize, speakers, words, onChunk (per segment), onProgress (seconds)`. Default model = smallest; pass bigger for accuracy. Output persisted under `~/.fused-render/ai/transcripts/` (paths in `providerMetadata.local`). Failed long run keeps `err.outputPartial` (.partial.jsonl) — rows there are RAW `{start, end, text}`, not the resolved `startSecond`/`endSecond` shape. Word timings ±200 ms — don't cut clips on them; `translate` returns no words. One at a time, second queues. **apple** (`provider: "apple"` / `model: "afm-speech"`): `language` = ISO code or BCP-47 tag, mapped to Apple's ~30 locales (unsupported → `bad_request` listing them; absent → system locale, no auto-detect); `task: "translate"` and `diarize` → `bad_request`; `initialPrompt`/`vad` → warnings; `words` honoured; first use of a locale downloads its model (row shows it). Segments are utterance-sized, often one per sentence. Fast: 2-3× Whisper.
 
 **embed** — `texts` OR `paths` (≤64), `kind: "query"|"document"`. Prose encoder: `kind`, no paths. Dual encoder (CLIP/SigLIP): `paths`, no kind. Index with `"document"`, search with `"query"` — mixing silently drops recall. **Store `response.modelId` with vectors, compare before searching** — cross-model cosine = plausible garbage; dimensions don't catch it.
 
@@ -68,7 +70,7 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 |---|---|
 | `model_loading` | Not resident; load started — watch `err.jobId`, retry |
 | `ai_unavailable` | claude CLI missing / local worker won't start — friendly state, not overlay |
-| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb) |
+| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/embed or below macOS 26 / Apple Intelligence off) |
 | `bad_request` | Call wrong — read `.message` |
 | `ai_error` | Ran, failed (bad id, OOM, crash, render past cap) |
 | `timeout` | Text: 600 s on Claude, 900 s local (image 900 s, video 2 h, transcribe far longer) — size a UI timeout off the tier you're calling, not off 600 |
