@@ -1346,6 +1346,16 @@ let ghReadyFocusDone = false;
 /* The repository-name field, seeded once from the folder name the first time
  * the "ready" step is reached and left alone after. */
 let ghName = "";
+/* The "identity" step's name/email fields — module-level for the same
+ * reason `ghName` is: the modal repaints on every poll tick, and a value
+ * living only in the DOM node the last render created would be discarded,
+ * caret and all, the next time `draw()` runs. */
+let ghIdentityName = "";
+let ghIdentityEmail = "";
+/* Whether the identity step's name field has already been focused once this
+ * modal session — see the "ready" step's `ghReadyFocusDone` for the same
+ * pattern. Reset by `ghStartPolling`. */
+let ghIdentityFocusDone = false;
 /* No default: a radio nobody has clicked is not a private repository, and
  * the Publish button stays disabled until one of "private"/"public" is
  * chosen on purpose. */
@@ -2417,6 +2427,9 @@ function ghStartPolling(root) {
   ghVisibility = "";
   ghHatch = null;
   ghHatchUrl = "";
+  ghIdentityName = "";
+  ghIdentityEmail = "";
+  ghIdentityFocusDone = false;
   if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
   ghPollTimer = setInterval(() => { void ghTick(); }, GH_POLL_MS);
   void ghTick();
@@ -2504,12 +2517,18 @@ function publishModal(data) {
       }),
       action("gh-cancel", "Cancel", { onClick: close })));
   } else if (state === "identity") {
+    // ghIdentityName/ghIdentityEmail live at module scope, not as locals —
+    // ghTick repaints this whole panel every GH_POLL_MS, and a plain local
+    // would be discarded, caret and all, on the next tick. Same pattern as
+    // the "ready" step's ghName below.
     const name = el("input", { type: "text", placeholder: "Your name",
-                               disabled: busy !== null });
+                               value: ghIdentityName, disabled: busy !== null });
     const email = el("input", { type: "text", placeholder: "you@example.com",
-                                disabled: busy !== null });
+                                value: ghIdentityEmail, disabled: busy !== null });
     name.setAttribute("aria-label", "Your name, for commits made in this repository");
     email.setAttribute("aria-label", "Your email, for commits made in this repository");
+    name.addEventListener("input", () => { ghIdentityName = name.value; });
+    email.addEventListener("input", () => { ghIdentityEmail = email.value; });
     const save = () => {
       if (!name.value.trim() || !email.value.trim()) return;
       run("set_identity", { op: "set_identity",
@@ -2529,7 +2548,10 @@ function publishModal(data) {
         className: "primary", disabled: busy !== null, onClick: save,
       }),
       action("gh-cancel", "Cancel", { onClick: close })));
-    focusSoon(name);
+    // Seeded once per modal session, like ghReadyFocusDone below — a repaint
+    // from a poll tick must not yank the caret out of a field the user is
+    // mid-typing into.
+    if (!ghIdentityFocusDone) { focusSoon(name); ghIdentityFocusDone = true; }
   } else if (state === "commits") {
     panel.append(el("div", { className: "panel-form" },
       el("p", { className: "note", style: "flex-basis:100%", textContent:

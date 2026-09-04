@@ -222,6 +222,51 @@ def test_the_escape_hatches_never_touch_the_github_api():
     assert "Could not connect that remote" in source
 
 
+def _identity_branch(source):
+    start = source.index('else if (state === "identity") {')
+    end = source.index('else if (state === "commits")', start)
+    return source[start:end]
+
+
+def test_identity_step_survives_a_repaint():
+    """`ghTick` calls `draw(true)` every `GH_POLL_MS`, rebuilding the whole
+    panel from scratch. The "identity" step's name/email fields must read
+    their value from module-level state (the same pattern the "ready" step's
+    `ghName` already uses below), not from a plain local that a fresh render
+    would reset to empty — a local can't survive the rebuild, so a repaint
+    mid-keystroke would silently erase whatever was typed and the step could
+    never be completed.
+    """
+    branch = _identity_branch(_source())
+    assert "value: ghIdentityName" in branch, (
+        "the name field is not seeded from module-level state, so a repaint "
+        f"resets it to empty:\n{branch}")
+    assert "value: ghIdentityEmail" in branch, (
+        "the email field is not seeded from module-level state, so a "
+        f"repaint resets it to empty:\n{branch}")
+    assert "ghIdentityName = name.value" in branch, (
+        "typing into the name field never writes back to the module-level "
+        f"state that survives the next repaint:\n{branch}")
+    assert "ghIdentityEmail = email.value" in branch, (
+        "typing into the email field never writes back to the module-level "
+        f"state that survives the next repaint:\n{branch}")
+
+
+def test_identity_step_focuses_only_once_per_session():
+    """A repaint from a poll tick must not yank the caret out of a field the
+    user is mid-typing into — `focusSoon` may only run gated behind a
+    once-per-session flag, the same pattern the "ready" step's
+    `ghReadyFocusDone` already uses, never unconditionally on every render.
+    """
+    branch = _identity_branch(_source())
+    guarded = re.search(
+        r"if\s*\(!ghIdentityFocusDone\)\s*\{\s*focusSoon\(name\);\s*"
+        r"ghIdentityFocusDone\s*=\s*true;\s*\}", branch)
+    assert guarded, (
+        "focusSoon(name) is not gated behind a once-per-session "
+        f"ghIdentityFocusDone flag:\n{branch}")
+
+
 def test_chan_derives_the_key_from_the_module_and_the_op():
     """`chan` must not collapse to a constant.
 
