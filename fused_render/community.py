@@ -264,13 +264,16 @@ def _git_install_hint():
     """The one-line "get git" instruction for this platform. macOS is called
     out on its own because /usr/bin/git is a shim that EXISTS on every Mac
     without the developer tools behind it — `which` finds it, so the missing
-    piece is the toolchain, not a download."""
+    piece is the toolchain, not a download.
+
+    No backticks or other markup: every surface drops this into a plain text
+    node, so markup would render as literal characters."""
     if sys.platform == "darwin":
-        return "run `xcode-select --install` to get it, then revisit this page"
+        return "run xcode-select --install to get it, then revisit this page"
     if sys.platform == "win32":
         return "install it from https://git-scm.com/download/win, then revisit this page"
-    return ("install it with your package manager (for example `apt install "
-            "git`), then revisit this page")
+    return ("install it with your package manager (apt install git, brew "
+            "install git), then revisit this page")
 
 
 def _require_git():
