@@ -152,8 +152,25 @@ def test_it_runs_gh_auth_login_web_on_the_binary_we_resolved(monkeypatch):
     proc = _FakeProc()
     seen = _spawn(monkeypatch, proc)
     github_login.start()
-    assert seen["cmd"] == [
-        "/opt/gh/gh", "auth", "login", "--web", "--git-protocol", "https"]
+    assert seen["cmd"][0] == "/opt/gh/gh"
+    assert "--web" in seen["cmd"]
+    assert "--git-protocol" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--git-protocol") + 1] == "https"
+    proc.finish()
+
+
+def test_hostname_is_always_pinned_to_github_com(monkeypatch):
+    """Without `--hostname` a non-interactive `gh auth login` either refuses
+    outright or spends the auto-advance newline on the GitHub.com-vs-
+    Enterprise host picker instead of the "press Enter to open your
+    browser" prompt it's meant for, then blocks forever until the watchdog
+    kills it."""
+    _found(monkeypatch, "/opt/gh/gh")
+    proc = _FakeProc()
+    seen = _spawn(monkeypatch, proc)
+    github_login.start()
+    assert "--hostname" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--hostname") + 1] == "github.com"
     proc.finish()
 
 

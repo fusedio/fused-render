@@ -372,7 +372,14 @@ def start() -> dict:
     if not path or not github_setup.executable(path):
         raise LoginError("there is no GitHub CLI on this machine to sign in to")
 
-    cmd = [path, "auth", "login", "--web", "--git-protocol", "https"]
+    # --hostname pins the login to github.com. Without it, a non-interactive
+    # `gh` (stdin/stdout are both PIPE here) either refuses to run at all or
+    # spends the single auto-advance newline below on the GitHub.com-vs-
+    # Enterprise host picker instead of the "Press Enter to open github.com
+    # in your browser..." prompt it's meant for, then blocks forever on that
+    # prompt until the watchdog kills the attempt.
+    cmd = [path, "auth", "login", "--hostname", "github.com", "--web",
+           "--git-protocol", "https"]
 
     global _active
     with _LOCK:
