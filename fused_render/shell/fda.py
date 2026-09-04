@@ -21,10 +21,30 @@ install up front.
 Detection probes paths that only FDA unlocks. FDA-class paths never raise a
 TCC prompt (unlike the per-folder categories) — a failed probe is silent,
 so probing on every /api/config read costs nothing but a stat.
+
+Detection is TWO-STAGE (amends D486's single in-process probe). macOS caches
+a process's TCC verdict for its lifetime — that is what the "Quit & Reopen"
+dialog in the Settings pane is about — so once this process has probed
+not-granted, the grant the user just made is invisible to it until relaunch.
+The in-process probe therefore only answers "can THIS process read". When it
+says no, `snapshot()` asks a FRESH CHILD (`/bin/ls` on the same target): a
+child of the app bundle is attributed to the bundle's TCC identity but has
+no cached verdict, so it sees the grant live. Child yes + self no is the
+`pending_relaunch` state the shell turns into a Relaunch button
+(fused-render://relaunch?reason=fda), instead of a "waiting…" spinner that
+can never finish. The child probe is memoized for a few seconds because
+/api/config is polled by several surfaces across tabs.
+
+Every consumer — the onboarding step, the Home/Apps/explorer strip — reads
+the ONE `fda` field of /api/config, and every route that hits a
+PermissionError reports it through the ONE `refused()` helper (or the
+server's PermissionError backstop handler, for routes that never caught it),
+so "denied" means the same thing everywhere.
 """
 import os
 import subprocess
 import sys
+import time
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
@@ -98,6 +118,66 @@ def granted() -> bool | None:
     return None
 
 
+#: How long one child-probe answer stands in for the next. /api/config is
+#: polled every few seconds by the status banner, the strip and the wizard
+#: step, in every open tab; a fork per poll would be silly, and a grant
+#: landing a couple of seconds late is invisible next to the relaunch it needs.
+CHILD_PROBE_TTL_S = 3.0
+
+#: Errno texts /bin/ls prints for a refused read: TCC denies as EPERM
+#: ("Operation not permitted"), classic mode bits as EACCES.
+_REFUSED_TEXTS = ("operation not permitted", "permission denied")
+
+_child_memo: tuple[float, bool | None] = (0.0, None)
+
+
+def _child_probe_target() -> str | None:
+    """The first listdir probe target that exists. Directory targets only:
+    `ls` on the TCC.db path is a stat, which succeeds without FDA."""
+    for raw, how in _PROBES:
+        if how != "listdir":
+            continue
+        path = os.path.expanduser(raw)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def child_granted() -> bool | None:
+    """Whether Full Disk Access is granted to a FRESHLY SPAWNED child of this
+    process — i.e. to the app's TCC identity as of right now, uncached.
+
+    True when `ls <FDA-gated dir>` succeeds, False when it is refused, None
+    when there is no target to ask about or `ls` failed for another reason.
+    Memoized for CHILD_PROBE_TTL_S. Never called on its own by the shell: it
+    only matters once the in-process probe has said no (see snapshot()).
+    """
+    global _child_memo
+    if os.environ.get(FORCE_ENV) == "demo":
+        return False
+    now = time.monotonic()
+    stamp, cached = _child_memo
+    if now - stamp < CHILD_PROBE_TTL_S:
+        return cached
+    result: bool | None = None
+    target = _child_probe_target()
+    if target is not None:
+        try:
+            proc = subprocess.run(
+                ["/bin/ls", "-d", target + "/"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None:
+            if proc.returncode == 0:
+                result = True
+            elif any(t in proc.stderr.lower() for t in _REFUSED_TEXTS):
+                result = False
+    _child_memo = (now, result)
+    return result
+
+
 #: Whether THIS session has hit a PermissionError on an fs route — the moment
 #: macOS actually refused a read, prompted or silent. The strip renders only
 #: after that: a user whose files all open fine never needs a word about Full
@@ -126,6 +206,11 @@ def snapshot() -> dict | None:
     probe is inconclusive — an absent field is the shell's "render nothing
     AND stop watching", so uncertainty never nags and never polls.
 
+    `granted` is what THIS process can do. `pending_relaunch` is the
+    two-stage verdict (module docstring): this process cannot, but a fresh
+    child can, so the grant has landed and only a relaunch stands between
+    the user and it. Never both true.
+
     `denied` is the trigger: the strip renders only while the current denial
     stands unacknowledged. Dismissing clears it ON THE SERVER (every tab
     converges), and the NEXT PermissionError raises it again — an ✕ is "not
@@ -139,7 +224,26 @@ def snapshot() -> dict | None:
     if state is None:
         return None
     denied = _denied or os.environ.get(FORCE_ENV) == "demo"
-    return {"granted": state, "denied": denied}
+    pending = (not state) and child_granted() is True
+    return {"granted": state, "pending_relaunch": pending, "denied": denied}
+
+
+def refused(path: str, exc: BaseException) -> JSONResponse:
+    """THE answer to a refused read: record the denial for the warning and
+    build the 403 the explorer keys its Full Disk Access card on. Every fs
+    route that catches a PermissionError returns this, so the wire shape and
+    the side effect cannot drift apart between routes."""
+    note_denied(exc)
+    return JSONResponse({"error": f"cannot read {path}: {exc}"}, status_code=403)
+
+
+async def permission_error_handler(request, exc: PermissionError) -> JSONResponse:
+    """Backstop for a PermissionError no route caught: it would otherwise
+    surface as a generic 500 and the warning would never hear about the one
+    failure it exists to explain. Registered by the server for the whole app;
+    a route that handles its own denial (through refused()) never gets here."""
+    path = request.query_params.get("path") or request.url.path
+    return refused(path, exc)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

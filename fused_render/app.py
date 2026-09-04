@@ -736,7 +736,7 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
 
 
 def begin_relaunch(*, quit_action, bundle=None, spawn=None,
-                   running=None, installed=None) -> bool:
+                   running=None, installed=None, same_version=False) -> bool:
     """fused-render://relaunch: quit through the normal teardown and park a
     relauncher on our pid. True if the relaunch was started.
 
@@ -760,12 +760,24 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     can be dead before a statement after `quit_action()` finishes — and a
     relauncher that was never spawned means the app quits with no successor.
     "The teardown drains for seconds" used to make this safe by accident; the
-    hook makes it safe by construction."""
+    hook makes it safe by construction.
+
+    `same_version=True` (fused-render://relaunch?reason=fda) skips ONLY the
+    staleness check: a Full Disk Access grant applies to the next process, so
+    respawning the very same version is the whole point. The bundle check and
+    the quit-in-flight check still apply."""
     if bundle is None:
         bundle = bundle_path()
     if bundle is None:
         logger.info("relaunch deep link ignored: not running from a bundle")
         return False
+    if same_version:
+        if spawn is None:
+            spawn = spawn_relauncher
+        if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
+            logger.info("relaunch deep link ignored: quit already in progress")
+            return False
+        return True
     if running is None:
         from fused_render import __version__ as running
     if installed is None:
@@ -1023,12 +1035,23 @@ def main() -> None:
     # openurls_target_path tells the two apart (mirrors the scheme check in
     # winopen.py's _open()).
     def application_openURLs_(self, _app, urls):
-        from fused_render.deeplink import is_launch_url, is_relaunch_url
+        from fused_render.deeplink import (
+            is_fda_relaunch_url,
+            is_launch_url,
+            is_relaunch_url,
+        )
 
         raws = [str(u.absoluteString()) for u in urls]
         logger.info("deep-link open-URLs event: %s", raws)
         state["docs"] = True  # a deep-link launch shouldn't also open the home tab
         for raw in raws:
+            if is_fda_relaunch_url(raw):
+                # fused-render://relaunch?reason=fda (FdaStrip / FdaStep's
+                # "Relaunch" button): a Full Disk Access grant only reaches a
+                # fresh process, so respawn this same version.
+                logger.info("fda relaunch deep link: quitting to respawn for the grant")
+                begin_relaunch(quit_action=_do_quit, same_version=True)
+                continue
             if is_relaunch_url(raw):
                 # fused-render://relaunch (the update-restart banner's button):
                 # park a relauncher on our pid and quit through the normal

@@ -266,18 +266,16 @@ def api_fs_list(path: str, cursor: str | None = None):
         with os.scandir(path) as it:
             dents = list(itertools.islice(it, _server_walk.LIST_MAX_ENTRIES + 1))
     except OSError as e:
-        # A PermissionError here is the moment the Full Disk Access warning
-        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
-        # exactly this EPERM, sometimes with no prompt ever shown.
-        shell_fda.note_denied(e)
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
-        # 403, matching stat (mount.py) and read below, so the explorer can
-        # tell "refused" from "not a directory" by status and show the
-        # Full Disk Access card instead of the raw errno text.
+        # A PermissionError here is the moment the Full Disk Access warning
+        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
+        # exactly this EPERM, sometimes with no prompt ever shown. refused()
+        # is the one place that records it AND shapes the 403 the explorer
+        # keys its card on, same as stat (mount.py) and read below.
         if isinstance(e, PermissionError):
-            return _error(f"cannot read {path}: {e}", status=403)
+            return shell_fda.refused(path, e)
         return _error(f"cannot read directory {path}: {e}", status=400)
     truncated = len(dents) > _server_walk.LIST_MAX_ENTRIES
     if truncated:
@@ -618,8 +616,7 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     try:
         st = await asyncio.to_thread(os.stat, path)
     except PermissionError as e:
-        shell_fda.note_denied(e)
-        return _error(f"cannot read {path}: {e}", status=403)
+        return shell_fda.refused(path, e)
     except OSError:
         # Any other OSError keeps the historical _stat_or_none contract:
         # ENOENT, ENOTDIR, ELOOP and friends all report as missing.
@@ -634,8 +631,7 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     try:
         await asyncio.to_thread(lambda: open(path, "rb").close())
     except PermissionError as e:
-        shell_fda.note_denied(e)
-        return _error(f"cannot read {path}: {e}", status=403)
+        return shell_fda.refused(path, e)
     except OSError:
         # A non-permission open failure (EIO, a file racing away) keeps its
         # previous behavior: FileResponse surfaces it as the send-time error.

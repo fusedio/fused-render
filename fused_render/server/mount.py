@@ -343,8 +343,7 @@ def _fs_stat(path: str):
         # historical "no such file" — a path the OS refused is not gone.
         if isinstance(e, PermissionError):
             from fused_render.shell import fda as shell_fda
-            shell_fda.note_denied(e)
-            return _error(f"cannot read {path}: {e}", status=403)
+            return shell_fda.refused(path, e)
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick

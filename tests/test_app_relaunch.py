@@ -187,6 +187,45 @@ def test_begin_relaunch_is_a_noop_when_the_disk_version_is_unknown():
     assert calls == []
 
 
+def test_same_version_relaunch_skips_only_the_staleness_check():
+    # fused-render://relaunch?reason=fda: a Full Disk Access grant applies to
+    # the NEXT process, so respawning the very same version is the point.
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: (on_claim(), calls.append("quit"))[1] or True,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda bundle, pid: calls.append(("spawn", bundle, pid)),
+        running="0.5.0", installed="0.5.0",
+        same_version=True,
+    )
+    assert started is True
+    assert calls == [("spawn", "/Applications/FusedRender.app", os.getpid()), "quit"]
+
+
+def test_same_version_relaunch_still_needs_a_bundle(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: calls.append("quit") or True,
+        spawn=lambda *a: calls.append(a),
+        same_version=True,
+    )
+    assert started is False
+    assert calls == []
+
+
+def test_same_version_relaunch_joins_a_quit_already_in_flight():
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda on_claim=None: False,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda *a: calls.append(a),
+        same_version=True,
+    )
+    assert started is False
+    assert calls == []
+
+
 def test_quit_action_reports_whether_it_claimed_the_teardown():
     # begin_relaunch's no-respawn guard rides this bool: the first quit from
     # any surface claims the teardown, every later one joins it.
