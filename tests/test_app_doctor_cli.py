@@ -50,14 +50,32 @@ def test_defaults_to_the_working_directory(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
-def test_a_fake_key_reddens_the_run_and_groups_the_finding(tmp_path):
+def test_a_fake_key_reddens_the_run(tmp_path):
     _clean_app(tmp_path)
     _write(tmp_path, "app.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
     r = _run(str(tmp_path), cwd=tmp_path)
     assert r.returncode != 0
-    assert "secrets" in r.stdout
+    assert "secrets:aws-access-key" in r.stdout
     assert "app.py" in r.stdout
     assert "AKIAABCDEFGHIJKLMNOP" not in r.stdout
+
+
+def test_findings_across_files_and_families_print_one_pinned_line_each_in_sorted_order(tmp_path):
+    """Two files, two families: a leaked key in `app.py` and a hardcoded
+    device path in `config.py`. Pins the exact `path:line: rule: excerpt`
+    shape and the path-then-line-then-rule sort, so the same app always
+    prints the same bytes in the same order."""
+    _clean_app(tmp_path)
+    _write(tmp_path, "app.py", '#\nAWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    _write(tmp_path, "config.py", 'PATH = "/home/user/project/secret.txt"\n')
+    r = _run(str(tmp_path), cwd=tmp_path)
+    assert r.returncode != 0
+    lines = r.stdout.splitlines()
+    assert lines == [
+        "app.py:2: secrets:aws-access-key: AK****************OP",
+        "config.py:1: device-path:hardcoded: /home/user/project/secret.txt",
+        "2 findings",
+    ]
 
 
 def test_a_missing_thumbnail_exits_nonzero(tmp_path):

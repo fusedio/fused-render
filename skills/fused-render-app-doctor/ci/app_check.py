@@ -41,8 +41,9 @@ WORKING TREE ONLY. No history scan — a secret already committed is a job for
 whatever gates publishing, not this script, and scanning history would make
 every run as slow as the app's oldest commit.
 
-Run as `python app_check.py [path]` (path defaults to `.`): prints findings
-grouped by family, then exits 1 if any fired and 0 if the folder is clean.
+Run as `python app_check.py [path]` (path defaults to `.`): prints one
+`path:line: rule: excerpt` line per finding, then exits 1 if any fired and 0
+if the folder is clean.
 """
 import fnmatch
 import os
@@ -564,7 +565,16 @@ def check(app_dir: str) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Review one app folder and print findings grouped by family.
+    """Review one app folder and print one line per finding.
+
+    Each line is `path:line: rule: excerpt` — the `path:line:` prefix is the
+    shape an editor or `grep` already understands, so a line pastes straight
+    into a jump-to-location, and the full `rule` (not just its family) is
+    what a person needs to look up or argue with. A finding with no line
+    number (the structure family reports against the app folder itself)
+    drops the line and its colon: `path: rule: excerpt`. Findings are sorted
+    by path, then line, then rule, so the same app always prints the same
+    bytes in the same order.
 
     The only mode is fail-on-finding: a CI floor has no use for a run that
     reports a leaked credential and still exits 0, so there is no flag to
@@ -582,17 +592,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no findings — {path} looks clean")
         return 0
 
-    by_family: dict[str, list] = {}
-    for f in findings:
-        by_family.setdefault(f["rule"].split(":", 1)[0], []).append(f)
-    for family in sorted(by_family):
-        group = by_family[family]
-        label = group[0]["severity"].upper()
-        print(f"\n{family} ({label}):")
-        for f in group:
-            where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
-            print(f"  {where}  {f['excerpt']}")
-    print(f"\n{len(findings)} finding(s)")
+    for f in sorted(findings, key=lambda f: (f["path"], f["line"], f["rule"])):
+        where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
+        print(f"{where}: {f['rule']}: {f['excerpt']}")
+    print(f"{len(findings)} finding" + ("" if len(findings) == 1 else "s"))
     return 1
 
 
