@@ -30,6 +30,43 @@ from fused_render import github_setup
 _RealThread = threading.Thread
 
 
+def _fake_thread_class(run_worker):
+    """threading.Thread double for the publish tests below.
+
+    The same monkeypatched `threading.Thread` stands in for TWO different
+    callers: github_setup's own worker thread (`target=_guarded,
+    daemon=True, name=...` — no positional `args`/`kwargs`), which each
+    test below wants to run synchronously, not at all, or on demand; and,
+    earlier in the same call, whatever thread(s) the stdlib spins up while
+    `publish_start`'s `_has_commits`/`_has_remote` preflight runs a real
+    `git` subprocess. On Windows, `subprocess.Popen.communicate()` always
+    reads pipes through real `threading.Thread` instances
+    (`Popen._readerthread`), constructed with positional `args=(fh,
+    buffer)` — those have to actually run, with the args they were given,
+    or `communicate()` never gets its pipe data back, and they have to
+    answer to `.join()` once it's done reading. A `Thread` built with no
+    `args`/`kwargs` is never the stdlib's — that shape is how the two
+    callers are told apart.
+    """
+
+    class T:
+        def __init__(self, target=None, args=(), kwargs=None, **_ignored):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._args or self._kwargs:
+                self._target(*self._args, **self._kwargs)
+            elif run_worker:
+                self._target()
+
+        def join(self, timeout=None):
+            pass
+
+    return T
+
+
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     """Every test gets its own shell home (so the cache file is its own) and a
@@ -820,7 +857,7 @@ def test_visibility_is_always_explicit_in_the_argv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
     monkeypatch.setattr(github_setup.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
     monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
     monkeypatch.setattr(github_setup, "executable", lambda p: True)
 
@@ -854,7 +891,7 @@ def test_ghs_stderr_reaches_the_record_verbatim(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
     monkeypatch.setattr(github_setup.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
     monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
     monkeypatch.setattr(github_setup, "executable", lambda p: True)
 
@@ -874,7 +911,7 @@ def test_a_successful_publish_records_the_repo_url(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
     monkeypatch.setattr(github_setup.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda self: kw["target"]()})())
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
     monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
     monkeypatch.setattr(github_setup, "executable", lambda p: True)
 
@@ -887,7 +924,7 @@ def test_a_successful_publish_records_the_repo_url(tmp_path, monkeypatch):
 def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):
     root = _repo_with_a_commit(tmp_path, monkeypatch)
     monkeypatch.setattr(github_setup.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda self: None})())
+                        lambda **kw: _fake_thread_class(run_worker=False)(**kw))
     monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
     monkeypatch.setattr(github_setup, "executable", lambda p: True)
     github_setup.publish_start(root, "my-repo", "private")
@@ -898,10 +935,18 @@ def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):
 def test_a_publish_worker_that_dies_unexpectedly_frees_the_slot(tmp_path, monkeypatch):
     root = _repo_with_a_commit(tmp_path, monkeypatch)
     captured = {}
-    monkeypatch.setattr(github_setup.threading, "Thread",
-                        lambda **kw: type("T", (), {
-                            "start": lambda self: captured.setdefault(
-                                "target", kw["target"])})())
+
+    def _fake_thread_ctor(**kw):
+        # Only the worker Thread — github_setup's own `target=_guarded,
+        # daemon=True, name=...` call — has no positional args/kwargs; the
+        # real threads the stdlib spins up while the git preflight runs
+        # (see _fake_thread_class's docstring) always do, so this only
+        # captures the worker's target rather than a reader thread's.
+        if not kw.get("args") and not kw.get("kwargs"):
+            captured.setdefault("target", kw.get("target"))
+        return _fake_thread_class(run_worker=False)(**kw)
+
+    monkeypatch.setattr(github_setup.threading, "Thread", _fake_thread_ctor)
     monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
     monkeypatch.setattr(github_setup, "executable", lambda p: True)
 
