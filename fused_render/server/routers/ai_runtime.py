@@ -1366,7 +1366,50 @@ def api_ai_catalog():
     return {"capabilities": _catalog_with_downloads(),
             # Everything else on this disk, with the reason it is not above.
             "unsupported": _unsupported_downloads(),
+            # The OTHER on-device tier (D700). A separate key, NOT rows in
+            # `capabilities[].models` — every picker maps that list as "things
+            # I may download and load", and an apple id has neither action. A
+            # client opts in (the Playground does) and draws them its own way.
+            "providers": {"apple": _apple_catalog()},
             "ramGb": fit.machine_ram_gb()}
+
+
+#: What the catalog says about each apple id — the OS owns the weights, so
+#: there is no size, no download and no version; a label and a sentence.
+_APPLE_CATALOG_MODELS = {
+    "afm-text": {"label": "Apple on-device language model", "nickname": "Apple Intelligence",
+                 "note": "Apple's own ~3B model. Nothing to download; ~4k-token context; "
+                         "answers stay on this Mac."},
+    "afm-speech": {"label": "Apple speech model (SpeechAnalyzer)", "nickname": "Apple Speech",
+                   "note": "Apple's dictation-grade speech model. Nothing to download; "
+                           "2-3× faster than Whisper; no translate, no speaker labels."},
+}
+
+
+def _apple_catalog() -> dict:
+    """The apple tier's row of the catalog: availability plus the ids it serves
+    in this build. `relevant` says whether the reason is worth a pixel here —
+    on Linux or an Intel Mac the tier's absence is a fact about the machine's
+    class, not something a user can act on, so a client keeps quiet there."""
+    from fused_render.ai.apple import host as apple_host
+
+    problem = apple_host.platform_problem()
+    if problem:
+        return {"available": False, "state": "unavailable", "reason": problem,
+                "relevant": False, "os": None, "models": []}
+    availability = apple_host.probe()
+    models = [
+        {"id": model, "capability": capability, **_APPLE_CATALOG_MODELS[model]}
+        for model, capability in APPLE_MODELS.items()
+        if model in _APPLE_CATALOG_MODELS
+    ]
+    return {"available": availability.ok, "state": availability.state,
+            "reason": availability.reason or None, "relevant": True,
+            "os": availability.os or None,
+            # Speech rides on the helper, not on Apple Intelligence, so it is
+            # usable whenever the helper answered with locales at all.
+            "speechAvailable": bool(availability.speech_locales),
+            "models": models}
 
 
 def _engine_gap_refusal(model: str):

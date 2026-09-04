@@ -3545,7 +3545,7 @@ export interface AiCatalogModel {
    *  The Discover tab's "Suggested models" grid renders the CURATED half only:
    *  the Local tab is already the answer to "what is on my disk", and the same
    *  repo in both grids would read as two different things. */
-  source: "curated" | "cached";
+  source: "curated" | "cached" | "apple";
   /** Whether it is on this disk. Always true for a cached entry; on a curated
    *  one it is what the checkmark means. */
   downloaded: boolean;
@@ -3682,14 +3682,44 @@ export interface AiUnsupportedModel {
   reason: string;
 }
 
+/** One id the apple tier serves (D700): no size, no download, no version —
+ *  the OS owns the weights. Drawn by a picker that opts in, never mixed into
+ *  `capabilities[].models` (see `AiUnsupportedModel` for why a separate key). */
+export interface AiProviderModel {
+  id: string;
+  capability: string;
+  label: string;
+  nickname: string | null;
+  note: string | null;
+}
+
+/** The `provider: "apple"` tier as the catalog reports it. */
+export interface AiAppleProvider {
+  available: boolean;
+  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal. */
+  state: "available" | "loading" | "unavailable";
+  reason: string | null;
+  /** False on a machine whose class rules the tier out (Linux, Intel): the
+   *  reason is then not something a user can act on, so a picker stays quiet. */
+  relevant: boolean;
+  os: string | null;
+  /** Speech needs the helper, not Apple Intelligence — it can be usable while
+   *  `available` (the text model) is false. */
+  speechAvailable?: boolean;
+  models: AiProviderModel[];
+}
+
 export function getAiCatalog(): Promise<{
   capabilities: AiCatalogCapability[];
   /** Optional: an older server does not send it. */
   unsupported?: AiUnsupportedModel[];
+  /** Optional: an older server does not send it. */
+  providers?: { apple?: AiAppleProvider };
 }> {
   return getJson<{
     capabilities: AiCatalogCapability[];
     unsupported?: AiUnsupportedModel[];
+    providers?: { apple?: AiAppleProvider };
   }>("/api/ai/catalog");
 }
 
