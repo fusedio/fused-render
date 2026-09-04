@@ -17,10 +17,15 @@ import { useEffect, useRef, useState } from "react";
 import { getConfig, mkdir, rawUrl } from "@platform/lib/api";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import {
+  cancelCapture,
+  captureSources,
   readPartialTranscript,
+  startNativeAudio,
   startTranscribe,
+  stopCapture,
   uploadFile,
   watchJob,
+  type CaptureStarted,
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
@@ -89,6 +94,14 @@ export function TranscribeStage({ model }: { model: string }) {
   const aliveRef = useRef(true);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  // A NATIVE take in progress — the server is the recorder (macOS), and this
+  // is the handle to stop it. Exclusive with `recorderRef`: one of the two is
+  // set while `phase.step === "recording"`, never both.
+  const nativeRef = useRef<CaptureStarted | null>(null);
+  // The mic stream opened only to DRAW the level meter on the native path —
+  // the server hears the microphone through its own device handle, this one
+  // exists so the user sees "it hears me" the same way the browser path shows it.
+  const meterStreamRef = useRef<MediaStream | null>(null);
   const meterRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
 
   const stopMeter = () => {
@@ -97,7 +110,33 @@ export function TranscribeStage({ model }: { model: string }) {
       void meterRef.current.ctx.close().catch(() => {});
       meterRef.current = null;
     }
+    meterStreamRef.current?.getTracks().forEach((t) => t.stop());
+    meterStreamRef.current = null;
     setLevel(0);
+  };
+
+  // The level meter: an analyser on a mic stream, RMS of one frame, painted
+  // ~60/s. Cheap, and the one thing that proves the mic is live. Shared by
+  // both recording paths; on the native one the stream is opened for this
+  // alone and a refusal only costs the meter, never the take.
+  const startMeter = (stream: MediaStream) => {
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const bytes = new Uint8Array(analyser.frequencyBinCount);
+    const paint = () => {
+      analyser.getByteTimeDomainData(bytes);
+      let sum = 0;
+      for (const b of bytes) {
+        const centered = (b - 128) / 128;
+        sum += centered * centered;
+      }
+      setLevel(Math.min(1, Math.sqrt(sum / bytes.length) * 3));
+      if (meterRef.current) meterRef.current.raf = requestAnimationFrame(paint);
+    };
+    meterRef.current = { ctx, raf: requestAnimationFrame(paint) };
   };
 
   useEffect(() => {
@@ -111,6 +150,13 @@ export function TranscribeStage({ model }: { model: string }) {
       aliveRef.current = false;
       abortRef.current?.abort();
       recorderRef.current?.stream.getTracks().forEach((t) => t.stop());
+      // A native take nobody can stop from this page any more is discarded,
+      // not left running: the stage that started it is gone, and a recording
+      // outliving its only Stop button is the one outcome to avoid.
+      if (nativeRef.current) {
+        void cancelCapture(nativeRef.current.id).catch(() => {});
+        nativeRef.current = null;
+      }
       stopMeter();
     };
   }, []);
@@ -226,13 +272,8 @@ export function TranscribeStage({ model }: { model: string }) {
     setError(null);
     setPhase({ step: "uploading", name });
     try {
-      const config = await getConfig();
-      await mkdir(config.cache_dir).catch(() => {});
-      const dir = `${config.cache_dir}/transcribe-playground`;
-      await mkdir(dir).catch(() => {});
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 60) || "recording";
-      const path = `${dir}/playground-${stamp}-${safe}`;
+      const path = await scratchPath(safe);
       await uploadFile(path, data, safe);
       setSource({ path, name: safe });
       await transcribePath(path);
@@ -242,59 +283,117 @@ export function TranscribeStage({ model }: { model: string }) {
     }
   };
 
+  // Where a mic take lands, extension left to the recorder: the server picks
+  // `.m4a` for a native take; the browser path names its own container.
+  const scratchPath = async (stem: string) => {
+    const config = await getConfig();
+    await mkdir(config.cache_dir).catch(() => {});
+    const dir = `${config.cache_dir}/transcribe-playground`;
+    await mkdir(dir).catch(() => {});
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    return `${dir}/playground-${stamp}-${stem}`;
+  };
+
+  /** The macOS path: the SERVER records the microphone (SPEC §45, the same
+   *  `/api/capture` behind `fused.capture.audio()`) and writes an `.m4a`.
+   *  Native rather than `MediaRecorder` because the container decides which
+   *  tiers can read the take: Chrome's default is WebM/Opus, which the apple
+   *  tier (AVFoundation) cannot open, while an `.m4a` is read by every tier
+   *  and previews without conversion. The mic stream below is for the level
+   *  meter only. */
+  const recordNative = async () => {
+    // Named with the container the native recorder writes: an explicit `path`
+    // is kept VERBATIM by `/api/capture/start` (only an omitted one gets the
+    // server's own name and extension), and a take with no extension is a
+    // file the previews and the apple tier have to sniff rather than know.
+    const path = (await scratchPath("mic")) + ".m4a";
+    const started = await startNativeAudio(path, "Playground recording");
+    nativeRef.current = started;
+    setPhase({ step: "recording" });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop was pressed while the permission prompt was up: the meter has
+      // nothing to draw for any more.
+      if (!nativeRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      meterStreamRef.current = stream;
+      startMeter(stream);
+    } catch {
+      // No meter, but the server is recording regardless — the elapsed clock
+      // still says so.
+    }
+  };
+
+  const stopNative = async () => {
+    const started = nativeRef.current;
+    if (!started) return;
+    nativeRef.current = null;
+    stopMeter();
+    setPhase({ step: "uploading", name: "recording" });
+    try {
+      const done = await stopCapture(started.id);
+      if (done.error || !done.path) {
+        throw new Error(done.error || "the recording was not saved");
+      }
+      const name = done.path.split("/").pop() ?? "recording.m4a";
+      setSource({ path: done.path, name });
+      await transcribePath(done.path);
+    } catch (e) {
+      setError((e as Error).message);
+      setPhase({ step: "idle" });
+    }
+  };
+
+  /** The browser path (Windows, Linux — `sources.client`): `MediaRecorder`
+   *  encodes, the bytes are uploaded, and the Whisper workers decode whatever
+   *  container the browser chose. */
+  const recordInBrowser = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    recorderRef.current = recorder;
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      stopMeter();
+      recorderRef.current = null;
+      const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      const ext = (recorder.mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm";
+      void land(blob, `mic.${ext}`);
+    };
+    startMeter(stream);
+    recorder.start();
+    setPhase({ step: "recording" });
+  };
+
   const record = async () => {
     setError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // `audio/mp4` (AAC) where the browser can mux it — Safari always, Chrome
-      // on recent builds — else the browser's default (WebM/Opus on Chrome).
-      // Not for the engines' sake: every transcribe tier decodes both (the
-      // Whisper workers through PyAV, the apple tier through the same PyAV
-      // rewrite in `ai/apple/speech.py`). An m4a is simply the container the
-      // rest of the machine plays and previews without conversion.
-      const preferred = ["audio/mp4", "audio/mp4;codecs=mp4a.40.2"].find(
-        (m) => typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(m),
-      );
-      const recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        stopMeter();
-        recorderRef.current = null;
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        const ext = (recorder.mimeType || "audio/webm").includes("mp4") ? "m4a" : "webm";
-        void land(blob, `mic.${ext}`);
-      };
-      // The level meter: an analyser on the same stream, RMS of one frame,
-      // painted ~60/s. Cheap, and the one thing that proves the mic is live.
-      const ctx = new AudioContext();
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const bytes = new Uint8Array(analyser.frequencyBinCount);
-      const paint = () => {
-        analyser.getByteTimeDomainData(bytes);
-        let sum = 0;
-        for (const b of bytes) {
-          const centered = (b - 128) / 128;
-          sum += centered * centered;
-        }
-        setLevel(Math.min(1, Math.sqrt(sum / bytes.length) * 3));
-        if (meterRef.current) meterRef.current.raf = requestAnimationFrame(paint);
-      };
-      meterRef.current = { ctx, raf: requestAnimationFrame(paint) };
-      recorder.start();
-      setPhase({ step: "recording" });
+      // Which recorder this machine has — asked, never sniffed (the same
+      // fork `fused.capture` makes, CP-8). `client: true` means the browser
+      // must encode; anything else is the server's own recorder.
+      const sources = await captureSources().catch(() => null);
+      if (sources && !sources.client && sources.audio?.available) {
+        await recordNative();
+      } else {
+        await recordInBrowser();
+      }
     } catch (e) {
+      nativeRef.current = null;
       setError(
         (e as Error).name === "NotAllowedError"
           ? "Microphone access was refused — allow it in the browser and try again."
           : (e as Error).message,
       );
+      setPhase({ step: "idle" });
     }
+  };
+
+  const stopRecording = () => {
+    if (nativeRef.current) void stopNative();
+    else recorderRef.current?.stop();
   };
 
   const busy = phase.step === "uploading" || phase.step === "running";
@@ -328,7 +427,7 @@ export function TranscribeStage({ model }: { model: string }) {
 
         {phase.step === "recording" ? (
           <div className="pg-recording">
-            <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
+            <button type="button" className="pg-rec-btn live" onClick={stopRecording}>
               <span className="pg-rec-square" />
             </button>
             <div className="pg-rec-info">

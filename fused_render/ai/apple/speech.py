@@ -108,112 +108,71 @@ def start(request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-apple-transcribe", daemon=True).start()
 
 
-#: Containers AVFoundation opens on macOS 26. Anything else — WebM and Ogg
-#: first among them, which is what Chrome's MediaRecorder produces — is
-#: rewritten to WAV first (`_decoded_copy`). Lower-case, with the dot.
+#: Containers AVFoundation opens on macOS 26 — the whole of what the apple
+#: speech tier reads. WebM/Ogg/Opus (Chrome's MediaRecorder output) are NOT
+#: among them, and this tier ships no decoder on purpose: the Whisper workers
+#: carry PyAV inside their own venvs, and a 54 MB ffmpeg for one browser's
+#: container is not a price every DMG user should pay (owner's call, D700
+#: follow-up). The Playground records natively on macOS instead, and a file
+#: from elsewhere is refused with the list below rather than failing in
+#: AVFoundation's own two words ("Cannot Open"). Lower-case, with the dot.
 AVFOUNDATION_EXTENSIONS = frozenset({
     ".m4a", ".mp4", ".mov", ".aac", ".mp3", ".wav", ".wave", ".aif", ".aiff", ".aifc",
     ".caf", ".flac", ".m4v", ".3gp", ".amr", ".ac3", ".ec3", ".snd", ".au",
 })
-#: The one rate Whisper's front end and Apple's model both accept happily.
-SAMPLE_RATE = 16000
+_READABLE_HINT = "m4a, mp4, mov, wav, aiff, mp3, flac, caf or aac"
 
 
-def _decoded_copy(source: str, workdir: str) -> str:
-    """`source` as a 16 kHz mono 16-bit WAV beside the transcript, for a
-    container AVFoundation cannot open.
+def unsupported_container(path: str) -> str | None:
+    """The refusal for a file Apple's speech model cannot read, or None.
 
-    PyAV in THIS process — the same decode `mlx_whisper/worker.py::_decode_audio`
-    does inside its venv, with the same three rules (planar float, mono
-    mixdown, resampler FLUSHED so the last frame is not lost), then written as
-    int16 for the helper. No system ffmpeg is ever spawned (the app's policy —
-    see the Whisper folders' pyproject.toml). A missing `av` is a build problem
-    and is named as one.
+    Decided from the extension, BEFORE a job row opens, so a caller gets a
+    400 with the fix in it rather than a row that dies. The same sentence is
+    used when AVFoundation refuses a native-looking file mid-run.
     """
-    try:
-        import av
-        import numpy as np
-    except ImportError as e:  # pragma: no cover - a build without the [bundled] extra
-        raise host.AppleError(
-            "unavailable",
-            f"{os.path.basename(source)} is not a container Apple's speech model reads "
-            "(mp4/m4a/mov/wav/aiff/mp3/flac), and this build has no decoder to convert "
-            f"it (PyAV missing: {e})") from e
-    import wave
-
-    chunks = []
-    with av.open(source) as container:
-        streams = container.streams.audio
-        if not streams:
-            raise host.AppleError("bad_request",
-                                  f"{os.path.basename(source)} has no audio track to transcribe")
-        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
-        for frame in container.decode(streams[0]):
-            for out in resampler.resample(frame):
-                chunks.append(out.to_ndarray().reshape(-1))
-        for out in resampler.resample(None):
-            chunks.append(out.to_ndarray().reshape(-1))
-    if not chunks:
-        raise host.AppleError("bad_request", f"{os.path.basename(source)} decoded to no audio")
-    pcm = np.concatenate(chunks).astype(np.int16)
-    target = os.path.join(workdir, os.path.splitext(os.path.basename(source))[0][:60] + ".decoded.wav")
-    with wave.open(target, "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(SAMPLE_RATE)
-        handle.writeframes(pcm.tobytes())
-    return target
-
-
-def _run(request: dict, job: str, fields: dict) -> dict:
-    source = request["path"]
-    out, out_text = request["out"], request["outText"]
-    locale = request["locale"]
-    words = bool(request.get("words"))
-    started = time.time()
-    segments: list[dict] = []
-    duration = None
-    reported_locale = locale
-
-    def tick(**over) -> None:
-        supervisor._report(job, **fields, **over)
-
-    tick(state="running", done=0, total=None, detail="Decoding audio…")
-    # What the helper is HANDED. The transcript's `path` stays the caller's
-    # file — a decoded copy is a private intermediate, removed at the end.
-    # Two doors into the decode: an extension AVFoundation is known not to
-    # open goes straight there; a native-looking one that AVFoundation still
-    # refuses ("Cannot Open" — a mislabelled file, an odd codec) is retried
-    # through it ONCE rather than failing on a container PyAV reads fine.
-    decoded: str | None = None
-    try:
-        if os.path.splitext(source)[1].lower() not in AVFOUNDATION_EXTENSIONS:
-            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            decoded = _decoded_copy(source, os.path.dirname(out))
-        try:
-            return _run_helper(request, job, fields, decoded or source, started, tick)
-        except host.AppleError as e:
-            if decoded or e.type != "ai_error" or not _looks_undecodable(str(e)):
-                raise
-            tick(state="running", done=0, total=None, detail="Re-decoding audio…")
-            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            decoded = _decoded_copy(source, os.path.dirname(out))
-            return _run_helper(request, job, fields, decoded, started, tick)
-    finally:
-        if decoded:
-            try:
-                os.remove(decoded)
-            except OSError:
-                pass
+    ext = os.path.splitext(path)[1].lower()
+    # No extension: not a refusal. AVFoundation sniffs the container itself
+    # (a `fused.capture.audio()` take handed an explicit `path` is written
+    # without one), and a wrong guess surfaces mid-run as the same sentence.
+    if not ext or ext in AVFOUNDATION_EXTENSIONS:
+        return None
+    return (f"Apple's speech model cannot read {ext} "
+            f"({os.path.basename(path)}); it reads {_READABLE_HINT}. Re-encode the "
+            "recording to .m4a or .wav, or transcribe it with a local Whisper model "
+            "(provider: \"local\"), which reads every container")
 
 
 def _looks_undecodable(message: str) -> bool:
-    """AVFoundation's own words for "I cannot read this file" — the only
-    failures worth a second pass through PyAV."""
+    """AVFoundation's own words for "I cannot read this file"."""
     lowered = message.lower()
     return any(marker in lowered for marker in
                ("cannot open", "no audio track", "could not be decoded", "cannot decode",
                 "unsupported", "not supported"))
+
+
+def _run(request: dict, job: str, fields: dict) -> dict:
+    source = request["path"]
+    started = time.time()
+
+    def tick(**over) -> None:
+        supervisor._report(job, **fields, **over)
+
+    refusal = unsupported_container(source)
+    if refusal:
+        raise host.AppleError("bad_request", refusal)
+    tick(state="running", done=0, total=None, detail="Decoding audio…")
+    try:
+        return _run_helper(request, job, fields, source, started, tick)
+    except host.AppleError as e:
+        if e.type == "ai_error" and _looks_undecodable(str(e)):
+            # A native-looking extension AVFoundation still refused: say what
+            # the tier reads, not the framework's two words.
+            raise host.AppleError(
+                "bad_request",
+                f"Apple's speech model could not decode {os.path.basename(source)} "
+                f"({e}); it reads {_READABLE_HINT}. Re-encode the recording, or "
+                "transcribe it with a local Whisper model (provider: \"local\")") from e
+        raise
 
 
 def _run_helper(request: dict, job: str, fields: dict, fed: str, started: float, tick) -> dict:

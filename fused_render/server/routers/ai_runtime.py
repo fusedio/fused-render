@@ -2301,6 +2301,13 @@ def _apple_transcribe(body: dict, source: str, task: str, diarizing: bool, wants
     locale, problem = apple_speech.locale_for(body.get("language"), availability)
     if problem:
         return _error(problem, status=400)
+    # The container, BEFORE a row opens: Apple's model reads what AVFoundation
+    # opens and nothing else (no WebM/Ogg — see `speech.AVFOUNDATION_EXTENSIONS`
+    # for why no decoder ships), so a Chrome recording gets a 400 naming the
+    # formats and the two ways out, not a job that dies with "Cannot Open".
+    refusal = apple_speech.unsupported_container(source)
+    if refusal:
+        return _error(refusal, status=400)
 
     model = apple_speech.MODEL
     uid = secrets.token_hex(6)
