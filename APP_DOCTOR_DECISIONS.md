@@ -160,11 +160,48 @@ confirmed the CI workflow's own test-discovery convention (`test_*.py` /
 (`disk-usage/test_disk.py`). The clone was deleted afterward; nothing from
 it was copied into this worktree.
 
-## Not yet done
+## Task 6: the skill
 
-Task 6 (the skill) is not started as of this commit. Resume point: create
-`skills/fused-render-app-doctor/SKILL.md` (the `ci/app-check.yml` this
-directory already ships was added in Task 5), matching
-`skills/fused-render-usage/SKILL.md`'s frontmatter shape, then confirm
-`pytest tests/test_skill_plugin.py -q` picks it up with no test-file
-changes (both discovery paths are directory scans, per the plan).
+`Skill: reviewing an app with the doctor` — committed.
+`skills/fused-render-app-doctor/SKILL.md` points at the one command and
+says what to do per family (move a secret out and rotate it, swap a
+device path for a relative one, fix or drop an unknown call, bump the
+declared API version, fix the named housekeeping gap, delete or
+`.gitignore` a stray generated file) without restating the engine's own
+rules or teaching its detection patterns. No test file changes were
+needed — `pytest tests/test_skill_plugin.py -q` (64 tests, including both
+`test_every_skill_in_the_repo_is_discovered` and
+`test_the_build_hook_discovers_the_same_skills_as_the_runtime`) passed
+against the new skill directory unmodified, confirming the plan's claim
+that both discovery paths are plain directory scans.
+
+## Post-build correction: DECISIONS.md
+
+The Task 5 commit accidentally overwrote this repo's actual project
+decision log (`DECISIONS.md` at the worktree root — the whole D1-onward
+design history for fused-render, unrelated to this feature) with an
+earlier draft of this file, because both files share the same name. It
+was restored to its prior content in the very next commit
+(`Fix: restore the project DECISIONS.md, move app-doctor build notes
+out`), and this build's own notes moved here, to
+`APP_DOCTOR_DECISIONS.md`, to make sure that collision can't recur. If a
+later builder is looking for the project's actual design log, it is
+`DECISIONS.md`; this file is scoped to the app-doctor build only.
+
+## All six tasks: done
+
+Every task in `app-doctor-plan.html` is committed, one commit each, exact
+messages from the plan, in order:
+
+1. `App doctor: secrets and device-specific paths`
+2. `App doctor: housekeeping — structure, API version, stray files`
+3. `App doctor: flag unknown fused.* calls`
+4. `CLI: a doctor subcommand for reviewing an app`
+5. `App doctor: repo mode, and a workflow for the community apps`
+6. `Skill: reviewing an app with the doctor`
+
+Plus one unplanned correction commit (see above) for the DECISIONS.md
+mistake. Full scoped test run at the end of the build:
+`pytest tests/test_app_doctor.py tests/test_app_doctor_housekeeping.py
+tests/test_app_doctor_api.py tests/test_app_doctor_cli.py
+tests/test_app_doctor_repo.py tests/test_skill_plugin.py -q` — all green.
