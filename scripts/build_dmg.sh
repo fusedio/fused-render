@@ -992,13 +992,30 @@ fi
 #     macos-14 runner gave us for free and the one D468 restored; this keeps
 #     it. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
 #     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
-#     The apple helper is excluded: minos 26 by design, host.py never spawns it
-#     below that (D700).
+#     Exempt, and listed rather than hidden:
+#       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never
+#         spawns it below that (D700).
+#       - Contents/Resources/bin/rclone: the rclone project's own osx-arm64
+#         build carries minos 15.0 from v1.71 on (v1.70.3 is the last at 14.0
+#         — measured across releases when this sweep first ran). It came into
+#         the bundle with that floor from the macos-14 runner too, so it is
+#         not something the runner move caused; it IS a main executable dyld
+#         refuses below macOS 15, i.e. cloud mounts on a macOS 14 Mac are
+#         already broken in the shipping DMG. Pinning rclone back is a
+#         product call (the NFS handle-cache and rcd-auth tests pin 1.74's
+#         behaviour), so it is exempted here and printed, not fixed.
 # ---------------------------------------------------------------------------
 MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"
+MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai" "Contents/Resources/bin/rclone")
 echo "==> bundle sanity: no Mach-O requires a macOS newer than ${MINOS_FLOOR}"
+for rel in "${MINOS_EXEMPT[@]}"; do
+  if [[ -f "$APP_DIR/$rel" ]]; then
+    v="$(otool -l "$APP_DIR/$rel" 2>/dev/null | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit}')"
+    echo "    exempt: $rel (minos ${v:-?})"
+  fi
+done
 MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
-    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" -print0 \
+    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" ! -path "$APP_DIR/Contents/Resources/bin/rclone" -print0 \
   | xargs -0 -n 64 sh -c 'for f do
       case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in
         cffaedfe|cafebabe|feedfacf) ;;
