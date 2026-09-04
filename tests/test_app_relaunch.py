@@ -196,10 +196,28 @@ def test_same_version_relaunch_skips_only_the_staleness_check():
         bundle="/Applications/FusedRender.app",
         spawn=lambda bundle, pid: calls.append(("spawn", bundle, pid)),
         running="0.5.0", installed="0.5.0",
-        same_version=True,
+        same_version=True, fda_granted=lambda: False,
     )
     assert started is True
     assert calls == [("spawn", "/Applications/FusedRender.app", os.getpid()), "quit"]
+
+
+def test_same_version_relaunch_is_a_noop_once_this_process_has_the_grant():
+    # The OS may launch a FRESH instance just to deliver the link (a second
+    # click after the old pid died, or a cold start). That instance already
+    # has the grant — quitting it would re-run the pidfile race the version
+    # guard exists to avoid. Inconclusive (None) is also a no-op: nothing a
+    # relaunch would provably change.
+    for verdict in (True, None):
+        calls = []
+        started = app_mod.begin_relaunch(
+            quit_action=lambda on_claim=None: calls.append("quit") or True,
+            bundle="/Applications/FusedRender.app",
+            spawn=lambda *a: calls.append(a),
+            same_version=True, fda_granted=lambda: verdict,
+        )
+        assert started is False
+        assert calls == []
 
 
 def test_same_version_relaunch_still_needs_a_bundle(monkeypatch):
@@ -208,7 +226,7 @@ def test_same_version_relaunch_still_needs_a_bundle(monkeypatch):
     started = app_mod.begin_relaunch(
         quit_action=lambda on_claim=None: calls.append("quit") or True,
         spawn=lambda *a: calls.append(a),
-        same_version=True,
+        same_version=True, fda_granted=lambda: False,
     )
     assert started is False
     assert calls == []
@@ -220,7 +238,7 @@ def test_same_version_relaunch_joins_a_quit_already_in_flight():
         quit_action=lambda on_claim=None: False,
         bundle="/Applications/FusedRender.app",
         spawn=lambda *a: calls.append(a),
-        same_version=True,
+        same_version=True, fda_granted=lambda: False,
     )
     assert started is False
     assert calls == []

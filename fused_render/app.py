@@ -736,7 +736,8 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
 
 
 def begin_relaunch(*, quit_action, bundle=None, spawn=None,
-                   running=None, installed=None, same_version=False) -> bool:
+                   running=None, installed=None, same_version=False,
+                   fda_granted=None) -> bool:
     """fused-render://relaunch: quit through the normal teardown and park a
     relauncher on our pid. True if the relaunch was started.
 
@@ -762,16 +763,31 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     "The teardown drains for seconds" used to make this safe by accident; the
     hook makes it safe by construction.
 
-    `same_version=True` (fused-render://relaunch?reason=fda) skips ONLY the
-    staleness check: a Full Disk Access grant applies to the next process, so
-    respawning the very same version is the whole point. The bundle check and
-    the quit-in-flight check still apply."""
+    `same_version=True` (fused-render://relaunch?reason=fda) swaps the
+    staleness check for a different "am I the one who needs replacing" test:
+    a Full Disk Access grant applies to the next process, so respawning the
+    very same version is the whole point — but ONLY while THIS process still
+    lacks the grant. The same fresh-instance hazard applies here: the OS may
+    launch a new instance just to deliver the link (a second click after the
+    old pid died, or a cold start), and that instance already has the grant
+    and reads fine — quitting it would re-run the pidfile race the version
+    guard exists to avoid. `fda_granted` is the in-process probe
+    (shell/fda.py granted()), injectable for tests. The bundle check and the
+    quit-in-flight check still apply."""
     if bundle is None:
         bundle = bundle_path()
     if bundle is None:
         logger.info("relaunch deep link ignored: not running from a bundle")
         return False
     if same_version:
+        if fda_granted is None:
+            from fused_render.shell import fda as shell_fda
+
+            fda_granted = shell_fda.granted
+        if fda_granted() is not False:
+            logger.info("fda relaunch deep link ignored: this process already "
+                        "reads fine — nothing a relaunch would change")
+            return False
         if spawn is None:
             spawn = spawn_relauncher
         if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
