@@ -191,10 +191,13 @@ export function OnboardingWizard({ config }: { config: Config }) {
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
           </span>
-          {/* Below ~760px the side track is no longer wide enough for the
-              wordmark next to the centred pills, and it would truncate to
-              "Fused Rend…". The mark alone says it better. */}
-          <span className="truncate max-[760px]:hidden">Fused Render</span>
+          {/* Only where the pills are actually competing for the row: from
+              `sm` (where they appear) up to 760px (measured as the width at
+              which the centred pills stop leaving the side track room for the
+              wordmark) it would truncate to "Fused Rend…", and the mark alone
+              says it better. Under `sm` the pills are hidden, so the wordmark
+              has the row to itself and stays. */}
+          <span className="truncate sm:max-[760px]:hidden">Fused Render</span>
         </div>
 
         {/* Every step is a link, in both directions: nothing before step 4
