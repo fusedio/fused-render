@@ -148,25 +148,35 @@ def test_nothing_installed_resolves_to_nothing(monkeypatch):
 )
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
-    shell's, so the known install dirs — including this app's own
-    ~/.fused-render/bin, Task 2's install target — are all that is left."""
-    home = tmp_path / "userhome"
-    (home / ".fused-render" / "bin").mkdir(parents=True)
-    cli = home / ".fused-render" / "bin" / "gh"
+    shell's, so the known install dirs — including this app's own install
+    dir, Task 2's install target — are all that is left."""
+    install = tmp_path / "home" / "bin"
+    install.mkdir(parents=True)
+    cli = install / "gh"
     cli.write_text("#!/bin/sh\n")
     cli.chmod(0o755)
-    monkeypatch.setattr(github_setup.os.path, "expanduser",
-                        lambda p: p.replace("~", str(home), 1))
     monkeypatch.setattr(github_setup.os, "name", "posix")
     assert github_setup.resolve() == (str(cli), "candidate")
 
 
-def test_fused_render_bin_dir_is_a_posix_candidate():
-    """Task 2 (not this one) installs `gh` into ~/.fused-render/bin; nothing
-    populates it yet, but the candidate list must already know to look there
-    so a Dock-launched app finds it the day it exists."""
-    assert any(c.endswith(".fused-render/bin/gh")
-               for c in github_setup.POSIX_CANDIDATES)
+def test_the_apps_own_candidate_is_derived_from_install_dir(tmp_path, monkeypatch):
+    """The app's own entry in `candidates()` must track wherever `gh` was
+    actually installed, not a hardcoded guess — a `FUSED_RENDER_HOME`
+    override (this test) or an active branch ref both move `install_dir()`
+    away from the plain `~/.fused-render/bin` a literal would assume."""
+    custom_home = tmp_path / "somewhere-else"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(custom_home))
+    expected = os.path.join(custom_home, "bin", github_setup._binary_name())
+    assert github_setup.candidates()[0] == expected
+
+
+def test_the_apps_own_candidate_is_always_first():
+    """The rest of the list (Homebrew, winget, /usr/bin, …) are fixed system
+    locations; this app's own install dir is checked before any of them."""
+    own = os.path.join(github_setup.install_dir(), github_setup._binary_name())
+    assert github_setup.candidates()[0] == own
+    assert own not in github_setup.POSIX_CANDIDATES
+    assert own not in github_setup.WINDOWS_CANDIDATES
 
 
 # -- version parsing --------------------------------------------------------

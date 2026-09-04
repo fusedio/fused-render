@@ -73,17 +73,19 @@ BIN_ENV = "FUSED_RENDER_GH_BIN"
 # shell's, so it misses ~/.local/bin and Homebrew (see claude_health.py's
 # WINDOWS_CANDIDATES/POSIX_CANDIDATES docstring for the full argument).
 #
-# `~/.fused-render/bin` is this app's OWN install directory — nothing writes
-# into it yet, but Task 2 installs `gh` there, and a candidate list that did
-# not already know to look is a candidate list a Dock-launched app would
-# never see it through.
+# This app's OWN install directory (`install_dir()`, where the installer
+# below actually writes `gh`) is deliberately NOT a literal in these tuples:
+# `FUSED_RENDER_HOME` and a branch ref (see storage.home_dir()) both move it
+# at runtime, and a hardcoded `~/.fused-render/bin` here would go stale the
+# moment either is set — an install that succeeds with nothing `resolve()`
+# ever looks at again. `candidates()` below derives that entry fresh on
+# every call instead. The rest of these are fixed, well-known locations a
+# package manager puts `gh` in, so a literal is exactly right for them.
 WINDOWS_CANDIDATES = (
-    r"%USERPROFILE%\.fused-render\bin\gh.exe",
     r"%ProgramFiles%\GitHub CLI\gh.exe",
     r"%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe",
 )
 POSIX_CANDIDATES = (
-    "~/.fused-render/bin/gh",
     "/opt/homebrew/bin/gh",
     "/usr/local/bin/gh",
     "/usr/bin/gh",
@@ -92,8 +94,13 @@ POSIX_CANDIDATES = (
 
 
 def candidates() -> tuple:
-    """The platform's known install locations, unexpanded."""
-    return WINDOWS_CANDIDATES if os.name == "nt" else POSIX_CANDIDATES
+    """The platform's known install locations, unexpanded except for this
+    app's own entry (first), which is already an absolute path — it comes
+    from `install_dir()`, which already resolves `FUSED_RENDER_HOME` and any
+    active branch ref via `storage.home_dir()`."""
+    own = os.path.join(install_dir(), _binary_name())
+    literal = WINDOWS_CANDIDATES if os.name == "nt" else POSIX_CANDIDATES
+    return (own,) + literal
 
 
 # `gh --version` prints e.g. "gh version 2.63.0 (2024-10-30)". Take the first
@@ -369,8 +376,8 @@ def summary_refreshed() -> dict:
 # either — so instead of shelling out to the platform's package manager (three
 # code paths, one of them a request for a password this app cannot make), this
 # downloads GitHub's own official `gh` release binary straight into
-# `~/.fused-render/bin`, the same app-private dir every POSIX/WINDOWS_CANDIDATES
-# entry above already knows to look in. One code path, no sudo, on all three
+# `install_dir()`, the same app-private location `candidates()` above
+# derives its own entry from. One code path, no sudo, on all three
 # platforms — the same "downloads one binary" shape as claude_install.py's
 # native installer, except there the vendor supplies a shell one-liner that
 # does the download and unpack itself; `gh` supplies only the archive, so this
@@ -483,8 +490,10 @@ def _binary_name() -> str:
 
 
 def install_dir() -> str:
-    """Where this app installs `gh` — `~/.fused-render/bin`, already the
-    first entry `resolve()`'s candidate list checks on both platforms."""
+    """Where this app installs `gh` — `storage.home_dir()`'s `bin` dir, which
+    tracks `FUSED_RENDER_HOME` and any active branch ref. `candidates()`
+    derives its own first entry from this at call time, so `resolve()`
+    always checks here first regardless of either override."""
     return os.path.join(storage.home_dir(), "bin")
 
 
@@ -645,10 +654,10 @@ def _run_install() -> None:
         return
 
     # THE RE-PROBE IS THE POINT — same argument as claude_install._run: a
-    # forced re-measure finds the freshly installed binary (its directory is
-    # already first in POSIX_CANDIDATES/WINDOWS_CANDIDATES, so no PATH change
-    # or restart is needed) and the snapshot flips to found without the user
-    # doing anything else.
+    # forced re-measure finds the freshly installed binary (candidates()
+    # derives this app's own entry from install_dir(), so it is already
+    # first in the list with no PATH change or restart needed) and the
+    # snapshot flips to found without the user doing anything else.
     fresh = None
     try:
         fresh = summary_refreshed()
