@@ -2415,6 +2415,18 @@ export async function removeAppIcon(
   return r.json();
 }
 
+/** Put an app folder on the desk by hand — the explorer's "Open in project"
+ *  button, ahead of the hop to `/apps/<folder>`. `added` is false when the
+ *  row was already there; the sidebar then focuses it rather than inserting. */
+export function addCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; added: boolean; path: string }> {
+  return postJson<{ ok: boolean; added: boolean; path: string }>(
+    "/api/current-apps/add",
+    { path },
+  );
+}
+
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
  *  is the folder or inside it is archived (the same gesture as
  *  `archiveTask`, per task — cancelled work, filed session, nothing destroyed). */

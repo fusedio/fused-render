@@ -36,12 +36,20 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
+import {
+  IS_PANEL_PANE,
+  IS_SNAPSHOT,
+  encodeFsPathSegments,
+  navigate,
+  navigateUrl,
+  replaceSearch,
+} from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { getAppEntry } from "@platform/lib/api";
+import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
-import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
+import { basename, formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
@@ -122,8 +130,8 @@ const FLIP_BUDGET = 2;
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
-// the client nothing under the marker rule, so the "Open app" button asks
-// GET /api/apps/entry instead of re-deriving anything from row names.)
+// the client nothing under the marker rule, so the "Open in project" button
+// asks GET /api/apps/entry instead of re-deriving anything from row names.)
 
 // The window global the injected runtime calls to hand this pane a prompt the
 // git companion's "Fix with AI" button built for a failed operation
@@ -901,14 +909,26 @@ export default function Listing({
     };
   }, [base]);
 
-  // The ONE "Open app" click, shared by the pane strip's button and its
-  // shut-pane fallback in the bar so they can't drift. The click just
-  // navigates: recording the open — recents for a workspace app, /apps hub
-  // registration for an external folder — is the SERVER's, done by GET /render
-  // when it serves the marker-carrying page this navigation renders (D301).
-  const openAppEntry = () => {
+  // The ONE "Open in project" click, shared by the pane strip's button and its
+  // shut-pane fallback in the bar so they can't drift. Gated on the folder
+  // having an entry page (it IS an app), it puts the folder on the sidebar's
+  // desk (POST /api/current-apps/add — a no-op when the row is already there,
+  // which then simply reads as the active row) and hops to the folder's app
+  // page, `/apps/<folder>` — spelled here rather than imported from
+  // shell/current-apps-lib's appPageUrl because an app may not import the
+  // shell (Preview.tsx's Migrate button does the same). The add is awaited
+  // and announced before the hop so the row is on top the moment the page
+  // paints; a failed add still opens the page — the desk is a convenience,
+  // the page is the point.
+  const openAppEntry = async () => {
     if (!appEntryPath) return;
-    navigate(appEntryPath, { isDir: false });
+    try {
+      await addCurrentApp(base);
+      announceCurrentAppsChanged();
+    } catch {
+      /* the page still opens; the row shows up on the next task under it */
+    }
+    navigateUrl("/apps/" + encodeFsPathSegments(base));
   };
 
   const paneSides = paneSideList(sideEntries);
@@ -1882,28 +1902,30 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
-              {/* OPEN APP, the SHUT-PANE FALLBACK. Its home is the pane's own strip,
-                  beside the chevron and the pill (ListingPreviewPane) — the button is
-                  about the pane's SUBJECT, so it belongs to the pane. With the pane
-                  shut there is no strip to live in, and this row is the folder's own
-                  chrome, so it lands here instead of vanishing with the column.
+              {/* OPEN IN PROJECT, the SHUT-PANE FALLBACK. Its home is the pane's own
+                  strip, beside the chevron and the pill (ListingPreviewPane) — the
+                  button is about the pane's SUBJECT, so it belongs to the pane. With
+                  the pane shut there is no strip to live in, and this row is the
+                  folder's own chrome, so it lands here instead of vanishing with the
+                  column.
 
                   `!paneOpen` and not `!pane.on`: a pane the user has closed
                   (`_side=off`) is the case this exists for. When the pane is open the
                   strip has it and a second copy here would be two buttons for one
                   action a few pixels apart, which reads as a rendering fault.
 
-                  Same `navigate(path, { isDir: false })` as the row's own
-                  open-on-click (onRowPointerUp), reused rather than reinvented: no
-                  new view and no `_mode`, just the file. */}
+                  It hops to the folder's app page (`/apps/<folder>`) and puts the
+                  folder on the sidebar's desk on the way — `openAppEntry`, above.
+                  It used to open the entry page itself ("Open app"); the app page's
+                  Overview tab frames that page, so nothing is lost. */}
               {!paneOpen && appEntryPath && (
                 <button
                   type="button"
-                  className="bar-ctl bar-ctl-strong"
-                  title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
+                  className="bar-ctl bar-ctl-bordered"
+                  title={"Open " + basename(base) + " as a project"}
                   onClick={openAppEntry}
                 >
-                  Open app
+                  Open in project
                 </button>
               )}
               {pane.on && !sideState.open && (

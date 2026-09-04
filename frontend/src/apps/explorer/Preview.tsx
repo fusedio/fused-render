@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  addCurrentApp,
   getAppEntry,
   migrateApp,
   setAppPreview,
@@ -25,7 +26,7 @@ import {
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { appLandingUrl } from "@platform/lib/appLanding";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { announceCurrentAppsChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -314,6 +315,54 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Creating task…" : "Migrate to new version"}
+    </button>
+  );
+}
+
+// The explorer folder view's "Open in project" (Listing.tsx openAppEntry),
+// here on the ENTRY PAGE's own header: viewing an app's index.html is the
+// other place one is standing in an app, so the same hop is offered — put the
+// folder on the sidebar's desk (POST /api/current-apps/add, a no-op when the
+// row is there already, which then reads as the active row) and open the
+// folder's app page, `/apps/<folder>`, spelled as the Migrate button spells it
+// since an app may not import shell/current-apps-lib. Same gate as
+// ExportAppButton beside it: the server's entry rule, never the filename.
+function OpenInProjectButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  useEffect(() => {
+    let alive = true;
+    setIsEntry(false);
+    getAppEntry(dir)
+      .then((r) => {
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no button for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, dir]);
+  if (!isEntry) return null;
+  const open = async () => {
+    try {
+      await addCurrentApp(dir);
+      announceCurrentAppsChanged();
+    } catch {
+      /* the page still opens; the row shows up on the next task under it */
+    }
+    navigateUrl("/apps/" + encodeFsPathSegments(dir));
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={"Open " + basename(dir) + " as a project"}
+      onClick={open}
+    >
+      Open in project
     </button>
   );
 }
@@ -1736,6 +1785,14 @@ function TemplatePreview({
           .fused app never shows it. */}
       {!stat.is_dir && <MigrateAppButton fsPath={fsPath} />}
       {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
+      {/* The folder view's "Open in project", offered on the app's entry page
+          too (same server-side entry gate), wearing the same bordered look as
+          Export App. Its HOME is the sidebar's header, right before the mode
+          pill — exactly where the folder pane's strip puts it — so the two
+          views agree on where the hop lives. This copy is the SHUT-SIDEBAR
+          fallback (`!activeSide`, Listing's `!paneOpen` rule): with the column
+          down there is no strip, and the button must not vanish with it. */}
+      {!stat.is_dir && !activeSide && <OpenInProjectButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -2008,6 +2065,7 @@ function TemplatePreview({
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}
+            lead={<OpenInProjectButton fsPath={fsPath} />}
           />,
           sideSlot
         )}
