@@ -60,6 +60,33 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@platform/shadcn/ui/card";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
+import {
+  BlockedAsk,
+  CapabilityGroup,
+  CapabilityGroupNote,
+  DownloadSwap,
+  DownloadSwapBytes,
+  DownloadSwapIcon,
+  DownloadSwapLive,
+  DownloadSwapRoot,
+  DownloadSwapStop,
+  heroCardClass,
+  ModelDownloadButton,
+  ModelFoot,
+  ModelFull,
+  ModelLive,
+  ModelName,
+  ModelRail,
+  ModelRow,
+  ModelRowHead,
+  ModelSize,
+  ModelTask,
+  ModelWhy,
+  PlaygroundBody,
+  ProgressRing,
+  StageFrame,
+  StageScroller,
+} from "@platform/ui/playground";
 import { Binary, Check, Copy, Cpu, HardDriveDownload, Sparkles } from "lucide-react";
 
 // What the groups are called HERE: the capability vocabulary is exact
@@ -87,13 +114,9 @@ function groupLabel(capability: string): string {
 // place rather than joining it, because the arrow and the ring make the same
 // claim about the same model and the row has no room to make it twice.
 //
-// The arc is drawn with `stroke-dasharray`/`-dashoffset` on a circle rotated a
-// quarter turn back, so 0% starts at twelve o'clock. An unmeasured pull — no
-// total yet, which is the first second of every one of them and the whole of a
-// venv build — spins a fixed quarter-arc instead: a ring frozen at 0 reads as a
-// download that has stalled, which is the one thing it is not.
-const RING_R = 6.5;
-const RING_C = 2 * Math.PI * RING_R;
+// The arc, the quarter-turn and the idle spin are `ProgressRing`'s
+// (platform/ui/playground): this file's job is only to say how far the pull has
+// got, and one drawing serves the rail row's corner and the stage header alike.
 
 /** How far a pull has got, 0–1, or null while nothing can divide. The job's
  *  bytes and never the runtime's: only the worker doing the fetching knows.
@@ -105,24 +128,7 @@ function downloadFraction(job?: Job): number | null {
 }
 
 function DownloadRing({ job }: { job?: Job }) {
-  const measured = downloadFraction(job);
-  return (
-    <svg
-      className={"pg-dl-ring" + (measured === null ? " pg-dl-ring-idle" : "")}
-      viewBox="0 0 16 16"
-      aria-hidden="true"
-    >
-      <circle className="pg-dl-ring-track" cx="8" cy="8" r={RING_R} />
-      <circle
-        className="pg-dl-ring-arc"
-        cx="8"
-        cy="8"
-        r={RING_R}
-        strokeDasharray={RING_C}
-        strokeDashoffset={measured === null ? RING_C * 0.75 : RING_C * (1 - measured)}
-      />
-    </svg>
-  );
+  return <ProgressRing value={downloadFraction(job)} />;
 }
 
 
@@ -429,8 +435,8 @@ export default function PlaygroundTab() {
   );
 
   return (
-    <div className="pg-body">
-      <aside className="pg-side" aria-label="Models to try">
+    <PlaygroundBody>
+      <ModelRail aria-label="Models to try">
         {railRows.map((row) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
@@ -458,14 +464,11 @@ export default function PlaygroundTab() {
             const job = jobByModel.get(model.id);
             const size = modelSizeHint(model.size_gb, job);
             return (
-              <div
+              <ModelRow
                 key={model.id}
                 role="button"
                 tabIndex={0}
-                className={
-                  "pg-model" + (active ? " active" : "") +
-                  (model.downloaded ? "" : " pg-model-absent")
-                }
+                active={active}
                 aria-pressed={active}
                 onClick={() => select(model.id)}
                 onKeyDown={(e) => {
@@ -480,17 +483,16 @@ export default function PlaygroundTab() {
                     figures and the Download glyph hard right. No repo id under
                     the name — the stage header names the selected model in
                     full. */}
-                <span className="pg-model-head">
-                  <span className="pg-model-name">
+                <ModelRowHead>
+                  <ModelName muted={!model.downloaded}>
                     {/* Live from the supervisor, not the catalog's `loaded`
                         snapshot — a dot that outlives an unload is a lie. */}
                     {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
-                      <span className="pg-model-live" title="Loaded — answering from memory" />
+                      <ModelLive title="Loaded — answering from memory" />
                     )}
                     {name}
-                  </span>
-                  <span
-                    className="pg-model-size"
+                  </ModelName>
+                  <ModelSize
                     title={
                       size
                         ? `${size.text} download — judged against this machine's memory`
@@ -498,7 +500,7 @@ export default function PlaygroundTab() {
                     }
                   >
                     {modelSizeLabel(model.size_gb, job)}
-                  </span>
+                  </ModelSize>
                   {/* On disk = nothing to say: the CTA exists only while there
                       is an action to take. Last on the row, RIGHT of the two
                       figures it acts on: the facts read as a block that way
@@ -514,9 +516,8 @@ export default function PlaygroundTab() {
                       decorative path, and the title is what carries the
                       running state a text button used to say out loud. */}
                   {!model.downloaded && (
-                    <button
+                    <ModelDownloadButton
                       type="button"
-                      className="pg-model-dl"
                       disabled={downloading}
                       aria-label={downloading ? "Downloading…" : `Download ${name}`}
                       title={
@@ -534,23 +535,26 @@ export default function PlaygroundTab() {
                       }}
                     >
                       {downloading ? <DownloadRing job={job} /> : MenuIcons.download}
-                    </button>
+                    </ModelDownloadButton>
                   )}
-                </span>
-              </div>
+                </ModelRowHead>
+              </ModelRow>
             );
           };
           return (
-            <details key={row.capability} className="pg-group" open>
-              <summary className="pg-group-head">
-                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
-                <span className="pg-group-title">{groupLabel(row.capability)}</span>
-              </summary>
+            <CapabilityGroup
+              key={row.capability}
+              open
+              icon={capabilityIcon(row.capability)}
+              title={groupLabel(row.capability)}
+            >
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
                 // ruled-out group look identical, and HF-8 already paid for
                 // that lesson once.
-                <p className="pg-group-off">{row.reason || "Not available on this machine."}</p>
+                <CapabilityGroupNote>
+                  {row.reason || "Not available on this machine."}
+                </CapabilityGroupNote>
               )}
               {row.available && !offered.length && (
                 // `offered`, not `row.models`: a capability whose whole
@@ -560,9 +564,9 @@ export default function PlaygroundTab() {
                 // curation is meant to prevent it (catalog.py keeps at least
                 // one recommended entry per list, and a test pins that) — this
                 // line is what the failure looks like if it ever slips.
-                <p className="pg-group-off">
+                <CapabilityGroupNote>
                   Nothing to try here yet — the Local tab is where a first model comes from.
-                </p>
+                </CapabilityGroupNote>
               )}
               {/* Curated first, then the uncurated repos this disk happens to
                   hold — one run of cards, no divider. The "Your downloads"
@@ -573,7 +577,7 @@ export default function PlaygroundTab() {
                   heading was a second answer to a question already answered. */}
               {row.available && curated.map(draw)}
               {row.available && cached.map(draw)}
-            </details>
+            </CapabilityGroup>
           );
         })}
 
@@ -587,23 +591,19 @@ export default function PlaygroundTab() {
           // that is): it is a reference list, not a menu — nothing in it is
           // selectable, so leaving it open would put dead cards between the
           // reader and the ones they came for.
-          <details className="pg-group">
-            <summary className="pg-group-head">
-              <span className="pg-group-icon">{unsupportedIcon()}</span>
-              <span className="pg-group-title">Not supported</span>
-            </summary>
-            <p className="pg-group-off">
+          <CapabilityGroup icon={unsupportedIcon()} title="Not supported">
+            <CapabilityGroupNote>
               On this disk, and nothing here runs it. The AI Models page is where these
               can be deleted.
-            </p>
+            </CapabilityGroupNote>
             {unsupported.map((model) => (
               // A card, so the shape matches the ones above — but a plain div:
               // no role, no tabIndex, no click. There is nothing to select, and
               // a control that looks pressable and is not teaches the wrong
               // thing about every card beside it.
-              <div key={model.id} className="pg-model pg-model-off">
-                <span className="pg-model-head">
-                  <span className="pg-model-name">{model.label}</span>
+              <ModelRow key={model.id} state="off">
+                <ModelRowHead>
+                  <ModelName>{model.label}</ModelName>
                   {/* Top-right, as on the selectable cards above — same slot,
                       so the size reads the same however the card behaves.
                       `shared/modelSize`, like every other size cell on this
@@ -611,43 +611,43 @@ export default function PlaygroundTab() {
                       downloading. Hand-formatting it here would be the second
                       copy of a rule that exists because the copies
                       disagreed. */}
-                  <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
-                </span>
-                <span className="pg-model-full">{model.id}</span>
+                  <ModelSize>{modelSizeLabel(model.size_gb)}</ModelSize>
+                </ModelRowHead>
+                <ModelFull>{model.id}</ModelFull>
                 {/* What it IS, when the repo said. Null is its own answer and
                     gets no chip: "we could not tell" is what the missing label
                     means, and inventing one would be a claim. */}
                 {model.task && (
-                  <span className="pg-model-foot">
-                    <span className="pg-model-task">{model.task}</span>
-                  </span>
+                  <ModelFoot>
+                    <ModelTask>{model.task}</ModelTask>
+                  </ModelFoot>
                 )}
                 {/* The server's own sentence, written per task beside the
                     classification it explains (`ai/tasks.py`). Empty for a repo
                     we could not identify — an explanation we have not earned is
                     worse than none — and then the line simply is not drawn. */}
-                {model.reason && <p className="pg-model-why">{model.reason}</p>}
-              </div>
+                {model.reason && <ModelWhy>{model.reason}</ModelWhy>}
+              </ModelRow>
             ))}
-          </details>
+          </CapabilityGroup>
         )}
-      </aside>
+      </ModelRail>
 
-      <div className="pg-stage">
+      <StageScroller>
       {/* One frame owns the width story for everything on the stage: capped at
           840px, centered, gutters below that. The hero spans it fully and the
           work column share the same box, so top and bottom can
           never drift apart. */}
-      <div className="pg-frame">
+      <StageFrame>
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
         {blockedAsk && selected && (
           // Not an ErrorBanner: nothing failed and nothing the user did is
           // wrong — the link simply named a task this machine cannot run, and
           // the stage below is the substitute, said out loud.
-          <p className="pg-blocked-ask">
+          <BlockedAsk>
             {groupLabel(blockedAsk.row.capability)} is not available here — {blockedAsk.reason}{" "}
             Showing {groupLabel(selected.row.capability)} instead.
-          </p>
+          </BlockedAsk>
         )}
         {!selected ? (
           <p className="cc-empty">
@@ -657,7 +657,7 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <Card className="pg-hero flex-none [--card-spacing:--spacing(6)]">
+            <Card className={heroCardClass + " flex-none [--card-spacing:--spacing(6)]"}>
               <CardHeader>
                 <div className="flex min-w-0 flex-col gap-2">
                   <div className="flex flex-wrap items-center gap-2">
@@ -735,39 +735,35 @@ export default function PlaygroundTab() {
                       Deliberately custom rather than a shadcn piece: the
                       one-cell two-drawings grid is the point. */}
                   {selectedDownloading && (
-                    <div
-                      className="pg-hero-dl"
+                    <DownloadSwapRoot
                       title={
                         downloadedFraction !== null
                           ? `Downloading — ${Math.floor(downloadedFraction * 100)}%`
                           : "Downloading…"
                       }
                     >
-                      <span className="pg-hero-dl-icon" aria-hidden="true">
-                        {MenuIcons.download}
-                      </span>
-                      <span className="pg-hero-dl-swap">
-                        <span className="pg-hero-dl-live">
+                      <DownloadSwapIcon>{MenuIcons.download}</DownloadSwapIcon>
+                      <DownloadSwap>
+                        <DownloadSwapLive>
                           <DownloadRing job={jobForSelected} />
                           {downloadedBytes && (
-                            <span className="pg-hero-dl-bytes">
+                            <DownloadSwapBytes>
                               {formatSize(jobForSelected?.done as number)} /{" "}
                               {formatSize(jobForSelected?.total as number)}
-                            </span>
+                            </DownloadSwapBytes>
                           )}
-                        </span>
+                        </DownloadSwapLive>
                         {stoppable && (
-                          <button
+                          <DownloadSwapStop
                             type="button"
-                            className="pg-hero-dl-stop"
                             title={`Stop downloading ${selected.model.id}`}
                             onClick={() => void runCancelDownload(stoppable)}
                           >
                             Cancel
-                          </button>
+                          </DownloadSwapStop>
                         )}
-                      </span>
-                    </div>
+                      </DownloadSwap>
+                    </DownloadSwapRoot>
                   )}
                   {selected.model.downloaded && !selectedResident && (
                     <Button
@@ -898,8 +894,8 @@ export default function PlaygroundTab() {
             )}
           </>
         )}
-      </div>
-      </div>
-    </div>
+      </StageFrame>
+      </StageScroller>
+    </PlaygroundBody>
   );
 }

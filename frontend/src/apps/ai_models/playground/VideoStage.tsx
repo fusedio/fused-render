@@ -31,6 +31,38 @@ import {
   StarterCards,
   type Starter,
 } from "./controls";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  AttachButton,
+  AttachChip,
+  AttachDrop,
+  AttachNote,
+  AttachOpen,
+  AttachRow,
+  ClearButton,
+  ComposerFoot,
+  ComposerKbd,
+  ComposerSide,
+  Composer as ComposerRow,
+  composerTextareaClass,
+  Lightbox,
+  LightboxClose,
+  lightboxImageClass,
+  MediaCaption,
+  MediaFrame,
+  mediaClass,
+  MediaResult,
+  MediaStrip,
+  mediaStripItemClass,
+  MediaWait,
+  ProgressBar,
+  SeedButton,
+  StageButton,
+  StageError,
+  stageWorkCardClass,
+  workGridClass,
+} from "@platform/ui/playground";
 import { canEdit, usableBase, type AttachedImage } from "./imageInput";
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
@@ -367,8 +399,8 @@ export function VideoStage({
   const settled = run?.started;
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <div className={workGridClass(configOpen)}>
+      <Card className={stageWorkCardClass + " flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]"}>
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -377,10 +409,11 @@ export function VideoStage({
         onToggleConfig={toggleConfig}
       />
 
-      <div className="pg-composer">
+      <ComposerRow>
         <textarea
           ref={boxRef}
           rows={3}
+          className={composerTextareaClass}
           value={prompt}
           placeholder="Describe the video…"
           onChange={(e) => setPrompt(e.target.value)}
@@ -394,82 +427,78 @@ export function VideoStage({
         {/* Clear at the top of this column, Generate at the bottom —
             the column's width is set by Generate, the wider of the two, so
             nothing moves when Clear comes and goes. */}
-        <div className="pg-composer-side">
+        <ComposerSide>
           {!busy && run && (
-            <button
+            <ClearButton
               type="button"
-              className="pg-ghost-btn pg-clear"
               title="Clear the prompt and the clip"
               onClick={clear}
             >
               Clear
-            </button>
+            </ClearButton>
           )}
           {busy ? (
-            <button
+            <StageButton
               type="button"
-              className="btn btn-secondary pg-send"
+              variant="secondary"
               onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
             >
               Stop
-            </button>
+            </StageButton>
           ) : (
-            <button
+            <StageButton
               type="button"
-              className="btn btn-primary pg-send"
+              variant="primary"
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              Generate <ComposerKbd>⏎</ComposerKbd>
+            </StageButton>
           )}
-        </div>
-      </div>
+        </ComposerSide>
+      </ComposerRow>
 
       {/* The reference image, on its own line below the composer — same
           pattern `ImageStage.tsx` uses for its own base image, drawn only
           when the resolved engine can honour one at all (`editable`). */}
       {(base || editable) && (
-        <div className="pg-composer-foot">
+        <ComposerFoot>
           {base && (
-            <span className="pg-attach">
-              <button
+            <AttachChip>
+              <AttachOpen
                 type="button"
-                className="pg-attach-open"
                 title="See this picture"
                 aria-label="See this picture"
                 onClick={() => setShowBase(true)}
               >
                 <img src={rawUrl(base.path)} alt="" />
-              </button>
-              <button
+              </AttachOpen>
+              <AttachDrop
                 type="button"
-                className="pg-attach-drop"
                 title="Remove this image"
                 aria-label="Remove this image"
                 onClick={() => setAttachment(null)}
               >
                 ✕
-              </button>
-            </span>
+              </AttachDrop>
+            </AttachChip>
           )}
           {editable && (
-            <div className="pg-attach-row">
-              <button
+            <AttachRow>
+              <AttachButton
                 type="button"
-                className="pg-attach-btn"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add a reference image"}</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
-            </div>
+              </AttachButton>
+              {attaching && <AttachNote>Working…</AttachNote>}
+            </AttachRow>
           )}
-        </div>
+        </ComposerFoot>
       )}
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
@@ -549,23 +578,26 @@ export function VideoStage({
           `ImageStage.tsx` uses for its own base image: a 28px thumbnail
           cannot be looked at. Click the backdrop or press Escape to close. */}
       {base && showBase && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached reference image"
-          onClick={() => setShowBase(false)}
+        <Lightbox
+          open
+          onClose={() => setShowBase(false)}
+          label="The attached reference image"
         >
-          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
+          <img
+            className={lightboxImageClass}
+            src={rawUrl(base.path)}
+            alt=""
+            onClick={(e) => e.stopPropagation()}
+          />
+          <LightboxClose
             type="button"
-            className="pg-lightbox-close"
             title="Close"
             aria-label="Close"
             onClick={() => setShowBase(false)}
           >
             ✕
-          </button>
-        </div>
+          </LightboxClose>
+        </Lightbox>
       )}
 
       {/* Examples first, under the box they fill; hidden once a clip is on
@@ -576,7 +608,7 @@ export function VideoStage({
           Generate. The four sliders in the order a render is thought about:
           how big, how long, how carefully — then the seed. */}
 
-      {error && <p className="pg-error">{error}</p>}
+      {error && <StageError>{error}</StageError>}
 
       {!run ? (
         <ResultSlot
@@ -585,11 +617,10 @@ export function VideoStage({
           note="Your clip appears here. Describe one above, then Generate."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
-            <div
-              className="pg-image-frame"
+        <AnswerBlock>
+          <AnswerLabel>Result</AnswerLabel>
+          <MediaResult>
+            <MediaFrame
               style={{
                 aspectRatio: `${run.started.width} / ${run.started.height}`,
                 width: "100%",
@@ -598,58 +629,55 @@ export function VideoStage({
               {run.done ? (
                 <video
                   key={run.started.jobId}
+                  className={mediaClass}
                   src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
                   controls
                 />
               ) : (
-                <div className="pg-image-wait" aria-hidden="true" />
+                <MediaWait />
               )}
-            </div>
+            </MediaFrame>
             {/* Unlike the image stage, the settled line STAYS after a render:
                 `frames` is rounded to the engine's own grid, so what ran is
                 genuinely not what was asked for — and a clip that took an hour
                 is worth being able to reproduce, which is what the seed button
                 is for. */}
-            <figcaption className="pg-image-caption">
+            <MediaCaption>
               {busy ? (
                 <>
                   <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                  {pct !== null && (
-                    <span className="pg-bar">
-                      <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
+                  {pct !== null && <ProgressBar value={pct} />}
                 </>
               ) : settled ? (
                 <>
                   {settled.width}×{settled.height} · {settled.frames} frames · {settled.steps} steps
                   ·{" "}
-                  <button
+                  <SeedButton
                     type="button"
-                    className="pg-seed"
                     title="Reuse this seed — the same prompt and settings render the same video"
                     onClick={() => setSeed(String(settled.seed))}
                   >
                     seed {settled.seed}
-                  </button>
+                  </SeedButton>
                 </>
               ) : null}
-            </figcaption>
-          </figure>
-        </div>
+            </MediaCaption>
+          </MediaResult>
+        </AnswerBlock>
       )}
 
       {/* Past clips, kept because a video render is the one call here that can
           cost an hour — losing it to the next Generate is not a fair trade. */}
       {gallery.length > 0 && (
-        <div className="pg-image-strip">
+        <MediaStrip>
           {gallery.map((item) => (
             <video
               key={item.jobId}
               src={rawUrl(item.path) + "&t=" + item.jobId}
-              className={
-                (run?.started.jobId === item.jobId ? "active" : "") + (busy ? " disabled" : "")
-              }
+              className={mediaStripItemClass({
+                active: run?.started.jobId === item.jobId,
+                disabled: busy,
+              })}
               // Disabled, not wired to a no-op click: a render here can run
               // for HOURS (unlike the image stage's seconds), so swapping
               // `run` mid-render would silently drop the in-flight Stop
@@ -665,7 +693,7 @@ export function VideoStage({
               onClick={busy ? undefined : () => setRun({ started: item, job: null, done: true })}
             />
           ))}
-        </div>
+        </MediaStrip>
       )}
       </Card>
     </div>

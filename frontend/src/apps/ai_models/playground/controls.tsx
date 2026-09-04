@@ -12,6 +12,23 @@ import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  Chips,
+  ConfigCog,
+  ConfigRail,
+  configCardClass,
+  CopyButton as CopyButtonChrome,
+  ResultSlot as ResultSlotBox,
+  StageHeader as StageHeaderRow,
+  StageTitle,
+  StarterIcon,
+  StarterPill,
+  StarterRotate,
+  starterGridClass,
+  starterRowClass,
+} from "@platform/ui/playground";
 import { capabilityIcon } from "./capabilityIcons";
 
 /** The stage's one-line title, with the config cog right-aligned on the same
@@ -30,11 +47,11 @@ export function StageHeader({
   onToggleConfig: () => void;
 }) {
   return (
-    <div className="pg-work-head">
-      <h2 className="pg-work-title">{title}</h2>
-      <button
+    <StageHeaderRow>
+      <StageTitle>{title}</StageTitle>
+      <ConfigCog
         type="button"
-        className={"pg-cog" + (configOpen ? " active" : "")}
+        active={configOpen}
         aria-expanded={configOpen}
         aria-label={configOpen ? "Hide the settings" : "Show the settings"}
         title={configOpen ? "Hide the settings" : "Show the settings"}
@@ -54,13 +71,13 @@ export function StageHeader({
           <circle cx="12" cy="12" r="3" />
           <path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .33-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.11a1.6 1.6 0 0 0 1.47-1.05 1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.33H9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.33 1.77V9a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97Z" />
         </svg>
-      </button>
-    </div>
+      </ConfigCog>
+    </StageHeaderRow>
   );
 }
 
 /** How long the settings card's exit animation runs, in ms. Mirrors
- *  `--pg-fade` in ai-playground.css — the timer below unmounts the card, the
+ *  `--pg-fade` (styles/tailwind.css) — the timer below unmounts the card, the
  *  stylesheet fades it, and a value that disagrees either cuts the fade off
  *  mid-way or leaves an invisible card mounted after it. */
 const CONFIG_EXIT_MS = 160;
@@ -70,7 +87,7 @@ const CONFIG_EXIT_MS = 160;
  *  the stage's right gutter and the input/result column keeps reading top to
  *  bottom. Wide enough windows give the card the whole gutter and the column
  *  does not move at all; narrower ones let it borrow some column width (see
- *  `.pg-work.has-config`, ai-playground.css) rather than cover anything.
+ *  `.stage-work-grid.is-open`, styles/tailwind.css) rather than cover anything.
  *
  *  Closed by default on purpose: the surface it hides behind has to read as a
  *  simple call. Unmounted while closed, not hidden — every control inside is
@@ -105,7 +122,7 @@ export function ConfigPanel({
   // under it is the half-animated version, and reads worse than no animation
   // at all. This unmount is also what STARTS the column's glide back: the
   // stylesheet holds the open geometry for as long as a closing card is
-  // mounted (`:has(.pg-config-card.is-closing)`, ai-playground.css), because
+  // mounted (`:has(.stage-config-rail.is-closing)`, styles/tailwind.css), because
   // the card's open place and the column's closed place overlap — a card
   // fading over a column already in motion can only be clipped by the stage or
   // laid on top of the composer.
@@ -121,10 +138,9 @@ export function ConfigPanel({
   }, [open, shown]);
   if (!shown) return null;
   return (
-    <aside
-      className={
-        "pg-config-card" + (open ? "" : " is-closing") + (animated ? "" : " no-entry")
-      }
+    <ConfigRail
+      closing={!open}
+      animated={animated}
       aria-label="Settings"
       // On the way out it is a picture of a panel, not a panel: nothing in it
       // can be reached or read while it fades.
@@ -132,9 +148,9 @@ export function ConfigPanel({
     >
       {/* Two boxes, not one: beside the column the <aside> is a full-height
           rail and this inner box is what sticks inside it. The Card carries
-          `pg-config-inner` so the sticky, fold-in/out and reduced-motion rules
-          in ai-playground.css keep landing on it. */}
-      <Card className="pg-config-inner flex-none">
+          `configCardClass` so the sticky, fold-in/out and reduced-motion rules
+          (styles/tailwind.css, next to the keyframes) keep landing on it. */}
+      <Card className={configCardClass + " flex-none"}>
         <CardHeader>
           <CardTitle className="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
             Settings
@@ -142,7 +158,7 @@ export function ConfigPanel({
         </CardHeader>
         <CardContent className="flex flex-col gap-4">{children}</CardContent>
       </Card>
-    </aside>
+    </ConfigRail>
   );
 }
 
@@ -150,9 +166,8 @@ export function ConfigPanel({
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
+    <CopyButtonChrome
       type="button"
-      className="pg-copy-btn"
       title={copied ? "Copied" : label}
       aria-label={label}
       onClick={() => {
@@ -175,7 +190,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       ) : (
         MenuIcons.copy
       )}
-    </button>
+    </CopyButtonChrome>
   );
 }
 
@@ -387,22 +402,10 @@ export function RailChips<T extends string>({
   active: T | null;
   onPick: (value: T) => void;
 }) {
-  return (
-    <div className="pg-chips" role="group">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          className={"pg-chip" + (option.value === active ? " active" : "")}
-          aria-pressed={option.value === active}
-          title={option.title}
-          onClick={() => onPick(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
+  // `Chips` is the shadcn ToggleGroup wearing this app's pill: it is what
+  // carries `role="group"`, the single-selection bookkeeping and each chip's
+  // `aria-pressed`. The pick is handed straight through.
+  return <Chips options={options} active={active} onPick={onPick} />;
 }
 
 /** One authored example. Three fields, because a prompt worth running is too
@@ -492,35 +495,31 @@ export function StarterCards<S extends Starter>({
     return samples[(offset + at) % samples.length];
   });
   return (
-    <div className="pg-starters">
-      <div className="pg-starter-grid" ref={rowRef}>
+    <div className={starterRowClass}>
+      <div className={starterGridClass} ref={rowRef}>
         {shown.map((sample) => (
-          <button
+          <StarterPill
             key={sample.name}
             type="button"
-            className="pg-starter-card"
             // The pill shows a name; the prompt it stands for is only legible
             // on hover, so the title is load-bearing here, not decoration.
             title={sample.detail ?? sample.prompt}
             onClick={() => onPick(sample)}
           >
-            <span className="pg-starter-icon" aria-hidden="true">
-              {sample.icon}
-            </span>
-            <span className="pg-starter-name">{sample.name}</span>
-          </button>
+            <StarterIcon>{sample.icon}</StarterIcon>
+            <span>{sample.name}</span>
+          </StarterPill>
         ))}
       </div>
       {samples.length > page && (
-        <button
+        <StarterRotate
           type="button"
-          className="pg-starter-rotate"
           title="Show other examples"
           aria-label="Show other examples"
           onClick={() => setOffset((at) => (at + page) % samples.length)}
         >
           {MenuIcons.refresh}
-        </button>
+        </StarterRotate>
       )}
     </div>
   );
@@ -555,14 +554,9 @@ export function ResultSlot({
   note: string;
 }) {
   return (
-    <div className="pg-answer-block">
-      <p className="pg-answer-label">{label}</p>
-      <div className="pg-slot">
-        <span className="pg-slot-icon" aria-hidden="true">
-          {capabilityIcon(capability)}
-        </span>
-        <p className="pg-slot-note">{note}</p>
-      </div>
-    </div>
+    <AnswerBlock>
+      <AnswerLabel>{label}</AnswerLabel>
+      <ResultSlotBox icon={capabilityIcon(capability)} note={note} />
+    </AnswerBlock>
   );
 }

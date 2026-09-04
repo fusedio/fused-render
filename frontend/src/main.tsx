@@ -8,6 +8,7 @@ import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged } from "@platform/lib/hooks";
 import App from "@shell/App";
+import { TooltipProvider } from "@platform/shadcn/ui/tooltip";
 import "./shell.css";
 
 // The preview iframe's injected runtime writes view params via
@@ -65,7 +66,12 @@ const root = createRoot(document.getElementById("root")!);
 
 getConfig().then(
   (config) => {
-    root.render(<App config={config} />);
+    // One provider for every shadcn Tooltip in the tree (base-ui requires it).
+    root.render(
+      <TooltipProvider>
+        <App config={config} />
+      </TooltipProvider>,
+    );
     // Embed documents are display-only panes/previews. They have no global
     // sidebar, so hydrating its bookmark and recents stores in every iframe is
     // unrelated work — and multiplies the two bounded filesystem checks by the

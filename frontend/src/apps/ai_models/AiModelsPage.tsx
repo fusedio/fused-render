@@ -42,6 +42,7 @@ import { AI_MODELS_TABS, tabFromPath, tabHref, tabLabel, type AiModelsTab } from
 import { useNavEpoch } from "@platform/lib/hooks";
 import { formatSize } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { playgroundFillClass } from "@platform/ui/playground";
 
 /** The strip's hover for each tab, in strip order (AI_MODELS_TABS). The label
  *  itself lives in `routes.ts` (`tabLabel`) — the one thing about a tab that
@@ -113,7 +114,7 @@ export default function AiModelsPage() {
       {/* The playground fills the viewport and scrolls its own columns (the
           sidebar, the chat log) — the other tabs stay ordinary scrolling
           pages, so the flex column is scoped to the one tab that wants it. */}
-      <main className={"cc-main" + (tab === "playground" ? " pg-fill" : "")}>
+      <main className={"cc-main" + (tab === "playground" ? " " + playgroundFillClass : "")}>
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>

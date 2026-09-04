@@ -27,7 +27,6 @@
 @import "./styles/ai-models.css";
 /* After ai-models.css: the Playground tab lives on the same page and layers its
    pg-* stage/sidebar rules over that page's chrome. */
-@import "./styles/ai-playground.css";
 @import "./styles/mounts.css";
 /* After mounts.css for the same reason mounts.css sits after preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
