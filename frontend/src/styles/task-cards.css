@@ -136,9 +136,9 @@
   border-bottom: 1px solid var(--border);
 }
 
-/* Row one: the id at the left edge, the ring at the right, the time and Open
-   tucked against the ring. `margin-left: auto` on the time is what pushes the
-   right-hand group over; the id keeps the corner. */
+/* Row one: ring then id at the left edge (the List row's order), the time and
+   Open at the right. `margin-left: auto` on the time is what pushes the
+   right-hand pair over. */
 .task-card-head-row {
   display: flex;
   align-items: center;

@@ -207,12 +207,16 @@ function TaskCard({
   return (
     <section className="task-card" aria-label={`${task.task_id} ${title}`}>
       <header className="task-card-head">
-        {/* TWO ROWS (Akshil, 2026-09-04): the id top-left and the status ring
-            top-right on the first, the title alone on the second — so the title
-            gets the card's whole width at a size that can be read across a wall,
-            and the two facts a reader matches against the List (which task, what
-            state) sit in the two corners every card puts them in. */}
+        {/* TWO ROWS (Akshil, 2026-09-04): ring then id at the top-left — the
+            List row's own order — with the time and Open at the right, and the
+            title alone on the second row so it gets the card's whole width at a
+            size that can be read across a wall. */}
         <div className="task-card-head-row">
+          {/* The ring is unconditional here, unlike the Board's. A card on this
+              view sits under no lane header, so nothing else on it says what
+              state the run is in — the same argument that keeps the ring on
+              every List row and every Calendar chip. */}
+          <StatusIcon status={taskColumn(task)} failed={task.failed} />
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -242,11 +246,6 @@ function TaskCard({
               Open
             </a>
           )}
-          {/* The ring is unconditional here, unlike the Board's. A card on this
-              view sits under no lane header, so nothing else on it says what
-              state the run is in — the same argument that keeps the ring on
-              every List row and every Calendar chip. */}
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
         </div>
         {/* `data-hint`, not `title`: the List row shows its full title in the
             app's own hint the moment the pointer rests (hints.ts), and a native

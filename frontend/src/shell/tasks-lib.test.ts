@@ -6794,12 +6794,13 @@ describe("the Cards view's frame", () => {
     // not a native `title` that arrives a second later.
     expect(CARDS).toContain('<span className="task-card-title" data-hint={task.title}>');
     expect(CARDS).not.toContain('className="task-card-title" title=');
-    // Two rows: id top-left, ring top-right, the title alone below
-    // (Akshil, 2026-09-04). The id is the List row's own chip.
+    // Two rows: ring then id top-left (the List row's order), time and Open at
+    // the right, the title alone below (Akshil, 2026-09-04).
     expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
     const head = CARDS.slice(CARDS.indexOf('<header className="task-card-head">'), CARDS.indexOf("</header>"));
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
-    expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("<StatusIcon"));
+    expect(row.indexOf("<StatusIcon")).toBeLessThan(row.indexOf("tasks-id--task"));
+    expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
     expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
     expect(block(CARDS_CSS, ".task-card-head-row > .task-card-when")).toContain("margin-left: auto");
