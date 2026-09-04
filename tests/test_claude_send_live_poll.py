@@ -94,6 +94,19 @@ def test_a_send_into_a_live_session_is_not_believed_done_before_its_echo(
         "a send into a live session must not be believed done before its "
         "own echo lands — otherwise the previous turn's reply renders as "
         "the answer to the new message and the real reply never arrives")
+    # `done` being false is not enough on its own: `rows` (from
+    # `_read_current_turn`) is still windowed off the OLD cursor while the
+    # echo is pending, so `text`/`segments` built off those rows are still
+    # turn one's own content. A page's pollLoop paints whatever a non-done
+    # poll hands back into a fresh bubble regardless of `done` — so leaving
+    # these non-empty would paint turn one's reply as the answer to the new
+    # message, then leave it on screen until the new turn's own tokens
+    # started arriving.
+    assert first_poll["text"] == "", (
+        "a poll with a pending echo must not hand back the PREVIOUS turn's "
+        "text — a page renders it into a fresh bubble regardless of `done`")
+    assert first_poll["segments"] == [], (
+        "same as `text` above — a pending echo must blank `segments` too")
 
     # Once the follow-up's own echo lands (and, later, its result), `done`
     # must resolve normally again.

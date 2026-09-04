@@ -3748,6 +3748,45 @@ def _read_current_turn(run_dir: str) -> tuple:
     return rows, cursor
 
 
+def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
+    """Is `run_dir`'s `cancelled` marker still true, given `cursor` — a proven
+    turn-boundary offset in `out.jsonl` (either `_read_current_turn`'s own
+    return value, mid-poll, or a fresh `_read_poll_cursor` off the persisted
+    file, for a caller like `_stopped_last` that has no scan of its own to
+    reuse)?
+
+    `_cancel` cannot remove the marker synchronously the instant an
+    `interrupt` control response lands — the CLI has not written that turn's
+    own error `result` yet, so an immediate removal races a caller reading
+    `cancelled` a moment later. So the marker outlives the turn it recorded,
+    paired with `interrupted_offset` (the byte offset `_cancel` captured
+    right before queuing the interrupt): once `cursor` has advanced to or
+    past that offset, a PROVEN new turn has started since, the interrupted
+    turn is over and already attributed, and both files are retired here
+    rather than tainting a later, unrelated turn as cancelled too.
+
+    No `interrupted_offset` (an old marker predating it, or a write that
+    failed) means staleness can't be proven — stays cancelled rather than
+    guessing."""
+    cancelled_marker = os.path.join(run_dir, "cancelled")
+    if not os.path.exists(cancelled_marker):
+        return False
+    offset_marker = os.path.join(run_dir, "interrupted_offset")
+    try:
+        with open(offset_marker, encoding="utf-8") as fh:
+            interrupted_offset = int(fh.read().strip())
+    except (OSError, ValueError):
+        return True
+    if cursor < interrupted_offset:
+        return True
+    for stale in (cancelled_marker, offset_marker):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    return False
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -3849,7 +3888,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     # list only holds a second reference to objects that pass already built.
     parsed = []
 
-    rows, _cursor = _read_current_turn(run_dir)
+    rows, scan_cursor = _read_current_turn(run_dir)
 
     for row in rows:
         parsed.append(row)
@@ -4031,6 +4070,17 @@ def _poll(run_id: str, file: str = "") -> dict:
     # than through the cursor machinery — this is a one-time, bounded read
     # (only the bytes written since the send) whether or not the cursor
     # happens to reach that far this poll.
+    # Suppresses `text`/`segments` below, not just `idle`, for exactly as long
+    # as `pending_echo` holds — `rows` (from `_read_current_turn`) is still
+    # windowed off the OLD cursor while the echo is pending (that is the whole
+    # point of `_read_current_turn`'s own `seen_result` rule: it will not
+    # advance past the follow-up's echo either), so `text_parts`/`parsed` built
+    # from those same rows are still the PREVIOUS turn's content. Forcing
+    # `idle` false alone stopped `done` from lying, but a page's `pollLoop`
+    # still paints whatever `segments`/`text` a non-done poll carries into a
+    # fresh bubble — so the stale reply rendered anyway, then sat on screen
+    # until the new turn's own tokens started arriving.
+    echo_pending = False
     pending_echo_path = os.path.join(run_dir, "pending_echo")
     if os.path.exists(pending_echo_path):
         try:
@@ -4062,6 +4112,7 @@ def _poll(run_id: str, file: str = "") -> dict:
                 pass
         else:
             idle = False
+            echo_pending = True
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
@@ -4196,19 +4247,35 @@ def _poll(run_id: str, file: str = "") -> dict:
     # never a different turn. That is deliberate and pinned by a test — the
     # alternative was widening `text` on the fallback path, and its byte
     # identity is a harder constraint than this asymmetry is a cost.
-    return {"text": text, "done": done, "session_id": new_session, "error": error,
+    #
+    # WAS THIS RUN'S END ASKED FOR — read off the run rather than remembered
+    # by whoever asked (see `_cancel`, which writes `cancelled`). A landed
+    # `interrupt` leaves that marker in place — see `_cancel`'s own comment
+    # on why it cannot remove it the moment the control response comes back
+    # — paired with `interrupted_offset`, the byte offset of `out.jsonl` at
+    # the instant the interrupt was requested. `scan_cursor` (from
+    # `_read_current_turn`) only ever advances past a PROVEN turn boundary,
+    # so `scan_cursor >= interrupted_offset` is the earliest point a later
+    # poll can tell "a genuinely new turn has started since" apart from
+    # "still reporting the interrupted turn's own error" — the interrupted
+    # turn is over and already attributed, so the marker (and the offset
+    # beside it) are retired here rather than tainting turn 3 as cancelled
+    # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
+    # the identical staleness check off its own cursor read.
+    cancelled = _cancelled_marker_state(run_dir, scan_cursor)
+    return {"text": "" if echo_pending else text, "done": done,
+            "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
-            # WAS THIS RUN'S END ASKED FOR — read off the run rather than
-            # remembered by whoever asked. The page's own stop button sets a
-            # variable and can swallow the resulting error itself, but a stop
-            # from anywhere else (the tasks queue card's ✕, which goes through
-            # schedule.py) left this page reporting the kill as a crash. See
-            # `_cancel`, which writes the marker.
-            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            # The page's own stop button sets a variable and can swallow the
+            # resulting error itself, but a stop from anywhere else (the
+            # tasks queue card's ✕, which goes through schedule.py) needs
+            # this field — see the `cancelled`/`interrupted_offset` handling
+            # above.
+            "cancelled": cancelled,
             # Same array `activity.tasks` renders from, collapsed to the
             # yes/no a session host's reap loop wants: background work still
             # running is what holds a host open past an otherwise-idle turn
@@ -4224,7 +4291,7 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": _segments_from_rows(parsed)}
+            "segments": [] if echo_pending else _segments_from_rows(parsed)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -4794,7 +4861,24 @@ def _stopped_last(file: str, session_id: str) -> bool:
             continue
         # The newest run of this conversation — whatever it says, it is the
         # answer, so this returns rather than carrying on down the list.
-        return os.path.exists(os.path.join(run_dir, "cancelled"))
+        #
+        # `_poll` retires a stale `cancelled` marker (one whose interrupted
+        # turn was followed by a later, completed one) the next time it runs
+        # — but a session revisited only through history, never live-polled
+        # again after the interrupt, would never trigger that retirement, and
+        # this would keep reading the same stale marker forever. Reads the
+        # persisted cursor directly (no side effects of its own — unlike
+        # `_read_current_turn`, `_read_poll_cursor` never advances it) and
+        # runs it through the same staleness check `_poll` uses, so a
+        # conversation with a real later turn stops showing "Stopped" under
+        # it the first time ANYTHING (a live poll, or this history read
+        # itself) proves that turn happened.
+        try:
+            out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            out_size = 0
+        cursor = _read_poll_cursor(run_dir, out_size)
+        return _cancelled_marker_state(run_dir, cursor)
     return False
 
 
@@ -5012,16 +5096,28 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
             run_dir, request_id, start_offset=out_offset)
         if response is not None:
             # The interrupt LANDED — the whole point of trying it first is
-            # that the session survives, so the marker written above (which
-            # exists to tell every later reader "this run's end was asked
-            # for") must not outlive the turn it was asked for. Left in
-            # place, it would taint every later poll of the same run_id —
-            # spanning a whole multi-turn session now, not one turn — as
-            # cancelled forever: a clean turn 3 would read as "the turn
-            # finished before the stop landed", and a real error on turn 3
-            # would be swallowed into a silent "Stopped." instead of shown.
+            # that the session survives, so the `cancelled` marker written
+            # above must not outlive the turn it was asked for, or a clean
+            # turn 3 would read as "the turn finished before the stop
+            # landed" and a real error on turn 3 would be swallowed into a
+            # silent "Stopped." instead of shown.
+            #
+            # It must NOT be removed here, though: the CLI has only been told
+            # to abort, not finished aborting — its own error `result` row
+            # for the interrupted turn is written AFTER this control response
+            # comes back, and removing the marker now would leave every
+            # reader that is not the tab that pressed Stop (the tasks card, a
+            # second viewer) seeing that error with `cancelled` false, i.e.
+            # a crash. `out_offset`, captured above, is
+            # this turn's own boundary — `_poll` retires the marker itself,
+            # once its cursor proves a genuinely NEW turn has started past
+            # that offset, which is the earliest point "outliving the turn
+            # it was asked for" can actually be told apart from "still
+            # reporting the turn that was interrupted".
             try:
-                os.remove(os.path.join(run_dir, "cancelled"))
+                with _private_open(
+                        os.path.join(run_dir, "interrupted_offset")) as fh:
+                    fh.write(str(out_offset))
             except OSError:
                 pass
             return {"cancelled": run_id,
