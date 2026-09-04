@@ -154,7 +154,10 @@ def _marker_free(root, rel):
     if len(raw) > MAX_RESOLVED_SCAN_BYTES:
         return False
     for line in raw.splitlines():
-        if line.startswith(b"<<<<<<< ") or line.startswith(b">>>>>>> "):
+        if (
+            line.startswith(b"<<<<<<< ") or line == b"<<<<<<<"
+            or line.startswith(b">>>>>>> ") or line == b">>>>>>>"
+        ):
             return False
     return True
 
