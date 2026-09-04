@@ -2126,9 +2126,12 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                              detail=f"Generated {event.get('characters') or 0} characters")
                 yield event
                 if etype == "chunk" and supervisor._cancel_requested(job):
+                    # Through the host, which reads the SIGTERM exit back as
+                    # a `cancelled` done frame — the loop above then ticks the
+                    # row cancelled and the caller gets a result, not a 500.
                     proc = child.get("proc")
-                    if proc is not None and proc.poll() is None:
-                        proc.terminate()
+                    if proc is not None:
+                        apple_host.cancel(proc)
         finally:
             if not reported_terminal:
                 reported_terminal = True
@@ -2152,16 +2155,22 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
 
     if not stream:
         text, final = [], None
-        for event in walk():
-            if event.get("type") == "chunk":
-                text.append(event.get("text") or "")
-            elif event.get("type") == "done":
-                final = event
-                if not event.get("ok", True):
-                    error = event.get("error") or {}
-                    return _ai_failed(model, str(error.get("type") or "ai_error"),
-                                      str(error.get("message") or "generation failed"),
-                                      status=502)
+        try:
+            for event in walk():
+                if event.get("type") == "chunk":
+                    text.append(event.get("text") or "")
+                elif event.get("type") == "done":
+                    final = event
+                    if not event.get("ok", True):
+                        error = event.get("error") or {}
+                        return _ai_failed(model, str(error.get("type") or "ai_error"),
+                                          str(error.get("message") or "generation failed"),
+                                          status=502)
+        except apple_host.AppleError as e:
+            # A helper that dies or stalls AFTER its first frame raises out of
+            # `frames()`; the streaming branch maps that to a done frame, this
+            # one to the same envelope a first-frame failure gets.
+            return _ai_failed(model, e.type, str(e), status=504 if e.type == "timeout" else 502)
         ai_metrics.record(model, None)
         return JSONResponse({"ok": True, "result": frame("".join(text), final or {})})
 

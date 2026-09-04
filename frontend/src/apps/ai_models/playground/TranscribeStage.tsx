@@ -65,6 +65,11 @@ export function TranscribeStage({ model }: { model: string }) {
   const [dragging, setDragging] = useState(false);
   const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
+  // `afm-speech` transcribes only: the apple tier answers `task: "translate"`
+  // with a 400 (SpeechTranscriber has no translation), so the control is
+  // hidden for it and a Translate setting saved under a Whisper model is not
+  // sent along when the user switches over.
+  const appleModel = model === "afm-speech";
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
   );
@@ -98,6 +103,11 @@ export function TranscribeStage({ model }: { model: string }) {
   // is the handle to stop it. Exclusive with `recorderRef`: one of the two is
   // set while `phase.step === "recording"`, never both.
   const nativeRef = useRef<CaptureStarted | null>(null);
+  // The start request in flight, until `nativeRef` has its handle. Stop or
+  // unmount during that window clears this, and the resolve handler then
+  // cancels the take it can no longer hand to anyone — otherwise the server
+  // keeps recording with no Stop button anywhere.
+  const nativePendingRef = useRef<Promise<CaptureStarted> | null>(null);
   // The mic stream opened only to DRAW the level meter on the native path —
   // the server hears the microphone through its own device handle, this one
   // exists so the user sees "it hears me" the same way the browser path shows it.
@@ -157,6 +167,7 @@ export function TranscribeStage({ model }: { model: string }) {
         void cancelCapture(nativeRef.current.id).catch(() => {});
         nativeRef.current = null;
       }
+      nativePendingRef.current = null;
       stopMeter();
     };
   }, []);
@@ -198,7 +209,7 @@ export function TranscribeStage({ model }: { model: string }) {
     const started = await startTranscribe({
       path,
       model,
-      ...(task !== "transcribe" ? { task } : {}),
+      ...(task !== "transcribe" && !appleModel ? { task } : {}),
       ...(language.trim() ? { language: language.trim() } : {}),
       ...(vad ? {} : { vad: false }),
       ...(words ? { words: true } : {}),
@@ -306,10 +317,23 @@ export function TranscribeStage({ model }: { model: string }) {
     // is kept VERBATIM by `/api/capture/start` (only an omitted one gets the
     // server's own name and extension), and a take with no extension is a
     // file the previews and the apple tier have to sniff rather than know.
-    const path = (await scratchPath("mic")) + ".m4a";
-    const started = await startNativeAudio(path, "Playground recording");
-    nativeRef.current = started;
+    // Busy from the first line, not from the first frame the server records:
+    // the Record button is gone while `phase` says recording, so a second
+    // click cannot start a second take during the POST below.
     setPhase({ step: "recording" });
+    const path = (await scratchPath("mic")) + ".m4a";
+    const pending = startNativeAudio(path, "Playground recording");
+    nativePendingRef.current = pending;
+    const started = await pending;
+    if (!aliveRef.current || nativePendingRef.current !== pending) {
+      // Unmounted, or Stop was pressed, while the server was starting: the
+      // take exists now and nothing else holds its id.
+      void cancelCapture(started.id).catch(() => {});
+      if (aliveRef.current) setPhase({ step: "idle" });
+      return;
+    }
+    nativePendingRef.current = null;
+    nativeRef.current = started;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       // Stop was pressed while the permission prompt was up: the meter has
@@ -393,7 +417,12 @@ export function TranscribeStage({ model }: { model: string }) {
 
   const stopRecording = () => {
     if (nativeRef.current) void stopNative();
-    else recorderRef.current?.stop();
+    else if (nativePendingRef.current) {
+      // Stop before the server answered the start: `recordNative` sees the
+      // cleared pending ref when it resolves and discards the take.
+      nativePendingRef.current = null;
+      setPhase({ step: "idle" });
+    } else recorderRef.current?.stop();
   };
 
   const busy = phase.step === "uploading" || phase.step === "running";
@@ -510,15 +539,17 @@ export function TranscribeStage({ model }: { model: string }) {
         )}
 
         <ConfigPanel open={configOpen} animated={configTouched.current}>
-          <RailField label="Task">
-            <RailSelect
-              value={task}
-              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-            >
-              <option value="transcribe">Transcribe — same language</option>
-              <option value="translate">Translate into English</option>
-            </RailSelect>
-          </RailField>
+          {!appleModel && (
+            <RailField label="Task">
+              <RailSelect
+                value={task}
+                onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
+              >
+                <option value="transcribe">Transcribe — same language</option>
+                <option value="translate">Translate into English</option>
+              </RailSelect>
+            </RailField>
+          )}
           <RailField label="Language" hint="Set it only when detection gets it wrong.">
             <Input
               type="text"

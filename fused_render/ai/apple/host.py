@@ -211,6 +211,11 @@ def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST
     if on_spawn is not None:
         on_spawn(proc)
     finished = False
+    # Created BEFORE anything that can raise: the `finally` sets it, and a
+    # stdin write failing on an already-dead child must surface as its own
+    # AppleError, not as an UnboundLocalError that also skips the terminate.
+    got_first = threading.Event()
+    watchdog_fired = threading.Event()
     try:
         try:
             proc.stdin.write(json.dumps(request or {}).encode("utf-8"))
@@ -220,10 +225,10 @@ def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST
         # The first-frame timeout, without a reader thread: a timer that kills
         # the child if nothing has arrived, which makes the blocking readline
         # below return.
-        got_first = threading.Event()
 
         def _watchdog() -> None:
             if not got_first.wait(first_timeout) and proc.poll() is None:
+                watchdog_fired.set()
                 proc.terminate()
 
         threading.Thread(target=_watchdog, daemon=True, name="apple-ai-watchdog").start()
@@ -239,9 +244,19 @@ def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST
                 return
             yield frame
         got_first.set()
-        # stdout closed with no `done`: the child died (or the watchdog fired).
+        # stdout closed with no `done`: the child died, the watchdog fired, or
+        # somebody cancelled it. Cancel is `terminate()` (one-shot design: no
+        # protocol for it), so the child never says "cancelled" itself — the
+        # SIGTERM exit stands in for that frame. Only the watchdog's own
+        # SIGTERM is a timeout; every other one was asked for (`cancel()`, a
+        # row's ✕, `/api/ai/cancel`), and a consumer sees the same `done` the
+        # local tier's worker sends on its cooperative cancel.
         if not finished:
             code = proc.wait()
+            if code in (-15, 143) and not watchdog_fired.is_set():
+                finished = True
+                yield {"type": "done", "ok": True, "cancelled": True, "finishReason": "cancelled"}
+                return
             raise AppleError("timeout" if code in (-15, 143) else "ai_error",
                              f"the Apple helper produced nothing for {int(first_timeout)}s"
                              if code in (-15, 143) else
@@ -275,15 +290,23 @@ def track_text(proc: subprocess.Popen) -> None:
             _text_children.discard(child)
 
 
+def cancel(proc: subprocess.Popen) -> None:
+    """Stop one request's child. `frames()` turns the resulting SIGTERM exit
+    into a `cancelled` done frame, so callers cancel through this and never
+    terminate the process themselves."""
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+
 def cancel_text() -> bool:
     """Stop every `afm-text` generation in flight. True when there was one."""
     with _lock:
         live = [c for c in _text_children if c.poll() is None]
     for child in live:
-        try:
-            child.terminate()
-        except OSError:
-            pass
+        cancel(child)
     return bool(live)
 
 

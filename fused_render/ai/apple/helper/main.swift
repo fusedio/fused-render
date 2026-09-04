@@ -232,13 +232,20 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
     ])
     output.alwaysCopiesSampleData = false
     reader.add(output)
-    guard reader.startReading() else {
-        throw reader.error ?? NSError(domain: "fused.apple", code: 2,
-                                      userInfo: [NSLocalizedDescriptionKey: "the audio could not be decoded"])
-    }
     let channels = Int(format.channelCount)
     let stream = AsyncThrowingStream<AnalyzerInput, Error> { continuation in
+        // Every call on the reader — startReading AND the copyNextSampleBuffer
+        // loop — happens on this one task: AVAssetReader is not thread-safe,
+        // and reads from a thread other than the one that started it can
+        // return nothing or trap. A failed start surfaces through the stream
+        // as the same error a mid-file decode failure would.
         Task.detached {
+            guard reader.startReading() else {
+                continuation.finish(throwing: reader.error ?? NSError(
+                    domain: "fused.apple", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "the audio could not be decoded"]))
+                return
+            }
             while let sample = output.copyNextSampleBuffer() {
                 guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                 let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sample))
