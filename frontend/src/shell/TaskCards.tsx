@@ -207,15 +207,47 @@ function TaskCard({
   return (
     <section className="task-card" aria-label={`${task.task_id} ${title}`}>
       <header className="task-card-head">
-        {/* The ring is unconditional here, unlike the Board's. A card on this
-            view sits under no lane header, so nothing else on it says what state
-            the run is in — the same argument that keeps the ring on every List
-            row and every Calendar chip. */}
-        <StatusIcon status={taskColumn(task)} failed={task.failed} />
-        {/* The id, in the List row's own chip (`.tasks-id--task`, tasks.css), so
-            a card and the row it stands for can be matched by eye across views
-            (Akshil, 2026-09-04). The title still carries the full text on hover. */}
-        <span className="tasks-id tasks-id--task">{task.task_id}</span>
+        {/* TWO ROWS (Akshil, 2026-09-04): the id top-left and the status ring
+            top-right on the first, the title alone on the second — so the title
+            gets the card's whole width at a size that can be read across a wall,
+            and the two facts a reader matches against the List (which task, what
+            state) sit in the two corners every card puts them in. */}
+        <div className="task-card-head-row">
+          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          {/* The same relative unit every task row on this page prints, from the
+              same function — so a card and its row agree about when this last
+              moved (tasks-lib.taskWhen). */}
+          <span className="task-card-when" title={when.title}>
+            {when.text}
+          </span>
+          {href && (
+            <a
+              // The app's own small secondary button, not a bare accent link: a
+              // word in the corner of a card read as a label, not as a thing to
+              // press (Akshil, 2026-09-03). Still an <a> with a real href, so
+              // ⌘-click and middle-click keep working.
+              className="btn btn-secondary task-card-open"
+              href={href}
+              aria-label={`Open ${task.task_id}`}
+              onClick={(e) => {
+                // A modified press is left entirely alone — ⌘-click means "open
+                // that in a tab", and this page has no business intercepting it.
+                // The same rule every row on this page follows.
+                if (opensElsewhere(e)) return;
+                e.preventDefault();
+                navigateUrl(href);
+              }}
+              title={tildePath(task.target || task.project, home)}
+            >
+              Open
+            </a>
+          )}
+          {/* The ring is unconditional here, unlike the Board's. A card on this
+              view sits under no lane header, so nothing else on it says what
+              state the run is in — the same argument that keeps the ring on
+              every List row and every Calendar chip. */}
+          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+        </div>
         {/* `data-hint`, not `title`: the List row shows its full title in the
             app's own hint the moment the pointer rests (hints.ts), and a native
             tooltip that arrives a second later read as no tooltip at all
@@ -223,34 +255,6 @@ function TaskCard({
         <span className="task-card-title" data-hint={task.title}>
           {title}
         </span>
-        {/* The same relative unit every task row on this page prints, from the
-            same function — so a card and its row agree about when this last
-            moved (tasks-lib.taskWhen). */}
-        <span className="task-card-when" title={when.title}>
-          {when.text}
-        </span>
-        {href && (
-          <a
-            // The app's own small secondary button, not a bare accent link: a
-            // word in the corner of a card read as a label, not as a thing to
-            // press (Akshil, 2026-09-03). Still an <a> with a real href, so
-            // ⌘-click and middle-click keep working.
-            className="btn btn-secondary task-card-open"
-            href={href}
-            aria-label={`Open ${task.task_id}`}
-            onClick={(e) => {
-              // A modified press is left entirely alone — ⌘-click means "open
-              // that in a tab", and this page has no business intercepting it.
-              // The same rule every row on this page follows.
-              if (opensElsewhere(e)) return;
-              e.preventDefault();
-              navigateUrl(href);
-            }}
-            title={tildePath(task.target || task.project, home)}
-          >
-            Open
-          </a>
-        )}
       </header>
       <div className="task-card-body">
         {src ? (

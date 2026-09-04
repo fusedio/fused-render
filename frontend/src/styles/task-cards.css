@@ -129,31 +129,42 @@
    glyph says. */
 .task-card-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
 
-/* The title takes the row's slack and gives it all back on a long one: ONE line,
-   ellipsed. Deliberately not the Board's free wrap — a card here is a fixed box
-   whose content is the transcript, so a two-line title would steal a line of the
-   thing the card exists to show, on exactly the busiest cards. */
+/* Row one: the id at the left edge, the ring at the right, the time and Open
+   tucked against the ring. `margin-left: auto` on the time is what pushes the
+   right-hand group over; the id keeps the corner. */
+.task-card-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-card-head-row > .task-card-when {
+  margin-left: auto;
+}
+
+/* Row two: the title, ONE LINE, at a size that reads across a wall of six —
+   the card's whole width is its own now, so it no longer competes with the id
+   and the time for one strip. Ellipsed; the full text rides `data-hint`. */
 .task-card-title {
-  flex: 1 1 auto;
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.3;
   color: var(--fg);
 }
 
-/* The time, in the row's quiet weight — the same relative unit every task row on
-   this page prints (tasks-lib.taskWhen). `flex: none` so it is never the thing
-   that gets squeezed: a truncated "3m ago" says nothing at all. */
 .task-card-when {
   flex: none;
   font-size: 11px;
