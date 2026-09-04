@@ -15,3 +15,14 @@ export const TASKS_CHANGED_EVENT = "fused-render:tasks-changed";
 export function announceTasksChanged(): void {
   window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
 }
+
+// "The desk just changed" — the same wall-throw for the sidebar's Projects
+// table (shell/CurrentAppsSection). The explorer's "Open in project" button
+// puts a folder on the desk (POST /api/current-apps/add) and then hops to
+// its app page; the section refetches on this so the new row is there — on
+// top, focused — the moment the page paints, not on the next task pulse.
+export const CURRENT_APPS_CHANGED_EVENT = "fused-render:current-apps-changed";
+
+export function announceCurrentAppsChanged(): void {
+  window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT));
+}
