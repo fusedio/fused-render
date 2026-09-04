@@ -120,6 +120,44 @@ MAX_CONFLICT_BYTES = 60_000
 # which refuses to APPLY content that still contains them.
 CONFLICT_MARKERS = ("<<<<<<< ", "=======", ">>>>>>> ")
 
+# How much of an unmerged file `_marker_free` will read to decide whether its
+# markers are gone. A conflicted source file is not a 4 MB artefact; one that is
+# gets the cautious answer (not resolved), and the command line.
+MAX_RESOLVED_SCAN_BYTES = 4_000_000
+
+
+def _marker_free(root, rel):
+    """True when the working-tree copy of an UNMERGED path holds no conflict
+    markers any more — i.e. someone (Apply, or an editor) has resolved it and
+    the only step left is `git add`.
+
+    This is what lets the view offer that step: the row tick and "Select all"
+    are disabled on a conflicted file precisely because `git add` on marked-up
+    text commits the markers, so they need a fact — not the index, which still
+    says unmerged until the add — to know when the file is safe again. Only the
+    two bracketing markers are looked for: a bare `=======` line is legal
+    Markdown (a setext underline) and would keep a resolved README unstageable.
+
+    A path that no longer exists on disk (a both-deleted `DD`, or a side that
+    chose deletion) is marker-free by definition — `git add` records the
+    removal. Unreadable or oversized files answer False: not knowing is the same
+    as not yet.
+    """
+    full = os.path.join(root, *rel.split("/"))
+    if not os.path.exists(full):
+        return True
+    try:
+        with open(full, "rb") as handle:
+            raw = handle.read(MAX_RESOLVED_SCAN_BYTES + 1)
+    except OSError:
+        return False
+    if len(raw) > MAX_RESOLVED_SCAN_BYTES:
+        return False
+    for line in raw.splitlines():
+        if line.startswith(b"<<<<<<< ") or line.startswith(b">>>>>>> "):
+            return False
+    return True
+
 # `git status` is unbounded in principle (a build tree can hold 100k untracked
 # files). Bounded on the way in — bytes off the pipe — and again on the way out.
 MAX_STATUS_BYTES = 4_000_000
@@ -630,6 +668,11 @@ def _status(root, rel, is_dir):
             # and getting it wrong means offering to resolve a file that is not
             # conflicted, or hiding the button on one that is.
             "conflicted": "U" in (x, y) or code in ("AA", "DD"),
+            # For a conflicted entry only: the working tree copy has no markers
+            # left, so staging it is the resolve rather than a mistake. Read
+            # per unmerged file — there are rarely more than a handful.
+            "resolved": ("U" in (x, y) or code in ("AA", "DD"))
+                        and _marker_free(root, path),
             "staged": not untracked and x not in (" ", "?"),
             "unstaged": not untracked and y not in (" ", "?"),
             "untracked": untracked,

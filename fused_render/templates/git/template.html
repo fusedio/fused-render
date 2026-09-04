@@ -3315,15 +3315,21 @@ function changeLine(repo, change, selected) {
   const tick = el("input", { type: "checkbox", className: "tick" });
   tick.checked = !!change.staged && !change.unstaged && !change.untracked;
   tick.indeterminate = !!(change.staged && (change.unstaged || change.untracked));
-  /* A conflicted file's tick is disabled: `git add` on a file that still has
-     markers in it is the classic way half a conflict gets committed. The
-     sparkle (or hand-editing) is the way through, and a checkbox saying "not
-     yet" is part of that message. */
-  tick.disabled = busy !== null || !!change.conflicted || !canAct;
+  /* A conflicted file's tick is disabled while the markers are still in it:
+     `git add` on that text is the classic way half a conflict gets committed.
+     The sparkle (or hand-editing) is the way through — and once the reader
+     says the markers are gone (`resolved`), the tick comes back, because
+     `git add` is now the act that marks the conflict resolved, and the row is
+     the only place left in the view that can offer it (Apply deliberately
+     writes the file and stops). */
+  const blocked = !!change.conflicted && !change.resolved;
+  tick.disabled = busy !== null || blocked || !canAct;
   tick.setAttribute("aria-label",
     (tick.checked ? "Remove " + path + " from" : "Include " + path + " in")
     + " the next commit");
-  tick.title = change.conflicted ? "Resolve the conflict first."
+  tick.title = blocked ? "Resolve the conflict first."
+    : change.conflicted ? "Markers are gone — tick to mark " + path
+      + " resolved and include it in the next commit"
     : tick.checked ? "Ticked: goes into the next commit. Untick to leave it out."
     : "Tick to include " + path + " in the next commit";
   tick.addEventListener("change", () => {
@@ -3338,7 +3344,7 @@ function changeLine(repo, change, selected) {
      was spending the plain one on the tooltip while printing git's shorthand
      at the exact audience that has never read `git status --short`. */
   const word = change.untracked ? "New"
-    : change.conflicted ? "Conflict"
+    : change.conflicted ? (change.resolved ? "Resolved" : "Conflict")
     : (change.label || change.status);
   const row = el("button", {
     className: "row",
@@ -3985,12 +3991,12 @@ function render(data, stashes, diff) {
   const allIn = changes.length > 0
     && changes.every((c) => c.staged && !c.unstaged && !c.untracked);
   const selectOp = allIn ? "unstage_all" : "stage_all";
-  /* Disabled while any file is conflicted, for the same reason that file's own
-     tick is: `stage_all` is `git add` over the lot, and staging a file that
-     still has markers in it clears the conflict without resolving it, letting
-     Commit record the markers. The row tick already refuses; the header must
-     not offer a way around it. */
-  const anyConflict = changes.some((c) => c.conflicted);
+  /* Disabled while any file still has conflict markers in it, for the same
+     reason that file's own tick is: `stage_all` is `git add` over the lot, and
+     staging marked-up text clears the conflict without resolving it, letting
+     Commit record the markers. A conflicted file the reader calls `resolved`
+     (markers gone) does not block — staging it IS the resolve. */
+  const anyConflict = changes.some((c) => c.conflicted && !c.resolved);
   const selectAll = changes.length ? action(selectOp,
       [icon(CHECK_GLYPH, 14), btnLabel(allIn ? "Deselect all" : "Select all")], {
     className: "good",
