@@ -258,6 +258,20 @@ def test_each_arm_starts_a_clean_round_of_pins(html):
     assert "let annRoundStart = 0;" in html
 
 
+def test_a_failed_follow_up_gives_the_notes_back(html):
+    """sendFollowUp stamps the notes `sent` before the inbox write; a run that
+    is gone, a send the session never took, or a thrown send are all failures
+    the claude never saw, so the notes go back to pending (chips return, Done
+    can resend) and the receipt is pulled — the rollback sendMessage already
+    does for a run that never launched (Bugbot, PR #996)."""
+    body = _block(html, "async function sendFollowUp(text)", "\n}\n")
+    assert "const giveBack = () => {" in body
+    assert "for (const c of pending) c.sent = 0;" in body
+    assert "if (receipt) receipt.remove();" in body
+    assert body.count("giveBack();") == 3, "no run, not sent, and thrown"
+    assert body.index("giveBack();") < body.index('"Could not send: no run to attach')
+
+
 def test_a_saved_note_pools_until_done(html):
     """Saving a typed note sends nothing (Akshil, 2026-09-04): the first note
     of a review used to start a run while the reader was still giving

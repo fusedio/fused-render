@@ -15089,10 +15089,23 @@ async function sendFollowUp(text) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
+  // The notes are stamped `sent` above, before the inbox write — and every
+  // failure below is one the claude never saw. Give them back as pending (and
+  // pull the receipt) so the chips return and Done can send them again;
+  // sendMessage does the same for a run that never launched (Bugbot, PR #996).
+  let receipt = null;
+  const giveBack = () => {
+    if (receipt) receipt.remove();
+    if (pending.length) {
+      for (const c of pending) c.sent = 0;
+      annSave();
+    }
+  };
   if (pending.length || pics.length) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
+    receipt = sum;
     sum.className = "annsum";
     for (const pic of pics) shotReceipt(sum, pic);
     for (const c of pending) sum.appendChild(annReceiptRow(c));
@@ -15109,6 +15122,7 @@ async function sendFollowUp(text) {
     run_id = activeRun;
   }
   if (!run_id) {
+    giveBack();
     addError("Could not send: no run to attach this message to.");
     return;
   }
@@ -15149,9 +15163,11 @@ async function sendFollowUp(text) {
       return;
     }
     if (!res || !res.sent) {
+      giveBack();
       addError("Could not send: the session ended before this reached it.");
     }
   } catch (err) {
+    giveBack();
     addError("Could not send: " + err.message);
   }
 }
