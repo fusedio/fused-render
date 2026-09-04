@@ -65,6 +65,7 @@ def send(row):
     sys.stdout.flush()
 
 interrupted = False
+answered_one = False
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -92,7 +93,12 @@ for line in sys.stdin:
     # pending-echo wait actually clears.
     send({{"type": "user", "message": {{"role": "user",
            "content": [{{"type": "text", "text": text}}]}}}})
-    send({{"type": "result", "session_id": "sess-stub", "result": "ok " + text}})
+    # The FIRST message's turn is held open — no `result` closes it, the way a
+    # long-running turn behaves — so the stop under test lands on a turn that
+    # is genuinely still in flight. Every later message answers normally.
+    if answered_one:
+        send({{"type": "result", "session_id": "sess-stub", "result": "ok " + text}})
+    answered_one = True
 '''
 
 

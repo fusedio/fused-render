@@ -998,7 +998,11 @@ def test_an_uncovered_folder_reports_disabled_while_indexing_is_off(
     from fused_render.server.routers import index as index_routes
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
-    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    # The pref is read through `index_gate` (shell/index_gate.py), which looks
+    # it up as a module attribute so the FDA refusal and this one cannot
+    # drift apart — patching the router's own bound import would not be seen.
+    monkeypatch.setattr(index_routes.index_gate.prefs, "indexing_enabled",
+                        lambda: False)
     body = client.get("/api/index/rank",
                       params={"root": str(tmp_path), "q": "x"}).json()
     assert body["covered"] is False and body["reason"] == "disabled"
@@ -1014,7 +1018,8 @@ def test_ignored_still_wins_over_disabled_ordering_is_not_swapped(
     root = str(tmp_path / "proj" / "node_modules")
     client = _ranked_client(tmp_path, str(tmp_path / "proj"),
                             [str(tmp_path / "proj") + "/a.txt"])
-    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_routes.index_gate.prefs, "indexing_enabled",
+                        lambda: False)
     body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
     assert body["reason"] == "disabled"
 

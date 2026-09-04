@@ -3760,10 +3760,22 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     own error `result` yet, so an immediate removal races a caller reading
     `cancelled` a moment later. So the marker outlives the turn it recorded,
     paired with `interrupted_offset` (the byte offset `_cancel` captured
-    right before queuing the interrupt): once `cursor` has advanced to or
+    right before queuing the interrupt): once `cursor` has advanced STRICTLY
     past that offset, a PROVEN new turn has started since, the interrupted
     turn is over and already attributed, and both files are retired here
     rather than tainting a later, unrelated turn as cancelled too.
+
+    Strictly past, not "to or past", and the offset file's own existence is
+    what makes that exact: it is written only once `_await_control_response`
+    has READ the CLI's `control_response` row out of `out.jsonl` starting at
+    that very offset, so whenever the file exists there are already bytes at
+    `>= interrupted_offset` that belong to the interrupted turn — a later
+    turn's own start is therefore always strictly greater. The one way
+    `cursor == interrupted_offset` is `0 == 0`: a stop pressed so early that
+    the turn had not written a byte yet, where cursor 0 is the interrupted
+    turn's own start and proves nothing. `>=` retired the marker on the very
+    next poll there, which is exactly the crash-instead-of-"Stopped" this
+    pairing exists to prevent.
 
     No `interrupted_offset` (an old marker predating it, or a write that
     failed) means staleness can't be proven — stays cancelled rather than
@@ -3777,7 +3789,7 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
             interrupted_offset = int(fh.read().strip())
     except (OSError, ValueError):
         return True
-    if cursor < interrupted_offset:
+    if cursor <= interrupted_offset:
         return True
     for stale in (cancelled_marker, offset_marker):
         try:
@@ -4268,7 +4280,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     # — paired with `interrupted_offset`, the byte offset of `out.jsonl` at
     # the instant the interrupt was requested. `scan_cursor` (from
     # `_read_current_turn`) only ever advances past a PROVEN turn boundary,
-    # so `scan_cursor >= interrupted_offset` is the earliest point a later
+    # so `scan_cursor > interrupted_offset` is the earliest point a later
     # poll can tell "a genuinely new turn has started since" apart from
     # "still reporting the interrupted turn's own error" — the interrupted
     # turn is over and already attributed, so the marker (and the offset
