@@ -103,11 +103,14 @@ export function TranscribeStage({ model }: { model: string }) {
   // is the handle to stop it. Exclusive with `recorderRef`: one of the two is
   // set while `phase.step === "recording"`, never both.
   const nativeRef = useRef<CaptureStarted | null>(null);
-  // The start request in flight, until `nativeRef` has its handle. Stop or
-  // unmount during that window clears this, and the resolve handler then
-  // cancels the take it can no longer hand to anyone — otherwise the server
-  // keeps recording with no Stop button anywhere.
-  const nativePendingRef = useRef<Promise<CaptureStarted> | null>(null);
+  // The native take being SET UP — the scratch-dir mkdirs and the start POST
+  // — before `nativeRef` has its handle. A non-zero value is the arm token of
+  // the setup in flight; Stop or unmount zeroes it, and `recordNative`
+  // re-checks it after every await: before the POST it simply stops, after
+  // the POST it cancels the take it can no longer hand to anyone. Otherwise a
+  // Stop pressed during setup is ignored and the server records with no Stop
+  // button anywhere.
+  const nativeArmRef = useRef(0);
   // The mic stream opened only to DRAW the level meter on the native path —
   // the server hears the microphone through its own device handle, this one
   // exists so the user sees "it hears me" the same way the browser path shows it.
@@ -167,7 +170,7 @@ export function TranscribeStage({ model }: { model: string }) {
         void cancelCapture(nativeRef.current.id).catch(() => {});
         nativeRef.current = null;
       }
-      nativePendingRef.current = null;
+      nativeArmRef.current = 0;
       stopMeter();
     };
   }, []);
@@ -321,18 +324,21 @@ export function TranscribeStage({ model }: { model: string }) {
     // the Record button is gone while `phase` says recording, so a second
     // click cannot start a second take during the POST below.
     setPhase({ step: "recording" });
+    const arm = Date.now();
+    nativeArmRef.current = arm;
+    const armed = () => aliveRef.current && nativeArmRef.current === arm;
     const path = (await scratchPath("mic")) + ".m4a";
-    const pending = startNativeAudio(path, "Playground recording");
-    nativePendingRef.current = pending;
-    const started = await pending;
-    if (!aliveRef.current || nativePendingRef.current !== pending) {
-      // Unmounted, or Stop was pressed, while the server was starting: the
-      // take exists now and nothing else holds its id.
+    // Stop (or unmount) during the mkdirs: nothing has been started, so
+    // there is nothing to cancel — just do not start it.
+    if (!armed()) return;
+    const started = await startNativeAudio(path, "Playground recording");
+    if (!armed()) {
+      // Stop (or unmount) while the server was starting: the take exists now
+      // and nothing else holds its id.
       void cancelCapture(started.id).catch(() => {});
-      if (aliveRef.current) setPhase({ step: "idle" });
       return;
     }
-    nativePendingRef.current = null;
+    nativeArmRef.current = 0;
     nativeRef.current = started;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -406,6 +412,7 @@ export function TranscribeStage({ model }: { model: string }) {
       }
     } catch (e) {
       nativeRef.current = null;
+      nativeArmRef.current = 0;
       setError(
         (e as Error).name === "NotAllowedError"
           ? "Microphone access was refused — allow it in the browser and try again."
@@ -417,10 +424,10 @@ export function TranscribeStage({ model }: { model: string }) {
 
   const stopRecording = () => {
     if (nativeRef.current) void stopNative();
-    else if (nativePendingRef.current) {
-      // Stop before the server answered the start: `recordNative` sees the
-      // cleared pending ref when it resolves and discards the take.
-      nativePendingRef.current = null;
+    else if (nativeArmRef.current) {
+      // Stop during setup: `recordNative` sees the zeroed arm token at its
+      // next await and either never starts the take or cancels it.
+      nativeArmRef.current = 0;
       setPhase({ step: "idle" });
     } else recorderRef.current?.stop();
   };

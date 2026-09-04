@@ -146,7 +146,10 @@ def _dev_build(problems: list[str]) -> str | None:
            "-framework", "FoundationModels", "-framework", "Speech",
            "-framework", "AVFoundation", "-o", target, SOURCE]
     try:
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # encoding pinned: a GUI-launched server has no LANG, and swiftc's
+        # diagnostics carry curly quotes (test_subprocess_encoding).
+        run = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=600)
     except (OSError, subprocess.TimeoutExpired) as e:
         problems.append(f"building the helper failed: {e}")
         return None
