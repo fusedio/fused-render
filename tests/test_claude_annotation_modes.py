@@ -219,56 +219,25 @@ def test_a_portaled_composer_keeps_its_keystrokes(html):
     assert "}, true);" not in body, "bubble phase, not capture"
 
 
-def test_done_during_a_live_run_queues_the_notes(html):
-    """Done (and a stopped recording) during a live run used to fall through
-    submitChat's text-only queue and leave the notes as chips the reader had
-    to Enter out by hand (Akshil, 2026-09-04). An annotation-only entry parks
-    in the queue like typed words do — one at a time, the notes folding in at
-    send time — and the home form's Stop is never pressed by an auto-send."""
-    body = _block(html, "function submitChat()", "\n}\n")
-    # liveness is the bubble's presence, not array membership: stopRun's
-    # provisional splice empties the array while the bubbles stay, and a Done
-    # in that gap must not re-park notes that then send after Stop (Bugbot, #996)
-    assert ("if (!annPending().length || (annQueued && annQueued.el.isConnected))"
-            " return;") in body
-    assert "queuedMsgs.includes(annQueued)" not in html
-    # Back empties the queue by hand; the pointer goes with it
-    back = html[html.index("for (const q of queuedMsgs) q.el.remove();"):]
-    back = back[:back.index("\n\n")]
-    assert "queuedMsgs.length = 0;" in back and "annQueued = null;" in back
-    # text already parked ahead: the notes ride THAT entry (sendMessage folds
-    # every pending note into whichever message drains first), so the chips go
-    # on its bubble instead of into a second entry that drains empty (Bugbot, #996)
-    assert "if (queuedMsgs.length) annQueueChips(queuedMsgs[0]);" in body
-    assert 'else queueMessage("");' in body
-    q = _block(html, "function queueMessage(text)", "\n}\n")
-    assert "const ann = !text;" in q
-    assert "const entry = { text, el: d, bubble: b, ann, chips: null };" in q
-    assert "if (entry === annQueued) { annQueued = null; renderAnn(); }" in q, \
-        "unqueue sends the chips home to the composer"
-    assert "if (ann) return;" in q, "an annotation-only entry has no words to give back"
-    assert "if (ann) annQueueChips(entry);" in q
-    hook = _block(html, "function annQueueChips(entry)", "\n}\n")
-    assert "entry.bubble.appendChild(entry.chips);" in hook
-    assert "annQueued = entry;" in hook
-    # the chips live in the bubble while queued, not above the composer
-    chips = _block(html, "  // pending chips above both composers", "\n  });\n")
-    assert "annQueued.chips" in chips and "dest.appendChild(chip);" in chips
-    drain = _block(html, "function drainQueue()", "\n}\n")
-    assert "if (next === annQueued) annQueued = null;" in drain
-    # an annotation-only entry with nothing left to carry is dropped and the
-    # loop moves on — sendMessage's early return would never reach drainQueue
-    # and everything behind it would stay parked (Bugbot, #996)
-    assert "if (next.ann && !annPending().length && !shotAttached.length) { renderAnn(); continue; }" in drain
-    assert "while (queuedMsgs.length) {" in drain
-    un = _block(html, "function unqueueAll(entries)", "\n}\n")
-    assert "if (q === annQueued) { annQueued = null; renderAnn(); }" in un
-    assert "if (q.ann) continue;" in un
-    persist = _block(html, "function persistQueue()", "\n}\n")
-    assert "queuedMsgs.filter((q) => !q.ann)" in persist, \
-        "annotation-only entries are not mirrored — annSave already holds the notes"
+def test_done_during_a_live_run_sends_the_notes_as_a_follow_up(html):
+    """Done (and a stopped recording) during a live run used to hold the notes
+    back behind a `!sending` gate and leave them as chips the reader had to
+    Enter out by hand (Akshil, 2026-09-04). Both now hand them to submitChat,
+    whose live-run branch sends an annotation-only follow-up to the running
+    claude (sendFollowUp, PR #979). The home form's Stop is never pressed by
+    an auto-send."""
+    done = _block(html, "async function annDone()", "\n}\n")
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in done
+    rec = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "if (activeRun || !sending) annAutoSubmit();" in rec
+    submit = _block(html, "function submitChat()", "\n}\n")
+    live = submit[submit.index("if (activeRun) {"):]
+    assert "if (!message && !annPending().length && !shotAttached.length) return;" in live
+    assert "sendFollowUp(message);" in live
     auto = _block(html, "function annAutoSubmit()", "\n}\n")
     assert 'contains("home") && !activeRun' in auto
+    # nothing page-side parks notes any more
+    assert "annQueued" not in html and "annQueueChips" not in html
 
 
 def test_a_sent_note_draws_no_pin(html):

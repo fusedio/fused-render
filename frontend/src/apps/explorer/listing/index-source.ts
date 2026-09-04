@@ -81,11 +81,13 @@ export function nextStep(input: SourceInput): SearchStep {
   // the other three are — the user can flip the preference back on — because
   // there is no server signal to poll for that, so a scan is exactly as
   // unaskable-for as it is for a mount, a package, or an ignored folder.
+  // `fda` likewise: the grant lands on the NEXT launch, not this one.
   if (
     reason === "mount" ||
     reason === "package" ||
     reason === "ignored" ||
-    reason === "disabled"
+    reason === "disabled" ||
+    reason === "fda"
   ) {
     return "walk";
   }

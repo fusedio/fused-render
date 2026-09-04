@@ -55,6 +55,35 @@ def agent():
     return _load("agent")
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
 @pytest.fixture
 def html():
     return open(TEMPLATE, encoding="utf-8").read()
@@ -145,14 +174,12 @@ def test_the_spawn_line_pre_approves_reading_a_crop_and_nothing_else(
     project.mkdir()
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
-    assert "error" not in agent._start(str(project), "hi", "", "", "")
-    cmd = seen["cmd"]
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    out = agent._start(str(project), "hi", "", "", "")
+    assert "error" not in out, out
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    cmd = _argv_from_req(agent, seen["req"], run_dir)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert agent._read_rule(str(tmp_path / "shots")) in allowed
     # Not a blanket Read: a rule with no path would allow the whole filesystem.
@@ -2449,8 +2476,9 @@ def test_the_shot_belongs_to_exactly_one_message(html):
     assert "if (!message && !pending.length && !pics.length) { sending = false; return; }" \
         in send
     assert html.count(
-        "if (!message && !annPending().length && !shotAttached.length) return;") == 2, \
-        "and both composers' submit guards agree"
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 3, \
+        "the home composer, the chat composer, and its activeRun follow-up " \
+        "branch all agree"
 
 
 def test_the_thumbnail_never_reaches_the_wire(html):
@@ -3993,9 +4021,10 @@ def test_a_pasted_picture_and_a_capture_ride_the_same_message_together(html):
 })();
 """)
     assert out["kinds"] == ["image", "pane", "image"]
-    # and the composer's own guard counts the list rather than one binding
+    # and the composer's own guard counts the list rather than one binding —
+    # the home composer, the chat composer, and its activeRun follow-up branch
     assert html.count(
-        "if (!message && !annPending().length && !shotAttached.length) return;") == 2
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 3
 
 
 def test_the_block_tells_the_model_which_picture_is_of_this_app(html):
@@ -4213,16 +4242,13 @@ def test_the_spawn_line_grows_a_read_rule_per_attachment_directory(
     drops.mkdir()
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
-    assert "error" not in agent.main(action="start", file=str(project),
-                                    message="hi",
-                                    read_dirs=json.dumps([str(drops)]))
-    cmd = seen["cmd"]
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    out = agent.main(action="start", file=str(project), message="hi",
+                     read_dirs=json.dumps([str(drops)]))
+    assert "error" not in out, out
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    cmd = _argv_from_req(agent, seen["req"], run_dir)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert agent._read_rule(str(tmp_path / "shots")) in allowed, "still there"
     assert agent._read_rule(str(drops)) in allowed

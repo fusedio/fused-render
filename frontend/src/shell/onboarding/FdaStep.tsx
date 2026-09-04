@@ -12,47 +12,45 @@
 // the whole affordance. The button is live only when the server offers it
 // (`config.fda` present: packaged mac app, conclusive probe); on a dev server
 // the copy still renders and the button says why it is disabled.
+//
+// State and copy come from platform/lib/fda.ts, the same store the strip
+// reads, so this step and the strip never disagree about whether the grant
+// landed. The one state this step adds a face to is `pending_relaunch`: the
+// user turned FusedRender on, a fresh child of the app can read, and only a
+// relaunch stands between them and the grant — so offer the relaunch instead
+// of a "waiting…" line that could never finish (macOS caches the running
+// process's verdict).
 import { useEffect, useState } from "react";
-import { Check, ExternalLink, FolderLock, Lock, ShieldCheck } from "lucide-react";
+import { Check, ExternalLink, FolderLock, Lock, RotateCw, Search, ShieldCheck } from "lucide-react";
 
-import { getConfig, openFdaSettings, type Config } from "@platform/lib/api";
+import { openFdaSettings, type Config } from "@platform/lib/api";
+import { FDA_COPY, RELAUNCH_HREF, pokeFda, seedFda, useFda } from "@platform/lib/fda";
 import { Button } from "@platform/shadcn/ui/button";
 
 import { StepHeader } from "./StepHeader";
 
-//: Poll for the grant while the pane is open. Most grants apply to a relaunched
-//: process only, but when macOS relaunches the app for us the fresh server
-//: answers granted and this still-open tab converges.
-const GRANT_POLL_MS = 3000;
-
 export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }) {
-  const [fda, setFda] = useState(config.fda);
+  // The wizard already holds a config: seed so the first paint is right,
+  // then the shared store takes over.
+  useEffect(() => seedFda(config.fda), [config.fda]);
+  const live = useFda();
+  // Before the store's first answer, render off the config prop synchronously:
+  // an effect-time seed alone would flash the disabled "dev server" button
+  // for a frame on a packaged app.
+  const fda = live === undefined ? (config.fda ?? null) : live;
   const [opened, setOpened] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const offered = fda !== undefined;
+  const offered = fda != null;
   const granted = fda?.granted === true;
-
-  useEffect(() => {
-    if (!opened || granted) return;
-    let alive = true;
-    const t = window.setInterval(() => {
-      getConfig().then(
-        (c) => {
-          if (alive) setFda(c.fda);
-        },
-        () => undefined,
-      );
-    }, GRANT_POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, [opened, granted]);
+  const pending = fda?.pending_relaunch === true;
 
   const open = () => {
     setError(null);
     openFdaSettings().then(
-      () => setOpened(true),
+      () => {
+        setOpened(true);
+        pokeFda();
+      },
       (e) => setError(String(e?.message || e)),
     );
   };
@@ -62,10 +60,10 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
       <StepHeader
         eyebrow={eyebrow}
         title="Let FusedRender read your files"
-        lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them and survives upgrades."
+        lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets FusedRender index your files for search."
       />
 
-      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-3">
+      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">
         {[
           {
             icon: <Lock className="size-4" />,
@@ -76,6 +74,11 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
             icon: <FolderLock className="size-4" />,
             title: "One grant, every folder",
             body: "Replaces a prompt per protected folder — including the ones macOS never shows.",
+          },
+          {
+            icon: <Search className="size-4" />,
+            title: "Powers search",
+            body: "File search runs on an index of your home folder. Indexing waits for this grant — nothing is scanned before you say so.",
           },
           {
             icon: <ShieldCheck className="size-4" />,
@@ -106,26 +109,39 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
               <div className="text-xs text-muted-foreground">Already granted — nothing to do here.</div>
             </div>
           </div>
+        ) : pending ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="grid size-6 place-items-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                <Check className="size-3.5" strokeWidth={3} />
+              </span>
+              <div>
+                <div className="text-sm font-medium">Granted — one relaunch to go</div>
+                <div className="text-xs text-muted-foreground">{FDA_COPY.pending}</div>
+              </div>
+            </div>
+            {/* A plain link, like the update-restart banner: the OS hands the
+                deep link to the running app, which quits and respawns. This
+                tab keeps polling and flips to "Already granted" on its own. */}
+            <Button render={<a href={RELAUNCH_HREF} />}>
+              <RotateCw data-icon="inline-start" />
+              {FDA_COPY.relaunch}
+            </Button>
+          </div>
         ) : (
           <>
             <ol className="m-0 flex list-none flex-col gap-1.5 p-0 text-sm">
-              <li className="flex gap-2">
-                <span className="w-4 shrink-0 text-muted-foreground">1.</span>
-                <span>Open System Settings on the Full Disk Access pane.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="w-4 shrink-0 text-muted-foreground">2.</span>
-                <span>Turn on <strong className="font-medium">FusedRender</strong> in the list.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="w-4 shrink-0 text-muted-foreground">3.</span>
-                <span>Relaunch the app when macOS asks — the grant applies to the next launch.</span>
-              </li>
+              {FDA_COPY.steps.map((s, i) => (
+                <li key={s} className="flex gap-2">
+                  <span className="w-4 shrink-0 text-muted-foreground">{i + 1}.</span>
+                  <span>{s}</span>
+                </li>
+              ))}
             </ol>
             <div className="flex flex-wrap items-center gap-3">
               <Button onClick={open} disabled={!offered} title={offered ? undefined : "Available in the installed FusedRender app"}>
                 <ExternalLink data-icon="inline-start" />
-                {opened ? "Open System Settings again" : "Open System Settings"}
+                {opened ? FDA_COPY.reopen : FDA_COPY.open}
               </Button>
               {!offered && (
                 <span className="text-xs text-muted-foreground">
@@ -134,7 +150,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
               )}
               {opened && offered && (
                 <span className="text-xs text-muted-foreground" role="status">
-                  Waiting for the grant… turn FusedRender on in the pane that just opened.
+                  {FDA_COPY.waiting}
                 </span>
               )}
             </div>
@@ -144,7 +160,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
       </div>
 
       <p className="text-xs text-muted-foreground">
-        You can do this later. If macOS ever refuses a file, the Home page shows a reminder with this same button.
+        You can do this later. If macOS ever refuses a file, the Home page shows a reminder with this same button, and file search offers it whenever it has no index to answer from.
       </p>
     </div>
   );
