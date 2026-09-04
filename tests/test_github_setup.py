@@ -568,6 +568,18 @@ def test_a_clean_install_finishes_and_installs_the_binary(tmp_path, monkeypatch)
         assert os.access(dest, os.X_OK)
 
 
+def test_a_found_binary_with_no_probed_version_is_still_a_success(tmp_path, monkeypatch):
+    """`probe_version` returns None (not "") for a `--version` spawn that
+    timed out or exited non-zero — the binary is genuinely installed and
+    runnable, so the install must not be reported as a crash just because
+    the re-probe couldn't also read a version string."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    rec = _run_install(monkeypatch, health={"found": True, "version": None})
+    assert rec["state"] == "done"
+    assert rec["error"] is None
+    assert rec["detail"] == "gh"
+
+
 def test_a_failing_download_surfaces_its_real_error(tmp_path, monkeypatch):
     """A 403 from GitHub and a proxy eating the TLS handshake are different
     documented problems with different fixes — a reworded "install failed"

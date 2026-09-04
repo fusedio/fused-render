@@ -666,9 +666,10 @@ def _run_install() -> None:
             error="the download finished, but the GitHub CLI still cannot "
                   "be found on this machine")
         return
-    _publish_install(state="done", finished_at=time.time(),
-                     detail=("gh " + (fresh or {}).get("version", "") or "").strip()
-                            if fresh else "Finished")
+    _publish_install(
+        state="done", finished_at=time.time(),
+        detail=("gh " + ((fresh or {}).get("version") or "")).strip()
+                if fresh else "Finished")
 
 
 def install_start() -> dict:
