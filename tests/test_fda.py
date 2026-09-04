@@ -138,9 +138,9 @@ def test_child_granted_reads_ls_exit_and_errno_text(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fda_mod.subprocess, "run", _run)
     assert fda_mod.child_granted() is True
-    # -d + trailing slash: list the directory ENTRY's existence via readdir,
-    # never its (possibly huge) contents.
-    assert calls == [["/bin/ls", "-d", str(target) + "/"]]
+    # Plain `ls <dir>`: it must READ the directory. `ls -d` or a trailing
+    # slash would stat the entry, which succeeds without FDA.
+    assert calls == [["/bin/ls", str(target)]]
 
     monkeypatch.setattr(fda_mod, "_child_memo", (0.0, None))
     monkeypatch.setattr(

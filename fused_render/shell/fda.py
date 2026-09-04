@@ -41,6 +41,7 @@ PermissionError reports it through the ONE `refused()` helper (or the
 server's PermissionError backstop handler, for routes that never caught it),
 so "denied" means the same thing everywhere.
 """
+import logging
 import os
 import subprocess
 import sys
@@ -50,6 +51,7 @@ from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 #: Deep-link straight to System Settings -> Privacy & Security -> Full Disk
 #: Access. The legacy `com.apple.preference.security` anchor still routes on
@@ -133,7 +135,9 @@ _child_memo: tuple[float, bool | None] = (0.0, None)
 
 def _child_probe_target() -> str | None:
     """The first listdir probe target that exists. Directory targets only:
-    `ls` on the TCC.db path is a stat, which succeeds without FDA."""
+    `ls` on the TCC.db path is a stat, which succeeds without FDA — the
+    child has to READ the directory (readdir), same as the in-process probe's
+    os.listdir, or a bare stat would fake a grant on every install."""
     for raw, how in _PROBES:
         if how != "listdir":
             continue
@@ -163,8 +167,10 @@ def child_granted() -> bool | None:
     target = _child_probe_target()
     if target is not None:
         try:
+            # No -d and no trailing slash: those make ls stat the entry, which
+            # succeeds without FDA. Plain `ls <dir>` opens and reads it.
             proc = subprocess.run(
-                ["/bin/ls", "-d", target + "/"],
+                ["/bin/ls", target],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
@@ -241,8 +247,13 @@ async def permission_error_handler(request, exc: PermissionError) -> JSONRespons
     """Backstop for a PermissionError no route caught: it would otherwise
     surface as a generic 500 and the warning would never hear about the one
     failure it exists to explain. Registered by the server for the whole app;
-    a route that handles its own denial (through refused()) never gets here."""
+    a route that handles its own denial (through refused()) never gets here.
+    Logged with the request line — the 500 handler this preempts wrote a
+    traceback, and a surprise denial must stay traceable."""
     path = request.query_params.get("path") or request.url.path
+    logger.warning(
+        "permission denied (uncaught) %s %s: %s", request.method, request.url.path, exc
+    )
     return refused(path, exc)
 
 

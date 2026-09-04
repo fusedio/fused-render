@@ -33,7 +33,11 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
   // The wizard already holds a config: seed so the first paint is right,
   // then the shared store takes over.
   useEffect(() => seedFda(config.fda), [config.fda]);
-  const fda = useFda();
+  const live = useFda();
+  // Before the store's first answer, render off the config prop synchronously:
+  // an effect-time seed alone would flash the disabled "dev server" button
+  // for a frame on a packaged app.
+  const fda = live === undefined ? (config.fda ?? null) : live;
   const [opened, setOpened] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const offered = fda != null;
