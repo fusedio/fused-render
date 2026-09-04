@@ -21,7 +21,7 @@
 // of a "waiting…" line that could never finish (macOS caches the running
 // process's verdict).
 import { useEffect, useState } from "react";
-import { Check, ExternalLink, FolderLock, Lock, RotateCw, ShieldCheck } from "lucide-react";
+import { Check, ExternalLink, FolderLock, Lock, RotateCw, Search, ShieldCheck } from "lucide-react";
 
 import { openFdaSettings, type Config } from "@platform/lib/api";
 import { FDA_COPY, RELAUNCH_HREF, pokeFda, seedFda, useFda } from "@platform/lib/fda";
@@ -60,10 +60,10 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
       <StepHeader
         eyebrow={eyebrow}
         title="Let FusedRender read your files"
-        lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them and survives upgrades."
+        lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets FusedRender index your files for search."
       />
 
-      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-3">
+      <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">
         {[
           {
             icon: <Lock className="size-4" />,
@@ -74,6 +74,11 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
             icon: <FolderLock className="size-4" />,
             title: "One grant, every folder",
             body: "Replaces a prompt per protected folder — including the ones macOS never shows.",
+          },
+          {
+            icon: <Search className="size-4" />,
+            title: "Powers search",
+            body: "File search runs on an index of your home folder. Indexing waits for this grant — nothing is scanned before you say so.",
           },
           {
             icon: <ShieldCheck className="size-4" />,
@@ -155,7 +160,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }
       </div>
 
       <p className="text-xs text-muted-foreground">
-        You can do this later. If macOS ever refuses a file, the Home page shows a reminder with this same button.
+        You can do this later. If macOS ever refuses a file, the Home page shows a reminder with this same button, and file search offers it whenever it has no index to answer from.
       </p>
     </div>
   );

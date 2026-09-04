@@ -313,8 +313,8 @@ def note_index_mutation(*paths: str | None) -> None:
     the mutating page keeps touching files. Checked here rather than only at
     `_real_start` because THAT already having a scan to skip is the failure
     mode this avoids."""
-    from fused_render.shell.prefs import indexing_enabled
+    from fused_render.shell import index_gate
 
-    if not indexing_enabled():
+    if not index_gate.indexing_allowed():
         return
     _queue.note(*[p for p in paths if isinstance(p, str) and p])
