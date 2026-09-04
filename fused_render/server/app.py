@@ -617,6 +617,13 @@ def create_app(start_dir: str) -> FastAPI:
             logger.info("reclaimed %d orphaned project venv(s)", removed)
 
     app.exception_handler(Exception)(unhandled_exception)
+    # A PermissionError no route caught: 403 + the Full Disk Access warning
+    # hears about it (shell/fda.py), instead of a 500 that explains nothing.
+    # Routes that handle their own denial return shell_fda.refused() and
+    # never reach this.
+    from fused_render.shell import fda as _shell_fda
+
+    app.exception_handler(PermissionError)(_shell_fda.permission_error_handler)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     # Vendored JS libraries (marked, CodeMirror) that templates load by absolute

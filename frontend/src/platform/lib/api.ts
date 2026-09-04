@@ -4,6 +4,16 @@ import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import type { ModifiedInstall } from "@platform/lib/selffix";
 
+export interface FdaState {
+  // What THIS server process can read. Final for the process's lifetime.
+  granted: boolean;
+  // The two-stage verdict (shell/fda.py): this process cannot read, but a
+  // fresh child of the app can — the grant landed, only a relaunch remains.
+  pending_relaunch: boolean;
+  // An fs route was refused and nobody has dismissed it yet.
+  denied: boolean;
+}
+
 export interface Config {
   start_dir: string;
   home: string;
@@ -43,11 +53,14 @@ export interface Config {
   // ordinary install is one the user owns.
   read_only?: boolean;
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
-  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
-  // absent means render nothing and stop watching. `denied` flips when this
-  // session hits a PermissionError on an fs route — the moment the warning
-  // is worth showing; dismissing clears it server-side until the next one.
-  fda?: { granted: boolean; denied: boolean };
+  // packaged mac app when the probe is conclusive. Read through the one store
+  // in platform/lib/fda.ts (FdaStrip + the onboarding FdaStep); absent means
+  // render nothing and stop watching. `pending_relaunch`: a fresh child of
+  // the app can read but this process cannot — the grant landed, relaunch to
+  // apply. `denied` flips when this session hits a PermissionError on an fs
+  // route — the moment the warning is worth showing; dismissing clears it
+  // server-side until the next one.
+  fda?: FdaState;
   // First-run wizard flag (fused_render/shell/onboarding.py). The shell
   // auto-shows the wizard while BOTH timestamps are null; `complete` and
   // `dismiss` are distinct writes (reached the end vs "skip for now").
@@ -198,6 +211,9 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
 export interface OnboardingState {
   completed_at: number | null;
   dismissed_at: number | null;
+  // The step id the user last had open — the resume point after a server
+  // restart or a dismiss. Optional: an older server does not send it.
+  step?: string | null;
   version: number;
 }
 
@@ -211,6 +227,10 @@ export function completeOnboarding(): Promise<OnboardingState> {
 
 export function dismissOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
+export function setOnboardingStep(step: string): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/step", { step });
 }
 
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
