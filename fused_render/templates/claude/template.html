@@ -1592,6 +1592,8 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .queued .qbubble .qlbl { font-size: 12px; }
+  .queued .qbubble .annchips { padding: 6px 0 0; }
   .queued .qmeta {
     display: flex; gap: 6px; align-items: center;
     font-size: 11px; color: var(--faint); margin-top: 3px;
@@ -6137,6 +6139,19 @@ annToolElBtn.addEventListener("click", () => annSetTool("element"));
 annToolPtBtn.addEventListener("click", () => annSetTool("point"));
 let annDraft = null;    // anchor of a NEW note being composed
 let annEditing = null;  // id of an existing pending note being edited
+// The queue entry holding the pending notes, if ✓ Done landed during a live
+// run (submitChat parks one; see queueMessage). While it exists the chips are
+// drawn INSIDE its bubble instead of above the composer — the notes are
+// spoken for, and a row of chips beside a "queued" pill that named the same
+// notes read as two copies (Akshil, 2026-09-04). Declared up here, beside
+// the rest of the notes' state, because renderAnn runs at boot long before
+// the queue's own `const`s exist.
+let annQueued = null;
+// When the mode was last ARMED. Pins are drawn only for notes saved since
+// (Akshil, 2026-09-04): each arm is a fresh round over a clean app — older
+// notes, queued or merely pending from an earlier round, keep their chips
+// (they still send) but no longer mark the page the reader is now reading.
+let annRoundStart = 0;
 // Pins follow the mode: annotating shows the comment pins over the app, leaving
 // the mode hides them. Chips above the composer are the send payload and stay
 // visible either way.
@@ -6277,6 +6292,14 @@ function renderAnn() {
   // the same box is the target document's own viewport (annSyncTarget).
   const host = annStageEl;
   annotations.forEach((c, i) => {
+    // A SENT note draws no pin (Akshil, 2026-09-04). It used to stay on the app
+    // as a muted ✓ until the run finished and annResolveSent dropped it, which
+    // meant the next round of commenting was done over last round's marks. The
+    // note itself is kept until then — the receipt and a failed send's
+    // un-marking (`c.sent = 0`) still read it — it just stops being a pin.
+    // Likewise a note from an EARLIER round (see annRoundStart): its chip is
+    // the whole of its presence now.
+    if (c.sent || (c.createdAt || 0) < annRoundStart) return;
     let x, y;
     if (c.kind === "point") {
       // No element to resolve — the anchor IS the coordinate, converted back
@@ -6318,6 +6341,12 @@ function renderAnn() {
   annChipsEls.forEach((box) => {
     if (!box) return;
     box.innerHTML = "";
+    // Queued: the chips move into the queue bubble (see annQueued). Both
+    // composer boxes pass through here, so the bubble is cleared and rebuilt
+    // twice — cheap, and it ends up right either way.
+    const dest = annQueued && annQueued.chips && annQueued.chips.isConnected
+      ? annQueued.chips : box;
+    if (dest !== box) dest.innerHTML = "";
     pending.forEach((c) => {
       const chip = document.createElement("div");
       chip.className = "annchip";
@@ -6371,7 +6400,7 @@ function renderAnn() {
         annSave();
       };
       chip.append(lbl, txt, x);
-      box.appendChild(chip);
+      dest.appendChild(chip);
     });
     // The pictures ride in the SAME row, last and in attachment order, because
     // they are the same kind of thing: something this message is about to carry,
@@ -6761,10 +6790,16 @@ annDelBtn.addEventListener("click", () => {
 // Nothing here awaits any more: a note's picture is the send-time overview
 // screenshot (annCaptureOverview), taken once for the whole message rather
 // than per note at save time.
+//
+// SAVE ONLY — nothing is sent from here (Akshil, 2026-09-04). A saved note
+// used to go to Claude the moment Enter landed, which turned the FIRST note of
+// a review into a run and left the reader giving feedback to a model already
+// acting on half of it. Notes now pool as pending until ✓ Done (annDone), the
+// same shape a recorded walkthrough already has: many marks, one send when the
+// mode ends. Esc out of the mode leaves them pending for the next message.
 async function annCommit() {
   const content = annTa.value.trim();
-  const isNew = !!(content && annDraft);
-  if (isNew) {
+  if (content && annDraft) {
     annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
     annSave();
   } else if (content && annEditing) {
@@ -6772,12 +6807,6 @@ async function annCommit() {
     if (c && !c.sent) { c.content = content; annSave(); }
   }
   annCloseComposer();
-  // Auto-send fires for NEW notes only — editing an existing pending note must
-  // not send. Skipped while a turn is in flight (the note stays pending and
-  // rides the next message). The message may be EMPTY — an annotation-only
-  // send is the normal case — and whatever the user already typed in the
-  // composer is theirs and rides along as the message's own words.
-  if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
   // stopPropagation, because the document-level Escape binding would otherwise
@@ -6789,6 +6818,46 @@ annTa.addEventListener("keydown", (e) => {
     annCommit();
   }
 });
+// Typing in a PORTALED composer must not reach the app (Akshil, 2026-09-04).
+// Hosted, the textarea is a node of the target's document, so every keystroke
+// bubbles out of the layer's shadow root into that document's own listeners —
+// and an app with a document-level "any key focuses the search box" handler
+// pulled focus mid-keystroke, so the letters landed in ITS input and the note
+// stayed empty. The events stop at the composer's own root; the app hears
+// nothing while the reader is writing to Claude.
+//
+// On #annpop rather than the textarea because the whole card is the composer
+// (the Delete button included), and on the node rather than the layer host
+// because the node is what travels — the parked seat needs none of this (the
+// chat column's own bindings are ours, and gated on their popups), so it is
+// skipped there. Bubble phase, deliberately: a capture listener on the card
+// would stop the event BEFORE it reached the textarea's own keydown handler,
+// and Enter and Escape live there.
+//
+// Two halves. Stopping the bubble is the whole fix for bubble-phase listeners;
+// a CAPTURE-phase listener on the app's document has already run by the time
+// the event reaches the composer, and if it moved focus the character about to
+// be inserted (the default action runs after dispatch) would still land in the
+// app's field. So focus is also taken back, synchronously, on every keydown:
+// the default action then inserts into the textarea after all.
+const ANN_KEY_EVENTS = ["keydown", "keyup", "keypress", "input", "beforeinput",
+  "compositionstart", "compositionupdate", "compositionend"];
+for (const type of ANN_KEY_EVENTS) {
+  annPop.addEventListener(type, (e) => {
+    // Asked of the EVENT, not only the node: Enter's own handler ran first
+    // (target phase) and already brought the composer home — annPortaled() is
+    // false by the time the bubble gets here, while the event is still
+    // walking the app document's path. `view` is the window the key landed in.
+    if (!annPortaled() && !(e.view && e.view !== window)) return;
+    e.stopPropagation();
+    if (type === "keydown" && annPop.style.display === "block") {
+      const doc = annPop.ownerDocument;
+      const host = doc.activeElement;
+      const deep = host && host.shadowRoot ? host.shadowRoot.activeElement : host;
+      if (deep !== annTa && !annPop.contains(deep)) annTa.focus();
+    }
+  });
+}
 
 
 // The idle tooltip, as a function because it has TWO writers — applyPaneNoun sets
@@ -6933,7 +7002,7 @@ function annSetMode(on) {
   // Every ARM gets a number, so a disarm decided long ago (annRecEnd's, after
   // an await) can tell "the mode I armed" from "a mode the user re-armed
   // while I was transcribing" and leave the second one alone (Bugbot, #644).
-  if (on) annArmEpoch += 1;
+  if (on) { annArmEpoch += 1; annRoundStart = Date.now(); }
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
   // this. `annmode` is effectively-off: only an explicit "1" means armed, and
@@ -7023,13 +7092,14 @@ function annSetMode(on) {
 // job now — the seat that used to toggle the mode off IS the Done button.
 annBtn.addEventListener("click",
   () => (annRecOn ? annRecEnd() : annOn ? annDone() : annSetMode(true)));
-// Done: the typed-comment mode's exit that also delivers. A composer still
-// open with words in it is committed FIRST — Done means "send what I said",
-// and the mousedown exemption above is what kept that draft alive this far —
-// through the same annCommit the Enter key uses (save, auto-send). Then any
-// notes the auto-send guard left pending (a turn was in flight) flush with a
-// bare auto-submit — the notes ARE the content, nothing is seeded — and the
-// mode goes away.
+// Done: the typed-comment mode's exit that also delivers — and the ONLY send
+// the typed mode has (annCommit saves, never sends). A composer still open
+// with words in it is committed FIRST — Done means "send what I said", and the
+// mousedown exemption above is what kept that draft alive this far — through
+// the same annCommit the Enter key uses. Then every pending note flushes in
+// ONE bare auto-submit — the notes ARE the content, nothing is seeded — and
+// the mode goes away. A turn already in flight leaves them pending; they ride
+// the next message instead.
 //
 // One at a time (Bugbot, PR #664): annCommit's await could span a second
 // Done click, which would see no open composer, read the just-saved note as
@@ -7044,7 +7114,11 @@ async function annDone() {
       await annCommit();
     }
     const pending = annotations.some((a) => a.content && !a.sent);
-    if (pending && !sending) annAutoSubmit();
+    // A live run is not a reason to hold the notes back: submitChat parks an
+    // annotation-only entry in the queue (Akshil, 2026-09-04), the same way
+    // words typed during a run are parked. Only the brief `sending` window
+    // before a run has an id still leaves them pending for the next message.
+    if (pending && (activeRun || !sending)) annAutoSubmit();
     annSetMode(false);
   } finally {
     annDoneBusy = false;
@@ -7530,7 +7604,7 @@ async function annRecEnd() {
     // send, instead of evaporating because the walkthrough ended mid-turn.
     if (spoke || intro) {
       annPrefillComposer(intro);
-      if (!sending) annAutoSubmit();
+      if (activeRun || !sending) annAutoSubmit();  // a live run parks it — see annDone
     }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
@@ -7704,8 +7778,10 @@ function annPollTarget() {
   else { annSetMode(false); renderAnn(); }
 }
 
-// Auto-send: a saved NEW note goes to Claude immediately, always — there is no
-// off switch. The `filled`/`sending` guards below are the only gates.
+// The notes' one door to Claude: ✓ Done (annDone) for typed notes, the stop of
+// a recording (annRecEnd) for spoken ones — both send EVERY pending note in one
+// message. There is no off switch; the callers' `sending` guards are the only
+// gates.
 //
 // This is the one path that starts a run while the transcript may be OFF SCREEN:
 // notes are saved in the narrow layout's Preview view, where #log is collapsed
@@ -7715,7 +7791,10 @@ function annPollTarget() {
 // Deliberately not a gate here: refusing to send from Preview would take away the
 // feature instead of fixing where its output lands.
 function annAutoSubmit() {
-  if (chatEl.classList.contains("home")) document.getElementById("card").requestSubmit();
+  // The home form's submit is Stop while a run is live; an auto-send must
+  // never press it. (Home with a live run should not happen — the first send
+  // leaves home — but a wrong guess here would kill the reader's run.)
+  if (chatEl.classList.contains("home") && !activeRun) document.getElementById("card").requestSubmit();
   else submitChat();
 }
 
@@ -15065,7 +15144,10 @@ function queueRestore(raw, sessionId, runId) {
 function persistQueue() {
   const sessionId = fused.params.get("session_id") || "";
   const runId = fused.params.get("run") || "";
-  const texts = queuedMsgs.map((q) => q.text);
+  // Annotation-only entries are not mirrored: their notes are already on disk
+  // (annSave) and come back as pending chips, which is where a reload should
+  // find them — a stored empty string would be dropped by queueRestore anyway.
+  const texts = queuedMsgs.filter((q) => !q.ann).map((q) => q.text);
   const rec = queueRecord(sessionId, runId, texts);
   try {
     if (rec) sessionStorage.setItem(QUEUE_STORE, JSON.stringify(rec));
@@ -15135,7 +15217,23 @@ function queueMessage(text) {
   d.className = "turn queued";
   const b = document.createElement("div");
   b.className = "qbubble";
-  b.textContent = text;
+  // No words: an annotation-only entry (submitChat's Done-during-a-run case).
+  // The bubble holds the notes' chips themselves (renderAnn draws them here
+  // while annQueued points at this entry), so what will be sent is what is
+  // shown — every pending note rides along at send time, and a note added
+  // after Done shows up in the bubble as it is saved.
+  const ann = !text;
+  let chips = null;
+  if (ann) {
+    const lbl = document.createElement("div");
+    lbl.className = "qlbl";
+    lbl.textContent = "\u{1F4CC} Comments";
+    chips = document.createElement("div");
+    chips.className = "annchips";
+    b.append(lbl, chips);
+  } else {
+    b.textContent = text;
+  }
   const meta = document.createElement("div");
   meta.className = "qmeta";
   const lbl = document.createElement("span");
@@ -15145,7 +15243,7 @@ function queueMessage(text) {
   x.className = "qx";
   x.textContent = "remove";
   x.title = "Unqueue: put this message back in the input box";
-  const entry = { text, el: d };
+  const entry = { text, el: d, ann, chips };
   x.onclick = () => {
     const i = queuedMsgs.indexOf(entry);
     if (i >= 0) queuedMsgs.splice(i, 1);
@@ -15153,7 +15251,9 @@ function queueMessage(text) {
     persistQueue();
     d.remove();
     // Back into the composer, not the void — appended so a draft in progress
-    // is never clobbered.
+    // is never clobbered. An annotation-only entry has no words to give back:
+    // its notes are still pending, so unqueuing is the chips coming home.
+    if (ann) { annQueued = null; renderAnn(); return; }
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
     growBox();
     focusBox(box);
@@ -15164,6 +15264,7 @@ function queueMessage(text) {
   scrollBottom();
   queuedMsgs.push(entry);
   persistQueue();
+  if (ann) { annQueued = entry; renderAnn(); }
 }
 
 // Fire the next queued message once nothing is live. Called from the tails of
@@ -15180,6 +15281,7 @@ function drainQueue() {
   // the next boot can already see in the log.
   persistQueue();
   next.el.remove();  // sendMessage adds the real user bubble
+  if (next.ann) annQueued = null;  // sendMessage marks the notes sent and repaints
   sendMessage(next.text);
 }
 
@@ -15190,6 +15292,7 @@ function unqueueAll(entries) {
   for (const q of entries) {  // head first: composer keeps typed order
     if (q.dead) continue;  // × was clicked while this entry was detached
     q.el.remove();
+    if (q.ann) { annQueued = null; renderAnn(); continue; }  // chips come home
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
   }
   growBox();
@@ -16807,7 +16910,16 @@ function submitChat() {
   // an old session must not be parked with no run to drain it after.
   if (activeRun) {
     const message = box.value.trim();
-    if (!message) return;  // text-only queue; annotation-only sends can't park
+    // An annotation-only send parks too (Akshil, 2026-09-04): ✓ Done or a
+    // stopped recording during a live run used to fall through here and leave
+    // the notes as chips the reader had to Enter out by hand. One such entry
+    // at a time — the notes are folded in at SEND time, so a second Done while
+    // the first is still queued has nothing new to park.
+    if (!message) {
+      if (!annPending().length || queuedMsgs.some((q) => q.ann)) return;
+      queueMessage("");
+      return;
+    }
     box.value = "";
     growBox();
     queueMessage(message);

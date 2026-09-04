@@ -2179,7 +2179,7 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     opened) leaves the comment layer down, so clicks reach the app. Encoded as
     `=== "1"` rather than `!== "0"` so ABSENT reads as disarmed.
     Pin visibility and auto-send have no params of their own any more: pins
-    follow the mode, and a saved new note always auto-sends."""
+    follow the mode, and Done always sends the pending notes."""
     assert 'annSetMode(fused.params.get("annmode") === "1")' in html
     assert "annshow" not in html
     assert "annautosend" not in html
@@ -2196,9 +2196,11 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
     assert 'if ((fused.params.get("annmode") === "1") !== annOn) {' in mode
     assert mode.count('fused.params.set("annmode"') == 1
-    # auto-send is unconditional (bar the in-flight guard) — an empty composer
-    # sends bare, the annotations carrying the content
-    assert "if (isNew && !sending) annAutoSubmit();" in html
+    # Done's send is unconditional (bar the in-flight guard) — an empty
+    # composer sends bare, the annotations carrying the content. Saving a note
+    # sends nothing: notes pool until Done (Akshil, 2026-09-04).
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in html
+    assert "isNew && !sending" not in html
     assert "annAutoEl" not in html and 'id="annauto"' not in html
 
 

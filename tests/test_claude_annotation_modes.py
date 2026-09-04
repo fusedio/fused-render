@@ -192,9 +192,91 @@ def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
 # --------------------------------------------------- one commit path, awaited
 
 def test_typed_notes_save_through_the_one_commit_path(html):
-    """The Enter key calls annCommit — the one save-and-autosend path."""
+    """The Enter key calls annCommit — the one SAVE path. It never sends."""
     enter = _block(html, 'if (e.key === "Enter" && !e.shiftKey)', "});")
     assert "annCommit();" in enter
+    assert "annAutoSubmit" not in enter
+
+
+def test_a_portaled_composer_keeps_its_keystrokes(html):
+    """Hosted, the composer is a node of the APP's document, so a keystroke in
+    it bubbled into the app's own listeners — an app that focuses its search
+    box on any key stole the letters (Akshil, 2026-09-04). Every key-family
+    event stops at the composer, and focus is taken back on keydown in case a
+    capture-phase listener already moved it. Bubble phase, or Enter/Escape
+    would never reach the textarea's own handler."""
+    body = _block(html, "const ANN_KEY_EVENTS = [", "\n}\n")
+    for ev in ("keydown", "keyup", "keypress", "input", "beforeinput",
+               "compositionstart", "compositionend"):
+        assert '"%s"' % ev in body
+    assert "if (!annPortaled() && !(e.view && e.view !== window)) return;" in body, \
+        ("the parked seat's bindings are the chat's own — leave them alone; but "
+         "Enter unportals mid-dispatch, so the event's window decides too")
+    assert "e.stopPropagation();" in body
+    assert "annTa.focus();" in body
+    assert "host.shadowRoot.activeElement" in body, \
+        "activeElement retargets to the layer host; drill into the shadow root"
+    assert "}, true);" not in body, "bubble phase, not capture"
+
+
+def test_done_during_a_live_run_queues_the_notes(html):
+    """Done (and a stopped recording) during a live run used to fall through
+    submitChat's text-only queue and leave the notes as chips the reader had
+    to Enter out by hand (Akshil, 2026-09-04). An annotation-only entry parks
+    in the queue like typed words do — one at a time, the notes folding in at
+    send time — and the home form's Stop is never pressed by an auto-send."""
+    body = _block(html, "function submitChat()", "\n}\n")
+    assert "if (!annPending().length || queuedMsgs.some((q) => q.ann)) return;" in body
+    assert 'queueMessage("");' in body
+    q = _block(html, "function queueMessage(text)", "\n}\n")
+    assert "const ann = !text;" in q
+    assert "const entry = { text, el, ann, chips };".replace("el,", "el: d,") in q
+    assert "if (ann) { annQueued = null; renderAnn(); return; }" in q, \
+        "unqueue gives no words back — the chips come home to the composer"
+    assert "if (ann) { annQueued = entry; renderAnn(); }" in q
+    # the chips live in the bubble while queued, not above the composer
+    chips = _block(html, "  // pending chips above both composers", "\n  });\n")
+    assert "annQueued.chips" in chips and "dest.appendChild(chip);" in chips
+    drain = _block(html, "function drainQueue()", "\n}\n")
+    assert "if (next.ann) annQueued = null;" in drain
+    un = _block(html, "function unqueueAll(entries)", "\n}\n")
+    assert "if (q.ann) { annQueued = null; renderAnn(); continue; }" in un
+    persist = _block(html, "function persistQueue()", "\n}\n")
+    assert "queuedMsgs.filter((q) => !q.ann)" in persist, \
+        "annotation-only entries are not mirrored — annSave already holds the notes"
+    auto = _block(html, "function annAutoSubmit()", "\n}\n")
+    assert 'contains("home") && !activeRun' in auto
+
+
+def test_a_sent_note_draws_no_pin(html):
+    """Once a note has gone to Claude its pin leaves the app (Akshil,
+    2026-09-04): the muted ✓ that used to linger until the run resolved meant
+    the next round was commented over last round's marks. The note is kept —
+    the receipt and a failed send's un-marking still read it."""
+    body = _block(html, "  annotations.forEach((c, i) => {", "\n  });\n")
+    gate = "if (c.sent || (c.createdAt || 0) < annRoundStart) return;"
+    assert body.index(gate) < body.index("annPins.ownerDocument.createElement")
+
+
+def test_each_arm_starts_a_clean_round_of_pins(html):
+    """Arming the mode stamps the round (Akshil, 2026-09-04); only notes saved
+    since get pins. Older notes — queued behind a live run, or left pending —
+    keep their chips and still send, but no longer mark the page."""
+    assert "if (on) { annArmEpoch += 1; annRoundStart = Date.now(); }" in html
+    assert "let annRoundStart = 0;" in html
+
+
+def test_a_saved_note_pools_until_done(html):
+    """Saving a typed note sends nothing (Akshil, 2026-09-04): the first note
+    of a review used to start a run while the reader was still giving
+    feedback. Notes pool as pending and go out together on Done — the shape a
+    recorded walkthrough already has (many marks, one send at stop)."""
+    body = _block(html, "async function annCommit()", "\n}\n")
+    assert "annAutoSubmit" not in body
+    assert "submitChat" not in body
+    assert "requestSubmit" not in body
+    assert "annSave();" in body
+    assert "annCloseComposer();" in body
 
 
 def test_a_note_saves_without_any_capture_of_its_own(html):
@@ -204,7 +286,6 @@ def test_a_note_saves_without_any_capture_of_its_own(html):
     body = _block(html, "async function annCommit()", "\n}\n")
     assert "shotPane" not in body
     assert "annRecPointShot" not in body
-    assert "annAutoSubmit()" in body
 
 
 # ------------------------------------------ two buttons, one mode at a time
@@ -222,10 +303,10 @@ def test_the_comment_seat_is_the_modes_one_control(html):
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
-    """Done is the exit that also delivers: an open composer's words are
-    committed first (through the same annCommit the Enter key uses), notes
-    the auto-send guards left pending ride out through the same
-    prefill-and-submit, then the mode goes away."""
+    """Done is the exit that also delivers — the typed mode's ONE send: an open
+    composer's words are committed first (through the same annCommit the Enter
+    key uses), then every pending note goes out in one bare auto-submit, then
+    the mode goes away."""
     body = _block(html, "async function annDone()", "\n}\n")
     assert "await annCommit();" in body
     # one at a time: annCommit's await could span a re-entrant Done click,
@@ -234,8 +315,9 @@ def test_done_flushes_pending_notes_before_disarming(html):
     assert "annDoneBusy = false;" in body
     assert "a.content && !a.sent" in body
     # the flush is a bare auto-submit: annPrefillComposer returns nothing now,
-    # so gating on its return value would silently never send (Bugbot, #661)
-    assert "if (pending && !sending) annAutoSubmit();" in body
+    # so gating on its return value would silently never send (Bugbot, #661).
+    # A live run is not a gate: submitChat parks the notes in the queue.
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in body
     assert "annPrefillComposer" not in body, \
         "there is no canned prompt to seed — the notes are the content"
     assert "annSetMode(false);" in body
@@ -412,7 +494,7 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     # during a live run parks its words in the composer to ride the next send
     # instead of evaporating (Bugbot, #661) — only the auto-submit is gated
     seed = body.index("annPrefillComposer(intro);")
-    submit = body.index("if (!sending) annAutoSubmit();")
+    submit = body.index("if (activeRun || !sending) annAutoSubmit();")
     assert send < seed < submit
 
 
@@ -552,14 +634,14 @@ console.log(JSON.stringify({seededValue: seededValue, joined: joined,
         "no seed means the composer is left exactly as the user had it"
 
 
-def test_a_new_note_autosends_bare_with_no_canned_message(html):
-    """Saving a note fires the send even with an empty composer: the message
-    may be empty, the annotations carry the content, and whatever the user had
-    typed is theirs and goes along as the message's own words."""
-    body = _block(html, "async function annCommit()", "\n}\n")
-    assert "if (isNew && !sending) annAutoSubmit();" in body
+def test_done_sends_bare_with_no_canned_message(html):
+    """Done fires the send even with an empty composer: the message may be
+    empty, the annotations carry the content, and whatever the user had typed
+    is theirs and goes along as the message's own words."""
+    body = _block(html, "async function annDone()", "\n}\n")
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in body
     assert "annPrefillComposer" not in body, \
-        "the save path seeds nothing — there is no canned prompt to seed"
+        "the send path seeds nothing — there is no canned prompt to seed"
 
 
 # ------------------------------------------- the app records, not this page
