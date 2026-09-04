@@ -461,15 +461,27 @@
      fired 48px too late — the band where labels showed AND the bar clipped is
      gone with the buttons. */
   .btn[aria-expanded="true"] .caret { color: inherit; transform: rotate(180deg); }
+  /* Filled in INK, not accent: Commit and Send are the next step, and a solid
+     block says so, but an accent slab beside an accent-ringed sparkle was two
+     yellow controls shouting at once. Ink-on-bg is the loudest quiet colour the
+     palette has, and it inverts cleanly in light mode. */
   .btn.primary {
-    border-color: var(--accent-dim);
-    background: var(--accent);
-    color: var(--on-accent);
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--bg);
     font-weight: 700;
   }
-  .btn.primary:hover:not([disabled]) { background: var(--accent-dim); color: var(--on-accent); }
+  .btn.primary:hover:not([disabled]) { background: var(--ink-2); border-color: var(--ink-2); color: var(--bg); }
+  .btn.primary .count { background: var(--bg); color: var(--ink); }
   .btn.danger { color: var(--danger); border-color: var(--danger-line); }
   .btn.danger:hover:not([disabled]) { color: var(--danger); background: var(--danger-bg); border-color: var(--danger); }
+  /* The constructive twin of `.danger`: "Select all" rides the Changes header
+     beside "Discard all", and the two are the section's opposite verbs — one
+     keeps every change, one throws every change away — so they wear opposite
+     colours in the same outline shape. */
+  .btn.good { color: var(--good-fg); border-color: var(--good-line); }
+  .btn.good:hover:not([disabled]) { color: var(--good-fg); background: var(--good-bg); border-color: var(--good-fg); }
+  .btn.good[disabled] { color: var(--ink-3); border-color: var(--line); }
   .btn .count {
     padding: 0 5px;
     border-radius: 999px;
@@ -528,6 +540,10 @@
      does not reflow while text is streaming into the textarea above it. */
   .btn.ai { color: var(--ink-3); }
   .btn.ai:hover:not([disabled]) { color: var(--accent); }
+  /* Once something is ticked the offer is LIVE — the same moment Commit fills
+     in — so the sparkle steps up with it: accent ink and an accent ring, still
+     an outline so Commit stays the one filled control on the row. */
+  .btn.ai.ready:not([disabled]) { color: var(--accent); border-color: var(--accent-dim); }
   .btn.ai.working { opacity: 1; color: var(--accent); animation: ai-pulse 1.2s ease-in-out infinite; }
   /* 0.65, not 0.45: a 55% opacity swing reads as BLINKING, and the streaming
      text in the textarea above is already the real progress signal — this only
@@ -865,7 +881,9 @@
     flex: none;
     align-self: center;
     margin: 0 0 0 14px;
-    accent-color: var(--accent-dim);
+    /* Ink, matching the filled Commit button the ticks feed — an accent tick
+       beside an ink Commit was the one yellow thing left in the column. */
+    accent-color: var(--ink);
     width: 14px;
     height: 14px;
     cursor: pointer;
@@ -874,11 +892,6 @@
   .tick:disabled { cursor: not-allowed; }
   /* A row that follows a checkbox loses its left padding — the tick owns it. */
   .tick + .row { padding-left: 8px; }
-  /* The select-all row: first line of the list, quiet, the master tick and its
-     words one click surface. It lives IN the list because it acts on the list —
-     parked in the header's action cluster it read as an unrelated control (and
-     wore the browser's blue, styled by nothing). */
-  .line.select-all .row { color: var(--ink-3); font-size: 12px; }
   .line[aria-current="true"] .subject, .line[aria-current="true"] .path { font-weight: 700; }
   .row .sha {
     flex: none;
@@ -1595,6 +1608,7 @@ const STASH_GLYPH = ["M4 5h16v4H4z", "M6 9v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9",
 const RESTORE_GLYPH = ["M4 5h16v4H4z", "M6 9v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9",
                        "M12 17v-4.5", "M9.5 15L12 12.5 14.5 15"];
 const CROSS_GLYPH = ["M6 6l12 12", "M18 6L6 18"];
+const CHECK_GLYPH = ["M5 12l5 5L20 7"];
 
 /* Which sections are folded shut. MEMORY, deliberately not a param: which
    accordion is open is a reading posture, not a place — a refresh starting
@@ -1755,6 +1769,10 @@ function toolbar(data) {
      face of the button speaks the user's language. */
   const behind = repo.behind || 0;
   const ahead = repo.upstream ? (repo.ahead || 0) : 0;
+  /* The states with commits to MOVE wear `.primary` — filled, like Commit —
+     because they are the one thing left to do; "Check for updates" and
+     "Publish to GitHub" stay outlined, as offers rather than the next step. An
+     outlined Send after a commit read as one more grey button and was missed. */
   const canPush = remote && !repo.detached;
   if (!remote) {
     /* No remote used to be a dead end — a greyed-out button with nothing
@@ -1772,6 +1790,7 @@ function toolbar(data) {
     }));
   } else if (behind) {
     group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
+      className: "primary",
       label: "Get the latest — " + plural(behind, "commit") + " to pull",
       count: behind,
       title: (ahead
@@ -1782,6 +1801,7 @@ function toolbar(data) {
     }));
   } else if (ahead && canPush) {
     group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Send")], {
+      className: "primary",
       label: "Send " + plural(ahead, "commit"),
       count: ahead,
       title: "git push to " + repo.upstream,
@@ -1792,6 +1812,7 @@ function toolbar(data) {
        PUBLISHES it. The old toolbar hid this distinction in a tooltip on a
        button that just said Push. */
     group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Publish branch")], {
+      className: "primary",
       label: "Publish " + repo.branch + " to " + remote,
       title: "git push — create " + repo.branch + " on " + remote + " and track it",
       onClick: () => run("push", { op: "push" }),
@@ -2687,7 +2708,7 @@ function commitBox(data) {
         : "Nothing is ticked yet — tick the changes to include them.",
       onClick: () => commit(box.value),
     }),
-    generateButton(),
+    generateButton(total > 0 && !conflicted),
     el("span", { className: "hint", textContent: hint }));
 
   const wrap = el("div", { className: "commit" }, box, actions);
@@ -2748,12 +2769,15 @@ const AI_SYSTEM = [
    disabled instead of handing the user a second click into the same stream. */
 let aiBusy = false;
 
-function generateButton() {
+const AI_STALE_MESSAGE = "The AI helper did not load in this view. Reload the "
+  + "app and try again, or write the message yourself in the box above.";
+
+function generateButton(ready) {
   /* While it writes, the sparkle IS a spinner — the pulse alone read as
      nothing happening, and the button got clicked three times by a user who
      never learned a generation was already running. */
   return action("ai", aiBusy ? el("span", { className: "spin" }) : icon(SPARK_GLYPH, 14), {
-    className: "icon ai" + (aiBusy ? " working" : ""),
+    className: "icon ai" + (aiBusy ? " working" : "") + (ready ? " ready" : ""),
     disabled: aiBusy,
     label: "Generate a commit message with AI",
     title: aiBusy ? "Writing a commit message…"
@@ -2805,9 +2829,12 @@ function aiPrompt(payload) {
 /* A failure is a `flash`, exactly like a failed mutation: an AI that is not
    configured on this server, or a model that errored, is an ordinary answer
    this view reports in its own words — never the red traceback overlay. */
-function aiFailed(message) {
+function aiFailed(message, noAsk) {
   aiBusy = false;
-  flash = { ok: false, message };
+  /* `noAsk`: the failure is this page's (the AI helper never loaded, nothing
+     to describe), not the repository's — a "Fix with AI" that opens Claude on
+     it would send the user to fix something that is not theirs. */
+  flash = { ok: false, message, noAsk: !!noAsk };
   announce(message);
   draw(true);
 }
@@ -2829,7 +2856,15 @@ async function generateMessage() {
     return;
   }
   if (payload.empty) {
-    aiFailed("There is nothing to describe — no changes were found.");
+    aiFailed("Nothing to describe yet — make a change first, then the sparkle "
+             + "can write its message.", true);
+    return;
+  }
+  /* The runtime is injected by the shell; a stale bundle cached from before
+     `fused.ai` became a namespace has no `.text`, and the raw TypeError
+     ("fused.ai.text is not a function") is a bug report, not a message. */
+  if (!window.fused || !fused.ai || typeof fused.ai.text !== "function") {
+    aiFailed(AI_STALE_MESSAGE, true);
     return;
   }
 
@@ -2861,10 +2896,16 @@ async function generateMessage() {
     if (written) written.focus();
   } catch (err) {
     if (!received) setMessage(before);
-    aiFailed(err && err.type === "ai_unavailable"
-      ? "AI is not available on this server."
-      : "Could not write a commit message: "
+    if (err && err.type === "ai_unavailable") {
+      aiFailed("AI is not available on this server.");
+    } else if (err instanceof TypeError) {
+      /* A TypeError out of the bridge is the page's fault, never git's or the
+         model's — say what to do about it instead of quoting the stack. */
+      aiFailed(AI_STALE_MESSAGE, true);
+    } else {
+      aiFailed("Could not write a commit message: "
         + ((err && err.message) || "the request failed."));
+    }
   }
 }
 
@@ -3929,66 +3970,58 @@ function render(data, stashes, diff) {
 
   /* ONE Changes section. Staged / unstaged / untracked was git's index model
      rendered at people who do not have it; the checkbox on each row (see
-     `changeLine`) is the model everyone has. The master checkbox stages or
-     unstages the lot; discard-all and the stash dialog ride the header as
-     icon+word buttons whose words give way in a narrow pane. */
+     `changeLine`) is the model everyone has. Select all, discard-all and the
+     stash dialog ride the header as icon+word buttons whose words give way in
+     a narrow pane. */
   const changes = data.changes;
-  const stagedCount = changes.filter((c) => c.staged).length;
   const changesAsk = askIn("changes");
   const showChanges = changes.length || changesAsk || truncNote;
 
-  /* The master tick heads the LIST, not the header's action cluster: it acts
-     on the rows below it, it belongs in their column (and in the cluster it
-     sat unstyled in the browser's blue, matching nothing). One quiet
-     "Select all" row, the tick aligned over the rows' own ticks. */
-  const master = el("input", { type: "checkbox", className: "tick" });
+  /* "Select all" is a header BUTTON beside "Discard all", not a master tick
+     heading the list: the two are the section's opposite verbs over the same
+     rows, and reading them side by side — green keep, red throw away — is what
+     a row-level tick could never say. It flips to "Deselect all" once every
+     change is in, so the label always names what a click will do. */
   const allIn = changes.length > 0
     && changes.every((c) => c.staged && !c.unstaged && !c.untracked);
-  master.checked = allIn;
-  master.indeterminate = stagedCount > 0 && !allIn;
-  master.disabled = busy !== null || !changes.length;
-  master.setAttribute("aria-label", allIn
-    ? "Remove every change from the next commit"
-    : "Include every change in the next commit");
-  master.title = allIn ? "Untick to leave everything out of the next commit"
-                       : "Tick to include every change in the next commit";
-  master.addEventListener("change", () => {
-    if (busy !== null) return;
-    if (master.checked) run("stage_all", { op: "stage_all" });
-    else run("unstage_all", { op: "unstage_all" });
-  });
-  const selectAllRow = el("button", {
-    className: "row", type: "button",
-    disabled: busy !== null,
-    title: master.title,
-    textContent: "Select all",
-  });
-  selectAllRow.addEventListener("click", () => { if (!master.disabled) master.click(); });
-  const selectAllLine = el("div", { className: "line select-all" }, master, selectAllRow);
+  const selectOp = allIn ? "unstage_all" : "stage_all";
+  const selectAll = changes.length ? action(selectOp,
+      [icon(CHECK_GLYPH, 14), btnLabel(allIn ? "Deselect all" : "Select all")], {
+    className: "good",
+    label: allIn ? "Remove every change from the next commit"
+                 : "Include every change in the next commit",
+    title: allIn ? "Leave every change out of the next commit"
+                 : "Include every change in the next commit",
+    onClick: () => run(selectOp, { op: selectOp }),
+  }) : null;
 
   const stashOpen = param("panel") === "stash";
   const changeRows = spliceDiff(
     changes.map((c) => changeLine(data.repo, c, c.path === wt)),
     wt ? changes.findIndex((c) => c.path === wt) : -1);
-  if (changes.length > 1) changeRows.unshift(selectAllLine);
   if (showChanges) sections.push(listSection(
     "Changes", String(changes.length),
-    [changes.length ? confirmable("discard_all",
-        [icon(REVERT_GLYPH, 14), btnLabel("Discard all")],
-        "Discard every change under this path?",
-        { label: "Discard every change under this path" }) : null,
-     changes.length ? action("panel-stash",
+    /* Stash, Discard all, Select all: neutral, then destructive, then the
+       constructive one nearest the rows it acts on. */
+    [changes.length ? action("panel-stash",
         [icon(STASH_GLYPH, 14), btnLabel("Stash")], {
           label: "Stash — set these changes aside for later",
           title: "Set these changes aside for later (git stash). They come "
                  + "back with Restore.",
           expanded: stashOpen,
           onClick: () => setParams({ panel: stashOpen ? null : "stash" }),
-        }) : null],
+        }) : null,
+     changes.length ? confirmable("discard_all",
+        [icon(REVERT_GLYPH, 14), btnLabel("Discard all")],
+        "Discard every change under this path?",
+        { label: "Discard every change under this path" }) : null,
+     selectAll],
     changeRows,
     data.repo.dirty ? "No changes under this path." : "Working tree is clean.",
     footer(changesAsk, truncNote),
-    headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet"),
+    /* No branch name here — the chip in the toolbar already says it, and a
+       second copy beside the count read as a filter on the list. */
+    data.repo.has_commits ? null : "no commits yet",
     "changes"));
 
   const stashAsk = askIn("stashes");
@@ -4056,7 +4089,7 @@ function render(data, stashes, diff) {
   if (flash) {
     const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
                     el("span", { textContent: flash.message }));
-    if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
+    if (!flash.ok && !flash.noAsk && resolving === null && proposal === null && !aiBusy) {
       if (askUnavailable) {
         /* Confirmed (not merely guessed, see `askClaudeOnError`) that nothing
            up the ancestor chain can open this into a chat. A dead button that
