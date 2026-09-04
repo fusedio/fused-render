@@ -8,10 +8,12 @@
 //   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
 //   4 First app    — the Home composer, or a showcase local-AI app
 //
-// Steps 1–3 write nothing. Step 4's create (or a showcase open) is the only
-// durable action and doubles as "complete". ✕ / Escape record a DISMISS — a
-// different flag, so a later build can tell the two apart. Both stop the
-// auto-show; neither is undone by reopening from Help › Setup wizard.
+// Steps 1–3 write nothing but the resume step (which step is open, so a
+// restart or a reopen lands back on it). Step 4's create (or a showcase open)
+// is the only other durable action and doubles as "complete". ✕ / Escape
+// record a DISMISS — a different flag, so a later build can tell the two
+// apart. Both stop the auto-show; neither is undone by reopening from Help ›
+// Setup wizard, which resumes where the user left off.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
