@@ -1,34 +1,33 @@
-// fused-apple-ai — the `provider: "apple"` tier's one native process.
+// fused-apple-ai — the `provider: "apple"` tier's native process, ONE request
+// per process.
 //
 // Owns the two Apple frameworks Python cannot reach (both are Swift-only, so
 // pyobjc has nothing to bind): FoundationModels for `afm-text` and Speech's
 // SpeechAnalyzer for `afm-speech`. The server (`fused_render/ai/apple/host.py`)
-// spawns ONE of these, keeps it resident, and talks NDJSON over stdin/stdout:
-// every request line carries an `id` and an `op`, every reply line echoes the
-// `id` and carries a `type`. Requests run concurrently as Tasks; `cancel`
-// stops the one it names. Nothing here listens on a port — the helper is a
-// child of the server and dies with it.
+// spawns one of these per call, feeds ONE JSON object on stdin, reads NDJSON
+// frames off stdout until the process exits, and cancels by terminating it.
+// Nothing here listens, multiplexes or stays resident: the weights live in
+// the OS's own daemon (modelmanagerd / the speech assets), so a fresh process
+// per request costs a spawn and nothing else — measured ~1 s for a whole cold
+// text call, and a transcription is a job anyway.
 //
-// Wire (one JSON object per line):
-//   -> {"id","op":"probe"}
-//   <- {"id","type":"probe","available":bool,"reason":str,"os":"26.6.2",
-//       "imageInput":false,"speechLocales":[...],"installedLocales":[...]}
-//   -> {"id","op":"text","prompt","instructions"?,"history"?:[{role,content}],
-//       "temperature"?,"maxTokens"?}
-//   <- {"id","type":"chunk","text"}   (DELTAS — the framework's snapshots are
-//                                      cumulative; the diff happens here so
-//                                      the server relays them untouched)
-//   <- {"id","type":"done","ok":true,"finishReason":"stop|length|cancelled|content-filter"}
-//   <- {"id","type":"done","ok":false,"error":{"type","message"}}
-//   -> {"id","op":"speech","path","locale"?,"words":bool}
-//   <- {"id","type":"assets","state":"installing","progress":0..1}  (per tick,
-//       only when the locale's model has to be downloaded first)
-//   <- {"id","type":"segment","start","end","text","words"?:[{start,end,word}]}
-//   <- {"id","type":"done","ok":true,"duration","locale"}
-//   -> {"op":"cancel","id":<the id to stop>}
+//   fused-apple-ai probe
+//     <- {"type":"probe","available","state","reason","os","imageInput",
+//         "defaultLocale","speechLocales":[...],"installedLocales":[...]}
+//   fused-apple-ai text   <<< {"prompt","instructions"?,"history"?:[{role,content}],
+//                              "temperature"?,"maxTokens"?}
+//     <- {"type":"chunk","text"}   (DELTAS — the framework's snapshots are
+//                                   cumulative; the diff happens here)
+//     <- {"type":"done","ok":true,"finishReason":"stop|length|content-filter","characters"}
+//     <- {"type":"done","ok":false,"error":{"type","message"}}
+//   fused-apple-ai speech <<< {"path","locale"?,"words":bool}
+//     <- {"type":"assets","state":"installing"}   (once, only when the locale's
+//                                                  model has to download first)
+//     <- {"type":"segment","start","end","text","words"?:[{start,end,word}]}
+//     <- {"type":"done","ok":true,"duration","locale"}
 //
 // Error `type`s the server maps onto the fused.ai vocabulary: `model_loading`
-// (assets still downloading, the caller should wait and retry), `unavailable`
+// (the OS is still fetching the model — wait and retry), `unavailable`
 // (device/OS/Apple Intelligence), `bad_request` (unsupported locale, missing
 // file), `ai_error` (anything the framework threw mid-run).
 
@@ -37,40 +36,23 @@ import Foundation
 import FoundationModels
 import Speech
 
-// MARK: - stdout, serialised
+// MARK: - stdout
 
-/// One writer for every Task: two replies interleaving mid-line would corrupt
-/// both, and the server's reader cuts on newlines and trusts each one parses.
-final class Output: @unchecked Sendable {
-    private let lock = NSLock()
-    private let handle = FileHandle.standardOutput
-
-    func send(_ object: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        handle.write(data)
-        handle.write(Data([0x0A]))
-    }
+func send(_ object: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data([0x0A]))
 }
 
-let out = Output()
-let debugging = ProcessInfo.processInfo.environment["FUSED_APPLE_DEBUG"] != nil
-
-func debug(_ message: String) {
-    guard debugging else { return }
-    FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
-}
-
-func reply(_ id: String, _ type: String, _ fields: [String: Any] = [:]) {
+func frame(_ type: String, _ fields: [String: Any] = [:]) {
     var object = fields
-    object["id"] = id
     object["type"] = type
-    out.send(object)
+    send(object)
 }
 
-func fail(_ id: String, _ type: String, _ message: String) {
-    reply(id, "done", ["ok": false, "error": ["type": type, "message": message]])
+func fail(_ type: String, _ message: String) -> Never {
+    frame("done", ["ok": false, "error": ["type": type, "message": message]])
+    exit(0)
 }
 
 // MARK: - probe
@@ -99,26 +81,29 @@ func availabilityReason(_ model: SystemLanguageModel) -> String? {
     }
 }
 
-func probe(_ id: String) async {
+func isLoading(_ model: SystemLanguageModel) -> Bool {
+    model.availability == .unavailable(.modelNotReady)
+}
+
+func probe() async {
     let model = SystemLanguageModel.default
     let reason = availabilityReason(model)
-    // `modelNotReady` is a WAIT, not a refusal — the server turns it into the
-    // same 409 `model_loading` a cold local model answers with.
-    var state = "available"
-    if reason != nil {
-        state = (model.availability == .unavailable(.modelNotReady)) ? "loading" : "unavailable"
-    }
-    reply(id, "probe", [
+    frame("probe", [
         "available": reason == nil,
-        "state": state,
+        // `modelNotReady` is a WAIT, not a refusal — the server turns it into
+        // the same 409 `model_loading` a cold local model answers with.
+        "state": reason == nil ? "available" : (isLoading(model) ? "loading" : "unavailable"),
         "reason": reason ?? "",
         "os": osVersionString(),
         // The 26.x SDK this is built against has no image-input surface on the
         // session; the day it does, this flag flips and the server's `images`
-        // refusal lifts with it. Reported rather than hard-coded server-side so
-        // a newer helper on a newer OS can say yes without a Python change.
+        // refusal lifts with it.
         "imageInput": false,
-        "defaultLocale": Locale.current.identifier(.bcp47),
+        // The USER's language, not `Locale.current`: a child of the server
+        // inherits no LANG, so `current` degrades to a region-less "en" and
+        // the server's locale mapping then has no region to match. The
+        // preferred-languages list reads the user's own setting.
+        "defaultLocale": Locale.preferredLanguages.first ?? Locale.current.identifier(.bcp47),
         "speechLocales": await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) },
         "installedLocales": await SpeechTranscriber.installedLocales.map { $0.identifier(.bcp47) },
     ])
@@ -127,8 +112,7 @@ func probe(_ id: String) async {
 // MARK: - text
 
 /// Prior turns become a `Transcript` the session is opened WITH, so a
-/// conversation is rebuilt per call (the server keeps no session state — one
-/// process serves every page, and two pages must never share a transcript).
+/// conversation is rebuilt per call — one process, one request, no state.
 func makeSession(instructions: String?, history: [[String: Any]]) -> LanguageModelSession {
     if history.isEmpty {
         return LanguageModelSession(model: .default, instructions: instructions)
@@ -140,8 +124,7 @@ func makeSession(instructions: String?, history: [[String: Any]]) -> LanguageMod
             toolDefinitions: [])))
     }
     for turn in history {
-        let content = turn["content"] as? String ?? ""
-        let segment = Transcript.Segment.text(Transcript.TextSegment(content: content))
+        let segment = Transcript.Segment.text(Transcript.TextSegment(content: turn["content"] as? String ?? ""))
         if (turn["role"] as? String) == "assistant" {
             entries.append(.response(Transcript.Response(assetIDs: [], segments: [segment])))
         } else {
@@ -151,81 +134,63 @@ func makeSession(instructions: String?, history: [[String: Any]]) -> LanguageMod
     return LanguageModelSession(model: .default, transcript: Transcript(entries: entries))
 }
 
-func generateText(_ id: String, _ request: [String: Any]) async {
+func generateText(_ request: [String: Any]) async {
     if let reason = availabilityReason(.default) {
-        let loading = SystemLanguageModel.default.availability == .unavailable(.modelNotReady)
-        fail(id, loading ? "model_loading" : "unavailable", reason)
-        return
+        fail(isLoading(.default) ? "model_loading" : "unavailable", reason)
     }
     guard let prompt = request["prompt"] as? String, !prompt.isEmpty else {
-        fail(id, "bad_request", "'prompt' must be a non-empty string")
-        return
+        fail("bad_request", "'prompt' must be a non-empty string")
     }
-    let history = request["history"] as? [[String: Any]] ?? []
-    let session = makeSession(instructions: request["instructions"] as? String, history: history)
+    let session = makeSession(instructions: request["instructions"] as? String,
+                              history: request["history"] as? [[String: Any]] ?? [])
     let maxTokens = request["maxTokens"] as? Int
-    let options = GenerationOptions(
-        temperature: request["temperature"] as? Double,
-        maximumResponseTokens: maxTokens)
-
+    let options = GenerationOptions(temperature: request["temperature"] as? Double,
+                                    maximumResponseTokens: maxTokens)
     var emitted = ""
-    var restarted = false
     do {
-        let stream = session.streamResponse(to: prompt, options: options)
-        for try await snapshot in stream {
-            try Task.checkCancellation()
+        for try await snapshot in session.streamResponse(to: prompt, options: options) {
             let whole = snapshot.content
-            // Cumulative -> delta. A snapshot that does not extend the last one
-            // (the framework re-tokenised and rewrote a suffix) cannot be
-            // expressed as an append, so it is sent as a fresh start: the
-            // server clears what it buffered and the page sees one `restart`
-            // frame it may ignore.
+            // Cumulative -> delta. The framework has only ever extended the
+            // previous snapshot; if it ever rewrites one instead, the whole
+            // text goes out again as one chunk and `done` says so — the server
+            // rebuilds `text` from the frames, so the result stays right even
+            // where a page's own concatenation would not.
             if whole.hasPrefix(emitted) {
                 let delta = String(whole.dropFirst(emitted.count))
-                if !delta.isEmpty { reply(id, "chunk", ["text": delta]) }
+                if !delta.isEmpty { frame("chunk", ["text": delta]) }
             } else {
-                restarted = true
-                reply(id, "restart", [:])
-                reply(id, "chunk", ["text": whole])
+                frame("chunk", ["text": whole])
             }
             emitted = whole
         }
         // `length` when the reply is at least as long as the cap allowed — the
         // framework has no stop-reason field, so hitting the ceiling IS the
-        // signal, the same rule `_local_finish_reason` applies to MLX.
-        var finish = "stop"
-        if let maxTokens, maxTokens > 0 {
-            // ~3-4 chars/token for English; a reply that filled the budget is
-            // within a few tokens of it, so this is a conservative floor.
-            if emitted.count >= maxTokens * 3 { finish = "length" }
-        }
-        reply(id, "done", ["ok": true, "finishReason": finish, "restarted": restarted,
-                           "characters": emitted.count])
-    } catch is CancellationError {
-        reply(id, "done", ["ok": true, "finishReason": "cancelled", "characters": emitted.count])
+        // signal (the rule `_local_finish_reason` applies to MLX). ~3-4 chars
+        // per English token makes this a conservative floor.
+        let capped = (maxTokens ?? 0) > 0 && emitted.count >= (maxTokens ?? 0) * 3
+        frame("done", ["ok": true, "finishReason": capped ? "length" : "stop", "characters": emitted.count])
     } catch let error as LanguageModelSession.GenerationError {
         switch error {
         case .guardrailViolation, .refusal:
-            // The AI SDK's name for "the model declined": the text so far (if
-            // any) was already streamed, and the frame says why it stopped.
-            reply(id, "done", ["ok": true, "finishReason": "content-filter",
-                               "characters": emitted.count,
-                               "message": error.localizedDescription])
+            // The AI SDK's name for "the model declined": the text so far was
+            // already streamed, and the frame says why it stopped.
+            frame("done", ["ok": true, "finishReason": "content-filter",
+                           "characters": emitted.count, "message": error.localizedDescription])
         case .exceededContextWindowSize:
-            fail(id, "ai_error", "the prompt (with history and instructions) exceeds Apple's on-device model's context window (~4096 tokens) — send less")
+            fail("ai_error", "the prompt (with history and instructions) exceeds Apple's on-device model's context window (~4096 tokens) — send less")
         case .assetsUnavailable:
-            fail(id, "model_loading", "Apple's on-device model assets are not ready yet; try again shortly")
+            fail("model_loading", "Apple's on-device model assets are not ready yet; try again shortly")
         case .unsupportedLanguageOrLocale:
-            fail(id, "bad_request", "Apple's on-device model does not support the language of this prompt")
+            fail("bad_request", "Apple's on-device model does not support the language of this prompt")
         case .rateLimited:
-            fail(id, "ai_error", "Apple's on-device model is rate-limiting this process; try again shortly")
+            fail("ai_error", "Apple's on-device model is rate-limiting this process; try again shortly")
         case .concurrentRequests:
-            fail(id, "ai_error", "Apple's on-device model refused a concurrent request; try again")
+            fail("ai_error", "Apple's on-device model refused a concurrent request; try again")
         default:
-            fail(id, "ai_error", error.localizedDescription)
+            fail("ai_error", error.localizedDescription)
         }
     } catch {
-        fail(id, "ai_error", error.localizedDescription)
+        fail("ai_error", error.localizedDescription)
     }
 }
 
@@ -236,10 +201,15 @@ func seconds(_ time: CMTime) -> Double {
     return s.isFinite ? (s * 100).rounded() / 100 : 0
 }
 
-/// Decode the file's first audio track to PCM buffers in the analyzer's own
-/// format. `AVAssetReader`, not `AVAudioFile`: the latter opens audio
-/// containers only, and every other transcribe engine here accepts a `.mp4`
-/// or `.mov` — a page must not have to know which engine ran (AI-10c).
+/// Decode the file's first audio track to PCM buffers in EXACTLY the analyzer's
+/// format — sample rate, channel count, sample type AND layout. SpeechAnalyzer
+/// traps (SIGTRAP inside `preRunRecognition`) on a buffer whose format merely
+/// resembles the one it asked for, and a Float32 copy into the Int16 buffer it
+/// wants on Apple Silicon is silence with the right length.
+///
+/// `AVAssetReader`, not `AVAudioFile`: the latter opens audio containers only,
+/// and every other transcribe engine here accepts a `.mp4` or `.mov` — a page
+/// must not have to know which engine ran (AI-10c).
 func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingStream<AnalyzerInput, Error>, AVAsset) {
     let asset = AVURLAsset(url: url)
     let reader = try AVAssetReader(asset: asset)
@@ -247,15 +217,11 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
         throw NSError(domain: "fused.apple", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "the file has no audio track"])
     }
-    // EXACTLY the analyzer's format — sample rate, channel count AND layout.
-    // SpeechAnalyzer traps (SIGTRAP inside `preRunRecognition`) on a buffer
-    // whose format merely resembles the one it asked for; an interleaved mono
-    // buffer is byte-identical to a planar one and still not accepted.
     let planar = !format.isInterleaved
     let description = format.streamDescription.pointee
     let sampleBytes = Int(description.mBitsPerChannel / 8)
     let isFloat = (description.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-    let settings: [String: Any] = [
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
         AVFormatIDKey: kAudioFormatLinearPCM,
         AVSampleRateKey: format.sampleRate,
         AVNumberOfChannelsKey: format.channelCount,
@@ -263,8 +229,7 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
         AVLinearPCMIsFloatKey: isFloat,
         AVLinearPCMIsBigEndianKey: false,
         AVLinearPCMIsNonInterleaved: planar,
-    ]
-    let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+    ])
     output.alwaysCopiesSampleData = false
     reader.add(output)
     guard reader.startReading() else {
@@ -272,14 +237,9 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
                                       userInfo: [NSLocalizedDescriptionKey: "the audio could not be decoded"])
     }
     let channels = Int(format.channelCount)
-    debug("pcm format: \(format) planar=\(planar)")
     let stream = AsyncThrowingStream<AnalyzerInput, Error> { continuation in
         Task.detached {
-            var fed = 0
-            defer { debug("pcm buffers fed: \(fed)") }
             while let sample = output.copyNextSampleBuffer() {
-                fed += 1
-                if Task.isCancelled { reader.cancelReading(); break }
                 guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
                 let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sample))
                 guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { continue }
@@ -289,14 +249,12 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
                 CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil,
                                             totalLengthOut: &length, dataPointerOut: &pointer)
                 if let pointer {
-                    // Copy by raw bytes into the buffer's own AudioBufferList,
-                    // whatever the sample type: the analyzer asked for Int16
-                    // on this machine, and a float copy into an Int16 buffer
-                    // is silence with the right length.
+                    // Raw bytes into the buffer's own AudioBufferList, whatever
+                    // the sample type. A planar block is channel 0's frames,
+                    // then channel 1's…
                     let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
                     let perChannel = Int(frames) * sampleBytes
                     if planar {
-                        // Planar block: channel 0's frames, then channel 1's…
                         for c in 0..<min(channels, list.count) where (c + 1) * perChannel <= length {
                             if let dest = list[c].mData { memcpy(dest, pointer + c * perChannel, perChannel) }
                         }
@@ -304,8 +262,8 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
                         memcpy(dest, pointer, min(length, perChannel * channels))
                     }
                 }
-                let start = CMSampleBufferGetPresentationTimeStamp(sample)
-                continuation.yield(AnalyzerInput(buffer: buffer, bufferStartTime: start))
+                continuation.yield(AnalyzerInput(buffer: buffer,
+                                                 bufferStartTime: CMSampleBufferGetPresentationTimeStamp(sample)))
             }
             if let error = reader.error { continuation.finish(throwing: error) } else { continuation.finish() }
         }
@@ -313,57 +271,39 @@ func pcmStream(url: URL, format: AVAudioFormat) async throws -> (AsyncThrowingSt
     return (stream, asset)
 }
 
-func transcribe(_ id: String, _ request: [String: Any]) async {
+func transcribe(_ request: [String: Any]) async {
     guard let path = request["path"] as? String, FileManager.default.fileExists(atPath: path) else {
-        fail(id, "bad_request", "no such file: \(request["path"] ?? "")")
-        return
+        fail("bad_request", "no such file: \(request["path"] ?? "")")
     }
     let wantsWords = request["words"] as? Bool ?? false
     let asked = (request["locale"] as? String).map { Locale(identifier: $0) } ?? Locale.current
     guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: asked) else {
         let supported = await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) }.sorted().joined(separator: ", ")
-        fail(id, "bad_request", "Apple's speech model has no \(asked.identifier(.bcp47)) — supported: \(supported)")
-        return
+        fail("bad_request", "Apple's speech model has no \(asked.identifier(.bcp47)) — supported: \(supported)")
     }
     // `.audioTimeRange` is asked for whether or not the caller wants words:
-    // the segment's own `range` is what every transcript line needs, and the
-    // per-word runs only exist when the attribute is on. `words` decides
-    // what is EMITTED below, not what is decoded.
-    let transcriber = SpeechTranscriber(
-        locale: locale, transcriptionOptions: [],
-        reportingOptions: [],
-        attributeOptions: [.audioTimeRange])
+    // the segment's own `range` needs it, and the per-word runs only exist
+    // when it is on. `words` decides what is EMITTED, not what is decoded.
+    let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
+                                        reportingOptions: [], attributeOptions: [.audioTimeRange])
     do {
         // The locale's model lives in system storage and is fetched on first
-        // use. Progress is relayed so the job row shows a download, not a
-        // stall; the run continues into the transcription once it lands.
+        // use; one frame tells the row it is a download, not a stall.
         if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            reply(id, "assets", ["state": "installing", "progress": 0.0])
-            let progress = install.progress
-            let ticker = Task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1))
-                    reply(id, "assets", ["state": "installing", "progress": progress.fractionCompleted])
-                }
-            }
-            defer { ticker.cancel() }
+            frame("assets", ["state": "installing"])
             try await install.downloadAndInstall()
         }
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-            fail(id, "ai_error", "no audio format is compatible with Apple's speech model")
-            return
+            fail("ai_error", "no audio format is compatible with Apple's speech model")
         }
         let (input, asset) = try await pcmStream(url: URL(fileURLWithPath: path), format: format)
         let duration = seconds(try await asset.load(.duration))
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
         // Results are consumed on their own Task so segments stream out while
-        // the file is still being fed; the analysis call below returns when
-        // the input is exhausted.
+        // the file is still being fed.
         let consumer = Task {
             for try await result in transcriber.results {
-                try Task.checkCancellation()
-                debug("result final=\(result.isFinal) range=\(seconds(result.range.start))-\(seconds(CMTimeAdd(result.range.start, result.range.duration))) text=\(String(result.text.characters).prefix(60))")
                 let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty { continue }
                 var segment: [String: Any] = [
@@ -385,88 +325,44 @@ func transcribe(_ id: String, _ request: [String: Any]) async {
                     }
                     segment["words"] = words
                 }
-                reply(id, "segment", segment)
+                frame("segment", segment)
             }
         }
-        let last = try await analyzer.analyzeSequence(input)
-        debug("analyzeSequence returned last=\(last.map { seconds($0) } ?? -1)")
-        if let last {
+        if let last = try await analyzer.analyzeSequence(input) {
             try await analyzer.finalizeAndFinish(through: last)
         } else {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
         }
-        debug("finalized")
         try await consumer.value
-        reply(id, "done", ["ok": true, "duration": duration, "locale": locale.identifier(.bcp47)])
-    } catch is CancellationError {
-        reply(id, "done", ["ok": false, "cancelled": true,
-                           "error": ["type": "cancelled", "message": "cancelled"]])
+        frame("done", ["ok": true, "duration": duration, "locale": locale.identifier(.bcp47)])
     } catch {
-        fail(id, "ai_error", error.localizedDescription)
+        fail("ai_error", error.localizedDescription)
     }
 }
 
-// MARK: - dispatcher
+// MARK: - main
 
-/// In-flight requests by id, so `cancel` can reach the Task running one.
-actor Registry {
-    private var tasks: [String: Task<Void, Never>] = [:]
-    func add(_ id: String, _ task: Task<Void, Never>) { tasks[id] = task }
-    func remove(_ id: String) { tasks[id] = nil }
-    func cancel(_ id: String) { tasks[id]?.cancel() }
-    var inFlight: Int { tasks.count }
+/// The one request object on stdin, or an empty dict for `probe`.
+func readRequest() -> [String: Any] {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    if data.isEmpty { return [:] }
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        fail("bad_request", "stdin must hold one JSON object")
+    }
+    return object
 }
 
-let registry = Registry()
-
-func dispatch(_ line: Data) {
-    guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-          let op = object["op"] as? String else {
-        out.send(["type": "error", "error": ["type": "bad_request", "message": "unreadable request line"]])
-        return
-    }
-    let id = object["id"] as? String ?? UUID().uuidString
-    switch op {
-    case "cancel":
-        Task { await registry.cancel(id) }
-    case "probe", "text", "speech":
-        let task = Task {
-            switch op {
-            case "probe": await probe(id)
-            case "text": await generateText(id, object)
-            default: await transcribe(id, object)
-            }
-            await registry.remove(id)
-        }
-        Task { await registry.add(id, task) }
-    default:
-        fail(id, "bad_request", "unknown op \(op)")
-    }
-}
-
-// MARK: - main loop
-
-// One line per request, read until stdin closes — which is how the server
-// stops this process: it closes the pipe (or dies), and the loop ends.
 setvbuf(stdout, nil, _IONBF, 0)
-let stdin = FileHandle.standardInput
-var pending = Data()
-while true {
-    let chunk = stdin.availableData
-    if chunk.isEmpty { break }
-    pending.append(chunk)
-    while let newline = pending.firstIndex(of: 0x0A) {
-        let line = pending.subdata(in: pending.startIndex..<newline)
-        pending = pending.subdata(in: pending.index(after: newline)..<pending.endIndex)
-        if !line.isEmpty { dispatch(line) }
+let op = CommandLine.arguments.dropFirst().first ?? ""
+Task {
+    switch op {
+    case "probe": await probe()
+    case "text": await generateText(readRequest())
+    case "speech": await transcribe(readRequest())
+    default: fail("bad_request", "usage: fused-apple-ai probe|text|speech  (request JSON on stdin)")
     }
-}
-// stdin closed: let whatever was already asked finish before exiting, so a
-// one-shot caller (`printf ... | fused-apple-ai`) still gets its replies.
-let drain = Task {
-    while await registry.inFlight > 0 { try? await Task.sleep(for: .milliseconds(50)) }
     exit(0)
 }
-// Requests dispatched on the last lines may not have been registered yet.
-Thread.sleep(forTimeInterval: 0.2)
+// Cancellation is the parent terminating this process; there is nothing to
+// unwind — the OS daemon owns the model and the parent owns the files.
 while true { Thread.sleep(forTimeInterval: 1) }

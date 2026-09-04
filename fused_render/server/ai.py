@@ -2057,8 +2057,18 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     def tick(**over) -> None:
         supervisor._report(job, **row, **over)
 
+    # One child per call (host.py). Its handle is kept for THIS job's ✕ — the
+    # row's cancel must stop this generation and no other page's — and
+    # registered with the host so `/api/ai/cancel {provider: "apple"}` (the
+    # abort path of a non-streaming call) can reach it too.
+    child: dict = {}
+
+    def _spawned(proc) -> None:
+        child["proc"] = proc
+        apple_host.track_text(proc)
+
     try:
-        events = apple_host.frames("text", request, track_text=True)
+        events = apple_host.frames("text", request, on_spawn=_spawned)
         first = next(events, None)
     except apple_host.AppleError as e:
         if e.type == "timeout":
@@ -2116,7 +2126,9 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                              detail=f"Generated {event.get('characters') or 0} characters")
                 yield event
                 if etype == "chunk" and supervisor._cancel_requested(job):
-                    apple_host.cancel_text()
+                    proc = child.get("proc")
+                    if proc is not None and proc.poll() is None:
+                        proc.terminate()
         finally:
             if not reported_terminal:
                 reported_terminal = True
@@ -2132,8 +2144,6 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                     # is inferred from the OS because the API names none.
                     "modelGeneration": "afm-3" if availability.os.startswith("27") else "afm-2025",
                     "usageReported": False}
-        if event.get("restarted"):
-            metadata["restarted"] = True
         if finish == "content-filter" and event.get("message"):
             metadata["refusal"] = str(event.get("message"))
         return ai_result({"text": text}, provider="apple", model=model, usage=None,
@@ -2145,8 +2155,6 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         for event in walk():
             if event.get("type") == "chunk":
                 text.append(event.get("text") or "")
-            elif event.get("type") == "restart":
-                text = []
             elif event.get("type") == "done":
                 final = event
                 if not event.get("ok", True):
@@ -2165,13 +2173,6 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                     chunk = event.get("text") or ""
                     text.append(chunk)
                     yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
-                elif event.get("type") == "restart":
-                    # The framework rewrote its output rather than appending.
-                    # Chunks already sent cannot be recalled; the result's
-                    # `text` is rebuilt from here so it is right even where a
-                    # page's own concatenation is not. Rare, and flagged in
-                    # `providerMetadata.apple.restarted`.
-                    text = []
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
                     if ok:

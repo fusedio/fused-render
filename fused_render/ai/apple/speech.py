@@ -69,10 +69,19 @@ def locale_for(language: str | None, availability: host.Availability) -> tuple[s
     for tag in candidates:
         if region and tag.split("-")[-1].lower() == region.lower():
             return tag, None
-    for tag in candidates:
+    # No regional match: the conventional variant for the language before an
+    # arbitrary installed one — Apple's `installedLocales` comes back in no
+    # meaningful order (en-ZA led it here), and "en" landing on South African
+    # English because it was first in a set is not a choice anyone made.
+    conventional = {"en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE", "it": "it-IT",
+                    "pt": "pt-BR", "zh": "zh-CN", "ja": "ja-JP", "ko": "ko-KR", "yue": "yue-CN"}
+    preferred = conventional.get(lang)
+    if preferred and preferred in candidates:
+        return preferred, None
+    for tag in sorted(candidates):
         if tag in installed:
             return tag, None
-    return candidates[0], None
+    return sorted(candidates)[0], None
 
 
 def start(request: dict, job: str) -> None:
@@ -114,9 +123,11 @@ def _run(request: dict, job: str, fields: dict) -> dict:
 
     tick(state="running", done=0, total=None, detail="Decoding audio…")
     with partial.sink(request.get("outPartial")) as progressive:
+        # The first frame may be the locale's model downloading, so the bound
+        # is the transcription ceiling, not text's; after it the child's own
+        # exit is the bound, and this row is what a caller watches.
         stream = host.frames("speech", {"path": source, "locale": locale, "words": words},
-                             first_timeout=supervisor.TRANSCRIBE_TIMEOUT_S,
-                             timeout=supervisor.TRANSCRIBE_TIMEOUT_S)
+                             first_timeout=supervisor.TRANSCRIBE_TIMEOUT_S)
         for frame in stream:
             if supervisor._cancel_requested(job):
                 # Closing the generator cancels the helper's request (its
@@ -126,10 +137,8 @@ def _run(request: dict, job: str, fields: dict) -> dict:
                 raise supervisor.SupervisorError("cancelled")
             kind = frame.get("type")
             if kind == "assets":
-                pct = frame.get("progress")
                 tick(state="running", done=None, total=None,
-                     detail=_INSTALLING_DETAIL.format(locale=locale)
-                     + (f" {int(float(pct) * 100)}%" if isinstance(pct, (int, float)) else ""))
+                     detail=_INSTALLING_DETAIL.format(locale=locale))
             elif kind == "segment":
                 segment = {"start": frame.get("start"), "end": frame.get("end"),
                            "text": str(frame.get("text") or "").strip()}

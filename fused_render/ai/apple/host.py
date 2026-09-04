@@ -1,17 +1,19 @@
-"""The Apple tier's process host: one resident `fused-apple-ai`, NDJSON over stdio.
+"""The Apple tier's process host: one `fused-apple-ai` child per request.
 
-Shaped like `server/ai.py`'s `_AiSession` (a long-lived child the server
-owns), NOT like a `registry.Runner`: the supervisor keeps ONE worker per
-capability and evicts on engine mismatch, so an Apple "runner" would evict
-the resident MLX model on every `provider: "apple"` call and be evicted
-back on the next local one. The two tiers have to coexist, so this tier
-holds its own process and borrows only the job-row helpers.
+Shaped like `server/ai.py`'s `_spawn_claude_stream` (a child per call, its
+stdout read as NDJSON), NOT like a `registry.Runner`: the supervisor keeps ONE
+worker per capability and evicts on engine mismatch, so an Apple "runner"
+would evict the resident MLX model on every `provider: "apple"` call and be
+evicted back on the next local one. The two tiers have to coexist, so this
+tier spawns its own children and borrows only the job-row helpers.
 
-Protocol: see the header of `helper/main.swift`. Every request carries an
-`id`; the reader thread demultiplexes replies into a per-request queue, so
-a text stream and a transcription can run through the same child at once.
-The child is spawned lazily on first use, respawned if it dies, and killed
-from `shutdown()` at app exit.
+One process per request, deliberately (D700 follow-up). The weights live in
+the OS's own daemon, not in our child, so a spawn costs a spawn and nothing
+else — and it removes the resident-server design's whole cost: no reader
+thread, no per-request queues, no respawn logic, no cancel protocol.
+Cancellation is `terminate()`; concurrency is two children.
+
+Protocol: see the header of `helper/main.swift`.
 
 **Where the binary comes from**, in order:
   1. `FUSED_RENDER_APPLE_HELPER` — an explicit path (CI, measurement builds).
@@ -30,13 +32,11 @@ import json
 import logging
 import os
 import platform
-import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -52,14 +52,13 @@ SOURCE = os.path.join(_HERE, "helper", "main.swift")
 CHECKOUT_BIN = os.path.join(_HERE, "bin", HELPER_NAME)
 
 #: How long a probe answer is trusted before the helper is asked again. Long
-#: enough that a page polling `models.list()` costs nothing; short enough that
+#: enough that a page polling the catalog costs nothing; short enough that
 #: turning Apple Intelligence on in System Settings shows up without a restart.
 PROBE_TTL_S = 30.0
 PROBE_TIMEOUT_S = 15.0
 #: A generation that produces nothing for this long is dead, not slow — the
 #: on-device model answers its first token in well under a second.
 FIRST_FRAME_TIMEOUT_S = 120.0
-FRAME_TIMEOUT_S = 600.0
 
 
 class AppleError(RuntimeError):
@@ -91,9 +90,8 @@ class Availability:
 def _macos_major() -> int | None:
     if sys.platform != "darwin":
         return None
-    release = platform.mac_ver()[0]
     try:
-        return int(release.split(".")[0])
+        return int(platform.mac_ver()[0].split(".")[0])
     except (ValueError, IndexError):
         return None
 
@@ -169,8 +167,8 @@ def helper_path(problems: list[str] | None = None) -> str | None:
             return explicit
         problems.append(f"{HELPER_ENV}={explicit!r} is not an executable file")
         return None
-    bundled = os.path.join(os.path.dirname(sys.executable), HELPER_NAME)
     if getattr(sys, "frozen", None) == "macosx_app":
+        bundled = os.path.join(os.path.dirname(sys.executable), HELPER_NAME)
         if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
             return bundled
         problems.append("this build of the app ships without the Apple helper")
@@ -180,136 +178,113 @@ def helper_path(problems: list[str] | None = None) -> str | None:
     return _dev_build(problems)
 
 
-# ------------------------------------------------------------------ the child
+def _binary() -> str:
+    problem = platform_problem()
+    if problem:
+        raise AppleError("unavailable", problem)
+    problems: list[str] = []
+    path = helper_path(problems)
+    if not path:
+        raise AppleError("unavailable", "; ".join(problems) or "the Apple helper is missing")
+    return path
 
 
-class _Helper:
-    """One child process and the reader thread that fans its replies out."""
+# ------------------------------------------------------------------ requests
 
-    def __init__(self, path: str):
-        self.path = path
-        self.proc: subprocess.Popen | None = None
-        self._write_lock = threading.Lock()
-        self._queues: dict[str, queue.Queue] = {}
-        self._queues_lock = threading.Lock()
-        self._reader: threading.Thread | None = None
 
-    # -- lifecycle
+def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST_FRAME_TIMEOUT_S,
+           on_spawn=None):
+    """Yield the helper's frames for ONE request, until its `done` or its exit.
 
-    def alive(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
+    A generator, so a consumer that stops early (a page that disconnected
+    mid-stream, a ✕ on the row) triggers the `finally`, which TERMINATES the
+    child — the model must not keep generating for nobody. `on_spawn(proc)`
+    hands the caller the process for its own cancel path.
 
-    def start(self) -> None:
-        if self.alive():
-            return
-        self.proc = subprocess.Popen(
-            [self.path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, bufsize=0)
-        self._reader = threading.Thread(target=self._pump, name="apple-ai-reader", daemon=True)
-        self._reader.start()
-
-    def stop(self) -> None:
-        proc, self.proc = self.proc, None
-        if proc is None:
-            return
+    The first frame is bounded (`first_timeout`); after that the child's own
+    exit is the bound — a transcription of a long file legitimately says
+    nothing for a while, and the job's row is what a caller watches.
+    """
+    proc = subprocess.Popen(
+        [_binary(), op], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL)
+    if on_spawn is not None:
+        on_spawn(proc)
+    finished = False
+    try:
         try:
-            if proc.stdin:
-                proc.stdin.close()
-            proc.wait(timeout=2.0)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                proc.kill()
-            except OSError:
-                pass
-        self._fail_all("the Apple helper stopped")
+            proc.stdin.write(json.dumps(request or {}).encode("utf-8"))
+            proc.stdin.close()
+        except (OSError, ValueError) as e:
+            raise AppleError("ai_unavailable", f"the Apple helper did not accept the request: {e}") from e
+        # The first-frame timeout, without a reader thread: a timer that kills
+        # the child if nothing has arrived, which makes the blocking readline
+        # below return.
+        got_first = threading.Event()
 
-    def _fail_all(self, message: str) -> None:
-        with self._queues_lock:
-            pending, self._queues = self._queues, {}
-        for q in pending.values():
-            q.put({"type": "done", "ok": False,
-                   "error": {"type": "ai_unavailable", "message": message}})
+        def _watchdog() -> None:
+            if not got_first.wait(first_timeout) and proc.poll() is None:
+                proc.terminate()
 
-    def _pump(self) -> None:
-        proc = self.proc
-        if proc is None or proc.stdout is None:
-            return
+        threading.Thread(target=_watchdog, daemon=True, name="apple-ai-watchdog").start()
         for raw in proc.stdout:
+            got_first.set()
             try:
                 frame = json.loads(raw.decode("utf-8", "replace"))
             except ValueError:
                 continue
-            rid = frame.get("id")
-            with self._queues_lock:
-                q = self._queues.get(rid) if isinstance(rid, str) else None
-            if q is not None:
-                q.put(frame)
-        # stdout closed: the child is gone. Anything still waiting learns now
-        # rather than at its own timeout.
-        self._fail_all("the Apple helper exited unexpectedly")
-
-    # -- requests
-
-    def send(self, request: dict) -> None:
-        proc = self.proc
-        if proc is None or proc.stdin is None:
-            raise AppleError("ai_unavailable", "the Apple helper is not running")
-        line = (json.dumps(request) + "\n").encode("utf-8")
-        with self._write_lock:
+            if frame.get("type") == "done":
+                finished = True
+                yield frame
+                return
+            yield frame
+        got_first.set()
+        # stdout closed with no `done`: the child died (or the watchdog fired).
+        if not finished:
+            code = proc.wait()
+            raise AppleError("timeout" if code in (-15, 143) else "ai_error",
+                             f"the Apple helper produced nothing for {int(first_timeout)}s"
+                             if code in (-15, 143) else
+                             f"the Apple helper exited without finishing (code {code})")
+    finally:
+        got_first.set()
+        if proc.poll() is None:
             try:
-                proc.stdin.write(line)
-                proc.stdin.flush()
-            except (OSError, ValueError) as e:
-                raise AppleError("ai_unavailable", f"the Apple helper did not accept the request: {e}") from e
-
-    def open(self, op: str, fields: dict) -> tuple[str, queue.Queue]:
-        rid = uuid.uuid4().hex
-        q: queue.Queue = queue.Queue()
-        with self._queues_lock:
-            self._queues[rid] = q
-        try:
-            self.send({"id": rid, "op": op, **fields})
-        except AppleError:
-            with self._queues_lock:
-                self._queues.pop(rid, None)
-            raise
-        return rid, q
-
-    def close(self, rid: str) -> None:
-        with self._queues_lock:
-            self._queues.pop(rid, None)
-
-    def cancel(self, rid: str) -> None:
-        try:
-            self.send({"id": rid, "op": "cancel"})
-        except AppleError:
-            pass
+                proc.terminate()
+                proc.wait(timeout=2.0)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
 
 _lock = threading.Lock()
-_helper: _Helper | None = None
 _probe_cache: Availability | None = None
-#: Request ids of text generations in flight, so `/api/ai/cancel` with
-#: `provider: "apple"` has something to stop (the local tier's analogue is
-#: `supervisor.cancel_generation`, which POSTs `/cancel` to the one worker).
-_text_in_flight: set[str] = set()
+#: Text children in flight, so `/api/ai/cancel` with `provider: "apple"` has
+#: something to stop (the local tier's analogue is `supervisor.
+#: cancel_generation`, which POSTs `/cancel` to the one worker).
+_text_children: set[subprocess.Popen] = set()
 
 
-def _get_helper() -> _Helper:
-    problem = platform_problem()
-    if problem:
-        raise AppleError("unavailable", problem)
+def track_text(proc: subprocess.Popen) -> None:
     with _lock:
-        global _helper
-        if _helper is None or not _helper.alive():
-            problems: list[str] = []
-            path = helper_path(problems)
-            if not path:
-                raise AppleError("unavailable",
-                                 "; ".join(problems) or "the Apple helper is missing")
-            _helper = _Helper(path)
-            _helper.start()
-        return _helper
+        _text_children.add(proc)
+        # Reap the ones already gone, so the set cannot grow unbounded.
+        for child in [c for c in _text_children if c.poll() is not None]:
+            _text_children.discard(child)
+
+
+def cancel_text() -> bool:
+    """Stop every `afm-text` generation in flight. True when there was one."""
+    with _lock:
+        live = [c for c in _text_children if c.poll() is None]
+    for child in live:
+        try:
+            child.terminate()
+        except OSError:
+            pass
+    return bool(live)
 
 
 def probe(force: bool = False) -> Availability:
@@ -324,14 +299,9 @@ def probe(force: bool = False) -> Availability:
         result = Availability(False, "unavailable", problem)
     else:
         try:
-            helper = _get_helper()
-            rid, q = helper.open("probe", {})
-            try:
-                frame = q.get(timeout=PROBE_TIMEOUT_S)
-            finally:
-                helper.close(rid)
-            if frame.get("type") != "probe":
-                error = frame.get("error") or {}
+            frame = next(frames("probe", first_timeout=PROBE_TIMEOUT_S), None)
+            if frame is None or frame.get("type") != "probe":
+                error = (frame or {}).get("error") or {}
                 result = Availability(False, "unavailable",
                                       str(error.get("message") or "the Apple helper could not report availability"))
             else:
@@ -347,69 +317,19 @@ def probe(force: bool = False) -> Availability:
                 )
         except AppleError as e:
             result = Availability(False, "unavailable", str(e))
-        except queue.Empty:
-            result = Availability(False, "unavailable", "the Apple helper did not answer the availability check")
     _probe_cache = result
     return result
 
 
-def frames(op: str, fields: dict, *, first_timeout: float = FIRST_FRAME_TIMEOUT_S,
-           timeout: float = FRAME_TIMEOUT_S, track_text: bool = False):
-    """Yield the helper's frames for one request until its `done`.
-
-    A generator, so a consumer that stops early (a page that disconnected
-    mid-stream) triggers the `finally`, which CANCELS the request in the
-    helper — the model must not keep generating for nobody.
-    """
-    helper = _get_helper()
-    rid, q = helper.open(op, fields)
-    if track_text:
-        with _lock:
-            _text_in_flight.add(rid)
-    finished = False
-    try:
-        wait = first_timeout
-        while True:
-            try:
-                frame = q.get(timeout=wait)
-            except queue.Empty:
-                raise AppleError("timeout", f"the Apple helper produced nothing for {int(wait)}s")
-            wait = timeout
-            if frame.get("type") == "done":
-                finished = True
-                yield frame
-                return
-            yield frame
-    finally:
-        if not finished:
-            helper.cancel(rid)
-        helper.close(rid)
-        if track_text:
-            with _lock:
-                _text_in_flight.discard(rid)
-
-
-def cancel_text() -> bool:
-    """Stop every `afm-text` generation in flight. True when there was one."""
-    with _lock:
-        pending = list(_text_in_flight)
-        helper = _helper
-    if not pending or helper is None:
-        return False
-    for rid in pending:
-        helper.cancel(rid)
-    return True
-
-
 def shutdown() -> None:
-    global _helper, _probe_cache
+    """Stop whatever is in flight and forget the probe (app exit, tests)."""
+    global _probe_cache
+    cancel_text()
     with _lock:
-        helper, _helper = _helper, None
+        _text_children.clear()
         _probe_cache = None
-    if helper is not None:
-        helper.stop()
 
 
 def reset() -> None:
-    """Tests: forget the process and the cache."""
+    """Tests: forget the cache."""
     shutdown()

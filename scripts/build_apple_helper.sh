@@ -45,7 +45,7 @@ chmod +x "$OUT"
 # The binary must at least start and answer a probe on the build host; a
 # runner without Apple Intelligence still answers (available:false), which is
 # all this checks.
-PROBE_OUT="$(printf '{"id":"p","op":"probe"}\n' | "$OUT" 2>/dev/null | head -1 || true)"
+PROBE_OUT="$("$OUT" probe </dev/null 2>/dev/null | head -1 || true)"
 if [[ "$PROBE_OUT" != *'"type":"probe"'* ]]; then
   echo "FATAL: the built helper did not answer a probe:" >&2
   echo "$PROBE_OUT" >&2
