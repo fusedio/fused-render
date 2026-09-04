@@ -123,6 +123,20 @@
   color: var(--fg-muted);
 }
 
+/* The showcase clone refused (no usable git, no network). A notice, not the
+   page's error banner: the local apps in the grid below loaded fine, so this
+   states what is missing without claiming the page failed. */
+.apps-showcase-note {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 /* Filter facet selector (Category | Folders): a small segmented control that
    decides which chip set shows. Neutral fill on the active segment (accent
    stays reserved for focus/selection).
