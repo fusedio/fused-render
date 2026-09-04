@@ -64,11 +64,25 @@ def _followup_bump_src(html):
 
 def _reply_reset_src(html):
     """The reset check `pollLoop` runs each iteration before touching
-    `reply`."""
+    `reply` — now also records `segBase`/`textBase`, the offsets a fresh
+    bubble slices `data.segments`/`data.text` back to (see
+    `_segs_flat_src`)."""
     marker = "// A follow-up landed mid-turn (see sendFollowUp)"
     start = html.index(marker)
     end = html.index("tailText = null;", start)
     end = html.index("\n      }\n", end) + len("\n      }\n")
+    return html[start:end]
+
+
+def _segs_flat_src(html):
+    """The `segs`/`flatText` computation right after the reset check — sliced
+    back to `segBase`/`textBase` so a fresh post-follow-up bubble only ever
+    sees the turn's continuation, not everything already shown above it —
+    and the `lastSegLen`/`lastTextLen` update the NEXT reset freezes into
+    `segBase`/`textBase`."""
+    start = html.index("const fullSegs = Array.isArray(data.segments)")
+    end = html.index("lastTextLen = fullText.length;", start)
+    end = html.index("\n", end) + 1
     return html[start:end]
 
 
@@ -150,34 +164,51 @@ def _run(html, body):
 
 
 # The driver below reproduces exactly what `pollLoop`'s own loop body does
-# each iteration: run the reset check, then the (unchanged) creation guard.
+# each iteration: run the reset check (which also updates segBase/textBase),
+# recompute segs/flatText off the current poll's `data`, then the (unchanged)
+# creation guard. Wrapped in its own block so each iteration's `const segs`/
+# `const flatText` get fresh bindings, same as one trip through `while (true)`.
 _ONE_POLL_ITERATION = """
+{{
+  const data = {data};
   {reset}
+  {segsflat}
   {create}
+}}
 """
 
 
 def test_reply_starts_a_new_bubble_after_a_mid_turn_followup(html):
     src = _addUser_src(html) + "\n" + _addAssistant_src(html)
     reset = _reply_reset_src(html)
+    segsflat = _segs_flat_src(html)
     create = _create_reply_src(html)
     out = _run(html, src + """
 const w = { el: addWorkingLine() };
 let reply = null, typer = null, segBody = null, segMode = false, tailText = null;
 let followupSeq = 0;
 let seenFollowupSeq = followupSeq;
-let segs = [];
+let segBase = 0, textBase = 0;
+let lastSegLen = 0, lastTextLen = 0;
 
 // First poll of the turn: no text yet, then some streams in — the reply
 // bubble is created once, same as always.
-""" + _ONE_POLL_ITERATION.format(reset=reset, create=create) + """
+""" + _ONE_POLL_ITERATION.format(
+        reset=reset, segsflat=segsflat, create=create,
+        data='{ segments: [{ kind: "text", text: "first" }], text: "first" }'
+    ) + """
 
 // The reader sends a follow-up while the turn is still streaming.
 addUser("second message");
 """ + _followup_bump_src(html) + """
 
-// The next poll of the SAME turn.
-""" + _ONE_POLL_ITERATION.format(reset=reset, create=create) + """
+// The next poll of the SAME turn — the cursor has not advanced (D687), so
+// `data` still carries everything from before the follow-up too.
+""" + _ONE_POLL_ITERATION.format(
+        reset=reset, segsflat=segsflat, create=create,
+        data=('{ segments: [{ kind: "text", text: "first" }, '
+              '{ kind: "text", text: "second" }], text: "first second" }')
+    ) + """
 
 console.log(JSON.stringify({ order: classNamesOf(log) }));
 """)
@@ -190,22 +221,65 @@ console.log(JSON.stringify({ order: classNamesOf(log) }));
     )
 
 
+def test_reply_segments_are_not_duplicated_after_a_mid_turn_followup(html):
+    """The new bubble a follow-up starts must render only the segments/text
+    that arrive AFTER the follow-up's echo — not the whole current-turn list
+    `data` still carries (the cursor deliberately does not advance past a
+    mid-turn echo, D687), or the streamed answer appears twice."""
+    reset = _reply_reset_src(html)
+    segsflat = _segs_flat_src(html)
+    out = _run(html, """
+let followupSeq = 0;
+let seenFollowupSeq = followupSeq;
+let segBase = 0, textBase = 0;
+let lastSegLen = 0, lastTextLen = 0;
+let reply = null, typer = null, segBody = null, segMode = false, tailText = null;
+let seenByPoll = [];
+
+""" + _ONE_POLL_ITERATION.format(
+        reset=reset, segsflat=segsflat, create="seenByPoll.push({ segs, flatText });",
+        data='{ segments: [{ kind: "text", text: "hello" }], text: "hello" }'
+    ) + """
+
+followupSeq++;
+
+""" + _ONE_POLL_ITERATION.format(
+        reset=reset, segsflat=segsflat, create="seenByPoll.push({ segs, flatText });",
+        data=('{ segments: [{ kind: "text", text: "hello" }, '
+              '{ kind: "text", text: "world" }], text: "hello world" }')
+    ) + """
+
+console.log(JSON.stringify({ seenByPoll }));
+""")
+    first, second = out["seenByPoll"]
+    assert first["segs"] == [{"kind": "text", "text": "hello"}]
+    assert first["flatText"] == "hello"
+    assert second["segs"] == [{"kind": "text", "text": "world"}], (
+        "the poll right after a follow-up must only see the NEW segment, "
+        "not the whole current-turn list — otherwise the fresh bubble "
+        "duplicates the segment(s) already shown above the follow-up")
+    assert second["flatText"] == " world"
+
+
 def test_reply_is_not_reset_when_no_followup_landed(html):
     """Sanity check: without a `followupSeq` change, repeated poll iterations
     must keep reusing the SAME bubble — this fix must not turn every poll
     into a fresh bubble."""
     src = _addAssistant_src(html)
     reset = _reply_reset_src(html)
+    segsflat = _segs_flat_src(html)
     create = _create_reply_src(html)
+    poll = _ONE_POLL_ITERATION.format(
+        reset=reset, segsflat=segsflat, create=create,
+        data='{ segments: [{ kind: "text", text: "hi" }], text: "hi" }')
     out = _run(html, src + """
 const w = { el: addWorkingLine() };
 let reply = null, typer = null, segBody = null, segMode = false, tailText = null;
 let followupSeq = 0;
 let seenFollowupSeq = followupSeq;
-let segs = [];
-""" + _ONE_POLL_ITERATION.format(reset=reset, create=create)
-       + _ONE_POLL_ITERATION.format(reset=reset, create=create)
-       + _ONE_POLL_ITERATION.format(reset=reset, create=create) + """
+let segBase = 0, textBase = 0;
+let lastSegLen = 0, lastTextLen = 0;
+""" + poll + poll + poll + """
 console.log(JSON.stringify({ order: classNamesOf(log) }));
 """)
     assert out["order"] == ["turn assistant", "turn working"]

@@ -15146,6 +15146,16 @@ async function pollLoop(run_id, gen = logGen) {
   // The `followupSeq` value as of the last iteration — see the reset check
   // inside the loop below.
   let seenFollowupSeq = followupSeq;
+  // How much of `data.segments`/`data.text` already belonged to the bubble
+  // the follow-up landed below — see the reset check inside the loop below.
+  let segBase = 0;
+  let textBase = 0;
+  // `data.segments.length`/`data.text.length` as of the PREVIOUS iteration —
+  // what the reset check freezes into `segBase`/`textBase` on a follow-up,
+  // not this poll's own (already possibly grown) lengths. See the reset
+  // check inside the loop below.
+  let lastSegLen = 0;
+  let lastTextLen = 0;
   // Ticks of THIS loop, so the artifacts read below is one in every eight polls
   // (~3.2s) rather than one every 400ms: a publish is a rare event in a turn and
   // a transcript read is an open() of a file that is being appended to.
@@ -15178,9 +15188,25 @@ async function pollLoop(run_id, gen = logGen) {
         seenFollowupSeq = followupSeq;
         reply = null; typer = null; segBody = null; segMode = false;
         tailText = null;
+        // The cursor deliberately refuses to advance past a mid-turn echo
+        // (D687), so `data.segments`/`data.text` keep carrying everything
+        // already streamed above the follow-up, not just what comes after
+        // it. Freezing `lastSegLen`/`lastTextLen` — this poll's OWN
+        // (possibly already-grown) lengths would swallow anything that
+        // streamed in the same tick this reset was noticed — and slicing
+        // back to them below is what keeps the new bubble showing only the
+        // turn's continuation instead of repeating the same reply a second
+        // time underneath the follow-up.
+        segBase = lastSegLen;
+        textBase = lastTextLen;
       }
-      const segs = Array.isArray(data.segments) ? data.segments : [];
-      if (segs.length || data.text) {
+      const fullSegs = Array.isArray(data.segments) ? data.segments : [];
+      const fullText = data.text || "";
+      const segs = fullSegs.slice(segBase);
+      const flatText = fullText.slice(textBase);
+      lastSegLen = fullSegs.length;
+      lastTextLen = fullText.length;
+      if (segs.length || flatText) {
         if (!reply) {
           reply = addAssistant("");
           log.insertBefore(reply, w.el);  // status line stays below the streaming reply
@@ -15205,7 +15231,7 @@ async function pollLoop(run_id, gen = logGen) {
             activeSegBody = segBody;
           }
           tailText = renderSegments(segBody, segs, { typer });
-        } else if (!data.done) typer.update(data.text);
+        } else if (!data.done) typer.update(flatText);
       }
       if (data.done) {
         // OWNERSHIP-GUARDED, same as the `finally` block below: a respawn
@@ -15241,7 +15267,7 @@ async function pollLoop(run_id, gen = logGen) {
           await typer.finish(tailText || "");
           attachCodeCopy(reply);
         } else if (typer) {
-          await typer.finish(data.text);
+          await typer.finish(flatText);
         } else if (data.text) {
           // A run whose text only ever arrived on the poll that ENDED it, so no
           // typer was ever pointed at anything. Through addAssistantTurn like
