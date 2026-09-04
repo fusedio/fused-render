@@ -81,10 +81,15 @@ export function forgetModelsStep(): void {
   memory = { checked: null, started: new Map(), errors: {} };
 }
 
-/** Clock skew allowance when comparing a job's server-side `finished_at`
- *  against this page's `Date.now()`. Same machine, so the two clocks are the
- *  same clock; this covers the second-granularity rounding either side. */
-const CLOCK_SLACK_MS = 2000;
+// There is deliberately NO slack in the `finished_at` vs `askedAt`
+// comparison in `jobFor`. `askedAt` is stamped BEFORE the POST goes out and
+// both clocks are this machine's clock (`time.time()` against `Date.now()`,
+// float seconds against ms — the same epoch, no rounding to a second), so a
+// job this visit caused always finishes strictly after the ask. A tolerance
+// only bought the opposite error: for its width, a row that had JUST failed
+// still counted as this visit's, so a retry kept the old sentence, kept its
+// checkbox and left Download enabled over exactly the gap `STARTING_GRACE_MS`
+// exists to cover.
 
 /** How long a sent Download reads as busy before its job row has appeared —
  *  the gap between the POST returning and the next poll seeing the row. A
@@ -105,7 +110,12 @@ const STARTING_GRACE_MS = 30_000;
  *  every catalog row was matched against the whole server job list: a `done`
  *  row from last week (kept until dismissed, D663) drew a tick on a model the
  *  user had not chosen and took its checkbox away, and an old failure drew a
- *  sentence about something that happened days ago. */
+ *  sentence about something that happened days ago.
+ *
+ *  "After it asked" is exact, with no tolerance — see the note above the
+ *  constants: a retry re-stamps the ask, so the row it is retrying stops
+ *  counting the instant Start is pressed, which is what lets `awaiting` take
+ *  over from a failure the user has just acted on. */
 function jobFor(
   id: string,
   jobs: Map<string, Job>,
@@ -117,7 +127,7 @@ function jobFor(
   const askedAt = started.get(id);
   if (askedAt === undefined) return undefined;
   if (job.finished_at == null) return undefined;
-  return job.finished_at * 1000 >= askedAt - CLOCK_SLACK_MS ? job : undefined;
+  return job.finished_at * 1000 >= askedAt ? job : undefined;
 }
 
 /** The catalog, once, as picks. Lives at the WIZARD level (like
