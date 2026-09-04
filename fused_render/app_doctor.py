@@ -297,6 +297,66 @@ def _check_device_paths(rel_path: str, text: str, findings: list) -> None:
             ))
 
 
+# -------------------------------------------------------- fused API misuse
+
+# window.fused's real shape (fused_render/static/runtime.js), pinned by
+# tests/test_app_doctor_api.py against the runtime source itself — see that
+# test's own docstring for why a hand-copied list is only trustworthy with a
+# parity check behind it. A member added to the runtime and not here is a
+# false alarm waiting to happen, and the parity test is what turns that into
+# a loud, caught mistake instead of a silent one.
+KNOWN_FUSED_MEMBERS = frozenset({
+    "env", "device", "runPython", "daemon", "rawUrl", "stat", "readFile",
+    "writeFile", "uploadFile", "mkdir", "ai", "capture", "fileIndex",
+    "trackJob", "watchJob", "autoReload", "params",
+})
+
+# One level of namespacing only (the plan's own limit): `fused.ai.text(...)`
+# is checked, `fused.ai.text.whatever` is not — an app calling that deep into
+# the bridge is vanishingly unlikely, and the runtime has never had a real
+# second layer of namespacing to check against.
+KNOWN_NAMESPACED_MEMBERS = {
+    "ai": frozenset({"text", "models", "image", "video", "transcribe",
+                      "embed", "cancel"}),
+    "fileIndex": frozenset({"search", "query"}),
+    "capture": frozenset({"screen", "audio", "screenshot", "sources",
+                           "list", "attach"}),
+    "params": frozenset({"get", "getAll", "set", "onChange"}),
+}
+
+# `fused.NAME` or `fused.NAME.MEMBER`, word-bounded so `refused.env` or
+# `fused.envFoo` never matches. No JS parser: this engine reads text, not an
+# AST, so a `fused.` inside a string or a comment can still be flagged — the
+# same trade a regex-based secret scan already makes, and per the plan this
+# check does no arity or type checking either.
+_FUSED_CALL_RE = re.compile(r"\bfused\.([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?")
+
+
+def _check_api_usage(app_dir: str, findings: list) -> None:
+    for name in _direct_child_pages(app_dir):
+        text = _read_text(app_dir, name)
+        if text is None:
+            continue
+        for m in _FUSED_CALL_RE.finditer(text):
+            member, sub = m.group(1), m.group(2)
+            if member not in KNOWN_FUSED_MEMBERS:
+                findings.append(_finding(
+                    "api-misuse:unknown-member", name, _line_of(text, m.start()),
+                    f"fused.{member} — this runtime does not expose it; "
+                    "the call will fail at run time",
+                ))
+                continue
+            if sub is None:
+                continue
+            namespace = KNOWN_NAMESPACED_MEMBERS.get(member)
+            if namespace is not None and sub not in namespace:
+                findings.append(_finding(
+                    "api-misuse:unknown-member", name, _line_of(text, m.start()),
+                    f"fused.{member}.{sub} — this runtime does not expose it; "
+                    "the call will fail at run time",
+                ))
+
+
 # ---------------------------------------------------------------- structure
 
 # The one authored thumbnail name — the same exact-listdir match
@@ -493,6 +553,7 @@ def check(app_dir: str) -> list[dict]:
         _check_secrets(rel, text, findings)
         _check_device_paths(rel, text, findings)
 
+    _check_api_usage(app_dir, findings)
     _check_structure(app_dir, findings)
     _check_api_version(app_dir, findings)
     _check_stray_files(candidates, findings)
