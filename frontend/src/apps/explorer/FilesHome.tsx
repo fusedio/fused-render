@@ -836,10 +836,10 @@ export function FilesSearch({
     !suppressRank
       ? indexGap(displayAnswer.reason, liveScanning)
       : null;
-  // The `buildable` branch yields nothing — the `.fh-index-cta` callout is the
-  // message for that state — so the note paragraph is empty and the suffix's
-  // leading "·" would separate nothing.
-  const noteEmpty = gap === "buildable";
+  // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
+  // callout is the message for those states — so the note paragraph is empty
+  // and the suffix's leading "·" would separate nothing.
+  const noteEmpty = gap === "buildable" || gap === "fda";
   // Whether AI search has anything to answer WITH. It executes its spec
   // against the same file index (`routers/search._search_index`), so with no
   // index built it fails the same way the instant search did — see
