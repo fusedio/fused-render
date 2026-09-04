@@ -6767,16 +6767,25 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
-  it("lays the wall out two across, two down, and scrolls the rest — never sideways", () => {
-    // Four in view, then scroll (Akshil, 2026-09-03). The wall is the scroll
+  it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
+    // Six in view, then scroll (Akshil, 2026-09-04) — the frame inside is scaled
+    // so a third column stays readable. The wall is the scroll
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
     expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
     // ...and the page grows to the fold for THIS view only — every other view is
     // content-sized, and the rows here are sized from the page.
     expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
-    expect(CARDS_CSS).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
-    expect(CARDS_CSS).not.toContain("repeat(3,");
+    expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+    // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
+    // exactly the body — no clipping, no gap, readable at a third of the width.
+    const frame = block(CARDS_CSS, ".task-card-frame");
+    expect(frame).toContain("transform: scale(0.75)");
+    expect(frame).toContain("width: 133.3334%");
+    expect(frame).toContain("height: 133.3334%");
+    expect(frame).toContain("transform-origin: 0 0");
+    // The id sits beside the ring in the List row's own chip.
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
