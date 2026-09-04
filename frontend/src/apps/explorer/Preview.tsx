@@ -358,7 +358,7 @@ function OpenInProjectButton({ fsPath }: { fsPath: string }) {
   return (
     <button
       type="button"
-      className="bar-ctl bar-ctl-strong"
+      className="bar-ctl bar-ctl-bordered"
       title={"Open " + basename(dir) + " as a project"}
       onClick={open}
     >
@@ -1786,8 +1786,8 @@ function TemplatePreview({
       {!stat.is_dir && <MigrateAppButton fsPath={fsPath} />}
       {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* The folder view's "Open in project", offered on the app's entry page
-          too (same server-side entry gate). Last, as the strongest control in
-          the bar — the explorer strip puts it at the tail as well. */}
+          too (same server-side entry gate), wearing the same bordered look as
+          Export App beside it. */}
       {!stat.is_dir && <OpenInProjectButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of

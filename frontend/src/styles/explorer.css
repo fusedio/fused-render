@@ -481,50 +481,6 @@
   display: block;
 }
 
-/* THE STRONGEST CONTROL IN A BAR — the "Open in project" button in the pane's strip.
-   Filled with --fg on --bg, which is the same idiom `.btn-primary`
-   (buttons-modal.css) and the home composer's send button use, so it inherits
-   maximal contrast in BOTH themes by construction rather than by a chosen colour:
-   the pair IS the theme's text-on-surface, whichever way round the theme puts them.
-   --on-fg on hover is the token that file defines for exactly this ("one step
-   further from --bg than --fg").
-
-   DELIBERATELY NOT ACCENT, and this is a reservation rather than a preference.
-   `.btn-menu-item.active` in this same strip uses `color-mix(--accent 16%)` to say
-   WHICH MODE THE PANE IS ON, and the crumb bar next to it uses --accent for drop
-   targets and the spring-armed highlight. Accent here would put a second accent
-   element inches from the one that means "this is the mode you are looking at", and
-   `.btn-primary` states the house rule twice over: "reads strongest through
-   contrast, not accent — accent stays for focus/selection". A filled --fg button is
-   already the loudest thing in a strip of ghost controls. */
-.bar-ctl.bar-ctl-strong {
-  background: var(--fg);
-  color: var(--bg);
-  font-weight: 600;
-}
-
-.bar-ctl.bar-ctl-strong:hover:not(:disabled) {
-  /* NOT var(--on-fg) — that moved --fg one step FURTHER toward the same
-     extreme (near-black to pure black in light, near-white to pure white in
-     dark), which is a luminance delta of ~0.01–0.02 and reads as no hover at
-     all. This instead steps --fg back TOWARD --bg — the same "mix off --fg"
-     idiom `.apps-tag-chip.is-active` / `.apps-filter-mode-btn.is-active` use
-     (apps.css) to get a background that shifts visibly in BOTH themes while
-     keeping a --bg label legible on it, because the mix moves each theme's
-     fill away from that theme's own extreme rather than further into it.
-     82% keeps it reading as the same filled/strong button (still mostly
-     --fg, not washed toward a ghost tint) while giving a clearly visible
-     step: ~0.28 luminance delta in dark, ~0.05 in light — both an order of
-     magnitude bigger than --on-fg's. */
-  background: color-mix(in srgb, var(--fg) 82%, var(--bg));
-  /* The generic .bar-ctl:hover rule right below sets color: var(--fg), which
-     was already illegible against the old --on-fg hover and would be no
-     better against this one. Restate --bg explicitly so the label stays
-     high-contrast through the hover (>9:1 in both themes against the mix
-     above). */
-  color: var(--bg);
-}
-
 .bar-ctl:hover:not(:disabled) {
   background: rgba(var(--tint), 0.08);
   color: var(--fg);

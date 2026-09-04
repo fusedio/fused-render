@@ -1921,7 +1921,7 @@ export default function Listing({
               {!paneOpen && appEntryPath && (
                 <button
                   type="button"
-                  className="bar-ctl bar-ctl-strong"
+                  className="bar-ctl bar-ctl-bordered"
                   title={"Open " + basename(base) + " as a project"}
                   onClick={openAppEntry}
                 >
