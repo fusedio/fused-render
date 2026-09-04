@@ -891,6 +891,41 @@ if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; th
 fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
+# 4e. The apple tier's Swift helper (D700, fused_render/ai/apple/). Lands in
+#     Contents/MacOS beside the interpreter — `host.py` looks for it there when
+#     `sys.frozen == "macosx_app"` — and is a plain Mach-O, so the signing
+#     sweep (step 5) picks it up with no extra rule.
+#
+#     The binary links macOS-26-only frameworks, so it cannot be built on the
+#     macos-14 image this script runs on (see the runs-on comment in the
+#     workflows for why THAT stays old). CI builds it on a macos-26 job and
+#     hands it over as FUSED_RENDER_APPLE_HELPER_SRC; a local run with an Xcode
+#     26 selected builds it in place; anything else ships WITHOUT it and the
+#     tier's probe says so ("this build of the app ships without the Apple
+#     helper"). Missing is fatal only for a release build (a Developer ID
+#     identity configured), so a dev DMG never fails over an optional tier.
+echo "==> bundling the apple tier helper"
+APPLE_HELPER_DEST="$APP_DIR/Contents/MacOS/fused-apple-ai"
+APPLE_HELPER_SRC="${FUSED_RENDER_APPLE_HELPER_SRC:-}"
+if [[ -z "$APPLE_HELPER_SRC" ]]; then
+  APPLE_SDK_MAJOR="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null | cut -d. -f1 || echo 0)"
+  if [[ "${APPLE_SDK_MAJOR:-0}" -ge 26 ]]; then
+    APPLE_HELPER_SRC="$BUILD_DIR/fused-apple-ai"
+    bash "$REPO_ROOT/scripts/build_apple_helper.sh" "$APPLE_HELPER_SRC"
+  fi
+fi
+if [[ -n "$APPLE_HELPER_SRC" && -f "$APPLE_HELPER_SRC" ]]; then
+  cp "$APPLE_HELPER_SRC" "$APPLE_HELPER_DEST"
+  chmod +x "$APPLE_HELPER_DEST"
+  echo "    $(file -b "$APPLE_HELPER_DEST" | cut -c1-80)"
+elif [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+  echo "FATAL: a release build needs the apple tier helper; set FUSED_RENDER_APPLE_HELPER_SRC" >&2
+  echo "       to a binary built by scripts/build_apple_helper.sh on macOS 26" >&2
+  exit 1
+else
+  echo "    skipped: no prebuilt helper and no macOS 26 SDK here (the apple tier will report itself unavailable)"
+fi
+
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:
 #

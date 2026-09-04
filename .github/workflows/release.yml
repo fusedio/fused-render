@@ -65,8 +65,33 @@ jobs:
             --title "FusedRender $TAG" \
             --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
 
-  build-sign-notarize-release:
+  # The apple tier's Swift helper (D700) needs the macOS 26 SDK, which the
+  # macos-14 DMG image below does not have — built here and handed over as an
+  # artifact. See test.yml's `apple-helper` job for the full argument.
+  apple-helper:
     needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select an Xcode with the macOS 26 SDK
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+      - name: Build fused-apple-ai
+        run: bash scripts/build_apple_helper.sh "$RUNNER_TEMP/fused-apple-ai"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fused-apple-ai
+          path: ${{ runner.temp }}/fused-apple-ai
+          if-no-files-found: error
+
+  build-sign-notarize-release:
+    needs: [prepare-release, apple-helper]
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
     # macos-14, deliberately the OLDEST macOS image GH offers: build_dmg.sh
     # bundles Homebrew's python@3.12 framework, and Homebrew ships PREBUILT
@@ -151,11 +176,19 @@ jobs:
 
           rm -f "$CERT_PATH"
 
+      # The apple tier helper from the macos-26 job above; build_dmg.sh copies
+      # it into Contents/MacOS and the signing sweep signs it with the rest.
+      - uses: actions/download-artifact@v4
+        with:
+          name: fused-apple-ai
+          path: ${{ runner.temp }}/apple-helper
+
       - name: Build, sign, notarize, staple DMG
         env:
           FUSED_RENDER_CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
           FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+          FUSED_RENDER_APPLE_HELPER_SRC: ${{ runner.temp }}/apple-helper/fused-apple-ai
         run: bash scripts/build_dmg.sh
 
       - name: Delete ephemeral keychain

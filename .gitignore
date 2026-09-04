@@ -76,3 +76,8 @@ ios/FusedRenderWidgets/Info.plist
 # same branch; a stray one left tracked past merge is the bug this rule
 # prevents.
 *_NOTES.md
+
+# The apple tier's Swift helper, built per checkout by scripts/build_apple_helper.sh
+# (or on demand by fused_render/ai/apple/host.py); the packaged app carries it in
+# Contents/MacOS instead. Never committed.
+fused_render/ai/apple/bin/

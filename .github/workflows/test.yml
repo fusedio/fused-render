@@ -55,6 +55,9 @@ jobs:
               - 'scripts/setup_py2app.py'
               - 'scripts/app_entry.py'
               - 'scripts/file_associations.*'
+              # The apple tier's Swift helper ships inside the DMG (D700).
+              - 'scripts/build_apple_helper.sh'
+              - 'fused_render/ai/apple/helper/**'
             app:
               - 'fused_render/**'
               - 'tests/**'
@@ -640,9 +643,38 @@ jobs:
   # test_shell_mounts.py starts the HTTP server
   # (create_app) through its client fixture, which refuses without the React
   # shell, so this job depends on `frontend` and downloads shell-dist.
+  # The apple tier's Swift helper (fused_render/ai/apple/helper, D700) links
+  # FoundationModels and Speech, which exist only in the macOS 26 SDK — so it
+  # is built HERE, on the newest image, and handed to the DMG job below as an
+  # artifact. The DMG job itself stays on macos-14 (see its runs-on comment:
+  # Homebrew's per-OS Python bottles, not our deployment target, are what pin
+  # it). The helper targets macOS 26 by design; `host.py` never spawns it on
+  # an older Mac, so the app's own LSMinimumSystemVersion is unaffected.
+  apple-helper:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.macos_packaging == 'true'
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select an Xcode with the macOS 26 SDK
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+      - name: Build fused-apple-ai
+        run: bash scripts/build_apple_helper.sh "$RUNNER_TEMP/fused-apple-ai"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fused-apple-ai
+          path: ${{ runner.temp }}/fused-apple-ai
+          if-no-files-found: error
+
   macos-desktop:
-    needs: [detect-changes, frontend]
-    if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
+    needs: [detect-changes, frontend, apple-helper]
+    if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success' && (needs.apple-helper.result == 'success' || needs.apple-helper.result == 'skipped')
     # macos-14, deliberately the OLDEST macOS image GH offers: build_dmg.sh
     # bundles Homebrew's python@3.12 framework, and Homebrew ships PREBUILT
     # PER-OS BOTTLES. A newer runner therefore stages a Python whose C
@@ -687,6 +719,14 @@ jobs:
           tests/test_app_view_url.py
           tests/test_pasteboard_darwin.py
 
+      # The apple tier helper, built by the `apple-helper` job on macos-26
+      # (this image's SDK cannot build it). Same gate as the DMG smoke below.
+      - uses: actions/download-artifact@v4
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        with:
+          name: fused-apple-ai
+          path: ${{ runner.temp }}/apple-helper
+
       - name: Build the DMG (smoke)
         # build_dmg.sh falls back to ad-hoc signing when no Developer ID identity
         # is configured (FUSED_RENDER_CODESIGN_IDENTITY unset) and skips
@@ -695,6 +735,8 @@ jobs:
         # minutes. setup-python 3.12 above satisfies the script's own version
         # check (str | None syntax, py>=3.10), same as release.yml's DMG job.
         if: needs.detect-changes.outputs.macos_packaging == 'true'
+        env:
+          FUSED_RENDER_APPLE_HELPER_SRC: ${{ runner.temp }}/apple-helper/fused-apple-ai
         run: bash scripts/build_dmg.sh
 
   test-status:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import (
@@ -21,7 +22,9 @@ from fastapi.responses import (
 from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
-from fused_render.server.common import AI_PROVIDERS, _require_fused, ai_result, ai_usage_tokens
+from fused_render.server.common import (
+    AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
+    apple_model_for, provider_of_model)
 from fused_render.shell.prefs import default_model
 
 router = APIRouter()
@@ -1371,6 +1374,31 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
             "bad_request",
             "'provider' must be one of: %s" % ", ".join(_AI_PROVIDERS),
             status=400)
+    # The PINNED ids (D700) are checked before the shape rule: `afm-text` has
+    # no slash and no `.gguf`, so the shape rule alone would send it to
+    # Claude as an unrecognised alias. A pinned id with no `provider` infers
+    # its tier; a pinned id with a DIFFERENT `provider` is a mismatch refused
+    # in both directions, the same rule `claude` + repo id already follows.
+    pinned = provider_of_model(model)
+    if pinned is not None:
+        if provider is None:
+            provider = pinned
+        elif provider != pinned:
+            return _ai_error(
+                "bad_request",
+                f"'provider': {provider!r} cannot run {model!r}: that id belongs "
+                f"to the {pinned!r} tier — drop 'provider' or send {pinned!r}",
+                status=400)
+    if provider == "apple":
+        if model is None:
+            model = apple_model_for("text-generation")
+        if APPLE_MODELS.get(model) != "text-generation":
+            return _ai_error(
+                "bad_request",
+                f"'provider': 'apple' serves text as {apple_model_for('text-generation')!r} "
+                f"only; {model!r} is not an apple text model"
+                + (" (it is the apple id for another capability)" if model in APPLE_MODELS else ""),
+                status=400)
     # `provider: "local"` with no model means the LOCAL default — the catalog's
     # position-0 text model for whichever runner serves this machine (the
     # same answer a bare AI Models page load gives) — never the Claude chain
@@ -1479,6 +1507,43 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     # `warnings[]` (RH-11, `_unsupported`) — for tunables. The semantic flags
     # (`history`, `raw`, `images`) stay refusals on the Claude tier below.
     warnings: list[dict] = []
+    if provider == "apple":
+        # Apple's on-device model (D700). Tunables it lacks are warnings, like
+        # every tier: no top-p (the framework samples by temperature or by
+        # top-k, and `topP` maps to neither honestly) and no thinking budget.
+        # `temperature`/`maxTokens` pass through, range-checked by the same
+        # table as local. Semantics: `history` is HONOURED (the helper
+        # rebuilds a transcript per call), `raw` is refused (the framework
+        # owns its template and exposes none), `images` is refused until the
+        # helper's probe reports image input — never on macOS 26.
+        if effort is not None:
+            warnings.append(_unsupported(
+                "effort", "apple", "Apple's on-device model has no thinking "
+                "budget to set; use 'temperature' / 'maxTokens'"))
+        if body.get("topP") is not None:
+            warnings.append(_unsupported(
+                "topP", "apple", "Apple's on-device model samples by temperature "
+                "(or top-k), not nucleus probability"))
+        sampling = _sampling_problem(body)
+        if sampling:
+            return _ai_error("bad_request", sampling, status=400)
+        if raw:
+            return _ai_error(
+                "bad_request",
+                "'raw' sends the prompt with no chat template, which Apple's "
+                "on-device model cannot do — it owns its template; drop 'raw'",
+                status=400)
+        if images:
+            from fused_render.ai.apple import host as apple_host
+            if not apple_host.probe().image_input:
+                return _ai_error(
+                    "bad_request",
+                    "'images' is not supported by Apple's on-device model on this "
+                    "macOS (image input arrives with macOS 27 on Macs that run "
+                    "the larger model); use a local vision model instead",
+                    status=400)
+        return await asyncio.to_thread(
+            _apple_relay, model, prompt, system_prompt, bool(stream), body, warnings)
     if provider == "local" or (provider is None and _is_local_model(model)):
         if effort is not None:
             warnings.append(_unsupported(
@@ -1935,6 +2000,255 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     return StreamingResponse(ndjson(), media_type="text/x-ndjson")
 
 
+#: What the apple tier's row says between accepting the prompt and its first
+#: token. Same register as `_text_prefill_detail`, without a token count: the
+#: framework reports none.
+_APPLE_ROW_DETAIL = "Apple on-device model…"
+
+
+def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
+                 body: dict, warnings: list | None = None):
+    """One completion from Apple's on-device model (D700), via the helper.
+
+    `_local_relay`'s shape on purpose — same wire (`{ok, result}` or NDJSON
+    chunks closed by a `done` carrying `result`), same Activity row lifecycle,
+    same 409 for a model that is not ready — so a page that swaps
+    `model: "mlx-community/…"` for `provider: "apple"` changes nothing else.
+
+    Differences that are the framework's, not this relay's: `usage` is null
+    on macOS 26 (the API reports no token counts until 27), and a guardrail
+    refusal is not an error but a `finishReason` of `"content-filter"` — the
+    AI SDK's name — with whatever text was produced before the classifier
+    vetoed it. Cancellation reaches the helper on the ✕ (polled between
+    chunks, like local) and on a streaming client's disconnect (the frame
+    generator's `finally`).
+    """
+    from fused_render.ai import supervisor
+    from fused_render.ai.apple import host as apple_host
+
+    availability = apple_host.probe()
+    if not availability.ok:
+        if availability.state == "loading":
+            # Not counted as a failure (AI-12b), like a cold local model: the
+            # OS is still fetching the weights. The row is the probe's own
+            # `sys:ai-model:` slot for this id, so a page has something to
+            # watch; the poll below closes it when the model lands.
+            job = _apple_wait_row(model, availability.reason)
+            return JSONResponse(
+                {"ok": False, "error": {"type": "model_loading",
+                                        "message": availability.reason, "jobId": job}},
+                status_code=409)
+        return _ai_failed(model, "ai_unavailable", availability.reason, status=409)
+
+    history = body.get("history") or []
+    request = {
+        "prompt": prompt,
+        "history": [{"role": turn["role"], "content": turn["content"]} for turn in history],
+        "maxTokens": body.get("maxTokens"),
+        "temperature": body.get("temperature"),
+    }
+    if system_prompt and system_prompt != _AI_DEFAULT_SYSTEM_PROMPT:
+        request["instructions"] = system_prompt
+    request = {k: v for k, v in request.items() if v is not None}
+
+    job = supervisor.text_job_id(uuid.uuid4().hex)
+    row = supervisor.text_row_fields(_text_title(prompt, model), model)
+
+    def tick(**over) -> None:
+        supervisor._report(job, **row, **over)
+
+    try:
+        events = apple_host.frames("text", request, track_text=True)
+        first = next(events, None)
+    except apple_host.AppleError as e:
+        if e.type == "timeout":
+            return _ai_failed(model, "timeout", str(e), status=504)
+        return _ai_failed(model, "ai_unavailable", str(e), status=502)
+    if first is None:
+        return _ai_failed(model, "ai_error", "the Apple helper answered nothing", status=502)
+    # A done-before-any-chunk that is an error is the framework refusing to
+    # START — model still loading, prompt over the context window, unsupported
+    # language. Those are proper JSON errors, not demoted done frames.
+    if first.get("type") == "done" and not first.get("ok"):
+        error = first.get("error") or {}
+        type_ = str(error.get("type") or "ai_error")
+        message = str(error.get("message") or "generation failed")
+        if type_ == "model_loading":
+            job = _apple_wait_row(model, message)
+            return JSONResponse(
+                {"ok": False, "error": {"type": "model_loading", "message": message,
+                                        "jobId": job}}, status_code=409)
+        status = {"bad_request": 400, "unavailable": 409, "timeout": 504}.get(type_, 502)
+        if type_ == "bad_request":
+            return _ai_error(type_, message, status=status)
+        return _ai_failed(model, type_ if type_ != "unavailable" else "ai_unavailable",
+                          message, status=status)
+
+    tick(state="running", done=None, total=None, detail=_APPLE_ROW_DETAIL)
+    count = 0
+    reported_terminal = False
+
+    def walk():
+        nonlocal count, reported_terminal
+
+        def _all():
+            if first is not None:
+                yield first
+            yield from events
+
+        try:
+            for event in _all():
+                etype = event.get("type")
+                if etype == "chunk":
+                    count += 1
+                    tick(state="running", done=count, total=None, detail="Generating…")
+                elif etype == "done":
+                    reported_terminal = True
+                    finish = event.get("finishReason")
+                    if finish == "cancelled":
+                        tick(state="cancelled", done=count, total=None,
+                             detail=f"Cancelled after {count} chunk{'' if count == 1 else 's'}")
+                    elif not event.get("ok", True):
+                        tick(state="error", done=count, total=None,
+                             message=str((event.get("error") or {}).get("message") or "generation failed"))
+                    else:
+                        tick(state="done", done=count, total=count,
+                             detail=f"Generated {event.get('characters') or 0} characters")
+                yield event
+                if etype == "chunk" and supervisor._cancel_requested(job):
+                    apple_host.cancel_text()
+        finally:
+            if not reported_terminal:
+                reported_terminal = True
+                tick(state="error", done=count, total=None,
+                     message="generation stopped before it finished")
+
+    warnings = list(warnings or [])
+
+    def frame(text: str, event: dict) -> dict:
+        finish = str(event.get("finishReason") or "stop")
+        metadata = {"os": availability.os,
+                    # 26.x is the 2025-generation model; 27 is AFM 3. The tier
+                    # is inferred from the OS because the API names none.
+                    "modelGeneration": "afm-3" if availability.os.startswith("27") else "afm-2025",
+                    "usageReported": False}
+        if event.get("restarted"):
+            metadata["restarted"] = True
+        if finish == "content-filter" and event.get("message"):
+            metadata["refusal"] = str(event.get("message"))
+        return ai_result({"text": text}, provider="apple", model=model, usage=None,
+                         finish_reason=finish, warnings=warnings, request_id=job,
+                         metadata=metadata)
+
+    if not stream:
+        text, final = [], None
+        for event in walk():
+            if event.get("type") == "chunk":
+                text.append(event.get("text") or "")
+            elif event.get("type") == "restart":
+                text = []
+            elif event.get("type") == "done":
+                final = event
+                if not event.get("ok", True):
+                    error = event.get("error") or {}
+                    return _ai_failed(model, str(error.get("type") or "ai_error"),
+                                      str(error.get("message") or "generation failed"),
+                                      status=502)
+        ai_metrics.record(model, None)
+        return JSONResponse({"ok": True, "result": frame("".join(text), final or {})})
+
+    def lines():
+        text = []
+        try:
+            for event in walk():
+                if event.get("type") == "chunk":
+                    chunk = event.get("text") or ""
+                    text.append(chunk)
+                    yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                elif event.get("type") == "restart":
+                    # The framework rewrote its output rather than appending.
+                    # Chunks already sent cannot be recalled; the result's
+                    # `text` is rebuilt from here so it is right even where a
+                    # page's own concatenation is not. Rare, and flagged in
+                    # `providerMetadata.apple.restarted`.
+                    text = []
+                elif event.get("type") == "done":
+                    ok = bool(event.get("ok", True))
+                    if ok:
+                        ai_metrics.record(model, None)
+                        yield json.dumps({"type": "done", "ok": True,
+                                          "result": frame("".join(text), event)}) + "\n"
+                    else:
+                        error = event.get("error") or {}
+                        ai_metrics.record_failure(model, str(error.get("type") or "ai_error"))
+                        yield json.dumps({"type": "done", "ok": False, "error": {
+                            "type": str(error.get("type") or "ai_error"),
+                            "message": str(error.get("message") or "generation failed")}}) + "\n"
+        except apple_host.AppleError as e:
+            ai_metrics.record_failure(model, e.type)
+            yield json.dumps({"type": "done", "ok": False,
+                              "error": {"type": e.type, "message": str(e)}}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+#: Wait-row polling: how often the OS is asked whether Apple's model landed.
+_APPLE_WAIT_TICK_S = 5.0
+_APPLE_WAIT_MAX_S = 6 * 3600.0
+
+
+def _apple_wait_row(model: str, reason: str) -> str:
+    """Open (once) the row a 409 `model_loading` from the apple tier points at,
+    and poll the probe until the OS says the model is ready.
+
+    The contract is a jobId the page can watch (SPEC AI-5); the local tier's
+    row is the load it started, but nothing here can start Apple's download
+    — the OS does that on its own schedule — so the row shows the wait and
+    closes itself when the probe flips. Deterministic id per model, like
+    `supervisor.job_id_for`, so a second caller joins the same row.
+    """
+    from fused_render.ai import supervisor
+    from fused_render.ai.apple import host as apple_host
+
+    job = supervisor.JOB_PREFIX + model
+    with _apple_wait_lock:
+        if job in _apple_waits:
+            return job
+        _apple_waits.add(job)
+    fields = {"title": "Apple on-device model", "model": model, "kind": "task",
+              "cancellable": False, "unit": ""}
+    supervisor._report(job, **fields, state="running", done=None, total=None,
+                       detail=reason[:120])
+
+    def poll() -> None:
+        deadline = time.monotonic() + _APPLE_WAIT_MAX_S
+        try:
+            while time.monotonic() < deadline:
+                time.sleep(_APPLE_WAIT_TICK_S)
+                availability = apple_host.probe(force=True)
+                if availability.ok:
+                    supervisor._report(job, **fields, state="done", detail="Ready")
+                    return
+                if availability.state != "loading":
+                    supervisor._report(job, **fields, state="error",
+                                       message=availability.reason)
+                    return
+                supervisor._report(job, **fields, state="running", done=None, total=None,
+                                   detail=availability.reason[:120])
+            supervisor._report(job, **fields, state="error",
+                               message="Apple's model did not become ready")
+        finally:
+            with _apple_wait_lock:
+                _apple_waits.discard(job)
+
+    threading.Thread(target=poll, name="ai-apple-wait", daemon=True).start()
+    return job
+
+
+_apple_wait_lock = threading.Lock()
+_apple_waits: set[str] = set()
+
+
 def _ai_usage(raw) -> dict | None:
     """Normalize CLI usage to exactly {input_tokens, output_tokens} or None.
 
@@ -1991,6 +2305,14 @@ async def shutdown_ai_session(app=None):
     if session is None:
         session = _AI_SESSION
     await session.shutdown()
+    # The apple tier's helper is a child of this server too (host.py); it is
+    # stopped here beside the Claude instance rather than left to die with the
+    # pipe, so a transcription mid-run gets its cancel rather than a SIGPIPE.
+    try:
+        from fused_render.ai.apple import host as apple_host
+        await asyncio.to_thread(apple_host.shutdown)
+    except Exception:  # noqa: BLE001 - shutdown must not fail on a tier that never started
+        pass
 
 
 @router.post("/api/ai")
