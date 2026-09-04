@@ -157,7 +157,7 @@ def test_scan_folder_reports_disabled_and_starts_nothing(client, tmp_path,
     from fused_render.server.routers import index as index_routes
 
     calls = _started(monkeypatch)
-    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_routes.index_gate.prefs, "indexing_enabled", lambda: False)
     folder = tmp_path / "elsewhere"
     folder.mkdir()
     body = _ask(client, folder)

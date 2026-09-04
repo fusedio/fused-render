@@ -523,10 +523,13 @@ export function submitRow(
  *    Waiting fixes nothing; only a scan does.
  *  * `disabled` — the indexing pref is off, so no scan can start until it is
  *    back on.
+ *  * `fda` — the packaged mac app has no Full Disk Access, so no scan can
+ *    start until it is granted (and the app relaunched). The page offers the
+ *    grant, not a scan.
  *  * `unavailable` — mount-backed, inside a package, or pruned by the ignore
  *    rules: no scan will ever cover it (see `RankReason`).
  */
-export type IndexGap = "scanning" | "buildable" | "disabled" | "unavailable";
+export type IndexGap = "scanning" | "buildable" | "disabled" | "fda" | "unavailable";
 
 /**
  * Which of those an uncovered root is in.
@@ -562,6 +565,9 @@ export type IndexGap = "scanning" | "buildable" | "disabled" | "unavailable";
  */
 export function indexGap(reason: RankReason, scanning: boolean | null): IndexGap {
   if (reason === "disabled") return "disabled";
+  // Same argument as `disabled`: every trigger is gated on the grant, so a
+  // lagging `scanning` from the poll cannot be a scan that will finish.
+  if (reason === "fda") return "fda";
   if (scanning === true) return "scanning";
   if (reason === "scanning" && scanning === null) return "scanning";
   if (reason === "mount" || reason === "package" || reason === "ignored") {
