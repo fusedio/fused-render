@@ -15223,14 +15223,11 @@ function queueMessage(text) {
   // shown — every pending note rides along at send time, and a note added
   // after Done shows up in the bubble as it is saved.
   const ann = !text;
-  let chips = null;
   if (ann) {
     const lbl = document.createElement("div");
     lbl.className = "qlbl";
     lbl.textContent = "\u{1F4CC} Comments";
-    chips = document.createElement("div");
-    chips.className = "annchips";
-    b.append(lbl, chips);
+    b.append(lbl);
   } else {
     b.textContent = text;
   }
@@ -15243,17 +15240,19 @@ function queueMessage(text) {
   x.className = "qx";
   x.textContent = "remove";
   x.title = "Unqueue: put this message back in the input box";
-  const entry = { text, el: d, ann, chips };
+  const entry = { text, el: d, bubble: b, ann, chips: null };
   x.onclick = () => {
     const i = queuedMsgs.indexOf(entry);
     if (i >= 0) queuedMsgs.splice(i, 1);
     entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
     persistQueue();
     d.remove();
+    // Chips riding this entry come home to the composer: the notes are still
+    // pending, so unqueuing is just the removal for them.
+    if (entry === annQueued) { annQueued = null; renderAnn(); }
     // Back into the composer, not the void — appended so a draft in progress
-    // is never clobbered. An annotation-only entry has no words to give back:
-    // its notes are still pending, so unqueuing is the chips coming home.
-    if (ann) { annQueued = null; renderAnn(); return; }
+    // is never clobbered. An annotation-only entry has no words to give back.
+    if (ann) return;
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
     growBox();
     focusBox(box);
@@ -15264,7 +15263,20 @@ function queueMessage(text) {
   scrollBottom();
   queuedMsgs.push(entry);
   persistQueue();
-  if (ann) { annQueued = entry; renderAnn(); }
+  if (ann) annQueueChips(entry);
+}
+// Hang the pending notes' chips on a queued entry's bubble and make it THE
+// entry the notes ride (annQueued; renderAnn draws the chips there instead of
+// above the composer). Two callers: an annotation-only entry as it is made,
+// and the head of an existing queue when Done lands behind parked text.
+function annQueueChips(entry) {
+  if (!entry.chips) {
+    entry.chips = document.createElement("div");
+    entry.chips.className = "annchips";
+    entry.bubble.appendChild(entry.chips);
+  }
+  annQueued = entry;
+  renderAnn();
 }
 
 // Fire the next queued message once nothing is live. Called from the tails of
@@ -15273,16 +15285,25 @@ function queueMessage(text) {
 // it knowing less than we do now, but un-sending their words is worse); a
 // STOPPED turn is the exception, handled in stopRun above.
 function drainQueue() {
-  if (sending || activeRun || !queuedMsgs.length) return;
-  const next = queuedMsgs.shift();
-  // Out of the store as it leaves the array, not after the send resolves: from
-  // here the text's fate is sendMessage's (a real user bubble, and on failure
-  // an error beside it), and a mirror still holding it would re-park a message
-  // the next boot can already see in the log.
-  persistQueue();
-  next.el.remove();  // sendMessage adds the real user bubble
-  if (next.ann) annQueued = null;  // sendMessage marks the notes sent and repaints
-  sendMessage(next.text);
+  if (sending || activeRun) return;
+  while (queuedMsgs.length) {
+    const next = queuedMsgs.shift();
+    // Out of the store as it leaves the array, not after the send resolves: from
+    // here the text's fate is sendMessage's (a real user bubble, and on failure
+    // an error beside it), and a mirror still holding it would re-park a message
+    // the next boot can already see in the log.
+    persistQueue();
+    next.el.remove();  // sendMessage adds the real user bubble
+    if (next === annQueued) annQueued = null;  // sendMessage marks the notes sent and repaints
+    // An annotation-only entry whose notes are all gone (every chip ✕'d, or
+    // they rode an earlier message) has nothing to say. sendMessage would
+    // return before the tail that drains the NEXT entry, parking everything
+    // behind it forever (Bugbot, PR #996) — so it is dropped here and the
+    // loop moves on.
+    if (next.ann && !annPending().length && !shotAttached.length) { renderAnn(); continue; }
+    sendMessage(next.text);
+    return;
+  }
 }
 
 // Stop means halt: give queued text back to the composer instead of firing it
@@ -15292,7 +15313,8 @@ function unqueueAll(entries) {
   for (const q of entries) {  // head first: composer keeps typed order
     if (q.dead) continue;  // × was clicked while this entry was detached
     q.el.remove();
-    if (q.ann) { annQueued = null; renderAnn(); continue; }  // chips come home
+    if (q === annQueued) { annQueued = null; renderAnn(); }  // chips come home
+    if (q.ann) continue;  // no words to give back
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
   }
   growBox();
@@ -16916,8 +16938,13 @@ function submitChat() {
     // at a time — the notes are folded in at SEND time, so a second Done while
     // the first is still queued has nothing new to park.
     if (!message) {
-      if (!annPending().length || queuedMsgs.some((q) => q.ann)) return;
-      queueMessage("");
+      if (!annPending().length || annQueued) return;
+      // Text already parked ahead: the notes will ride THAT entry — sendMessage
+      // folds every pending note into whichever message drains first — so the
+      // chips go onto its bubble rather than into a second entry that would
+      // then drain empty (Bugbot, PR #996).
+      if (queuedMsgs.length) annQueueChips(queuedMsgs[0]);
+      else queueMessage("");
       return;
     }
     box.value = "";

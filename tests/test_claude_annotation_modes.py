@@ -226,21 +226,35 @@ def test_done_during_a_live_run_queues_the_notes(html):
     in the queue like typed words do — one at a time, the notes folding in at
     send time — and the home form's Stop is never pressed by an auto-send."""
     body = _block(html, "function submitChat()", "\n}\n")
-    assert "if (!annPending().length || queuedMsgs.some((q) => q.ann)) return;" in body
-    assert 'queueMessage("");' in body
+    assert "if (!annPending().length || annQueued) return;" in body
+    # text already parked ahead: the notes ride THAT entry (sendMessage folds
+    # every pending note into whichever message drains first), so the chips go
+    # on its bubble instead of into a second entry that drains empty (Bugbot, #996)
+    assert "if (queuedMsgs.length) annQueueChips(queuedMsgs[0]);" in body
+    assert 'else queueMessage("");' in body
     q = _block(html, "function queueMessage(text)", "\n}\n")
     assert "const ann = !text;" in q
-    assert "const entry = { text, el, ann, chips };".replace("el,", "el: d,") in q
-    assert "if (ann) { annQueued = null; renderAnn(); return; }" in q, \
-        "unqueue gives no words back — the chips come home to the composer"
-    assert "if (ann) { annQueued = entry; renderAnn(); }" in q
+    assert "const entry = { text, el: d, bubble: b, ann, chips: null };" in q
+    assert "if (entry === annQueued) { annQueued = null; renderAnn(); }" in q, \
+        "unqueue sends the chips home to the composer"
+    assert "if (ann) return;" in q, "an annotation-only entry has no words to give back"
+    assert "if (ann) annQueueChips(entry);" in q
+    hook = _block(html, "function annQueueChips(entry)", "\n}\n")
+    assert "entry.bubble.appendChild(entry.chips);" in hook
+    assert "annQueued = entry;" in hook
     # the chips live in the bubble while queued, not above the composer
     chips = _block(html, "  // pending chips above both composers", "\n  });\n")
     assert "annQueued.chips" in chips and "dest.appendChild(chip);" in chips
     drain = _block(html, "function drainQueue()", "\n}\n")
-    assert "if (next.ann) annQueued = null;" in drain
+    assert "if (next === annQueued) annQueued = null;" in drain
+    # an annotation-only entry with nothing left to carry is dropped and the
+    # loop moves on — sendMessage's early return would never reach drainQueue
+    # and everything behind it would stay parked (Bugbot, #996)
+    assert "if (next.ann && !annPending().length && !shotAttached.length) { renderAnn(); continue; }" in drain
+    assert "while (queuedMsgs.length) {" in drain
     un = _block(html, "function unqueueAll(entries)", "\n}\n")
-    assert "if (q.ann) { annQueued = null; renderAnn(); continue; }" in un
+    assert "if (q === annQueued) { annQueued = null; renderAnn(); }" in un
+    assert "if (q.ann) continue;" in un
     persist = _block(html, "function persistQueue()", "\n}\n")
     assert "queuedMsgs.filter((q) => !q.ann)" in persist, \
         "annotation-only entries are not mirrored — annSave already holds the notes"
