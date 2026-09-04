@@ -334,14 +334,29 @@ _PRIVATE_KEY_RE = re.compile(
 # Two alternatives for the value: quoted (Python, JS, JSON, TOML — anything
 # where the assignment sits inside source syntax) or bare (`.env` files and
 # `docker-compose.yml`-style `KEY=value` lines, which are never quoted and
-# are among the likeliest places in a tree to hold a real credential). The
-# bare alternative stops at whitespace/#/quote so it doesn't run past the end
-# of the line into a trailing comment.
+# are among the likeliest places in a tree to hold a real credential).
+#
+# The bare alternative has to be the whole of the rest of its line, give or
+# take a trailing comment. Without that anchor it matches the leading run of
+# any code expression assigned to a credential-shaped name, and the single
+# most common such expression is the RIGHT way to hold a secret:
+# `API_KEY = os.environ.get("FUSED_API_KEY")` yields the bare run
+# `os.environ.get`, and a check that fails an app for reading its key from
+# the environment is worse than no check at all. Brackets, braces, parens
+# and `$` are out of the value's character set for the same reason: they
+# belong to call and subscript syntax, never to a credential.
 _ASSIGNMENT_SECRET_RE = re.compile(
     rb"(?i)\b([A-Z0-9_]*(?:SECRET|API[_-]?KEY|ACCESS[_-]?KEY|TOKEN|PASSWORD"
     rb"|PASSWD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*"
-    rb"(?:[\"']([^\"'\r\n]{8,})[\"']|([^\s\"'#\r\n]{8,}))"
+    rb"(?:[\"']([^\"'\r\n]{8,})[\"']"
+    rb"|([^\s\"'#\r\n()\[\]{}$,;]{8,})(?=[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)))"
 )
+
+# A bare value that reads as a dotted name — `form.cleaned_data`,
+# `settings.auth.token` — is a reference to a secret, not a secret. Real
+# credentials do not arrive shaped like an attribute chain, and an app that
+# passes one around by name has not leaked anything.
+_DOTTED_NAME_RE = re.compile(rb"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
 
 # A value made of nothing but one repeated filler character or a template
 # marker — "xxxxxxxx", "********", "<your-key>", "${API_KEY}", "%API_KEY%" —
@@ -421,8 +436,11 @@ def _check_secrets(rel_path: str, text: str, findings: list) -> None:
         ))
 
     for m in _ASSIGNMENT_SECRET_RE.finditer(data):
-        value = m.group(2) if m.group(2) is not None else m.group(3)
+        bare = m.group(2) is None
+        value = m.group(2) if not bare else m.group(3)
         if _is_placeholder(value):
+            continue
+        if bare and _DOTTED_NAME_RE.match(value.strip()):
             continue
         findings.append(_finding(
             "secrets:assignment", rel_path, line_for(m.start()),

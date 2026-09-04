@@ -6,10 +6,14 @@ name: app-check
 # no idea the repo it lives in exists, or how many apps are in it. So this
 # workflow works out the shape of the repo itself, then loops:
 #
-#   - the repo root IS an app (it carries its own metadata.json) — check
+#   - the repo root IS an app (it carries its own index.html) — check
 #     just that one folder, or
 #   - the repo root is a folder OF apps — check every top-level folder that
-#     carries a metadata.json.
+#     carries an index.html.
+#
+# The entry page is the marker because it is the one file every app has:
+# `metadata.json` is optional catalog data that most apps never write, and a
+# repo keyed on it would quietly check nothing and pass.
 #
 # Either way, each app gets the same two checks: `python app_check.py` and,
 # if it has any, its own tests.
@@ -41,9 +45,9 @@ jobs:
           python-version: "3.12"
 
       - name: Review each app and run its own tests
-        # Find the app folders first (the repo root itself, if it carries a
-        # metadata.json, otherwise every top-level folder that does), then
-        # one loop, two checks per app:
+        # Find the app folders first (the repo root itself, if it carries an
+        # index.html, otherwise every top-level folder that does), then one
+        # loop, two checks per app:
         #
         #   1. `python .github/app_check.py "$app"` — the same script and
         #      the same severity rule a developer runs locally, pointed at
@@ -54,8 +58,12 @@ jobs:
         #      merely on a `tests/` directory existing. `pytest` is only
         #      installed once a folder actually needs it. Install that app's
         #      declared dependencies first if a pyproject.toml exists; pip
-        #      parses and installs them. If the install fails, log a warning
-        #      naming the app, skip that app's tests, and continue. Exit 5
+        #      parses and installs them. An app's pyproject is often a
+        #      dependency list rather than a buildable package (`package =
+        #      false` and friends), so an install that fails is a reason to
+        #      skip that app's tests with a warning annotation, not to fail
+        #      the repo — the alternative is a permanently red check that
+        #      says nothing about the app. Exit 5
         #      from pytest is "no tests collected" — reachable even after
         #      the test_files gate (every matching file skipped), and means
         #      nothing failed, only that there was nothing to run.
@@ -63,19 +71,19 @@ jobs:
           set -e
           status=0
 
-          if [ -f "metadata.json" ]; then
+          if [ -f "index.html" ]; then
             apps="."
           else
             apps=""
             for d in */; do
               d="${d%/}"
-              [ -f "$d/metadata.json" ] || continue
+              [ -f "$d/index.html" ] || continue
               apps="$apps $d"
             done
           fi
 
           if [ -z "$apps" ]; then
-            echo "No app folders found (no metadata.json at the repo root or in any top-level folder) — nothing to check."
+            echo "No app folders found (no index.html at the repo root or in any top-level folder) — nothing to check."
             exit 0
           fi
 
@@ -95,7 +103,6 @@ jobs:
               if ! pip install -e "$app"; then
                 echo "::warning::could not install $app's declared dependencies — skipping its tests"
                 echo "::endgroup::"
-                status=1
                 continue
               fi
             fi

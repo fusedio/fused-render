@@ -116,6 +116,22 @@ def test_an_unquoted_env_style_assignment_is_flagged(tmp_path):
                for f in findings)
 
 
+def test_reading_a_credential_from_the_environment_is_not_a_leak(tmp_path):
+    """The right way to hold a secret is to not hold it — read it at runtime.
+    Every one of these lines assigns a credential-shaped name from an
+    expression rather than a literal, and none of them puts a secret in the
+    tree."""
+    _write(tmp_path, "app.py",
+           "import os\n"
+           'API_KEY = os.environ.get("FUSED_API_KEY")\n'
+           'ACCESS_KEY = os.environ["AWS_ACCESS_KEY"]\n'
+           "token = get_token()\n"
+           "SECRET_PATH = pathlib.Path(__file__).parent\n"
+           "password_field = form.cleaned_data\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert not any(f["rule"].startswith("secrets:") for f in findings)
+
+
 def test_a_secret_reports_its_line_number_correctly_past_non_ascii_text(tmp_path):
     """The reported line counts characters, not encoded bytes — a non-ASCII
     comment earlier in the file must not shift the line number of a finding
