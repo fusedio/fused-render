@@ -3985,13 +3985,22 @@ function render(data, stashes, diff) {
   const allIn = changes.length > 0
     && changes.every((c) => c.staged && !c.unstaged && !c.untracked);
   const selectOp = allIn ? "unstage_all" : "stage_all";
+  /* Disabled while any file is conflicted, for the same reason that file's own
+     tick is: `stage_all` is `git add` over the lot, and staging a file that
+     still has markers in it clears the conflict without resolving it, letting
+     Commit record the markers. The row tick already refuses; the header must
+     not offer a way around it. */
+  const anyConflict = changes.some((c) => c.conflicted);
   const selectAll = changes.length ? action(selectOp,
       [icon(CHECK_GLYPH, 14), btnLabel(allIn ? "Deselect all" : "Select all")], {
     className: "good",
-    label: allIn ? "Remove every change from the next commit"
-                 : "Include every change in the next commit",
-    title: allIn ? "Leave every change out of the next commit"
-                 : "Include every change in the next commit",
+    disabled: anyConflict,
+    label: anyConflict ? "Resolve the conflicted files before selecting all"
+         : allIn ? "Remove every change from the next commit"
+         : "Include every change in the next commit",
+    title: anyConflict ? "Resolve the conflicted files first."
+         : allIn ? "Leave every change out of the next commit"
+         : "Include every change in the next commit",
     onClick: () => run(selectOp, { op: selectOp }),
   }) : null;
 
