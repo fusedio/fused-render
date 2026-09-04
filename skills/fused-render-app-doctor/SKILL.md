@@ -33,13 +33,13 @@ Grep for absolute paths that describe one person's filesystem: `/home/`, `/Users
 
 ## Generated data outside `.fused/`
 
-An app's own machine-local state belongs under `.fused/` (`fused_render/app_fused_dir.py`). Anything that looks generated and sits loose in the tree instead is a finding: `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and stray files ending `.pyc`, `.log`, `.db`, `.sqlite`, `.sqlite3`. Advise deleting it, or moving it under `.fused/`, or adding it to `.gitignore` if it's the kind of thing that will regenerate.
+An app's own machine-local state belongs under `.fused/`. Anything that looks generated and sits loose in the tree instead is a finding: `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and stray files ending `.pyc`, `.log`, `.db`, `.sqlite`, `.sqlite3`. Advise deleting it, or moving it under `.fused/`, or adding it to `.gitignore` if it's the kind of thing that will regenerate.
 
 ## Structure
 
 Check for:
 
-- An entry page. `fused_render/app_listing.py`'s `app_entry` defines it precisely: the first non-hidden direct-child `.html` file, in name order, whose first 4 KiB contains a `<meta name="fused-app">` tag (matched case-insensitively, quotes on the value optional). Filenames carry no meaning, `index.html` gets no special treatment, only the tag decides. A folder with no page carrying that tag has no entry, regardless of what its html is named.
+- An entry page: the first non-hidden direct-child `.html` file, in name order, whose first 4 KiB contains a `<meta name="fused-app">` tag (matched case-insensitively, quotes on the value optional). Filenames carry no meaning, `index.html` gets no special treatment, only the tag decides. A folder with no page carrying that tag has no entry, regardless of what its html is named.
 - A README.
 - A `preview.png` thumbnail.
 - A `pyproject.toml` that actually parses as TOML.
@@ -47,7 +47,7 @@ Check for:
 
 ## A stale declared API version
 
-The entry page may declare `<meta name="fused-api-version" content="N">` right after the `fused-app` tag, in the same 4 KiB head. No tag means version 0, the oldest apps predate the tag entirely. Find current by reading `fused_render/fused_api_version.py`: it lists `docs/v{N}.md` files under the `fused-render-api-migration` skill and current is the highest `N` that exists there. If the entry page's declared version is behind that, it's a finding, route the fix to `fused-render-api-migration`, don't guess at what changed between versions yourself.
+The entry page may declare `<meta name="fused-api-version" content="N">` right after the `fused-app` tag, in the same 4 KiB head. No tag means version 0, the oldest apps predate the tag entirely. Current is the highest `N` among the `docs/v{N}.md` files in the `fused-render-api-migration` skill directory, which sits beside this one. List that directory rather than assuming a number, so the answer stays right as versions land. If the entry page's declared version is behind that, it's a finding, route the fix to `fused-render-api-migration`, don't guess at what changed between versions yourself.
 
 ## Judging the app's actual `fused.*` calls
 
