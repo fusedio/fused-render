@@ -17,6 +17,7 @@ from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
+from fused_render.shell import prefs
 from fused_render.index.store import Sink, compact, partition_files
 from fused_render.server import create_app
 
@@ -998,6 +999,11 @@ def test_an_uncovered_folder_reports_disabled_while_indexing_is_off(
     from fused_render.server.routers import index as index_routes
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
+    # The pref is read in two places now: the route's own `indexing_enabled`
+    # (the `scanning` guard) and `index_gate.indexing_blocked`, which looks
+    # the pref up through `prefs` so the FDA gate beside it is one decision
+    # (#991). Patch the source both read from, not the route's import.
+    monkeypatch.setattr(prefs, "indexing_enabled", lambda: False)
     monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
     body = client.get("/api/index/rank",
                       params={"root": str(tmp_path), "q": "x"}).json()
@@ -1014,6 +1020,7 @@ def test_ignored_still_wins_over_disabled_ordering_is_not_swapped(
     root = str(tmp_path / "proj" / "node_modules")
     client = _ranked_client(tmp_path, str(tmp_path / "proj"),
                             [str(tmp_path / "proj") + "/a.txt"])
+    monkeypatch.setattr(prefs, "indexing_enabled", lambda: False)
     monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
     body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
     assert body["reason"] == "disabled"

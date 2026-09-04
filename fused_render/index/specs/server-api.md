@@ -310,6 +310,7 @@ otherwise one of:
 | `package` | a `.app`/`.photoslibrary` — recorded as one opaque row, never listed | live streamed walk |
 | `ignored` | the scan's ignore list excludes this tree (`node_modules`, …) | live streamed walk |
 | `disabled` | the `indexing_enabled` preference is off (`shell/prefs.py`) — no scan will start | live streamed walk |
+| `fda` | the packaged mac app has no Full Disk Access (`shell/index_gate.py`) — no scan will start until it is granted and the app relaunched | live streamed walk; the home search offers the grant |
 | `uncovered` | not scanned yet, and scannable | ask for a scan (§7.2), then poll |
 | `scanning` | a run covering this root is live — in EITHER direction, an ancestor root or a descendant one | poll, rendering whatever came back |
 
@@ -337,6 +338,18 @@ the ordinary on-demand-scan path (§7.2) takes over from there. Precedence: `dis
 checked after `mount`/`package` and before `ignored`, so an ignored folder is still
 `ignored` regardless of the toggle — that fact is about the scan config, not about
 whether scanning can run at all.
+
+`fda` is `disabled`'s sibling and sits right after it in precedence (`shell/index_gate.py`
+answers both from one call). The default root is the user's home, and walking it reads
+under every TCC-protected folder — Desktop, Documents, Downloads and the rest — which on a
+fresh install fired a prompt per folder at boot, before onboarding had painted, or had
+those prompts silently denied because the app was not frontmost. So on the packaged mac
+app no trigger starts a scan (startup, on-demand, folder-open freshness, mutation rescan,
+`runner.start` as the backstop) while the in-process probe conclusively says not granted;
+an inconclusive probe (no target on the machine) does not block. The grant applies to the
+next launch, which runs the startup scan, so indexing begins on its own once the user
+grants and relaunches. `POST /api/index/scan` answers 409 with `reason: "fda"`;
+`scan-folder` answers `why: "fda"`.
 
 **Deciding this server-side is the point.** The mount policy is `MountGuard`'s — the
 same object `runner.start` refuses with — the ignore list is the scan config's, and the

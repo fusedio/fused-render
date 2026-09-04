@@ -52,7 +52,7 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
-import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
+import { ONBOARDING_PATH, onboardingUrl, shouldAutoShow } from "@shell/onboarding/state";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -642,14 +642,15 @@ export default function App({ config }: { config: Config }) {
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
   // leaving the wizard must not bounce back in. Same render-time rewrite as
   // "/" above; the flag the rule reads is the server's, so a completed or
-  // dismissed wizard stays gone across ports and browsers.
+  // dismissed wizard stays gone across ports and browsers. The URL names the
+  // server's stored step, so a restart mid-wizard resumes where it was.
   if (
     !IS_EMBED &&
     !autoShowDecided &&
     location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
-    history.replaceState(null, "", ONBOARDING_PATH);
+    history.replaceState(null, "", onboardingUrl(config));
   }
   autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config

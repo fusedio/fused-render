@@ -34,6 +34,7 @@ describe("what to do with a ranked answer", () => {
     // source available, same as mount/package/ignored.
     expect(at({ reason: "disabled" })).toBe("walk");
     expect(at({ reason: "disabled", asked: true, sinceAsk: 99 })).toBe("walk");
+    expect(at({ reason: "fda" })).toBe("walk");
   });
 
   test("an uncovered folder is scanned, once", () => {

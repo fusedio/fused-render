@@ -26,6 +26,7 @@ import {
 } from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
+import { IndexFdaCta } from "@apps/explorer/IndexFdaCta";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import {
   refreshIsPending,
@@ -835,10 +836,10 @@ export function FilesSearch({
     !suppressRank
       ? indexGap(displayAnswer.reason, liveScanning)
       : null;
-  // The `buildable` branch yields nothing — the `.fh-index-cta` callout is the
-  // message for that state — so the note paragraph is empty and the suffix's
-  // leading "·" would separate nothing.
-  const noteEmpty = gap === "buildable";
+  // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
+  // callout is the message for those states — so the note paragraph is empty
+  // and the suffix's leading "·" would separate nothing.
+  const noteEmpty = gap === "buildable" || gap === "fda";
   // Whether AI search has anything to answer WITH. It executes its spec
   // against the same file index (`routers/search._search_index`), so with no
   // index built it fails the same way the instant search did — see
@@ -1031,6 +1032,9 @@ export function FilesSearch({
               </button>
             </div>
           )}
+          {/* No Full Disk Access on the packaged mac app: no scan may start,
+              so the offer is the grant, not a scan (explorer/IndexFdaCta). */}
+          {gap === "fda" && <IndexFdaCta />}
           <p className="fh-result-note">
             {/* Branch on the ANSWER IN HAND, not on the request state: while a
                 new query is in flight the previous answer is what is on screen,
@@ -1085,6 +1089,10 @@ export function FilesSearch({
                 </button>
                 .
               </>
+            ) : gap === "fda" ? (
+              // Owned by the IndexFdaCta callout above, same reasoning as
+              // `buildable` below: one message, not two.
+              null
             ) : gap === "scanning" ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state. The file

@@ -85,6 +85,35 @@ def agent():
     return _load("agent")
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
 # --------------------------------------------------------------- the MCP wire
 # The stdio harness (one reader thread, responses demultiplexed by JSON-RPC id,
 # and why both are load-bearing) lives in _mcp_stdio.py, shared with
@@ -1762,8 +1791,7 @@ def test_start_records_the_mode_it_spawned_with(agent, tmp_path, monkeypatch):
     target.write_text("<html></html>")
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda *a, **k: type("P", (), {"pid": 4321})())
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda *a, **k: _HostProc({}))
     run_id = agent._start(str(target), "hi", "", "", "", "acceptEdits")["run_id"]
     meta = json.load(open(os.path.join(agent.RUNS, run_id, "meta.json")))
     assert meta["mode"] == "acceptEdits"
@@ -1789,17 +1817,10 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
-
-    class _Proc:
-        pid = 4242
-
-    def fake_popen(cmd, **kwargs):
-        seen["cmd"] = cmd
-        return _Proc()
-
-    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
     run_id = agent._start(str(target), "hi", "", "", "")["run_id"]
-    cmd = seen["cmd"]
+    cmd = _argv_from_req(agent, seen["req"],
+                         os.path.join(agent.RUNS, run_id))
 
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.PERMISSION_TOOL)
     assert cmd[cmd.index("--permission-prompt-tool") + 1] == tool
@@ -2033,14 +2054,10 @@ def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
-
-    class _Proc:
-        pid = 4242
-
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
-    agent._start(str(target), "hi", "", "", "", picked)
-    cmd = seen["cmd"]
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    run_id = agent._start(str(target), "hi", "", "", "", picked)["run_id"]
+    cmd = _argv_from_req(agent, seen["req"],
+                         os.path.join(agent.RUNS, run_id))
 
     if flag is None:
         assert "--permission-mode" not in cmd
@@ -2418,17 +2435,22 @@ def test_the_run_tree_is_not_readable_by_other_local_accounts(agent, tmp_path,
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
 
-    class _Proc:
-        pid = 4242
-
-    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
     run_id = agent._start(str(target), "hi", "", "", "")["run_id"]
     run_dir = os.path.join(agent.RUNS, run_id)
+    # mcp.json comes from `_claude_argv`, which now runs inside
+    # session_host.py once it is actually spawned — the stub Popen above
+    # never runs it, so make the same call here, in-process, off the request
+    # it was handed (the one the real host would have read off its stdin).
+    _argv_from_req(agent, seen["req"], run_dir)
 
     for d in (run_dir, agent._perm_dir(run_dir)):
         mode = stat.S_IMODE(os.stat(d).st_mode)
         assert mode == 0o700, f"{d} is {oct(mode)}, readable beyond this user"
-    for name in ("meta.json", "out.jsonl", "err.log", "pid", "mcp.json"):
+    # out.jsonl is not among these: it is opened (and appended to) by
+    # session_host.py's own main(), which the stub Popen above never runs.
+    for name in ("meta.json", "err.log", "pid", "mcp.json"):
         path = os.path.join(run_dir, name)
         mode = stat.S_IMODE(os.stat(path).st_mode)
         assert mode == 0o600, f"{name} is {oct(mode)}"

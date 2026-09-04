@@ -323,6 +323,9 @@
    actually does something — an update that would no-op renders no button at
    all, only the command that would work. */
 .claude-health-action {
+  /* Also an <a> (FdaStrip's Relaunch deep link): same fill, no underline. */
+  text-decoration: none;
+  display: inline-block;
   font: inherit;
   font-weight: 600;
   padding: 5px 12px;
