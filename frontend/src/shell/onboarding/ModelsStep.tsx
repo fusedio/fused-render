@@ -86,6 +86,12 @@ export function forgetModelsStep(): void {
  *  same clock; this covers the second-granularity rounding either side. */
 const CLOCK_SLACK_MS = 2000;
 
+/** How long a sent Download reads as busy before its job row has appeared —
+ *  the gap between the POST returning and the next poll seeing the row. A
+ *  bound, not a timeout: nothing is cancelled when it lapses, the row simply
+ *  becomes one the user can Start again. */
+const STARTING_GRACE_MS = 30_000;
+
 /** The job that is telling the truth about `id` right now, or none.
  *
  *  Two rules, and the second one is the whole reason this function exists.
@@ -144,25 +150,39 @@ export function useModelPicks(): ModelPicks {
  *  has no status bar and no download manager on screen (App.tsx renders this
  *  route alone), so progress has to be drawn in the step or it is invisible
  *  until the user leaves — including progress that was already running when
- *  the step opened, which is what a return to it after a Next looks like. */
-function useJobs(): Job[] {
+ *  the step opened, which is what a return to it after a Next looks like.
+ *
+ *  `refresh` is the out-of-band tick a click needs: the cadence is right for
+ *  watching, and wrong for the moment a Download has just been sent, when the
+ *  next scheduled poll may be `POLL_IDLE_MS` away. It drops the pending timer
+ *  and asks now, and a reply that lands after an unmount is discarded — the
+ *  epoch, not the `alive` flag of a closure a caller could be holding. */
+function useJobs(): { jobs: Job[]; refresh: () => void } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const lastRunning = useRef(Date.now());
+  const refresh = useRef(() => {});
   useEffect(() => {
+    let epoch = 0;
     let alive = true;
     let timer: number | undefined;
     const tick = () => {
+      const mine = ++epoch;
       fetchJobs().then(
         ({ jobs: next }) => {
-          if (!alive) return;
+          if (!alive || mine !== epoch) return;
           setJobs(next);
           if (next.some(isRunning)) lastRunning.current = Date.now();
           timer = window.setTimeout(tick, pollInterval(next, Date.now() - lastRunning.current));
         },
         () => {
-          if (alive) timer = window.setTimeout(tick, 4000);
+          if (alive && mine === epoch) timer = window.setTimeout(tick, 4000);
         },
       );
+    };
+    refresh.current = () => {
+      if (!alive) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      tick();
     };
     tick();
     return () => {
@@ -170,7 +190,7 @@ function useJobs(): Job[] {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
-  return jobs;
+  return { jobs, refresh: () => refresh.current() };
 }
 
 export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: string }) {
@@ -202,7 +222,7 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: str
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `setChecked` is a per-render closure
   }, [picks, checked]);
 
-  const jobs = useJobs();
+  const { jobs, refresh } = useJobs();
   // Deliberately NOT `activeJobByModel`: that map drops a terminal row (the
   // stale-busy fix for pages that gate on mere presence), and this step reads
   // the STATE — a `done` row is how a finished download turns into a tick, an
@@ -225,8 +245,18 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: str
   // act on: selected, not here already, and nothing in flight for it.
   const rows = (picks ?? []).map((pick) => {
     const job = jobFor(pick.model.id, jobByModel, started);
-    const busy = job !== undefined && !isTerminal(job);
     const here = pick.model.downloaded || job?.state === "done";
+    // A Download that has been SENT is busy before its job row exists: the
+    // POST returns as soon as the worker thread is up, and the row only
+    // appears on the next poll. Without this the button stayed enabled and
+    // the checkbox stayed put for that gap — long enough to send the same
+    // downloads twice. Bounded, so a request that somehow never produces a
+    // row does not leave the model unfetchable: after the grace it reads as
+    // pending again and Start can be pressed.
+    const askedAt = started.get(pick.model.id);
+    const awaiting =
+      askedAt !== undefined && job === undefined && !here && Date.now() - askedAt < STARTING_GRACE_MS;
+    const busy = awaiting || (job !== undefined && !isTerminal(job));
     return {
       pick,
       job,
@@ -268,7 +298,10 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: str
     // thread server-side and returns immediately, and a model already being
     // fetched JOINS that fetch rather than racing it (supervisor.load).
     for (const p of wanted) {
-      downloadAiModel(p.model.id, p.capability).catch((e: unknown) => {
+      // `refresh` on the way OUT of each request, not once at the end: the
+      // reply is the first moment the row it opened can be read back, and the
+      // scheduled poll may be a whole idle interval away.
+      downloadAiModel(p.model.id, p.capability).then(refresh).catch((e: unknown) => {
         // Through `memory` rather than the wrappers above: this lands after an
         // await, so the closure's `errors`/`started` are a snapshot from
         // before the other requests in this same batch reported.
