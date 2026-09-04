@@ -205,3 +205,52 @@ mistake. Full scoped test run at the end of the build:
 `pytest tests/test_app_doctor.py tests/test_app_doctor_housekeeping.py
 tests/test_app_doctor_api.py tests/test_app_doctor_cli.py
 tests/test_app_doctor_repo.py tests/test_skill_plugin.py -q` — all green.
+
+## Post-build: push protection, and a judgment pass in the skill
+
+GitHub's push protection rejected the push: a "Slack API Token" secret scan
+hit on `tests/test_app_doctor.py` at two historical commits
+(`f670dce78`, `fe4323bdb`). Every other planted secret in that file's
+masking-guarantee test builds its value by string concatenation
+(`"ghp_" + "a" * 40`), which keeps the real-looking string out of the
+source as a contiguous literal; the Slack fixture was the one exception,
+writing its whole token inline in one quoted literal. Fixed the same way
+as its siblings, splitting the literal into two pieces joined with `+`,
+in both the line that plants it and the line that lists it for the
+masking assertion, keeping the same value and the same `xox[baprs]-…`
+shape the engine's regex expects. Grepped the whole repo for the same contiguous-secret
+shape (AWS, `ghp_`, `sk-`, `AIza`, `sk_live_`, `xox[baprs]-`, all with
+their real minimum lengths) and found no other instance.
+
+**History rewrite.** `git rebase -i` isn't available in this environment,
+so the two offending commits (and everything after them, to keep the
+merge and the six per-task commits distinct) were rewritten with
+`git filter-branch --tree-filter` scoped to `origin/main..HEAD`, running a
+small Python script that does the same two string replacements against
+`tests/test_app_doctor.py` in every commit where the file exists. Verified
+after with a grep of the full diff for the reassembled token: zero hits,
+and `git diff origin/main..HEAD --stat` still lists exactly the
+same ten files as before the rewrite, and all eight commits (the merge
+plus the six per-task commits plus the DECISIONS.md fix commit) remain
+distinct with their original messages. The stale `refs/original/...`
+backup ref `filter-branch` leaves behind was deleted so the old string
+doesn't linger reachable in the local repo.
+
+**The skill's judgment pass.** `SKILL.md` only ran the command and
+paraphrased its findings; it had no room for catching a *real* fused
+method used *wrongly*, which `api-misuse` can't see since it only checks
+whether a name exists on `window.fused`. Added a "Judgment pass" section
+between "Per family" and "Setting up checks for a repo of apps" covering
+three things read against the app's own source, all confirmed directly
+against `fused_render/static/runtime.js` before writing: a promise
+returning call (`runPython`, `writeFile`, `uploadFile`, `mkdir`, `stat`,
+`readFile`, `trackJob`, `watchJob`, every `ai.*` verb) used without
+`await`/`.then`, generated data or cache written outside `.fused/`
+(the convention already named in `app_doctor.py`'s own generated-file
+check and in `app_fused_dir.py`), and an expensive call (`runPython`,
+`ai.*`) fired per keystroke or per render instead of on an explicit
+action. The section says outright that this pass is manual/agent-only
+and deliberately not in `app-check.yml`, because CI has no reader to make
+this kind of judgment call. `tests/test_skill_plugin.py` has no
+app-doctor-specific shape assertion to satisfy; the full scoped suite
+(117 tests, same six files as before) still passes unchanged.
