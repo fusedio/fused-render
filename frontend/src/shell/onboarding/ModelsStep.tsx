@@ -1,0 +1,345 @@
+// Step 4 — local models, and a head start on downloading them.
+//
+// The step exists because of a timing problem, not a capability one: a model
+// this machine does not have is fetched on FIRST USE — the route answers
+// `model_loading` and starts the download rather than refusing (ai_runtime.py
+// `api_ai_download`/`_resolve_capability`) — so nothing here is required for
+// anything to work. What it buys is that the multi-GB wait happens while the
+// user is reading the next step and building their first app, instead of the
+// first time they ask an app for a sentence.
+//
+// So: NOTHING BLOCKS. Start is fire-and-forget (`supervisor.load(...,
+// weights_only=True)` returns the instant its thread is up), Next stays live
+// the whole time, and leaving the wizard leaves the fetch running — it is a
+// server-owned job, reported in the download manager like every other one.
+// Skipping costs the user nothing but the wait, later, and the copy says so
+// rather than implying a penalty.
+//
+// What it offers is ONE model per capability and WHETHER EACH ONE FITS: the
+// `fit` verdict already on every catalog row (fit.py — measured footprint,
+// curator's envelope, or the download's own bytes, in that order), drawn with
+// `fitNote`'s own words so this step and the Playground's badge cannot come
+// to different conclusions about the same machine. Comfortable ones start
+// checked; a tight or too-big one is shown, unchecked, with the reason — the
+// selection rule lives in `modelPicks.ts`.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, Cpu, HardDrive } from "lucide-react";
+
+import { fitNote } from "@apps/ai_models/shared/fitNote";
+import { downloadAiModel, getAiCatalog } from "@platform/lib/api";
+import { formatSize } from "@platform/lib/format";
+import {
+  fetchJobs,
+  isRunning,
+  isTerminal,
+  jobAmount,
+  jobFraction,
+  jobStatusLine,
+  pollInterval,
+  type Job,
+} from "@platform/lib/jobs";
+import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+
+import { comfortableIds, modelPicks, selectedTotal, type ModelPick } from "./modelPicks";
+import { StepHeader } from "./StepHeader";
+
+/** `null` while the catalog is still answering — the wizard reads that as
+ *  "unknown", not "none", and keeps the step in the list meanwhile. */
+export type ModelPicks = ModelPick[] | null;
+
+/** The catalog, once, as picks. Lives at the WIZARD level (like
+ *  `useClaudeSetup`) because the step list itself depends on the answer: a
+ *  machine no engine serves has no Models step at all, and a hook per step
+ *  would fetch twice to tell the same thing to two places. */
+export function useModelPicks(): ModelPicks {
+  const [picks, setPicks] = useState<ModelPicks>(null);
+  useEffect(() => {
+    let alive = true;
+    getAiCatalog().then(
+      ({ capabilities }) => {
+        if (alive) setPicks(modelPicks(capabilities));
+      },
+      // A catalog that cannot be read is an empty offer, not an error face:
+      // the step drops out and the user loses nothing they needed.
+      () => {
+        if (alive) setPicks([]);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return picks;
+}
+
+/** Jobs, polled only once something has been started here, and only while
+ *  anything is still running. The wizard has no status bar and no download
+ *  manager on screen (App.tsx renders this route alone), so progress has to
+ *  be drawn in the step or it is invisible until the user leaves. */
+function useStartedJobs(started: boolean): Job[] {
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const lastRunning = useRef(Date.now());
+  useEffect(() => {
+    if (!started) return;
+    let alive = true;
+    let timer: number | undefined;
+    const tick = () => {
+      fetchJobs().then(
+        ({ jobs: next }) => {
+          if (!alive) return;
+          setJobs(next);
+          if (next.some(isRunning)) lastRunning.current = Date.now();
+          timer = window.setTimeout(tick, pollInterval(next, Date.now() - lastRunning.current));
+        },
+        () => {
+          if (alive) timer = window.setTimeout(tick, 4000);
+        },
+      );
+    };
+    tick();
+    return () => {
+      alive = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [started]);
+  return jobs;
+}
+
+export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: string }) {
+  const [checked, setChecked] = useState<Set<string> | null>(null);
+  const [started, setStarted] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // The preselection is seeded ONCE, from the first picks that arrive: a
+  // later render must not re-check a box the user has just cleared.
+  useEffect(() => {
+    if (picks && checked === null) setChecked(new Set(comfortableIds(picks)));
+  }, [picks, checked]);
+
+  const jobs = useStartedJobs(started.size > 0);
+  // Deliberately NOT `activeJobByModel`: that map drops a terminal row (the
+  // stale-busy fix for pages that gate on mere presence), and this step reads
+  // the STATE — a `done` row is how a finished download turns into a tick, an
+  // `error` row is the only place the failure's sentence exists. Same key
+  // (`job.title` is the repo id, `supervisor.load`'s own `title=model`) and
+  // the same server-owned filter.
+  const jobByModel = useMemo(
+    () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
+    [jobs],
+  );
+
+  const selection = checked ?? new Set<string>();
+  const total = useMemo(() => selectedTotal(picks ?? [], selection), [picks, selection]);
+
+  // Driven by the checkbox's own reported value, not by flipping what this
+  // render happened to see: the primitive owns the state transition.
+  const setRow = (id: string, on: boolean) =>
+    setChecked((prev) => {
+      const next = new Set(prev ?? []);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const start = useCallback(() => {
+    if (!picks) return;
+    const wanted = picks.filter((p) => selection.has(p.model.id) && !started.has(p.model.id));
+    if (wanted.length === 0) return;
+    setStarted((prev) => new Set([...prev, ...wanted.map((p) => p.model.id)]));
+    // One request per model, each caught on its own: a 409 on one ("needs
+    // Apple Silicon", a partly-fetched cache another page is already pulling)
+    // must not take the others down with it. The server does the queueing —
+    // each call starts its own worker thread and returns immediately.
+    for (const p of wanted) {
+      downloadAiModel(p.model.id, p.capability).catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        setErrors((prev) => ({ ...prev, [p.model.id]: message }));
+        setStarted((prev) => {
+          const next = new Set(prev);
+          next.delete(p.model.id);
+          return next;
+        });
+      });
+    }
+  }, [picks, selection, started]);
+
+  const pending = picks
+    ? picks.filter((p) => selection.has(p.model.id) && !started.has(p.model.id))
+    : [];
+  const pendingTotal = selectedTotal(
+    picks ?? [],
+    pending.map((p) => p.model.id),
+  );
+  const models = `${pending.length} model${pending.length === 1 ? "" : "s"}`;
+  // The figure only when there IS one: every selected model lacking a
+  // published size would otherwise put "~0 B" on the button, which is a claim.
+  const startLabel =
+    pendingTotal.bytes > 0
+      ? `Download ${models} · ~${formatSize(pendingTotal.bytes)}`
+      : `Download ${models}`;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <StepHeader
+        eyebrow={eyebrow}
+        title="AI models run on this machine"
+        lead="No account, no API key, no cloud: an app that generates text or images loads a model into this machine's own memory. Download the ones that fit now and they are ready when you need them — skip, and an app fetches what it needs the first time it asks."
+      />
+
+      {picks === null ? (
+        <div className="flex flex-col gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-16 w-full rounded-xl" />
+          ))}
+        </div>
+      ) : (
+        <ul className="m-0 flex list-none flex-col gap-3 p-0">
+          {picks.map((p) => (
+            <ModelRow
+              key={p.model.id}
+              pick={p}
+              checked={selection.has(p.model.id)}
+              started={started.has(p.model.id)}
+              job={jobByModel.get(p.model.id)}
+              error={errors[p.model.id]}
+              onToggle={(on) => setRow(p.model.id, on)}
+            />
+          ))}
+        </ul>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={start} disabled={pending.length === 0}>
+          {pending.length > 0
+            ? startLabel
+            : started.size > 0
+              ? "Downloading in the background"
+              : picks?.every((p) => p.model.downloaded)
+                ? "Every model is already here"
+                : "Nothing selected"}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          {started.size > 0
+            ? "Carry on — the download keeps running while you finish setup, and appears in the download manager."
+            : "Downloads run in the background. You can go to the next step straight away."}
+        </span>
+      </div>
+
+      {total.unknown > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {total.unknown === 1 ? "One model does" : `${total.unknown} models do`} not publish a
+          file size, so {total.unknown === 1 ? "it is" : "they are"} not in the figure above.
+        </p>
+      )}
+
+      <p className="text-xs text-muted-foreground">
+        You can add, swap or delete models any time under AI Models — including a video model,
+        which is left out here because it is a far larger download than the rest put together.
+      </p>
+    </div>
+  );
+}
+
+function ModelRow({
+  pick,
+  checked,
+  started,
+  job,
+  error,
+  onToggle,
+}: {
+  pick: ModelPick;
+  checked: boolean;
+  started: boolean;
+  job: Job | undefined;
+  error: string | undefined;
+  onToggle: (on: boolean) => void;
+}) {
+  const { model } = pick;
+  const fit = fitNote(model.fit);
+  const size = model.size_gb == null ? null : formatSize(model.size_gb * 1e9);
+  const name = model.nickname || model.label;
+  // A fresh install builds the runner's environment before any bytes move
+  // (`supervisor._env_install_worker`, states `venv` -> `downloading`), so the
+  // job's own caption is what makes a row at 0 bytes read as working rather
+  // than stuck. `jobAmount` is the byte count beside it, once there is one.
+  const caption = job ? [jobStatusLine(job), jobAmount(job)].filter(Boolean).join(" · ") : "";
+  const fraction = job ? jobFraction(job) : null;
+  const finished = model.downloaded || (job !== undefined && job.state === "done");
+
+  return (
+    <li className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        {finished ? (
+          <span className="mt-0.5 grid size-4 place-items-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+            <Check className="size-3" strokeWidth={3} />
+          </span>
+        ) : started ? (
+          <span className="mt-0.5 grid size-4 place-items-center text-muted-foreground">
+            <HardDrive className="size-3.5" />
+          </span>
+        ) : (
+          <Checkbox
+            id={`model-${model.id}`}
+            className="mt-0.5"
+            checked={checked}
+            onCheckedChange={(next) => onToggle(!!next)}
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <label
+            htmlFor={started || finished ? undefined : `model-${model.id}`}
+            className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium"
+          >
+            {name}
+            {model.params && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
+                {model.params}
+              </span>
+            )}
+            <span className="text-xs font-normal text-muted-foreground">{pick.capabilityLabel}</span>
+          </label>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <Cpu className="size-3" />
+              {pick.runnerShortLabel ?? "on this machine"}
+            </span>
+            <span>{finished && !job ? "Already on this machine" : (size ?? "size unknown")}</span>
+            {fit && (
+              <span className="inline-flex items-center gap-1.5" title={fit.title}>
+                <span className={`size-1.5 rounded-full ${fit.dot}`} />
+                {fit.text}
+              </span>
+            )}
+          </div>
+          {model.note && !job && (
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{model.note}</p>
+          )}
+        </div>
+      </div>
+
+      {job && !finished && (
+        <div className="flex flex-col gap-1.5">
+          <div className="h-1 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-[width] duration-500"
+              style={{ width: fraction === null ? "15%" : `${Math.round(fraction * 100)}%` }}
+            />
+          </div>
+          <span className="text-xs text-muted-foreground" role="status">
+            {caption || "Starting…"}
+          </span>
+        </div>
+      )}
+
+      {(error || (job && isTerminal(job) && job.state === "error")) && (
+        <p className="flex items-start gap-2 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          {error || job?.message || "The download failed."}
+        </p>
+      )}
+    </li>
+  );
+}
