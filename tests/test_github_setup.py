@@ -506,10 +506,16 @@ def test_target_arch_refuses_an_unpublished_architecture():
 
 
 def test_member_for_names_the_binary_inside_the_archive():
+    """macOS and Linux archives unpack into a versioned root dir
+    (`gh_<version>_<os>_<arch>/bin/...`); the Windows zip is the one shape
+    that doesn't — `gh_2.100.0_windows_amd64.zip`'s full member list is
+    exactly `["LICENSE", "bin/gh.exe"]`, no root directory at all."""
     assert (github_setup._member_for("linux", "amd64", "2.100.0")
             == "gh_2.100.0_linux_amd64/bin/gh")
+    assert (github_setup._member_for("macOS", "amd64", "2.100.0")
+            == "gh_2.100.0_macOS_amd64/bin/gh")
     assert (github_setup._member_for("windows", "amd64", "2.100.0")
-            == "gh_2.100.0_windows_amd64/bin/gh.exe")
+            == "bin/gh.exe")
 
 
 # -- the install worker --------------------------------------------------------

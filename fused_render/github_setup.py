@@ -463,12 +463,16 @@ def _release_url(version: str, asset_name: str) -> str:
 
 def _member_for(os_kind: str, arch: str, version: str) -> str:
     """The path INSIDE the archive that is the `gh` binary itself — e.g.
-    `gh_2.100.0_linux_amd64/bin/gh`. Every `gh` archive unpacks into one
-    top-level dir named after the asset (minus its extension) containing a
-    `bin/` with the binary, a LICENSE, and man pages/shell completions this
-    app has no use for."""
-    root = f"gh_{version}_{os_kind}_{arch}"
+    `gh_2.100.0_linux_amd64/bin/gh`. The Linux tar.gz and macOS zip both
+    unpack into one top-level dir named after the asset (minus its
+    extension) containing a `bin/` with the binary, a LICENSE, and man
+    pages/shell completions this app has no use for. The Windows zip is the
+    one shape without that root dir: `gh_2.100.0_windows_amd64.zip`'s full
+    member list is exactly `["LICENSE", "bin/gh.exe"]`."""
     name = "gh.exe" if os_kind == "windows" else "gh"
+    if os_kind == "windows":
+        return f"bin/{name}"
+    root = f"gh_{version}_{os_kind}_{arch}"
     return f"{root}/bin/{name}"
 
 
