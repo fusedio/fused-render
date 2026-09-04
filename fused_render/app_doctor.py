@@ -79,12 +79,13 @@ def _finding(rule: str, path: str, line: int, excerpt: str) -> dict:
 
 # --------------------------------------------------------- file enumeration
 
-# The bookkeeping files app_git.py's own _GITIGNORE keeps out of an app's
-# history (see app_git.py's module docstring for why each one is there).
-# Duplicated rather than imported (see the module docstring); a name added
-# there and not here is a false-positive risk, never a missed real finding,
-# because these are all machine bookkeeping, never app content.
-_IGNORED_DIR_NAMES = {".git", ".venv", ".fused", "__pycache__", "node_modules"}
+# The bookkeeping folders app_git.py's own _GITIGNORE keeps out of an app's
+# history (see app_git.py's module docstring for why each one is there), plus
+# node_modules — never worth reading AS CONTENT. Generated cache dirs
+# (__pycache__ and friends) are deliberately NOT here: `_check_stray_files`
+# needs to see them exist to flag them, so only their (binary, uninteresting)
+# contents are skipped, via the same null-byte sniff every other file gets.
+_IGNORED_DIR_NAMES = {".git", ".venv", ".fused", "node_modules"}
 _IGNORED_FILE_SUFFIXES = (".html.json",)
 _IGNORED_FILE_NAMES = {".claude-split.json", ".DS_Store"}
 _IGNORED_FILE_PREFIXES = (".fused-render-write-probe.",)
@@ -296,6 +297,181 @@ def _check_device_paths(rel_path: str, text: str, findings: list) -> None:
             ))
 
 
+# ---------------------------------------------------------------- structure
+
+# The one authored thumbnail name — the same exact-listdir match
+# app_listing.app_preview_image makes, and for the same reason (case-folding
+# is not portable across filesystems, so a membership test is the only rule
+# every machine agrees on).
+_PREVIEW_IMAGE_NAME = "preview.png"
+_ICON_NAME = "icon.svg"
+
+
+def _has_fused_meta(html_path: str) -> bool:
+    """Same head-budget sniff as app_listing.has_fused_meta: the marker sits
+    in the first few KiB of <head>, so a whole-file read per candidate page
+    is never needed."""
+    try:
+        with open(html_path, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return False
+    return re.search(rb'<meta\s[^>]*name\s*=\s*["\']?fused-app["\']?[^>]*>',
+                      head, re.IGNORECASE) is not None
+
+
+def _direct_child_pages(app_dir: str) -> list[str]:
+    """Non-hidden top-level `.html` files, the same population
+    `app_listing.app_entry` scans for the one that is the entry."""
+    try:
+        names = sorted(os.listdir(app_dir))
+    except OSError:
+        return []
+    return [n for n in names if not n.startswith(".") and n.lower().endswith(".html")
+            and os.path.isfile(os.path.join(app_dir, n))]
+
+
+def _app_entry(app_dir: str) -> str | None:
+    """Mirrors app_listing.app_entry: the first non-hidden top-level `.html`
+    (name order) carrying the app marker, or None. Duplicated rather than
+    imported — see the module docstring."""
+    for name in _direct_child_pages(app_dir):
+        if _has_fused_meta(os.path.join(app_dir, name)):
+            return name
+    return None
+
+
+def _check_structure(app_dir: str, findings: list) -> None:
+    entry = _app_entry(app_dir)
+    if entry is None:
+        findings.append(_finding(
+            "structure:no-entry", ".", 0,
+            "no top-level .html page carries <meta name=\"fused-app\">",
+        ))
+
+    icon = os.path.join(app_dir, _ICON_NAME)
+    if os.path.isfile(icon):
+        try:
+            import xml.etree.ElementTree as ET
+            ET.parse(icon)
+        except Exception:
+            findings.append(_finding(
+                "structure:bad-icon", _ICON_NAME, 0,
+                f"{_ICON_NAME} does not parse as XML",
+            ))
+
+    try:
+        has_readme = any(
+            n.lower().startswith("readme") and os.path.isfile(os.path.join(app_dir, n))
+            for n in os.listdir(app_dir)
+        )
+    except OSError:
+        has_readme = True  # an unlistable folder is not a "missing README" finding
+    if not has_readme:
+        findings.append(_finding(
+            "structure:missing-readme", ".", 0, "no README in the app folder",
+        ))
+
+    pyproject = os.path.join(app_dir, "pyproject.toml")
+    if os.path.isfile(pyproject):
+        try:
+            import tomllib
+            with open(pyproject, "rb") as fh:
+                tomllib.load(fh)
+        except Exception as exc:
+            findings.append(_finding(
+                "structure:bad-pyproject", "pyproject.toml", 0,
+                f"pyproject.toml does not parse: {exc}",
+            ))
+
+    try:
+        has_preview = (_PREVIEW_IMAGE_NAME in os.listdir(app_dir)
+                       and os.path.getsize(
+                           os.path.join(app_dir, _PREVIEW_IMAGE_NAME)) > 0)
+    except OSError:
+        has_preview = False
+    if not has_preview:
+        findings.append(_finding(
+            "structure:missing-thumbnail", ".", 0,
+            f"no {_PREVIEW_IMAGE_NAME} thumbnail (or it is empty)",
+        ))
+
+
+# ------------------------------------------------------------- API version
+
+# Mirrors fused_api_version.version_from_text / current_version, without
+# importing that module (see the module docstring) — current_version reads
+# the migration skill's docs/ folder through skill_sources, which is not
+# stdlib. This constant is the highest API version THIS copy of the engine
+# knows about; bumping it is part of shipping a new version, the same way
+# the starter's own tag is bumped alongside a new docs/vN.md (see
+# fused_api_version's docstring) — the two already have to move together,
+# this is a third place that moves with them.
+CURRENT_API_VERSION = 1
+
+_API_VERSION_TAG_RE = re.compile(
+    rb'<meta\s[^>]*name\s*=\s*["\']?fused-api-version["\']?[^>]*>',
+    re.IGNORECASE)
+_API_VERSION_CONTENT_RE = re.compile(rb'content\s*=\s*["\']?\s*(\d+)\s*["\']?',
+                                     re.IGNORECASE)
+
+
+def _declared_api_version(html_path: str) -> int:
+    try:
+        with open(html_path, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return 0
+    tag = _API_VERSION_TAG_RE.search(head)
+    if not tag:
+        return 0
+    m = _API_VERSION_CONTENT_RE.search(tag.group(0))
+    if not m:
+        return 0
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return 0
+
+
+def _check_api_version(app_dir: str, findings: list) -> None:
+    entry = _app_entry(app_dir)
+    if entry is None:
+        return  # "no entry" is structure:no-entry's finding to make, not this one's
+    declared = _declared_api_version(os.path.join(app_dir, entry))
+    if declared < CURRENT_API_VERSION:
+        findings.append(_finding(
+            "api-version:behind", entry, 0,
+            f"declares API version {declared}, current is {CURRENT_API_VERSION}",
+        ))
+
+
+# ------------------------------------------------------------ stray files
+
+# Generated artifacts that belong in the app's own machine-local .fused/
+# folder (see app_git.py's module docstring for why that folder is never
+# app history) but are loose in the tree instead — almost always a cache or
+# a log a run left beside the code rather than under it.
+_STRAY_SUFFIXES = (".pyc", ".log", ".sqlite", ".sqlite3", ".db")
+_STRAY_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+
+
+def _check_stray_files(candidates: list[str], findings: list) -> None:
+    for rel in candidates:
+        parts = rel.split("/")
+        if any(p in _STRAY_DIR_NAMES for p in parts[:-1]):
+            findings.append(_finding(
+                "generated:stray-file", rel, 0,
+                f"{parts[-2]}/ is a generated cache, not app content",
+            ))
+            continue
+        if rel.endswith(_STRAY_SUFFIXES):
+            findings.append(_finding(
+                "generated:stray-file", rel, 0,
+                f"{rel} looks generated (belongs in .fused/, or shouldn't be committed)",
+            ))
+
+
 # --------------------------------------------------------------------- API
 
 
@@ -309,11 +485,16 @@ def check(app_dir: str) -> list[dict]:
     app_dir = os.path.abspath(app_dir)
     findings: list[dict] = []
 
-    for rel in _candidate_files(app_dir):
+    candidates = _candidate_files(app_dir)
+    for rel in candidates:
         text = _read_text(app_dir, rel)
         if text is None:
             continue
         _check_secrets(rel, text, findings)
         _check_device_paths(rel, text, findings)
+
+    _check_structure(app_dir, findings)
+    _check_api_version(app_dir, findings)
+    _check_stray_files(candidates, findings)
 
     return findings

@@ -22,13 +22,21 @@ def _rules(findings):
     return {f["rule"] for f in findings}
 
 
+def _leaks(findings):
+    """This file's own two families — secrets and device paths. `check()`
+    also runs housekeeping checks (structure, version, stray files) added in
+    later tasks; a fixture built only for a leak assertion is not a complete
+    app, so those show up here too and are not what these tests are about."""
+    return [f for f in findings if f["rule"].startswith(("secrets:", "device-path:"))]
+
+
 # --------------------------------------------------------------- secrets
 
 
 def test_a_clean_app_yields_nothing(tmp_path):
     _write(tmp_path, "index.html", "<html><body>hi</body></html>\n")
     _write(tmp_path, "README.md", "a small app\n")
-    assert app_doctor.check(str(tmp_path)) == []
+    assert _leaks(app_doctor.check(str(tmp_path))) == []
 
 
 def test_an_aws_key_is_flagged_and_masked(tmp_path):
@@ -132,7 +140,7 @@ def test_a_windows_users_path_is_flagged(tmp_path):
 def test_an_app_relative_path_is_not_flagged(tmp_path):
     _write(tmp_path, "app.py", 'DATA = "./data/model.bin"\n')
     findings = app_doctor.check(str(tmp_path))
-    assert findings == []
+    assert _leaks(findings) == []
 
 
 # -------------------------------------------------------- file enumeration
@@ -146,16 +154,16 @@ def test_git_ignored_files_are_not_scanned(tmp_path):
     _write(tmp_path, "secret.env", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n')
     _write(tmp_path, "app.py", "print('hi')\n")
     findings = app_doctor.check(str(tmp_path))
-    assert findings == []
+    assert _leaks(findings) == []
 
 
 def test_binary_files_are_skipped_without_raising(tmp_path):
     (tmp_path / "asset.bin").write_bytes(b"\x00\x01\x02AKIAABCDEFGHIJKLMNOP")
-    assert app_doctor.check(str(tmp_path)) == []
+    assert _leaks(app_doctor.check(str(tmp_path))) == []
 
 
 def test_bookkeeping_files_are_never_scanned(tmp_path):
     _write(tmp_path, ".claude-split.json", '{"key": "AKIAABCDEFGHIJKLMNOP"}\n')
     _write(tmp_path, ".venv/cache.txt", 'AKIAABCDEFGHIJKLMNOP')
     findings = app_doctor.check(str(tmp_path))
-    assert findings == []
+    assert _leaks(findings) == []
