@@ -77,15 +77,23 @@
  *     itself is a namespace, not a function. The old callable
  *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
  *     it gets "fused.ai is not a function".
- *     opts.provider: "local" | "claude" — which tier serves the call. Omitted,
- *     the model's shape decides (a repo id or .gguf filename is weights on
- *     this machine, anything else is a Claude alias), which IS the tier walk
- *     local -> claude for the two tiers that exist. The reply's `provider`
+ *     opts.provider: "local" | "apple" | "claude" — which tier serves the
+ *     call. Omitted, the model decides: the apple tier's PINNED ids
+ *     ("afm-text" here, "afm-speech" on .transcribe, "afm-embedding" on
+ *     .embed — D700) name their tier outright, then the shape rule applies
+ *     (a repo id or .gguf filename is weights on this machine, anything else
+ *     is a Claude alias). So `{provider: "apple"}` and `{model: "afm-text"}`
+ *     are the same call; a pinned id under a different provider is a 400.
+ *     "apple" is the OS's own on-device model (macOS 26+, Apple Silicon,
+ *     Apple Intelligence on) — nothing to download, nothing leaves the Mac,
+ *     ~4k-token context, `usage` null on macOS 26. The reply's `provider`
  *     names the tier that answered. The SAME option, same meaning, is on
  *     .image/.video/.transcribe/.embed, and every reply carries `provider`;
- *     those four have only a local tier today, so omitted means "local" and
- *     "claude" rejects with `unavailable` (the CLI speaks text and nothing
- *     else) rather than a 400 — the tier exists, it lacks the verb.
+ *     omitted means "local" there. "claude" rejects those four with
+ *     `unavailable` (the CLI speaks text and nothing else), and "apple"
+ *     rejects .image/.video (Apple ships no programmatic image model) and,
+ *     in this build, .embed — a 409, not a 400: the tier exists, it lacks
+ *     the verb.
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
@@ -94,11 +102,16 @@
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
  *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
  *     Claude path — dropping them would answer a different question. The
- *     sampling knobs (and `effort` on a local model) are TUNABLES: a tier
- *     that lacks one drops it and says so in the result's `warnings[]`
+ *     apple tier honours `history`, refuses `raw` (the framework owns its
+ *     template) and refuses `images` until the OS offers image input
+ *     (macOS 27 on the larger model; never on 26). The sampling knobs (and
+ *     `effort` on a local model, `effort`/`topP` on apple) are TUNABLES: a
+ *     tier that lacks one drops it and says so in the result's `warnings[]`
  *     ({type: "unsupported-setting", setting, message}) instead of failing
  *     the call. `finishReason`: "stop" | "length" (hit maxTokens) |
- *     "cancelled".
+ *     "cancelled" | "content-filter" (apple only: the on-device guardrail
+ *     declined — the text so far is returned, `providerMetadata.apple.
+ *     refusal` says why; refusals there can be arbitrary, retry or reword).
  *     opts.abortSignal: a standard AbortSignal. Aborting rejects with
  *     .type === "cancelled" and stops the work server-side (a streaming
  *     call by disconnecting, a local generation via /api/ai/cancel). Every
@@ -138,6 +151,11 @@
  *                 words?}], language, durationInSeconds, ...frame}>
  *     providerMetadata.local: {path, output, url, outputText, outputPartial,
  *     task, speakers, estimatedSpeakers}; response.id = the job id.
+ *     provider "apple" (or model "afm-speech", D700) runs Apple's own speech
+ *     model instead of Whisper: same reply, same files; `language` becomes
+ *     one of Apple's locales (absent = the system locale, no auto-detect),
+ *     `task: "translate"` and `diarize` are refused, initialPrompt/vad are
+ *     dropped with a warning, `words` is honoured.
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
  *     when relative, like readFile/rawUrl. Resolves with the
@@ -3408,8 +3426,16 @@
     const looksLocal = body.provider === "local"
       || (body.provider === undefined && typeof body.model === "string"
           && (body.model.indexOf("/") !== -1 || /\.gguf$/i.test(body.model)));
-    const wantsServerCancel = !!signal && !onChunk && looksLocal;
-    const onAbort = () => { aiPost("/api/ai/cancel", {}).catch(() => {}); };
+    // The apple tier has the same non-streaming exposure and its own cancel
+    // (the helper is asked by request id, there is no resident worker), so
+    // the route is told which tier to stop. Pinned-id inference restated
+    // here because the abort listener cannot wait for the server's answer.
+    const looksApple = body.provider === "apple"
+      || (body.provider === undefined && body.model === "afm-text");
+    const wantsServerCancel = !!signal && !onChunk && (looksLocal || looksApple);
+    const onAbort = () => {
+      aiPost("/api/ai/cancel", looksApple ? { provider: "apple" } : {}).catch(() => {});
+    };
     if (wantsServerCancel) signal.addEventListener("abort", onAbort, { once: true });
     const settle = (promise) => wantsServerCancel
       ? promise.finally(() => signal.removeEventListener("abort", onAbort))

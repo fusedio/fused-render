@@ -220,7 +220,7 @@ fused.env
 // (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
 const { text, usage, response, provider } = await fused.ai.text({
   prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
-  provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
+  provider,                   // optional "local" | "apple" | "claude" — pins the tier; omitted, a pinned id ("afm-text") or the model's shape decides
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
@@ -242,10 +242,14 @@ const { text, usage, response, provider } = await fused.ai.text({
   turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
   `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
   (`prompt` is a field, never a positional argument), and the former callable
-  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
-  pins the **tier** that serves the call; omitted, the model's shape decides (a repo
-  id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
-  is the fixed tier walk local → claude. The three omitted-`model` cases: no
+  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "apple" |
+  "claude"`, optional) pins the **tier** that serves the call; omitted, the model decides:
+  the apple tier's **pinned ids** (`afm-text`, `afm-speech`, `afm-embedding` — D700) name
+  their tier outright, then the shape rule (a repo id or `.gguf` filename is local weights,
+  anything else a Claude alias — AI-1), which is the fixed tier walk local → claude. A
+  pinned id under a different `provider` is a 400 in both directions. A tier is an
+  **engine family**, not a privacy class: `local` and `apple` (Apple's on-device models,
+  macOS 26+) both keep the prompt on the machine. The three omitted-`model` cases: no
   `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
@@ -289,9 +293,11 @@ const { text, usage, response, provider } = await fused.ai.text({
   file paths (`previewPath`, transcript `output`/`outputText`/`outputPartial`),
   `seconds` — so **no input is echoed at top level** (the SDK's rule), and the frame
   never changes shape because a tier learned a new fact;
-  **`finishReason`** `"stop" | "length" | "cancelled"` (`length` = a local model
-  produced exactly `maxTokens`; the Claude CLI reports no stop reason, so that tier
-  always says `stop`); **`warnings`** an array, usually empty, of
+  **`finishReason`** `"stop" | "length" | "cancelled" | "content-filter"` (`length` = a
+  local model produced exactly `maxTokens`; the Claude CLI reports no stop reason, so
+  that tier always says `stop`; `content-filter` = the apple tier's on-device guardrail
+  declined, the text so far is returned and `providerMetadata.apple.refusal` says why —
+  D700); **`warnings`** an array, usually empty, of
   `{type: "unsupported-setting", setting, message}` — a **tunable** the serving tier
   cannot honour (`temperature`/`maxTokens`/`topP` on Claude, `effort` on a local
   model) is DROPPED and named here rather than refused, so one page carries one
@@ -6602,8 +6608,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
   which is what keeps every page written before this working. Since D631 the shape
   rule is the **default**, not the only route: an explicit `provider: "local" |
-  "claude"` (RH-11) pins the tier without consulting the model's shape, and the
-  reply's `provider` names the tier that answered on both paths and in both shapes.
+  "apple" | "claude"` (RH-11) pins the tier without consulting the model's shape, the
+  apple tier's pinned ids infer it before the shape rule (D700), and the reply's
+  `provider` names the tier that answered on both paths and in both shapes.
 - **AI-1a** **A conversation and a stop, because a chat client needs both.**
   `prompt` stays the thing being asked NOW, and `history` carries the turns
   before it — so adding it changes no existing call, and the turns reach the
@@ -9351,10 +9358,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   py2app showed only its generic "Launch error", so v0.4.49–v0.4.51 could not
   start at all on macOS 14. **The app's own `MACOSX_DEPLOYMENT_TARGET` was
   correct throughout and did not help** — it governs code WE compile, not
-  bottles we bundle. The macOS build jobs are therefore pinned to `macos-14`,
-  the oldest image GitHub offers, guarded by
-  `tests/test_build_dmg_diagnostics.py`; moving them forward requires first
-  making the build stop bundling a per-OS Homebrew bottle. `ltx-video`
+  bottles we bundle. The macOS build jobs were therefore pinned to `macos-14`,
+  the oldest image GitHub offers, until D700's helper needed the macOS 26 SDK;
+  the build then stopped bundling the per-OS Homebrew bottle (a python.org-style
+  framework instead, plus a minos guard over every bundled Mach-O), which is
+  what D468 named as the precondition for moving the image forward. `ltx-video`
   already served this capability as the default row, so the removal cost the
   high-fidelity option and not the capability. Two traces stay on purpose:
   `formats.loaders` still returns early on a root `FL2VA/` tree while

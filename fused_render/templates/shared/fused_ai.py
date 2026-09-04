@@ -474,9 +474,12 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
     """`POST /api/ai` and return the completion text. Mirrors `fused.ai.text()`
     without `onChunk` — see `stream()` for the streaming form.
 
-    `provider` is `"local"` or `"claude"` — which tier serves the call. Left
-    `None`, the server picks from the model's shape (a repo id or `.gguf`
-    filename is local, anything else Claude), exactly as the JS side does."""
+    `provider` is `"local"`, `"apple"` or `"claude"` — which tier serves the
+    call. Left `None`, the server picks from the model: the apple tier's
+    pinned ids (`"afm-text"`) name it outright, then the shape rule (a repo
+    id or `.gguf` filename is local, anything else Claude), exactly as the
+    JS side does. `provider="apple"` alone runs Apple's on-device model
+    (macOS 26+, D700)."""
     body: dict = {"prompt": prompt}
     if model is not None:
         body["model"] = model
@@ -588,6 +591,12 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     alongside an absolute `base` naming the calling PAGE (RH-1), and
     `_child.py` already chdirs a running `.py` to its own directory, so a
     relative path here already means "beside this file" without one.
+
+    `provider="apple"` (or `model="afm-speech"`, D700) runs Apple's
+    SpeechAnalyzer instead of a Whisper model: no download, `language` is
+    mapped to one of Apple's locales (absent = the system locale), `task`
+    must be `"transcribe"`, `diarize` is refused, `initial_prompt`/`vad` are
+    dropped with a warning, `words` is honoured.
     """
     resolved = os.path.abspath(os.path.expanduser(path))
     body: dict = {"path": resolved}

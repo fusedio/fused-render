@@ -2231,3 +2231,18 @@
   color: var(--fg-muted);
 }
 
+
+/* An apple-tier row (D700): the size slot says "system" instead of a figure —
+ * the OS owns these weights, so there is nothing to measure or download. Same
+ * slot, same type, so the name column lines up with its neighbours. */
+.pg-model-sys {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10.5px;
+}
+
+/* The one line the text/speech group says when the apple row is missing on a
+ * Mac that could have it (Apple Intelligence off, model still downloading). */
+.pg-group-apple {
+  margin-top: 6px;
+}
